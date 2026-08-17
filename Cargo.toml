@@ -8,6 +8,7 @@ members = [
     "crates/recorder-core",
     "crates/source-bundle",
     "crates/source-rpc",
+    "crates/registry",
 ]
 
 [workspace.package]
@@ -47,6 +48,7 @@ ozpb-evaluator = { path = "crates/evaluator" }
 ozpb-recorder-core = { path = "crates/recorder-core" }
 ozpb-source-bundle = { path = "crates/source-bundle" }
 ozpb-source-rpc = { path = "crates/source-rpc" }
+ozpb-registry = { path = "crates/registry" }
 
 [profile.release]
 lto = true
