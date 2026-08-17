@@ -1,0 +1,17 @@
+[package]
+name = "ozpb-source-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Soroban RPC acquisition adapter: getTransaction / simulateTransaction -> EvidenceSnapshot"
+
+[dependencies]
+ozpb-recorder-core = { workspace = true }
+ozpb-domain = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+stellar-xdr = { workspace = true }
+stellar-strkey = { workspace = true }
