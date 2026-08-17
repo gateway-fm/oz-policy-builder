@@ -4,6 +4,7 @@ exclude = ["contracts"]
 members = [
     "crates/domain",
     "crates/policy-spec",
+    "crates/evaluator",
 ]
 
 [workspace.package]
@@ -39,6 +40,7 @@ nix = { version = "0.29", default-features = false, features = ["signal", "user"
 
 ozpb-domain = { path = "crates/domain" }
 ozpb-policy-spec = { path = "crates/policy-spec" }
+ozpb-evaluator = { path = "crates/evaluator" }
 
 [profile.release]
 lto = true
