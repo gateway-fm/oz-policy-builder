@@ -14,6 +14,7 @@ members = [
     "crates/build-runner",
     "crates/api-types",
     "crates/toolkit",
+    "crates/mcp-server",
 ]
 
 [workspace.package]

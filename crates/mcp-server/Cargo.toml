@@ -1,0 +1,26 @@
+[package]
+name = "ozpb-mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "rmcp stdio server exposing the record/synthesize/evaluate/generate tools (no domain logic)"
+
+[[bin]]
+name = "ozpb-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+ozpb-toolkit = { workspace = true }
+ozpb-api-types = { workspace = true }
+ozpb-recorder-core = { workspace = true }
+ozpb-source-rpc = { workspace = true }
+ozpb-source-bundle = { workspace = true }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+axum = "0.8"
+tokio-util = "0.7"
+url = "2"
