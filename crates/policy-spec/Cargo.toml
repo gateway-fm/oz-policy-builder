@@ -1,0 +1,16 @@
+[package]
+name = "ozpb-policy-spec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "PolicySpec v1: canonical schema, typestate validation, spec hashing"
+
+[dependencies]
+ozpb-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+stellar-xdr = { workspace = true }
