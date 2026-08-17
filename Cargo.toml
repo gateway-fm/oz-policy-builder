@@ -11,6 +11,7 @@ members = [
     "crates/source-rpc",
     "crates/registry",
     "crates/codegen",
+    "crates/build-runner",
 ]
 
 [workspace.package]
@@ -53,6 +54,7 @@ ozpb-source-bundle = { path = "crates/source-bundle" }
 ozpb-source-rpc = { path = "crates/source-rpc" }
 ozpb-registry = { path = "crates/registry" }
 ozpb-codegen = { path = "crates/codegen" }
+ozpb-build-runner = { path = "crates/build-runner" }
 
 [profile.release]
 lto = true
