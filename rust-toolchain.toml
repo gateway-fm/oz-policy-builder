@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.91.1"
+components = ["rustfmt", "clippy"]
+# The wasm target travels with the toolchain rather than as a separate CI step, so a build
+# outside CI cannot quietly lack it.
+targets = ["wasm32v1-none"]

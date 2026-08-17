@@ -1,0 +1,16 @@
+/target
+contracts/**/target/
+**/*.rs.bk
+.DS_Store
+/tmp
+*.wasm
+determinism-run-*/
+contracts/**/test_snapshots/
+node_modules/
+
+# Testnet-harness runtime secrets/config (generated locally; never commit).
+*.secret
+
+# Agent worktrees live inside the repository and are nested git checkouts; without this
+# a `git add -A` commits them as embedded repositories.
+.claude/worktrees/

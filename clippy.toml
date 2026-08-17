@@ -1,0 +1,31 @@
+# Types banned workspace-wide because they make a hash nondeterministic.
+#
+# Everything trust-bearing here is identified by a hash over a serialized structure, so the
+# serialized bytes are part of the security property rather than an implementation detail of the
+# serializer. Two type families break that:
+#
+#   * `HashMap`/`HashSet` seed their hasher per process, so iteration order — and therefore the
+#     serialized byte order — differs between runs of the same binary on the same input.
+#     `BTreeMap`/`BTreeSet` are ordered and are drop-in replacements for every use here.
+#
+#   * floats have no faithful JSON form: NaN and the infinities serialize to `null`, so distinct
+#     values collide and cannot round-trip; `0.0` and `-0.0` are distinct bit patterns that compare
+#     equal; and a computed value can differ in its last bit between platforms. They are also
+#     absent from Stellar's own value system — `ScVal` has no float variant — so a policy reasoning
+#     in floats could not express itself on-chain at all. Amounts are `i128` in stroops, ledger
+#     numbers are `u32`, and a rate belongs in integer basis points.
+#
+# This was previously a rule stated in a doc comment above `canonical_json_bytes`. A stated rule
+# that nothing checks is how the next contributor breaks a hash without a single failing test —
+# and the same class of "green for the wrong reason" has bitten this repository repeatedly. The
+# lint is type-aware, so it also catches aliases and re-exports that a grep would miss.
+#
+# If a genuinely unhashed code path ever needs one of these, the escape hatch is a local
+# `#[allow(clippy::disallowed_types)]` with a comment saying why the value never reaches a hash.
+# That is deliberately visible in review rather than silent.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is per-process; use BTreeMap so serialized bytes are stable" },
+    { path = "std::collections::HashSet", reason = "iteration order is per-process; use BTreeSet so serialized bytes are stable" },
+    { path = "f32", reason = "not representable in canonical JSON (NaN/Inf), and absent from Stellar's ScVal; use integers" },
+    { path = "f64", reason = "not representable in canonical JSON (NaN/Inf), and absent from Stellar's ScVal; use integers" },
+]
