@@ -15,6 +15,7 @@ members = [
     "crates/api-types",
     "crates/toolkit",
     "crates/mcp-server",
+    "crates/cli",
 ]
 
 [workspace.package]
