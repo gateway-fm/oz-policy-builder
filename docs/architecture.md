@@ -309,7 +309,6 @@ are referenced **by template family**, never by a wasm hash that doesn't exist y
     "address": "C…",
     "observed_code_hash": "…",
     "registry_resolution": "stellar-accounts@0.7.x (registry entry sha256:…)",
-    "install_rule": { "id": 0, "role": "admin" },
     "install_safe": true
   },
   "rules": [{

@@ -239,8 +239,8 @@ say "8. fail-closed: the same synthesis refuses an account it cannot vouch for"
 # second, made as cheaply and as honestly as it can be made: change one field of one input, run
 # the identical command from step 4, and require it to turn the request down.
 #
-# `install_safe` is the account record's verdict that a safe install can be prepared for the rule
-# slot the grant would occupy. The synthesizer treats it as a precondition (§4.1: unknown or
+# `install_safe` is the account record's verdict that a safe install can be prepared on the
+# account. The synthesizer treats it as a precondition (§4.1: unknown or
 # incompatible accounts fail closed), so with it false there is no spec to be had at any level of
 # permission. The refusal below is this step's expected result: a green run is one where it
 # happens, and the assertion is what would notice if it stopped happening.

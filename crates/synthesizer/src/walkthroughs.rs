@@ -18,7 +18,7 @@
 use crate::{synthesize, PredicateChoice, SynthesisInput, UserDecisions, Widening, WideningBound};
 use ozpb_domain::pinned_upstream;
 use ozpb_domain::{sha256, BlastRadius, NetworkId, TESTNET_PASSPHRASE};
-use ozpb_policy_spec::{InstallRule, SignerSpec, SmartAccountRecord, ValidatedSpec};
+use ozpb_policy_spec::{SignerSpec, SmartAccountRecord, ValidatedSpec};
 use ozpb_recorder_core::{
     ArgSummary, AuthorizationRecord, AuthorizedCall, CredentialRecord, ExecutableObservation,
     Execution, InvocationNode, ObservedExecutable, RawEvidence, RecordingBundle, RECORDING_SCHEMA,
@@ -40,10 +40,6 @@ fn account_record() -> SmartAccountRecord {
         address: account(),
         observed_code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
         registry_resolution: "stellar-accounts@0.7.x (walkthrough)".to_string(),
-        install_rule: InstallRule {
-            id: 0,
-            role: "admin".to_string(),
-        },
         install_safe: true,
     }
 }

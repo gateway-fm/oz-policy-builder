@@ -24,12 +24,7 @@ The fields:
     *overwrites* it with the entry it actually resolved out of the signed snapshot
     ("stellar-accounts@… (registry entry …)"), so nothing invented here can reach the spec.
     Written as prose to make that visible rather than as a plausible-looking release string.
-  * `install_rule` — the context-rule slot (`id`) and role the grant is destined to occupy on
-    the account. Recorded in the spec as a decision; nothing in this milestone enforces it,
-    and the generated contract does not hard-code it either — its call counter is keyed by
-    whatever `(account, context rule id)` it is installed under. Honouring this is the install
-    flow's job, which is the next milestone.
-  * `install_safe` — the verdict that a safe install can be prepared for that slot. The
+  * `install_safe` — the verdict that a safe install can be prepared on the account. The
     synthesizer refuses outright when it is false, so it is a precondition and not a hint.
     True here by construction: the account was deployed seconds ago with `--policies '{}'`,
     so no rule can be displaced. Establishing it for an account a user already owns is part
@@ -61,7 +56,6 @@ def main() -> int:
         "address": address,
         "observed_code_hash": observed_code_hash,
         "registry_resolution": "resolved by the toolkit from the signed snapshot",
-        "install_rule": {"id": 0, "role": "admin"},
         "install_safe": install_safe,
     }
     with open(out_path, "w", encoding="utf-8") as handle:

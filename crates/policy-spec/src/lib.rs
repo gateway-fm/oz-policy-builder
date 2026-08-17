@@ -56,15 +56,7 @@ pub struct SmartAccountRecord {
     pub observed_code_hash: Hash32,
     /// Human-readable registry resolution, e.g. "stellar-accounts@0.7.x (entry sha256:…)".
     pub registry_resolution: String,
-    pub install_rule: InstallRule,
     pub install_safe: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstallRule {
-    pub id: u32,
-    pub role: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -777,10 +769,6 @@ pub mod fixtures {
                 address: ACCOUNT.to_string(),
                 observed_code_hash: sha256(b"fixture-account-wasm"),
                 registry_resolution: "stellar-accounts@0.7.x (fixture)".to_string(),
-                install_rule: InstallRule {
-                    id: 0,
-                    role: "admin".to_string(),
-                },
                 install_safe: true,
             },
             rules: vec![RuleSpec {

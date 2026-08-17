@@ -2,9 +2,5 @@
   "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
   "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
   "registry_resolution": "stellar-accounts@0.7.x (dev registry)",
-  "install_rule": {
-    "id": 0,
-    "role": "admin"
-  },
   "install_safe": true
 }

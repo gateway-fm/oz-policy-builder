@@ -927,7 +927,6 @@ struct Observed<'a> {
 mod tests {
     use super::*;
     use ozpb_domain::sha256;
-    use ozpb_policy_spec::InstallRule;
     use ozpb_recorder_core::{
         fixtures, record, ExecutableObservation, ObservedExecutable, RecordOptions,
     };
@@ -967,10 +966,6 @@ mod tests {
             address: account_strkey(),
             observed_code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
             registry_resolution: "stellar-accounts@0.7.x (test)".to_string(),
-            install_rule: InstallRule {
-                id: 0,
-                role: "admin".to_string(),
-            },
             install_safe: true,
         }
     }
@@ -1997,7 +1992,7 @@ mod tests {
 pub mod fixtures {
     use super::*;
     use ozpb_domain::sha256;
-    use ozpb_policy_spec::{InstallRule, ValidatedSpec};
+    use ozpb_policy_spec::ValidatedSpec;
     use ozpb_recorder_core::{fixtures as rec, record, RecordOptions};
 
     pub fn golden_account_strkey() -> String {
@@ -2049,10 +2044,6 @@ pub mod fixtures {
                 address: golden_account_strkey(),
                 observed_code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 registry_resolution: "stellar-accounts@0.7.x (dev registry)".to_string(),
-                install_rule: InstallRule {
-                    id: 0,
-                    role: "admin".to_string(),
-                },
                 install_safe: true,
             },
             registry_snapshot: sha256(b"dev-registry-snapshot"),
