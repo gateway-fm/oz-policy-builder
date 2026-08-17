@@ -1,0 +1,72 @@
+# cargo-deny configuration (architecture §4.11 engineering gate).
+#
+# Enforces the RFP's "open source, permissive license" requirement *for the whole
+# dependency tree*, not just our own crates: every crate we compile — ours (Apache-2.0)
+# and all transitive dependencies — must carry a license compatible with redistributing
+# this toolkit under Apache-2.0. Also flags security advisories and yanked crates.
+#
+# Run via `scripts/check-licenses.sh` (wired into the verify gates). License/bans/sources
+# checks are fully offline; the advisory check fetches the RustSec DB when network is
+# available and is best-effort in the offline gate.
+
+[licenses]
+# cargo-deny v2 semantics: anything NOT in `allow` is denied. No copyleft blanket-allow.
+version = 2
+confidence-threshold = 0.9
+# Permissive licenses compatible with distributing under Apache-2.0. Copyleft
+# (GPL/AGPL/LGPL) and file-level-copyleft (MPL) are intentionally absent — if a real
+# dependency needs one, it surfaces here and becomes a documented Legal decision, not a
+# silent allow.
+# Exactly the license classes present in the current dependency tree. Adding a license
+# here is a conscious review step: a dependency bump that introduces a new class fails the
+# gate until someone allows it, which is the point.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "Unicode-3.0",
+]
+
+# Per-crate license exceptions — each is an explicit, reviewed entry.
+#
+# webpki-roots bundles Mozilla's root-CA trust store (used by the `ureq` RPC client) as
+# DATA under CDLA-Permissive-2.0, a permissive data license. It carries no copyleft and
+# permits redistribution, so it is compatible with shipping this toolkit under Apache-2.0.
+# Scoped to this crate rather than globally allowed. (Legal/Compliance may veto; reversible.)
+exceptions = [
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
+
+[advisories]
+version = 2
+# Refuse crates pulled from a version yanked from the registry.
+yanked = "deny"
+# Advisory IDs consciously ignored — each needs a reason and a revisit trigger. These are
+# NOT vulnerabilities; they are "unmaintained" notices on build-time transitive crates we
+# do not control.
+ignore = [
+    # `paste` is a build-time proc-macro helper pulled transitively by the Soroban SDK
+    # macro stack (contracts workspace only). RUSTSEC-2024-0436 is an unmaintained notice,
+    # not a vulnerability; there is no code path we can change to drop it. Revisit when
+    # soroban-sdk's dependency tree stops depending on `paste`.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained build-time transitive dep (soroban-sdk macros); no vulnerability; not directly controllable" },
+]
+
+[bans]
+# Duplicate versions of the same crate are a warning (common and often unavoidable in a
+# large tree), not a hard failure.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+# Every crate must come from a known source; the public crates.io registry is the only
+# one allowed by default. A git or private-registry dependency must be added explicitly.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,38 @@
+# Hash-shaped strings that tracked documents quote and this tree cannot derive.
+#
+# Format: <hex>|<class>|<why it is not derivable from this tree>
+#
+# Every line is a statement that the value is real but unverifiable *here* — not that it
+# is unimportant. Being on this list means no offline gate can tell you it went stale, so
+# a reader who cannot reproduce one of these has to be told where it came from instead.
+#
+# The gate fails two ways, and the second is what stops this file becoming a blanket
+# exemption: on any quoted hash that is neither derivable nor listed here, AND on any
+# line here that no document quotes any more.
+#
+# Truncated quotes resolve by prefix, so a value is recorded at full length even when the
+# only place it appears abbreviated — the abbreviation is the document's choice, and the
+# exemption should still say which value it stands for.
+
+# Testnet transaction hashes. Assigned by the network to a transaction submitted once; nothing
+# offline computes them, and re-running the demo produces different ones. stellar.expert is the
+# reader's check, not this gate — which also means the gate cannot tell whether a label here
+# describes its hash correctly. Three of the four below did not, until they were read back
+# against the evidence they came from.
+# Quoted by docs/TESTNET-EVIDENCE.md.
+0eb48bcb9e7c76cdb45ec3e280b504a1beaa659138797e4a8fc897e9d80438c9|testnet-tx|the recorded transfer that validated the recorder against live RPC
+5487a04c6a8e6f455d72cd9919a7ad2004dfa3f49df0a5daebcdc7bc2d285b71|testnet-tx|deploy of the generated policy contract
+
+# The stellar-cli release the wasm gates pin. Both halves identify an upstream artifact we
+# download rather than build: the checksum is the published tarball's, and the revision is
+# the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.
+357bf712f6353c28cd33c794402a3c87231757a5b305e6ef1604365af4fdd556|upstream-release|sha256 of the v27.0.0 x86_64-unknown-linux-gnu asset
+5a7c5fe76530bf4248477ac812fc757146b98cc4|upstream-revision|the v27.0.0 release commit, quoted abbreviated in recorded-build-inputs.sh
+
+# Wasm hashes. Reproducing one needs the pinned rustc AND the pinned stellar-cli, both of
+# which land inside the hashed bytes, so only the nightly wasm workflow can say whether
+# these still hold. Offline they are recorded and not verified — which is the whole reason
+# a wasm hash quoted in prose is worth reading with suspicion.
+b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golden policy under CLI 27.0.0, the pinned one
+90792361630c2bc7d5cbaa5f3b217a59cf7fcef0caa396ef380b3313dd794386|wasm-hash|the same source under CLI 27.1.0, kept as the evidence that the CLI alone moves the hash
+9a818ed3|wasm-hash|golden policy across a clean rebuild under the pinned rustc 1.91.1 and CLI 27.0.0, measured 2026-08-14 after the TTL codegen change; PROGRESS.md quotes 8 characters, so 8 is all that can be recorded

@@ -1,0 +1,120 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host:
+    name: host workspace (fmt · clippy · test · dep-rules · determinism)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # rustc and stellar-cli are recorded as the build inputs every shipped wasm hash was
+      # produced with, and both land inside the hashed bytes. This is the only workflow that runs
+      # on a pull request, so it is the only place the assertion can block a merge: the wasm
+      # workflow is scheduled, and a pin that drifts there is discovered a day later in a job whose
+      # header lists three plausible external causes for a red. Needs no toolchain and takes about
+      # a second, so it runs before everything expensive.
+      - name: recorded build inputs match the pins in use (rustc · stellar-cli)
+        run: bash scripts/check-build-input-pins.sh
+      - name: toolchain
+        run: rustup show # rust-toolchain.toml pins the channel + components
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: dependency rules (evaluator ↛ codegen; cores transport-free)
+        run: bash scripts/check-dep-rules.sh
+      # The gate above is only worth its green if a rule cannot go unchecked without saying so.
+      # This drives it through crate names that match nothing and asserts it stops.
+      - name: dependency rules — the gate still checks what it names
+        run: bash scripts/test-check-dep-rules.sh
+      - name: test
+        run: cargo test --workspace
+      # Source determinism, asserted without a toolchain. This previously shelled out to
+      # `ozpb generate`, which compiles the policy and therefore needs the stellar CLI that
+      # this runner does not have — so the step failed on every push while proving nothing.
+      # These tests assert the same property directly: identical spec in, byte-identical
+      # source out, and no drift between codegen and the committed golden crates. Wasm-level
+      # reproducibility needs the real toolchain and runs in the `nightly live` workflow.
+      - name: determinism (codegen byte-identical; golden crates in step)
+        run: |
+          cargo test -q -p ozpb-codegen generation_is_byte_deterministic
+          cargo test -q -p ozpb-codegen golden_crate_matches_committed_output
+
+  contracts:
+    name: contracts (differential suite · generated code compiles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: differential suite (reference evaluator vs real compiled policy)
+        working-directory: contracts
+        run: cargo test -p ozpb-differential
+
+      # The hash-determinism bans in `clippy.toml` apply to this workspace too — clippy
+      # walks up to the repository root to find it — but the host job's `--workspace` never
+      # reaches here, so without this step the ban is declared for two workspaces and
+      # enforced on one. Dependencies are already built by the step above.
+      - name: clippy (the hash-determinism bans cover this workspace too)
+        working-directory: contracts
+        run: cargo clippy --all-targets -- -D warnings
+
+  publication-guard:
+    name: publication allowlist (no confidential material leaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Architecture §6.5: the public repo is produced from an allowlist; this is the
+      # negative test — a planted sentinel filename/fingerprint must fail the build.
+      - name: forbidden-content scan
+        run: bash scripts/check-publication-allowlist.sh
+
+  unused-deps:
+    name: unused dependencies (every manifest in the tree, both workspaces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: toolchain
+        run: rustup show # rust-toolchain.toml pins the channel + components
+      # check-dep-rules.sh asserts only the ABSENCE of forbidden edges, so a declared-and-
+      # never-used dependency passed every gate and had to be found by hand. cargo-machete
+      # walks directories rather than workspaces, so one run covers the toolkit workspace,
+      # the contracts workspace, and the two generated policy crates both of them exclude.
+      # Pinned for the same reason as cargo-deny: which declarations a version considers
+      # "used" is the gate's verdict.
+      - name: cargo-machete (pinned)
+        run: cargo install cargo-machete --locked --version 0.9.2
+      - name: unused-dependency gate
+        run: bash scripts/check-unused-deps.sh
+
+  quoted-hashes:
+    name: quoted hashes (documents cite values the tree still produces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # A hash quoted in prose that nothing here produces any more is worse than an
+      # out-of-date sentence: the reader follows it, cannot reproduce it, and concludes the
+      # attestation chain is broken. Whole classes of derived hash move together whenever the
+      # canonical encoding changes, and prose does not move with them.
+      #
+      # Its own job rather than a step inside another, so the summary line names what broke.
+      # Reads checked-out files only — no toolchain, no network, about a second.
+      - name: quoted hashes resolve to a current artifact or a declared exception
+        run: python3 scripts/check-quoted-hashes.py
+
+  supply-chain:
+    name: supply-chain (permissive licenses · sources · advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Pinned, not latest — same reasoning as cargo-machete above. cargo-deny decides this
+      # gate's verdict, and its advisory-database handling and lint defaults change between
+      # releases, so a floating install can turn a green tree red (or the reverse) with no
+      # change to the tree. 0.20.2 declares MSRV 1.88, below the repo's pinned 1.91.1.
+      - name: cargo-deny (pinned)
+        run: cargo install cargo-deny --locked --version 0.20.2
+      # deny.toml: every crate (ours + transitive, both workspaces) must be permissively
+      # licensed and compatible with shipping under Apache-2.0; flags advisories too.
+      - name: license & supply-chain gate
+        run: bash scripts/check-licenses.sh

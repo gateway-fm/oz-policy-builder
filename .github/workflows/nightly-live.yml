@@ -1,0 +1,227 @@
+# Wasm-level gates: the checks that need the real Stellar toolchain.
+#
+# Separate from `ci.yml` on purpose. A cold policy build is ~6 minutes on a fast machine and
+# longer on a hosted runner, and it is the *only* thing here that needs `stellar contract
+# build`. Paying that on every push would slow every PR for a property that changes only when
+# codegen, the pinned SDK, or the toolchain changes — so it runs nightly and on demand, and
+# `ci.yml` keeps fast, toolchain-free feedback.
+#
+# It also exercises the **live acquisition path**, which no offline gate can cover and which
+# was silently broken for three weeks: the RPC's `getLedgerEntries` puts `LedgerEntryData` in
+# its `xdr` field, our mocks encoded a whole `LedgerEntry`, and mock and code agreed with each
+# other rather than with the network. Captured responses now pin the shapes we know about
+# (`crates/source-rpc/tests/captured-testnet/`); this job is what catches the shapes we do not
+# — an endpoint that changes, a protocol that moves, a contract that expires from archival.
+#
+# What only this workflow proves (nothing in ci.yml covers it):
+#   * a generated policy builds for wasm32v1-none via the real `stellar contract build`;
+#   * the same source produces byte-identical wasm across two clean builds (§6.3);
+#   * the boundary-shape and golden E2E build tests that are `#[ignore]`d elsewhere because
+#     they need the toolchain.
+# Generated code *compiling* is already covered in ci.yml: the `contracts` job builds the
+# golden policy crate as a dev-dependency of the differential suite.
+name: nightly live
+
+on:
+  schedule:
+    # 03:17 UTC — off the hour, so it does not pile up with everyone else's cron.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  # Pinned by version AND checksum: an unpinned toolchain download would undermine the
+  # reproducibility claim this workflow exists to test.
+  #
+  # The version is load-bearing, not hygiene. The SDK macro writes a `contractmetav0` section at
+  # compile time carrying the compiler and SDK versions, and `stellar contract build` then appends
+  # a second `contractmetav0` section of its own carrying `cliver`:
+  #
+  #     $ stellar contract info meta --wasm <artifact>
+  #      • rsver: 1.91.1
+  #      • rssdkver: 26.1.0#175aa41306f383057a8cdfc84b68d931664fc34e
+  #      • cliver: 27.0.0#5a7c5fe76530bf4248477ac812fc757146b98cc4
+  #
+  # `cliver` lands *inside* the wasm, so it is part of the wasm hash — both halves of it, version
+  # and git revision. A different CLI changes the artifact hash even when the generator's output is
+  # byte-identical, which is why pinning rustc in rust-toolchain.toml is necessary but not
+  # sufficient. It is also why the cache key below includes the CLI version: artifacts built by two
+  # CLIs are not interchangeable.
+  #
+  # 27.0.0 is not a free choice. It is the version recorded in the `pinned_upstream` provenance
+  # table (crates/domain/src/lib.rs), i.e. the one every wasm hash this repository ships was built
+  # with; scripts/check-build-input-pins.sh asserts the two still agree, here and on every PR. The
+  # checksum is the published x86_64-unknown-linux-gnu release asset's, computed from the tarball.
+  #
+  # The revision is recorded, not resolved. Both halves of `cliver` are inside the hashed bytes,
+  # so the release's commit is a build input exactly as its version is — and a tag is mutable.
+  # Reading the expected revision from `v27.0.0` at check time would mean that if the tag were
+  # ever moved, the checksum-pinned historical release would start being rejected and whatever
+  # the tag now points at would be accepted, with no change to this repository. That inverts the
+  # assertion. Recorded here, a moved tag surfaces as a disagreement to investigate, which is how
+  # the upstream OpenZeppelin commit is already handled in verify-pinned-upstream.sh.
+  #
+  # Established from three independent sightings that agree: the v27.0.0 ref (a lightweight tag,
+  # so it names the commit directly), `git ls-remote --tags`, and the release binary's own
+  # `stellar --version`.
+  STELLAR_CLI_VERSION: 27.0.0
+  STELLAR_CLI_REVISION: 5a7c5fe76530bf4248477ac812fc757146b98cc4
+  STELLAR_CLI_SHA256: 357bf712f6353c28cd33c794402a3c87231757a5b305e6ef1604365af4fdd556
+
+jobs:
+  wasm:
+    name: wasm build + byte-reproducibility (real stellar toolchain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # A pin that disagrees with the recorded provenance is worse than no pin: the gates below
+      # would prove reproducibility under inputs no shipped hash was ever built with, and nothing
+      # would say so. Same validator ci.yml runs on every PR — this repeat costs a second and
+      # covers the case where main drifted without passing through a pull request.
+      - name: recorded build inputs match the pins in use (rustc · stellar-cli)
+        run: bash scripts/check-build-input-pins.sh
+
+      - name: toolchain
+        run: |
+          rustup show # rust-toolchain.toml pins the channel + components
+          rustup target add wasm32v1-none
+
+      - name: stellar-cli (pinned by version, revision and checksum)
+        run: |
+          set -euo pipefail
+          asset="stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          url="https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${asset}"
+          curl -sSfL "$url" -o "$asset"
+          echo "${STELLAR_CLI_SHA256}  ${asset}" | sha256sum -c -
+
+          # Its own directory, not /usr/local/bin. Extracting alongside whatever the runner image
+          # ships leaves which binary wins to PATH order, and a preinstalled `stellar` reporting
+          # the same version but built from a different revision stamps a different `cliver` into
+          # every artifact — inside the hashed bytes, so the reproducibility gates below would be
+          # measuring a CLI this job never verified. A dedicated directory placed first removes
+          # the ambiguity instead of testing for it.
+          mkdir -p "${RUNNER_TEMP}/stellar-cli"
+          tar -xzf "$asset" -C "${RUNNER_TEMP}/stellar-cli" stellar
+          # `$GITHUB_PATH` takes effect for *subsequent* steps, not this one, so the assertions
+          # below invoke the extracted binary by absolute path.
+          echo "${RUNNER_TEMP}/stellar-cli" >> "$GITHUB_PATH"
+
+          cli="${RUNNER_TEMP}/stellar-cli/stellar"
+          line=$("$cli" --version | head -1)
+          have=$(printf '%s\n' "$line" | awk '{print $2}')
+          have_rev=$(printf '%s\n' "$line" | awk '{gsub(/[()]/, "", $3); print $3}')
+          if [ "$have" != "${STELLAR_CLI_VERSION}" ]; then
+            echo "::error::extracted stellar reports $have, expected ${STELLAR_CLI_VERSION}"
+            exit 1
+          fi
+          # Both halves of cliver are hashed, so the version alone is not the artifact's identity.
+          if [ "$have_rev" != "${STELLAR_CLI_REVISION}" ]; then
+            echo "::error::extracted stellar is ${have:-?}#${have_rev:-unknown}, expected ${STELLAR_CLI_VERSION}#${STELLAR_CLI_REVISION}"
+            exit 1
+          fi
+          printf '%s\n' "$line"
+
+      # Separate step so it runs with the PATH written above: proves the resolved `stellar` is the
+      # extracted one, which the step that extracted it could not check.
+      - name: the resolved stellar is the verified one
+        run: |
+          set -euo pipefail
+          resolved=$(command -v stellar)
+          if [ "$resolved" != "${RUNNER_TEMP}/stellar-cli/stellar" ]; then
+            echo "::error::PATH resolves stellar to $resolved, not the verified download"
+            exit 1
+          fi
+          line=$(stellar --version | head -1)
+          rev=$(printf '%s\n' "$line" | awk '{gsub(/[()]/, "", $3); print $3}')
+          [ "$rev" = "${STELLAR_CLI_REVISION}" ] || {
+            echo "::error::resolved stellar is revision ${rev:-unknown}, expected ${STELLAR_CLI_REVISION}"
+            exit 1
+          }
+          echo "stellar resolves to $resolved ($line)"
+
+      # Keyed on the contract lockfiles: they pin soroban-sdk and stellar-accounts, so a hit
+      # means the dependency tree is unchanged and only the policy crate needs rebuilding —
+      # ~35s instead of ~6min. A miss just costs the cold build this workflow is sized for.
+      #
+      # The CLI version comes BEFORE the lockfile hash so that `restore-keys` — a prefix match —
+      # cannot fall back onto a cache built by a different CLI. Measured rather than assumed:
+      # building the golden policy with 27.0.0 and then, in the same warm target dir with cargo
+      # recompiling nothing, with 27.1.0 gives b8ea10a2… and then 90792361…. The artifact is
+      # re-uplifted and re-stamped on every invocation, so a restored cache does NOT carry a stale
+      # `cliver`, and the appended `contractmetav0` does not accumulate — the count stays at two,
+      # one from the SDK macro and one from the CLI. What a cross-CLI restore would produce is a
+      # valid artifact that simply differs, which is enough to make the reproducibility step's two
+      # hashes disagree for a reason belonging to the cache rather than to codegen. Keeping
+      # restores inside one CLI version avoids that, and the same measurement is the direct
+      # evidence that the CLI alone moves the hash: identical source, identical rustc, no
+      # recompilation, different bytes.
+      - name: cache the contract build directory
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            contracts/target
+            contracts/golden-transfer-policy/target
+          key: contracts-target-${{ runner.os }}-cli${{ env.STELLAR_CLI_VERSION }}-${{ hashFiles('contracts/**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            contracts-target-${{ runner.os }}-cli${{ env.STELLAR_CLI_VERSION }}-
+
+      - name: W2 golden policy builds to wasm
+        working-directory: contracts/golden-transfer-policy
+        run: stellar contract build
+
+      # §6.3: the same canonical spec plus identical pinned build inputs must produce
+      # byte-identical wasm. Rebuilt from clean so the second run cannot simply reuse the
+      # first's artifact.
+      - name: wasm byte-reproducibility
+        run: |
+          set -euo pipefail
+          # The golden crate is excluded from the contracts workspace, so it is its own
+          # workspace root and builds into ITS target dir. Hashing contracts/target/... instead
+          # is what made this gate vacuous locally and made it fail here: that path only exists
+          # when the differential suite has built the crate as a dev-dependency, which a fresh
+          # checkout has not.
+          golden=contracts/golden-transfer-policy
+          wasm="$golden/target/wasm32v1-none/release/generated_sub_transfer_r0.wasm"
+          first=$(sha256sum "$wasm" | cut -d' ' -f1)
+          ( cd "$golden" && cargo clean )
+          if [ -f "$wasm" ]; then
+            echo "::error::cargo clean left the artifact in place; this check would prove nothing"
+            exit 1
+          fi
+          ( cd "$golden" && stellar contract build )
+          second=$(sha256sum "$wasm" | cut -d' ' -f1)
+          if [ "$first" != "$second" ]; then
+            echo "::error::wasm is not reproducible: $first vs $second"
+            exit 1
+          fi
+          echo "wasm byte-identical across a full clean rebuild: $first"
+
+      # The two tests that are #[ignore]d in ci.yml precisely because they need this
+      # toolchain: the golden E2E build, and the boundary shapes a parse check cannot vouch
+      # for (i128::MIN/MAX literals, a zero-argument tuple, the longest legal symbol, the
+      # max_calls bounds).
+      - name: real-compile tests (normally #[ignore]d)
+        run: cargo test -p ozpb-build-runner -- --ignored --test-threads=1
+
+      # The Tranche-1 outcome, executed against live testnet from scratch: deploy an OZ smart
+      # account, record a transfer's authorization, synthesize, generate, compile. This is the
+      # only check that touches the network, so it is the only one that can catch acquisition
+      # drift. It also re-asserts that the deployed account's on-chain code hash equals the
+      # value pinned in `ozpb_domain::pinned_upstream`.
+      #
+      # Uses Friendbot-funded throwaway identities; nothing of value is at risk. Allowed to
+      # fail the job — a broken live path is a real failure, not a flake to be tolerated — but
+      # see the note below on the one thing that is genuinely external.
+      - name: Tranche-1 outcome against live testnet
+        run: bash scripts/demo-tranche1.sh
+
+      # A red job here has three plausible causes, in order of likelihood:
+      #   1. our acquisition layer no longer matches what the RPC returns;
+      #   2. testnet moved protocol version ahead of the pinned stellar-xdr;
+      #   3. the public endpoint is down, which is not our bug but still blocks the demo.
+      # Whichever it is, the answer is to look before the next demo, not to disable the job.
+
