@@ -1,0 +1,26 @@
+# GENERATED POLICY CRATE — DO NOT EDIT BY HAND (see src/lib.rs header).
+[package]
+name = "generated-sub-transfer-r0"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+soroban-sdk = "=26.1.0"
+stellar-accounts = "=0.7.2"
+
+[dev-dependencies]
+soroban-sdk = { version = "=26.1.0", features = ["testutils"] }
+
+# `stellar contract build` requires overflow-checks on the release profile; emitting it
+# here lets the crate build standalone (not only inside a workspace that supplies it).
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+strip = "symbols"
+panic = "abort"
+codegen-units = 1
+lto = true

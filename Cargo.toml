@@ -10,6 +10,7 @@ members = [
     "crates/source-bundle",
     "crates/source-rpc",
     "crates/registry",
+    "crates/codegen",
 ]
 
 [workspace.package]
@@ -51,6 +52,7 @@ ozpb-recorder-core = { path = "crates/recorder-core" }
 ozpb-source-bundle = { path = "crates/source-bundle" }
 ozpb-source-rpc = { path = "crates/source-rpc" }
 ozpb-registry = { path = "crates/registry" }
+ozpb-codegen = { path = "crates/codegen" }
 
 [profile.release]
 lto = true

@@ -1,0 +1,8 @@
+# GENERATED POLICY CRATE — DO NOT EDIT BY HAND (see src/lib.rs header).
+#
+# The wasm hash recorded in build-manifest.json is specific to this channel: identical source
+# under a different rustc compiles to a different artifact. Changing the channel here without
+# rebuilding invalidates that hash.
+[toolchain]
+channel = "1.91.1"
+targets = ["wasm32v1-none"]

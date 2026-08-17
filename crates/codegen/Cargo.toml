@@ -1,0 +1,24 @@
+[package]
+name = "ozpb-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Deterministic template assembly: ValidatedSpec -> immutable Soroban policy crate source"
+
+[dependencies]
+ozpb-domain = { workspace = true }
+ozpb-policy-spec = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+stellar-strkey = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# Parses generated source as Rust so the "always compilable" property can run without
+# invoking the real compiler on every case.
+syn = { workspace = true }
+ozpb-synthesizer = { workspace = true }
