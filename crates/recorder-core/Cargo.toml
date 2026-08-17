@@ -1,0 +1,19 @@
+[package]
+name = "ozpb-recorder-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Pure recorder: EvidenceSnapshot -> RecordingBundle (auth trees, events, dual hashing)"
+
+[dependencies]
+ozpb-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+stellar-xdr = { workspace = true }
+stellar-strkey = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
