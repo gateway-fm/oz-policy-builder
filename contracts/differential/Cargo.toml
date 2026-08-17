@@ -1,0 +1,21 @@
+[package]
+name = "ozpb-differential"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+# Test-only crate: the differential suite lives in tests/.
+
+[dev-dependencies]
+generated-sub-transfer-r0 = { path = "../golden-transfer-policy" }
+soroban-sdk = { version = "=26.1.0", features = ["testutils"] }
+stellar-accounts = "=0.7.2"
+ozpb-domain = { path = "../../crates/domain" }
+ozpb-policy-spec = { path = "../../crates/policy-spec" }
+ozpb-evaluator = { path = "../../crates/evaluator" }
+ozpb-synthesizer = { path = "../../crates/synthesizer" }
+ozpb-codegen = { path = "../../crates/codegen" }
+stellar-strkey = "0.0.18"
+

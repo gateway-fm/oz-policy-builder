@@ -1,0 +1,11 @@
+# Contracts workspace — separate from the host toolkit workspace on purpose:
+# contract crates pin the audited stellar-accounts release and its soroban-sdk line,
+# independent of the host-side stellar-xdr version.
+[workspace]
+resolver = "2"
+# The generated policy crates are EXCLUDED from the workspace: each now carries its own
+# [profile.release] so it builds standalone via `stellar contract build` (as it ships to
+# users). `differential` still path-depends on them. Keeping them as members would make
+# cargo ignore their profiles ("profiles for the non-root package will be ignored").
+members = ["differential"]
+exclude = ["golden-transfer-policy"]
