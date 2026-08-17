@@ -1,6 +1,10 @@
 [toolchain]
 channel = "1.91.1"
-components = ["rustfmt", "clippy"]
+# `rust-analyzer` is here because the channel is pinned. An editor ships its own copy built
+# against a newer compiler, cannot read this one's metadata, and greets a first-time reader with
+# a warning instead of working code navigation. Naming the component makes rustup supply the
+# matching version, so the repository opens and reads correctly with nothing installed by hand.
+components = ["rustfmt", "clippy", "rust-analyzer"]
 # The wasm target travels with the toolchain rather than as a separate CI step, so a build
 # outside CI cannot quietly lack it.
 targets = ["wasm32v1-none"]
