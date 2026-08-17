@@ -1,0 +1,118 @@
+{
+  "schema": "policy-spec/v1",
+  "name": "sub-transfer",
+  "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+  "registry_snapshot": "57e64c043d8611d7f7a1bc1683cac12ccb9c302de65db4588408d6a7655c7541",
+  "smart_account": {
+    "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+    "observed_code_hash": "062f1ae77a30549e3da237bccbc32e08cbe70cbfc10de3efe772b7b9ed88da14",
+    "registry_resolution": "stellar-accounts@0.7.x (fixture)",
+    "install_rule": {
+      "id": 0,
+      "role": "admin"
+    },
+    "install_safe": true
+  },
+  "rules": [
+    {
+      "context": {
+        "type": "CallContract",
+        "contract": "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ",
+        "target_code_hash": {
+          "hash": "94e4cc26e9f1caa3ec1f81da0c5f353609b7f7772eb94f4e7396120280da4ebd",
+          "role": "evidence_only",
+          "observed_ledger": 4100000,
+          "on_drift": "warn"
+        }
+      },
+      "valid_until": {
+        "ledger": 4223456,
+        "approx_time": "2026-10-01T00:00:00Z"
+      },
+      "authorization": {
+        "kind": "any_of",
+        "strict_signer_set": true,
+        "signers": [
+          {
+            "delegated": {
+              "address": "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
+            }
+          }
+        ]
+      },
+      "allowed_calls": [
+        {
+          "fn": "transfer",
+          "args": [
+            {
+              "i": 0,
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "prov": "observed_exact"
+            },
+            {
+              "i": 1,
+              "c": {
+                "eq_address": {
+                  "value": "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC"
+                }
+              },
+              "prov": "observed_exact"
+            },
+            {
+              "i": 2,
+              "c": {
+                "eq_i128": {
+                  "value": "500000000"
+                }
+              },
+              "prov": "observed_exact"
+            }
+          ],
+          "justified_by": [
+            "recordings[0]/auth[0]/root"
+          ]
+        }
+      ],
+      "policies": [
+        {
+          "reviewed": {
+            "kind": "oz:spending_limit",
+            "capability": "4a7b750eeebc6ab1bd49f5d6597970214c78e7ce1fc08b7511a5bedbc66f3934",
+            "params": {
+              "spending_limit": {
+                "limit": "500000000",
+                "period_ledgers": 120960
+              }
+            }
+          }
+        },
+        {
+          "generated": {
+            "kind": "gen:scope+count",
+            "template_family": "policy-templates/scope@1",
+            "capability_schema": "a55943f73b7773367b40aec517187fa4a1e7e8930e0da704a21f802fd55f0b35"
+          }
+        }
+      ],
+      "state": [
+        {
+          "call_count_per_installation": {
+            "max_calls": 12
+          }
+        }
+      ]
+    }
+  ],
+  "evidence": {
+    "recordings": [
+      {
+        "hash": "3019142fc566b86f6b31099bcb5a40d3a16b5adb13ce8021a8ab18be55e2dd1a",
+        "trust": "self_supplied"
+      }
+    ]
+  }
+}

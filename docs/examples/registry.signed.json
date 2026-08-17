@@ -1,0 +1,64 @@
+{
+  "snapshot": {
+    "schema": "registry/v1",
+    "version": 1,
+    "log_index": 1,
+    "previous_root": null,
+    "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+    "valid_from_unix": -9223372036854775808,
+    "expires_at_unix": 9223372036854775807,
+    "policies": {
+      "4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c": {
+        "kind": "oz:spending_limit",
+        "signer_predicates": [],
+        "security_relevant_methods": [
+          "install",
+          "enforce",
+          "uninstall",
+          "set_spending_limit"
+        ],
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/spending-limit-policy @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Upstream publishes no wasm, so this is our reproducible build of their source, not an artifact they signed."
+      }
+    },
+    "accounts": {
+      "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289": {
+        "release": "stellar-accounts@0.7.x",
+        "rule_enumeration": "bounded_next_id",
+        "management_evidence": "return_value_and_events_must_agree",
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/account @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
+      }
+    },
+    "verifiers": {
+      "60e8798db610bdaf3370d39ebda56ee1dc2c15ce1c3a9e28b528bfa24a06b477": {
+        "implementation": "oz ed25519 verifier",
+        "key_encoding": "raw ed25519 public key (32 bytes)",
+        "immutable": true,
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/ed25519-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
+      }
+    },
+    "templates": {
+      "policy-templates/scope@1": {
+        "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+        "signer_predicates": [
+          "any_of",
+          "all_of",
+          "threshold",
+          "strict_signer_set"
+        ],
+        "constraint_kinds": [
+          "eq_address",
+          "eq_i128",
+          "eq_scval",
+          "le_i128",
+          "ge_i128",
+          "call_count_per_installation"
+        ],
+        "review_reference": "audited with the template pack"
+      }
+    },
+    "revocations": {}
+  },
+  "signatures": {
+    "legacy": "2e81008f37c3b4de7d9f56ef465a64fc9dee1f9db026734d4663f33ead5b5264ab8687b3b4305069a8838a4189feff2db58d29389709c597e662d6428433dd0e"
+  }
+}

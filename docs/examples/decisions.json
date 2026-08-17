@@ -1,0 +1,19 @@
+{
+  "grant_name": "sub-transfer",
+  "delegate_signers": [
+    {
+      "delegated": {
+        "address": "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
+      }
+    }
+  ],
+  "predicate": "any_of",
+  "valid_until_ledger": 4223456,
+  "no_expiry_acknowledged": false,
+  "max_calls": 12,
+  "widenings": [],
+  "spending_limit": {
+    "limit": "500000000",
+    "period_ledgers": 120960
+  }
+}

@@ -12,6 +12,8 @@ members = [
     "crates/registry",
     "crates/codegen",
     "crates/build-runner",
+    "crates/api-types",
+    "crates/toolkit",
 ]
 
 [workspace.package]
@@ -55,6 +57,8 @@ ozpb-source-rpc = { path = "crates/source-rpc" }
 ozpb-registry = { path = "crates/registry" }
 ozpb-codegen = { path = "crates/codegen" }
 ozpb-build-runner = { path = "crates/build-runner" }
+ozpb-api-types = { path = "crates/api-types" }
+ozpb-toolkit = { path = "crates/toolkit" }
 
 [profile.release]
 lto = true
