@@ -1,0 +1,21 @@
+[package]
+name = "ozpb-synthesizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Pure synthesizer: RecordingBundle(s) + user decisions -> PolicySpec (exact-by-default, fail-closed)"
+
+[dependencies]
+ozpb-domain = { workspace = true }
+ozpb-policy-spec = { workspace = true }
+ozpb-recorder-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+stellar-xdr = { workspace = true }
+stellar-strkey = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

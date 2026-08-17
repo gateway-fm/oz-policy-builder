@@ -5,6 +5,7 @@ members = [
     "crates/domain",
     "crates/policy-spec",
     "crates/evaluator",
+    "crates/synthesizer",
     "crates/recorder-core",
     "crates/source-bundle",
     "crates/source-rpc",
@@ -45,6 +46,7 @@ nix = { version = "0.29", default-features = false, features = ["signal", "user"
 ozpb-domain = { path = "crates/domain" }
 ozpb-policy-spec = { path = "crates/policy-spec" }
 ozpb-evaluator = { path = "crates/evaluator" }
+ozpb-synthesizer = { path = "crates/synthesizer" }
 ozpb-recorder-core = { path = "crates/recorder-core" }
 ozpb-source-bundle = { path = "crates/source-bundle" }
 ozpb-source-rpc = { path = "crates/source-rpc" }
