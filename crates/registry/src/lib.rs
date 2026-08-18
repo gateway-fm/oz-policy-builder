@@ -398,8 +398,9 @@ impl Registry {
                 now: now_unix,
             });
         }
+        validate_capability_keys(&signed.snapshot)?;
         for (capability, revocation) in &signed.snapshot.revocations {
-            if capability.is_empty() || revocation.reason.trim().is_empty() {
+            if revocation.reason.trim().is_empty() {
                 return Err(RegistryError::Parse(
                     "revocations require a capability key and non-empty reason".to_string(),
                 ));
@@ -466,6 +467,21 @@ impl Registry {
                     "snapshot does not extend the previously accepted root {}",
                     current.root
                 )));
+            }
+            for (capability, previous) in &current.snapshot.revocations {
+                match signed.snapshot.revocations.get(capability) {
+                    Some(next) if next == previous => {}
+                    Some(_) => {
+                        return Err(RegistryError::Transparency(format!(
+                            "revocation {capability} was modified after acceptance"
+                        )))
+                    }
+                    None => {
+                        return Err(RegistryError::Transparency(format!(
+                            "revocation {capability} was removed after acceptance"
+                        )))
+                    }
+                }
             }
         }
         self.current = Some(Loaded {
@@ -553,6 +569,68 @@ impl Registry {
         }
         Ok(())
     }
+}
+
+fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryError> {
+    for (kind, keys) in [
+        ("policy", snapshot.policies.keys().collect::<Vec<_>>()),
+        ("account", snapshot.accounts.keys().collect::<Vec<_>>()),
+        ("verifier", snapshot.verifiers.keys().collect::<Vec<_>>()),
+    ] {
+        for key in keys {
+            if !is_canonical_hash(key) {
+                return Err(RegistryError::Parse(format!(
+                    "{kind} capability key must be exactly 64 lowercase hexadecimal characters: {key}"
+                )));
+            }
+        }
+    }
+    for family in snapshot.templates.keys() {
+        validate_template_family(family)?;
+    }
+    for capability in snapshot.revocations.keys() {
+        let (kind, identity) = capability.split_once('/').ok_or_else(|| {
+            RegistryError::Parse(format!(
+                "revocation key must be kind/identity, got {capability}"
+            ))
+        })?;
+        match kind {
+            "policy" | "account" | "verifier" if is_canonical_hash(identity) => {}
+            "template" => validate_template_family(identity)?,
+            "policy" | "account" | "verifier" => {
+                return Err(RegistryError::Parse(format!(
+                    "revocation {capability} must contain a canonical wasm hash"
+                )))
+            }
+            _ => {
+                return Err(RegistryError::Parse(format!(
+                    "revocation {capability} uses an unknown capability kind"
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_canonical_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_template_family(family: &str) -> Result<(), RegistryError> {
+    if family.is_empty()
+        || family.len() > 128
+        || !family.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'/' | b'.' | b'@')
+        })
+    {
+        return Err(RegistryError::Parse(format!(
+            "template family is empty, too long, or non-canonical: {family:?}"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1033,6 +1111,107 @@ mod tests {
             Err(RegistryError::Revoked { reason, .. })
                 if reason == "critical authorization bypass"
         ));
+    }
+
+    fn signed_successor(previous: &RegistrySnapshot, mut next: RegistrySnapshot) -> SignedSnapshot {
+        next.log_index = previous.log_index + 1;
+        next.previous_root = Some(snapshot_root(previous).unwrap());
+        sign_snapshot(&dev::dev_signing_key(), next).unwrap()
+    }
+
+    #[test]
+    fn accepted_revocations_are_append_only_and_immutable() {
+        let hash = pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex();
+        let key = format!("account/{hash}");
+        let mut first_snapshot = dev::dev_snapshot(network(), 1);
+        first_snapshot.revocations.insert(
+            key.clone(),
+            Revocation {
+                reason: "reviewed authorization bypass".to_string(),
+                effective_version: 1,
+            },
+        );
+        let first = sign_snapshot(&dev::dev_signing_key(), first_snapshot.clone()).unwrap();
+
+        for tamper in ["remove", "rewrite"] {
+            let mut next = dev::dev_snapshot(network(), 2);
+            if tamper == "rewrite" {
+                next.revocations.insert(
+                    key.clone(),
+                    Revocation {
+                        reason: "quietly weakened reason".to_string(),
+                        effective_version: 2,
+                    },
+                );
+            }
+            let next = signed_successor(&first_snapshot, next);
+            let mut registry = registry();
+            registry.load(&first).unwrap();
+            assert!(matches!(
+                registry.load(&next),
+                Err(RegistryError::Transparency(_))
+            ));
+        }
+
+        let mut valid_next = dev::dev_snapshot(network(), 2);
+        valid_next.revocations.insert(
+            key,
+            first_snapshot.revocations.values().next().unwrap().clone(),
+        );
+        valid_next.revocations.insert(
+            format!(
+                "policy/{}",
+                pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM.to_hex()
+            ),
+            Revocation {
+                reason: "new independent finding".to_string(),
+                effective_version: 2,
+            },
+        );
+        let valid_next = signed_successor(&first_snapshot, valid_next);
+        let mut registry = registry();
+        registry.load(&first).unwrap();
+        registry.load(&valid_next).unwrap();
+    }
+
+    #[test]
+    fn capability_and_revocation_keys_must_be_canonical() {
+        let invalid_hashes = [
+            "ABCD".to_string(),
+            "A".repeat(64),
+            format!("{}g", "0".repeat(63)),
+        ];
+        for invalid in invalid_hashes {
+            let mut snapshot = dev::dev_snapshot(network(), 1);
+            let capability = snapshot.policies.pop_first().unwrap().1;
+            snapshot.policies.insert(invalid, capability);
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            assert!(matches!(
+                registry().load(&signed),
+                Err(RegistryError::Parse(_))
+            ));
+        }
+
+        for invalid in [
+            "policy/not-a-hash",
+            "unknown/0000000000000000000000000000000000000000000000000000000000000000",
+            "template/contains a space",
+            "missing-separator",
+        ] {
+            let mut snapshot = dev::dev_snapshot(network(), 1);
+            snapshot.revocations.insert(
+                invalid.to_string(),
+                Revocation {
+                    reason: "test".to_string(),
+                    effective_version: 1,
+                },
+            );
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            assert!(matches!(
+                registry().load(&signed),
+                Err(RegistryError::Parse(_))
+            ));
+        }
     }
 
     #[test]

@@ -13,14 +13,16 @@ use ozpb_recorder_core::{
 };
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::time::Duration;
 use stellar_xdr::{
     ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntryData, LedgerKey,
-    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, WriteXdr,
+    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope, WriteXdr,
 };
 
 const MAX_XDR_BYTES: usize = 16 * 1024 * 1024;
 const MAX_XDR_DEPTH: u32 = 128;
+const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 
 fn xdr_limits() -> Limits {
     Limits {
@@ -75,13 +77,33 @@ impl HttpTransport {
 impl RpcTransport for HttpTransport {
     fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
         let req = json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
-        let resp: serde_json::Value = self
+        let response = self
             .agent
             .post(&self.url)
             .send_json(req)
-            .map_err(|e| RpcError::Transport(e.to_string()))?
-            .into_json()
-            .map_err(|e| RpcError::Malformed(e.to_string()))?;
+            .map_err(|e| RpcError::Transport(e.to_string()))?;
+        if response
+            .header("content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|length| length > MAX_HTTP_RESPONSE_BYTES)
+        {
+            return Err(RpcError::Malformed(format!(
+                "response exceeds the {MAX_HTTP_RESPONSE_BYTES}-byte limit"
+            )));
+        }
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take((MAX_HTTP_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| RpcError::Transport(e.to_string()))?;
+        if bytes.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Err(RpcError::Malformed(format!(
+                "response exceeds the {MAX_HTTP_RESPONSE_BYTES}-byte limit"
+            )));
+        }
+        let resp: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| RpcError::Malformed(e.to_string()))?;
         if let Some(err) = resp.get("error") {
             return Err(RpcError::Rpc(err.to_string()));
         }
@@ -97,12 +119,18 @@ pub fn get_transaction<T: RpcTransport>(
     network_passphrase: &str,
     tx_hash: &str,
 ) -> Result<EvidenceSnapshot, RpcError> {
+    let requested_hash = ozpb_domain::Hash32::from_hex(tx_hash).map_err(|_| {
+        RpcError::Malformed(
+            "transaction hash must be exactly 64 hexadecimal characters".to_string(),
+        )
+    })?;
+    let canonical_hash = requested_hash.to_hex();
     verify_network(transport, network_passphrase)?;
     let result = transport.call(
         "getTransaction",
-        json!({ "hash": tx_hash, "xdrFormat": "base64" }),
+        json!({ "hash": canonical_hash, "xdrFormat": "base64" }),
     )?;
-    let snapshot = parse_get_transaction(network_passphrase, tx_hash, &result)?;
+    let snapshot = parse_get_transaction(network_passphrase, &canonical_hash, &result)?;
     acquire_contract_executables(transport, snapshot)
 }
 
@@ -117,7 +145,39 @@ fn parse_get_transaction(
         "SUCCESS" | "FAILED" => {}
         other => return Err(RpcError::Rpc(format!("unexpected tx status: {other}"))),
     }
+    let returned_hash = str_field(result, "txHash")?;
+    let returned_hash = ozpb_domain::Hash32::from_hex(&returned_hash)
+        .map_err(|_| {
+            RpcError::Malformed("field 'txHash' is not a 32-byte hexadecimal hash".to_string())
+        })?
+        .to_hex();
+    if returned_hash != tx_hash {
+        return Err(RpcError::Malformed(format!(
+            "response txHash {returned_hash} does not match requested transaction {tx_hash}"
+        )));
+    }
     let envelope = str_field(result, "envelopeXdr")?;
+    if envelope.len() > MAX_XDR_BYTES.div_ceil(3) * 4 {
+        return Err(RpcError::Malformed(
+            "field 'envelopeXdr' exceeds the XDR size limit".to_string(),
+        ));
+    }
+    let decoded_envelope = TransactionEnvelope::from_xdr_base64(&envelope, xdr_limits())
+        .map_err(|error| RpcError::Malformed(format!("invalid envelopeXdr: {error}")))?;
+    let computed_hash = decoded_envelope
+        .hash(
+            ozpb_domain::NetworkId::from_passphrase(network_passphrase)
+                .0
+                 .0,
+        )
+        .map(ozpb_domain::Hash32)
+        .map_err(|error| RpcError::Malformed(format!("cannot hash envelopeXdr: {error}")))?
+        .to_hex();
+    if computed_hash != tx_hash {
+        return Err(RpcError::Malformed(format!(
+            "envelopeXdr hashes to {computed_hash}, not requested transaction {tx_hash}"
+        )));
+    }
     let meta = result
         .get("resultMetaXdr")
         .and_then(|v| v.as_str())
@@ -554,12 +614,24 @@ mod tests {
         )
     }
 
+    fn transaction_hash(envelope: &str) -> String {
+        let envelope = TransactionEnvelope::from_xdr_base64(envelope, xdr_limits()).unwrap();
+        ozpb_domain::Hash32(
+            envelope
+                .hash(ozpb_domain::NetworkId::from_passphrase(NET).0 .0)
+                .unwrap(),
+        )
+        .to_hex()
+    }
+
     #[test]
     fn get_transaction_parses_and_records() {
         let (envelope, meta) = fixture_envelope_and_meta();
+        let tx_hash = transaction_hash(&envelope);
         let t = CannedTransport {
             result: json!({
                 "status": "SUCCESS",
+                "txHash": tx_hash.clone(),
                 "envelopeXdr": envelope,
                 "resultMetaXdr": meta,
                 "ledger": 4200100,
@@ -567,7 +639,7 @@ mod tests {
             }),
             last_method: RefCell::new(String::new()),
         };
-        let snap = get_transaction(&t, NET, "abc").unwrap();
+        let snap = get_transaction(&t, NET, &tx_hash).unwrap();
         assert_eq!(*t.last_method.borrow(), "getLedgerEntries");
         assert_eq!(snap.trust().as_str(), "rpc_reported");
         let bundle = record(&snap, RecordOptions::default()).unwrap();
@@ -581,8 +653,47 @@ mod tests {
             result: json!({"status": "NOT_FOUND"}),
             last_method: RefCell::new(String::new()),
         };
-        let err = get_transaction(&t, NET, "deadbeef").unwrap_err();
+        let err = get_transaction(&t, NET, &"d".repeat(64)).unwrap_err();
         assert!(matches!(err, RpcError::NotFound(_)));
+    }
+
+    #[test]
+    fn transaction_hash_is_validated_before_network_io() {
+        let t = CannedTransport {
+            result: json!({"status": "NOT_FOUND"}),
+            last_method: RefCell::new(String::new()),
+        };
+        let error = get_transaction(&t, NET, "deadbeef").unwrap_err();
+        assert!(matches!(error, RpcError::Malformed(_)));
+        assert!(t.last_method.borrow().is_empty());
+    }
+
+    #[test]
+    fn response_and_envelope_hashes_must_match_the_request() {
+        let (envelope, meta) = fixture_envelope_and_meta();
+        let actual = transaction_hash(&envelope);
+        let requested = "0".repeat(64);
+        let response = json!({
+            "status": "SUCCESS",
+            "txHash": actual,
+            "envelopeXdr": envelope,
+            "resultMetaXdr": meta,
+            "ledger": 4200100,
+            "createdAt": "1780000000"
+        });
+        let error = parse_get_transaction(NET, &requested, &response).unwrap_err();
+        assert!(error.to_string().contains("does not match requested"));
+
+        let response = json!({
+            "status": "SUCCESS",
+            "txHash": requested,
+            "envelopeXdr": envelope,
+            "resultMetaXdr": meta,
+            "ledger": 4200100,
+            "createdAt": "1780000000"
+        });
+        let error = parse_get_transaction(NET, &requested, &response).unwrap_err();
+        assert!(error.to_string().contains("envelopeXdr hashes to"));
     }
 
     #[test]
@@ -639,7 +750,7 @@ mod tests {
     fn rpc_network_must_match_the_requested_network() {
         let (envelope, meta) = fixture_envelope_and_meta();
         let transport = NetworkMismatchTransport { envelope, meta };
-        let err = get_transaction(&transport, NET, "abc").unwrap_err();
+        let err = get_transaction(&transport, NET, &"0".repeat(64)).unwrap_err();
         assert!(
             err.to_string().starts_with("E_NETWORK_MISMATCH:"),
             "a mainnet response must never be labelled as testnet evidence: {err}"
@@ -734,6 +845,7 @@ mod tests {
     #[test]
     fn rpc_acquisition_records_observed_contract_wasm_hashes() {
         let (envelope, meta) = fixture_envelope_and_meta();
+        let tx_hash = transaction_hash(&envelope);
         let code_hash = [7u8; 32];
         let instance = |contract: stellar_xdr::ScAddress, executable: ContractExecutable| {
             let key = LedgerKey::ContractData(LedgerKeyContractData {
@@ -788,6 +900,7 @@ mod tests {
         let transport = ExecutableTransport {
             transaction: json!({
                 "status": "SUCCESS",
+                "txHash": tx_hash.clone(),
                 "envelopeXdr": envelope,
                 "resultMetaXdr": meta,
                 "ledger": 4200100,
@@ -798,7 +911,7 @@ mod tests {
             calls: RefCell::new(Vec::new()),
         };
 
-        let snapshot = get_transaction(&transport, NET, "abc").unwrap();
+        let snapshot = get_transaction(&transport, NET, &tx_hash).unwrap();
         let bundle = record(&snapshot, RecordOptions::default()).unwrap();
         let observation = bundle.contract_executables.get(&account).unwrap();
         assert!(matches!(
