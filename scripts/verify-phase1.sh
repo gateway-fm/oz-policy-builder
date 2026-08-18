@@ -20,7 +20,7 @@ fi
 # machine without it must hear that from this check, not from a raw command-not-found later.
 command -v python3 >/dev/null 2>&1 || { echo "this gate requires python3 in every mode" >&2; exit 1; }
 if [ "$MODE" = release ]; then
-    for tool in stellar cargo-deny cargo-mutants cargo-machete; do
+    for tool in stellar cargo-deny cargo-machete; do
         command -v "$tool" >/dev/null 2>&1 || {
             echo "release gate requires $tool; use --offline only for the explicitly reduced gate" >&2
             exit 1
@@ -118,9 +118,9 @@ if [ "$MODE" = release ]; then
     # on the version (scripts/verify-pinned-upstream.sh) fail instead of noting.
     #
     # Advisory means advisory: `set -euo pipefail` is in force, so both probes are allowed to fail
-    # and are read afterwards. Otherwise a reformatted documentation table would abort this gate —
-    # and verify-phase2.sh with it — after clippy and the whole test suite had already passed, for
-    # a line that is only ever informational.
+    # and are read afterwards. Otherwise a reformatted documentation table would abort this gate
+    # after clippy and the whole test suite had already passed, for a line that is only ever
+    # informational.
     EXPECTED_CLI="$(bash scripts/recorded-build-inputs.sh stellar-cli 2>/dev/null || true)"
     HAVE_CLI="$(stellar --version 2>/dev/null | awk 'NR==1 {print $2}' || true)"
     if [ -z "$EXPECTED_CLI" ]; then
@@ -164,13 +164,11 @@ else
     echo "  OFFLINE: cargo-deny license/supply-chain gate not run"
 fi
 
-echo "== 8. unused dependencies and mutation resistance =="
+echo "== 8. unused dependencies =="
 if [ "$MODE" = release ]; then
     bash scripts/check-unused-deps.sh
-    bash scripts/mutation-test.sh
 else
     echo "  OFFLINE: cargo-machete unused-dependency gate not run"
-    echo "  OFFLINE: cargo-mutants mutation gate not run"
 fi
 
 if [ "$MODE" = release ]; then

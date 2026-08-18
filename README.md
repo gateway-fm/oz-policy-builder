@@ -65,7 +65,7 @@ contracts/          separate cargo workspace: golden generated policy + soroban 
 scripts/            dependency-rule check, determinism check
 ```
 
-The security-critical cores have unit, property, differential, mutation, and real-toolchain
+The security-critical cores have unit, property, differential, and real-toolchain
 gates. See `scripts/verify-phase1.sh` for the local/release distinction and `PROGRESS.md` for
 the evidence that has actually been run; test counts alone are not treated as assurance.
 
