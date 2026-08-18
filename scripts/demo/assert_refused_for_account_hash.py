@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Assert that synthesis rejected the deliberately unregistered account Wasm hash."""
 
+import pathlib
 import sys
 
 ERROR_CODE = "E_INCOMPATIBLE_ACCOUNT"
@@ -10,7 +11,7 @@ REASON_FRAGMENTS = ("no recognized account entry", "wasm hash")
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit("usage: assert_refused_for_account_hash.py CAPTURED_STDERR")
-    stderr = open(sys.argv[1], encoding="utf-8").read()
+    stderr = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
     matching = [
         line.strip()
         for line in stderr.splitlines()
