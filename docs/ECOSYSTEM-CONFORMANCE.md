@@ -6,9 +6,11 @@ their sources, our current state against each, a verdict, and an action. It is w
 decision is checked against, and what answers the question of whether we are reinventing
 something the ecosystem already supplies.
 
-Compiled 13 August 2026. Verified against `stellar-cli` 27.0.0, `stellar-xdr` 26.0.1/27.0.0,
-`soroban-sdk` 26.1.0, `stellar-accounts` 0.7.2, and the repository at `main` plus the pending
-change that adds the workspace-wide disallowed-type gate (§4).
+Compiled 13 August 2026; last reconciled 18 August 2026 against the release-readiness hardening
+pass. Verified against `stellar-cli` 27.0.0, `stellar-xdr` 26.0.1/27.0.0, `soroban-sdk` 26.1.0,
+`stellar-accounts` 0.7.2, and the repository as of that pass. Sections 9–14 record the
+subsystems that pass hardened; the disallowed-type gate that was pending at first compilation
+has since landed (§4).
 
 **Verdict legend:** ✅ conforms · ⚠️ diverges · ❌ gap · ℹ️ open decision
 
@@ -18,7 +20,7 @@ is unresolved, the section says what would resolve it.
 
 ---
 
-## 1. Serialization and hashing ⚠️
+## 1. Serialization and hashing ✅
 
 **Platform principle.** Stellar's canonical format is **XDR**: field order is fixed by the
 schema, integers are fixed-width, padding is defined. Rust structures map onto values by a
@@ -50,37 +52,36 @@ domain collision that separation prevents — our hash would become indistinguis
 protocol one. What is needed is a **versioned XDR envelope of our own** with our own domain
 identifiers.
 
-**What we have.** Three inconsistent mechanisms:
+**What we have.** Hash identity is canonical XDR, version 2 (`CANONICALIZATION_VERSION = 2`):
+every artifact type carries its own application domain identifier and schema version in a
+versioned preimage of our own; maps are built through `ScMap::sorted_from_entries`, so the
+ordering rule and its validator come from `stellar-xdr` rather than from a rule of ours;
+integer widths and the `Option`/enumeration encodings are fixed explicitly; and SHA-256 is
+applied to the resulting bounded XDR bytes (`canonical_hash`, `crates/domain/src/canonical.rs:158`).
+The normative mapping and its fixtures are `docs/CANONICAL-HASHING.md`, so an external
+implementation reproduces a hash from the specification instead of mirroring Rust declaration
+order. The signer set — previously the sharpest divergence, a hand-written
+`"external:" + strkey + ":" + hex` string encoding — now hashes the `ScVal` representation the
+account itself stores (`SignerSpec::to_stored_scval`, `crates/policy-spec/src/lib.rs:197`; the
+sort over encodings in `signer_set_hash`, `:247`). Call arguments inside the generated contract
+compare as XDR, as they always did (`v.to_xdr(e)`, emitted by `emit_lib`,
+`crates/codegen/src/lib.rs:538`).
 
-| What | Mechanism | Where |
-|---|---|---|
-| `PolicySpec`, `BuildManifest`, `RegistrySnapshot`, `RecordingBundle`, `NormalizedInput` | `serde_json::to_vec`, field order = declaration order in Rust | `canonical_json_bytes`, `crates/domain/src/lib.rs:279` |
-| the signer set | a hand-written binary encoding: the per-signer strings `"external:" + strkey + ":" + hex`, then a sort over those encodings and a 4-byte length prefix per entry | `SignerSpec::canonical_bytes`, `crates/policy-spec/src/lib.rs:171`; the sort and prefixes in `signer_set_hash`, `:193-202` |
-| call arguments inside the contract | **XDR** (`v.to_xdr(e)`) | emitted by `emit_lib`, `crates/codegen/src/lib.rs:396` |
+Since the hardening pass the preimages are also **bounded before hashing**: encoded evidence is
+capped below the 4 MiB canonical-hash preimage ceiling (per-value and total caps in §14), so a
+recording the recorder accepts cannot fail only when it is hashed.
 
-Domain separation is present, but as string prefixes over JSON (`ozpb:v1:policy-spec`) — the
-idea is right, the carrier is a format that requires canonicalization.
-
-**Verdict.** Diverges. The intent matches the platform's; the implementation does not. The
-consequence: an external implementation is obliged to mirror the field order of our structures
-by hand, and moving a field in Rust silently breaks an external verifier. The signer set is the
-sharpest case — it is the one hashed structure carried by a hand-written binary encoding where
-XDR is the obvious carrier (`ScVal` for the signer, `to_xdr()` for the bytes), and that has not
-been done.
-
-**Action.** Unify on XDR: represent hashable structures as `ScVal`, building every map through
-`ScMap::sorted_from_*` so the ordering rule and its validator come from the crate rather than
-from a rule of ours, fix the remaining choices explicitly (type mapping, `Option`, enumerations),
-hash `to_xdr()`, and do domain separation with a versioned union **of our own** carrying our own
-domain IDs. Raise `CANONICALIZATION_VERSION` to 2 (the constant exists for precisely this). The
-window in which this is cheap is while we are the only implementation.
+**Verdict.** Conforms. The earlier "diverges" — three inconsistent mechanisms: JSON bytes in
+Rust declaration order, the hand-written signer encoding, and XDR only inside the contract —
+was resolved by action 1 of the table below, taken together with the schema-breaking rename in
+§3 so the format broke once rather than twice.
 
 **Honestly about the status of this requirement.** Soroban does **not** oblige off-chain
-artifacts to be XDR; a JSON artifact is not a violation. This is a strong decision taken for
-interoperability and to keep the road to on-chain verification open, not a conformance item we
-are breaching. The "diverges" verdict above refers to the internal inconsistency of the three
-schemes and to the interoperability we chose to aim for, not to an obligation imposed by the
-platform.
+artifacts to be XDR; a JSON artifact would not have been a violation. The move was a strong
+decision taken for interoperability and to keep the road to on-chain verification open, not a
+conformance item we were breaching. The earlier "diverges" verdict referred to the internal
+inconsistency of the three schemes and to the interoperability we chose to aim for, not to an
+obligation imposed by the platform.
 
 **Why not RFC 8785 (JCS).** Checked: JCS canonicalizes numbers through a double, so it loses
 precision above 2⁵³ — the author of the maintained crate recommends outright that such numbers
@@ -231,7 +232,7 @@ which is what makes the dependency visible, but reproducibility still requires t
 
 ---
 
-## 3. State archival and TTL ⚠️ (operations) / ✅ (security)
+## 3. State archival and TTL ✅ (security and, since the hardening pass, operations)
 
 **Platform principle.** `persistent` entries have a TTL. When it expires the entry is
 **archived**, not deleted, and, verbatim: "Archived persistent entries can never be re-created.
@@ -258,14 +259,20 @@ control — which is a caution against building a guarantee on top of extension,
 caution against over-engineering extension itself. Both belong here: the guidance is worth
 following for predictable cost and behaviour, and it is not a requirement we are in breach of.
 
-**What we have.** The generated policy keeps its call counter in `persistent()` and **extends no
-TTL anywhere** — `extend_ttl` occurs neither in the template nor in the generator. The constant
-`VALID_UNTIL_LEDGER` lives on its own, unconnected to the network's maximum
-(`e.storage().max_ttl()` — the SDK exposes the maximum TTL on `Storage`, not on `Ledger`, which
-carries `max_live_until_ledger()`).
+**What we have.** The generated policy keeps its per-installation state in `persistent()` —
+since the hardening pass that is an installation marker for **every** policy, scoped by
+(smart account, context-rule id), plus the call counter where the rule has one — and it
+**extends TTL deliberately and boundedly**. A successful `enforce` and a successful `install`
+extend the instance entry and the policy's own persistent entries toward `ttl_target(e)`: the
+network's rolling `e.storage().max_ttl()` (the SDK exposes the maximum on `Storage`, not on
+`Ledger`), clamped so the target never outlives `VALID_UNTIL_LEDGER` — past expiry every entry
+point denies, so extending further would pay rent for an artifact that can no longer permit
+anything. A denied call extends nothing, `uninstall` extends nothing, and the extension is
+threshold-conditional rather than unconditional, so routine authorizations do not each buy
+rent. The policy does not separately extend the **wasm code** entry (see action 2 below).
 
 **Security verdict — conforms, along two different paths.** The architecture requires
-(`docs/architecture.md:567`): "a call cap never resets **within an installation** due to
+(`docs/architecture.md:565`): "a call cap never resets **within an installation** due to
 inactivity, TTL expiry, or archival". The requirement is satisfied by **the platform's semantics
 rather than by our code**, and in both modes:
 
@@ -305,9 +312,13 @@ The scope of "never resets" is one installation, and that limit is real: `uninst
 entry, after which `install` is possible and the counter starts from zero. Both require
 `smart_account.require_auth()`, so only the account's owner can reach it, and the result is a new
 grant rather than the erosion of an existing one. The architecture now states the cap that way —
-`docs/architecture.md:567` says "within an installation" rather than "lifetime", and the
-reinstall invariant at `:555` is scoped to the installer flow instead of being asserted of the
-policy contract, which cannot enforce it.
+`docs/architecture.md:565` says "within an installation" rather than "lifetime", and the
+reinstall invariant at `:553` is scoped to the installer flow instead of being asserted of the
+policy contract, which cannot enforce it. The generated contract enforces its half of that
+scoping since the hardening pass: `install` refuses a second installation (`AlreadyInstalled`),
+`uninstall` of something never installed refuses (`NotInstalled`), `uninstall` removes the
+policy-owned state, and `enforce` fails closed (`MissingState`) when the installation marker is
+absent — so "a new grant" is a new marker, never a resumed one.
 
 **The code has followed.** The rename reached the generated artifact's header, the reference
 evaluator's message, the spec type (`StateSpec::CallCountPerInstallation`) and — the expensive
@@ -317,31 +328,40 @@ signed artifact and every consumer that parses a spec, which is why it was taken
 the canonicalization change rather than paid for separately: both break the schema, and one break
 is cheaper than two.
 
-**Operational verdict — diverges, but more mildly than it first appeared.** "Breaks silently"
-would be an overstatement: under the normal flow through simulation the policy will usually be
-restored automatically. The real cost is different and has three parts: the user pays a fee for
-rent and restoration; clients that assemble a transaction **manually or without simulation** will
-still fail before execution; and the moment at which that happens is unpredictable. Proactive TTL
-extension remains justified — for predictability of cost and behaviour, not as a rescue from
-inevitable breakage.
+**Operational verdict — conforms since the hardening pass.** The earlier divergence was that
+the policy extended nothing, leaving rent, restoration fees, and the moment of archival
+unpredictable for the user. Extension is now emitted, bounded twice (the rolling `max_ttl()`
+and the rule's own validity window), conditional on a threshold, and withheld on denial and on
+`uninstall`. It remains what the platform says it may be — a predictability measure, never a
+safety mechanism: the security verdict above rests on restore semantics and fail-closed reads,
+not on who paid for an extension.
 
 **Action.**
 
-1. Extend the counter's TTL on read and write in `enforce`, bounding **each** extension by the
-   current `e.storage().max_ttl()` and going no further than `VALID_UNTIL_LEDGER`. This ties the two
-   lifetimes together: the entry lives no longer than the policy is valid, and after the policy
-   expires the state is archived naturally instead of paying rent forever.
-2. Separately extend the TTL of the **contract instance and of the wasm code** — these are their
-   own entries with their own deadlines, and the guidance is to extend the state an invocation
-   touches. Keep both extensions proportionate: since extensions may not be relied on for
-   functionality or safety, they buy predictability, and any design that would need them to hold
-   a guarantee is the wrong design.
+1. ~~Extend the counter's TTL on read and write in `enforce`, bounding **each** extension by the
+   current `e.storage().max_ttl()` and going no further than `VALID_UNTIL_LEDGER`.~~ **Done.**
+   `ttl_target(e)` clamps the extension to the rolling `max_ttl()` and saturates at
+   `VALID_UNTIL_LEDGER`, so the entries live no longer than the policy can permit and are
+   archived naturally after it expires.
+2. Extend the TTL of the **contract instance and of the wasm code** — their own entries with
+   their own deadlines. **Done for the instance entry**, extended alongside the persistent
+   entries in `install` and permitting `enforce`. The **wasm code** entry is deliberately left
+   to the operator/installer: anyone may extend it, an archived entry is restored rather than
+   lost, and the code entry is shared with every other deployment of the same wasm, so its rent
+   is not obviously this policy's to pay. Keep both extensions proportionate: since extensions
+   may not be relied on for functionality or safety, they buy predictability, and any design
+   that would need them to hold a guarantee is the wrong design.
 3. Do **not** reject, at generation time, a policy whose `valid_until` exceeds `max_ttl()`.
    `max_ttl()` is a sliding network bound counted from the current ledger, so an entry is carried
    to a distant future deadline by **successive** extensions. Rejection would cut off precisely
-   the long-lived scenario the tool exists for.
-4. Cover this with tests in the soroban test environment, advancing the ledger number —
-   otherwise it becomes one more rule that is written down and not checked.
+   the long-lived scenario the tool exists for. (Still holds; `ttl_target` is exactly that
+   successive-extension mechanism.)
+4. ~~Cover this with tests in the soroban test environment, advancing the ledger number.~~
+   **Done.** `contracts/differential/tests/ttl.rs` advances the test ledger and covers: install
+   and enforce extending the counter and instance entries, the no-op above the threshold, a
+   denied call extending nothing, `uninstall` extending nothing, the target never outliving the
+   validity window, the last permitted call not buying rent, and install-after-expiry refusing
+   without writing state.
 
 ---
 
@@ -360,10 +380,14 @@ strkeys (base32, the set `A-Z2-7`, with a checksum).
 **What we have.** No floats anywhere. Amounts are `i128`, serialized as a decimal **string** with
 a canonicality check (`is_canonical_i128`). Every map is a `BTreeMap`.
 
-**Verdict.** Conforms. The ban becomes **checked** rather than declared with the change that
-adds a workspace-wide `clippy.toml` forbidding `HashMap`/`HashSet`/`f32`/`f64`, together with a
-cross-process determinism test of the registry snapshot hash; that gate is pending and is not on
-this branch, so until it lands the conformance rests on review rather than on a gate.
+**Verdict.** Conforms, and the ban is **checked** rather than declared: the workspace-wide
+`clippy.toml` forbids `HashMap`/`HashSet`/`f32`/`f64` (per-process iteration order and values
+with no faithful JSON or `ScVal` form), and the registry snapshot hash has a cross-process
+determinism test. Since the hardening pass the values are also **bounded**, not merely typed:
+exact `ScVal` constraints are size-capped per value and per rule, validation and codegen share
+the builder's input ceiling so a spec that validates cannot generate a crate the next stage
+refuses, and a maximum-shaped rule is generated in a non-vacuous boundary test (the caps are
+tabulated in §14).
 
 **A note on the move to XDR (§1), now carried out.** Field names became `Symbol`s, so both
 constraints applied: length ≤ 32 bytes and the character set. The `$schema` field was the known
@@ -373,7 +397,7 @@ the `$` carried no meaning worth an encoding exception.
 
 ---
 
-## 5. Authorization model ✅
+## 5. Authorization model ✅ / ⚠️ (external verifiers deferred)
 
 **Platform principle.** A smart account is a contract implementing the custom account interface;
 `__check_auth` validates the proofs presented. OpenZeppelin's `stellar-accounts` formalizes this
@@ -383,11 +407,30 @@ as signers, context rules, and policies; a policy is a separate contract with
 **What we have.** The generated policy implements exactly the `Policy` trait from
 `stellar-accounts` 0.7.2, reads
 `soroban_sdk::auth::Context::Contract(ContractContext { contract, fn_name, args })`, and denies
-by panicking. The order of checks is fixed and documented in the artifact's header: signer
-predicate → signer set → target/function/argument tuple → state invariants.
+by panicking. The order of checks is fixed and documented in the artifact's header: account
+authorization and installation state first, then the signer predicate (the account defers
+signer validation to policies), then the strict signer set, then target/function/argument
+tuple, then stateful invariants. Named signer predicates are strict by default, so adding a
+signer to a live account rule cannot silently widen the generated grant, and zero
+authenticated signers always deny.
 
-**Verdict.** Conforms. We invent no authorization primitives of our own, and OpenZeppelin's
-`spending_limit` policy is **used by hash** rather than replaced.
+**External verifier signers are deliberately unsupported in this milestone (⚠️).** An off-chain
+spec can name a verifier address and a verifier wasm hash, but the runtime OpenZeppelin signer
+value carries only the verifier address and key — nothing at authorization time binds that
+address to the recognized code. Registry recognition of a caller-supplied hash does not prove
+the address runs that code, so validation rejects the shape (`E_SPEC_EXTERNAL_UNSUPPORTED`)
+until a later acquisition/install layer can bind address to observed executable and survive
+upgrades.
+
+**The reviewed spending-limit composition is validated, not assumed.** Composition is accepted
+only for a recognized SEP-41 `transfer` shape with the `i128` amount at argument index 2, a
+positive limit and period, decisions that can replay the representative evidence, and never on
+mixed transfer/non-transfer rules. Its stateful runtime behaviour is deliberately not
+reimplemented by the Phase 1 evaluator — see §11.
+
+**Verdict.** Conforms where it claims to; defers loudly where it cannot check. We invent no
+authorization primitives of our own, and OpenZeppelin's `spending_limit` policy is **used by
+hash** rather than replaced.
 
 ---
 
@@ -397,10 +440,13 @@ predicate → signer set → target/function/argument tuple → state invariants
 `panic_with_error!`. Events (`events().publish`) are the standard way to make a contract's
 behaviour observable outside the transaction.
 
-**What we have.** `#[contracterror]` with ten distinguishable codes, every denial path named
-(`RuleExpired`, `TargetMismatch`, `CallCountExceeded`, `NoTupleMatched`, …). This is not
-cosmetic: distinguishable codes are what let the differential test compare not only "yes/no" but
-the reason for a denial.
+**What we have.** `#[contracterror]` with eleven distinguishable codes, every denial path named
+(`RuleExpired`, `TargetMismatch`, `CallCountExceeded`, `NoTupleMatched`, …), including the
+lifecycle refusals the hardening pass added (`AlreadyInstalled`, `NotInstalled`, and
+`MissingState` for an enforce without an installation marker). This is not cosmetic:
+distinguishable codes are what let the differential test compare not only "yes/no" but the
+reason for a denial. On the toolkit's wire, error codes are likewise stable machine-readable
+identifiers, standardized as `SCREAMING_SNAKE_CASE` with an exhaustive round-trip test (§12).
 
 **Verdict on errors — conforms.**
 
@@ -471,10 +517,138 @@ exercises the pairing is contracted in a later milestone, and is recorded with t
 evidence.
 
 **Verdict.** Conforms, and the choice is deliberate: for an artifact whose value is "the user
-read exactly what executes", immutability is a requirement rather than an omission. That value
-is exactly what the unfixed "lifetime cap" wording in the artifact's header currently spends
-(§3): the header is the thing a user reads, so a name there that overstates the guarantee costs
-more than the same name would anywhere else.
+read exactly what executes", immutability is a requirement rather than an omission. The header
+is the thing a user reads, which is why the cap wording there was renamed to
+"within an installation" when §3 settled what the platform actually guarantees — a name that
+overstates a guarantee costs more in that header than the same name would anywhere else.
+
+---
+
+## 9. Evidence provenance and RPC binding ✅ / ⚠️
+
+**Platform principle.** Soroban RPC is a query interface, not a trust anchor: `getTransaction`
+returns what the configured endpoint says, `getLedgerEntries` reads current state, and nothing
+in the protocol makes a JSON response self-authenticating. Whatever trust a recording carries
+has to be assigned by the party that fetched it, and downgraded the moment it leaves their
+hands.
+
+**What we have.** For an executed transaction, the RPC adapter (hardened in this pass): rejects
+any requested hash that is not exactly 32 bytes of hexadecimal; verifies the configured network
+passphrase through `getNetwork`; compares the response `txHash` against the canonical requested
+hash; decodes `envelopeXdr` and independently recomputes the transaction hash under that
+network, so a response body cannot smuggle a different transaction under the right label;
+bounds the HTTP stream before allocating or parsing JSON; and decodes authorization/meta XDR
+under depth and size limits.
+
+`rpc_reported` means exactly "returned by the configured RPC endpoint" — it is not an inclusion
+proof. More importantly, serialized JSON is caller-controlled: the toolkit downgrades every
+bundle crossing the synthesize JSON boundary to `self_supplied`, so changing a `trust` field
+cannot mint RPC or indexer assurance (⚠️ — a future hosted service can preserve stronger
+provenance only with an authenticated receipt or a server-side recording ID).
+
+`getLedgerEntries` observes contract executables at its reported latest ledger, which may be
+later than the transaction's ledger. The observation ledger is stored with the observation; for
+historical transactions the toolkit does not claim the current executable was the one at
+execution time.
+
+---
+
+## 10. Capability registry governance ✅ / ⚠️
+
+**What we have.** Registry snapshots are content-addressed, threshold-signed, network-bound,
+versioned, chained by previous root, time-bounded, and checked against a persisted minimum
+version or checkpoint, so a replayed older snapshot or a same-version fork is refused rather
+than accepted. Capabilities are keyed by canonical lower-case wasm hashes (or a validated
+template family), and unknown or revoked capabilities fail closed. Since the hardening pass,
+accepted revocations are also **append-only across succession**: a signed successor snapshot
+cannot remove a prior revocation or rewrite its reason or effective version, and revocations
+survive registry restarts. Tests cover rollback, same-version equivocation with checkpoints,
+transparency-chain forks, invalid key encodings, and revocation removal/mutation.
+
+**Verdict.** Conforms as a mechanism; ⚠️ as governance. The committed registry key is a
+deterministic development root — suitable for reproducible examples, not production governance,
+which needs independently controlled roots, durable checkpoints, rotation and revocation
+operations, monitoring, and an incident process. (Also recorded in PROGRESS.md as a residual.)
+
+---
+
+## 11. Evaluator and differential evidence ✅ / ⚠️
+
+**What we have.** The reference evaluator interprets validated spec structures directly; it
+consumes no generated Rust and cannot depend on codegen — the missing edge is enforced in the
+cargo dependency graph by `scripts/check-dep-rules.sh`. Structural independence reduces common
+implementation coupling; it does not make either side correct by definition, which is why
+property tests, mutation tests, canonical fixtures, and the compiled-contract comparison all
+still run.
+
+Since the hardening pass the full-spec evaluator is **honest about composition**: it returns
+`deny` when the generated conjunct conclusively denies, `permit` only when every relevant
+component is modelled, and `indeterminate` when an attached reviewed policy could still deny
+and its state is not modelled — a whole-spec permit is never manufactured from a partial model.
+The differential suite is correspondingly **scoped**: it invokes the generated policy contract
+directly in a Soroban test environment and compares verdict plus denial reason against the
+explicitly scoped `evaluate_generated_rule` model.
+
+**Verdict.** Conforms for what it claims. ⚠️ for what it does not: the suite does not exercise
+a full OpenZeppelin smart account's `__check_auth`, reviewed-policy composition, wallet
+installation, or live account state — later-milestone evidence, not implied by the phrase
+"compiled contract".
+
+---
+
+## 12. MCP surface and machine-readable failures ✅
+
+**What we have.** Request DTOs are closed schemas and reject unknown fields. Every declared
+error code is included in an exhaustive serialization round-trip table, standardized as
+`SCREAMING_SNAKE_CASE`, and public DTOs generate JSON Schema. Tool execution and validation
+failures return as MCP `CallToolResult` values with `isError: true` and structured
+`{code, message, details}` data rather than being misclassified as JSON-RPC protocol failures,
+so an agent can distinguish transaction-not-found, network mismatch, import parse, build
+timeout/resource, and registry failures by stable wire codes.
+
+The server never deploys, signs, or holds user keys. HTTP mode is loopback-only,
+bearer-protected, request-bounded, rate- and concurrency-limited, and RPC-allowlisted. MCP
+annotations remain hints, not authorization controls.
+
+---
+
+## 13. Build containment ⚠️ (a local safeguard, not hosted isolation)
+
+**What we have.** The local builder uses fixed commands and arguments, an offline `--locked`
+Cargo build, bounded source/wasm/log sizes, a bounded timeout with bounded version probes,
+process-group termination, a protected per-user cache, and — since the hardening pass — a
+sanitized allowlisted child environment that excludes service and cloud credentials and proxy
+variables, plus a combined CPU budget so HTTP request concurrency multiplied by Cargo jobs
+cannot exceed the detected budget.
+
+**Verdict.** Diverges from what hosting would need, and says so. These controls provide no
+cgroup memory/CPU/disk/PID quotas, namespaces, seccomp, per-job filesystem isolation, egress
+isolation, or cancellation on client disconnect. Tranche 1 therefore does not describe loopback
+HTTP or the local compiler as a safe multi-tenant hosted service; before hosting, this needs a
+secret-free worker identity, a digest-pinned image (§2 action 3), hard OS quotas, per-job
+workspace and cache strategy, bounded egress, cancellation, durable rate limits, and
+operational monitoring.
+
+---
+
+## 14. Defaults and limits
+
+The knobs and caps the release ships with, and what each one does and does not promise:
+
+| Setting | Interpretation |
+|---|---|
+| Rust 1.91.1 / CLI 27.0.0 / SDK 26.1.0 / OZ 0.7.2 | Intentional reproducibility set; upgrades change artifact hashes and require review. |
+| Build timeout 600 s | Reasonable for a cold local build; hosted infrastructure still needs an outer deadline and hard quotas (§13). |
+| Build jobs CPU−1, minimum 1 | Appropriate for one local build; HTTP defaults to one concurrent request and enforces a combined CPU budget. |
+| HTTP request body 1 MiB / RPC response 24 MiB | Transport ceilings; nested domain and per-XDR limits still apply before evidence is accepted. |
+| RPC timeout 30 s and bounded response stream | Prevents unbounded read/allocation; endpoint correctness is still part of `rpc_reported` trust (§9). |
+| XDR 512 KiB per value / 1 MiB total encoded evidence | Deliberately below the 4 MiB canonical-hash preimage ceiling, so a recording accepted by the recorder does not fail only when hashed (§1). |
+| 5 policies / 15 signers / 20-byte name | Equal to the pinned OpenZeppelin account constants and contract-tested. |
+| 32 rules / 32 calls per rule / 32 args per call / 256 recordings | Defensive off-chain caps; text, evidence-reference and exact-ScVal limits prevent these counts from hiding unbounded payloads. |
+| 64 KiB exact ScVal / 256 KiB exact-ScVal XDR per rule / 2 MiB generated crate | Validation and codegen share the builder's input ceiling; a maximum-shaped rule is generated in a non-vacuous boundary test (§4). |
+| Example period 120,960 ledgers | Roughly seven days at an assumed five-second cadence; it is a ledger count, not seconds. |
+| Example max calls 12 | Explicit demo decision, not inferred protocol truth; synthesis verifies it can cover representative calls. |
+| No expiry | Allowed only with explicit high-blast-radius acknowledgement. |
 
 ---
 
@@ -483,12 +657,12 @@ more than the same name would anywhere else.
 | # | Action | Section | Type |
 |---|---|---|---|
 | 1 | ~~Unify canonicalization on XDR~~ — **done.** `ScVal` built through `ScMap::sorted_from_entries` for ordering, explicit per-type rules, and a versioned preimage tagged with our own domains rather than the protocol's `HashIdPreimage`. Specified in `docs/CANONICAL-HASHING.md`, so an external implementation can reproduce a hash | 1 | breaking, done |
-| 2 | Extend the counter's TTL on read/write, each extension ≤ the current `max_ttl()` and no further than `valid_until` | 3 | operational |
-| 3 | Extend the TTL of the **contract instance and wasm code** separately, at the start of public functions | 3 | operational |
+| 2 | ~~Extend the counter's TTL on read/write, each extension ≤ the current `max_ttl()` and no further than `valid_until`~~ — **done.** `ttl_target` clamps to the rolling `max_ttl()` and saturates at the validity window; extension is threshold-conditional and withheld on denial and `uninstall` | 3 | operational, done |
+| 3 | Extend the TTL of the **contract instance and wasm code** separately — **done for the instance entry**, extended with the persistent entries; the shared wasm-code entry is deliberately left to the operator/installer (§3, action 2) | 3 | operational |
 | 4 | Emit `contractmeta!` with the artifact's provenance (`spec_hash` and the rest) into the SEP-46 section, and follow SEP-55's shape where `BuildManifest` asserts what SEP-55 attests. The restatement of `rsver`/`cliver`/`rssdkver` is no longer taken on trust — ~~reconcile against the wasm metadata and fail on divergence~~ **done** — but it is still a private shape | 2 | compatibility |
 | 5 | Run Scout and the Veridise checklist over the generated policies; a gate only after pinning the version, checking applicability, and defining a false-positive policy | 7 | security |
 | 6 | Apply to the Soroban Security Audit Bank | 7 | process |
-| 7 | TTL tests in the soroban environment, advancing the ledger number | 3 | tests |
+| 7 | ~~TTL tests in the soroban environment, advancing the ledger number~~ — **done**: `contracts/differential/tests/ttl.rs` (§3, action 4) | 3 | tests, done |
 | 8 | Settle where a generated contract's source archive is published, and by whom — SEP-58 requires `source_sha256` over its bytes and leaves `source_uri` optional | 2 | unresolved |
 | 9 | Decide whether to publish an event on a **successful** `enforce`; denials come from RPC diagnostics | 6 | unresolved |
 | 10 | Decide whether to build inside a digest-pinned container image and record it as SEP-58 `bldimg`; pinning rustc and dependency versions pins neither the OS nor the container | 2 | compatibility |
