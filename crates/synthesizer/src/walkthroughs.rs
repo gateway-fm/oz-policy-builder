@@ -186,10 +186,10 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
     let path_xdr = ScVal::Vec(Some(
         vec![ScVal::U32(1), ScVal::U32(2)]
             .try_into()
-            .unwrap_or_default(),
+            .expect("a two-element ScVec is always within protocol limits"),
     ))
     .to_xdr_base64(Limits::none())
-    .unwrap_or_default();
+    .expect("encoding a two-element ScVec cannot exceed unbounded limits");
     let path = ArgSummary::Other {
         xdr_base64: path_xdr,
     };
