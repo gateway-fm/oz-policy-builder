@@ -602,10 +602,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         .iter()
         .enumerate()
         .map(|(ci, call)| {
+            // `fn_names` is sorted and deduplicated just above, so the lookup is a binary
+            // search rather than a scan per call — and it uses the ordering that is already
+            // established instead of building a second index beside it. (A hash map is not an
+            // option here in any case: `clippy.toml` bans `HashMap` across both workspaces,
+            // because per-process iteration order is how emitted bytes stop being reproducible.)
             let fi = fn_names
-                .iter()
-                .position(|name| *name == call.fn_name.as_str())
-                .unwrap_or_else(|| unreachable!("fn_names is built from rule.calls"));
+                .binary_search(&call.fn_name.as_str())
+                .unwrap_or_else(|_| unreachable!("fn_names is built from rule.calls"));
             let inner = format!("fn_{fi}_ok && check_call_{ci}(e, &c.args, &smart_account)");
             if multi {
                 format!("({inner})")
