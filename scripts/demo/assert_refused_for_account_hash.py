@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Assert that synthesis rejected the deliberately falsified account Wasm hash."""
+"""Assert that synthesis rejected the deliberately unregistered account Wasm hash."""
 
 import sys
 
 ERROR_CODE = "E_INCOMPATIBLE_ACCOUNT"
-REASON_FRAGMENTS = ("observed account wasm hash", "account record claims")
+REASON_FRAGMENTS = ("no recognized account entry", "wasm hash")
 
 
 def main() -> int:

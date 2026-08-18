@@ -210,7 +210,7 @@ impl ToolError {
 
 impl std::fmt::Display for ToolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.code, self.message)?;
+        write!(f, "{}: {}", self.code.as_str(), self.message)?;
         for d in &self.details {
             write!(f, "\n  - {d}")?;
         }
@@ -383,7 +383,7 @@ mod tests {
         let e = ToolError::new(ErrorCode::ESpecInvalid, "spec invalid")
             .with_details(vec!["rule 0: no signers".into()]);
         let s = format!("{e}");
-        assert!(s.contains("ESpecInvalid"));
+        assert!(s.contains("E_SPEC_INVALID"));
         assert!(s.contains("rule 0"));
     }
 

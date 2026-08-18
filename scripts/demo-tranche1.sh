@@ -243,15 +243,15 @@ python3 scripts/demo/assert_regenerated_identically.py "$WORK/policy" "$WORK/pol
 echo "  (the hash from step 6 differs because \`stellar contract build\` optimizes;"
 echo "   \`ozpb generate\` builds unoptimized so the artifact stays reviewable)"
 
-say "8. fail-closed: the same synthesis refuses a falsified account code hash"
+say "8. fail-closed: the same synthesis refuses an unregistered account code hash"
 # Steps 3 to 7 are all the permit path. The project claims two things — minimum permission AND
 # refusal by default — and a demo that only ever succeeds evidences the first one. So here is the
 # second, made as cheaply and as honestly as it can be made: change one field of one input, run
 # the identical command from step 4, and require it to turn the request down.
 #
-# Account compatibility is established from the code hash observed by RPC and resolved through
-# the signed registry. It is not a caller boolean. Change only the account record's hash to a
-# syntactically valid but false value; synthesis must notice that the evidence says otherwise.
+# Account compatibility is established by resolving the RPC-observed code hash through the signed
+# registry. It is not a caller boolean. Change only the account record's hash to a syntactically
+# valid but unknown value; synthesis must refuse before it can construct a spec.
 UNREGISTERED_ACCOUNT_WASM="$(printf '00%.0s' {1..32})"
 python3 scripts/demo/write_account_record.py \
     "$WORK/account-tampered.json" "$ACCOUNT" "$UNREGISTERED_ACCOUNT_WASM"
@@ -262,8 +262,8 @@ echo "  input differs from step 4 in one field: observed_code_hash is now all ze
 # this step exists to catch. The refusal falls through to the assertion.
 if synthesize "$WORK/account-tampered.json" > "$WORK/tampered-synthesis.json" 2> "$WORK/tampered.err"
 then
-    echo "  FAIL-CLOSED CHECK FAILED: synthesis SUCCEEDED with falsified account code."
-    echo "  A spec was written for an account record that contradicts the RPC evidence:"
+    echo "  FAIL-CLOSED CHECK FAILED: synthesis SUCCEEDED with unregistered account code."
+    echo "  A spec was written for an account hash absent from the signed registry:"
     echo "  $WORK/tampered-synthesis.json"
     exit 1
 fi
