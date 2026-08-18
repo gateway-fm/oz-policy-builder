@@ -608,25 +608,43 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // `c.fn_name == Symbol::new(e, "…")`, which put the length of the `tuple_ok` line at the
     // mercy of the recorded function name: `transfer` overshot rustfmt's width by four columns
     // and `swap_exact_tokens_for_tokens` by twenty-seven, and rustfmt broke each differently.
-    // A binding is at most 86 columns for the longest symbol Soroban accepts.
+    // A binding is at most 87 columns: the longest symbol Soroban accepts under a two-digit
+    // binding index, both of which the spec's own bounds admit (MAX_CALLS_PER_RULE is 32).
     for (fi, name) in fn_names.iter().enumerate() {
         out.push_str(&format!(
             "        let fn_{fi}_ok = c.fn_name == Symbol::new(e, \"{name}\");\n"
         ));
     }
-    let known_expr = (0..fn_names.len())
+    let known_names: Vec<String> = (0..fn_names.len())
         .map(|fi| format!("fn_{fi}_ok"))
-        .collect::<Vec<_>>()
-        .join(" || ");
+        .collect();
+    // The disjunction of every binding grows with the number of unique names — up to 386
+    // columns at the spec's 32-call bound — so, like the byte arrays in `render`, its layout
+    // is derived from rustfmt's own rules rather than assumed. One line while the whole `if`
+    // fits `MAX_WIDTH`, because rustfmt collapses a shorter chain back onto the `if` line;
+    // once it does not fit, rustfmt's canonical break for an over-wide `||` chain: every
+    // operand on its own line, block-indented one level, and — after a multiline condition —
+    // the opening brace on its own line. The switch is measured on the rendered line, not
+    // derived from the name count, because operand width varies with the index's digit count
+    // (`fn_10_ok` is a column wider than `fn_9_ok`).
+    //
     // A single allowed name needs no parens around the negation (clippy: unnecessary_parens).
-    let known_test = if fn_names.len() > 1 {
-        format!("!({known_expr})")
+    let one_line = if fn_names.len() > 1 {
+        format!("        if !({}) {{", known_names.join(" || "))
     } else {
-        format!("!{known_expr}")
+        format!("        if !{} {{", known_names.join(" || "))
     };
-    out.push_str(&format!(
-        "        if {known_test} {{\n            panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }}\n"
-    ));
+    if one_line.chars().count() <= render::MAX_WIDTH {
+        out.push_str(&one_line);
+        out.push('\n');
+    } else {
+        out.push_str(&format!("        if !({}", known_names[0]));
+        for name in &known_names[1..] {
+            out.push_str(&format!("\n            || {name}"));
+        }
+        out.push_str(")\n        {\n");
+    }
+    out.push_str("            panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }\n");
     // `&&` binds tighter than `||`, so per-disjunct parens are unnecessary; a single
     // allowed call must emit no wrapping parens at all (clippy: unnecessary_parens).
     let multi = rule.calls.len() > 1;
@@ -897,7 +915,7 @@ mod tests {
         use ozpb_domain::{BlastRadius, LedgerSeq, Provenance};
         use ozpb_policy_spec::{
             AddressRef, AllowedCall, ArgConstraint, Constraint, PredicateKind, SignerSpec,
-            StateSpec, ValidUntil,
+            StateSpec, ValidUntil, MAX_ARGS_PER_CALL, MAX_CALLS_PER_RULE, MAX_SIGNERS_PER_RULE,
         };
         use proptest::prelude::Strategy;
         use proptest::strategy::Just;
@@ -959,16 +977,27 @@ mod tests {
         }
 
         fn call_strategy() -> impl Strategy<Value = AllowedCall> {
-            let names = vec![
+            // Enough distinct names that a rule can reach MAX_CALLS_PER_RULE *unique* ones:
+            // the emitted known-function check grows with the number of distinct names, so a
+            // pool smaller than the call bound would cap the very dimension the corpus is
+            // widened to explore. Collisions still happen constantly (up to 32 draws from 36
+            // names), so the emitter's name dedup keeps being exercised too.
+            let mut names = vec![
                 "transfer".to_string(),
                 "swap".to_string(),
                 "claim_rewards".to_string(),
                 // Boundary: the longest symbol Soroban accepts.
                 "a".repeat(32),
             ];
+            names.extend((0..MAX_CALLS_PER_RULE).map(|i| format!("f{i}")));
             (
                 proptest::sample::select(names),
-                proptest::collection::vec(constraint_strategy(), 0..5),
+                // The full declared range here too (MAX_ARGS_PER_CALL is 32): argument
+                // indices reach two digits at 10, which widens every index-bearing line.
+                // Both bounds together cost the property test about 14 seconds instead of
+                // 7 — measured, and paid, because a corpus that stops short of the domain
+                // it quantifies over is how the 32-call corner went unvisited before.
+                proptest::collection::vec(constraint_strategy(), 0..=MAX_ARGS_PER_CALL),
             )
                 .prop_map(|(fn_name, constraints)| AllowedCall {
                     fn_name,
@@ -1132,7 +1161,11 @@ mod tests {
             /// covers the real toolchain.
             #[test]
             fn any_validated_spec_generates_parseable_rust(
-                calls in proptest::collection::vec(call_strategy(), 1..4),
+                // The full declared range: the spec admits MAX_CALLS_PER_RULE allowed calls,
+                // and the corpus used to stop at three — below the point (nine unique names)
+                // where the emitted known-function check outgrows rustfmt's width, so the
+                // property read as proven over a domain it never reached.
+                calls in proptest::collection::vec(call_strategy(), 1..=MAX_CALLS_PER_RULE),
                 predicate in predicate_strategy(),
                 valid_until in proptest::option::of(0u32..u32::MAX),
                 max_calls in proptest::option::of(0u32..u32::MAX),
@@ -1344,6 +1377,154 @@ mod tests {
             assert!(
                 bytes <= MAX_GENERATED_CRATE_BYTES,
                 "generated {bytes} bytes"
+            );
+        }
+
+        /// Emission stays rustfmt-clean at the largest spec validation admits.
+        ///
+        /// The property test samples the interior of the space; this pins its far corner
+        /// deterministically: MAX_CALLS_PER_RULE allowed calls carrying that many *unique*
+        /// function names, one call at MAX_ARGS_PER_CALL constraints, and the rule at
+        /// MAX_SIGNERS_PER_RULE signers. The known-function check is the one statement that
+        /// grows with every unique name — 32 of them joined on a single line reach 386
+        /// columns — so this corner is where "generated source is rustfmt-clean" was
+        /// contradicted while the corpus stopped at three calls.
+        #[test]
+        fn emitted_code_stays_inside_rustfmt_width_at_the_spec_size_boundary() {
+            let justified = vec!["recordings[0]/auth[0]/root".to_string()];
+            let mut calls: Vec<AllowedCall> = (0..MAX_CALLS_PER_RULE)
+                .map(|i| AllowedCall {
+                    fn_name: format!("f{i}"),
+                    args: vec![],
+                    justified_by: justified.clone(),
+                })
+                .collect();
+            // The longest symbol Soroban accepts, on the call that also carries the full
+            // argument load.
+            calls[0].fn_name = "a".repeat(32);
+            calls[0].args = (0..MAX_ARGS_PER_CALL as u32)
+                .map(|i| {
+                    let constraint = match i {
+                        // One- and two-digit XDR constants side by side: CALL_0_ARG_1_XDR
+                        // and CALL_0_ARG_10_XDR are the adjacent names the constant-balance
+                        // check must tell apart. A canonical 40-byte ScVal::Bytes encodes to
+                        // 48 XDR bytes — wide enough to force the wrapped array layout.
+                        1 | 10 => Constraint::EqScval {
+                            xdr_base64: scval_b64(ScVal::Bytes(ScBytes(
+                                vec![0xabu8; 40].try_into().unwrap(),
+                            ))),
+                        },
+                        2 => Constraint::EqAddress {
+                            value: AddressRef::self_account(),
+                        },
+                        3 => Constraint::EqAddress {
+                            value: AddressRef::address(
+                                ozpb_synthesizer::fixtures::golden_merchant_strkey(),
+                            ),
+                        },
+                        // The i128 boundaries, and a bound on the last argument index so a
+                        // two-digit `v31` binding is emitted (AnyValue binds nothing).
+                        4 => Constraint::EqI128 {
+                            value: i128::MIN.to_string(),
+                        },
+                        5 => Constraint::LeI128 {
+                            max: i128::MAX.to_string(),
+                        },
+                        6 | 31 => Constraint::GeI128 {
+                            min: "-1".to_string(),
+                        },
+                        _ => Constraint::AnyValue,
+                    };
+                    ArgConstraint {
+                        index: i,
+                        provenance: provenance_for(&constraint),
+                        constraint,
+                    }
+                })
+                .collect();
+
+            let mut spec = golden_spec().spec().clone();
+            let rule = &mut spec.rules[0];
+            // The fixture composes oz:spending_limit, which F-06 validation ties to a SEP-41
+            // transfer shape; this rule's calls are f0..f31, so the reviewed policy goes.
+            rule.policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+            rule.allowed_calls = calls;
+            // Fill the signer set to its bound. Delegated, not External: since the F-01
+            // hardening a validated spec cannot carry external signers, so the bound is
+            // exercised with minted, pairwise-distinct delegated addresses instead.
+            while rule.authorization.signers.len() < MAX_SIGNERS_PER_RULE {
+                let n = rule.authorization.signers.len() as u8;
+                rule.authorization.signers.push(SignerSpec::Delegated {
+                    // format!: the crate's inherent `to_string` returns its heapless string.
+                    address: format!("{}", stellar_strkey::ed25519::PublicKey([n | 0x80; 32])),
+                });
+            }
+            let spec = spec
+                .validate()
+                .expect("the spec-size boundary is a valid spec");
+            let source = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept the boundary spec")
+                .files["src/lib.rs"]
+                .clone();
+
+            // Non-vacuity: every bound must actually be reached in the emitted source.
+            for expected in [
+                // 32 allowed calls under 32 unique names.
+                "let fn_31_ok = ",
+                "fn check_call_31(",
+                // One call at the argument bound, with two-digit indices in play.
+                "if args.len() != 32u32 {",
+                "let Some(v31) = args.get(31u32)",
+                "if args.get(30u32).is_none()",
+                "const CALL_0_ARG_1_XDR: [u8; 48]",
+                "const CALL_0_ARG_10_XDR: [u8; 48]",
+            ] {
+                assert!(
+                    source.contains(expected),
+                    "this test does not exercise what it claims: no {expected:?} in\n{source}"
+                );
+            }
+
+            // The signer set at its bound: the last minted delegated address must be
+            // compiled in. (The SIGNER_<i>_KEY constant family is external-only and external
+            // signers are rejected at validation, so it cannot appear via a validated spec;
+            // the two-digit-adjacency concern is carried by CALL_0_ARG_1/10_XDR above.)
+            let last_signer = format!(
+                "{}",
+                stellar_strkey::ed25519::PublicKey([(MAX_SIGNERS_PER_RULE - 1) as u8 | 0x80; 32])
+            );
+            assert!(
+                source.contains(&last_signer),
+                "this test does not exercise the signer bound: no {last_signer} in\n{source}"
+            );
+
+            let wide = overlong_code_lines(&source);
+            assert!(
+                wide.is_empty(),
+                "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
+            );
+            // Width alone under-approximates "rustfmt-clean": rustfmt does not *tolerate*
+            // within-width layouts of an over-wide `||` chain, it rewrites to exactly one —
+            // each operand on its own line, block-indented, brace on its own line (verified
+            // against the pinned toolchain's rustfmt). Pin that form so a within-width
+            // variant rustfmt would still reflow cannot pass.
+            let canonical_break = "        if !(fn_0_ok\n            || fn_1_ok\n";
+            let canonical_close = "\n            || fn_31_ok)\n        {\n            \
+                                   panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }\n";
+            for expected in [canonical_break, canonical_close] {
+                assert!(
+                    source.contains(expected),
+                    "the known-function check is not rustfmt's canonical multiline form \
+                     (expected {expected:?}):\n{source}"
+                );
+            }
+
+            syn::parse_file(&source).expect("the boundary emission must parse");
+            let unbalanced = unbalanced_constants(&source);
+            assert!(
+                unbalanced.is_empty(),
+                "compiled-in constants do not balance: {unbalanced:?}\n{source}"
             );
         }
 
