@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2d5da99a9ab1ca3d7cd588bf2218d5681957d3dbbb599551675f3f4753f9605c # shrinks to calls = [AllowedCall { fn_name: "claim_rewards", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "f8", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "transfer", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "f0", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "f1", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "f2", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "f9", args: [], justified_by: ["recordings[0]/auth[0]/root"] }, AllowedCall { fn_name: "f3", args: [], justified_by: ["recordings[0]/auth[0]/root"] }], predicate = (AllOf, true), valid_until = None, max_calls = None, extra_signer = false
