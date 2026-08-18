@@ -114,7 +114,7 @@ fn malformed_tool_input_yields_a_machine_readable_error() {
     let call = by_id(&resp, 2);
     assert_eq!(call["result"]["isError"], true, "got {call}");
     assert_eq!(
-        call["result"]["structuredContent"]["code"], "ESpecInvalid",
+        call["result"]["structuredContent"]["code"], "E_SPEC_INVALID",
         "got {call}"
     );
     assert!(

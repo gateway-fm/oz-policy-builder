@@ -111,7 +111,7 @@ impl PolicyBuilderServer {
 fn tool_err(e: ToolError) -> CallToolResult {
     let data = serde_json::to_value(&e).unwrap_or_else(|_| {
         serde_json::json!({
-            "code": "EInternal",
+            "code": "E_INTERNAL",
             "message": "could not serialize tool error"
         })
     });
