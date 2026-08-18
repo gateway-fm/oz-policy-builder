@@ -66,18 +66,16 @@ jobs:
       # so the omission was not only untidy source, it was a code generator emitting text
       # rustfmt rewrites, in the artifact this project ships for review.
       #
-      # Three invocations, because `--all` means "the members of this workspace" and neither
-      # generated crate is a member of one: `contracts` excludes both, each carrying its own
-      # `[profile.release]` so it builds standalone. The first invocation reaches
-      # golden-transfer-policy only through the differential suite's dev-dependency on it — an
-      # edge that exists for testing rather than for coverage, and one the milestone boundary
-      # may remove — and it does not reach soroswap-swap-policy at all, because nothing depends
-      # on that crate. Both are shipped artifacts, so both are named rather than relied upon.
-      - name: fmt (this workspace and the two generated crates it excludes)
+      # Two invocations, because `--all` means "the members of this workspace" and the generated
+      # crate is not a member of one: `contracts` excludes it, since it carries its own
+      # `[profile.release]` so `stellar contract build` can build it standalone as it ships. The
+      # first invocation does reach golden-transfer-policy, but only through the differential
+      # suite's dev-dependency on it — an edge that exists for testing rather than for coverage,
+      # and one a later milestone may move. So the crate is named rather than relied upon.
+      - name: fmt (this workspace and the generated crate it excludes)
         run: |
           ( cd contracts && cargo fmt --all --check )
           ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
-          ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 
   publication-guard:
     name: publication allowlist (no confidential material leaks)
