@@ -17,7 +17,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 if [ "$MODE" = release ]; then
-    for tool in stellar cargo-deny; do
+    for tool in stellar cargo-deny cargo-mutants cargo-machete python3; do
         command -v "$tool" >/dev/null 2>&1 || {
             echo "release gate requires $tool; use --offline only for the explicitly reduced gate" >&2
             exit 1
@@ -29,6 +29,12 @@ fi
 
 echo "== 1. dependency rules (evaluator ↛ codegen; cores transport-free) =="
 bash scripts/check-dep-rules.sh
+bash scripts/test-check-dep-rules.sh
+
+echo "== 1b. publication, build-input and quoted-hash invariants =="
+bash scripts/check-publication-allowlist.sh
+bash scripts/check-build-input-pins.sh
+python3 scripts/check-quoted-hashes.py
 
 # clippy also carries the hash-determinism gate: `clippy.toml` disallows `HashMap`/`HashSet`
 # (per-process iteration order) and floats (no faithful JSON form, absent from `ScVal`) so the
@@ -140,8 +146,12 @@ if [ "$MODE" = release ]; then
     H2=$(shasum -a 256 "$W" | cut -d' ' -f1)
     [ "$H1" = "$H2" ] && echo "  wasm byte-identical across a full clean rebuild: $H1" \
         || { echo "  WASM DIFFERS: $H1 vs $H2"; exit 1; }
+
+    echo "== 6b. real builder boundary + metadata reconciliation tests =="
+    cargo test -p ozpb-build-runner -- --ignored --test-threads=1
 else
     echo "  OFFLINE: wasm reproducibility not run"
+    echo "  OFFLINE: ignored real-builder tests not run"
 fi
 
 echo "== 7. license & supply-chain gate (permissive-license requirement, §4.11) =="
@@ -149,6 +159,15 @@ if [ "$MODE" = release ]; then
     bash scripts/check-licenses.sh
 else
     echo "  OFFLINE: cargo-deny license/supply-chain gate not run"
+fi
+
+echo "== 8. unused dependencies and mutation resistance =="
+if [ "$MODE" = release ]; then
+    bash scripts/check-unused-deps.sh
+    bash scripts/mutation-test.sh
+else
+    echo "  OFFLINE: cargo-machete unused-dependency gate not run"
+    echo "  OFFLINE: cargo-mutants mutation gate not run"
 fi
 
 if [ "$MODE" = release ]; then

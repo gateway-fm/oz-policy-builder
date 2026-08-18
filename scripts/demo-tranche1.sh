@@ -243,32 +243,31 @@ python3 scripts/demo/assert_regenerated_identically.py "$WORK/policy" "$WORK/pol
 echo "  (the hash from step 6 differs because \`stellar contract build\` optimizes;"
 echo "   \`ozpb generate\` builds unoptimized so the artifact stays reviewable)"
 
-say "8. fail-closed: the same synthesis refuses an account it cannot vouch for"
+say "8. fail-closed: the same synthesis refuses a falsified account code hash"
 # Steps 3 to 7 are all the permit path. The project claims two things — minimum permission AND
 # refusal by default — and a demo that only ever succeeds evidences the first one. So here is the
 # second, made as cheaply and as honestly as it can be made: change one field of one input, run
 # the identical command from step 4, and require it to turn the request down.
 #
-# `install_safe` is the account record's verdict that a safe install can be prepared on the
-# account. The synthesizer treats it as a precondition (§4.1: unknown or
-# incompatible accounts fail closed), so with it false there is no spec to be had at any level of
-# permission. The refusal below is this step's expected result: a green run is one where it
-# happens, and the assertion is what would notice if it stopped happening.
-python3 scripts/demo/write_account_record.py --install-unsafe \
-    "$WORK/account-unsafe.json" "$ACCOUNT" "$PINNED_ACCOUNT_WASM"
-echo "  input differs from step 4 in one field: install_safe true -> false"
+# Account compatibility is established from the code hash observed by RPC and resolved through
+# the signed registry. It is not a caller boolean. Change only the account record's hash to a
+# syntactically valid but false value; synthesis must notice that the evidence says otherwise.
+UNREGISTERED_ACCOUNT_WASM="$(printf '00%.0s' {1..32})"
+python3 scripts/demo/write_account_record.py \
+    "$WORK/account-tampered.json" "$ACCOUNT" "$UNREGISTERED_ACCOUNT_WASM"
+echo "  input differs from step 4 in one field: observed_code_hash is now all zeroes"
 # Wrapped in `if` rather than called plainly, because `set -e` would read the expected non-zero
 # exit as the end of the demo. Note which branch is which: the *success* branch below is the
 # failure case, since a spec produced from an account the toolkit cannot vouch for is the defect
 # this step exists to catch. The refusal falls through to the assertion.
-if synthesize "$WORK/account-unsafe.json" > "$WORK/unsafe-synthesis.json" 2> "$WORK/unsafe.err"
+if synthesize "$WORK/account-tampered.json" > "$WORK/tampered-synthesis.json" 2> "$WORK/tampered.err"
 then
-    echo "  FAIL-CLOSED CHECK FAILED: synthesis SUCCEEDED for an install-unsafe account."
-    echo "  A spec was written for an account whose installation surface is not vouched for,"
-    echo "  which is precisely what must not happen: $WORK/unsafe-synthesis.json"
+    echo "  FAIL-CLOSED CHECK FAILED: synthesis SUCCEEDED with falsified account code."
+    echo "  A spec was written for an account record that contradicts the RPC evidence:"
+    echo "  $WORK/tampered-synthesis.json"
     exit 1
 fi
-python3 scripts/demo/assert_refused_for_install_safety.py "$WORK/unsafe.err"
+python3 scripts/demo/assert_refused_for_account_hash.py "$WORK/tampered.err"
 
 say "done"
 echo "  account   https://stellar.expert/explorer/testnet/contract/$ACCOUNT"

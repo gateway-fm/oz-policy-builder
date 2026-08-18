@@ -24,18 +24,11 @@ The fields:
     *overwrites* it with the entry it actually resolved out of the signed snapshot
     ("stellar-accounts@… (registry entry …)"), so nothing invented here can reach the spec.
     Written as prose to make that visible rather than as a plausible-looking release string.
-  * `install_safe` — the verdict that a safe install can be prepared on the account. The
-    synthesizer refuses outright when it is false, so it is a precondition and not a hint.
-    True here by construction: the account was deployed seconds ago with `--policies '{}'`,
-    so no rule can be displaced. Establishing it for an account a user already owns is part
-    of the install flow, not of this demo.
+Installation authority is deliberately not a caller-supplied boolean. Phase 1 resolves account
+compatibility from observed code plus the signed registry; later installation checks live in the
+installation flow.
 
-`--install-unsafe` writes the identical record with that last verdict false, which the demo's
-last step feeds to the same synthesis command in order to watch it refuse. It is a flag on this
-script rather than a second script because *one boolean* being the only difference between a
-policy and a refusal is the whole content of that step; two files would hide it.
-
-Usage: write_account_record.py [--install-unsafe] <out.json> <account-address> <code-hash-hex>
+Usage: write_account_record.py <out.json> <account-address> <code-hash-hex>
 """
 
 import json
@@ -44,10 +37,6 @@ import sys
 
 def main() -> int:
     arguments = sys.argv[1:]
-    install_safe = True
-    if arguments[:1] == ["--install-unsafe"]:
-        install_safe = False
-        arguments = arguments[1:]
     if len(arguments) != 3:
         sys.exit(__doc__)
     out_path, address, observed_code_hash = arguments
@@ -56,7 +45,6 @@ def main() -> int:
         "address": address,
         "observed_code_hash": observed_code_hash,
         "registry_resolution": "resolved by the toolkit from the signed snapshot",
-        "install_safe": install_safe,
     }
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(record, handle, indent=1)
