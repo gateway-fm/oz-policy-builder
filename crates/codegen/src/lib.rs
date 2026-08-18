@@ -1233,23 +1233,31 @@ mod tests {
             // Today's names happen to make substring and token counts agree — the
             // `_XDR`/`_KEY` suffix follows the index, so no emitted name nests in another —
             // but the checker must not lean on the naming scheme it exists to check.
-            let tokens: Vec<&str> = source
+            // Counted once into a map, so each direction below is a lookup rather than a
+            // scan over every token per name — the boundary-sized sources this now runs on
+            // hold a few thousand tokens. A BTreeMap, not a HashMap: `clippy.toml` bans
+            // HashMap across both workspaces, and a test helper is not the place to start
+            // depending on per-process iteration order.
+            let mut token_counts: BTreeMap<&str, usize> = BTreeMap::new();
+            let tokens = source
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .flat_map(|line| line.split('"').step_by(2))
                 .flat_map(|code| code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
-                .filter(|token| !token.is_empty())
-                .collect();
+                .filter(|token| !token.is_empty());
+            for token in tokens {
+                *token_counts.entry(token).or_insert(0) += 1;
+            }
             let mut problems = Vec::new();
             for name in &declared {
                 // Once for the declaration; a read is any further occurrence.
-                if tokens.iter().filter(|token| *token == name).count() < 2 {
+                if token_counts.get(name).copied().unwrap_or(0) < 2 {
                     problems.push(format!("`{name}` is declared and never read"));
                 }
             }
             // The generated names, wherever they appear. Anything matching that is not declared
             // is a reference emission failed to back with a constant.
-            for token in &tokens {
+            for token in token_counts.keys() {
                 let generated = token.starts_with("SIGNER_") || token.starts_with("CALL_");
                 if generated && !declared.contains(token) {
                     problems.push(format!("`{token}` is read and never declared"));
