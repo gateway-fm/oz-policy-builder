@@ -97,7 +97,7 @@ jobs:
       # check-dep-rules.sh asserts only the ABSENCE of forbidden edges, so a declared-and-
       # never-used dependency passed every gate and had to be found by hand. cargo-machete
       # walks directories rather than workspaces, so one run covers the toolkit workspace,
-      # the contracts workspace, and the two generated policy crates both of them exclude.
+      # the contracts workspace, and the generated policy crate they both exclude.
       # Pinned for the same reason as cargo-deny: which declarations a version considers
       # "used" is the gate's verdict.
       - name: cargo-machete (pinned)
