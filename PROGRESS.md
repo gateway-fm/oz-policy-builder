@@ -291,9 +291,9 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
 ## Verifiable artifacts
 
 - **Codegen determinism:** two cold runs of `ozpb generate` produce byte-identical
-  `src/lib.rs` (sha256 `64ab9bbe…`); normalized codegen-input hash `662ad7a9…`.
+  `src/lib.rs` (sha256 `f0a84503…`); normalized codegen-input hash `662ad7a9…`.
 - **Wasm reproducibility:** `stellar contract build` → byte-identical wasm across a full
-  `cargo clean` rebuild (sha256 `0291b543…`). The claim holds; the gate that asserted it did
+  `cargo clean` rebuild (sha256 `5b9374d8…`). The claim holds; the gate that asserted it did
   not until 2026-08-13. It hashed `contracts/target/…`, which the rebuild never writes: the
   golden crate is excluded from the contracts workspace (it carries its own
   `[profile.release]`), so `stellar contract build` writes to *its* target dir. The old gate

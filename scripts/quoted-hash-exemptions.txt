@@ -35,4 +35,4 @@
 # a wasm hash quoted in prose is worth reading with suspicion.
 b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golden policy under CLI 27.0.0, the pinned one
 90792361630c2bc7d5cbaa5f3b217a59cf7fcef0caa396ef380b3313dd794386|wasm-hash|the same source under CLI 27.1.0, kept as the evidence that the CLI alone moves the hash
-0291b543566dd7a4b84523531e984c0962ede9bb91578b919400aa6eedd0b267|wasm-hash|golden policy across a clean rebuild under the pinned rustc 1.91.1 and CLI 27.0.0, measured 2026-08-18 after emission was made rustfmt-clean; quoted abbreviated by PROGRESS.md and recorded-build-inputs.sh, recorded here at full length
+5b9374d810530bdc8b5d3aa19525ea19993c645e8fa711320f1cd0cc83a97bf2|wasm-hash|golden policy across a clean rebuild under the pinned rustc 1.91.1 and CLI 27.0.0, measured 2026-08-18 after the installation-lifecycle emission landed; quoted abbreviated by PROGRESS.md and recorded-build-inputs.sh, recorded here at full length
