@@ -1,10 +1,103 @@
 # Progress
 
-The first phase, plus a hardening pass. Gates: `scripts/verify-phase1.sh`,
-`scripts/check-licenses.sh` (cargo-deny: permissive-license + supply-chain gate over both
-workspaces, wired into CI + verify-phase1). Two `#[ignore]`d tests need the real toolchain
-(`stellar-cli` + a warm contract cache), both in `ozpb-build-runner`: the golden end-to-end
-build, and the boundary-shape compile check. CI runs them in the `nightly live` workflow.
+The first phase, plus two hardening passes. `scripts/verify-phase1.sh` is the strict
+release gate (dependency/publication/build-input/quoted-hash invariants, fmt + clippy +
+tests over both workspaces and the generated crate, golden/determinism checks, wasm
+reproducibility, the `#[ignore]`d real-toolchain suite, cargo-deny, cargo-machete);
+`scripts/verify-phase1.sh --offline` is the explicitly reduced local mode, and its success
+message names the release-only gates it did not run. Two `#[ignore]`d tests need the real
+toolchain (`stellar-cli` + a warm contract cache), both in `ozpb-build-runner`: the golden
+end-to-end build, and the boundary-shape compile check. CI runs them in the `nightly live`
+workflow, and the release gate runs them too.
+
+---
+
+# Release-readiness hardening (2026-08-18)
+
+An adversarial release review of the Tranche-1 surface: every claim the milestone makes was
+re-read the way an attacker or a release auditor would read it, and each finding became
+either a fail-closed check or an explicit non-claim. Nothing here widens what Phase 1
+promises; most of it narrows a promise to exactly what the code can keep.
+
+**Trust boundaries, made structural rather than asserted.**
+
+- [x] **`install_safe` is gone from `SmartAccountRecord`.** It was a caller-supplied boolean
+      standing where evidence should be. Account compatibility is now established solely from
+      the code hash observed via RPC and resolved through the signed registry; a falsified
+      hash refuses with `E_INCOMPATIBLE_ACCOUNT`. The demo's refusal step (step 8) now
+      demonstrates exactly that: one field of one input changed to a syntactically valid lie,
+      the same command as the permit path, and a required refusal.
+- [x] **External-verifier signers are rejected at validation**
+      (`E_SPEC_EXTERNAL_UNSUPPORTED`). The runtime OpenZeppelin signer value carries only the
+      verifier address and key, so nothing at authorization time binds that address to the
+      recognized verifier code; registry recognition of a caller-supplied hash proves nothing
+      about the address. Until an acquisition/install layer can bind address to observed
+      executable, the shape is refused rather than half-supported.
+- [x] **Serialized recordings cannot mint trust.** Any bundle crossing the synthesize JSON
+      boundary is downgraded to `self_supplied` — a `trust` field in caller JSON is not
+      `rpc_reported`. The RPC adapter itself now verifies the network passphrase via
+      `getNetwork`, compares the response `txHash` against the canonical requested hash, and
+      independently recomputes the transaction hash from `envelopeXdr`, under bounded HTTP
+      streams and bounded XDR decoding.
+
+**The generated policy got a real lifecycle.** Every generated policy — stateless ones
+included — now writes an installation marker scoped by (smart account, context-rule id):
+`install` refuses a duplicate (`AlreadyInstalled`) and refuses after expiry, `uninstall` of
+something never installed refuses (`NotInstalled`) and removes policy-owned state, and
+`enforce` fails closed (`MissingState`) when the marker is absent. The artifact header's check
+order is now: account authorization and installation state first, then the signer predicate,
+then the rest. TTL extension covers the marker alongside the counter and instance entries, and
+`contracts/differential/tests/ttl.rs` + `differential.rs` grew the lifecycle, isolation and
+TTL-target cases. This moved the golden crate, so both derived identities moved with it:
+emitted `src/lib.rs` is now sha256 `f0a84503…` and the clean-rebuild wasm `5b9374d8…`; the
+normalized codegen-input hash `662ad7a9…` did not move, because the inputs did not — only the
+emission.
+
+**Validation owns its bounds.** User-controlled strings, evidence references and exact `ScVal`
+values are size-capped per value and per rule; the caps sit deliberately below the 4 MiB
+canonical-hash preimage ceiling, so a recording the recorder accepts cannot fail only when
+hashed; and validation and codegen share the builder's 2 MiB input ceiling, so a spec that
+validates cannot generate a crate the next stage refuses (`E_CODEGEN_RESOURCE_LIMIT` guards
+the seam, and a maximum-shaped rule is generated in a non-vacuous boundary test).
+Template-family hostility checks moved from codegen into the validation typestate
+(`E_SPEC_TEMPLATE_FAMILY`), where the rest of the grammar checks live. Spending-limit
+composition is validated semantically: a recognized SEP-41 `transfer` shape with the `i128`
+amount at argument index 2, positive limit and period, decisions that can replay the
+representative evidence — and never on mixed transfer/non-transfer rules.
+
+**Evaluation stopped rounding up.** A rule that attaches a reviewed policy no longer yields a
+whole-spec `permit` from the reference evaluator: the verdict is `indeterminate` while the
+reviewed policy's state is unmodelled, and the differential model is explicitly scoped to the
+generated policy. On the registry side, accepted revocations persist across restarts and are
+append-only across successor snapshots — a signed successor cannot un-revoke, rewrite a
+reason, or move an effective version.
+
+**Wire and MCP errors are a contract.** Every declared error code serializes as
+`SCREAMING_SNAKE_CASE` and round-trips through an exhaustive `ErrorCode::ALL` table — closing
+the two-spellings problem where `EBuildTimeout` shipped verbatim beside `E_BUILD_TIMEOUT`
+prose. MCP tool failures return structured `{code, message, details}` with `isError: true`
+instead of surfacing as JSON-RPC protocol errors, and request DTOs are closed schemas that
+reject unknown fields.
+
+**The build runner's environment is allowlisted.** The child build sees a sanitized
+environment — service and cloud credentials and proxy variables excluded — and HTTP request
+concurrency × cargo jobs is held to the detected CPU budget. The golden-build fixture also
+gained the `rust-toolchain.toml` its real crate ships: its absence was R-01, the omission that
+kept the `nightly live` workflow red for five days, because the fixture built with whatever
+toolchain the runner had instead of the pinned one the manifest claims.
+
+**Gates fail closed and say what they did not run.** `verify-phase1.sh` became the strict
+release gate described in the header; `--offline` is the explicitly reduced mode whose success
+message names the skipped release-only gates, so an offline pass can never read as a release
+pass. `check-licenses.sh` fails when the advisory tooling cannot run instead of passing
+vacuously. The live demo derives its policy expiry from `getLatestLedger` plus a
+120,960-ledger horizon instead of a committed absolute ledger that necessarily expires.
+
+**Docs follow the narrowed claims.** README and `docs/DEVELOPERS.md` state the Phase-1
+assurance boundary (account recognition is generation compatibility, not installation safety;
+`verify` and the install path are second-milestone), and `docs/ECOSYSTEM-CONFORMANCE.md` was
+reconciled section by section — §9–§14 now cover the subsystems this pass hardened, and every
+file:line reference in it was re-read against the tree.
 
 ---
 
@@ -120,17 +213,15 @@ regression test:
    status. Related: `simple_threshold` and `weighted_threshold` appear only in the docs, never
    in code.
 4. **Encoded-literal rendering** — template-pack v2, one deliberate artifact-hash break.
-5. **`api-types` schema-stability tests.** `dtos_have_schemas` asserts nothing and covers 5 of
-   ~20 DTOs; `error_codes_round_trip` covers 3 of 47 variants. §8:1344 promises snapshots and
-   error-code contract tests; they do not exist yet. Also unreconciled: `EBuildTimeout`
-   serializes verbatim while the docs and `BuildError` strings say `E_BUILD_TIMEOUT`, so an
-   agent sees both spellings in one payload — renaming is a single breaking wire change and
-   should be decided deliberately.
+5. ~~**`api-types` schema-stability tests.**~~ **Closed by the release-readiness pass.**
+   `error_codes_round_trip` now iterates `ErrorCode::ALL` exhaustively and asserts each code's
+   single `SCREAMING_SNAKE_CASE` spelling, which was the deliberate breaking wire change this
+   item said should be decided rather than drifted into; request DTOs are closed schemas that
+   reject unknown fields, and `dtos_have_schemas` covers the MCP-exposed inputs and outputs.
 6. **Layer-2 deny-code agreement.** The hand-written `differential.rs` here agrees with the
    reference evaluator on verdict *and* deny reason. The generated layer-2 suite, which asserts
    only the permit/deny boolean, is part of the dry-run harness — a second-milestone
    deliverable — so bringing it up to deny-code agreement belongs to that milestone.
-
 
 ---
 
