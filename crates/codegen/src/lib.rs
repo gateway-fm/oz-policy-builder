@@ -1220,24 +1220,86 @@ mod tests {
                 .filter_map(|line| line.strip_prefix("const "))
                 .filter_map(|rest| rest.split(':').next())
                 .collect();
+            // What counts as a read is an identifier *token* in code: substring counting
+            // would credit a declared name with occurrences inside any longer identifier,
+            // and text in a comment was never a read at all (every comment the emitter
+            // produces is a whole line, so filtering by line prefix is exact). Today's
+            // names happen to make substring and token counts agree — the `_XDR`/`_KEY`
+            // suffix follows the index, so no emitted name nests in another — but the
+            // checker must not lean on the naming scheme it exists to check.
+            let tokens: Vec<&str> = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .flat_map(|line| line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
+                .filter(|token| !token.is_empty())
+                .collect();
             let mut problems = Vec::new();
             for name in &declared {
                 // Once for the declaration; a read is any further occurrence.
-                if source.matches(*name).count() < 2 {
+                if tokens.iter().filter(|token| *token == name).count() < 2 {
                     problems.push(format!("`{name}` is declared and never read"));
                 }
             }
             // The generated names, wherever they appear. Anything matching that is not declared
             // is a reference emission failed to back with a constant.
-            for token in source.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            for token in &tokens {
                 let generated = token.starts_with("SIGNER_") || token.starts_with("CALL_");
-                if generated && !declared.contains(&token) {
+                if generated && !declared.contains(token) {
                     problems.push(format!("`{token}` is read and never declared"));
                 }
             }
             problems.sort();
             problems.dedup();
             problems
+        }
+
+        /// The balance check counts identifier tokens, not substrings or prose.
+        ///
+        /// Counting with `source.matches(name)` credits a declared name with every occurrence
+        /// of its text, including inside a *longer* identifier and inside comments. No two
+        /// names the emitter produces today can nest — the `_XDR`/`_KEY` suffix follows the
+        /// index, so ten-and-up argument indices do not contain their one-digit neighbours —
+        /// but that is an accident of the suffix position, and this checker exists to catch
+        /// precisely the renames that would not preserve such accidents. Both directions the
+        /// accident could break are constructed here; substring counting is silent on each.
+        #[test]
+        fn unbalanced_constants_counts_identifier_tokens_not_substrings() {
+            // Keep the "cannot nest today" claim checked where it is relied on.
+            assert!(!"CALL_0_ARG_10_XDR".contains("CALL_0_ARG_1_XDR"));
+            assert!(!"SIGNER_10_KEY".contains("SIGNER_1_KEY"));
+
+            // Eleven arguments under index-*last* names — the shape `arg_xdr_name` would
+            // produce if the suffix moved ahead of the index. The first argument's constant
+            // is declared and its read has been lost; every declaration and read of the
+            // eleventh contains the dead name as a prefix, so `source.matches` counts them
+            // as its reads and reports nothing.
+            let mut source = String::new();
+            for i in 0..11 {
+                source.push_str(&format!("const CALL_0_XDR_ARG_{i}: [u8; 1] = [0x00];\n"));
+            }
+            source.push_str("fn check_call_0(e: &Env, args: &Vec<Val>) -> bool {\n");
+            for i in (0..11).filter(|i| *i != 1) {
+                source.push_str(&format!(
+                    "    if v.to_xdr(e) != Bytes::from_slice(e, &CALL_0_XDR_ARG_{i}) {{\n        \
+                     return false;\n    }}\n"
+                ));
+            }
+            source.push_str("    true\n}\n");
+            assert_eq!(
+                unbalanced_constants(&source),
+                vec!["`CALL_0_XDR_ARG_1` is declared and never read".to_string()],
+                "a dead constant whose name prefixes a live one's must still be reported"
+            );
+
+            // Prose is not a read: a doc comment naming a constant — as the emitted
+            // `ttl_target` comment names VALID_UNTIL_LEDGER — must not keep it alive.
+            let commented = "const SIGNER_0_KEY: [u8; 1] = [0x00];\n\
+                             // SIGNER_0_KEY is compared against the caller's key.\n";
+            assert_eq!(
+                unbalanced_constants(commented),
+                vec!["`SIGNER_0_KEY` is declared and never read".to_string()],
+                "a constant read only by its own documentation is dead code"
+            );
         }
 
         /// Lines of emitted code that rustfmt would have to reflow, as `(line, columns)`.
