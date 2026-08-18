@@ -48,7 +48,7 @@ RPC_URL="${OZPB_RPC_URL:-https://rpc.testnet.stellar.gateway.fm}"
 PINNED_ACCOUNT_WASM=a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289
 PINNED_SPENDING_LIMIT=4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c
 
-for tool in stellar cargo python3; do
+for tool in stellar cargo python3 curl; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required"; exit 1; }
 done
 
@@ -173,8 +173,12 @@ say "4. synthesize: a minimum-permission PolicySpec"
 #                   lowest snapshot version still accepted. Together: what the toolkit is
 #                   allowed to recognize — which account releases, which reviewed policies.
 #   the decisions — what the user asked for: expiry ledger, call cap, spend limit, signers.
+#                   The committed file is a deterministic example, so this live run copies it
+#                   and derives expiry from getLatestLedger plus a 120,960-ledger horizon.
 #
-# Those three files come from `docs/examples/`, committed, exactly as a reader consumes them.
+# The registry and decision template come from `docs/examples/`, committed exactly as a reader
+# consumes them. The live decision copy differs in expiry only, because a committed absolute
+# ledger necessarily expires.
 # The demo deliberately does not regenerate them first: `ozpb dev-registry` would repair any
 # drift from `registry::dev` in place and then pass anyway, hiding exactly what running the
 # committed inputs is meant to expose. That drift is caught offline instead, by ozpb-toolkit's
@@ -194,10 +198,16 @@ synthesize() {   # $1 = account record; prints the synthesis JSON on stdout
         --account "$1" \
         --signed-registry docs/examples/registry.signed.json \
         --registry-roots docs/examples/registry-roots.json --registry-min-version 1 \
-        --decisions docs/examples/decisions.json \
+        --decisions "$WORK/decisions.json" \
         --template-family policy-templates/scope@1 \
         --spending-limit-capability "$PINNED_SPENDING_LIMIT"
 }
+curl --fail --silent --show-error --max-time 30 \
+    -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger","params":{}}' \
+    "$RPC_URL" > "$WORK/latest-ledger.json"
+python3 scripts/demo/write_live_decisions.py \
+    "$WORK/latest-ledger.json" docs/examples/decisions.json "$WORK/decisions.json"
 python3 scripts/demo/write_account_record.py \
     "$WORK/account.json" "$ACCOUNT" "$PINNED_ACCOUNT_WASM"
 synthesize "$WORK/account.json" > "$WORK/synthesis.json"

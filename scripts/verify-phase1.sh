@@ -5,6 +5,28 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+MODE=release
+case "${1:-}" in
+    "") ;;
+    --offline) MODE=offline ;;
+    *) echo "usage: bash scripts/verify-phase1.sh [--offline]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+    echo "usage: bash scripts/verify-phase1.sh [--offline]" >&2
+    exit 2
+fi
+
+if [ "$MODE" = release ]; then
+    for tool in stellar cargo-deny; do
+        command -v "$tool" >/dev/null 2>&1 || {
+            echo "release gate requires $tool; use --offline only for the explicitly reduced gate" >&2
+            exit 1
+        }
+    done
+else
+    echo "OFFLINE MODE: stellar-cli build/reproducibility and cargo-deny license gates will not run"
+fi
+
 echo "== 1. dependency rules (evaluator ↛ codegen; cores transport-free) =="
 bash scripts/check-dep-rules.sh
 
@@ -66,7 +88,7 @@ done
 echo "  codegen deterministic; golden crate matches codegen output"
 # The end-to-end shell path additionally proves the CLI emits those same bytes, but it
 # compiles the policy, so it needs the toolchain.
-if command -v stellar >/dev/null 2>&1; then
+if [ "$MODE" = release ]; then
     rm -rf target/det-a target/det-b
     cargo run -q -p ozpb-cli -- generate --spec docs/examples/subscription-spec.json --rule 0 --out target/det-a
     cargo run -q -p ozpb-cli -- generate --spec docs/examples/subscription-spec.json --rule 0 --out target/det-b
@@ -75,11 +97,11 @@ if command -v stellar >/dev/null 2>&1; then
     [ "$A" = "$B" ] || { echo "  CLI CODEGEN NON-DETERMINISTIC"; exit 1; }
     echo "  CLI end-to-end byte-identical: $A"
 else
-    echo "  (stellar-cli not installed — skipping the end-to-end CLI check)"
+    echo "  OFFLINE: end-to-end CLI compile check not run"
 fi
 
 echo "== 6. wasm reproducibility (requires stellar-cli) =="
-if command -v stellar >/dev/null 2>&1; then
+if [ "$MODE" = release ]; then
     # A note, not a gate: this compares two builds made with whatever CLI is installed, so its
     # verdict holds at any version. But `stellar contract build` stamps its own version into the
     # wasm (`cliver` in contractmetav0), so the hash printed below is only *this* CLI's — it will
@@ -119,14 +141,18 @@ if command -v stellar >/dev/null 2>&1; then
     [ "$H1" = "$H2" ] && echo "  wasm byte-identical across a full clean rebuild: $H1" \
         || { echo "  WASM DIFFERS: $H1 vs $H2"; exit 1; }
 else
-    echo "  (stellar-cli not installed — skipping wasm reproducibility)"
+    echo "  OFFLINE: wasm reproducibility not run"
 fi
 
 echo "== 7. license & supply-chain gate (permissive-license requirement, §4.11) =="
-if command -v cargo-deny >/dev/null 2>&1; then
+if [ "$MODE" = release ]; then
     bash scripts/check-licenses.sh
 else
-    echo "  (cargo-deny not installed — skipping; run: cargo install cargo-deny --locked)"
+    echo "  OFFLINE: cargo-deny license/supply-chain gate not run"
 fi
 
-echo "ALL PHASE 1 GATES PASSED"
+if [ "$MODE" = release ]; then
+    echo "ALL PHASE 1 RELEASE GATES PASSED"
+else
+    echo "ALL OFFLINE PHASE 1 GATES PASSED (release-only toolchain gates not run)"
+fi
