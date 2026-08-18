@@ -1764,6 +1764,136 @@ mod tests {
     }
 
     #[test]
+    fn spending_limit_parameter_checks_are_independent_of_call_shape() {
+        for (limit, period_ledgers) in [("0", 1), ("-1", 1), ("0500000000", 1), ("500000000", 0)] {
+            let choice = SpendingLimitChoice {
+                limit: limit.to_string(),
+                period_ledgers,
+            };
+            assert!(
+                validate_spending_limit_shape(&choice, &[], &[]).is_err(),
+                "invalid limit={limit:?}, period={period_ledgers} must fail before call-shape checks"
+            );
+        }
+        let valid = SpendingLimitChoice {
+            limit: "500000000".to_string(),
+            period_ledgers: 1,
+        };
+        assert!(validate_spending_limit_shape(&valid, &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn spending_limit_constraint_intersections_include_only_their_boundaries() {
+        fn transfer_with_amount(constraint: Constraint) -> AllowedCall {
+            AllowedCall {
+                fn_name: "transfer".to_string(),
+                args: vec![ArgConstraint {
+                    index: 2,
+                    provenance: if constraint.is_widening() {
+                        Provenance::UserWidened {
+                            intent: "semantic boundary test".to_string(),
+                            blast_radius: BlastRadius::Medium,
+                        }
+                    } else {
+                        Provenance::ObservedExact
+                    },
+                    constraint,
+                }],
+                justified_by: vec!["recordings[0]/auth[0]/root".to_string()],
+            }
+        }
+
+        let choice = SpendingLimitChoice {
+            limit: "10".to_string(),
+            period_ledgers: 1,
+        };
+        for (constraint, accepted) in [
+            (Constraint::EqI128 { value: "-1".into() }, false),
+            (Constraint::EqI128 { value: "0".into() }, true),
+            (Constraint::EqI128 { value: "10".into() }, true),
+            (Constraint::EqI128 { value: "11".into() }, false),
+            (Constraint::LeI128 { max: "-1".into() }, false),
+            (Constraint::LeI128 { max: "0".into() }, true),
+            (Constraint::GeI128 { min: "10".into() }, true),
+            (Constraint::GeI128 { min: "11".into() }, false),
+        ] {
+            let call = transfer_with_amount(constraint.clone());
+            assert_eq!(
+                validate_spending_limit_shape(&choice, &[call], &[]).is_ok(),
+                accepted,
+                "unexpected spending-limit intersection for {constraint:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spending_limit_observed_amount_boundaries_and_cumulative_totals() {
+        let allowed = vec![AllowedCall {
+            fn_name: "transfer".to_string(),
+            args: vec![ArgConstraint {
+                index: 2,
+                constraint: Constraint::EqI128 { value: "0".into() },
+                provenance: Provenance::ObservedExact,
+            }],
+            justified_by: vec!["recordings[0]/auth[0]/root".to_string()],
+        }];
+        let choice = SpendingLimitChoice {
+            limit: "10".to_string(),
+            period_ledgers: 1,
+        };
+
+        for (amount, accepted) in [(-1, false), (0, true), (10, true), (11, false)] {
+            let args = vec![
+                ArgSummary::U32(0),
+                ArgSummary::U32(0),
+                ArgSummary::I128(amount),
+            ];
+            let observed = Observed {
+                contract: "contract".to_string(),
+                fn_name: "transfer".to_string(),
+                args: &args,
+                evidence_path: "recordings[0]/auth[0]/root".to_string(),
+                recording_index: 0,
+            };
+            assert_eq!(
+                validate_spending_limit_shape(&choice, &allowed, &[&observed]).is_ok(),
+                accepted,
+                "unexpected verdict for observed amount {amount}"
+            );
+        }
+
+        let args_a = vec![ArgSummary::U32(0), ArgSummary::U32(0), ArgSummary::I128(4)];
+        let args_b = vec![ArgSummary::U32(0), ArgSummary::U32(0), ArgSummary::I128(6)];
+        let args_c = vec![ArgSummary::U32(0), ArgSummary::U32(0), ArgSummary::I128(7)];
+        let observed = |args| Observed {
+            contract: "contract".to_string(),
+            fn_name: "transfer".to_string(),
+            args,
+            evidence_path: "recordings[0]/auth[0]/root".to_string(),
+            recording_index: 0,
+        };
+        let four = observed(&args_a);
+        let six = observed(&args_b);
+        let seven = observed(&args_c);
+        assert!(validate_spending_limit_shape(&choice, &allowed, &[&four, &six]).is_ok());
+        assert!(validate_spending_limit_shape(&choice, &allowed, &[&four, &seven]).is_err());
+
+        let max_choice = SpendingLimitChoice {
+            limit: i128::MAX.to_string(),
+            period_ledgers: 1,
+        };
+        let max_args = vec![
+            ArgSummary::U32(0),
+            ArgSummary::U32(0),
+            ArgSummary::I128(i128::MAX),
+        ];
+        let one_args = vec![ArgSummary::U32(0), ArgSummary::U32(0), ArgSummary::I128(1)];
+        let max = observed(&max_args);
+        let one = observed(&one_args);
+        assert!(validate_spending_limit_shape(&max_choice, &allowed, &[&max, &one]).is_err());
+    }
+
+    #[test]
     fn spending_limit_rejects_untyped_and_wildcard_amounts() {
         let token = transfer_bundle().authorizations[0].root.call_contract();
         let bundle = bundle_with_subs(
@@ -1859,6 +1989,14 @@ mod tests {
             .iter()
             .any(|error| matches!(error, SynthError::InvalidDecision(message)
                 if message.contains("below the 2 calls observed"))));
+
+        user_decisions.max_calls = Some(2);
+        let output = synthesize(&synthesis_input, &user_decisions)
+            .expect("a cap equal to the representative sequence must permit replay");
+        assert_eq!(
+            output.spec.rules[0].state,
+            vec![StateSpec::CallCountPerInstallation { max_calls: 2 }]
+        );
     }
 
     #[test]
