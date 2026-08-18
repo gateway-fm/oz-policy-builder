@@ -193,9 +193,11 @@ pub struct EvaluateSpecInput {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvaluateSpecOutput {
-    /// "permit" or "deny".
+    /// "permit", "deny", or "indeterminate". The last verdict is fail-closed: at least one
+    /// composed reviewed policy is outside the Phase 1 evaluator's model.
     pub verdict: String,
-    /// Present on deny: the machine-readable reason.
+    /// Present on deny or indeterminate: the machine-readable reason. The wire name is retained
+    /// for compatibility even though an indeterminate reason is not a denial.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny_reason: Option<String>,
 }

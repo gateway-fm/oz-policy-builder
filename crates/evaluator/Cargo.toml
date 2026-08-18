@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Independent reference evaluator for PolicySpec — shares NO code with codegen"
 
 [dependencies]
+hex = { workspace = true }
 ozpb-domain = { workspace = true }
 ozpb-policy-spec = { workspace = true }
 serde = { workspace = true }

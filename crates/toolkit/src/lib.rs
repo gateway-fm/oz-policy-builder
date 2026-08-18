@@ -253,6 +253,10 @@ pub fn evaluate_spec(input: &EvaluateSpecInput) -> Result<EvaluateSpecOutput, To
             verdict: "deny".to_string(),
             deny_reason: Some(format!("{reason:?}")),
         },
+        Verdict::Indeterminate(reason) => EvaluateSpecOutput {
+            verdict: "indeterminate".to_string(),
+            deny_reason: Some(format!("{reason:?}")),
+        },
     })
 }
 
@@ -493,7 +497,8 @@ mod tests {
         assert!(gen.files.contains_key("src/lib.rs"));
         assert_eq!(gen.stellar_accounts_version, "0.7.2");
 
-        // And the spec evaluates: original permits under the delegate.
+        // The generated scope permits, but the full spec also composes a reviewed
+        // spending-limit policy that the Phase 1 evaluator deliberately does not simulate.
         let ctx = serde_json::json!({
             "smart_account": fx::golden_account_strkey(),
             "current_ledger": 100,
@@ -516,7 +521,11 @@ mod tests {
             invocation: inv,
         })
         .unwrap();
-        assert_eq!(out.verdict, "permit");
+        assert_eq!(out.verdict, "indeterminate");
+        assert_eq!(
+            out.deny_reason.as_deref(),
+            Some("ReviewedPoliciesUnmodeled")
+        );
     }
 
     #[test]

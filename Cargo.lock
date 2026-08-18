@@ -1215,6 +1215,7 @@ dependencies = [
 name = "ozpb-evaluator"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "ozpb-domain",
  "ozpb-policy-spec",
  "proptest",

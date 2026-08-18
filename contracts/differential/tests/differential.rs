@@ -204,6 +204,9 @@ fn assert_agreement(
                 "{name}: deny reasons diverged (evaluator: {reason:?}, contract code {code})"
             );
         }
+        (ev::Verdict::Indeterminate(reason), _) => {
+            panic!("{name}: generated-rule evaluation was indeterminate: {reason:?}")
+        }
         (v, r) => panic!("{name}: DIVERGENCE — evaluator {v:?}, contract {r:?}"),
     }
 }

@@ -38,7 +38,7 @@ fn initialize_and_list_tools() {
 }
 
 #[test]
-fn tools_call_evaluate_spec_permits_the_original() {
+fn tools_call_evaluate_spec_is_indeterminate_for_unmodeled_reviewed_policy() {
     // Derive the concrete addresses from the committed spec so the test never drifts:
     // account (SELF), the token (rule contract), the delegate signer, and the exact
     // recipient/amount from the allowed-call tuple.
@@ -90,7 +90,12 @@ fn tools_call_evaluate_spec_permits_the_original() {
         }),
     ]);
     let sc = &by_id(&resp, 2)["result"]["structuredContent"];
-    assert_eq!(sc["verdict"], serde_json::json!("permit"), "got {sc}");
+    assert_eq!(
+        sc["verdict"],
+        serde_json::json!("indeterminate"),
+        "got response {:?}",
+        by_id(&resp, 2)
+    );
 }
 
 #[test]

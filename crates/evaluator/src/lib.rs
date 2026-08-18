@@ -14,7 +14,8 @@
 
 use ozpb_domain::LedgerSeq;
 use ozpb_policy_spec::{
-    signer_set_hash, AddressRef, Constraint, PredicateKind, SignerSpec, StateSpec, ValidatedSpec,
+    signer_set_hash, AddressRef, Constraint, PolicyRef, PredicateKind, SignerSpec, StateSpec,
+    ValidatedSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,14 @@ pub struct EvalContext {
 pub enum Verdict {
     Permit,
     Deny(DenyReason),
+    Indeterminate(IndeterminateReason),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+pub enum IndeterminateReason {
+    #[error("one or more reviewed policies are outside the Phase 1 reference model")]
+    ReviewedPoliciesUnmodeled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -88,6 +97,7 @@ pub enum DenyReason {
 /// (deterministic) denial is returned.
 pub fn evaluate(spec: &ValidatedSpec, ctx: &EvalContext, inv: &Invocation) -> Verdict {
     let mut first_denial: Option<DenyReason> = None;
+    let mut unmodeled_permit = false;
     let mut any_rule = false;
 
     for rule in &spec.spec().rules {
@@ -96,7 +106,20 @@ pub fn evaluate(spec: &ValidatedSpec, ctx: &EvalContext, inv: &Invocation) -> Ve
         }
         any_rule = true;
         match evaluate_rule_inner(rule, ctx, inv) {
-            Ok(()) => return Verdict::Permit,
+            Ok(()) => {
+                if rule
+                    .policies
+                    .iter()
+                    .any(|policy| matches!(policy, PolicyRef::Reviewed { .. }))
+                {
+                    // Reviewed policies are composed conjunctively with the generated scope
+                    // policy. Scope denial is therefore conclusive, but scope permission is not:
+                    // the upstream policy may still deny for state this evaluator does not model.
+                    unmodeled_permit = true;
+                } else {
+                    return Verdict::Permit;
+                }
+            }
             Err(reason) => {
                 if first_denial.is_none() {
                     first_denial = Some(reason);
@@ -105,6 +128,9 @@ pub fn evaluate(spec: &ValidatedSpec, ctx: &EvalContext, inv: &Invocation) -> Ve
         }
     }
 
+    if unmodeled_permit {
+        return Verdict::Indeterminate(IndeterminateReason::ReviewedPoliciesUnmodeled);
+    }
     match (any_rule, first_denial) {
         (false, _) => Verdict::Deny(DenyReason::NoMatchingRule),
         (true, Some(reason)) => Verdict::Deny(reason),
@@ -113,10 +139,10 @@ pub fn evaluate(spec: &ValidatedSpec, ctx: &EvalContext, inv: &Invocation) -> Ve
     }
 }
 
-/// Evaluate exactly one rule. This is used by the harness to test each generated policy
-/// independently even when another rule in the permission bundle would also match the
-/// candidate invocation.
-pub fn evaluate_rule(
+/// Evaluate exactly the generated scope/count policy of one rule. Reviewed policies are
+/// deliberately excluded. The differential harness uses this entry point because it compares
+/// against that generated contract, not against upstream contracts it did not execute.
+pub fn evaluate_generated_rule(
     rule: &ozpb_policy_spec::RuleSpec,
     ctx: &EvalContext,
     inv: &Invocation,
@@ -198,11 +224,11 @@ fn evaluate_rule_inner(
     // The smart-account layer rejects signatures from identities outside the selected
     // rule before invoking any policy. Keep this after policy-specific signer checks so
     // the reference evaluator retains the generated policy's stable denial precedence.
-    if ctx
-        .authenticated_signers
-        .iter()
-        .any(|signer| !ctx.rule_live_signers.contains(signer))
-    {
+    if ctx.authenticated_signers.iter().any(|signer| {
+        !ctx.rule_live_signers
+            .iter()
+            .any(|live| same_signer_identity(signer, live))
+    }) {
         return Err(DenyReason::PredicateUnsatisfied);
     }
 
@@ -236,17 +262,56 @@ fn evaluate_rule_inner(
 }
 
 fn count_matched(authenticated: &[SignerSpec], expected: &[SignerSpec]) -> usize {
-    // Set-intersection semantics over exact stored representations; duplicates in the
-    // authenticated list must not double-count.
+    // Set-intersection semantics over the identity the account actually stores. In particular,
+    // `verifier_code_hash` is not part of `Signer::External`; comparing the full off-chain enum
+    // would incorrectly make authorization depend on a field the host never sees.
     let mut seen: Vec<&SignerSpec> = Vec::new();
     let mut matched = 0usize;
     for s in authenticated {
-        if expected.contains(s) && !seen.contains(&s) {
+        if expected
+            .iter()
+            .any(|candidate| same_signer_identity(s, candidate))
+            && !seen
+                .iter()
+                .any(|candidate| same_signer_identity(s, candidate))
+        {
             seen.push(s);
             matched += 1;
         }
     }
     matched
+}
+
+fn same_signer_identity(left: &SignerSpec, right: &SignerSpec) -> bool {
+    match (left, right) {
+        (
+            SignerSpec::Delegated {
+                address: left_address,
+            },
+            SignerSpec::Delegated {
+                address: right_address,
+            },
+        ) => left_address == right_address,
+        (
+            SignerSpec::External {
+                verifier: left_verifier,
+                key_hex: left_key,
+                ..
+            },
+            SignerSpec::External {
+                verifier: right_verifier,
+                key_hex: right_key,
+                ..
+            },
+        ) => {
+            left_verifier == right_verifier
+                && hex::decode(left_key)
+                    .ok()
+                    .zip(hex::decode(right_key).ok())
+                    .is_some_and(|(left, right)| left == right)
+        }
+        _ => false,
+    }
 }
 
 fn tuple_matches(
@@ -297,8 +362,15 @@ mod tests {
 
     const AMOUNT: i128 = 500_000_000;
 
+    fn validate_generated_only(mut spec: ozpb_policy_spec::PolicySpec) -> ValidatedSpec {
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        spec.validate().unwrap()
+    }
+
     fn validated() -> ValidatedSpec {
-        subscription_spec().validate().unwrap()
+        validate_generated_only(subscription_spec())
     }
 
     fn delegate() -> SignerSpec {
@@ -341,7 +413,24 @@ mod tests {
         assert_eq!(v, Verdict::Permit);
     }
 
-    // --- `evaluate_rule` (the single-rule entry point the harness drives) ------------------
+    #[test]
+    fn full_spec_never_false_permits_an_unmodeled_reviewed_policy() {
+        let spec = subscription_spec().validate().unwrap();
+        assert_eq!(
+            evaluate(&spec, &base_ctx(), &original_invocation()),
+            Verdict::Indeterminate(IndeterminateReason::ReviewedPoliciesUnmodeled)
+        );
+
+        let mut denied = original_invocation();
+        denied.fn_name = "not_transfer".to_string();
+        assert_eq!(
+            evaluate(&spec, &base_ctx(), &denied),
+            Verdict::Deny(DenyReason::FunctionNotAllowed),
+            "the generated conjunct's denial remains conclusive"
+        );
+    }
+
+    // --- generated-rule entry point (the differential harness drives this) ----------------
     //
     // The tests above go through `evaluate`, which walks every rule. `evaluate_rule` has its
     // own contract check, and nothing in this crate exercised it — so mutation testing found
@@ -356,7 +445,7 @@ mod tests {
     fn evaluate_rule_permits_its_own_contract_and_rejects_any_other() {
         let rule = only_rule();
         assert_eq!(
-            evaluate_rule(&rule, &base_ctx(), &original_invocation()),
+            evaluate_generated_rule(&rule, &base_ctx(), &original_invocation()),
             Verdict::Permit,
             "the recorded call against the rule's own target must permit"
         );
@@ -366,7 +455,7 @@ mod tests {
             ..original_invocation()
         };
         assert_eq!(
-            evaluate_rule(&rule, &base_ctx(), &elsewhere),
+            evaluate_generated_rule(&rule, &base_ctx(), &elsewhere),
             Verdict::Deny(DenyReason::NoMatchingRule),
             "a rule must not evaluate a call aimed at a different contract"
         );
@@ -395,7 +484,7 @@ mod tests {
             ..base_ctx()
         };
         assert_eq!(
-            evaluate_rule(&rule, &ctx, &original_invocation()),
+            evaluate_generated_rule(&rule, &ctx, &original_invocation()),
             Verdict::Deny(DenyReason::PredicateUnsatisfied),
             "any_of must require a *granted* signer; being merely live is not enough"
         );
@@ -414,7 +503,7 @@ mod tests {
             ..base_ctx()
         };
         assert_eq!(
-            evaluate_rule(&rule, &ctx, &original_invocation()),
+            evaluate_generated_rule(&rule, &ctx, &original_invocation()),
             Verdict::Permit,
             "two granted signers satisfy any_of; only a too-few bound may deny"
         );
@@ -435,7 +524,7 @@ mod tests {
             ..base_ctx()
         };
         assert_eq!(
-            evaluate_rule(&rule, &two_live, &original_invocation()),
+            evaluate_generated_rule(&rule, &two_live, &original_invocation()),
             Verdict::Permit,
             "the dynamic predicate must permit when several live signers authorized"
         );
@@ -447,8 +536,34 @@ mod tests {
             ..base_ctx()
         };
         assert_eq!(
-            evaluate_rule(&rule, &none, &original_invocation()),
+            evaluate_generated_rule(&rule, &none, &original_invocation()),
             Verdict::Deny(DenyReason::ZeroSigners)
+        );
+    }
+
+    #[test]
+    fn external_signer_identity_ignores_the_off_chain_verifier_hash_claim() {
+        let expected = SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"expected-code"),
+            key_hex: "aabb".to_string(),
+        };
+        let account_value = SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"different-off-chain-claim"),
+            key_hex: "AABB".to_string(),
+        };
+        let mut rule = only_rule();
+        rule.authorization.signers = vec![expected];
+        let context = EvalContext {
+            authenticated_signers: vec![account_value.clone()],
+            rule_live_signers: vec![account_value],
+            ..base_ctx()
+        };
+        assert_eq!(
+            evaluate_generated_rule(&rule, &context, &original_invocation()),
+            Verdict::Permit,
+            "the account stores verifier+key, not verifier Wasm hash; evaluator identity must match"
         );
     }
 
@@ -496,7 +611,7 @@ mod tests {
         let mut spec = subscription_spec();
         spec.rules[0].authorization.kind = PredicateKind::Threshold { n: 2 };
         spec.rules[0].authorization.signers.push(stranger());
-        let v = spec.validate().unwrap();
+        let v = validate_generated_only(spec);
         let mut ctx = base_ctx();
         ctx.rule_live_signers = vec![delegate(), stranger()];
         ctx.authenticated_signers = vec![delegate(), delegate()]; // same signer twice
@@ -513,7 +628,7 @@ mod tests {
         let mut spec = subscription_spec();
         spec.rules[0].authorization.kind = PredicateKind::AllOf;
         spec.rules[0].authorization.signers.push(stranger());
-        let v = spec.validate().unwrap();
+        let v = validate_generated_only(spec);
         let mut ctx = base_ctx();
         ctx.rule_live_signers = vec![delegate(), stranger()];
         // One of two present → deny.
@@ -532,7 +647,7 @@ mod tests {
         let mut spec = subscription_spec();
         spec.rules[0].allowed_calls[0].args[2].constraint = c;
         spec.rules[0].allowed_calls[0].args[2].provenance = prov;
-        spec.validate().unwrap()
+        validate_generated_only(spec)
     }
 
     fn widened() -> ozpb_domain::Provenance {
@@ -622,7 +737,7 @@ mod tests {
         spec.rules[0].authorization.kind = PredicateKind::AnyOfCurrentRuleSigners;
         spec.rules[0].authorization.strict_signer_set = false;
         spec.rules[0].authorization.signers.clear();
-        let v = spec.validate().unwrap();
+        let v = validate_generated_only(spec);
 
         // A signer in the live rule set passes, even though no identity is named.
         let mut ctx = base_ctx();
@@ -792,7 +907,7 @@ mod tests {
             intent: "cap at 100".to_string(),
             blast_radius: ozpb_domain::BlastRadius::Medium,
         };
-        let v = spec.validate().unwrap();
+        let v = validate_generated_only(spec);
         for (amount, expected) in [
             (1i128, Verdict::Permit),
             (1_000_000_000, Verdict::Permit),
