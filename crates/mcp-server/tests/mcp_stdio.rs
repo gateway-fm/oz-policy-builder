@@ -112,11 +112,32 @@ fn malformed_tool_input_yields_a_machine_readable_error() {
         }),
     ]);
     let call = by_id(&resp, 2);
-    // rmcp surfaces the tool error either as a JSON-RPC error or an isError result; either
-    // way the stable code must be present in the payload.
-    let text = serde_json::to_string(call).unwrap();
-    assert!(
-        text.contains("ESpecInvalid") || text.contains("spec"),
-        "expected structured error, got {call}"
+    assert_eq!(call["result"]["isError"], true, "got {call}");
+    assert_eq!(
+        call["result"]["structuredContent"]["code"], "ESpecInvalid",
+        "got {call}"
     );
+    assert!(
+        call.get("error").is_none(),
+        "tool failures are not protocol errors"
+    );
+}
+
+#[test]
+fn unknown_request_fields_fail_closed_as_tool_errors() {
+    let resp = run_session(&[
+        initialize(),
+        initialized(),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "record_transaction", "arguments": {
+                "network_passphrase": "network",
+                "tx_hash": "0".repeat(64),
+                "rpc_url": "https://rpc.example",
+                "unexpected": "must not be ignored"
+            }}
+        }),
+    ]);
+    let call = by_id(&resp, 2);
+    assert_eq!(call["result"]["isError"], true, "got {call}");
 }

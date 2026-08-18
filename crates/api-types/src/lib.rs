@@ -76,6 +76,112 @@ pub enum ErrorCode {
     EInternal,
 }
 
+impl ErrorCode {
+    /// Complete stable-code vocabulary. Tests serialize every entry; callers can publish it
+    /// without maintaining a second list.
+    pub const ALL: &'static [Self] = &[
+        Self::ETxNotFound,
+        Self::ERetentionExpired,
+        Self::EEnvelopeParse,
+        Self::EUnsupportedEnvelope,
+        Self::ENoSorobanOp,
+        Self::EOperationSelection,
+        Self::ETxFailed,
+        Self::EUnsupportedMetaVersion,
+        Self::EMetaParse,
+        Self::EUnsupportedAddress,
+        Self::EAuthParse,
+        Self::EImportParse,
+        Self::EResourceLimit,
+        Self::ENoEvidence,
+        Self::EEvidenceTrust,
+        Self::ENetworkMismatch,
+        Self::EAuthorizerNotFound,
+        Self::EUnsupportedPattern,
+        Self::EAmbiguousArgSemantics,
+        Self::EUnregisteredPolicy,
+        Self::ENeedsDecision,
+        Self::ESpecInvalid,
+        Self::ECodegen,
+        Self::EBuildFailed,
+        Self::EBuildTimeout,
+        Self::EBuildResourceLimit,
+        Self::EBuildUnavailable,
+        Self::ERegistrySignature,
+        Self::ERegistryRollback,
+        Self::ERegistryNetwork,
+        Self::ERegistryExpired,
+        Self::ERegistryValidity,
+        Self::ERegistryTransparency,
+        Self::ERegistryRevoked,
+        Self::EIncompatibleAccount,
+        Self::EUnregisteredVerifier,
+        Self::EUnregisteredTemplate,
+        Self::ERegistryEmpty,
+        Self::EPolicyBindingInvalid,
+        Self::EAccountRuleEnumerationUnsupported,
+        Self::EIncompleteAccountState,
+        Self::EAdminRuleUnsafe,
+        Self::EUnsafeCallSurface,
+        Self::EUnsafeManagementSurface,
+        Self::EScanBudgetExceeded,
+        Self::ERpc,
+        Self::EInternal,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ETxNotFound => "ETxNotFound",
+            Self::ERetentionExpired => "ERetentionExpired",
+            Self::EEnvelopeParse => "EEnvelopeParse",
+            Self::EUnsupportedEnvelope => "EUnsupportedEnvelope",
+            Self::ENoSorobanOp => "ENoSorobanOp",
+            Self::EOperationSelection => "EOperationSelection",
+            Self::ETxFailed => "ETxFailed",
+            Self::EUnsupportedMetaVersion => "EUnsupportedMetaVersion",
+            Self::EMetaParse => "EMetaParse",
+            Self::EUnsupportedAddress => "EUnsupportedAddress",
+            Self::EAuthParse => "EAuthParse",
+            Self::EImportParse => "EImportParse",
+            Self::EResourceLimit => "EResourceLimit",
+            Self::ENoEvidence => "ENoEvidence",
+            Self::EEvidenceTrust => "EEvidenceTrust",
+            Self::ENetworkMismatch => "ENetworkMismatch",
+            Self::EAuthorizerNotFound => "EAuthorizerNotFound",
+            Self::EUnsupportedPattern => "EUnsupportedPattern",
+            Self::EAmbiguousArgSemantics => "EAmbiguousArgSemantics",
+            Self::EUnregisteredPolicy => "EUnregisteredPolicy",
+            Self::ENeedsDecision => "ENeedsDecision",
+            Self::ESpecInvalid => "ESpecInvalid",
+            Self::ECodegen => "ECodegen",
+            Self::EBuildFailed => "EBuildFailed",
+            Self::EBuildTimeout => "EBuildTimeout",
+            Self::EBuildResourceLimit => "EBuildResourceLimit",
+            Self::EBuildUnavailable => "EBuildUnavailable",
+            Self::ERegistrySignature => "ERegistrySignature",
+            Self::ERegistryRollback => "ERegistryRollback",
+            Self::ERegistryNetwork => "ERegistryNetwork",
+            Self::ERegistryExpired => "ERegistryExpired",
+            Self::ERegistryValidity => "ERegistryValidity",
+            Self::ERegistryTransparency => "ERegistryTransparency",
+            Self::ERegistryRevoked => "ERegistryRevoked",
+            Self::EIncompatibleAccount => "EIncompatibleAccount",
+            Self::EUnregisteredVerifier => "EUnregisteredVerifier",
+            Self::EUnregisteredTemplate => "EUnregisteredTemplate",
+            Self::ERegistryEmpty => "ERegistryEmpty",
+            Self::EPolicyBindingInvalid => "EPolicyBindingInvalid",
+            Self::EAccountRuleEnumerationUnsupported => "EAccountRuleEnumerationUnsupported",
+            Self::EIncompleteAccountState => "EIncompleteAccountState",
+            Self::EAdminRuleUnsafe => "EAdminRuleUnsafe",
+            Self::EUnsafeCallSurface => "EUnsafeCallSurface",
+            Self::EUnsafeManagementSurface => "EUnsafeManagementSurface",
+            Self::EScanBudgetExceeded => "EScanBudgetExceeded",
+            Self::ERpc => "ERpc",
+            Self::EInternal => "EInternal",
+        }
+    }
+}
+
 /// Uniform structured error returned by every tool on failure.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ToolError {
@@ -119,6 +225,7 @@ impl std::error::Error for ToolError {}
 // ---------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RecordTransactionInput {
     /// Network passphrase (e.g. "Test SDF Network ; September 2015").
     pub network_passphrase: String,
@@ -133,6 +240,7 @@ pub struct RecordTransactionInput {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RecordSimulationInput {
     pub network_passphrase: String,
     /// Unsigned transaction envelope, base64 XDR. Confidential input (§6.5).
@@ -152,6 +260,7 @@ pub struct RecordOutput {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SynthesizeInput {
     /// One or more RecordingBundles as JSON.
     pub bundles: Vec<serde_json::Value>,
@@ -182,6 +291,7 @@ pub struct SynthesizeOutput {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluateSpecInput {
     /// The PolicySpec as JSON.
     pub spec: serde_json::Value,
@@ -203,6 +313,7 @@ pub struct EvaluateSpecOutput {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GenerateCodeInput {
     /// The PolicySpec as JSON.
     pub spec: serde_json::Value,
@@ -230,6 +341,7 @@ pub struct GenerateCodeOutput {
 // --- import_recording ------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImportRecordingInput {
     pub network_passphrase: String,
     /// Raw transaction envelope, base64 XDR.
@@ -254,12 +366,11 @@ mod tests {
 
     #[test]
     fn error_codes_round_trip() {
-        for code in [
-            ErrorCode::ETxNotFound,
-            ErrorCode::ENeedsDecision,
-            ErrorCode::EInternal,
-        ] {
+        let mut serialized = std::collections::BTreeSet::new();
+        for &code in ErrorCode::ALL {
             let json = serde_json::to_string(&code).unwrap();
+            assert_eq!(json, format!("\"{}\"", code.as_str()));
+            assert!(serialized.insert(json.clone()), "duplicate code {code:?}");
             let back: ErrorCode = serde_json::from_str(&json).unwrap();
             assert_eq!(code, back);
         }
@@ -287,9 +398,25 @@ mod tests {
         // schemars must be able to generate a schema for every input type (this is what
         // the MCP server exposes; if it panics, the wire contract is broken).
         let _ = schemars::schema_for!(RecordTransactionInput);
+        let _ = schemars::schema_for!(RecordSimulationInput);
+        let _ = schemars::schema_for!(RecordOutput);
         let _ = schemars::schema_for!(SynthesizeInput);
+        let _ = schemars::schema_for!(SynthesizeOutput);
         let _ = schemars::schema_for!(EvaluateSpecInput);
+        let _ = schemars::schema_for!(EvaluateSpecOutput);
         let _ = schemars::schema_for!(GenerateCodeInput);
         let _ = schemars::schema_for!(GenerateCodeOutput);
+        let _ = schemars::schema_for!(ImportRecordingInput);
+    }
+
+    #[test]
+    fn request_dtos_reject_unknown_fields() {
+        let value = serde_json::json!({
+            "network_passphrase": "network",
+            "tx_hash": "0".repeat(64),
+            "rpc_url": "https://rpc.example",
+            "unexpected": true
+        });
+        assert!(serde_json::from_value::<RecordTransactionInput>(value).is_err());
     }
 }

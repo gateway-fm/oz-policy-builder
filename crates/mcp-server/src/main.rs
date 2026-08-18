@@ -9,8 +9,8 @@
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
+use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 
 use ozpb_api_types::{
     EvaluateSpecInput, EvaluateSpecOutput, GenerateCodeInput, GenerateCodeOutput,
@@ -108,9 +108,32 @@ impl PolicyBuilderServer {
 /// Map a toolkit ToolError into an rmcp tool-execution error carrying the structured
 /// payload (stable code + message + details) as JSON data — the agent-recoverable
 /// channel (§4.6).
-fn tool_err(e: ToolError) -> ErrorData {
-    let data = serde_json::to_value(&e).ok();
-    ErrorData::internal_error(e.to_string(), data)
+fn tool_err(e: ToolError) -> CallToolResult {
+    let data = serde_json::to_value(&e).unwrap_or_else(|_| {
+        serde_json::json!({
+            "code": "EInternal",
+            "message": "could not serialize tool error"
+        })
+    });
+    CallToolResult::structured_error(data)
+}
+
+fn internal_tool_err(error: impl std::fmt::Display) -> CallToolResult {
+    tool_err(ToolError::new(
+        ozpb_api_types::ErrorCode::EInternal,
+        error.to_string(),
+    ))
+}
+
+fn rpc_tool_err(error: ozpb_source_rpc::RpcError) -> ToolError {
+    let code = match error {
+        ozpb_source_rpc::RpcError::NotFound(_) => ozpb_api_types::ErrorCode::ETxNotFound,
+        ozpb_source_rpc::RpcError::NetworkMismatch { .. } => {
+            ozpb_api_types::ErrorCode::ENetworkMismatch
+        }
+        _ => ozpb_api_types::ErrorCode::ERpc,
+    };
+    ToolError::new(code, error.to_string())
 }
 
 #[tool_router(router = tool_router)]
@@ -126,7 +149,7 @@ impl PolicyBuilderServer {
     async fn record_transaction(
         &self,
         Parameters(input): Parameters<RecordTransactionInput>,
-    ) -> Result<Json<RecordOutput>, ErrorData> {
+    ) -> Result<Json<RecordOutput>, CallToolResult> {
         let rpc_url = self.authorized_rpc_url(&input.rpc_url).map_err(tool_err)?;
         let out = tokio::task::spawn_blocking(move || {
             let transport = HttpTransport::new(rpc_url);
@@ -135,7 +158,7 @@ impl PolicyBuilderServer {
                 &input.network_passphrase,
                 &input.tx_hash,
             )
-            .map_err(|error| ToolError::new(ozpb_api_types::ErrorCode::ERpc, error.to_string()))?;
+            .map_err(rpc_tool_err)?;
             let options = RecordOptions {
                 operation_index: input.operation_index,
                 allow_failed: input.allow_failed,
@@ -143,7 +166,7 @@ impl PolicyBuilderServer {
             ozpb_toolkit::record_snapshot(&snapshot, options)
         })
         .await
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .map_err(internal_tool_err)?
         .map_err(tool_err)?;
         Ok(Json(out))
     }
@@ -159,7 +182,7 @@ impl PolicyBuilderServer {
     async fn record_simulation(
         &self,
         Parameters(input): Parameters<RecordSimulationInput>,
-    ) -> Result<Json<RecordOutput>, ErrorData> {
+    ) -> Result<Json<RecordOutput>, CallToolResult> {
         let rpc_url = self.authorized_rpc_url(&input.rpc_url).map_err(tool_err)?;
         let out = tokio::task::spawn_blocking(move || {
             let transport = HttpTransport::new(rpc_url);
@@ -168,11 +191,11 @@ impl PolicyBuilderServer {
                 &input.network_passphrase,
                 &input.envelope_xdr_base64,
             )
-            .map_err(|error| ToolError::new(ozpb_api_types::ErrorCode::ERpc, error.to_string()))?;
+            .map_err(rpc_tool_err)?;
             ozpb_toolkit::record_snapshot(&snapshot, RecordOptions::default())
         })
         .await
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .map_err(internal_tool_err)?
         .map_err(tool_err)?;
         Ok(Json(out))
     }
@@ -188,7 +211,7 @@ impl PolicyBuilderServer {
     async fn synthesize_policy(
         &self,
         Parameters(input): Parameters<SynthesizeInput>,
-    ) -> Result<Json<SynthesizeOutput>, ErrorData> {
+    ) -> Result<Json<SynthesizeOutput>, CallToolResult> {
         let trust = self.registry_trust.as_ref().ok_or_else(|| {
             tool_err(ToolError::new(
                 ozpb_api_types::ErrorCode::ERegistryEmpty,
@@ -211,7 +234,7 @@ impl PolicyBuilderServer {
     async fn evaluate_spec(
         &self,
         Parameters(input): Parameters<EvaluateSpecInput>,
-    ) -> Result<Json<EvaluateSpecOutput>, ErrorData> {
+    ) -> Result<Json<EvaluateSpecOutput>, CallToolResult> {
         let out = ozpb_toolkit::evaluate_spec(&input).map_err(tool_err)?;
         Ok(Json(out))
     }
@@ -227,13 +250,13 @@ impl PolicyBuilderServer {
     async fn generate_code(
         &self,
         Parameters(input): Parameters<GenerateCodeInput>,
-    ) -> Result<Json<GenerateCodeOutput>, ErrorData> {
+    ) -> Result<Json<GenerateCodeOutput>, CallToolResult> {
         let build = self.build_config.clone();
         let out = tokio::task::spawn_blocking(move || {
             ozpb_toolkit::generate_code_with_build_config(&input, &build)
         })
         .await
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
+        .map_err(internal_tool_err)?
         .map_err(tool_err)?;
         Ok(Json(out))
     }
@@ -249,7 +272,7 @@ impl PolicyBuilderServer {
     async fn import_recording(
         &self,
         Parameters(input): Parameters<ImportRecordingInput>,
-    ) -> Result<Json<RecordOutput>, ErrorData> {
+    ) -> Result<Json<RecordOutput>, CallToolResult> {
         let bundle_json = serde_json::json!({
             "network_passphrase": input.network_passphrase,
             "envelope_xdr_base64": input.envelope_xdr_base64,
@@ -259,8 +282,12 @@ impl PolicyBuilderServer {
             "successful": input.successful,
         })
         .to_string();
-        let snapshot = import_json(&bundle_json)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let snapshot = import_json(&bundle_json).map_err(|error| {
+            tool_err(ToolError::new(
+                ozpb_api_types::ErrorCode::EImportParse,
+                error.to_string(),
+            ))
+        })?;
         let out =
             ozpb_toolkit::record_snapshot(&snapshot, RecordOptions::default()).map_err(tool_err)?;
         Ok(Json(out))
