@@ -27,6 +27,9 @@ the dry-run harness, the call-surface check and the install intent are second-mi
 deliverables, described in `architecture.md` §4.5–4.8. No command for them appears below,
 deliberately: an example that looks runnable and is not misleads worse than a sentence saying
 the stage is not part of this milestone.
+`evaluate_spec` stays available throughout as an optional pure check of the generated
+scope, and it returns `indeterminate` when an attached reviewed policy would make a
+whole-composition verdict unsafe to state.
 
 ### CLI
 
@@ -111,7 +114,8 @@ same-version equivocation after restart. The MCP server receives the same JSON t
 `docs/examples/` holds runnable inputs for the commands above, and
 `crates/toolkit/tests/examples_are_current.rs` fails if any of them drifts from what the code
 produces — so an example that no longer works is a red test, not a puzzled reader.
-`scripts/verify-phase1.sh` runs the first milestone's pipeline as a gate.
+`bash scripts/verify-phase1.sh` is the strict first-milestone release gate;
+`bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
 
 ### Demonstrating the Tranche-1 outcome
 
@@ -123,10 +127,10 @@ OZPB_ACCOUNT=C... bash scripts/demo-tranche1.sh   # reuse an existing OZ smart a
 Deploys OpenZeppelin's smart-account example, records what authorization a transfer from it
 would require, synthesizes a minimum-permission spec, generates the policy crate, and has the
 real `stellar contract build` accept it — the contractual outcome — then checks that source and
-wasm are byte-identical across two runs. Its last step runs the same synthesis against an
-account record whose `install_safe` verdict is false and requires a refusal, so the run evidences
-refusal-by-default as well as minimum permission. That refusal is the expected result there; the
-demo fails if the synthesis succeeds.
+wasm are byte-identical across two runs. The script derives its policy expiry from the latest
+testnet ledger and also exercises a deliberately incompatible account-hash input, which must be
+refused by registry resolution. Account recognition is generation compatibility, not a claim
+that installation on the live account is safe.
 
 Three things it makes explicit, because each one broke a demo attempt:
 
@@ -143,9 +147,9 @@ Three things it makes explicit, because each one broke a demo attempt:
 ### Verifying the pinned upstream trust anchors
 
 `ozpb_domain::pinned_upstream` holds the wasm hashes of three OpenZeppelin contracts — the
-spending-limit policy, the smart account, the ed25519 verifier. They are trust anchors: the
-capability registry recognizes an on-chain contract by matching its code hash against them and
-refuses anything else, so they are worth checking rather than trusting.
+spending-limit policy, the smart account, and the ed25519 verifier. The first two are Phase 1
+trust anchors. The verifier pin is retained for later work, but external-verifier signers are
+rejected in Phase 1 because a supplied verifier address is not yet bound to its observed Wasm.
 
 ```bash
 bash scripts/verify-pinned-upstream.sh    # clones the pinned tag, rebuilds, compares
@@ -236,11 +240,12 @@ the tests guide you (TDD: add the failing test first):
    `generate`. Regenerate goldens with `UPDATE_GOLDEN=1 cargo test -p ozpb-codegen golden`.
 4. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
    a `Widening`/adapter). Never let it in heuristically.
-5. **`contracts/`** — `differential/tests/differential.rs` drives the generated wasm through
-   the real `stellar-accounts` account and asserts that the reference evaluator and the
+5. **`contracts/`** — the Tranche 1 differential suite drives the generated policy contract
+   directly in the Soroban environment and asserts that the reference evaluator and the
    compiled policy agree on verdict *and* deny code. Add the permit case and the adjacent
    denial for the new constraint there; agreement is what makes step 2's semantics binding
-   rather than merely written down.
+   rather than merely written down. Full `stellar-accounts::__check_auth` integration
+   belongs to Tranche 2.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove

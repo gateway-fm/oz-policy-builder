@@ -788,7 +788,8 @@ pub mod fixtures {
                 },
                 valid_until: Some(ValidUntil {
                     ledger: LedgerSeq(4_223_456),
-                    approx_time: Some("2026-10-01T00:00:00Z".to_string()),
+                    // This is a deterministic fixture ledger, not a wall-clock prediction.
+                    approx_time: None,
                 }),
                 authorization: AuthorizationSpec {
                     kind: PredicateKind::AnyOf,

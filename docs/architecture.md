@@ -156,7 +156,7 @@ deterministic tools.
 ### 4.1 Recording layer (`crates/recorder`)
 
 **Purpose:** turn a transaction — executed, simulated, or imported — into a precise,
-replay-invariant **RecordingBundle** with a code-derived evidence trust level.
+replay-invariant **RecordingBundle** with an acquisition-derived evidence label.
 
 **Inputs (three paths, same output type):**
 
@@ -175,11 +175,13 @@ replay-invariant **RecordingBundle** with a code-derived evidence trust level.
   retention. Incomplete historical data is never silently substituted — missing evidence is
   reported as missing.
 
-**Evidence trust levels — derived by code from the acquisition path, never selectable by the
-caller.** Hashing a supplied bundle proves internal identity, not that the network accepted
-it in the claimed ledger. Every bundle carries a trust classification, propagated into every
-downstream report, with provenance recording backend identity, endpoint configuration
-identity, response digest, and observation time:
+**Evidence trust levels are acquisition provenance, not caller authority.** An acquisition
+adapter mints the label for the bundle it has just acquired. Once a bundle is serialized and
+submitted through the synthesis JSON boundary, the receiver cannot prove which adapter created
+it; it is therefore downgraded to `self_supplied` unless a future authenticated receipt or
+server-side recording ID proves its provenance. Hashing a supplied bundle proves internal
+identity, not that the network accepted it in the claimed ledger. Every bundle carries a trust
+classification for display and audit:
 
 | Level | Meaning |
 |---|---|
@@ -258,9 +260,9 @@ convert to USDC" flow) into one bundle with **canonical ordering and deduplicati
 so a permission bundle hashes deterministically; the PolicySpec maps each rule/tuple to the
 exact justifying invocation(s) (§4.2).
 
-**Stack:** `stellar-xdr` 27.x (`curr`, `base64`, `serde`), `stellar-rpc-client` 27.x,
-`stellar-strkey`. Works against any Soroban RPC endpoint (user-configurable; Gateway's public
-mainnet/testnet RPC is the default reference, never a requirement).
+**Stack:** `stellar-xdr` 27.x (`curr`, `base64`, `serde`), blocking `ureq`, and
+`stellar-strkey`. Works against any Soroban RPC endpoint approved by the local operator
+(Gateway's public mainnet/testnet RPC is the reference, never a requirement).
 
 ### 4.2 PolicySpec and the artifact chain
 
@@ -308,8 +310,7 @@ are referenced **by template family**, never by a wasm hash that doesn't exist y
   "smart_account": {                     // account compatibility record (§4.1, §4.10)
     "address": "C…",
     "observed_code_hash": "…",
-    "registry_resolution": "stellar-accounts@0.7.x (registry entry sha256:…)",
-    "install_safe": true
+    "registry_resolution": "stellar-accounts@0.7.x (registry entry sha256:…)"
   },
   "rules": [{
     "context": {
@@ -317,15 +318,12 @@ are referenced **by template family**, never by a wasm hash that doesn't exist y
       "target_code_hash": { "hash": "…", "role": "evidence_only",   // or "adapter_required"
                             "observed_ledger": 4100000, "on_drift": "warn" } // or "refuse"
     },
-    "valid_until": { "ledger": 4123456, "approx_time": "2026-10-01T00:00:00Z" },
+    "valid_until": { "ledger": 4123456 },
     "authorization": {                   // REQUIRED: the signer predicate for this grant
       "kind": "any_of",                  // any_of | all_of | threshold(n) | weighted(…)
                                          //   | any_of_current_rule_signers (dynamic, §4.3)
       "strict_signer_set": true,         // default & mandatory for named identities (§4.3)
-      "signers": [
-        { "type": "External", "verifier": "C…", "verifier_code_hash": "…",
-          "verifier_registry_entry": "sha256:…", "key": "…" }
-      ]
+      "signers": [ { "type": "Delegated", "address": "G…" } ]
     },
     "allowed_calls": [                   // disjunction of COMPLETE argument tuples
       { "fn": "claim",
@@ -345,7 +343,7 @@ are referenced **by template family**, never by a wasm hash that doesn't exist y
         "capability_schema": "sha256:…" }                  // its declared capability algebra
     ],
     "state": [                           // executable invariants, not intent labels (§4.4)
-      { "counter": "call_count", "scope": "lifetime", "storage": "persistent",
+      { "counter": "call_count_per_installation", "storage": "persistent",
         "missing_state": "deny", "init": "install_only", "capacity": 1 }
     ]
   }],
@@ -656,7 +654,7 @@ endpoint; API role + isolated sandbox-worker role, §3).
 | `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`) |
 | `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied`; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
 | `synthesize_policy` | pure | bundle(s) + user decisions → PolicySpec + per-constraint rationale + open questions |
-| `evaluate_spec` | pure | PolicySpec + candidate invocation → reference-evaluator verdict |
+| `evaluate_spec` | pure | PolicySpec + candidate invocation → reference-evaluator verdict for the generated scope; `indeterminate` if an attached reviewed policy is unmodelled |
 | `generate_code` | pure render + **sandboxed build** | PolicySpec → Rust source (pure) + reproducible wasm (resource-consuming compilation, isolated worker) + BuildManifest attestation |
 | `dry_run` | layered (see §4.5) | offline layers deterministic; live preflight = network read; any testnet deploy/submit mode = **mutating, explicitly gated** |
 | `verify` | mixed, reported separately | source reproduction · wasm reproduction · spec conformance · offline behavioral conformance (each deterministic) · current-network preflight (state-dependent) |
@@ -1034,7 +1032,7 @@ crates/
   domain            # shared vocabulary: hashes, network IDs, trust levels, provenance,
                     # canonical encoding; no I/O, no async, no framework deps
   recorder-core     # pure: EvidenceSnapshot → RecordingBundle (no I/O, no async traits)
-  source-rpc        # async acquisition adapter over stellar-rpc-client; produces
+  source-rpc        # blocking HTTP acquisition adapter over Soroban RPC; produces
                     # immutable, ledger-stamped EvidenceSnapshots
   source-bundle     # acquisition adapter for imported evidence bundles (pure)
   policy-spec       # PolicySpec schema, canonical serialization, validation (typestate)
@@ -1068,7 +1066,7 @@ the `cargo metadata` graph and fails on forbidden edges — most importantly
 **`evaluator` ↛ `codegen`/`templates`** (differential testing is worthless if the two sides
 share logic; this guarantee must be structural, not aspirational) and **core ↛ transport**.
 Ports & adapters, with a shape that keeps cores honestly pure: **acquisition adapters**
-(`source-rpc`, `source-bundle`, the call-surface scanner) do the async I/O and produce
+(`source-rpc`, `source-bundle`, the call-surface scanner) perform acquisition and produce
 immutable, ledger-stamped `EvidenceSnapshot` values; cores are then plain functions over
 snapshots — `recorder_core::record(snapshot)`,
 `call_surface_core::evaluate(snapshot, bindings)`. No async trait threads through a
@@ -1317,19 +1315,13 @@ router function, tuple cross-products.
 
 ## 8. Testing strategy
 
-**Methodology — test-driven development, across the whole solution.** Every component
-(recorder, synthesizer, evaluator, codegen, harness, MCP server, registries, wallet
-integration) is developed test-first: a failing test precedes the implementation that makes
-it pass, and no behavior ships without a test that demanded it. This is a natural fit here
-because most of the architecture's guarantees are *already stated as executable
-specifications* — the constraint-derived deny suites, the stateful fail-closed invariants
-(§4.4), the registry fail-closed behaviors, and the machine-readable error codes are written
-as red tests before the code that satisfies them, and the independently implemented
-reference evaluator acts as the executable specification for codegen (differential testing,
-§4.5). Every bug fix and review finding starts life as a failing regression test; CI gates
-merges on the full suite, including coverage of every declared error code and rejection
-path. The walkthrough fixtures serve as the acceptance layer written ahead of each phase's
-implementation.
+**Methodology — executable invariants and independent checks.** The architecture's security
+claims are represented by focused unit/property tests, generated boundary cases, differential
+comparison, mutation testing, and real-toolchain release gates. A regression test is required
+for each repaired defect. The reference evaluator is independently implemented and acts as a
+second opinion for the generated scope policy (§4.5); independence does not make either
+implementation correct by itself. CI coverage is stated per concrete gate and case, never as an
+unverifiable claim about development chronology or every possible rejection path.
 
 - **Synthesizer:** property-based tests over generated recordings (never emits a grant
   broader than observed + explicit widenings; every grant carries a signer predicate
@@ -1417,24 +1409,26 @@ root; allowlist-derived public repos; sentinel-file negative test in CI — §6.
 opened, pinned dependency matrix (OZ release, SDK, protocol, management return/event schemas)
 agreed.
 
-**Phase 1 — MVP (core pipeline, security model first; TDD throughout — §8).** Recorder
+**Phase 1 — MVP (core pipeline, security model first — §8).** Recorder
 (executed + simulated
 paths, meta v3/v4, all credential arms, authorizer selection, account recognition,
-code-derived evidence trust levels, raw-evidence bundles with dual hashing); PolicySpec v1
+acquisition-derived evidence labels (downgraded to `self_supplied` after an unauthenticated
+serialization boundary), raw-evidence bundles with dual hashing); PolicySpec v1
 with mandatory signer predicate (strict-set default), exact call-tuples, target-hash
 binding, multi-recording evidence maps, and provenance; **acyclic artifact chain**
 (RecordingBundle → PolicySpec → BuildManifest); **initial capability registries with
 governance roots pinned** (template-pack capability algebra + pinned OZ prebuilt hashes +
-pinned account hash + pinned verifier hashes) and the **generated-artifact attestation
+pinned account hash; external verifiers remain unsupported in this milestone) and the **generated-artifact attestation
 path**; **reference evaluator**; synthesizer v1 (exact-by-default, fail-closed,
 registry-validated); codegen for the first template set (signer predicate with strict-set
 check + tuple scope, immutable configuration, state invariants) + `spending_limit`
 composition; reproducible builds; MCP server v0 (`record_transaction`, `record_simulation`,
 `synthesize_policy`, `evaluate_spec`, `generate_code`) over stdio.
 *Verifiable outcome:* a recorded testnet transfer becomes a compilable Rust policy accepted
-by `stellar contract build`, byte-identical across two cold runs, whose wasm agrees with the
-reference evaluator on an initial constraint-derived suite — including zero-signer denial
-and strict-mode signer-mutation denial.
+by `stellar contract build`, byte-identical across two cold runs, whose generated policy
+contract agrees with the reference evaluator on an initial constraint-derived suite — including
+zero-signer denial and strict-mode signer-mutation denial. This is not a full smart-account
+`__check_auth` or installation-safety proof.
 
 **Phase 2 — Testnet (prove & integrate).** Full four-layer harness with constraint-derived
 deny generation, differential testing, committed-state `__check_auth` integration,
@@ -1485,7 +1479,8 @@ audit report + remediation log.
   to its justifying recorded invocation.
 - Workflow claims are either state-enforced or explicitly described as independent permissions.
 - Reports separate offline conformance, committed-state integration, and live preflight, and
-  carry code-derived evidence trust levels.
+  carry acquisition-derived evidence labels; serialized inputs are downgraded unless separately
+  authenticated.
 - Stateful limits satisfy the executable invariants: missing state denies, install-only
   initialization, archival/restoration and max-TTL handled, reinstall is a new grant,
   survival across inactivity, expiration changes, and failed transactions.

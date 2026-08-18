@@ -31,7 +31,17 @@ verified, and not claimed complete by this repository.
 - **Independent evaluator:** the reference evaluator shares no code with codegen; a CI
   check on the cargo dependency graph fails if that edge ever appears.
 - **Fail-closed:** unknown credentials, unknown policies, ambiguous observations, and
-  unregistered account/verifier hashes are machine-readable errors, never guesses.
+  unregistered account hashes are machine-readable errors, never guesses; external verifiers
+  are unsupported in this milestone.
+
+The Phase 1 assurance boundary is intentionally narrow. Serialized/imported recordings
+are treated as `self_supplied` when they cross the synthesis boundary; a caller cannot mint
+the stronger `rpc_reported` provenance label. External-verifier signers are rejected until
+their address can be bound to observed executable code. Account-hash recognition establishes
+generation compatibility only: this milestone does not claim that a generated policy is safe
+to install on a particular live account. The reference evaluator covers the generated scope
+policy; it does not return a whole-composition permit when an attached reviewed policy is not
+modelled.
 
 ## Workspace
 
@@ -40,7 +50,7 @@ crates/
   domain            pure shared vocabulary: hashes, newtypes, trust levels, provenance
   recorder-core     pure: EvidenceSnapshot -> RecordingBundle
   source-bundle     acquisition adapter for imported evidence bundles (pure)
-  source-rpc        async acquisition adapter over Soroban RPC
+  source-rpc        blocking HTTP acquisition adapter over Soroban RPC
   policy-spec       PolicySpec v1: schema, validation (typestate), canonical hashing
   synthesizer       pure: RecordingBundle(s) + user decisions -> PolicySpec
   evaluator         independent reference evaluator (never depends on codegen)
@@ -55,8 +65,9 @@ contracts/          separate cargo workspace: golden generated policy + soroban 
 scripts/            dependency-rule check, determinism check
 ```
 
-Development is **test-first** throughout: a failing test precedes the implementation that
-makes it pass, and every declared error code has a test that demands it.
+The security-critical cores have unit, property, differential, mutation, and real-toolchain
+gates. See `scripts/verify-phase1.sh` for the local/release distinction and `PROGRESS.md` for
+the evidence that has actually been run; test counts alone are not treated as assurance.
 
 ## License
 

@@ -26,8 +26,9 @@ in the proposal).
   transfer token movement — matching the on-chain event exactly.
 
 This upgrades the recorder from fixture-tested to **live-protocol-tested**, and confirms
-Gateway's RPC serves the reads the toolkit depends on (`getTransaction`, `getNetwork`,
-`getLatestLedger`).
+Gateway's RPC serves the reads the recorder path depends on (`getTransaction`, `getNetwork`,
+and `getLedgerEntries`). The live demo separately calls `getLatestLedger` to choose a future
+policy expiry; the recorder itself does not claim that call as acquisition evidence.
 
 > **This claim went stale the next day and was wrong for three weeks.** The commit after it
 > (`68bd40a`, 2026-07-22) added a `getLedgerEntries` call to observe target executables, and

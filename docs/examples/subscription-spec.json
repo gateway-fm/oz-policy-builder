@@ -22,7 +22,7 @@
       },
       "valid_until": {
         "ledger": 4223456,
-        "approx_time": "2026-10-01T00:00:00Z"
+        "approx_time": null
       },
       "authorization": {
         "kind": "any_of",
