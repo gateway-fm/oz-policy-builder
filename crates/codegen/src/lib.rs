@@ -1215,7 +1215,12 @@ mod tests {
         /// not contain (a dynamic predicate, which must hoist no constant at all) are caught
         /// here, alongside the proptest corpus.
         fn unbalanced_constants(source: &str) -> Vec<String> {
-            let declared: Vec<&str> = source
+            use std::collections::BTreeSet;
+            // A set because the reference direction below asks membership once per distinct
+            // token, and a maximal spec declares up to a constant per (call, argument) pair
+            // — about a thousand names for a linear scan to walk per lookup. Ordered, so
+            // the reported problems keep their deterministic order.
+            let declared: BTreeSet<&str> = source
                 .lines()
                 .filter_map(|line| line.strip_prefix("const "))
                 .filter_map(|rest| rest.split(':').next())
