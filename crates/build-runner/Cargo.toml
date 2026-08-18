@@ -14,6 +14,10 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
 wait-timeout = { workspace = true }
+# To decode the `contractmetav0` section of a built wasm, whose payload is XDR `SCMetaEntry` —
+# the toolchain's own statement of which tools produced the artifact, which the BuildManifest is
+# reconciled against. The same pinned version the rest of the workspace decodes XDR with.
+stellar-xdr = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

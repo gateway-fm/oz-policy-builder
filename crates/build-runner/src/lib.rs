@@ -11,6 +11,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use stellar_xdr::{Limited, Limits, ReadXdr, ScMetaEntry};
 use wait_timeout::ChildExt;
 
 pub const BUILD_MANIFEST_SCHEMA: &str = "build-manifest/v1";
@@ -25,6 +26,30 @@ pub struct BuildRequest<'a> {
     pub pins: &'a Pins,
 }
 
+/// What the builder asserts about the tools that produced the Wasm.
+///
+/// Every version here is also written *into* the Wasm by those tools, as SEP-46 `contractmetav0`
+/// entries: `rsver` and `rssdkver` by the SDK at compile time, `cliver` appended by
+/// `stellar contract build`. The platform's spellings are the more precise ones — they carry the
+/// build's git revision where ours carry a bare version — so this struct is a claim and not the
+/// record of last resort, and [`reconcile_declared_toolchain`] holds it to what the artifact says
+/// about itself before any of it is recorded.
+///
+/// **Replace this with the standard once there is a released one to replace it with.** In shape it
+/// is a private spelling of **SEP-55 — Contract Build Verification** (Draft, version 0.4.1,
+/// updated 2025-03-12): an assertion by the builder about how an artifact was produced. The
+/// rebuild route is **SEP-58 — Contract Build Reproducibility for Verification** (Draft, version
+/// 0.6.0, updated 2026-07-15), keyed on a required `source_sha256` over the bytes of a source
+/// archive with an optional `source_uri` — a vocabulary still moving, since those two replaced
+/// `source_repo`/`source_rev`/`tarball_url`/`tarball_sha256` in v0.4.0, and since on 16 July its
+/// author was still establishing whether `--meta` has to be passed at verification time. An
+/// implementation exists and no released `stellar-cli` carries it: `build --backend docker` and
+/// `contract build verify` come from the `feat/reproducible-builds-via-docker` branch of
+/// `stellar-cli#2525`. Our case is also outside what the SEP covers — a generated contract has no
+/// source archive at all — and that question is on our agenda for `stellar-protocol#1923`.
+///
+/// The signal to replace it, then, is not a date: **SEP-58 leaving Draft and its support shipping
+/// in a released `stellar-cli`.** Until both hold there is nothing to conform to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolchainIdentity {
@@ -32,6 +57,19 @@ pub struct ToolchainIdentity {
     pub stellar_cli_version: String,
     pub builder: String,
 }
+
+/// The `builder` each [`Builder`] stamps into the manifest it produces.
+///
+/// Constants rather than literals at the two sites, because the reconciliation in [`manifest_for`]
+/// keys its one exemption on [`BUILDER_STUB`]: a second spelling of that name is a second way for
+/// a real build to be exempted by accident. Both directions fail closed — a further real builder
+/// that stamps neither name is reconciled, and a renamed stub loses its exemption loudly.
+///
+/// Which is why the fixtures name them too. A test that spelled the exemption key out by hand would
+/// keep passing through a rename of the constant while production stopped agreeing with it, so the
+/// one guard against the exemption drifting would be the first thing to stop watching it.
+const BUILDER_LOCAL: &str = "local-unattested";
+const BUILDER_STUB: &str = "stub-hermetic";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -327,15 +365,23 @@ pub enum BuildError {
     Timeout,
     #[error("E_BUILD_RESOURCE_LIMIT: {0}")]
     ResourceLimit(String),
-    /// The builder could not be started or configured — an operator fault, not a property of
-    /// the generated crate. Kept separate from [`BuildError::Failed`] so it never reaches an
-    /// agent as "your spec does not compile".
+    /// The builder could not be started or configured, or the artifact it produced contradicts
+    /// the toolchain the manifest would attest to ([`reconcile_declared_toolchain`]) — an operator
+    /// fault, not a property of the generated crate. Kept separate from [`BuildError::Failed`] so
+    /// it never reaches an agent as "your spec does not compile": a build environment whose tools
+    /// are not the ones it reports is nothing the caller's spec can fix.
     #[error("E_BUILD_UNAVAILABLE: {0}")]
     Unavailable(String),
     #[error("internal: {0}")]
     Internal(String),
 }
 
+/// Bind a built artifact to the inputs that produced it.
+///
+/// This is the only place a toolchain claim becomes a record, so it is where the claim is checked:
+/// [`reconcile_declared_toolchain`] refuses the build when the Wasm's own SEP-46 metadata
+/// contradicts what `toolchain` asserts. [`Builder::Stub`] is exempt, and only because its
+/// placeholder Wasm is not a module and carries no metadata to reconcile against.
 pub fn manifest_for(
     request: &BuildRequest<'_>,
     wasm: &[u8],
@@ -364,6 +410,9 @@ pub fn manifest_for(
         .files
         .get("Cargo.lock")
         .ok_or_else(|| BuildError::Input("generated crate has no Cargo.lock".to_string()))?;
+    if toolchain.builder != BUILDER_STUB {
+        reconcile_declared_toolchain(&toolchain, &request.pins.soroban_sdk, wasm)?;
+    }
     Ok(BuildManifest {
         schema: BUILD_MANIFEST_SCHEMA.to_string(),
         spec_hash: request.spec_hash,
@@ -413,6 +462,272 @@ const BUILD_ARGS: &[&str] = &[
     "--quiet",
 ];
 
+// ---------------------------------------------------------------------------------------
+// Reconciling the manifest's toolchain claim against the artifact's own metadata
+// ---------------------------------------------------------------------------------------
+
+/// The Wasm custom section SEP-46 carries contract metadata in.
+///
+/// A build emits **two** of them rather than one extended section — the SDK writes `rsver` and
+/// `rssdkver` at compile time, then `stellar contract build` appends `cliver` — so every
+/// occurrence has to be read. A reader stopping at the first finds the compiler, never the CLI.
+const WASM_META_SECTION: &str = "contractmetav0";
+
+/// Wasm's fixed preamble: the magic `\0asm` and format version 1.
+const WASM_PREAMBLE: [u8; 8] = *b"\0asm\x01\0\0\0";
+
+/// Ceiling on the metadata entries read out of one Wasm. A bound on a length field that arrives
+/// from a subprocess's output, not a schema limit — real artifacts carry four.
+const MAX_WASM_META_ENTRIES: usize = 256;
+
+/// A LEB128-encoded `u32`, as the Wasm binary format writes section and name lengths, with the
+/// bytes it did not consume. Bounded at the five bytes a `u32` can need: unbounded, a padded
+/// encoding would be allowed to run to the end of the module.
+fn read_uleb128(bytes: &[u8]) -> Option<(usize, &[u8])> {
+    let mut value: u64 = 0;
+    for (index, byte) in bytes.iter().take(5).enumerate() {
+        value |= u64::from(byte & 0x7f) << (7 * index);
+        if byte & 0x80 == 0 {
+            let value = usize::try_from(u32::try_from(value).ok()?).ok()?;
+            return Some((value, bytes.get(index + 1..)?));
+        }
+    }
+    None
+}
+
+/// The SEP-46 metadata the toolchain wrote into `wasm`, as key -> value.
+///
+/// The section walk is hand-rolled rather than delegated to a Wasm parser: what is needed is a
+/// walk over section headers, and the payload is XDR this workspace already decodes with its
+/// pinned `stellar-xdr`. Every length is checked against the bytes actually remaining, so a
+/// truncated or malformed module is an error — the alternative is an empty map, and an empty map
+/// would make [`reconcile_declared_toolchain`] pass by finding nothing to disagree with.
+///
+/// A key that occurs twice is an error for the same reason, whether the two occurrences sit in one
+/// section or one each. Reading into a map would otherwise resolve them by last-wins, and last is
+/// a fact about this walk rather than about the wasm: a verifier walking the sections in another
+/// order would reconcile the other value and reach the opposite verdict about identical bytes. That
+/// is precisely the disagreement this check exists to surface, so it cannot be collapsed on the way
+/// in — including when the two values are equal, since deciding which duplicates are harmless is a
+/// judgement a gate should not be making about metadata it is here to distrust.
+fn wasm_contract_meta(wasm: &[u8]) -> Result<BTreeMap<String, String>, BuildError> {
+    let unreadable = |why: &str| {
+        BuildError::Unavailable(format!(
+            "the built wasm cannot be read for its {WASM_META_SECTION} metadata, so the \
+             manifest's toolchain claim cannot be checked against it: {why}"
+        ))
+    };
+    let mut rest = wasm
+        .strip_prefix(&WASM_PREAMBLE)
+        .ok_or_else(|| unreadable("it does not begin with the wasm magic and format version 1"))?;
+    let mut meta = BTreeMap::new();
+    while let Some((section_id, tail)) = rest.split_first() {
+        let (size, tail) =
+            read_uleb128(tail).ok_or_else(|| unreadable("unreadable section length"))?;
+        if size > tail.len() {
+            return Err(unreadable(
+                "a section claims more bytes than the module has",
+            ));
+        }
+        let (body, tail) = tail.split_at(size);
+        rest = tail;
+        // Only custom sections (id 0) carry a name; the rest cannot be this one.
+        if *section_id != 0 {
+            continue;
+        }
+        let (name_len, body) = read_uleb128(body)
+            .ok_or_else(|| unreadable("unreadable custom-section name length"))?;
+        if name_len > body.len() {
+            return Err(unreadable("a custom section's name overruns the section"));
+        }
+        let (name, payload) = body.split_at(name_len);
+        if name != WASM_META_SECTION.as_bytes() {
+            continue;
+        }
+        let limits = Limits {
+            // A `SCMetaEntry` is a union of one struct of two strings; nothing here recurses.
+            depth: 8,
+            len: payload.len(),
+        };
+        let mut reader = Limited::new(payload, limits);
+        for entry in ScMetaEntry::read_xdr_iter(&mut reader) {
+            if meta.len() >= MAX_WASM_META_ENTRIES {
+                return Err(unreadable(&format!(
+                    "more than {MAX_WASM_META_ENTRIES} metadata entries, which is this reader's \
+                     own ceiling — `MAX_WASM_META_ENTRIES` in `ozpb-build-runner` — on how much of \
+                     the builder's output it will accumulate, and not a limit the format places on \
+                     a contract. Raise it there if a legitimate artifact has outgrown it"
+                )));
+            }
+            match entry.map_err(|error| {
+                unreadable(&format!(
+                    "{WASM_META_SECTION} is not decodable XDR: {error}"
+                ))
+            })? {
+                ScMetaEntry::ScMetaV0(entry) => {
+                    let key = entry.key.to_utf8_string_lossy();
+                    let value = entry.val.to_utf8_string_lossy();
+                    if let Some(first) = meta.get(&key) {
+                        return Err(unreadable(&format!(
+                            "it states `{key}` twice, as {first:?} and as {value:?}. A key with \
+                             two occurrences has no one value, so which of them is reconciled \
+                             would be a property of this reader's walk order rather than of the \
+                             artifact — and a verifier walking the sections differently would \
+                             reach the opposite verdict about the same bytes"
+                        )));
+                    }
+                    meta.insert(key, value);
+                }
+            }
+        }
+    }
+    Ok(meta)
+}
+
+/// A tool's version and, where the value states one, the git revision it was built at.
+///
+/// Two spellings meet here and reduce to the same pair, which is what makes them comparable. A
+/// `--version` line leads with the program name and parenthesizes the revision
+/// (`stellar 27.0.0 (5a7c…)`); a `contractmetav0` value spells it `<version>#<revision>`
+/// (`cliver: 27.0.0#5a7c…`) or as a bare version (`rsver: 1.91.1`).
+#[derive(Debug, PartialEq, Eq)]
+struct ToolIdentity<'a> {
+    version: &'a str,
+    revision: Option<&'a str>,
+}
+
+/// The identity inside a `--version` line, or inside a bare pinned version.
+///
+/// The version is the first token beginning with a digit, which skips the program name and is not
+/// confused by the parenthesized revision. Returns `None` when there is no such token at all,
+/// because a claim this cannot read is a claim that must not be compared and silently agreed with.
+fn declared_identity(value: &str) -> Option<ToolIdentity<'_>> {
+    let version = value
+        .split_whitespace()
+        .find(|token| token.starts_with(|first: char| first.is_ascii_digit()))?;
+    let revision = value
+        .split_once('(')
+        .and_then(|(_, after)| after.split_once(')'))
+        .and_then(|(inside, _)| inside.split_whitespace().next());
+    Some(ToolIdentity { version, revision })
+}
+
+fn metadata_identity(value: &str) -> ToolIdentity<'_> {
+    match value.split_once('#') {
+        Some((version, revision)) => ToolIdentity {
+            version,
+            revision: Some(revision),
+        },
+        None => ToolIdentity {
+            version: value,
+            revision: None,
+        },
+    }
+}
+
+/// One field of the manifest's toolchain claim, beside the `contractmetav0` key the toolchain
+/// writes the same fact under.
+struct ToolchainClaim<'a> {
+    /// Named as an operator reads it in the manifest JSON, so a divergence points at the line.
+    field: &'a str,
+    declared: &'a str,
+    key: &'a str,
+    /// Whether both spellings state the build's git revision at full length. Only `cliver` does:
+    /// `rustc --version` abbreviates its commit and `rsver` omits it entirely, and the SDK version
+    /// is a pin with no revision on our side at all. Recorded per claim rather than inferred from
+    /// the values, so a release that stopped printing its revision fails here instead of quietly
+    /// demoting the check to a version comparison.
+    revision_is_stated: bool,
+}
+
+/// Hold the manifest's toolchain claim to what the artifact says about itself.
+///
+/// The manifest asserts which tools produced the Wasm; those tools wrote the same facts into the
+/// Wasm. Where the two disagree the build is refused, naming the manifest field, the metadata
+/// key and both values — the operator has to be able to tell which side is wrong. Absent metadata
+/// is a refusal too: this exists precisely for the case of a claim with nothing behind it, so
+/// finding nothing must never read as agreement.
+fn reconcile_declared_toolchain(
+    toolchain: &ToolchainIdentity,
+    soroban_sdk_version: &str,
+    wasm: &[u8],
+) -> Result<(), BuildError> {
+    let meta = wasm_contract_meta(wasm)?;
+    for claim in [
+        ToolchainClaim {
+            field: "toolchain.rustc_version",
+            declared: &toolchain.rustc_version,
+            key: "rsver",
+            revision_is_stated: false,
+        },
+        ToolchainClaim {
+            field: "toolchain.stellar_cli_version",
+            declared: &toolchain.stellar_cli_version,
+            key: "cliver",
+            revision_is_stated: true,
+        },
+        ToolchainClaim {
+            field: "soroban_sdk_version",
+            declared: soroban_sdk_version,
+            key: "rssdkver",
+            revision_is_stated: false,
+        },
+    ] {
+        let contradiction = |what: &str, declared: &str, observed: &str| {
+            BuildError::Unavailable(format!(
+                "the built wasm contradicts the manifest: `{}` declares {what} {declared}, and \
+                 the wasm's own `{}` says {observed}. The artifact was not produced by the tools \
+                 the manifest attests to, so it must not be recorded as though it were.",
+                claim.field, claim.key
+            ))
+        };
+        let missing = |why: &str| {
+            BuildError::Unavailable(format!(
+                "the built wasm does not state {why}, so `{}` cannot be checked against the \
+                 artifact and would be recorded on the builder's word alone.",
+                claim.field
+            ))
+        };
+
+        let observed = meta
+            .get(claim.key)
+            .map(|value| metadata_identity(value))
+            .ok_or_else(|| missing(&format!("a `{}` in its {WASM_META_SECTION}", claim.key)))?;
+        let declared = declared_identity(claim.declared).ok_or_else(|| {
+            BuildError::Unavailable(format!(
+                "`{}` is {:?}, which states no version, so there is nothing to reconcile against \
+                 the wasm's `{}` of {}.",
+                claim.field, claim.declared, claim.key, observed.version
+            ))
+        })?;
+
+        if declared.version != observed.version {
+            return Err(contradiction("version", declared.version, observed.version));
+        }
+        if claim.revision_is_stated {
+            let (Some(declared_revision), Some(observed_revision)) =
+                (declared.revision, observed.revision)
+            else {
+                return Err(BuildError::Unavailable(format!(
+                    "the build's git revision is stated on only one side, so `{}` cannot be fully \
+                     checked: it gives {:?} and the wasm's `{}` gives {:?}. Both halves of a \
+                     `<version>#<revision>` are inside the hashed bytes, so agreement on the \
+                     version alone does not identify the build.",
+                    claim.field, declared.revision, claim.key, observed.revision
+                )));
+            };
+            if declared_revision != observed_revision {
+                return Err(contradiction(
+                    "revision",
+                    declared_revision,
+                    observed_revision,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build a generated crate into a manifest-bound artifact using the configured [`Builder`].
 /// Production and the end-to-end test use [`Builder::Local`]; hermetic tests use
 /// [`Builder::Stub`]. All non-test callers should route through here rather than calling
@@ -442,7 +757,7 @@ fn build_stub(request: &BuildRequest<'_>) -> Result<BuildArtifact, BuildError> {
     let toolchain = ToolchainIdentity {
         rustc_version: "stub".to_string(),
         stellar_cli_version: "stub".to_string(),
-        builder: "stub-hermetic".to_string(),
+        builder: BUILDER_STUB.to_string(),
     };
     let manifest = manifest_for(request, &wasm, toolchain)?;
     let manifest_hash = manifest.hash()?;
@@ -513,7 +828,17 @@ pub fn build_local(
             workspace.path(),
             VERSION_PROBE_TIMEOUT,
         )?,
-        builder: "local-unattested".to_string(),
+        // `local-unattested` names what this is, for the reason in this function's doc comment:
+        // a claim a consumer can check only by re-running our own CLI. The ecosystem's answers
+        // are SEP-55's attestation signed by the CI that performed the build, and SEP-58's
+        // rebuild against a digest-pinned image; either would replace this string with something
+        // a third party can verify without us. Both are Draft and the implementation is in no
+        // released `stellar-cli`, so the signal to replace it is SEP-58 leaving Draft with
+        // support in a release — see the note on `ToolchainIdentity` for the specifics.
+        //
+        // Meanwhile the versions beside it are not taken on trust: `manifest_for` reconciles
+        // them against the `contractmetav0` the toolchain wrote into the wasm.
+        builder: BUILDER_LOCAL.to_string(),
     };
     let manifest = manifest_for(request, &wasm, toolchain)?;
     let manifest_hash = manifest.hash()?;
@@ -920,10 +1245,14 @@ mod tests {
             template_family: "policy-templates/scope@1",
             pins: &pins,
         };
+        // The stub's builder name, because the wasm here is two placeholder byte strings and the
+        // subject is what the manifest hash binds. Under the real builder's name `manifest_for`
+        // reconciles the versions against the wasm's own metadata, which placeholders do not
+        // carry — `only_the_stub_builders_placeholder_wasm_is_exempt` asserts that boundary.
         let toolchain = ToolchainIdentity {
-            rustc_version: "rustc-test".to_string(),
-            stellar_cli_version: "stellar-test".to_string(),
-            builder: "local-unattested".to_string(),
+            rustc_version: "stub".to_string(),
+            stellar_cli_version: "stub".to_string(),
+            builder: BUILDER_STUB.to_string(),
         };
         let first = manifest_for(&request, b"wasm-a", toolchain.clone()).unwrap();
 
@@ -961,11 +1290,370 @@ mod tests {
                 ToolchainIdentity {
                     rustc_version: "rustc-test".to_string(),
                     stellar_cli_version: "stellar-test".to_string(),
-                    builder: "local-unattested".to_string(),
+                    builder: BUILDER_LOCAL.to_string(),
                 }
             ),
             Err(BuildError::Input(_))
         ));
+    }
+
+    // --- the manifest's toolchain claim, against the artifact's own metadata ---------------
+
+    /// The revisions the pinned releases were built at. Both are recorded elsewhere in the tree —
+    /// the CLI's in `nightly-live.yml`, read by `scripts/recorded-build-inputs.sh` — and repeated
+    /// here as fixture values, because what these tests need is two *distinguishable* revisions,
+    /// not the current pins.
+    const CLI_REVISION: &str = "5a7c5fe76530bf4248477ac812fc757146b98cc4";
+    const SDK_REVISION: &str = "175aa41306f383057a8cdfc84b68d931664fc34e";
+
+    /// Minimal LEB128, as the wasm binary format writes section and name lengths.
+    fn uleb128(mut value: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return out;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    /// An XDR `string<>`: a four-byte length, the bytes, then zero padding to a four-byte
+    /// boundary.
+    fn xdr_string(value: &str) -> Vec<u8> {
+        let mut out = (value.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(value.as_bytes());
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+        out
+    }
+
+    /// A wasm module carrying each group of `sections` as its own `contractmetav0` section.
+    ///
+    /// Encoded by hand rather than through the types the reader decodes with. Sharing an encoder
+    /// would make the two sides agree by construction: a reader that mis-parses the section would
+    /// be handed bytes mis-written the same way and pass regardless.
+    fn wasm_with_meta(sections: &[&[(&str, &str)]]) -> Vec<u8> {
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        for entries in sections {
+            let mut payload = Vec::new();
+            for (key, value) in *entries {
+                payload.extend_from_slice(&0u32.to_be_bytes()); // SC_META_V0
+                payload.extend(xdr_string(key));
+                payload.extend(xdr_string(value));
+            }
+            let mut body = uleb128("contractmetav0".len());
+            body.extend_from_slice(b"contractmetav0");
+            body.extend(payload);
+            wasm.push(0); // custom-section id
+            wasm.extend(uleb128(body.len()));
+            wasm.extend(body);
+        }
+        wasm
+    }
+
+    /// The metadata a real build writes, in the **two** sections it writes them in: `rsver` and
+    /// `rssdkver` by the SDK at compile time, `cliver` appended afterwards by
+    /// `stellar contract build`. Measured on the golden policy, which carries exactly this shape.
+    fn honest_wasm() -> Vec<u8> {
+        let sdk = format!("26.1.0#{SDK_REVISION}");
+        let cli = format!("27.0.0#{CLI_REVISION}");
+        wasm_with_meta(&[
+            &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
+            &[("cliver", &cli)],
+        ])
+    }
+
+    /// What a build on the pinned toolchain probes for itself: whole `--version` lines, exactly
+    /// as `command_version` returns them, against the pinned `Pins::default().soroban_sdk`.
+    fn honest_toolchain() -> ToolchainIdentity {
+        ToolchainIdentity {
+            rustc_version: "rustc 1.91.1 (ed61e7d7e 2025-11-07)".to_string(),
+            stellar_cli_version: format!("stellar 27.0.0 ({CLI_REVISION})"),
+            builder: BUILDER_LOCAL.to_string(),
+        }
+    }
+
+    fn manifest_from(
+        wasm: &[u8],
+        toolchain: ToolchainIdentity,
+    ) -> Result<BuildManifest, BuildError> {
+        let pins = Pins::default();
+        let crate_files = generated("source");
+        let request = BuildRequest {
+            generated: &crate_files,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        manifest_for(&request, wasm, toolchain)
+    }
+
+    /// The control for every refusal below: a claim the artifact confirms is recorded.
+    ///
+    /// Without it, a reconciliation that refused every build would satisfy all of them.
+    #[test]
+    fn a_toolchain_claim_the_artifact_confirms_is_recorded() {
+        let manifest = manifest_from(&honest_wasm(), honest_toolchain())
+            .expect("metadata that agrees with the claim must still be recorded");
+        assert_eq!(manifest.toolchain, honest_toolchain());
+    }
+
+    /// `BuildManifest` asserts which tools produced the wasm — and the toolchain writes the same
+    /// facts *into* the wasm, as SEP-46 `contractmetav0` entries. So the assertion is checkable,
+    /// and an assertion that can be checked and is not is worth no more than the builder's word.
+    ///
+    /// The seam is `manifest_for`, because that is the only place a claim becomes a record: both
+    /// builders reach it and `build_local` has no other way to produce a `BuildArtifact`. A check
+    /// wired into `build_local` alone could be deleted with every test still green.
+    ///
+    /// Not a hypothetical divergence. `the_build_command_carries_no_inherited_compiler_selection`
+    /// below exists because `CARGO_BUILD_RUSTC` changes the compiler cargo invokes while leaving
+    /// the probe reporting the pinned one — that gate inspects the command before the build, this
+    /// one inspects the artifact after it.
+    #[test]
+    fn a_manifest_that_misstates_the_cli_that_built_the_wasm_is_refused() {
+        let mut claimed = honest_toolchain();
+        claimed.stellar_cli_version = format!("stellar 27.1.0 ({CLI_REVISION})");
+        let message = manifest_from(&honest_wasm(), claimed)
+            .expect_err(
+                "the wasm's cliver says 27.0.0 and the manifest claims 27.1.0; recording that \
+                 attests to a build that did not happen",
+            )
+            .to_string();
+        for expected in ["stellar_cli_version", "cliver", "27.1.0", "27.0.0"] {
+            assert!(
+                message.contains(expected),
+                "{expected:?} missing from {message:?}: a divergence has to name the field, the \
+                 metadata key and both values, or the operator cannot tell which side is wrong"
+            );
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_misstates_the_compiler_is_refused() {
+        let mut claimed = honest_toolchain();
+        claimed.rustc_version = "rustc 1.90.0 (0000000000 2025-01-01)".to_string();
+        let message = manifest_from(&honest_wasm(), claimed)
+            .expect_err("a compiler the wasm does not name must not be recorded")
+            .to_string();
+        for expected in ["rustc_version", "rsver", "1.90.0", "1.91.1"] {
+            assert!(
+                message.contains(expected),
+                "{expected:?} missing from {message:?}"
+            );
+        }
+    }
+
+    /// The SDK version is the one field with no probe behind it: it is copied from the pins the
+    /// crate was generated against, so the wasm is the only witness of what actually compiled in.
+    #[test]
+    fn a_wasm_built_against_a_different_sdk_than_the_pins_is_refused() {
+        let sdk = format!("26.0.0#{SDK_REVISION}");
+        let cli = format!("27.0.0#{CLI_REVISION}");
+        let disagrees = wasm_with_meta(&[
+            &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
+            &[("cliver", &cli)],
+        ]);
+        let message = manifest_from(&disagrees, honest_toolchain())
+            .expect_err("a wasm built against an unpinned SDK must not be recorded as pinned")
+            .to_string();
+        for expected in ["soroban_sdk_version", "rssdkver", "26.0.0", "26.1.0"] {
+            assert!(
+                message.contains(expected),
+                "{expected:?} missing from {message:?}"
+            );
+        }
+    }
+
+    /// The half of the platform's metadata ours does not have.
+    ///
+    /// `cliver` records `<version>#<revision>` and both halves land inside the hashed bytes, so a
+    /// CLI built from a fork, a branch or a dirty tree reports the same version, a different
+    /// revision, and produces a different wasm — `scripts/verify-pinned-upstream.sh` says as much
+    /// about reproducing an upstream hash. Comparing versions alone would wave it through,
+    /// which would leave this check weaker than the metadata it reads.
+    #[test]
+    fn a_cli_at_the_pinned_version_built_from_another_revision_is_refused() {
+        const OTHER: &str = "0123456789abcdef0123456789abcdef01234567";
+        let mut claimed = honest_toolchain();
+        claimed.stellar_cli_version = format!("stellar 27.0.0 ({OTHER})");
+        let message = manifest_from(&honest_wasm(), claimed)
+            .expect_err("same version, different build: the artifact is not the pinned one")
+            .to_string();
+        for expected in ["stellar_cli_version", "cliver", OTHER, CLI_REVISION] {
+            assert!(
+                message.contains(expected),
+                "{expected:?} missing from {message:?}"
+            );
+        }
+    }
+
+    /// A revision on one side only, in both directions.
+    ///
+    /// This is the shape a future release could take by simply printing less, and the tempting
+    /// response — compare the revision when both sides happen to state one — would silently demote
+    /// the check above to a version comparison on the day that happened. So it is a refusal: which
+    /// halves are compared is declared per claim, and a claim that cannot be met has to say so.
+    #[test]
+    fn a_revision_stated_on_only_one_side_is_refused_rather_than_skipped() {
+        let sdk = format!("26.1.0#{SDK_REVISION}");
+        let wasm_without_revision = wasm_with_meta(&[
+            &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
+            &[("cliver", "27.0.0")],
+        ]);
+        let message = manifest_from(&wasm_without_revision, honest_toolchain())
+            .expect_err("a cliver with no revision leaves the pinned build unidentified")
+            .to_string();
+        assert!(
+            message.contains("stellar_cli_version") && message.contains("cliver"),
+            "{message:?}"
+        );
+
+        let mut claimed = honest_toolchain();
+        claimed.stellar_cli_version = "stellar 27.0.0".to_string();
+        let message = manifest_from(&honest_wasm(), claimed)
+            .expect_err("a probe that reports no revision cannot confirm the wasm's")
+            .to_string();
+        assert!(
+            message.contains("stellar_cli_version") && message.contains("cliver"),
+            "{message:?}"
+        );
+    }
+
+    /// A reconciliation that passes when it finds nothing is not a reconciliation — it is the
+    /// original claim with a gate's name on it. Four ways the metadata can be missing, and none of
+    /// them may read as agreement.
+    #[test]
+    fn a_wasm_that_does_not_carry_the_metadata_cannot_be_attested() {
+        let rsver_only = wasm_with_meta(&[&[("rsver", "1.91.1")]]);
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("no metadata section at all", wasm_with_meta(&[])),
+            ("only what the SDK writes, no cliver", rsver_only),
+            ("not a wasm module", b"\0asm-ozpb-stub\0digest".to_vec()),
+            ("a truncated section", {
+                let mut truncated = honest_wasm();
+                truncated.truncate(truncated.len() - 8);
+                truncated
+            }),
+        ];
+        for (label, wasm) in cases {
+            assert!(
+                manifest_from(&wasm, honest_toolchain()).is_err(),
+                "{label}: a toolchain claim was recorded with nothing to check it against"
+            );
+        }
+    }
+
+    /// A key the wasm states twice is refused, not resolved.
+    ///
+    /// The whole point of the reconciliation is to catch a contradiction between the manifest and
+    /// the artifact, so a contradiction *inside* the artifact must not be quietly collapsed on the
+    /// way in. Reading the metadata into a map made that the default: the last occurrence won, and
+    /// which occurrence is last is a fact about the walk order, not about the wasm. Another
+    /// verifier walking the sections differently would read the other value and reach the opposite
+    /// verdict about the same bytes.
+    ///
+    /// Every case below is a wasm whose *later* occurrence is the one that agrees with the
+    /// manifest, which is exactly the shape last-wins waves through, plus one where both
+    /// occurrences agree — a repeated key has no one value even when the values match, and letting
+    /// that through would mean deciding, per key, which duplicates are harmless.
+    ///
+    /// The duplicates are written into the encoded section bytes by `wasm_with_meta`, not injected
+    /// into a decoded map, because what has to be caught is what a file can actually contain: a
+    /// build writes two `contractmetav0` sections, so the same key arriving twice needs no
+    /// tampering at all.
+    #[test]
+    fn a_key_the_wasm_states_twice_is_refused_rather_than_resolved_by_walk_order() {
+        let sdk = format!("26.1.0#{SDK_REVISION}");
+        let cli = format!("27.0.0#{CLI_REVISION}");
+        let cases: [(&str, Vec<u8>, [&str; 3]); 4] = [
+            (
+                "twice in one section, the agreeing value last",
+                wasm_with_meta(&[
+                    &[("rsver", "1.90.0"), ("rsver", "1.91.1"), ("rssdkver", &sdk)],
+                    &[("cliver", &cli)],
+                ]),
+                ["rsver", "1.90.0", "1.91.1"],
+            ),
+            (
+                "once per section, the agreeing value in the later one",
+                wasm_with_meta(&[
+                    &[("rsver", "1.90.0"), ("rssdkver", &sdk)],
+                    &[("cliver", &cli), ("rsver", "1.91.1")],
+                ]),
+                ["rsver", "1.90.0", "1.91.1"],
+            ),
+            (
+                "twice with the same value, which is still no single value",
+                wasm_with_meta(&[
+                    &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
+                    &[("cliver", &cli), ("rsver", "1.91.1")],
+                ]),
+                ["rsver", "1.91.1", "1.91.1"],
+            ),
+            (
+                "the agreeing value first, so last-wins reports the wrong fault",
+                wasm_with_meta(&[
+                    &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
+                    &[("cliver", &cli), ("rsver", "1.90.0")],
+                ]),
+                ["rsver", "1.91.1", "1.90.0"],
+            ),
+        ];
+        for (label, wasm, expected) in cases {
+            let message = manifest_from(&wasm, honest_toolchain())
+                .expect_err(&format!(
+                    "{label}: a wasm stating one key twice was attested against whichever \
+                     occurrence the walk happened to keep"
+                ))
+                .to_string();
+            assert!(
+                message.contains("twice"),
+                "{label}: {message:?} reports something other than the duplication, so an \
+                 operator is sent to reconcile a value the wasm does not state alone"
+            );
+            for named in expected {
+                assert!(
+                    message.contains(named),
+                    "{label}: {named:?} missing from {message:?}: the refusal has to name the \
+                     repeated key and both of the values it was given"
+                );
+            }
+        }
+    }
+
+    /// The stub builder is the single exemption, and it is exempt because its placeholder wasm is
+    /// not a wasm module and has no metadata to reconcile against — not because a build may skip
+    /// the check. The same bytes under the real builder's name must be refused, or the exemption
+    /// is a hole anything can be pushed through.
+    #[test]
+    fn only_the_stub_builders_placeholder_wasm_is_exempt() {
+        let pins = Pins::default();
+        let crate_files = generated("source");
+        let request = BuildRequest {
+            generated: &crate_files,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        let stub = build_stub(&request).expect("the hermetic stub must still build");
+        assert_eq!(stub.manifest.toolchain.builder, BUILDER_STUB);
+
+        let mut posing_as_real = stub.manifest.toolchain.clone();
+        posing_as_real.builder = BUILDER_LOCAL.to_string();
+        assert!(
+            manifest_for(&request, &stub.wasm, posing_as_real).is_err(),
+            "the stub's placeholder wasm was attested as a real build: the exemption is keyed on \
+             the builder name, so it must not survive that name changing"
+        );
     }
 
     #[test]

@@ -154,16 +154,34 @@ vocabulary to stay compatible with, not a finalized standard we are in breach of
 generated artifact carries no meta we wrote — no reference to the spec it came from — and we
 publish the SEP-58 fields nowhere at all, in that section or in any other venue the SEP allows:
 no `bldimg`, `bldarg`, `bldopt`, `source_sha256` or `source_uri`. What stands in its place is
-`BuildManifest`, an out-of-band record whose `ToolchainIdentity.rustc_version` duplicates
-`rsver`, `stellar_cli_version` duplicates `cliver`, and `soroban_sdk_version` duplicates
+`BuildManifest`, an out-of-band record whose `ToolchainIdentity.rustc_version` restates
+`rsver`, `stellar_cli_version` restates `cliver`, and `soroban_sdk_version` restates
 `rssdkver` — and the platform's variants are more precise than ours, since they include commits.
 In shape it is a **parallel invention of SEP-55**: an assertion by the builder about how the
-artifact was produced, which a consumer takes on the builder's word. The difference is that
-SEP-55's attestation is signed by the CI that performed the build and checkable against it,
-whereas `BuildManifest` is checkable only with our CLI — which the build runner already says out
-loud, stamping every real build `builder: "local-unattested"` (in `build_local`,
-`crates/build-runner/src/lib.rs:514`), with the reason in that function's doc comment
-(`:450-453`): "trust requires local reproduction or a separately trusted build attestation".
+artifact was produced. The difference is that SEP-55's attestation is signed by the CI that
+performed the build and checkable against it, whereas `BuildManifest` is checkable only with our
+CLI — which the build runner already says out loud, stamping every real build
+`builder: BUILDER_LOCAL`, whose value is `local-unattested` (stamped in `build_local`,
+`crates/build-runner/src/lib.rs:841`), with the reason in that function's doc comment (`:771-774`):
+"trust requires local reproduction or a separately trusted build attestation".
+
+Those three restatements are no longer taken on the builder's word, which is the one thing about
+them that was cheap to fix. `manifest_for` reads the built wasm's own `contractmetav0` and refuses
+the build when it contradicts the claim, naming the manifest field, the metadata key and both
+values (`reconcile_declared_toolchain`, same file). It compares the version for all three, and for
+`cliver` the git revision as well — that half is precisely what the platform's spelling has and
+ours does not, and a CLI built from a fork or a dirty tree reports the same version with a
+different revision and produces a different wasm. Absent metadata is a refusal too: a claim with
+nothing behind it is the case the check exists for, so finding nothing must not read as agreement.
+A key the wasm states twice is refused on the same principle from the other side — reading the
+entries into a map would resolve it by last-wins, and which occurrence is last is a fact about the
+reader's walk order, so a verifier walking the two sections differently would reconcile the other
+value and reach the opposite verdict about identical bytes. The stub builder is the single
+exemption, because its placeholder wasm is not a module and carries no metadata at all.
+
+What this does **not** do is make the manifest verifiable by a third party — that still needs
+SEP-55's signature or SEP-58's rebuild. It makes our own statement about the toolchain a checked
+one instead of an asserted one.
 
 **Verdict.** A gap, but more precisely: our artifacts are **readable** by standard tooling
 already (`stellar contract info meta` shows the SEP-46 keys the toolchain writes itself —
@@ -175,7 +193,7 @@ only be checked with our `BuildManifest` and our CLI.
 **Our reproducibility guarantee is weaker than the one SEP-58 assumes, and that is a gap rather
 than a different spelling of the same thing.** We pin rustc through `rust-toolchain.toml`, pin
 dependency versions, and build `--locked` (in `BUILD_ARGS`,
-`crates/build-runner/src/lib.rs:401-407`). SEP-58 pins the
+`crates/build-runner/src/lib.rs:457-463`). SEP-58 pins the
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
 hash reproduces on a sufficiently similar host and is not guaranteed off it.
@@ -191,9 +209,12 @@ which is what makes the dependency visible, but reproducibility still requires t
    `normalized_input_hash`, `template_family`, `registry_snapshot`. The artifact then describes
    what it was derived from self-sufficiently, in the SEP-46 section, read by standard
    `stellar contract info meta` — without our `BuildManifest`.
-2. Stop duplicating what the toolchain writes itself; in `BuildManifest`, either reference the
-   wasm metadata or reconcile against it and fail on divergence. Where `BuildManifest` asserts
-   what SEP-55 attests, follow SEP-55's shape rather than a private one.
+2. ~~Stop duplicating what the toolchain writes itself; in `BuildManifest`, either reference the
+   wasm metadata or reconcile against it and fail on divergence.~~ **Done** for the reconciling
+   half: the three restated versions are now checked against the wasm's `contractmetav0` and a
+   divergence refuses the build. The rest stands — where `BuildManifest` asserts what SEP-55
+   attests, follow SEP-55's shape rather than a private one, once there is a released
+   implementation to follow.
 3. Decide whether to build inside a digest-pinned container image and record it as SEP-58
    `bldimg` (with `bldarg`/`bldopt` for the invocation). This is the ecosystem's answer to
    reproducibility, and it is strictly stronger than pinning rustc and dependency versions.
@@ -464,7 +485,7 @@ more than the same name would anywhere else.
 | 1 | ~~Unify canonicalization on XDR~~ — **done.** `ScVal` built through `ScMap::sorted_from_entries` for ordering, explicit per-type rules, and a versioned preimage tagged with our own domains rather than the protocol's `HashIdPreimage`. Specified in `docs/CANONICAL-HASHING.md`, so an external implementation can reproduce a hash | 1 | breaking, done |
 | 2 | Extend the counter's TTL on read/write, each extension ≤ the current `max_ttl()` and no further than `valid_until` | 3 | operational |
 | 3 | Extend the TTL of the **contract instance and wasm code** separately, at the start of public functions | 3 | operational |
-| 4 | Emit `contractmeta!` with the artifact's provenance (`spec_hash` and the rest) into the SEP-46 section; stop duplicating `rsver`/`cliver`/`rssdkver`, and follow SEP-55's shape where `BuildManifest` asserts what SEP-55 attests | 2 | compatibility |
+| 4 | Emit `contractmeta!` with the artifact's provenance (`spec_hash` and the rest) into the SEP-46 section, and follow SEP-55's shape where `BuildManifest` asserts what SEP-55 attests. The restatement of `rsver`/`cliver`/`rssdkver` is no longer taken on trust — ~~reconcile against the wasm metadata and fail on divergence~~ **done** — but it is still a private shape | 2 | compatibility |
 | 5 | Run Scout and the Veridise checklist over the generated policies; a gate only after pinning the version, checking applicability, and defining a false-positive policy | 7 | security |
 | 6 | Apply to the Soroban Security Audit Bank | 7 | process |
 | 7 | TTL tests in the soroban environment, advancing the ledger number | 3 | tests |
