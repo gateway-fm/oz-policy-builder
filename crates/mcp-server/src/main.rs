@@ -439,8 +439,29 @@ async fn serve_http(
         .map_err(|_| anyhow::anyhow!("OZPB_RPC_ALLOWLIST is required for HTTP mode"))?;
     let rpc_policy = RpcEndpointPolicy::from_csv(&rpc_allowlist)?;
     let max_requests = parse_positive_env("OZPB_HTTP_REQUESTS_PER_MINUTE", 60)?;
-    let max_concurrency = parse_positive_env("OZPB_HTTP_MAX_CONCURRENCY", 4)?;
+    // Builds are CPU- and memory-heavy. The request semaphore and Cargo's worker count form one
+    // resource budget; validating their product prevents four simultaneous requests from each
+    // starting an almost-machine-wide compile. Operators can trade request concurrency for
+    // per-build parallelism explicitly.
+    let max_concurrency = parse_positive_env("OZPB_HTTP_MAX_CONCURRENCY", 1)?;
+    let available_cpus = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let build_workers = usize::try_from(build_config.jobs).unwrap_or(usize::MAX);
+    let requested_workers = usize::try_from(max_concurrency)
+        .unwrap_or(usize::MAX)
+        .checked_mul(build_workers)
+        .ok_or_else(|| anyhow::anyhow!("HTTP/build concurrency budget overflows"))?;
+    if requested_workers > available_cpus {
+        anyhow::bail!(
+            "OZPB_HTTP_MAX_CONCURRENCY ({max_concurrency}) × OZPB_BUILD_JOBS ({build_workers}) \
+             exceeds available parallelism ({available_cpus})"
+        );
+    }
     let max_body_bytes = parse_positive_env("OZPB_HTTP_MAX_BODY_BYTES", 1_048_576)? as usize;
+    if max_body_bytes > 24 * 1024 * 1024 {
+        anyhow::bail!("OZPB_HTTP_MAX_BODY_BYTES must not exceed 25165824");
+    }
     let security = HttpSecurity {
         bearer: Arc::from(bearer),
         requests: Arc::new(Mutex::new((Instant::now(), 0))),

@@ -1082,6 +1082,7 @@ fn build_command(
     target_dir: &Path,
 ) -> Command {
     let mut command = Command::new(&config.stellar_binary);
+    sanitize_build_environment(&mut command);
     command
         .args(BUILD_ARGS)
         .arg("--manifest-path")
@@ -1171,6 +1172,53 @@ fn clear_inherited_toolchain_selection(command: &mut Command) {
     }
 }
 
+/// Start builders and version probes with an allowlisted environment.
+///
+/// Generated Rust invokes third-party build scripts. Even with network access disabled, an
+/// inherited environment would expose CI tokens, cloud credentials, signing material, and every
+/// unrelated application secret to those processes. The allowlist contains only what rustup and
+/// Cargo need to locate the pinned tools/cache plus platform temporary/certificate settings. It
+/// deliberately excludes proxy variables and all compiler selectors.
+fn sanitize_build_environment(command: &mut Command) {
+    let original_home = std::env::var_os("HOME");
+    let cargo_home = std::env::var_os("CARGO_HOME").or_else(|| {
+        original_home
+            .as_ref()
+            .map(|home| Path::new(home).join(".cargo").into())
+    });
+    let rustup_home = std::env::var_os("RUSTUP_HOME").or_else(|| {
+        original_home
+            .as_ref()
+            .map(|home| Path::new(home).join(".rustup").into())
+    });
+
+    command.env_clear();
+    for name in [
+        "PATH",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "NIX_SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "SystemRoot",
+        "COMSPEC",
+        "ComSpec",
+        "PATHEXT",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    if let Some(value) = cargo_home {
+        command.env("CARGO_HOME", value);
+    }
+    if let Some(value) = rustup_home {
+        command.env("RUSTUP_HOME", value);
+    }
+}
+
 /// Probe a build tool's version, **from the directory the build itself runs in**.
 ///
 /// `from` is not optional, because getting it wrong makes the attestation lie. `rustc` is a
@@ -1182,6 +1230,7 @@ fn clear_inherited_toolchain_selection(command: &mut Command) {
 /// caller's working directory.
 fn command_version(binary: &Path, from: &Path, timeout: Duration) -> Result<String, BuildError> {
     let mut command = Command::new(binary);
+    sanitize_build_environment(&mut command);
     command
         .arg("--version")
         .current_dir(from)
@@ -1677,6 +1726,11 @@ mod tests {
                     include_str!("../../../contracts/golden-transfer-policy/src/lib.rs")
                         .to_string(),
                 ),
+                (
+                    "rust-toolchain.toml".to_string(),
+                    include_str!("../../../contracts/golden-transfer-policy/rust-toolchain.toml")
+                        .to_string(),
+                ),
             ]),
             normalized_input_hash: sha256(b"golden-normalized-input"),
         };
@@ -1982,11 +2036,9 @@ mod tests {
             &dir.path().join("target"),
         );
 
-        // `get_envs` reports a removal as `(name, None)`, so this asserts the removal itself
-        // rather than the absence of a value that may simply never have been set.
-        let removed: std::collections::BTreeSet<String> = command
+        let explicitly_carried: std::collections::BTreeSet<String> = command
             .get_envs()
-            .filter(|(_, value)| value.is_none())
+            .filter(|(_, value)| value.is_some())
             .map(|(name, _)| name.to_string_lossy().into_owned())
             .collect();
 
@@ -2009,11 +2061,44 @@ mod tests {
             "CARGO_BUILD_TARGET",
         ] {
             assert!(
-                removed.contains(name),
-                "the build command would inherit {name}, which can change the compiler or its \
-                 output while the version probe keeps reporting the pinned one"
+                !explicitly_carried.contains(name),
+                "the sanitized build command explicitly carries {name}, which can change the \
+                 compiler or its output while the version probe keeps reporting the pinned one"
             );
         }
+        for forbidden in [
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "OZPB_HTTP_BEARER_TOKEN",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+        ] {
+            assert!(
+                !command
+                    .get_envs()
+                    .any(|(name, value)| name == forbidden && value.is_some()),
+                "the sanitized build environment explicitly carries {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_builder_environment_does_not_expose_an_inherited_secret() {
+        let _guard = serialized();
+        const SECRET: &str = "OZPB_TEST_BUILD_SECRET";
+        let previous = std::env::var_os(SECRET);
+        std::env::set_var(SECRET, "must-not-reach-generated-code");
+        let mut command = Command::new("env");
+        sanitize_build_environment(&mut command);
+        let output = command.output().unwrap();
+        match previous {
+            Some(value) => std::env::set_var(SECRET, value),
+            None => std::env::remove_var(SECRET),
+        }
+        assert!(output.status.success());
+        let environment = String::from_utf8_lossy(&output.stdout);
+        assert!(!environment.contains(SECRET), "{environment}");
+        assert!(!environment.contains("must-not-reach-generated-code"));
     }
 
     /// The recorded `rustc` version must come from the compiler the build would use, not from
