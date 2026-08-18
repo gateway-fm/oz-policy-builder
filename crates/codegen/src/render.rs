@@ -31,7 +31,7 @@ use std::fmt;
 ///
 /// Deriving the layout keeps codegen a pure function of the spec — running rustfmt over the
 /// output instead would make the rustfmt version an input to every shipped wasm hash.
-const MAX_WIDTH: usize = 100;
+pub const MAX_WIDTH: usize = 100;
 const ARRAY_WIDTH: usize = 60;
 
 /// A Stellar strkey, proven decodable (checksum included) by `stellar_strkey`.

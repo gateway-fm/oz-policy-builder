@@ -1094,11 +1094,15 @@ mod tests {
 
         /// Lines of emitted code that rustfmt would have to reflow, as `(line, columns)`.
         ///
+        /// The width is read from `render::MAX_WIDTH`, the one emission derives its layout from.
+        /// A second copy of the number here would let the two drift, and the drift would show up
+        /// as a passing test over source `cargo fmt --check` rejects.
+        ///
         /// Comments are excluded: rustfmt does not rewrap them (`wrap_comments` is off by
         /// default), and the generated header quotes a template-family identifier that can
         /// legitimately carry a `//!` line past the width.
         fn overlong_code_lines(source: &str) -> Vec<(usize, usize)> {
-            const MAX_WIDTH: usize = 100;
+            use render::MAX_WIDTH;
             source
                 .lines()
                 .enumerate()
