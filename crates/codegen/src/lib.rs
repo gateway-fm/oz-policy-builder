@@ -1179,7 +1179,8 @@ mod tests {
         /// writes the declaration, `render::*_name` the reference — and a compiled-in constant's
         /// name and its emission condition were each, at one point, decided in two places. The
         /// shapes the committed crates contain are caught by a real compile; the shapes they do
-        /// not contain (an external signer, a dynamic predicate carrying one) are caught here.
+        /// not contain (a dynamic predicate, which must hoist no constant at all) are caught
+        /// here, alongside the proptest corpus.
         fn unbalanced_constants(source: &str) -> Vec<String> {
             let declared: Vec<&str> = source
                 .lines()
