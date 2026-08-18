@@ -16,8 +16,11 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
+# python3 is required in BOTH modes: the quoted-hash gate below runs unconditionally, so a
+# machine without it must hear that from this check, not from a raw command-not-found later.
+command -v python3 >/dev/null 2>&1 || { echo "this gate requires python3 in every mode" >&2; exit 1; }
 if [ "$MODE" = release ]; then
-    for tool in stellar cargo-deny cargo-mutants cargo-machete python3; do
+    for tool in stellar cargo-deny cargo-mutants cargo-machete; do
         command -v "$tool" >/dev/null 2>&1 || {
             echo "release gate requires $tool; use --offline only for the explicitly reduced gate" >&2
             exit 1
