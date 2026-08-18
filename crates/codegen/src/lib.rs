@@ -512,7 +512,8 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
                 // whatever the recorded `ScVal` encodes to.
                 RenderConstraint::EqScval(_) => {
                     out.push_str(&format!(
-                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &CALL_{ci}_ARG_{i}_XDR) {{\n        return false;\n    }}\n"
+                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &{}) {{\n        return false;\n    }}\n",
+                        render::arg_xdr_name(ci, i)
                     ));
                 }
                 // Handled before the match (arity-only); listed for exhaustiveness.
@@ -1095,7 +1096,49 @@ mod tests {
                          \n--- source ---\n{source}"
                     )));
                 }
+                let unbalanced = unbalanced_constants(source);
+                if !unbalanced.is_empty() {
+                    return Err(proptest::test_runner::TestCaseError::fail(format!(
+                        "compiled-in constants do not balance: {unbalanced:?}\
+                         \n--- source ---\n{source}"
+                    )));
+                }
             }
+        }
+
+        /// Constants the emitted source declares but never reads, and constants it reads but
+        /// never declares. Both are empty in a correct emission, and each failure mode is real:
+        /// the first is a dead-code warning in a shipped crate, the second does not compile.
+        ///
+        /// This exists because the two sides are produced by different code — `render_*_const`
+        /// writes the declaration, `render::*_name` the reference — and a compiled-in constant's
+        /// name and its emission condition were each, at one point, decided in two places. The
+        /// shapes the committed crates contain are caught by a real compile; the shapes they do
+        /// not contain (an external signer, a dynamic predicate carrying one) are caught here.
+        fn unbalanced_constants(source: &str) -> Vec<String> {
+            let declared: Vec<&str> = source
+                .lines()
+                .filter_map(|line| line.strip_prefix("const "))
+                .filter_map(|rest| rest.split(':').next())
+                .collect();
+            let mut problems = Vec::new();
+            for name in &declared {
+                // Once for the declaration; a read is any further occurrence.
+                if source.matches(*name).count() < 2 {
+                    problems.push(format!("`{name}` is declared and never read"));
+                }
+            }
+            // The generated names, wherever they appear. Anything matching that is not declared
+            // is a reference emission failed to back with a constant.
+            for token in source.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                let generated = token.starts_with("SIGNER_") || token.starts_with("CALL_");
+                if generated && !declared.contains(&token) {
+                    problems.push(format!("`{token}` is read and never declared"));
+                }
+            }
+            problems.sort();
+            problems.dedup();
+            problems
         }
 
         /// Lines of emitted code that rustfmt would have to reflow, as `(line, columns)`.
@@ -1191,6 +1234,13 @@ mod tests {
                 wide.is_empty(),
                 "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
             );
+            // This spec carries both kinds of hoisted constant, so it is where a declaration and
+            // a reference built by different code would show up as disagreeing.
+            let unbalanced = unbalanced_constants(&source);
+            assert!(
+                unbalanced.is_empty(),
+                "compiled-in constants do not balance: {unbalanced:?}\n{source}"
+            );
         }
 
         /// A dynamic predicate carrying an external signer emits neither the key constant nor
@@ -1241,6 +1291,10 @@ mod tests {
                      \n{source}"
                 );
             }
+            assert!(
+                unbalanced_constants(&source).is_empty(),
+                "no constant is declared or read in this shape:\n{source}"
+            );
             // What it reads instead.
             assert!(
                 source.contains("matched_count(&authenticated_signers, &context_rule.signers)"),
