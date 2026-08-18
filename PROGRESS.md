@@ -349,17 +349,18 @@ denial.
 - [x] `build-runner` — bounded local builds, `BuildManifest` attestation (22 tests, 2 of them
       `#[ignore]`d because they need the real Stellar toolchain)
 - [x] `contracts/` — golden policy compiles, and the differential suite agrees with the
-      reference evaluator on verdict and deny code (15 cases) plus a storage-rent suite over
+      reference evaluator on verdict and deny code (17 cases) plus a storage-rent suite over
       the generated policy's TTL behaviour (8 cases), both against the real compiled contract
       in a committed-state soroban env
 - [x] `api-types` + `toolkit` + `source-rpc` + `mcp-server` (stdio; the five tools §10 names
       for this phase, plus `import_recording`, so six served) + `cli`
-- [x] Phase 1 verification: `scripts/verify-phase1.sh` — all 7 gates pass
+- [x] Phase 1 verification: `scripts/verify-phase1.sh` — the strict release gate passes end
+      to end (and `--offline` names what it skipped)
 
-**Totals:** 252 tests (229 host + 23 in the contracts workspace) · 14 crates + contracts
+**Totals:** 298 tests (273 host + 25 in the contracts workspace) · 14 crates + contracts
 workspace. Counted by running the two suites `scripts/verify-phase1.sh` runs —
 `cargo test --workspace` and, in `contracts/`, `cargo test -p ozpb-differential` — which is
-also how to re-count them; the number here is what those commands reported on 2026-08-17 and
+also how to re-count them; the number here is what those commands reported on 2026-08-19 and
 moves whenever a test is added.
 
 ## The pipeline (all deterministic, all fail-closed)
@@ -394,7 +395,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
   with `No such file or directory` on a fresh checkout. The gate now cleans, asserts the
   artifact is gone before rebuilding, and compares.
 - **Differential agreement:** the reference evaluator and the real compiled policy agree
-  on verdict AND deny code across 15 adversarial cases.
+  on verdict AND deny code across 17 adversarial cases.
 - **MCP:** `initialize` + `tools/list` over stdio expose `record_transaction`,
   `record_simulation`, `import_recording`, `synthesize_policy`, `evaluate_spec` and
   `generate_code` — each with an output schema generated from the shared `api-types` DTOs.
