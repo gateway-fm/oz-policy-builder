@@ -2377,31 +2377,6 @@ pub mod fixtures {
         format!("{}", stellar_strkey::ed25519::PublicKey([7u8; 32]))
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn golden_strkeys_are_stable_fixture_inputs_not_self_referential_expectations() {
-            assert_eq!(
-                golden_account_strkey(),
-                "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
-            );
-            assert_eq!(
-                golden_token_strkey(),
-                "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ"
-            );
-            assert_eq!(
-                golden_merchant_strkey(),
-                "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC"
-            );
-            assert_eq!(
-                golden_delegate_strkey(),
-                "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
-            );
-        }
-    }
-
     pub fn golden_bundle() -> RecordingBundle {
         match record(&rec::executed_snapshot(), RecordOptions::default()) {
             Ok(mut bundle) => {
@@ -2472,6 +2447,31 @@ pub mod fixtures {
         match out.spec.validate() {
             Ok(v) => v,
             Err(e) => panic!("golden spec must validate: {e:?}"),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn golden_strkeys_are_stable_fixture_inputs_not_self_referential_expectations() {
+            assert_eq!(
+                golden_account_strkey(),
+                "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+            );
+            assert_eq!(
+                golden_token_strkey(),
+                "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ"
+            );
+            assert_eq!(
+                golden_merchant_strkey(),
+                "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC"
+            );
+            assert_eq!(
+                golden_delegate_strkey(),
+                "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
+            );
         }
     }
 }
