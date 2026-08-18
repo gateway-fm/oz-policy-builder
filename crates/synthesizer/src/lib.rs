@@ -414,28 +414,25 @@ pub fn synthesize(
             if transfer_count == allowed_calls.len() {
                 match input.spending_limit_capability {
                     Some(capability) => {
-                        if sl.period_ledgers == 0
-                            || sl.limit.parse::<i128>().map(|v| v <= 0).unwrap_or(true)
-                        {
-                            errors.push(SynthError::UnregisteredPolicy(
-                                "spending limit requires a positive limit and a nonzero \
-                                 period"
-                                    .to_string(),
-                            ));
+                        match validate_spending_limit_shape(sl, &allowed_calls, calls) {
+                            Ok(()) => {
+                                policies.push(PolicyRef::Reviewed {
+                                    kind: "oz:spending_limit".to_string(),
+                                    capability,
+                                    params: ReviewedParams::SpendingLimit {
+                                        limit: sl.limit.clone(),
+                                        period_ledgers: sl.period_ledgers,
+                                    },
+                                });
+                                rationale.push(format!(
+                                    "composed reviewed oz:spending_limit on {contract} \
+                                     (defense-in-depth cumulative cap over arg 2 of SEP-41 \
+                                     transfer; it does not constrain the recipient — the generated \
+                                     scope policy does)"
+                                ));
+                            }
+                            Err(reason) => errors.push(SynthError::InvalidDecision(reason)),
                         }
-                        policies.push(PolicyRef::Reviewed {
-                            kind: "oz:spending_limit".to_string(),
-                            capability,
-                            params: ReviewedParams::SpendingLimit {
-                                limit: sl.limit.clone(),
-                                period_ledgers: sl.period_ledgers,
-                            },
-                        });
-                        rationale.push(format!(
-                            "composed reviewed oz:spending_limit on {contract} \
-                             (defense-in-depth cadence cap; it does not constrain the \
-                             recipient — the generated scope policy does)"
-                        ));
                     }
                     None => errors.push(SynthError::UnregisteredPolicy(
                         "spending-limit composition requested but no reviewed \
@@ -466,7 +463,24 @@ pub fn synthesize(
         });
 
         let state = match decisions.max_calls {
-            Some(max_calls) => vec![StateSpec::CallCountPerInstallation { max_calls }],
+            Some(max_calls) => {
+                let largest_observed_sequence = calls
+                    .iter()
+                    .fold(BTreeMap::<usize, u32>::new(), |mut counts, call| {
+                        *counts.entry(call.recording_index).or_default() += 1;
+                        counts
+                    })
+                    .into_values()
+                    .max()
+                    .unwrap_or(0);
+                if max_calls < largest_observed_sequence {
+                    errors.push(SynthError::InvalidDecision(format!(
+                        "max_calls {max_calls} is below the {largest_observed_sequence} calls \
+                         observed for {contract} in one representative recording"
+                    )));
+                }
+                vec![StateSpec::CallCountPerInstallation { max_calls }]
+            }
             None => vec![],
         };
 
@@ -542,6 +556,108 @@ pub fn synthesize(
     }
 
     Ok(SynthesisOutput { spec, rationale })
+}
+
+/// Validate the exact semantic assumptions made by the pinned OZ spending-limit policy.
+///
+/// Calls within one recording (one transaction) are treated as a single representative sequence
+/// inside the rolling window and must fit cumulatively. Separate recordings are not added
+/// together: they carry no durable fact about their relative order or distance in ledgers, so
+/// treating them as one session would invent workflow semantics. At runtime the reviewed policy
+/// still enforces the configured cumulative window across every call.
+fn validate_spending_limit_shape(
+    choice: &SpendingLimitChoice,
+    allowed_calls: &[AllowedCall],
+    observed_calls: &[&Observed<'_>],
+) -> Result<(), String> {
+    let limit = choice.limit.parse::<i128>().map_err(|_| {
+        "spending limit must be the canonical decimal representation of an i128".to_string()
+    })?;
+    if limit <= 0 || choice.limit != limit.to_string() || choice.period_ledgers == 0 {
+        return Err(
+            "spending limit requires a canonical positive i128 limit and a nonzero period"
+                .to_string(),
+        );
+    }
+
+    for call in allowed_calls {
+        let amount = call.args.iter().find(|arg| arg.index == 2).ok_or_else(|| {
+            "oz:spending_limit requires SEP-41 transfer amount at argument 2".to_string()
+        })?;
+        match &amount.constraint {
+            Constraint::EqI128 { value } => {
+                let value = value.parse::<i128>().map_err(|_| {
+                    "transfer argument 2 must be constrained as a canonical i128".to_string()
+                })?;
+                if !(0..=limit).contains(&value) {
+                    return Err(format!(
+                        "exact transfer amount {value} is outside the spending-limit range \
+                         0..={limit}"
+                    ));
+                }
+            }
+            Constraint::LeI128 { max } => {
+                let max = max.parse::<i128>().map_err(|_| {
+                    "transfer argument 2 must be constrained as a canonical i128".to_string()
+                })?;
+                if max < 0 {
+                    return Err(
+                        "transfer amount upper bound admits no nonnegative amount".to_string()
+                    );
+                }
+            }
+            Constraint::GeI128 { min } => {
+                let min = min.parse::<i128>().map_err(|_| {
+                    "transfer argument 2 must be constrained as a canonical i128".to_string()
+                })?;
+                if min > limit {
+                    return Err(format!(
+                        "transfer amount lower bound {min} exceeds spending limit {limit}; the \
+                         composed policies would deny every matching amount"
+                    ));
+                }
+            }
+            Constraint::EqAddress { .. } | Constraint::EqScval { .. } | Constraint::AnyValue => {
+                return Err(
+                    "oz:spending_limit requires every transfer argument 2 to be constrained as \
+                     i128"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    let mut representative_totals = BTreeMap::<usize, i128>::new();
+    for call in observed_calls {
+        let Some(ArgSummary::I128(amount)) = call.args.get(2) else {
+            return Err(format!(
+                "observed {} argument 2 is not an i128 transfer amount",
+                call.fn_name
+            ));
+        };
+        if *amount < 0 || *amount > limit {
+            return Err(format!(
+                "observed transfer amount {amount} is outside the spending-limit range \
+                 0..={limit}"
+            ));
+        }
+        let total = representative_totals
+            .entry(call.recording_index)
+            .or_default();
+        *total = total.checked_add(*amount).ok_or_else(|| {
+            "representative transfer amounts overflow i128 when accumulated".to_string()
+        })?;
+    }
+    if let Some(total) = representative_totals
+        .into_values()
+        .find(|total| *total > limit)
+    {
+        return Err(format!(
+            "one representative transaction's transfer sequence totals {total}, above spending \
+             limit {limit}; calls in one recording necessarily share the rolling window"
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_target_code_hash(
@@ -1630,7 +1746,7 @@ mod tests {
         assert!(synthesize(&input(), &d)
             .unwrap_err()
             .iter()
-            .any(|e| matches!(e, SynthError::UnregisteredPolicy(_))));
+            .any(|e| matches!(e, SynthError::InvalidDecision(_))));
         // Non-positive limit must error.
         let mut d = decisions();
         d.spending_limit = Some(SpendingLimitChoice {
@@ -1640,7 +1756,105 @@ mod tests {
         assert!(synthesize(&input(), &d)
             .unwrap_err()
             .iter()
-            .any(|e| matches!(e, SynthError::UnregisteredPolicy(_))));
+            .any(|e| matches!(e, SynthError::InvalidDecision(_))));
+    }
+
+    #[test]
+    fn spending_limit_rejects_untyped_and_wildcard_amounts() {
+        let token = transfer_bundle().authorizations[0].root.call_contract();
+        let bundle = bundle_with_subs(
+            (
+                &token,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::Address(merchant_strkey()),
+                    ArgSummary::Address(merchant_strkey()),
+                ],
+            ),
+            vec![],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![bundle];
+        let errors = synthesize(&synthesis_input, &decisions()).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SynthError::InvalidDecision(message)
+                if message.contains("constrained as i128"))));
+
+        let mut user_decisions = decisions();
+        user_decisions.widenings = vec![Widening {
+            contract: token,
+            fn_name: "transfer".to_string(),
+            arg_index: 2,
+            bound: WideningBound::AnyValue,
+            intent: "caller chooses any amount".to_string(),
+            blast_radius: BlastRadius::High,
+        }];
+        let errors = synthesize(&input(), &user_decisions).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SynthError::InvalidDecision(message)
+                if message.contains("constrained as i128"))));
+    }
+
+    #[test]
+    fn spending_limit_covers_each_amount_and_the_representative_sequence() {
+        let mut too_small = decisions();
+        too_small.spending_limit = Some(SpendingLimitChoice {
+            limit: "499999999".to_string(),
+            period_ledgers: 120_960,
+        });
+        let errors = synthesize(&input(), &too_small).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SynthError::InvalidDecision(message)
+                if message.contains("outside the spending-limit range"))));
+
+        let token = transfer_bundle().authorizations[0].root.call_contract();
+        let transfer_args = || {
+            vec![
+                ArgSummary::Address(account_strkey()),
+                ArgSummary::Address(merchant_strkey()),
+                ArgSummary::I128(300_000_000),
+            ]
+        };
+        let bundle = bundle_with_subs(
+            (&token, "transfer", transfer_args()),
+            vec![(&token, "transfer", transfer_args())],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![bundle];
+        let errors = synthesize(&synthesis_input, &decisions()).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SynthError::InvalidDecision(message)
+                if message.contains("calls in one recording necessarily share"))));
+    }
+
+    #[test]
+    fn call_cap_cannot_be_below_a_representative_contract_sequence() {
+        let token = transfer_bundle().authorizations[0].root.call_contract();
+        let args = || {
+            vec![
+                ArgSummary::Address(account_strkey()),
+                ArgSummary::Address(merchant_strkey()),
+                ArgSummary::I128(100_000_000),
+            ]
+        };
+        let bundle = bundle_with_subs(
+            (&token, "transfer", args()),
+            vec![(&token, "transfer", args())],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![bundle];
+        let mut user_decisions = decisions();
+        user_decisions.max_calls = Some(1);
+        let errors = synthesize(&synthesis_input, &user_decisions).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SynthError::InvalidDecision(message)
+                if message.contains("below the 2 calls observed"))));
     }
 
     #[test]

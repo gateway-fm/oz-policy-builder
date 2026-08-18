@@ -468,6 +468,8 @@ pub enum SpecError {
     },
     #[error("E_SPEC_STATE: rule {rule}: {reason}")]
     State { rule: usize, reason: String },
+    #[error("E_SPEC_REVIEWED_POLICY: rule {rule}: {reason}")]
+    ReviewedPolicy { rule: usize, reason: String },
     #[error("E_SPEC_LIMITS: rule {0}: {1}")]
     Limits(usize, String),
     #[error("E_SPEC_LIMITS: {0}")]
@@ -550,6 +552,66 @@ impl PolicySpec {
                     rule: ri,
                     generated: generated_policies,
                 });
+            }
+            for policy in &rule.policies {
+                let PolicyRef::Reviewed { kind, params, .. } = policy else {
+                    continue;
+                };
+                match (kind.as_str(), params) {
+                    (
+                        "oz:spending_limit",
+                        ReviewedParams::SpendingLimit {
+                            limit,
+                            period_ledgers,
+                        },
+                    ) => {
+                        if !is_canonical_i128(limit)
+                            || limit
+                                .parse::<i128>()
+                                .map(|value| value <= 0)
+                                .unwrap_or(true)
+                            || *period_ledgers == 0
+                        {
+                            errors.push(SpecError::ReviewedPolicy {
+                                rule: ri,
+                                reason: "oz:spending_limit requires a canonical positive i128 \
+                                         limit and a nonzero period_ledgers"
+                                    .to_string(),
+                            });
+                        }
+                        for call in &rule.allowed_calls {
+                            let amount_is_i128 = call
+                                .args
+                                .iter()
+                                .find(|arg| arg.index == 2)
+                                .is_some_and(|arg| {
+                                    matches!(
+                                        arg.constraint,
+                                        Constraint::EqI128 { .. }
+                                            | Constraint::LeI128 { .. }
+                                            | Constraint::GeI128 { .. }
+                                    )
+                                });
+                            if call.fn_name != "transfer" || !amount_is_i128 {
+                                errors.push(SpecError::ReviewedPolicy {
+                                    rule: ri,
+                                    reason: format!(
+                                        "oz:spending_limit may cover only SEP-41 transfer \
+                                         tuples whose argument 2 is constrained as i128; got \
+                                         '{}'",
+                                        call.fn_name
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    _ => errors.push(SpecError::ReviewedPolicy {
+                        rule: ri,
+                        reason: format!(
+                            "reviewed kind '{kind}' does not match its supported parameter shape"
+                        ),
+                    }),
+                }
             }
             if rule.authorization.signers.len() > MAX_SIGNERS_PER_RULE {
                 errors.push(SpecError::Limits(
@@ -1087,6 +1149,35 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| matches!(e, SpecError::ArgIndexes(0, _))));
+    }
+
+    #[test]
+    fn spending_limit_requires_transfer_amount_at_argument_two() {
+        let mut spec = subscription_spec();
+        spec.rules[0].allowed_calls[0].args[2].constraint = Constraint::AnyValue;
+        spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+            intent: "let caller choose the value".to_string(),
+            blast_radius: ozpb_domain::BlastRadius::High,
+        };
+        let errors = spec.validate().unwrap_err();
+        assert!(errors.iter().any(
+            |error| matches!(error, SpecError::ReviewedPolicy { reason, .. }
+                if reason.contains("argument 2 is constrained as i128"))
+        ));
+
+        let mut spec = subscription_spec();
+        let PolicyRef::Reviewed { params, .. } = &mut spec.rules[0].policies[0] else {
+            panic!("fixture must carry its reviewed spending limit")
+        };
+        *params = ReviewedParams::SpendingLimit {
+            limit: "0500000000".to_string(),
+            period_ledgers: 0,
+        };
+        let errors = spec.validate().unwrap_err();
+        assert!(errors.iter().any(
+            |error| matches!(error, SpecError::ReviewedPolicy { reason, .. }
+                if reason.contains("canonical positive i128"))
+        ));
     }
 
     #[test]

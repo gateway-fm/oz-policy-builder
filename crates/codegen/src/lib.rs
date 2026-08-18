@@ -1167,8 +1167,8 @@ mod tests {
         /// rustfmt over codegen's output, which would put the rustfmt version among the inputs
         /// to every shipped wasm hash. The fmt gate adjudicates the two committed crates; this
         /// covers the shapes they do not contain, choosing the awkward ones deliberately: the
-        /// longest symbol Soroban accepts, an `ScVal` long enough to wrap, an external signer's
-        /// key, and more than one allowed call.
+        /// longest symbol Soroban accepts, an `ScVal` long enough to wrap, and more than one
+        /// allowed call.
         #[test]
         fn emitted_code_stays_inside_rustfmt_width() {
             let long_scval = Constraint::EqScval {
@@ -1180,6 +1180,8 @@ mod tests {
             let justified = vec!["recordings[0]/auth[0]/root".to_string()];
             let mut spec = golden_spec().spec().clone();
             let rule = &mut spec.rules[0];
+            rule.policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
             rule.allowed_calls = vec![
                 AllowedCall {
                     // The longest symbol Soroban accepts: the shape that used to decide how
@@ -1435,6 +1437,9 @@ mod tests {
         ));
 
         let mut bad_fn = base.spec().clone();
+        bad_fn.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
         bad_fn.rules[0].allowed_calls[0].fn_name = "not a symbol!".to_string();
         let bad_fn = bad_fn.validate().unwrap();
         assert!(matches!(
