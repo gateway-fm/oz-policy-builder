@@ -629,13 +629,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // (`fn_10_ok` is a column wider than `fn_9_ok`).
     //
     // A single allowed name needs no parens around the negation (clippy: unnecessary_parens).
-    let one_line = if fn_names.len() > 1 {
+    let if_line = if fn_names.len() > 1 {
         format!("        if !({}) {{", known_names.join(" || "))
     } else {
         format!("        if !{} {{", known_names.join(" || "))
     };
-    if one_line.chars().count() <= render::MAX_WIDTH {
-        out.push_str(&one_line);
+    if if_line.chars().count() <= render::MAX_WIDTH {
+        out.push_str(&if_line);
         out.push('\n');
     } else {
         out.push_str(&format!("        if !({}", known_names[0]));
