@@ -1832,6 +1832,12 @@ mod tests {
         for (label, calls, state) in cases {
             let mut spec = ozpb_synthesizer::fixtures::golden_spec().spec().clone();
             let rule = &mut spec.rules[0];
+            // These cases exercise generated-source compilation, not the semantics of the
+            // golden fixture's reviewed spending-limit composition. Keeping that policy while
+            // replacing the transfer tuple would make validation correctly reject the fixture
+            // before any boundary shape reached rustc.
+            rule.policies
+                .retain(|policy| matches!(policy, ozpb_policy_spec::PolicyRef::Generated { .. }));
             rule.allowed_calls = calls;
             rule.state = state;
             let spec = spec
