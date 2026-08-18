@@ -16,7 +16,7 @@ use ozpb_api_types::{
 use ozpb_codegen::{generate, Pins};
 use ozpb_domain::Hash32;
 use ozpb_evaluator::{evaluate, EvalContext, Invocation, Verdict};
-use ozpb_policy_spec::{PolicyRef, PolicySpec, SignerSpec};
+use ozpb_policy_spec::{PolicyRef, PolicySpec};
 use ozpb_recorder_core::{record, EvidenceSnapshot, RecordOptions, RecordingBundle};
 use ozpb_registry::{Registry, RegistryCheckpoint, RegistryError, RootPolicy, SignedSnapshot};
 use ozpb_synthesizer::{synthesize, SynthesisInput, UserDecisions};
@@ -409,6 +409,7 @@ fn map_build_err(error: ozpb_build_runner::BuildError) -> ToolError {
 mod tests {
     use super::*;
     use crate::test_support::*;
+    use ozpb_policy_spec::SignerSpec;
     use ozpb_recorder_core::fixtures::executed_snapshot;
     use ozpb_registry::dev as registry_dev;
     use ozpb_synthesizer::fixtures as fx;
