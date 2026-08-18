@@ -11,7 +11,9 @@
 use ozpb_domain::{domains, Hash32, LedgerSeq, NetworkId, Provenance};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use stellar_xdr::{ScBytes, ScString, ScSymbol, ScVal, StringM};
+use stellar_xdr::{
+    Limits, ReadXdr, ScBytes, ScString, ScSymbol, ScVal, StringM, Validate, WriteXdr,
+};
 
 pub const SPEC_SCHEMA: &str = "policy-spec/v1";
 
@@ -25,6 +27,12 @@ pub const MAX_RULES: usize = 32;
 pub const MAX_CALLS_PER_RULE: usize = 32;
 pub const MAX_ARGS_PER_CALL: usize = 32;
 pub const MAX_EVIDENCE_RECORDINGS: usize = 256;
+/// One exact value should stay reviewable and comfortably below the 4 MiB canonical-preimage
+/// ceiling. The limit is over decoded XDR, not base64 text.
+pub const MAX_SCVAL_XDR_BYTES: usize = 64 * 1024;
+pub const MAX_JUSTIFICATIONS_PER_CALL: usize = 256;
+pub const MAX_EXTERNAL_KEY_BYTES: usize = 256;
+const MAX_SHORT_METADATA_BYTES: usize = 256;
 
 // ---------------------------------------------------------------------------------------
 // Schema types. Every struct is a closed schema (`deny_unknown_fields`); every map is a
@@ -457,6 +465,57 @@ pub enum SpecError {
     #[error("E_SPEC_EXTERNAL_KEY: rule {rule}, signer {signer}: key_hex is not valid hex")]
     ExternalKey { rule: usize, signer: usize },
     #[error(
+        "E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED: rule {rule}, signer {signer}: Phase 1 cannot bind \
+         verifier_code_hash to the verifier address, so external signers are rejected"
+    )]
+    ExternalSignerUnsupported { rule: usize, signer: usize },
+    #[error("E_SPEC_ADDRESS: {field} is not a valid {expected} strkey: {value}")]
+    Address {
+        field: String,
+        expected: &'static str,
+        value: String,
+    },
+    #[error("E_SPEC_SYMBOL: {field} must be 1..=32 bytes of [A-Za-z0-9_]: {value}")]
+    Symbol { field: String, value: String },
+    #[error("E_SPEC_TEMPLATE_FAMILY: rule {rule}: invalid template_family: {value}")]
+    TemplateFamily { rule: usize, value: String },
+    #[error("E_SPEC_SCVAL: rule {rule}, call '{call}', arg {arg}: {reason}")]
+    Scval {
+        rule: usize,
+        call: String,
+        arg: u32,
+        reason: String,
+    },
+    #[error("E_SPEC_TEXT: {field}: {reason}")]
+    Text { field: String, reason: String },
+    #[error(
+        "E_SPEC_DUPLICATE_CALL: rule {rule}: calls {first} and {duplicate} grant the same tuple"
+    )]
+    DuplicateCall {
+        rule: usize,
+        first: usize,
+        duplicate: usize,
+    },
+    #[error("E_SPEC_DUPLICATE_EVIDENCE: recordings {first} and {duplicate} have the same hash")]
+    DuplicateEvidence { first: usize, duplicate: usize },
+    #[error(
+        "E_SPEC_EVIDENCE_REF: rule {rule}, call '{call}': invalid evidence reference {value:?}"
+    )]
+    EvidenceReference {
+        rule: usize,
+        call: String,
+        value: String,
+    },
+    #[error(
+        "E_SPEC_EXPIRY: rule {rule}: valid_until {valid_until} must be greater than evidence \
+         ledger {evidence_ledger}"
+    )]
+    ExpiryNotAfterEvidence {
+        rule: usize,
+        valid_until: u32,
+        evidence_ledger: u32,
+    },
+    #[error(
         "E_SPEC_I128: rule {rule}, call '{call}', arg {arg}: value '{value}' must be the \
          canonical decimal representation of an i128"
     )]
@@ -519,7 +578,56 @@ impl PolicySpec {
                 self.evidence.recordings.len()
             )));
         }
+        let mut evidence_hashes: BTreeMap<Hash32, usize> = BTreeMap::new();
+        for (index, recording) in self.evidence.recordings.iter().enumerate() {
+            if let Some(first) = evidence_hashes.insert(recording.hash, index) {
+                errors.push(SpecError::DuplicateEvidence {
+                    first,
+                    duplicate: index,
+                });
+            }
+        }
+        validate_text(
+            &self.smart_account.registry_resolution,
+            MAX_SHORT_METADATA_BYTES,
+            "smart_account.registry_resolution",
+            &mut errors,
+        );
+        validate_address(
+            &self.smart_account.address,
+            AddressExpectation::Contract,
+            "smart_account.address",
+            &mut errors,
+        );
         for (ri, rule) in self.rules.iter().enumerate() {
+            validate_address(
+                &rule.context.contract,
+                AddressExpectation::Contract,
+                &format!("rules[{ri}].context.contract"),
+                &mut errors,
+            );
+            if let (Some(valid_until), Some(target)) = (
+                rule.valid_until.as_ref(),
+                rule.context.target_code_hash.as_ref(),
+            ) {
+                if valid_until.ledger.0 <= target.observed_ledger.0 {
+                    errors.push(SpecError::ExpiryNotAfterEvidence {
+                        rule: ri,
+                        valid_until: valid_until.ledger.0,
+                        evidence_ledger: target.observed_ledger.0,
+                    });
+                }
+            }
+            if let Some(valid_until) = &rule.valid_until {
+                if let Some(approx_time) = &valid_until.approx_time {
+                    validate_text(
+                        approx_time,
+                        MAX_SHORT_METADATA_BYTES,
+                        &format!("rules[{ri}].valid_until.approx_time"),
+                        &mut errors,
+                    );
+                }
+            }
             if rule.allowed_calls.is_empty() {
                 errors.push(SpecError::NoCalls(ri));
             }
@@ -626,15 +734,34 @@ impl PolicySpec {
 
             let mut signer_identities: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
             for (si, signer) in rule.authorization.signers.iter().enumerate() {
-                if matches!(signer, SignerSpec::External { .. }) {
-                    // `stellar-accounts` stores only the verifier address and key. The Phase 1
-                    // spec also names a verifier Wasm hash, but neither the generated policy nor
-                    // the account binds that hash to the address at authorization time. Reject
-                    // the shape until a later, verified installation/binding layer can prove it.
-                    errors.push(SpecError::ExternalSignerUnsupported {
-                        rule: ri,
-                        signer: si,
-                    });
+                match signer {
+                    SignerSpec::Delegated { address } => validate_address(
+                        address,
+                        AddressExpectation::SorobanAddress,
+                        &format!("rules[{ri}].authorization.signers[{si}].address"),
+                        &mut errors,
+                    ),
+                    SignerSpec::External {
+                        verifier, key_hex, ..
+                    } => {
+                        validate_address(
+                            verifier,
+                            AddressExpectation::Contract,
+                            &format!("rules[{ri}].authorization.signers[{si}].verifier"),
+                            &mut errors,
+                        );
+                        match hex::decode(key_hex) {
+                            Ok(key) if !key.is_empty() && key.len() <= MAX_EXTERNAL_KEY_BYTES => {}
+                            _ => errors.push(SpecError::ExternalKey {
+                                rule: ri,
+                                signer: si,
+                            }),
+                        }
+                        errors.push(SpecError::ExternalSignerUnsupported {
+                            rule: ri,
+                            signer: si,
+                        });
+                    }
                 }
                 let identity = match logical_signer_identity(signer) {
                     Ok(identity) => identity,
@@ -696,6 +823,12 @@ impl PolicySpec {
             }
 
             for call in &rule.allowed_calls {
+                if !symbol_is_valid(&call.fn_name) {
+                    errors.push(SpecError::Symbol {
+                        field: format!("rules[{ri}].allowed_calls.fn"),
+                        value: call.fn_name.clone(),
+                    });
+                }
                 if call.args.len() > MAX_ARGS_PER_CALL {
                     errors.push(SpecError::Limits(
                         ri,
@@ -732,6 +865,36 @@ impl PolicySpec {
                             });
                         }
                     }
+                    match &arg.constraint {
+                        Constraint::EqAddress {
+                            value: AddressRef::Address(address),
+                        } => validate_address(
+                            address,
+                            AddressExpectation::SorobanAddress,
+                            &format!(
+                                "rules[{ri}].allowed_calls[{}].args[{}].address",
+                                call.fn_name, arg.index
+                            ),
+                            &mut errors,
+                        ),
+                        Constraint::EqScval { xdr_base64 } => {
+                            if let Err(reason) = validate_canonical_scval(xdr_base64) {
+                                errors.push(SpecError::Scval {
+                                    rule: ri,
+                                    call: call.fn_name.clone(),
+                                    arg: arg.index,
+                                    reason,
+                                });
+                            }
+                        }
+                        Constraint::EqAddress {
+                            value: AddressRef::SelfAccount(_),
+                        }
+                        | Constraint::EqI128 { .. }
+                        | Constraint::LeI128 { .. }
+                        | Constraint::GeI128 { .. }
+                        | Constraint::AnyValue => {}
+                    }
                     if arg.constraint.is_widening()
                         && matches!(arg.provenance, Provenance::ObservedExact)
                     {
@@ -741,9 +904,115 @@ impl PolicySpec {
                             arg.index,
                         ));
                     }
+                    match &arg.provenance {
+                        Provenance::ObservedExact => {}
+                        Provenance::UserWidened { intent, .. } => validate_text(
+                            intent,
+                            MAX_SHORT_METADATA_BYTES,
+                            &format!(
+                                "rules[{ri}].allowed_calls[{}].args[{}].prov.intent",
+                                call.fn_name, arg.index
+                            ),
+                            &mut errors,
+                        ),
+                        Provenance::AdapterDerived { adapter, .. } => validate_text(
+                            adapter,
+                            MAX_SHORT_METADATA_BYTES,
+                            &format!(
+                                "rules[{ri}].allowed_calls[{}].args[{}].prov.adapter",
+                                call.fn_name, arg.index
+                            ),
+                            &mut errors,
+                        ),
+                    }
                 }
                 if call.justified_by.is_empty() {
                     errors.push(SpecError::Unjustified(ri, call.fn_name.clone()));
+                }
+                if call.justified_by.len() > MAX_JUSTIFICATIONS_PER_CALL {
+                    errors.push(SpecError::Limits(
+                        ri,
+                        format!(
+                            "call '{}' has {} justifications > max {MAX_JUSTIFICATIONS_PER_CALL}",
+                            call.fn_name,
+                            call.justified_by.len()
+                        ),
+                    ));
+                }
+                for reference in &call.justified_by {
+                    if reference.len() > MAX_SHORT_METADATA_BYTES
+                        || !evidence_reference_is_valid(reference, self.evidence.recordings.len())
+                    {
+                        errors.push(SpecError::EvidenceReference {
+                            rule: ri,
+                            call: call.fn_name.clone(),
+                            value: reference.clone(),
+                        });
+                    }
+                }
+            }
+            for duplicate in 1..rule.allowed_calls.len() {
+                if let Some(first) = rule.allowed_calls[..duplicate]
+                    .iter()
+                    .position(|call| same_grant(call, &rule.allowed_calls[duplicate]))
+                {
+                    errors.push(SpecError::DuplicateCall {
+                        rule: ri,
+                        first,
+                        duplicate,
+                    });
+                }
+            }
+            for policy in &rule.policies {
+                match policy {
+                    PolicyRef::Generated {
+                        kind,
+                        template_family,
+                        ..
+                    } => {
+                        validate_text(
+                            kind,
+                            MAX_SHORT_METADATA_BYTES,
+                            &format!("rules[{ri}].policies.generated.kind"),
+                            &mut errors,
+                        );
+                        if !template_family_is_valid(template_family) {
+                            errors.push(SpecError::TemplateFamily {
+                                rule: ri,
+                                value: template_family.clone(),
+                            });
+                        }
+                    }
+                    PolicyRef::Reviewed { kind, params, .. } => {
+                        validate_text(
+                            kind,
+                            MAX_SHORT_METADATA_BYTES,
+                            &format!("rules[{ri}].policies.reviewed.kind"),
+                            &mut errors,
+                        );
+                        match params {
+                            ReviewedParams::SpendingLimit {
+                                limit,
+                                period_ledgers,
+                            } => {
+                                if !is_canonical_i128(limit) {
+                                    errors.push(SpecError::I128 {
+                                        rule: ri,
+                                        call: "reviewed:spending_limit".to_string(),
+                                        arg: 0,
+                                        value: limit.clone(),
+                                    });
+                                }
+                                if *period_ledgers == 0 {
+                                    errors.push(SpecError::Limits(
+                                        ri,
+                                        "spending-limit period_ledgers must be greater than zero"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -754,6 +1023,147 @@ impl PolicySpec {
         let hash = spec_hash(&self)?;
         Ok(ValidatedSpec { spec: self, hash })
     }
+}
+
+#[derive(Clone, Copy)]
+enum AddressExpectation {
+    Contract,
+    SorobanAddress,
+}
+
+fn validate_address(
+    value: &str,
+    expectation: AddressExpectation,
+    field: &str,
+    errors: &mut Vec<SpecError>,
+) {
+    let parsed = stellar_strkey::Strkey::from_string(value);
+    let valid = matches!(
+        (expectation, parsed),
+        (
+            AddressExpectation::Contract,
+            Ok(stellar_strkey::Strkey::Contract(_))
+        ) | (
+            AddressExpectation::SorobanAddress,
+            Ok(stellar_strkey::Strkey::Contract(_) | stellar_strkey::Strkey::PublicKeyEd25519(_)),
+        )
+    );
+    if !valid {
+        errors.push(SpecError::Address {
+            field: field.to_string(),
+            expected: match expectation {
+                AddressExpectation::Contract => "contract (C...) address",
+                AddressExpectation::SorobanAddress => "contract (C...) or account (G...) address",
+            },
+            value: value.to_string(),
+        });
+    }
+}
+
+fn symbol_is_valid(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn template_family_is_valid(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'@'))
+}
+
+fn validate_text(value: &str, max: usize, field: &str, errors: &mut Vec<SpecError>) {
+    let reason = if value.is_empty() {
+        Some("must not be empty".to_string())
+    } else if value.len() > max {
+        Some(format!("{} bytes > max {max}", value.len()))
+    } else if value.chars().any(char::is_control) {
+        Some("must not contain control characters".to_string())
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        errors.push(SpecError::Text {
+            field: field.to_string(),
+            reason,
+        });
+    }
+}
+
+fn validate_canonical_scval(value: &str) -> Result<(), String> {
+    if value.len() > MAX_SCVAL_XDR_BYTES.div_ceil(3) * 4 {
+        return Err(format!(
+            "base64 text is too large for the {MAX_SCVAL_XDR_BYTES}-byte XDR limit"
+        ));
+    }
+    let limits = Limits {
+        depth: 64,
+        len: MAX_SCVAL_XDR_BYTES,
+    };
+    let scval = ScVal::from_xdr_base64(value, limits.clone())
+        .map_err(|error| format!("not a bounded ScVal XDR value: {error}"))?;
+    Validate::validate(&scval).map_err(|error| format!("invalid ScVal: {error}"))?;
+    let canonical = scval
+        .to_xdr_base64(limits)
+        .map_err(|error| format!("cannot re-encode ScVal: {error}"))?;
+    if canonical != value {
+        return Err("base64/XDR encoding is not canonical".to_string());
+    }
+    Ok(())
+}
+
+fn same_grant(left: &AllowedCall, right: &AllowedCall) -> bool {
+    if left.fn_name != right.fn_name || left.args.len() != right.args.len() {
+        return false;
+    }
+    let mut left_args: Vec<_> = left
+        .args
+        .iter()
+        .map(|arg| (arg.index, &arg.constraint))
+        .collect();
+    let mut right_args: Vec<_> = right
+        .args
+        .iter()
+        .map(|arg| (arg.index, &arg.constraint))
+        .collect();
+    left_args.sort_by_key(|(index, _)| *index);
+    right_args.sort_by_key(|(index, _)| *index);
+    left_args == right_args
+}
+
+fn evidence_reference_is_valid(value: &str, recording_count: usize) -> bool {
+    let Some(rest) = value.strip_prefix("recordings[") else {
+        return false;
+    };
+    let Some((recording, rest)) = rest.split_once(']') else {
+        return false;
+    };
+    let Ok(recording): Result<usize, _> = recording.parse() else {
+        return false;
+    };
+    if recording >= recording_count || !rest.starts_with("/auth[") {
+        return false;
+    }
+    let Some((auth, mut rest)) = rest[6..].split_once(']') else {
+        return false;
+    };
+    if auth.parse::<usize>().is_err() {
+        return false;
+    }
+    while let Some(after_prefix) = rest.strip_prefix("/sub[") {
+        let Some((sub, after)) = after_prefix.split_once(']') else {
+            return false;
+        };
+        if sub.parse::<usize>().is_err() {
+            return false;
+        }
+        rest = after;
+    }
+    rest.is_empty() || rest == "/root"
 }
 
 fn logical_signer_identity(signer: &SignerSpec) -> Result<Vec<u8>, ()> {
@@ -915,6 +1325,7 @@ pub mod fixtures {
 mod tests {
     use super::fixtures::subscription_spec;
     use super::*;
+    use stellar_xdr::{Limits, ScVal, WriteXdr};
 
     #[test]
     fn fixture_spec_validates() {
@@ -1331,6 +1742,191 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| matches!(e, SpecError::Unjustified(0, _))));
+    }
+
+    #[test]
+    fn all_address_and_symbol_surfaces_validate_before_codegen() {
+        let mut bad_account = subscription_spec();
+        bad_account.smart_account.address = fixtures::DELEGATE.to_string();
+        assert!(bad_account
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::Address { .. })));
+
+        let mut bad_target = subscription_spec();
+        bad_target.rules[0].context.contract = "CNOT-A-STRKEY".to_string();
+        assert!(bad_target
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::Address { .. })));
+
+        let mut bad_signer = subscription_spec();
+        bad_signer.rules[0].authorization.signers[0] = SignerSpec::Delegated {
+            address: "GNOT-A-STRKEY".to_string(),
+        };
+        assert!(bad_signer
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::Address { .. })));
+
+        let mut bad_arg = subscription_spec();
+        bad_arg.rules[0].allowed_calls[0].args[1].constraint = Constraint::EqAddress {
+            value: AddressRef::address("MALFORMED"),
+        };
+        assert!(bad_arg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::Address { .. })));
+
+        for bad in ["", "has-hyphen", "line\nbreak", &"a".repeat(33)] {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].fn_name = bad.to_string();
+            assert!(spec
+                .validate()
+                .unwrap_err()
+                .iter()
+                .any(|error| matches!(error, SpecError::Symbol { .. })));
+        }
+    }
+
+    #[test]
+    fn template_family_and_metadata_are_bounded_source_safe_text() {
+        for bad in [
+            "scope@1\n#![cfg(any())]".to_string(),
+            "scope with spaces".to_string(),
+            "a".repeat(65),
+        ] {
+            let mut spec = subscription_spec();
+            let PolicyRef::Generated {
+                template_family, ..
+            } = &mut spec.rules[0].policies[1]
+            else {
+                panic!("fixture generated policy");
+            };
+            *template_family = bad;
+            assert!(spec
+                .validate()
+                .unwrap_err()
+                .iter()
+                .any(|error| matches!(error, SpecError::TemplateFamily { .. })));
+        }
+
+        let mut spec = subscription_spec();
+        spec.smart_account.registry_resolution = "x".repeat(MAX_SHORT_METADATA_BYTES + 1);
+        assert!(spec
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::Text { .. })));
+    }
+
+    #[test]
+    fn eq_scval_requires_canonical_bounded_complete_xdr() {
+        let canonical = ScVal::U64(42).to_xdr_base64(Limits::none()).unwrap();
+        let mut valid = subscription_spec();
+        valid.rules[0].allowed_calls[0].args[2].constraint = Constraint::EqScval {
+            xdr_base64: canonical.clone(),
+        };
+        assert!(valid.validate().is_ok());
+
+        for bad in [
+            "not base64".to_string(),
+            // Valid base64, but only a truncated XDR discriminant.
+            "AAAA".to_string(),
+            format!("{canonical}\n"),
+            "A".repeat(MAX_SCVAL_XDR_BYTES.div_ceil(3) * 4 + 1),
+        ] {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].args[2].constraint =
+                Constraint::EqScval { xdr_base64: bad };
+            assert!(spec
+                .validate()
+                .unwrap_err()
+                .iter()
+                .any(|error| matches!(error, SpecError::Scval { .. })));
+        }
+    }
+
+    #[test]
+    fn duplicate_grants_and_evidence_are_rejected() {
+        let mut duplicate_call = subscription_spec();
+        let mut same_grant = duplicate_call.rules[0].allowed_calls[0].clone();
+        same_grant.justified_by = vec!["recordings[0]/auth[1]".to_string()];
+        duplicate_call.rules[0].allowed_calls.push(same_grant);
+        assert!(duplicate_call
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::DuplicateCall { .. })));
+
+        let mut duplicate_evidence = subscription_spec();
+        duplicate_evidence
+            .evidence
+            .recordings
+            .push(duplicate_evidence.evidence.recordings[0].clone());
+        assert!(duplicate_evidence
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::DuplicateEvidence { .. })));
+    }
+
+    #[test]
+    fn evidence_references_are_structural_and_in_range() {
+        for bad in [
+            "recordings[1]/auth[0]",
+            "recordings[0]/auth[x]",
+            "recordings[0]/movement[0]",
+            "../recordings[0]/auth[0]",
+            "recordings[0]/auth[0]/sub[x]",
+        ] {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].justified_by = vec![bad.to_string()];
+            assert!(spec
+                .validate()
+                .unwrap_err()
+                .iter()
+                .any(|error| matches!(error, SpecError::EvidenceReference { .. })));
+        }
+
+        let mut nested = subscription_spec();
+        nested.rules[0].allowed_calls[0].justified_by =
+            vec!["recordings[0]/auth[0]/sub[2]/sub[0]".to_string()];
+        assert!(nested.validate().is_ok());
+    }
+
+    #[test]
+    fn expiry_must_follow_the_ledger_bound_evidence() {
+        for ledger in [4_099_999, 4_100_000] {
+            let mut spec = subscription_spec();
+            spec.rules[0].valid_until.as_mut().unwrap().ledger = LedgerSeq(ledger);
+            assert!(spec
+                .validate()
+                .unwrap_err()
+                .iter()
+                .any(|error| matches!(error, SpecError::ExpiryNotAfterEvidence { .. })));
+        }
+        let mut spec = subscription_spec();
+        spec.rules[0].valid_until.as_mut().unwrap().ledger = LedgerSeq(4_100_001);
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn phase1_rejects_external_signers_until_code_hash_binding_exists() {
+        let mut spec = subscription_spec();
+        spec.rules[0].authorization.signers = vec![SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"claimed verifier code"),
+            key_hex: hex::encode([7u8; 32]),
+        }];
+        let errors = spec.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SpecError::ExternalSignerUnsupported { .. })));
     }
 
     #[test]

@@ -5,8 +5,9 @@
 //! SOURCE MODE (architecture §4.4) — spec conformance, differential testing,
 //! and generated-mode guarantees no longer apply to an edited copy.
 //!
-//! Check order is the generated-code contract (§4.4): signer predicate first
-//! (the OZ account defers signer validation to policies), then strict
+//! Check order is the generated-code contract (§4.4): account authorization and
+//! installation state first, then the signer predicate (the OZ account defers
+//! signer validation to policies), then strict
 //! signer-set, then target/function/tuple scoping, then stateful invariants
 //! (missing state denies; the call cap never resets within an installation —
 //! only `uninstall`, which the smart account alone can call, clears it).
@@ -42,13 +43,15 @@ pub enum PolicyError {
     MissingState = 8,
     RuleExpired = 9,
     AlreadyInstalled = 10,
+    NotInstalled = 11,
 }
 
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum DataKey {
-    /// Call count for one installation, segregated by (smart account, context rule id).
-    /// Never resets while installed; `uninstall` removes it.
+    /// Installation marker, segregated by (smart account, context rule id).
+    Installed(Address, u32),
+    /// Call count for one installation. Never resets until `uninstall`.
     CallCount(Address, u32),
 }
 
@@ -139,6 +142,11 @@ impl Policy for GeneratedPolicy {
     ) {
         smart_account.require_auth();
 
+        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);
+        if !e.storage().persistent().has(&installed_key) {
+            panic_with_error!(e, PolicyError::MissingState);
+        }
+
         if e.ledger().sequence() > VALID_UNTIL_LEDGER {
             panic_with_error!(e, PolicyError::RuleExpired);
         }
@@ -201,6 +209,9 @@ impl Policy for GeneratedPolicy {
             let ttl = ttl_target(e);
             if ttl > 0 {
                 e.storage().instance().extend_ttl(ttl / 2, ttl);
+                e.storage()
+                    .persistent()
+                    .extend_ttl(&installed_key, ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
@@ -208,10 +219,15 @@ impl Policy for GeneratedPolicy {
 
     fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
-        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);
-        if e.storage().persistent().has(&key) {
+        if e.ledger().sequence() > VALID_UNTIL_LEDGER {
+            panic_with_error!(e, PolicyError::RuleExpired);
+        }
+        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);
+        if e.storage().persistent().has(&installed_key) {
             panic_with_error!(e, PolicyError::AlreadyInstalled);
         }
+        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);
+        e.storage().persistent().set(&installed_key, &true);
         e.storage().persistent().set(&key, &0u32);
         let remaining = MAX_CALLS;
 
@@ -221,6 +237,9 @@ impl Policy for GeneratedPolicy {
             let ttl = ttl_target(e);
             if ttl > 0 {
                 e.storage().instance().extend_ttl(ttl / 2, ttl);
+                e.storage()
+                    .persistent()
+                    .extend_ttl(&installed_key, ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
@@ -228,8 +247,13 @@ impl Policy for GeneratedPolicy {
 
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
+        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);
+        if !e.storage().persistent().has(&installed_key) {
+            panic_with_error!(e, PolicyError::NotInstalled);
+        }
         let key = DataKey::CallCount(smart_account.clone(), context_rule.id);
         e.storage().persistent().remove(&key);
+        e.storage().persistent().remove(&installed_key);
     }
 }
 
@@ -238,12 +262,11 @@ impl Policy for GeneratedPolicy {
 /// Bounded twice. By the network's rolling `max_ttl()`, because a single extension can
 /// never reach further — a distant window is approached across successive calls rather
 /// than in one step. And by the rule's own window, because past VALID_UNTIL_LEDGER every
-/// enforce denies, so extending beyond it would pay rent for an artifact that can no
+/// entry point denies, so extending beyond it would pay rent for an artifact that can no
 /// longer permit anything.
 ///
-/// `saturating_sub` is load-bearing: `enforce` rejects an expired rule before reaching
-/// here, but `install` has no such check, and a wrapped subtraction would turn an
-/// already-expired rule into the largest possible extension.
+/// `saturating_sub` is defense in depth after the explicit expiry checks: later changes
+/// cannot turn an already-expired rule into the largest possible extension.
 fn ttl_target(e: &Env) -> u32 {
     let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());
     let max = e.storage().max_ttl();

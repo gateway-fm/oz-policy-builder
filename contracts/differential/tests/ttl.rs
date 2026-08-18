@@ -146,8 +146,19 @@ impl World {
         DataKey::CallCount(self.account.clone(), 0)
     }
 
+    fn installed_key(&self) -> DataKey {
+        DataKey::Installed(self.account.clone(), 0)
+    }
+
     fn counter_ttl(&self) -> u32 {
         let key = self.counter_key();
+        self.env.as_contract(&self.policy, || {
+            self.env.storage().persistent().get_ttl(&key)
+        })
+    }
+
+    fn installed_ttl(&self) -> u32 {
+        let key = self.installed_key();
         self.env.as_contract(&self.policy, || {
             self.env.storage().persistent().get_ttl(&key)
         })
@@ -237,6 +248,11 @@ fn install_extends_the_counter_entry_and_the_instance() {
         w.counter_ttl(),
         target,
         "install left the counter entry at its default TTL instead of extending it"
+    );
+    assert_eq!(
+        w.installed_ttl(),
+        target,
+        "install left the lifecycle marker at its default TTL"
     );
     assert_eq!(
         w.instance_ttl(),
@@ -425,9 +441,7 @@ fn the_ttl_target_never_outlives_the_policy_validity_window() {
 }
 
 #[test]
-fn installing_after_expiry_does_not_underflow_the_ttl_target() {
-    // `install` has no expiry check, so the target arithmetic must saturate rather than wrap:
-    // an underflow would turn "already expired" into the largest possible extension.
+fn installing_after_expiry_is_rejected_without_writing_state() {
     let env = Env::default();
     env.mock_all_auths();
     let policy = env.register(GeneratedPolicy, ());
@@ -452,14 +466,21 @@ fn installing_after_expiry_does_not_underflow_the_ttl_target() {
         valid_until: Some(VALID_UNTIL),
     };
 
-    // The install itself must succeed — refusing here is a separate policy decision, and an
-    // arithmetic overflow would abort the contract instead.
-    client.install(&0u32, &rule, &account);
-
-    let key = DataKey::CallCount(account, 0);
-    let ttl = env.as_contract(&policy, || env.storage().persistent().get_ttl(&key));
-    assert!(
-        ttl <= 4096,
-        "an expired policy extended its counter entry to {ttl}; the target underflowed"
-    );
+    match client.try_install(&0u32, &rule, &account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(9),
+            "expired installation must fail with RuleExpired"
+        ),
+        other => panic!("expired installation must be refused: {other:?}"),
+    }
+    for key in [
+        DataKey::Installed(account.clone(), 0),
+        DataKey::CallCount(account, 0),
+    ] {
+        assert!(
+            !env.as_contract(&policy, || env.storage().persistent().has(&key)),
+            "failed installation wrote {key:?}"
+        );
+    }
 }

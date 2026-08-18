@@ -381,7 +381,9 @@ mod tests {
 
     fn stranger() -> SignerSpec {
         SignerSpec::Delegated {
-            address: "GSTRANGERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            // A real, checksum-valid G-address distinct from the delegated signer. Validation
+            // now rejects mnemonic lookalikes before evaluation.
+            address: fixtures::MERCHANT.to_string(),
         }
     }
 

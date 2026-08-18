@@ -1082,6 +1082,10 @@ mod tests {
         format!("{}", stellar_strkey::ed25519::PublicKey([3u8; 32]))
     }
 
+    fn delegate_strkey(byte: u8) -> String {
+        format!("{}", stellar_strkey::ed25519::PublicKey([byte; 32]))
+    }
+
     fn account_record() -> SmartAccountRecord {
         SmartAccountRecord {
             address: account_strkey(),
@@ -1105,7 +1109,7 @@ mod tests {
 
     fn delegate() -> SignerSpec {
         SignerSpec::Delegated {
-            address: "GDELEGATE".to_string(),
+            address: delegate_strkey(7),
         }
     }
 
@@ -1300,7 +1304,7 @@ mod tests {
             predicate: PredicateChoice::Threshold { n },
             delegate_signers: (0..signers)
                 .map(|i| SignerSpec::Delegated {
-                    address: format!("GDELEGATE{i}"),
+                    address: delegate_strkey(u8::try_from(i + 7).unwrap()),
                 })
                 .collect(),
             ..decisions()
@@ -1621,7 +1625,7 @@ mod tests {
     #[test]
     fn threshold_boundary_validation() {
         let addr = |b: u8| SignerSpec::Delegated {
-            address: format!("GDELEGATE{b}"),
+            address: delegate_strkey(b),
         };
         let mut d = decisions();
         d.spending_limit = None;

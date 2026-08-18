@@ -248,9 +248,9 @@ targets = ["wasm32v1-none"]
 /// and when none is, the contract is useless to everyone and is meant to expire.
 fn ttl_extension_block(has_state: bool) -> &'static str {
     if has_state {
-        "\n        // Not a permission check — every decision above is already made. This keeps the\n        // entries the policy depends on out of archival while it can still permit something.\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n"
+        "\n        // Not a permission check — every decision above is already made. This keeps the\n        // entries the policy depends on out of archival while it can still permit something.\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage()\n                    .persistent()\n                    .extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n"
     } else {
-        "\n        // Not a permission check — every decision above is already made. This keeps this\n        // contract's instance and code entries out of archival.\n        let ttl = ttl_target(e);\n        if ttl > 0 {\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n        }\n"
+        "\n        // Not a permission check — every decision above is already made. This keeps this\n        // installation, contract instance and code out of archival while it can permit.\n        let ttl = ttl_target(e);\n        if ttl > 0 {\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n            e.storage()\n                .persistent()\n                .extend_ttl(&installed_key, ttl / 2, ttl);\n        }\n"
     }
 }
 
@@ -262,7 +262,7 @@ fn ttl_extension_block(has_state: bool) -> &'static str {
 /// bookkeeping after `uninstall`.
 fn emit_ttl_target(has_valid_until: bool) -> &'static str {
     if has_valid_until {
-        "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// Bounded twice. By the network's rolling `max_ttl()`, because a single extension can\n/// never reach further — a distant window is approached across successive calls rather\n/// than in one step. And by the rule's own window, because past VALID_UNTIL_LEDGER every\n/// enforce denies, so extending beyond it would pay rent for an artifact that can no\n/// longer permit anything.\n///\n/// `saturating_sub` is load-bearing: `enforce` rejects an expired rule before reaching\n/// here, but `install` has no such check, and a wrapped subtraction would turn an\n/// already-expired rule into the largest possible extension.\nfn ttl_target(e: &Env) -> u32 {\n    let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());\n    let max = e.storage().max_ttl();\n    if remaining < max {\n        remaining\n    } else {\n        max\n    }\n}\n"
+        "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// Bounded twice. By the network's rolling `max_ttl()`, because a single extension can\n/// never reach further — a distant window is approached across successive calls rather\n/// than in one step. And by the rule's own window, because past VALID_UNTIL_LEDGER every\n/// entry point denies, so extending beyond it would pay rent for an artifact that can no\n/// longer permit anything.\n///\n/// `saturating_sub` is defense in depth after the explicit expiry checks: later changes\n/// cannot turn an already-expired rule into the largest possible extension.\nfn ttl_target(e: &Env) -> u32 {\n    let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());\n    let max = e.storage().max_ttl();\n    if remaining < max {\n        remaining\n    } else {\n        max\n    }\n}\n"
     } else {
         "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// This rule carries no validity window, so the only bound is the network's rolling\n/// `max_ttl()`; a single extension can never reach further than that.\nfn ttl_target(e: &Env) -> u32 {\n    e.storage().max_ttl()\n}\n"
     }
@@ -330,8 +330,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
          //! SOURCE MODE (architecture §4.4) — spec conformance, differential testing,\n\
          //! and generated-mode guarantees no longer apply to an edited copy.\n\
          //!\n\
-         //! Check order is the generated-code contract (§4.4): signer predicate first\n\
-         //! (the OZ account defers signer validation to policies), then strict\n\
+         //! Check order is the generated-code contract (§4.4): account authorization and\n\
+         //! installation state first, then the signer predicate (the OZ account defers\n\
+         //! signer validation to policies), then strict\n\
          //! signer-set, then target/function/tuple scoping, then stateful invariants\n\
          //! (missing state denies; the call cap never resets within an installation —\n\
          //! only `uninstall`, which the smart account alone can call, clears it).\n\
@@ -365,11 +366,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         "contract",
         "contracterror",
         "contractimpl",
+        "contracttype",
         "panic_with_error",
     ];
-    if has_state {
-        sdk_macros.push("contracttype");
-    }
     sdk_macros.sort();
     out.push_str(&format!(
         "use soroban_sdk::{{{}}};\n",
@@ -386,14 +385,18 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
 
     // Error enum (stable numbering; mirrors the reference evaluator's deny reasons).
     out.push_str(
-        "#[contracterror]\n#[derive(Copy, Clone, Debug, PartialEq)]\n#[repr(u32)]\npub enum PolicyError {\n    ZeroSigners = 1,\n    PredicateUnsatisfied = 2,\n    SignerSetDiverged = 3,\n    TargetMismatch = 4,\n    FunctionNotAllowed = 5,\n    NoTupleMatched = 6,\n    CallCountExceeded = 7,\n    MissingState = 8,\n    RuleExpired = 9,\n    AlreadyInstalled = 10,\n}\n\n",
+        "#[contracterror]\n#[derive(Copy, Clone, Debug, PartialEq)]\n#[repr(u32)]\npub enum PolicyError {\n    ZeroSigners = 1,\n    PredicateUnsatisfied = 2,\n    SignerSetDiverged = 3,\n    TargetMismatch = 4,\n    FunctionNotAllowed = 5,\n    NoTupleMatched = 6,\n    CallCountExceeded = 7,\n    MissingState = 8,\n    RuleExpired = 9,\n    AlreadyInstalled = 10,\n    NotInstalled = 11,\n}\n\n",
     );
 
+    out.push_str(
+        "#[contracttype]\n#[derive(Clone, Debug)]\npub enum DataKey {\n    /// Installation marker, segregated by (smart account, context rule id).\n    Installed(Address, u32),\n",
+    );
     if has_state {
         out.push_str(
-            "#[contracttype]\n#[derive(Clone, Debug)]\npub enum DataKey {\n    /// Call count for one installation, segregated by (smart account, context rule id).\n    /// Never resets while installed; `uninstall` removes it.\n    CallCount(Address, u32),\n}\n\n",
+            "    /// Call count for one installation. Never resets until `uninstall`.\n    CallCount(Address, u32),\n",
         );
     }
+    out.push_str("}\n\n");
 
     // Compiled-in constants.
     out.push_str(&format!("const TARGET: &str = \"{}\";\n", rule.target));
@@ -532,6 +535,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     out.push_str(
         "    fn enforce(\n        e: &Env,\n        context: Context,\n        authenticated_signers: Vec<Signer>,\n        context_rule: ContextRule,\n        smart_account: Address,\n    ) {\n        smart_account.require_auth();\n\n",
     );
+    out.push_str(
+        "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n\n",
+    );
     if rule.valid_until_ledger.is_some() {
         out.push_str(
             "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n\n",
@@ -651,19 +657,35 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // the code were archived, the call could not be executing in the first place.
     if has_state {
         out.push_str(
-            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
+            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
+        );
+        if rule.valid_until_ledger.is_some() {
+            out.push_str(
+                "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n",
+            );
+        }
+        out.push_str(
+            "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
         );
         out.push_str(ttl_extension_block(true));
         out.push_str(
-            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n    }\n",
+            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     } else {
         out.push_str(
-            "    fn install(e: &Env, _install_params: u32, _context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
+            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
+        );
+        if rule.valid_until_ledger.is_some() {
+            out.push_str(
+                "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n",
+            );
+        }
+        out.push_str(
+            "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
         );
         out.push_str(ttl_extension_block(false));
         out.push_str(
-            "    }\n\n    fn uninstall(e: &Env, _context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n    }\n",
+            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     }
     out.push_str("}\n");
@@ -769,15 +791,12 @@ mod tests {
                 *template_family = "scope@1\n#![cfg(any())]".to_string();
             }
         }
-        let spec = spec
-            .validate()
-            .expect("spec validation does not police this field");
+        let errors = spec.validate().unwrap_err();
         assert!(
-            matches!(
-                generate(&spec, 0, &Pins::default()),
-                Err(CodegenError::TemplateFamily(_))
-            ),
-            "codegen must refuse a hostile template family rather than emit it"
+            errors
+                .iter()
+                .any(|error| error.to_string().starts_with("E_SPEC_TEMPLATE_FAMILY:")),
+            "hostile template metadata must be rejected at the typestate boundary: {errors:?}"
         );
     }
 
@@ -855,7 +874,6 @@ mod tests {
     // else can affect compilability.
     mod compilability {
         use super::*;
-        use base64::Engine as _;
         use ozpb_domain::{BlastRadius, LedgerSeq, Provenance};
         use ozpb_policy_spec::{
             AddressRef, AllowedCall, ArgConstraint, Constraint, PredicateKind, SignerSpec,
@@ -863,6 +881,11 @@ mod tests {
         };
         use proptest::prelude::Strategy;
         use proptest::strategy::Just;
+        use stellar_xdr::{Limits, ScBytes, ScVal, WriteXdr};
+
+        fn scval_b64(value: ScVal) -> String {
+            value.to_xdr_base64(Limits::none()).unwrap()
+        }
 
         /// A widening constraint with `ObservedExact` provenance is rejected by spec
         /// validation, so provenance is derived from the constraint rather than generated.
@@ -905,11 +928,12 @@ mod tests {
                 proptest::sample::select(numbers.clone())
                     .prop_map(|max| Constraint::LeI128 { max }),
                 proptest::sample::select(numbers).prop_map(|min| Constraint::GeI128 { min }),
-                proptest::collection::vec(proptest::prelude::any::<u8>(), 0..24).prop_map(
-                    |bytes| Constraint::EqScval {
-                        xdr_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                    }
-                ),
+                proptest::sample::select(vec![
+                    scval_b64(ScVal::U32(0)),
+                    scval_b64(ScVal::U64(u64::MAX)),
+                    scval_b64(ScVal::Bytes(ScBytes(vec![0xabu8; 24].try_into().unwrap()))),
+                ])
+                .prop_map(|xdr_base64| Constraint::EqScval { xdr_base64 }),
                 Just(Constraint::AnyValue),
             ]
         }
@@ -1025,11 +1049,16 @@ mod tests {
                     max_calls.is_some(),
                     "cap gate does not match the rule shape for {label}"
                 );
-                // The counter entry is extended only when there is a counter.
+                // The lifecycle marker is persistent in every shape; the counter is additional
+                // state only when a call cap exists.
                 assert_eq!(
-                    source.contains("persistent().extend_ttl(&key"),
+                    source.contains("extend_ttl(&key"),
                     max_calls.is_some(),
                     "counter extension does not match the rule shape for {label}"
+                );
+                assert!(
+                    source.contains("extend_ttl(&installed_key"),
+                    "installation marker extension missing for {label}"
                 );
                 // Instance and code are extended in every shape: archival of those makes the
                 // contract unreachable whether or not it keeps state.
@@ -1059,6 +1088,22 @@ mod tests {
                      arithmetic ahead of the permission checks"
                 );
             }
+        }
+
+        #[test]
+        fn stateless_no_expiry_rule_still_has_strict_install_lifecycle() {
+            let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+            let spec = spec_with(calls, (PredicateKind::AnyOf, true), None, None, false)
+                .expect("stateless no-expiry rule validates");
+            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+
+            assert!(source.contains("Installed(Address, u32)"));
+            assert!(!source.contains("CallCount(Address, u32)"));
+            assert!(!source.contains("VALID_UNTIL_LEDGER"));
+            assert!(source.contains("PolicyError::AlreadyInstalled"));
+            assert!(source.contains("PolicyError::NotInstalled"));
+            assert!(source.contains("remove(&installed_key)"));
+            assert!(source.contains("extend_ttl(&installed_key"));
         }
 
         proptest::proptest! {
@@ -1172,7 +1217,7 @@ mod tests {
         #[test]
         fn emitted_code_stays_inside_rustfmt_width() {
             let long_scval = Constraint::EqScval {
-                xdr_base64: base64::engine::general_purpose::STANDARD.encode([0xabu8; 40]),
+                xdr_base64: scval_b64(ScVal::Bytes(ScBytes(vec![0xabu8; 40].try_into().unwrap()))),
             };
             let merchant = Constraint::EqAddress {
                 value: AddressRef::address(ozpb_synthesizer::fixtures::golden_merchant_strkey()),
@@ -1214,7 +1259,7 @@ mod tests {
                 .clone();
 
             // Non-vacuity: a pass means nothing unless the awkward shapes are really emitted.
-            for expected in ["const CALL_0_ARG_0_XDR: [u8; 40] = [", "let fn_1_ok = "] {
+            for expected in ["const CALL_0_ARG_0_XDR: [u8; 48] = [", "let fn_1_ok = "] {
                 assert!(
                     source.contains(expected),
                     "this test does not exercise what it claims: no {expected:?} in\n{source}"
@@ -1430,22 +1475,20 @@ mod tests {
             ozpb_policy_spec::Constraint::EqAddress {
                 value: ozpb_policy_spec::AddressRef::address("NOT-A-STRKEY"),
             };
-        let bad = bad.validate().unwrap();
-        assert!(matches!(
-            generate(&bad, 0, &Pins::default()).unwrap_err(),
-            CodegenError::Address(_)
-        ));
+        let errors = bad.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().starts_with("E_SPEC_ADDRESS:")));
 
         let mut bad_fn = base.spec().clone();
         bad_fn.rules[0]
             .policies
             .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
         bad_fn.rules[0].allowed_calls[0].fn_name = "not a symbol!".to_string();
-        let bad_fn = bad_fn.validate().unwrap();
-        assert!(matches!(
-            generate(&bad_fn, 0, &Pins::default()).unwrap_err(),
-            CodegenError::Symbol(_)
-        ));
+        let errors = bad_fn.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().starts_with("E_SPEC_SYMBOL:")));
     }
 
     #[test]

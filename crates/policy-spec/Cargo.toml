@@ -14,3 +14,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
 stellar-xdr = { workspace = true }
+stellar-strkey = { workspace = true }

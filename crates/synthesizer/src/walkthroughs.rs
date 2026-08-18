@@ -24,6 +24,7 @@ use ozpb_recorder_core::{
     Execution, InvocationNode, ObservedExecutable, RawEvidence, RecordingBundle, RECORDING_SCHEMA,
 };
 use std::collections::BTreeMap;
+use stellar_xdr::{Limits, ScVal, WriteXdr};
 
 fn account() -> String {
     format!("{}", stellar_strkey::Contract([1u8; 32]))
@@ -179,8 +180,18 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
     let router = SOROSWAP_ROUTER();
     let observed_amount_in: i128 = 1_000_000_000;
     let observed_out_min: i128 = 950_000_000;
+    // A representative two-hop path encoded as one complete ScVal. Constructing the fixture
+    // through the protocol codec prevents a hand-maintained/truncated byte string from becoming
+    // an allegedly exact constraint.
+    let path_xdr = ScVal::Vec(Some(
+        vec![ScVal::U32(1), ScVal::U32(2)]
+            .try_into()
+            .unwrap_or_default(),
+    ))
+    .to_xdr_base64(Limits::none())
+    .unwrap_or_default();
     let path = ArgSummary::Other {
-        xdr_base64: "AAAAEAAAAAEAAAACAAAAEgAAAAA=".to_string(),
+        xdr_base64: path_xdr,
     };
     let bundle = bundle_for(
         &router,

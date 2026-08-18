@@ -129,7 +129,7 @@ impl World {
 }
 
 fn code_of(err: Error) -> u32 {
-    for c in 1..=10u32 {
+    for c in 1..=11u32 {
         if err == Error::from_contract_error(c) {
             return c;
         }
@@ -616,6 +616,64 @@ fn install_is_the_only_initializer_and_double_install_fails() {
     match res {
         Err(Ok(err)) => assert_eq!(code_of(err), 10, "AlreadyInstalled"),
         other => panic!("double install must fail: {other:?}"),
+    }
+}
+
+#[test]
+fn uninstall_obeys_upstream_lifecycle_and_reinstall_resets_state() {
+    let w = setup(false);
+    let rule = w.rule(&[&delegate()]);
+
+    match w.client.try_uninstall(&rule, &w.account) {
+        Err(Ok(err)) => assert_eq!(code_of(err), 11, "NotInstalled"),
+        other => panic!("uninstall before install must fail: {other:?}"),
+    }
+
+    w.client.install(&0u32, &rule, &w.account);
+    let ctx = w.transfer_ctx(&w.account, &merchant_str(), AMOUNT);
+    assert_eq!(w.enforce(&ctx, &[&delegate()], &[&delegate()]), Ok(()));
+    w.client.uninstall(&rule, &w.account);
+    match w.client.try_uninstall(&rule, &w.account) {
+        Err(Ok(err)) => assert_eq!(code_of(err), 11, "NotInstalled"),
+        other => panic!("repeated uninstall must fail: {other:?}"),
+    }
+
+    // A new installation is allowed and receives a fresh counter.
+    w.client.install(&0u32, &rule, &w.account);
+    for call in 0..MAX_CALLS {
+        assert_eq!(
+            w.enforce(&ctx, &[&delegate()], &[&delegate()]),
+            Ok(()),
+            "reinstalled counter must permit call {call}"
+        );
+    }
+    assert_eq!(
+        w.enforce(&ctx, &[&delegate()], &[&delegate()]),
+        Err(7),
+        "the fresh installation still enforces its own cap"
+    );
+}
+
+#[test]
+fn installation_markers_are_isolated_by_account_and_rule() {
+    let w = setup(false);
+    let delegate = delegate();
+    let rule0 = w.rule(&[&delegate]);
+    let mut rule1 = rule0.clone();
+    rule1.id = 1;
+    let account2 = Address::from_str(&w.env, &format!("{}", stellar_strkey::Contract([9u8; 32])));
+
+    w.client.install(&0u32, &rule0, &w.account);
+    w.client.install(&0u32, &rule1, &w.account);
+    w.client.install(&0u32, &rule0, &account2);
+
+    // Removing one key must not make either independent installation appear absent.
+    w.client.uninstall(&rule0, &w.account);
+    for (rule, account) in [(&rule1, &w.account), (&rule0, &account2)] {
+        match w.client.try_install(&0u32, rule, account) {
+            Err(Ok(err)) => assert_eq!(code_of(err), 10, "AlreadyInstalled"),
+            other => panic!("independent installation was disturbed: {other:?}"),
+        }
     }
 }
 
