@@ -56,7 +56,6 @@ pub struct SmartAccountRecord {
     pub observed_code_hash: Hash32,
     /// Human-readable registry resolution, e.g. "stellar-accounts@0.7.x (entry sha256:…)".
     pub registry_resolution: String,
-    pub install_safe: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -423,10 +422,10 @@ pub enum SpecError {
     #[error("E_SPEC_NO_CALLS: rule {0} has no allowed calls (default-deny needs a grant)")]
     NoCalls(usize),
     #[error(
-        "E_SPEC_INSTALL_UNSAFE: smart-account compatibility record says the installation \
-         authority surface is unsafe"
+        "E_SPEC_EXTERNAL_UNSUPPORTED: rule {rule}, signer {signer}: external verifiers are not \
+         supported by the Phase 1 enforcement model"
     )]
-    InstallUnsafe,
+    ExternalSignerUnsupported { rule: usize, signer: usize },
     #[error(
         "E_SPEC_SIGNER_POLICY: rule {rule} must contain exactly one generated \
          signer-enforcing policy; found {generated}"
@@ -518,10 +517,6 @@ impl PolicySpec {
                 self.evidence.recordings.len()
             )));
         }
-        if !self.smart_account.install_safe {
-            errors.push(SpecError::InstallUnsafe);
-        }
-
         for (ri, rule) in self.rules.iter().enumerate() {
             if rule.allowed_calls.is_empty() {
                 errors.push(SpecError::NoCalls(ri));
@@ -569,6 +564,16 @@ impl PolicySpec {
 
             let mut signer_identities: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
             for (si, signer) in rule.authorization.signers.iter().enumerate() {
+                if matches!(signer, SignerSpec::External { .. }) {
+                    // `stellar-accounts` stores only the verifier address and key. The Phase 1
+                    // spec also names a verifier Wasm hash, but neither the generated policy nor
+                    // the account binds that hash to the address at authorization time. Reject
+                    // the shape until a later, verified installation/binding layer can prove it.
+                    errors.push(SpecError::ExternalSignerUnsupported {
+                        rule: ri,
+                        signer: si,
+                    });
+                }
                 let identity = match logical_signer_identity(signer) {
                     Ok(identity) => identity,
                     Err(()) => {
@@ -769,7 +774,6 @@ pub mod fixtures {
                 address: ACCOUNT.to_string(),
                 observed_code_hash: sha256(b"fixture-account-wasm"),
                 registry_resolution: "stellar-accounts@0.7.x (fixture)".to_string(),
-                install_safe: true,
             },
             rules: vec![RuleSpec {
                 context: ContextSpec {
@@ -958,6 +962,18 @@ mod tests {
     }
 
     #[test]
+    fn external_signers_are_rejected_until_verifier_code_is_bound_at_runtime() {
+        let mut spec = subscription_spec();
+        spec.rules[0].authorization.signers = vec![SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"fixture-verifier-wasm"),
+            key_hex: "aa".repeat(32),
+        }];
+        let errors = spec.validate().unwrap_err();
+        assert!(errors.contains(&SpecError::ExternalSignerUnsupported { rule: 0, signer: 0 }));
+    }
+
+    #[test]
     fn duplicate_logical_signers_fail_validation() {
         let mut delegated = subscription_spec();
         delegated.rules[0].authorization.kind = PredicateKind::Threshold { n: 2 };
@@ -1120,16 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_account_and_unbacked_policy_fail_validation() {
-        let mut unsafe_account = subscription_spec();
-        unsafe_account.smart_account.install_safe = false;
-        let errs = unsafe_account.validate().unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|e| e.to_string().starts_with("E_SPEC_INSTALL_UNSAFE:")),
-            "verified specs must not target an account whose install surface is unsafe: {errs:?}"
-        );
-
+    fn unbacked_policy_fails_validation() {
         let mut no_policy = subscription_spec();
         no_policy.rules[0].policies.clear();
         let errs = no_policy.validate().unwrap_err();

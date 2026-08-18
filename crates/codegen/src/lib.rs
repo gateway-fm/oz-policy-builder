@@ -1205,11 +1205,6 @@ mod tests {
                     justified_by: justified,
                 },
             ];
-            rule.authorization.signers.push(SignerSpec::External {
-                verifier: ozpb_synthesizer::fixtures::golden_token_strkey(),
-                verifier_code_hash: ozpb_domain::sha256(b"external-verifier-code"),
-                key_hex: hex::encode([0x5au8; 32]),
-            });
             let spec = spec.validate().expect("the awkward spec must validate");
             let source = generate(&spec, 0, &Pins::default())
                 .expect("codegen must accept the awkward spec")
@@ -1217,12 +1212,7 @@ mod tests {
                 .clone();
 
             // Non-vacuity: a pass means nothing unless the awkward shapes are really emitted.
-            for expected in [
-                "const SIGNER_1_KEY: [u8; 32] = [",
-                "const CALL_0_ARG_0_XDR: [u8; 40] = [",
-                "let fn_1_ok = ",
-                "Signer::External(",
-            ] {
+            for expected in ["const CALL_0_ARG_0_XDR: [u8; 40] = [", "let fn_1_ok = "] {
                 assert!(
                     source.contains(expected),
                     "this test does not exercise what it claims: no {expected:?} in\n{source}"

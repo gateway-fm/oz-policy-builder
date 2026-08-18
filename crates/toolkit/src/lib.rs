@@ -64,7 +64,7 @@ pub fn synthesize_policy(
     input: &SynthesizeInput,
     registry_trust: &RegistryTrust,
 ) -> Result<SynthesizeOutput, ToolError> {
-    let bundles: Vec<RecordingBundle> = input
+    let mut bundles: Vec<RecordingBundle> = input
         .bundles
         .iter()
         .map(from_value)
@@ -74,6 +74,13 @@ pub fn synthesize_policy(
             EC::ENoEvidence,
             "no recording bundles supplied",
         ));
+    }
+    // JSON supplied to this boundary is caller-controlled, even when it was originally emitted
+    // by `record_snapshot`. A serialized `rpc_reported` / `trusted_indexer` label is descriptive
+    // provenance, not an authenticated receipt. Downgrade it before it can drive synthesis; a
+    // future hosted acquisition service may add a separately verified receipt instead.
+    for bundle in &mut bundles {
+        bundle.trust = ozpb_domain::TrustLevel::self_supplied();
     }
     let mut account: ozpb_policy_spec::SmartAccountRecord = from_value(&input.account)?;
     let decisions: UserDecisions = from_value(&input.decisions)?;
@@ -102,26 +109,6 @@ pub fn synthesize_policy(
         account_capability.release,
         account.observed_code_hash.to_hex()
     );
-
-    for signer in &decisions.delegate_signers {
-        if let SignerSpec::External {
-            verifier_code_hash, ..
-        } = signer
-        {
-            let verifier = registry
-                .resolve_verifier(verifier_code_hash)
-                .map_err(map_registry_err)?;
-            if !verifier.immutable {
-                return Err(ToolError::new(
-                    EC::EUnregisteredVerifier,
-                    format!(
-                        "verifier {} is registered but not immutable",
-                        verifier_code_hash.to_hex()
-                    ),
-                ));
-            }
-        }
-    }
 
     let template = registry
         .resolve_template(&input.template_family)
@@ -666,9 +653,43 @@ mod tests {
             verifier_code_hash: ozpb_domain::sha256(b"unknown-verifier"),
             key_hex: "00".repeat(32),
         }];
-        let mut unknown_verifier = base;
-        unknown_verifier.decisions = serde_json::to_value(decisions).unwrap();
-        let err = synthesize_policy(&unknown_verifier, &registry_trust()).unwrap_err();
-        assert_eq!(err.code, EC::EUnregisteredVerifier);
+        let mut unsupported_external = base;
+        unsupported_external.decisions = serde_json::to_value(decisions).unwrap();
+        let err = synthesize_policy(&unsupported_external, &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::EUnsupportedPattern);
+        assert!(err
+            .details
+            .iter()
+            .any(|detail| detail.contains("external verifiers are unavailable in Phase 1")));
+    }
+
+    #[test]
+    fn caller_supplied_provenance_labels_are_downgraded_before_synthesis() {
+        let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+        assert_eq!(rec.bundle["trust"], serde_json::json!("rpc_reported"));
+
+        let mut forged = rec.bundle;
+        forged["trust"] = serde_json::json!("trusted_indexer");
+        let input = SynthesizeInput {
+            bundles: vec![forged],
+            selected_authorizer: fx::golden_account_strkey(),
+            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
+            signed_registry_snapshot: signed_registry_json(),
+            decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+            spending_limit_capability: Some(
+                fx::golden_input()
+                    .spending_limit_capability
+                    .unwrap()
+                    .to_hex(),
+            ),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+        let output = synthesize_policy(&input, &registry_trust()).unwrap();
+
+        assert_eq!(
+            output.spec["evidence"]["recordings"][0]["trust"],
+            serde_json::json!("self_supplied"),
+            "an unauthenticated wire label must not survive as trusted provenance"
+        );
     }
 }

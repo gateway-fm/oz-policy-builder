@@ -40,7 +40,6 @@ fn account_record() -> SmartAccountRecord {
         address: account(),
         observed_code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
         registry_resolution: "stellar-accounts@0.7.x (walkthrough)".to_string(),
-        install_safe: true,
     }
 }
 

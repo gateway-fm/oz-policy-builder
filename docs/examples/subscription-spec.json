@@ -6,8 +6,7 @@
   "smart_account": {
     "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
     "observed_code_hash": "062f1ae77a30549e3da237bccbc32e08cbe70cbfc10de3efe772b7b9ed88da14",
-    "registry_resolution": "stellar-accounts@0.7.x (fixture)",
-    "install_safe": true
+    "registry_resolution": "stellar-accounts@0.7.x (fixture)"
   },
   "rules": [
     {

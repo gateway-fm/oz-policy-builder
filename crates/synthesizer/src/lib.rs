@@ -41,7 +41,8 @@ pub struct SynthesisInput {
     pub bundles: Vec<RecordingBundle>,
     /// Which authorizer the grant is for — a transaction may contain several (§4.1).
     pub selected_authorizer: String,
-    /// Account compatibility record (registry-resolved by the caller in Phase 1).
+    /// Account compatibility record. The toolkit constructs this only after resolving the
+    /// observed Wasm hash in the authenticated capability registry.
     pub account: SmartAccountRecord,
     pub registry_snapshot: Hash32,
     /// Reviewed spending-limit wasm hash from the policy capability registry, if any.
@@ -193,12 +194,6 @@ pub fn synthesize(
             input.account.address, input.selected_authorizer
         )));
     }
-    if !input.account.install_safe {
-        errors.push(SynthError::IncompatibleAccount(
-            "account compatibility record says the installation authority surface is unsafe"
-                .to_string(),
-        ));
-    }
     for (index, bundle) in input.bundles.iter().enumerate() {
         let has_selected_authorizer = bundle
             .authorizations
@@ -236,6 +231,16 @@ pub fn synthesize(
              inferred from the recording"
                 .to_string(),
         ));
+    }
+    for signer in &decisions.delegate_signers {
+        if matches!(signer, SignerSpec::External { .. }) {
+            errors.push(SynthError::UnsupportedPattern(
+                "external verifiers are unavailable in Phase 1: the smart-account signer value \
+                 does not carry the claimed verifier Wasm hash, so this toolkit cannot yet \
+                 enforce the required address-to-code binding"
+                    .to_string(),
+            ));
+        }
     }
     if decisions.valid_until_ledger.is_none() && !decisions.no_expiry_acknowledged {
         errors.push(SynthError::NeedsDecision(
@@ -966,7 +971,6 @@ mod tests {
             address: account_strkey(),
             observed_code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
             registry_resolution: "stellar-accounts@0.7.x (test)".to_string(),
-            install_safe: true,
         }
     }
 
@@ -1346,6 +1350,21 @@ mod tests {
     }
 
     #[test]
+    fn external_verifiers_are_rejected_without_a_runtime_code_binding() {
+        let mut decisions = decisions();
+        decisions.delegate_signers = vec![SignerSpec::External {
+            verifier: format!("{}", stellar_strkey::Contract([8u8; 32])),
+            verifier_code_hash: sha256(b"registered-but-not-runtime-bound-verifier"),
+            key_hex: "11".repeat(32),
+        }];
+        let errors = synthesize(&input(), &decisions).unwrap_err();
+        assert!(errors.iter().any(
+            |error| matches!(error, SynthError::UnsupportedPattern(message)
+                if message.contains("external verifiers are unavailable in Phase 1"))
+        ));
+    }
+
+    #[test]
     fn missing_lifetime_needs_explicit_ack() {
         let mut d = decisions();
         d.valid_until_ledger = None;
@@ -1380,15 +1399,6 @@ mod tests {
             errs.iter()
                 .any(|error| error.to_string().starts_with("E_INCOMPATIBLE_ACCOUNT:")),
             "SELF constraints and install metadata must refer to the selected authorizer: {errs:?}"
-        );
-
-        let mut i = input();
-        i.account.install_safe = false;
-        let errs = synthesize(&i, &decisions()).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|error| error.to_string().starts_with("E_INCOMPATIBLE_ACCOUNT:")),
-            "an unsafe installation surface must fail before a spec is returned: {errs:?}"
         );
     }
 
@@ -2044,7 +2054,6 @@ pub mod fixtures {
                 address: golden_account_strkey(),
                 observed_code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 registry_resolution: "stellar-accounts@0.7.x (dev registry)".to_string(),
-                install_safe: true,
             },
             registry_snapshot: sha256(b"dev-registry-snapshot"),
             spending_limit_capability: Some(pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM),
