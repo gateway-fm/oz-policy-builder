@@ -569,6 +569,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn external_signer_identity_requires_both_verifier_and_key() {
+        let expected = SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"expected-code"),
+            key_hex: "aabb".to_string(),
+        };
+        let different_key = SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"expected-code"),
+            key_hex: "aacc".to_string(),
+        };
+        let different_verifier = SignerSpec::External {
+            verifier: fixtures::ACCOUNT.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"expected-code"),
+            key_hex: "aabb".to_string(),
+        };
+
+        assert!(!same_signer_identity(&expected, &different_key));
+        assert!(!same_signer_identity(&expected, &different_verifier));
+    }
+
     // --- signer predicate (checked FIRST) -------------------------------------------
 
     #[test]
