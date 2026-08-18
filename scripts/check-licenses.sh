@@ -7,8 +7,8 @@
 # come only from allowed sources and flags known security advisories. Config: deny.toml.
 #
 # licenses/bans/sources are deterministic and offline. The advisory check needs the RustSec
-# database (network): a real advisory hard-fails; an unreachable DB (offline) degrades to a
-# warning so the deterministic checks above still gate.
+# database (network), and this release/CI gate fails closed when that database cannot be checked.
+# Use `scripts/verify-phase1.sh --offline` for the explicitly reduced, network-free gate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,27 +33,11 @@ echo "== contracts workspace (on-chain deliverables): licenses · bans · source
 # (harmless warnings), but any rejected license or disallowed source still fails.
 cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check licenses bans sources
 
-echo "== security advisories (RustSec; both workspaces; best-effort when offline) =="
-# A real advisory hard-fails; an unreachable DB (offline) degrades to a warning so the
-# deterministic checks above still gate. Runs over BOTH workspaces — the contracts tree
-# has its own dependency graph (e.g. the Soroban SDK stack).
-advisory_check() {
-    local label="$1"
-    shift
-    local out
-    if out=$(cargo deny "$@" check advisories 2>&1); then
-        echo "  ${label}: advisories ok"
-        return 0
-    fi
-    if echo "$out" | grep -qiE 'error\[(vulnerability|unmaintained|unsound|yanked|notice)\]'; then
-        echo "$out" | tail -30
-        echo "  ${label}: SECURITY ADVISORY found — see above"
-        return 1
-    fi
-    echo "  ${label}: could not fetch the RustSec advisory DB — offline? skipping"
-    return 0
-}
-advisory_check "toolkit" || exit 1
-advisory_check "contracts" --manifest-path contracts/Cargo.toml --config deny.toml || exit 1
+echo "== security advisories (RustSec; both workspaces; fail closed) =="
+# Runs over BOTH workspaces — the contracts tree has its own dependency graph (e.g. the
+# Soroban SDK stack). A missing/unreachable database is not evidence that the dependency
+# tree is safe, so cargo-deny's non-zero verdict is propagated unchanged.
+cargo deny check advisories
+cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check advisories
 
 echo "LICENSE & SUPPLY-CHAIN GATE PASSED"
