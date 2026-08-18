@@ -20,7 +20,9 @@ use stellar_xdr::{
     LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope, WriteXdr,
 };
 
-const MAX_XDR_BYTES: usize = 16 * 1024 * 1024;
+// Keep acquisition aligned with recorder-core's per-value bound. Accepted evidence must remain
+// small enough for the recorder's canonical 4 MiB hash preimage after decoding and summarizing.
+const MAX_XDR_BYTES: usize = 512 * 1024;
 const MAX_XDR_DEPTH: u32 = 128;
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 

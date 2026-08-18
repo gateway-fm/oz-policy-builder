@@ -30,6 +30,9 @@ pub const MAX_EVIDENCE_RECORDINGS: usize = 256;
 /// One exact value should stay reviewable and comfortably below the 4 MiB canonical-preimage
 /// ceiling. The limit is over decoded XDR, not base64 text.
 pub const MAX_SCVAL_XDR_BYTES: usize = 64 * 1024;
+/// Per generated rule. Decimal byte-array rendering expands XDR by roughly 4–5x; keeping the
+/// aggregate below 256 KiB leaves room under the builder's 2 MiB source limit.
+pub const MAX_RULE_SCVAL_XDR_BYTES: usize = 256 * 1024;
 pub const MAX_JUSTIFICATIONS_PER_CALL: usize = 256;
 pub const MAX_EXTERNAL_KEY_BYTES: usize = 256;
 const MAX_SHORT_METADATA_BYTES: usize = 256;
@@ -430,11 +433,6 @@ pub enum SpecError {
     #[error("E_SPEC_NO_CALLS: rule {0} has no allowed calls (default-deny needs a grant)")]
     NoCalls(usize),
     #[error(
-        "E_SPEC_EXTERNAL_UNSUPPORTED: rule {rule}, signer {signer}: external verifiers are not \
-         supported by the Phase 1 enforcement model"
-    )]
-    ExternalSignerUnsupported { rule: usize, signer: usize },
-    #[error(
         "E_SPEC_SIGNER_POLICY: rule {rule} must contain exactly one generated \
          signer-enforcing policy; found {generated}"
     )]
@@ -547,6 +545,8 @@ pub enum SpecError {
     NoEvidence,
     #[error("E_SPEC_UNJUSTIFIED: rule {0}, call '{1}' maps to no justifying recording")]
     Unjustified(usize, String),
+    #[error("E_SPEC_CANONICAL: canonical spec preimage cannot be encoded: {0}")]
+    Canonicalization(String),
 }
 
 impl PolicySpec {
@@ -600,6 +600,7 @@ impl PolicySpec {
             &mut errors,
         );
         for (ri, rule) in self.rules.iter().enumerate() {
+            let mut rule_scval_xdr_bytes = 0usize;
             validate_address(
                 &rule.context.contract,
                 AddressExpectation::Contract,
@@ -673,13 +674,11 @@ impl PolicySpec {
                             period_ledgers,
                         },
                     ) => {
-                        if !is_canonical_i128(limit)
-                            || limit
-                                .parse::<i128>()
-                                .map(|value| value <= 0)
-                                .unwrap_or(true)
-                            || *period_ledgers == 0
-                        {
+                        let parsed_limit = limit
+                            .parse::<i128>()
+                            .ok()
+                            .filter(|value| *value > 0 && value.to_string() == limit.as_str());
+                        if parsed_limit.is_none() || *period_ledgers == 0 {
                             errors.push(SpecError::ReviewedPolicy {
                                 rule: ri,
                                 reason: "oz:spending_limit requires a canonical positive i128 \
@@ -688,19 +687,17 @@ impl PolicySpec {
                             });
                         }
                         for call in &rule.allowed_calls {
-                            let amount_is_i128 = call
-                                .args
-                                .iter()
-                                .find(|arg| arg.index == 2)
-                                .is_some_and(|arg| {
+                            let amount = call.args.iter().find(|arg| arg.index == 2);
+                            if call.fn_name != "transfer"
+                                || !amount.is_some_and(|arg| {
                                     matches!(
                                         arg.constraint,
                                         Constraint::EqI128 { .. }
                                             | Constraint::LeI128 { .. }
                                             | Constraint::GeI128 { .. }
                                     )
-                                });
-                            if call.fn_name != "transfer" || !amount_is_i128 {
+                                })
+                            {
                                 errors.push(SpecError::ReviewedPolicy {
                                     rule: ri,
                                     reason: format!(
@@ -710,6 +707,32 @@ impl PolicySpec {
                                         call.fn_name
                                     ),
                                 });
+                                continue;
+                            }
+                            if let (Some(limit), Some(amount)) = (parsed_limit, amount) {
+                                let can_permit_nonnegative_amount = match &amount.constraint {
+                                    Constraint::EqI128 { value } => value
+                                        .parse::<i128>()
+                                        .is_ok_and(|value| (0..=limit).contains(&value)),
+                                    Constraint::LeI128 { max } => {
+                                        max.parse::<i128>().is_ok_and(|max| max >= 0)
+                                    }
+                                    Constraint::GeI128 { min } => {
+                                        min.parse::<i128>().is_ok_and(|min| min <= limit)
+                                    }
+                                    Constraint::EqAddress { .. }
+                                    | Constraint::EqScval { .. }
+                                    | Constraint::AnyValue => false,
+                                };
+                                if !can_permit_nonnegative_amount {
+                                    errors.push(SpecError::ReviewedPolicy {
+                                        rule: ri,
+                                        reason: format!(
+                                            "oz:spending_limit and transfer argument 2 have no \
+                                             common nonnegative amount within limit {limit}"
+                                        ),
+                                    });
+                                }
                             }
                         }
                     }
@@ -878,13 +901,17 @@ impl PolicySpec {
                             &mut errors,
                         ),
                         Constraint::EqScval { xdr_base64 } => {
-                            if let Err(reason) = validate_canonical_scval(xdr_base64) {
-                                errors.push(SpecError::Scval {
+                            match validate_canonical_scval(xdr_base64) {
+                                Ok(size) => {
+                                    rule_scval_xdr_bytes =
+                                        rule_scval_xdr_bytes.saturating_add(size);
+                                }
+                                Err(reason) => errors.push(SpecError::Scval {
                                     rule: ri,
                                     call: call.fn_name.clone(),
                                     arg: arg.index,
                                     reason,
-                                });
+                                }),
                             }
                         }
                         Constraint::EqAddress {
@@ -950,6 +977,15 @@ impl PolicySpec {
                         });
                     }
                 }
+            }
+            if rule_scval_xdr_bytes > MAX_RULE_SCVAL_XDR_BYTES {
+                errors.push(SpecError::Limits(
+                    ri,
+                    format!(
+                        "exact ScVal XDR totals {rule_scval_xdr_bytes} bytes > max \
+                         {MAX_RULE_SCVAL_XDR_BYTES} per generated rule"
+                    ),
+                ));
             }
             for duplicate in 1..rule.allowed_calls.len() {
                 if let Some(first) = rule.allowed_calls[..duplicate]
@@ -1094,7 +1130,7 @@ fn validate_text(value: &str, max: usize, field: &str, errors: &mut Vec<SpecErro
     }
 }
 
-fn validate_canonical_scval(value: &str) -> Result<(), String> {
+fn validate_canonical_scval(value: &str) -> Result<usize, String> {
     if value.len() > MAX_SCVAL_XDR_BYTES.div_ceil(3) * 4 {
         return Err(format!(
             "base64 text is too large for the {MAX_SCVAL_XDR_BYTES}-byte XDR limit"
@@ -1108,12 +1144,15 @@ fn validate_canonical_scval(value: &str) -> Result<(), String> {
         .map_err(|error| format!("not a bounded ScVal XDR value: {error}"))?;
     Validate::validate(&scval).map_err(|error| format!("invalid ScVal: {error}"))?;
     let canonical = scval
-        .to_xdr_base64(limits)
+        .to_xdr_base64(limits.clone())
         .map_err(|error| format!("cannot re-encode ScVal: {error}"))?;
     if canonical != value {
         return Err("base64/XDR encoding is not canonical".to_string());
     }
-    Ok(())
+    scval
+        .to_xdr(limits)
+        .map(|bytes| bytes.len())
+        .map_err(|error| format!("cannot size ScVal: {error}"))
 }
 
 fn same_grant(left: &AllowedCall, right: &AllowedCall) -> bool {
@@ -1203,7 +1242,7 @@ fn name_is_valid(name: &str) -> bool {
 
 fn spec_hash(spec: &PolicySpec) -> Result<Hash32, Vec<SpecError>> {
     ozpb_domain::canonical_hash(domains::POLICY_SPEC, spec)
-        .map_err(|e| vec![SpecError::Schema(format!("canonicalization failed: {e}"))])
+        .map_err(|e| vec![SpecError::Canonicalization(e.to_string())])
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1495,6 +1534,7 @@ mod tests {
             "170141183460469231731687303715884105728",
         ] {
             let mut s = subscription_spec();
+            s.rules[0].policies.remove(0);
             s.rules[0].allowed_calls[0].args[2].constraint = Constraint::EqI128 {
                 value: bad.to_string(),
             };
@@ -1513,6 +1553,7 @@ mod tests {
             i128::MAX.to_string(),
         ] {
             let mut s = subscription_spec();
+            s.rules[0].policies.remove(0);
             s.rules[0].allowed_calls[0].args[2].constraint = Constraint::EqI128 { value: good };
             assert!(s.validate().is_ok());
         }
@@ -1589,6 +1630,43 @@ mod tests {
             |error| matches!(error, SpecError::ReviewedPolicy { reason, .. }
                 if reason.contains("canonical positive i128"))
         ));
+
+        let mut spec = subscription_spec();
+        spec.rules[0].allowed_calls[0].args[2].constraint = Constraint::EqI128 {
+            value: "500000001".to_string(),
+        };
+        let errors = spec.validate().unwrap_err();
+        assert!(errors.iter().any(
+            |error| matches!(error, SpecError::ReviewedPolicy { reason, .. }
+                if reason.contains("no common nonnegative amount"))
+        ));
+    }
+
+    #[test]
+    fn aggregate_exact_scval_size_is_bounded_per_rule() {
+        let value = ScVal::Bytes(ScBytes(vec![7_u8; 60 * 1024].try_into().unwrap()));
+        let xdr_base64 = value
+            .to_xdr_base64(Limits {
+                depth: 64,
+                len: MAX_SCVAL_XDR_BYTES,
+            })
+            .unwrap();
+        let mut spec = subscription_spec();
+        for index in 3..8 {
+            spec.rules[0].allowed_calls[0].args.push(ArgConstraint {
+                index,
+                constraint: Constraint::EqScval {
+                    xdr_base64: xdr_base64.clone(),
+                },
+                provenance: Provenance::ObservedExact,
+            });
+        }
+
+        let errors = spec.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| matches!(error, SpecError::Limits(_, reason)
+                if reason.contains("exact ScVal XDR totals"))));
     }
 
     #[test]
@@ -1828,6 +1906,7 @@ mod tests {
     fn eq_scval_requires_canonical_bounded_complete_xdr() {
         let canonical = ScVal::U64(42).to_xdr_base64(Limits::none()).unwrap();
         let mut valid = subscription_spec();
+        valid.rules[0].policies.remove(0);
         valid.rules[0].allowed_calls[0].args[2].constraint = Constraint::EqScval {
             xdr_base64: canonical.clone(),
         };
@@ -1841,6 +1920,7 @@ mod tests {
             "A".repeat(MAX_SCVAL_XDR_BYTES.div_ceil(3) * 4 + 1),
         ] {
             let mut spec = subscription_spec();
+            spec.rules[0].policies.remove(0);
             spec.rules[0].allowed_calls[0].args[2].constraint =
                 Constraint::EqScval { xdr_base64: bad };
             assert!(spec

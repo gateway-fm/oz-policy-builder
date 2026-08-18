@@ -23,8 +23,13 @@ use stellar_xdr::{
 };
 
 pub const RECORDING_SCHEMA: &str = "recording/v1";
-const MAX_XDR_BYTES: usize = 16 * 1024 * 1024;
+// Soroban transactions and ledger entries are far smaller than this in practice. Keep a
+// defensive per-value bound, then separately cap the total encoded evidence below the canonical
+// hash preimage ceiling. This makes every accepted recording hashable instead of discovering an
+// incompatible 4 MiB limit only after decoding and summarizing it.
+const MAX_XDR_BYTES: usize = 512 * 1024;
 const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
+const MAX_TOTAL_EVIDENCE_BASE64_BYTES: usize = 1024 * 1024;
 const MAX_XDR_DEPTH: u32 = 128;
 const MAX_SIMULATED_AUTH_ENTRIES: usize = 256;
 const MAX_SIMULATED_STATE_CHANGES: usize = 4_096;
@@ -553,7 +558,7 @@ pub fn record(
         evidence_notes.push("no result meta available; token movements unknown".to_string());
     }
 
-    Ok(RecordingBundle {
+    let bundle = RecordingBundle {
         schema: RECORDING_SCHEMA.to_string(),
         canonicalization_version: CANONICALIZATION_VERSION,
         network_id: NetworkId::from_passphrase(&snapshot.network_passphrase),
@@ -572,7 +577,17 @@ pub fn record(
             result_meta_xdr_base64: snapshot.result_meta_xdr_base64.clone(),
             simulated_auth_xdr_base64: snapshot.simulated_auth_xdr_base64.clone(),
         },
-    })
+    };
+    // Resource admission and hashing are one boundary: never return a recording that the next
+    // pipeline stage can only reject because its canonical preimage exceeds the domain limit.
+    // All fields here use supported canonical types, so a serialization failure at this point is
+    // an input/resource failure rather than an optional best-effort hash.
+    bundle.recording_hash().map_err(|error| {
+        RecordError::ResourceLimit(format!(
+            "recording does not fit the canonical hash boundary: {error}"
+        ))
+    })?;
+    Ok(bundle)
 }
 
 /// Return every contract address whose executable influences the recorded authorization:
@@ -841,6 +856,26 @@ fn validate_evidence_limits(snapshot: &EvidenceSnapshot) -> Result<(), RecordErr
     if state_bytes > MAX_XDR_BASE64_BYTES {
         return Err(RecordError::ResourceLimit(format!(
             "state-change evidence is {state_bytes} encoded bytes; maximum is {MAX_XDR_BASE64_BYTES}"
+        )));
+    }
+    let encoded_evidence_bytes = snapshot
+        .envelope_xdr_base64
+        .len()
+        .checked_add(
+            snapshot
+                .result_meta_xdr_base64
+                .as_ref()
+                .map_or(0, String::len),
+        )
+        .and_then(|total| total.checked_add(auth_bytes))
+        .and_then(|total| total.checked_add(state_bytes))
+        .ok_or_else(|| {
+            RecordError::ResourceLimit("total encoded evidence size overflow".to_string())
+        })?;
+    if encoded_evidence_bytes > MAX_TOTAL_EVIDENCE_BASE64_BYTES {
+        return Err(RecordError::ResourceLimit(format!(
+            "encoded evidence is {encoded_evidence_bytes} bytes; maximum is \
+             {MAX_TOTAL_EVIDENCE_BASE64_BYTES}"
         )));
     }
     Ok(())
@@ -1486,6 +1521,25 @@ mod tests {
         assert!(matches!(
             record(&snapshot, RecordOptions::default()),
             Err(RecordError::ResourceLimit(message)) if message.contains("envelope")
+        ));
+    }
+
+    #[test]
+    fn aggregate_evidence_size_is_rejected_before_decode() {
+        let each = MAX_TOTAL_EVIDENCE_BASE64_BYTES / 2 + 1;
+        assert!(each <= MAX_XDR_BASE64_BYTES);
+        let snapshot = EvidenceSnapshot::from_import(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            "A".repeat(each),
+            Some("A".repeat(each)),
+            None,
+            None,
+            true,
+        );
+
+        assert!(matches!(
+            record(&snapshot, RecordOptions::default()),
+            Err(RecordError::ResourceLimit(message)) if message.contains("encoded evidence")
         ));
     }
 

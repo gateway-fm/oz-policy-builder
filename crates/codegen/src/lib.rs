@@ -78,6 +78,8 @@ pub enum CodegenError {
     TemplateFamily(String),
     #[error("E_CODEGEN_KEY: external signer key is not valid hex")]
     KeyHex,
+    #[error("E_CODEGEN_RESOURCE_LIMIT: generated crate is {actual} bytes; maximum is {maximum}")]
+    ResourceLimit { actual: usize, maximum: usize },
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -109,6 +111,9 @@ struct NormCall<'a> {
 }
 
 const CODEGEN_VERSION: u32 = 1;
+/// Must remain equal to build-runner's input ceiling. Enforcing it at generation keeps a caller
+/// from receiving an artifact that the very next Phase 1 stage necessarily refuses.
+const MAX_GENERATED_CRATE_BYTES: usize = 2 * 1024 * 1024;
 
 pub fn normalized_input_hash(
     rule: &RuleSpec,
@@ -178,6 +183,21 @@ pub fn generate(
     files.insert("Cargo.toml".to_string(), emit_cargo_toml(&crate_name, pins));
     files.insert("rust-toolchain.toml".to_string(), emit_rust_toolchain(pins));
     files.insert("src/lib.rs".to_string(), emit_lib(&render_rule, &hash));
+
+    let generated_bytes = files.values().try_fold(0usize, |total, body| {
+        total
+            .checked_add(body.len())
+            .ok_or(CodegenError::ResourceLimit {
+                actual: usize::MAX,
+                maximum: MAX_GENERATED_CRATE_BYTES,
+            })
+    })?;
+    if generated_bytes > MAX_GENERATED_CRATE_BYTES {
+        return Err(CodegenError::ResourceLimit {
+            actual: generated_bytes,
+            maximum: MAX_GENERATED_CRATE_BYTES,
+        });
+    }
 
     Ok(GeneratedCrate {
         crate_name,
@@ -1280,14 +1300,57 @@ mod tests {
             );
         }
 
-        /// A dynamic predicate carrying an external signer emits neither the key constant nor
-        /// anything that would reference it.
+        #[test]
+        fn maximum_rule_shape_stays_within_the_builder_input_limit() {
+            let large_scval = scval_b64(ScVal::Bytes(ScBytes(
+                vec![0xabu8; 60 * 1024].try_into().unwrap(),
+            )));
+            let mut spec = golden_spec().spec().clone();
+            let rule = &mut spec.rules[0];
+            rule.policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+            rule.allowed_calls = (0..ozpb_policy_spec::MAX_CALLS_PER_RULE)
+                .map(|call_index| AllowedCall {
+                    fn_name: format!("f_{call_index:02}"),
+                    args: (0..ozpb_policy_spec::MAX_ARGS_PER_CALL)
+                        .map(|arg_index| {
+                            let constraint = if call_index == 0 && arg_index < 4 {
+                                Constraint::EqScval {
+                                    xdr_base64: large_scval.clone(),
+                                }
+                            } else {
+                                Constraint::EqI128 {
+                                    value: "0".to_string(),
+                                }
+                            };
+                            ArgConstraint {
+                                index: arg_index as u32,
+                                provenance: Provenance::ObservedExact,
+                                constraint,
+                            }
+                        })
+                        .collect(),
+                    justified_by: vec!["recordings[0]/auth[0]/root".to_string()],
+                })
+                .collect();
+
+            let validated = spec
+                .validate()
+                .expect("the published maximum per-rule collection shape must validate");
+            let generated = generate(&validated, 0, &Pins::default())
+                .expect("the maximum accepted rule must fit the builder input boundary");
+            let bytes: usize = generated.files.values().map(String::len).sum();
+            assert!(
+                bytes <= MAX_GENERATED_CRATE_BYTES,
+                "generated {bytes} bytes"
+            );
+        }
+
+        /// A dynamic predicate carrying named signers compiles none of them into the artifact.
         ///
-        /// Spec validation permits the combination — it only forbids `strict_signer_set` on a
-        /// dynamic rule — so it is reachable, and it is the shape where the compiled-in signer
-        /// set and the rule's signer list disagree. Get it wrong in either direction and the
-        /// generated crate carries a constant nothing uses, an import nothing uses, or a
-        /// reference to a constant that was never emitted; the last does not compile at all.
+        /// The rule's list is irrelevant for this predicate: runtime `context_rule.signers` are
+        /// authoritative. Get it wrong and the generated crate carries constants/imports with no
+        /// use or, worse, silently narrows the dynamic rule to a stale compiled list.
         #[test]
         fn a_dynamic_predicate_compiles_in_no_signer_even_when_the_rule_carries_one() {
             let mut spec = golden_spec().spec().clone();
@@ -1295,23 +1358,21 @@ mod tests {
             rule.authorization.kind = PredicateKind::AnyOfCurrentRuleSigners;
             // Dynamic rules may not be strict; spec validation rejects the pair.
             rule.authorization.strict_signer_set = false;
-            rule.authorization.signers.push(SignerSpec::External {
-                verifier: ozpb_synthesizer::fixtures::golden_token_strkey(),
-                verifier_code_hash: ozpb_domain::sha256(b"external-verifier-code"),
-                key_hex: hex::encode([0x5au8; 32]),
+            rule.authorization.signers.push(SignerSpec::Delegated {
+                address: ozpb_synthesizer::fixtures::golden_merchant_strkey(),
             });
             let signer_count = rule.authorization.signers.len();
             let spec = spec
                 .validate()
                 .expect("a dynamic rule carrying signers is a valid spec");
-            // Non-vacuity: the point is that the rule *does* carry an external signer.
+            // Non-vacuity: the point is that the rule *does* carry named signers.
             assert_eq!(
                 signer_count, 2,
                 "the rule must carry the signers under test"
             );
 
             let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept a dynamic rule carrying an external signer")
+                .expect("codegen must accept a dynamic rule carrying named signers")
                 .files["src/lib.rs"]
                 .clone();
 
@@ -1406,6 +1467,9 @@ mod tests {
         // named constant so the "a ValidatedSpec always generates compilable Rust" invariant
         // holds across the full i128 range (§4.4).
         let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
         spec.rules[0].allowed_calls[0].args[2].constraint = ozpb_policy_spec::Constraint::EqI128 {
             value: i128::MIN.to_string(),
         };
