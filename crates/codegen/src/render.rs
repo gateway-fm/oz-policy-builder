@@ -34,6 +34,21 @@ use std::fmt;
 pub const MAX_WIDTH: usize = 100;
 const ARRAY_WIDTH: usize = 60;
 
+/// The constant holding signer `index`'s external key.
+///
+/// Names for emitted constants are built here, from positions, so that the identifier in the
+/// generated source cannot carry recorded text — the same rule the literal types above enforce
+/// for values. Emission calls this for the reference and `render_signer_key_const` for the
+/// definition, so the two spellings cannot drift apart.
+pub fn signer_key_name(index: usize) -> String {
+    format!("SIGNER_{index}_KEY")
+}
+
+/// The constant holding the XDR that argument `arg` of call `call` must equal.
+pub fn arg_xdr_name(call: usize, arg: u32) -> String {
+    format!("CALL_{call}_ARG_{arg}_XDR")
+}
+
 /// A Stellar strkey, proven decodable (checksum included) by `stellar_strkey`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Strkey(String);
@@ -167,6 +182,16 @@ impl ByteArray {
             .map_err(|_| CodegenError::KeyHex)
     }
 
+    /// `const SIGNER_<index>_KEY: [u8; N] = …;` — signer `index`'s external key.
+    pub fn render_signer_key_const(&self, index: usize) -> String {
+        self.render_const(&signer_key_name(index))
+    }
+
+    /// `const CALL_<call>_ARG_<arg>_XDR: [u8; N] = …;` — the XDR an argument must equal.
+    pub fn render_arg_xdr_const(&self, call: usize, arg: u32) -> String {
+        self.render_const(&arg_xdr_name(call, arg))
+    }
+
     /// A module-level `const` item holding these bytes: `const NAME: [u8; N] = [0xab, 0xcd];`.
     ///
     /// Hoisted to a constant rather than written at the point of use because the use sites sit
@@ -175,9 +200,12 @@ impl ByteArray {
     /// `array_width` and a greedy fill into `max_width` lines otherwise — which is what rustfmt
     /// does to an array of short elements, so it reformats neither form.
     ///
-    /// `name` is generated here from signer and argument positions, never from a recorded
-    /// value, so nothing caller-controlled reaches the identifier.
-    pub fn render_const(&self, name: &str) -> String {
+    /// Private, and reached only through the two wrappers above: `name` lands unescaped in an
+    /// identifier position, so the only way to reach it is with a name this module built from
+    /// integers. A `&str` parameter on a callable surface would be the one place in here where a
+    /// value's safety rested on the caller remembering, which is what the rest of the module
+    /// exists to avoid.
+    fn render_const(&self, name: &str) -> String {
         let items: Vec<String> = self.0.iter().map(|byte| format!("0x{byte:02x}")).collect();
         let head = format!("const {name}: [u8; {}] = ", self.0.len());
         let flat = format!("[{}]", items.join(", "));
@@ -361,8 +389,24 @@ impl RenderRule {
             .any(|arg| matches!(arg.constraint, RenderConstraint::EqScval(_)))
     }
 
+    /// The signers compiled into the artifact: none under a dynamic predicate, which is
+    /// evaluated against `context_rule.signers` at run time instead. Spec validation permits a
+    /// dynamic rule to carry signers regardless, so emission has to ask this rather than ask
+    /// whether the rule *has* signers — and asking it in one place is what keeps the compiled-in
+    /// key constants, the `Bytes` import and the `expected_signers` body from disagreeing.
+    pub fn compiled_signers(&self) -> &[RenderSigner] {
+        if self.is_dynamic_predicate() {
+            &[]
+        } else {
+            &self.signers
+        }
+    }
+
+    /// True when a signer *compiled into the artifact* carries an external key. That, and not the
+    /// presence of one on the rule, is what puts a key constant and the `Bytes` import in the
+    /// emitted source — a rule whose signers are read at run time emits neither.
     pub fn has_external_signer(&self) -> bool {
-        self.signers
+        self.compiled_signers()
             .iter()
             .any(|signer| matches!(signer, RenderSigner::External { .. }))
     }

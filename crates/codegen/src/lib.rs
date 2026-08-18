@@ -312,8 +312,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     let template_family = &rule.template_family;
     let has_state = rule.has_state();
     let has_scval = rule.has_scval();
-    let has_external = rule.has_external_signer();
     let dynamic = rule.is_dynamic_predicate();
+    // The signers compiled into the artifact — empty under a dynamic predicate. Everything that
+    // depends on them reads this one slice: the `Bytes` import, the external-key constants and
+    // the `expected_signers` body. A constant emitted without its use site is a dead-code warning
+    // in a shipped crate, an import without one is an unused-import warning, and a use site
+    // without its constant does not compile — so the three cannot be allowed to disagree.
+    let compiled_signers = rule.compiled_signers();
+    let has_external = rule.has_external_signer();
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -401,19 +407,18 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     // Recorded byte strings — an external signer's key, an `ScVal` an argument must equal — are
     // the only emitted literals whose length is not fixed, so they live here rather than at the
-    // point of use: at module level their layout depends on nothing but their own length.
-    // Names come from signer and argument positions only (see `ByteArray::render_const`).
-    if !dynamic {
-        for (index, signer) in rule.signers.iter().enumerate() {
-            if let RenderSigner::External { key, .. } = signer {
-                out.push_str(&key.render_const(&format!("SIGNER_{index}_KEY")));
-            }
+    // point of use: at module level their layout depends on nothing but their own length. Their
+    // names are built from signer and argument positions inside `render`, so no recorded value
+    // reaches an identifier.
+    for (index, signer) in compiled_signers.iter().enumerate() {
+        if let RenderSigner::External { key, .. } = signer {
+            out.push_str(&key.render_signer_key_const(index));
         }
     }
     for (ci, call) in rule.calls.iter().enumerate() {
         for arg in &call.args {
             if let RenderConstraint::EqScval(bytes) = &arg.constraint {
-                out.push_str(&bytes.render_const(&format!("CALL_{ci}_ARG_{}_XDR", arg.index)));
+                out.push_str(&bytes.render_arg_xdr_const(ci, arg.index));
             }
         }
     }
@@ -430,13 +435,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         // a strkey is always 56 characters, so the argument list is 61 and exceeds rustfmt's
         // `fn_call_width` of 60 whatever the surrounding indentation. Emitting it on one line
         // meant every generated policy failed `cargo fmt --check`.
-        for (index, signer) in rule.signers.iter().enumerate() {
+        for (index, signer) in compiled_signers.iter().enumerate() {
             match signer {
                 RenderSigner::Delegated(address) => out.push_str(&format!(
                     "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
                 )),
                 RenderSigner::External { verifier, .. } => out.push_str(&format!(
-                    "        Signer::External(\n            Address::from_str(\n                e,\n                \"{verifier}\"\n            ),\n            Bytes::from_slice(e, &SIGNER_{index}_KEY)\n        ),\n"
+                    "        Signer::External(\n            Address::from_str(\n                e,\n                \"{verifier}\"\n            ),\n            Bytes::from_slice(e, &{})\n        ),\n",
+                    render::signer_key_name(index)
                 )),
             }
         }
@@ -1184,6 +1190,61 @@ mod tests {
             assert!(
                 wide.is_empty(),
                 "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
+            );
+        }
+
+        /// A dynamic predicate carrying an external signer emits neither the key constant nor
+        /// anything that would reference it.
+        ///
+        /// Spec validation permits the combination — it only forbids `strict_signer_set` on a
+        /// dynamic rule — so it is reachable, and it is the shape where the compiled-in signer
+        /// set and the rule's signer list disagree. Get it wrong in either direction and the
+        /// generated crate carries a constant nothing uses, an import nothing uses, or a
+        /// reference to a constant that was never emitted; the last does not compile at all.
+        #[test]
+        fn a_dynamic_predicate_compiles_in_no_signer_even_when_the_rule_carries_one() {
+            let mut spec = golden_spec().spec().clone();
+            let rule = &mut spec.rules[0];
+            rule.authorization.kind = PredicateKind::AnyOfCurrentRuleSigners;
+            // Dynamic rules may not be strict; spec validation rejects the pair.
+            rule.authorization.strict_signer_set = false;
+            rule.authorization.signers.push(SignerSpec::External {
+                verifier: ozpb_synthesizer::fixtures::golden_token_strkey(),
+                verifier_code_hash: ozpb_domain::sha256(b"external-verifier-code"),
+                key_hex: hex::encode([0x5au8; 32]),
+            });
+            let signer_count = rule.authorization.signers.len();
+            let spec = spec
+                .validate()
+                .expect("a dynamic rule carrying signers is a valid spec");
+            // Non-vacuity: the point is that the rule *does* carry an external signer.
+            assert_eq!(
+                signer_count, 2,
+                "the rule must carry the signers under test"
+            );
+
+            let source = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept a dynamic rule carrying an external signer")
+                .files["src/lib.rs"]
+                .clone();
+
+            syn::parse_file(&source).expect("generated source must parse");
+            for absent in [
+                "SIGNER_",
+                "expected_signers",
+                // The only use of `Bytes` in this shape would have been the key.
+                "Bytes",
+            ] {
+                assert!(
+                    !source.contains(absent),
+                    "a dynamic predicate compiles in no signer, so {absent:?} has no use here:\
+                     \n{source}"
+                );
+            }
+            // What it reads instead.
+            assert!(
+                source.contains("matched_count(&authenticated_signers, &context_rule.signers)"),
+                "a dynamic predicate must be evaluated against the rule's live signers:\n{source}"
             );
         }
 
