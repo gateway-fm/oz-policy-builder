@@ -22,7 +22,9 @@
 //! stops paying rent.
 #![no_std]
 
-use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val, Vec, auth::Context, contract, contracterror, contractimpl, contracttype, panic_with_error};
+use soroban_sdk::auth::Context;
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error};
+use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val, Vec};
 use stellar_accounts::policies::Policy;
 use stellar_accounts::smart_account::{ContextRule, Signer};
 
@@ -58,7 +60,10 @@ const MAX_CALLS: u32 = 12;
 fn expected_signers(e: &Env) -> Vec<Signer> {
     soroban_sdk::vec![
         e,
-        Signer::Delegated(Address::from_str(e, "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI")),
+        Signer::Delegated(Address::from_str(
+            e,
+            "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
+        )),
     ]
 }
 
@@ -95,7 +100,10 @@ fn check_call_0(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {
     };
     match Address::try_from_val(e, &v1) {
         Ok(a) => {
-            if a != Address::from_str(e, "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC") {
+            if a != Address::from_str(
+                e,
+                "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC",
+            ) {
                 return false;
             }
         }
@@ -167,10 +175,11 @@ impl Policy for GeneratedPolicy {
         if c.contract != Address::from_str(e, TARGET) {
             panic_with_error!(e, PolicyError::TargetMismatch);
         }
-        if !(c.fn_name == Symbol::new(e, "transfer")) {
+        let fn_0_ok = c.fn_name == Symbol::new(e, "transfer");
+        if !fn_0_ok {
             panic_with_error!(e, PolicyError::FunctionNotAllowed);
         }
-        let tuple_ok = c.fn_name == Symbol::new(e, "transfer") && check_call_0(e, &c.args, &smart_account);
+        let tuple_ok = fn_0_ok && check_call_0(e, &c.args, &smart_account);
         if !tuple_ok {
             panic_with_error!(e, PolicyError::NoTupleMatched);
         }

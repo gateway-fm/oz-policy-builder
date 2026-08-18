@@ -20,6 +20,20 @@ use ozpb_policy_spec::{
 };
 use std::fmt;
 
+/// Two of rustfmt's default widths, which the emitted layout has to agree with.
+///
+/// The generated crate is a shipped artifact and `cargo fmt --check` covers it, so emission has
+/// to produce text rustfmt would leave alone. Everywhere else that is achieved by keeping each
+/// emitted line short enough that there is nothing to reflow; a byte array is the exception,
+/// because its length comes from the recorded value and has no bound. So its layout is derived
+/// from the same two numbers rustfmt uses: `array_width` decides whether the literal stays on
+/// one line, `max_width` decides how many elements a wrapped line holds.
+///
+/// Deriving the layout keeps codegen a pure function of the spec — running rustfmt over the
+/// output instead would make the rustfmt version an input to every shipped wasm hash.
+const MAX_WIDTH: usize = 100;
+const ARRAY_WIDTH: usize = 60;
+
 /// A Stellar strkey, proven decodable (checksum included) by `stellar_strkey`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Strkey(String);
@@ -152,19 +166,37 @@ impl ByteArray {
             .map(ByteArray)
             .map_err(|_| CodegenError::KeyHex)
     }
-}
 
-impl fmt::Display for ByteArray {
-    /// `[0xab, 0xcd]` — hex bytes, matching the emitted form exactly.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[")?;
-        for (index, byte) in self.0.iter().enumerate() {
-            if index > 0 {
-                f.write_str(", ")?;
-            }
-            write!(f, "0x{byte:02x}")?;
+    /// A module-level `const` item holding these bytes: `const NAME: [u8; N] = [0xab, 0xcd];`.
+    ///
+    /// Hoisted to a constant rather than written at the point of use because the use sites sit
+    /// several levels deep, where rustfmt breaks a long array across five nested lines. At
+    /// module level the indentation is fixed, so the layout is one line while the literal fits
+    /// `array_width` and a greedy fill into `max_width` lines otherwise — which is what rustfmt
+    /// does to an array of short elements, so it reformats neither form.
+    ///
+    /// `name` is generated here from signer and argument positions, never from a recorded
+    /// value, so nothing caller-controlled reaches the identifier.
+    pub fn render_const(&self, name: &str) -> String {
+        let items: Vec<String> = self.0.iter().map(|byte| format!("0x{byte:02x}")).collect();
+        let head = format!("const {name}: [u8; {}] = ", self.0.len());
+        let flat = format!("[{}]", items.join(", "));
+        let one_line = format!("{head}{flat};");
+        if flat.len() <= ARRAY_WIDTH && one_line.len() <= MAX_WIDTH {
+            return format!("{one_line}\n");
         }
-        f.write_str("]")
+        // `0xNN, ` occupies six columns; the last element on a line drops the trailing space,
+        // and the last line of all carries a trailing comma.
+        let indent = "    ";
+        let per_line = (MAX_WIDTH + 2 - indent.len()) / 6;
+        let mut out = format!("{head}[\n");
+        for row in items.chunks(per_line) {
+            out.push_str(indent);
+            out.push_str(&row.join(", "));
+            out.push_str(",\n");
+        }
+        out.push_str("];\n");
+        out
     }
 }
 

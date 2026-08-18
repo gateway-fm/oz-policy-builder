@@ -343,33 +343,38 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     out.push_str("#![no_std]\n\n");
 
     // Imports (conditional to keep the generated crate warning-free).
-    let mut sdk_imports: Vec<&str> = vec![
-        "auth::Context",
+    //
+    // Several statements rather than one brace group naming every item: that group ran to 148
+    // characters, so rustfmt reflowed it, and the fill it picks depends on which items the rule
+    // needs — a formatting choice that would then vary from policy to policy. Split this way no
+    // statement exceeds 89 characters for any combination below, so nothing reflows. The order
+    // is `reorder_imports`': module paths (`Ident`) before brace groups (`List`), and inside a
+    // group snake_case before CamelCase — which is why types and macros are two groups rather
+    // than one sorted list.
+    out.push_str("use soroban_sdk::auth::Context;\n");
+    if has_scval {
+        out.push_str("use soroban_sdk::xdr::ToXdr;\n");
+    }
+    let mut sdk_macros: Vec<&str> = vec![
         "contract",
         "contracterror",
         "contractimpl",
         "panic_with_error",
-        "Address",
-        "Env",
-        "Symbol",
-        "TryFromVal",
-        "Val",
-        "Vec",
     ];
     if has_state {
-        sdk_imports.push("contracttype");
+        sdk_macros.push("contracttype");
     }
-    if has_scval || has_external {
-        sdk_imports.push("Bytes");
-    }
-    if has_scval {
-        sdk_imports.push("xdr::ToXdr");
-    }
-    sdk_imports.sort();
+    sdk_macros.sort();
     out.push_str(&format!(
         "use soroban_sdk::{{{}}};\n",
-        sdk_imports.join(", ")
+        sdk_macros.join(", ")
     ));
+    let mut sdk_types: Vec<&str> = vec!["Address", "Env", "Symbol", "TryFromVal", "Val", "Vec"];
+    if has_scval || has_external {
+        sdk_types.push("Bytes");
+    }
+    sdk_types.sort();
+    out.push_str(&format!("use soroban_sdk::{{{}}};\n", sdk_types.join(", ")));
     out.push_str("use stellar_accounts::policies::Policy;\n");
     out.push_str("use stellar_accounts::smart_account::{ContextRule, Signer};\n\n");
 
@@ -394,6 +399,24 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     if let Some(max_calls) = rule.max_calls_per_installation {
         out.push_str(&format!("const MAX_CALLS: u32 = {max_calls};\n"));
     }
+    // Recorded byte strings — an external signer's key, an `ScVal` an argument must equal — are
+    // the only emitted literals whose length is not fixed, so they live here rather than at the
+    // point of use: at module level their layout depends on nothing but their own length.
+    // Names come from signer and argument positions only (see `ByteArray::render_const`).
+    if !dynamic {
+        for (index, signer) in rule.signers.iter().enumerate() {
+            if let RenderSigner::External { key, .. } = signer {
+                out.push_str(&key.render_const(&format!("SIGNER_{index}_KEY")));
+            }
+        }
+    }
+    for (ci, call) in rule.calls.iter().enumerate() {
+        for arg in &call.args {
+            if let RenderConstraint::EqScval(bytes) = &arg.constraint {
+                out.push_str(&bytes.render_const(&format!("CALL_{ci}_ARG_{}_XDR", arg.index)));
+            }
+        }
+    }
     out.push('\n');
 
     // Expected signer set (sorted canonical order — deterministic).
@@ -402,13 +425,18 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "fn expected_signers(e: &Env) -> Vec<Signer> {\n    soroban_sdk::vec![\n        e,\n",
         );
         // Already in canonical signer order — see `RenderRule::from_rule`.
-        for signer in &rule.signers {
+        //
+        // `Address::from_str` is written across four lines because rustfmt writes it that way:
+        // a strkey is always 56 characters, so the argument list is 61 and exceeds rustfmt's
+        // `fn_call_width` of 60 whatever the surrounding indentation. Emitting it on one line
+        // meant every generated policy failed `cargo fmt --check`.
+        for (index, signer) in rule.signers.iter().enumerate() {
             match signer {
                 RenderSigner::Delegated(address) => out.push_str(&format!(
-                    "        Signer::Delegated(Address::from_str(e, \"{address}\")),\n"
+                    "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
                 )),
-                RenderSigner::External { verifier, key } => out.push_str(&format!(
-                    "        Signer::External(Address::from_str(e, \"{verifier}\"), Bytes::from_slice(e, &{key})),\n"
+                RenderSigner::External { verifier, .. } => out.push_str(&format!(
+                    "        Signer::External(\n            Address::from_str(\n                e,\n                \"{verifier}\"\n            ),\n            Bytes::from_slice(e, &SIGNER_{index}_KEY)\n        ),\n"
                 )),
             }
         }
@@ -444,11 +472,15 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             ));
             match &arg.constraint {
                 RenderConstraint::EqSelf | RenderConstraint::EqAddress(_) => {
+                    // The literal form is broken across lines for the reason given at
+                    // `expected_signers`: a 56-character strkey puts `Address::from_str`'s
+                    // argument list past rustfmt's `fn_call_width`, so rustfmt splits it here
+                    // too — with a trailing comma, unlike inside the `vec!` above.
                     let cmp = match &arg.constraint {
                         RenderConstraint::EqSelf => "*smart_account != a".to_string(),
-                        RenderConstraint::EqAddress(address) => {
-                            format!("a != Address::from_str(e, \"{address}\")")
-                        }
+                        RenderConstraint::EqAddress(address) => format!(
+                            "a != Address::from_str(\n                e,\n                \"{address}\",\n            )"
+                        ),
                         _ => unreachable!("guarded by the outer arm"),
                     };
                     out.push_str(&format!(
@@ -470,9 +502,11 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
                         "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
                     ));
                 }
-                RenderConstraint::EqScval(bytes) => {
+                // The bytes are a module constant (emitted above), so this line is short
+                // whatever the recorded `ScVal` encodes to.
+                RenderConstraint::EqScval(_) => {
                     out.push_str(&format!(
-                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &{bytes}) {{\n        return false;\n    }}\n"
+                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &CALL_{ci}_ARG_{i}_XDR) {{\n        return false;\n    }}\n"
                     ));
                 }
                 // Handled before the match (arity-only); listed for exhaustiveness.
@@ -536,13 +570,29 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         names.dedup();
         names
     };
-    let known_expr = fn_names
-        .iter()
-        .map(|n| format!("c.fn_name == Symbol::new(e, \"{n}\")"))
+    // One binding per allowed function name, so the comparison against the invoked name is
+    // written once and both checks below read it. Previously each check inlined
+    // `c.fn_name == Symbol::new(e, "…")`, which put the length of the `tuple_ok` line at the
+    // mercy of the recorded function name: `transfer` overshot rustfmt's width by four columns
+    // and `swap_exact_tokens_for_tokens` by twenty-seven, and rustfmt broke each differently.
+    // A binding is at most 86 columns for the longest symbol Soroban accepts.
+    for (fi, name) in fn_names.iter().enumerate() {
+        out.push_str(&format!(
+            "        let fn_{fi}_ok = c.fn_name == Symbol::new(e, \"{name}\");\n"
+        ));
+    }
+    let known_expr = (0..fn_names.len())
+        .map(|fi| format!("fn_{fi}_ok"))
         .collect::<Vec<_>>()
         .join(" || ");
+    // A single allowed name needs no parens around the negation (clippy: unnecessary_parens).
+    let known_test = if fn_names.len() > 1 {
+        format!("!({known_expr})")
+    } else {
+        format!("!{known_expr}")
+    };
     out.push_str(&format!(
-        "        if !({known_expr}) {{\n            panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }}\n"
+        "        if {known_test} {{\n            panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }}\n"
     ));
     // `&&` binds tighter than `||`, so per-disjunct parens are unnecessary; a single
     // allowed call must emit no wrapping parens at all (clippy: unnecessary_parens).
@@ -552,10 +602,11 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         .iter()
         .enumerate()
         .map(|(ci, call)| {
-            let inner = format!(
-                "c.fn_name == Symbol::new(e, \"{}\") && check_call_{ci}(e, &c.args, &smart_account)",
-                call.fn_name
-            );
+            let fi = fn_names
+                .iter()
+                .position(|name| *name == call.fn_name.as_str())
+                .unwrap_or_else(|| unreachable!("fn_names is built from rule.calls"));
+            let inner = format!("fn_{fi}_ok && check_call_{ci}(e, &c.args, &smart_account)");
             if multi {
                 format!("({inner})")
             } else {
@@ -1027,7 +1078,105 @@ mod tests {
                         "generated source does not parse as Rust: {e}\n--- source ---\n{source}"
                     ))
                 })?;
+                let wide = overlong_code_lines(source);
+                if !wide.is_empty() {
+                    return Err(proptest::test_runner::TestCaseError::fail(format!(
+                        "generated source has lines rustfmt would reflow: {wide:?}\
+                         \n--- source ---\n{source}"
+                    )));
+                }
             }
+        }
+
+        /// Lines of emitted code that rustfmt would have to reflow, as `(line, columns)`.
+        ///
+        /// Comments are excluded: rustfmt does not rewrap them (`wrap_comments` is off by
+        /// default), and the generated header quotes a template-family identifier that can
+        /// legitimately carry a `//!` line past the width.
+        fn overlong_code_lines(source: &str) -> Vec<(usize, usize)> {
+            const MAX_WIDTH: usize = 100;
+            source
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| !line.trim_start().starts_with("//"))
+                .map(|(index, line)| (index + 1, line.chars().count()))
+                .filter(|(_, columns)| *columns > MAX_WIDTH)
+                .collect()
+        }
+
+        /// Emission keeps every line of code inside rustfmt's default width.
+        ///
+        /// That is what makes the generated crates `cargo fmt --check`-clean without running
+        /// rustfmt over codegen's output, which would put the rustfmt version among the inputs
+        /// to every shipped wasm hash. The fmt gate adjudicates the two committed crates; this
+        /// covers the shapes they do not contain, choosing the awkward ones deliberately: the
+        /// longest symbol Soroban accepts, an `ScVal` long enough to wrap, an external signer's
+        /// key, and more than one allowed call.
+        #[test]
+        fn emitted_code_stays_inside_rustfmt_width() {
+            let long_scval = Constraint::EqScval {
+                xdr_base64: base64::engine::general_purpose::STANDARD.encode([0xabu8; 40]),
+            };
+            let merchant = Constraint::EqAddress {
+                value: AddressRef::address(ozpb_synthesizer::fixtures::golden_merchant_strkey()),
+            };
+            let justified = vec!["recordings[0]/auth[0]/root".to_string()];
+            let mut spec = golden_spec().spec().clone();
+            let rule = &mut spec.rules[0];
+            rule.allowed_calls = vec![
+                AllowedCall {
+                    // The longest symbol Soroban accepts: the shape that used to decide how
+                    // rustfmt broke the `tuple_ok` line.
+                    fn_name: "a".repeat(32),
+                    args: vec![
+                        ArgConstraint {
+                            index: 0,
+                            provenance: provenance_for(&long_scval),
+                            constraint: long_scval,
+                        },
+                        ArgConstraint {
+                            index: 1,
+                            provenance: provenance_for(&merchant),
+                            constraint: merchant,
+                        },
+                    ],
+                    justified_by: justified.clone(),
+                },
+                AllowedCall {
+                    fn_name: "transfer".to_string(),
+                    args: vec![],
+                    justified_by: justified,
+                },
+            ];
+            rule.authorization.signers.push(SignerSpec::External {
+                verifier: ozpb_synthesizer::fixtures::golden_token_strkey(),
+                verifier_code_hash: ozpb_domain::sha256(b"external-verifier-code"),
+                key_hex: hex::encode([0x5au8; 32]),
+            });
+            let spec = spec.validate().expect("the awkward spec must validate");
+            let source = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept the awkward spec")
+                .files["src/lib.rs"]
+                .clone();
+
+            // Non-vacuity: a pass means nothing unless the awkward shapes are really emitted.
+            for expected in [
+                "const SIGNER_1_KEY: [u8; 32] = [",
+                "const CALL_0_ARG_0_XDR: [u8; 40] = [",
+                "let fn_1_ok = ",
+                "Signer::External(",
+            ] {
+                assert!(
+                    source.contains(expected),
+                    "this test does not exercise what it claims: no {expected:?} in\n{source}"
+                );
+            }
+
+            let wide = overlong_code_lines(&source);
+            assert!(
+                wide.is_empty(),
+                "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
+            );
         }
 
         /// The real-compile counterpart lives in `ozpb-build-runner`
