@@ -161,7 +161,13 @@ fn eval_ctx(
     }
 }
 
-fn transfer_inv(contract: &str, fn_name: &str, from: &str, to: &str, amount: i128) -> ev::Invocation {
+fn transfer_inv(
+    contract: &str,
+    fn_name: &str,
+    from: &str,
+    to: &str,
+    amount: i128,
+) -> ev::Invocation {
     ev::Invocation {
         contract: contract.to_string(),
         fn_name: fn_name.to_string(),
@@ -182,10 +188,16 @@ fn assert_agreement(
 ) {
     match (&verdict, &contract_result) {
         (ev::Verdict::Permit, Ok(())) => {
-            assert!(expect_permit, "{name}: both permitted but the case expected denial");
+            assert!(
+                expect_permit,
+                "{name}: both permitted but the case expected denial"
+            );
         }
         (ev::Verdict::Deny(reason), Err(code)) => {
-            assert!(!expect_permit, "{name}: both denied but the case expected permit");
+            assert!(
+                !expect_permit,
+                "{name}: both denied but the case expected permit"
+            );
             assert_eq!(
                 expected_code(reason),
                 *code,
@@ -227,7 +239,13 @@ fn original_recorded_invocation_permits_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("original", verdict, contract, true);
 }
@@ -242,7 +260,13 @@ fn zero_signers_denies_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("zero-signers", verdict, contract, false);
 }
@@ -256,7 +280,13 @@ fn unrecognized_signer_denies_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&s], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("stranger-signer", verdict, contract, false);
 }
@@ -272,7 +302,13 @@ fn strict_mode_denies_grown_and_swapped_signer_sets_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d, &s], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("strict-grown", verdict, contract, false);
 
@@ -283,7 +319,13 @@ fn strict_mode_denies_grown_and_swapped_signer_sets_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&s], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("strict-swapped", verdict, contract, false);
 }
@@ -298,7 +340,13 @@ fn amount_mutations_deny_in_both() {
         let verdict = ev::evaluate(
             &w.spec,
             &eval_ctx(&account_str(), 100, &[&d], &[&d], Some(0)),
-            &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), amount),
+            &transfer_inv(
+                &token_str(),
+                "transfer",
+                &account_str(),
+                &merchant_str(),
+                amount,
+            ),
         );
         assert_agreement(&format!("amount-{amount}"), verdict, contract, false);
     }
@@ -314,7 +362,13 @@ fn recipient_and_sender_mutations_deny_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &stranger(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &stranger(),
+            AMOUNT,
+        ),
     );
     assert_agreement("recipient", verdict, contract, false);
 
@@ -326,7 +380,13 @@ fn recipient_and_sender_mutations_deny_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &merchant_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &merchant_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("from-not-self", verdict, contract, false);
 }
@@ -353,7 +413,13 @@ fn function_and_target_mutations_deny_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "approve", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "approve",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("function", verdict, contract, false);
 
@@ -403,7 +469,13 @@ fn arg_arity_and_type_confusion_deny_in_both() {
         })
     };
     let contract = w.enforce(&ctx, &[&d], &[&d]);
-    let mut inv = transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT);
+    let mut inv = transfer_inv(
+        &token_str(),
+        "transfer",
+        &account_str(),
+        &merchant_str(),
+        AMOUNT,
+    );
     inv.args.push(ev::ArgValue::I128(1));
     let verdict = ev::evaluate(
         &w.spec,
@@ -428,7 +500,13 @@ fn arg_arity_and_type_confusion_deny_in_both() {
         })
     };
     let contract = w.enforce(&ctx, &[&d], &[&d]);
-    let mut inv = transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT);
+    let mut inv = transfer_inv(
+        &token_str(),
+        "transfer",
+        &account_str(),
+        &merchant_str(),
+        AMOUNT,
+    );
     inv.args[1] = ev::ArgValue::I128(42);
     let verdict = ev::evaluate(
         &w.spec,
@@ -443,13 +521,21 @@ fn expiry_boundary_agrees_in_both() {
     let d = delegate();
     // One past valid_until: deny.
     let w = setup(true);
-    w.env.ledger().with_mut(|l| l.sequence_number = VALID_UNTIL + 1);
+    w.env
+        .ledger()
+        .with_mut(|l| l.sequence_number = VALID_UNTIL + 1);
     let ctx = w.transfer_ctx(&w.account, &merchant_str(), AMOUNT);
     let contract = w.enforce(&ctx, &[&d], &[&d]);
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), VALID_UNTIL + 1, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("expired", verdict, contract, false);
 
@@ -461,7 +547,13 @@ fn expiry_boundary_agrees_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), VALID_UNTIL, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("boundary", verdict, contract, true);
 }
@@ -476,7 +568,13 @@ fn missing_state_denies_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d], None),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("missing-state", verdict, contract, false);
 }
@@ -496,7 +594,13 @@ fn lifetime_call_cap_exhausts_in_both_with_committed_state() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account_str(), 100, &[&d], &[&d], Some(MAX_CALLS)),
-        &transfer_inv(&token_str(), "transfer", &account_str(), &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account_str(),
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("call-cap", verdict, contract, false);
 }
@@ -523,7 +627,9 @@ fn self_marker_is_account_independent_in_both() {
     w.client.install(&0u32, &rule, &account2);
 
     let ctx = w.transfer_ctx(&account2, &merchant_str(), AMOUNT);
-    let res = w.client.try_enforce(&ctx, &w.signers(&[&d]), &rule, &account2);
+    let res = w
+        .client
+        .try_enforce(&ctx, &w.signers(&[&d]), &rule, &account2);
     let contract = match res {
         Ok(_) => Ok(()),
         Err(Ok(err)) => Err(code_of(err)),
@@ -532,7 +638,13 @@ fn self_marker_is_account_independent_in_both() {
     let verdict = ev::evaluate(
         &w.spec,
         &eval_ctx(&account2_str, 100, &[&d], &[&d], Some(0)),
-        &transfer_inv(&token_str(), "transfer", &account2_str, &merchant_str(), AMOUNT),
+        &transfer_inv(
+            &token_str(),
+            "transfer",
+            &account2_str,
+            &merchant_str(),
+            AMOUNT,
+        ),
     );
     assert_agreement("self-independence", verdict, contract, true);
 }
@@ -560,12 +672,8 @@ fn spec_limits_match_the_upstream_account_limits() {
 #[test]
 fn committed_golden_source_matches_codegen_output() {
     // The compiled crate in this workspace IS the codegen output — no drift allowed.
-    let generated = ozpb_codegen::generate(
-        &fx::golden_spec(),
-        0,
-        &ozpb_codegen::Pins::default(),
-    )
-    .expect("codegen must succeed");
+    let generated = ozpb_codegen::generate(&fx::golden_spec(), 0, &ozpb_codegen::Pins::default())
+        .expect("codegen must succeed");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../golden-transfer-policy");
     for (rel, content) in &generated.files {
         let committed = std::fs::read_to_string(root.join(rel)).expect("golden file exists");

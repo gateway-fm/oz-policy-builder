@@ -148,8 +148,9 @@ impl World {
 
     fn counter_ttl(&self) -> u32 {
         let key = self.counter_key();
-        self.env
-            .as_contract(&self.policy, || self.env.storage().persistent().get_ttl(&key))
+        self.env.as_contract(&self.policy, || {
+            self.env.storage().persistent().get_ttl(&key)
+        })
     }
 
     fn instance_ttl(&self) -> u32 {
@@ -410,9 +411,7 @@ fn the_ttl_target_never_outlives_the_policy_validity_window() {
     // Default `max_entry_ttl` (6_312_000) is larger than the remaining validity window, so the
     // window is the binding clamp and the entry is meant to expire with the rule it guards.
     let w = setup(None);
-    let max = w
-        .env
-        .as_contract(&w.policy, || w.env.storage().max_ttl());
+    let max = w.env.as_contract(&w.policy, || w.env.storage().max_ttl());
     assert!(
         max > VALID_UNTIL,
         "this test only means something while the network limit exceeds the validity window"
