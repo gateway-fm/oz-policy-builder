@@ -86,7 +86,7 @@ pub fn synthesize_policy(
     let decisions: UserDecisions = from_value(&input.decisions)?;
     let signed_registry: SignedSnapshot = from_value(&input.signed_registry_snapshot)?;
     let network = bundles[0].network_id;
-    let mut registry = match registry_trust.checkpoint {
+    let mut registry = match registry_trust.checkpoint.clone() {
         Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
             registry_trust.root_policy.clone(),
             network,
@@ -225,6 +225,7 @@ pub fn registry_trust_from_roots_json(
     Registry::with_pinned_roots(root_policy.clone()).map_err(map_registry_err)?;
     if config
         .checkpoint
+        .as_ref()
         .is_some_and(|checkpoint| checkpoint.version < minimum_version)
     {
         return Err(ToolError::new(

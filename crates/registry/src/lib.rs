@@ -113,12 +113,15 @@ pub struct RootPolicy {
 }
 
 /// Durable anti-rollback/equivocation state persisted by the registry consumer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryCheckpoint {
     pub version: u64,
     pub log_index: u64,
     pub root: Hash32,
+    /// Revocations accepted at this root. The root commits to them, but retaining the set is
+    /// necessary to enforce append-only succession after a process restart.
+    pub revocations: BTreeMap<String, Revocation>,
 }
 
 /// A snapshot plus its root signature (ed25519 over the canonical root hash).
@@ -420,9 +423,11 @@ impl Registry {
             });
         }
         if self.current.is_none() {
-            if let Some(checkpoint) = self.pinned_checkpoint {
+            if let Some(checkpoint) = &self.pinned_checkpoint {
                 if signed.snapshot.version == checkpoint.version {
-                    if root != checkpoint.root || signed.snapshot.log_index != checkpoint.log_index
+                    if root != checkpoint.root
+                        || signed.snapshot.log_index != checkpoint.log_index
+                        || signed.snapshot.revocations != checkpoint.revocations
                     {
                         return Err(RegistryError::Transparency(format!(
                             "snapshot version {} conflicts with the persisted checkpoint",
@@ -441,6 +446,10 @@ impl Registry {
                             checkpoint.root
                         )));
                     }
+                    ensure_revocations_extend(
+                        &checkpoint.revocations,
+                        &signed.snapshot.revocations,
+                    )?;
                 }
             }
         }
@@ -468,21 +477,7 @@ impl Registry {
                     current.root
                 )));
             }
-            for (capability, previous) in &current.snapshot.revocations {
-                match signed.snapshot.revocations.get(capability) {
-                    Some(next) if next == previous => {}
-                    Some(_) => {
-                        return Err(RegistryError::Transparency(format!(
-                            "revocation {capability} was modified after acceptance"
-                        )))
-                    }
-                    None => {
-                        return Err(RegistryError::Transparency(format!(
-                            "revocation {capability} was removed after acceptance"
-                        )))
-                    }
-                }
-            }
+            ensure_revocations_extend(&current.snapshot.revocations, &signed.snapshot.revocations)?;
         }
         self.current = Some(Loaded {
             snapshot: signed.snapshot.clone(),
@@ -513,6 +508,7 @@ impl Registry {
             version: loaded.snapshot.version,
             log_index: loaded.snapshot.log_index,
             root: loaded.root,
+            revocations: loaded.snapshot.revocations.clone(),
         })
     }
 
@@ -569,6 +565,28 @@ impl Registry {
         }
         Ok(())
     }
+}
+
+fn ensure_revocations_extend(
+    previous: &BTreeMap<String, Revocation>,
+    next: &BTreeMap<String, Revocation>,
+) -> Result<(), RegistryError> {
+    for (capability, accepted) in previous {
+        match next.get(capability) {
+            Some(candidate) if candidate == accepted => {}
+            Some(_) => {
+                return Err(RegistryError::Transparency(format!(
+                    "revocation {capability} was modified after acceptance"
+                )))
+            }
+            None => {
+                return Err(RegistryError::Transparency(format!(
+                    "revocation {capability} was removed after acceptance"
+                )))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryError> {
@@ -1172,6 +1190,38 @@ mod tests {
         let mut registry = registry();
         registry.load(&first).unwrap();
         registry.load(&valid_next).unwrap();
+    }
+
+    #[test]
+    fn persisted_checkpoint_preserves_revocation_append_only_state() {
+        let mut first_snapshot = dev::dev_snapshot(network(), 1);
+        first_snapshot.revocations.insert(
+            format!(
+                "account/{}",
+                pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex()
+            ),
+            Revocation {
+                reason: "accepted finding".to_string(),
+                effective_version: 1,
+            },
+        );
+        let first = sign_snapshot(&dev::dev_signing_key(), first_snapshot.clone()).unwrap();
+        let mut original = registry();
+        original.load(&first).unwrap();
+        let checkpoint = original.checkpoint().unwrap();
+
+        let successor = signed_successor(&first_snapshot, dev::dev_snapshot(network(), 2));
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+        };
+        let mut restarted =
+            Registry::with_pinned_roots_for_network_at_checkpoint(roots, network(), checkpoint)
+                .unwrap();
+        assert!(matches!(
+            restarted.load(&successor),
+            Err(RegistryError::Transparency(_))
+        ));
     }
 
     #[test]
