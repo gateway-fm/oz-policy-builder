@@ -60,6 +60,25 @@ jobs:
         working-directory: contracts
         run: cargo clippy --all-targets -- -D warnings
 
+      # The same hole as the step above, left open when clippy was extended to two workspaces
+      # and fmt was not: the host job's `cargo fmt --all --check` cannot reach here either.
+      # 30 differences had accumulated behind it, and 4 of them were in a *generated* crate —
+      # so the omission was not only untidy source, it was a code generator emitting text
+      # rustfmt rewrites, in the artifact this project ships for review.
+      #
+      # Three invocations, because `--all` means "the members of this workspace" and neither
+      # generated crate is a member of one: `contracts` excludes both, each carrying its own
+      # `[profile.release]` so it builds standalone. The first invocation reaches
+      # golden-transfer-policy only through the differential suite's dev-dependency on it — an
+      # edge that exists for testing rather than for coverage, and one the milestone boundary
+      # may remove — and it does not reach soroswap-swap-policy at all, because nothing depends
+      # on that crate. Both are shipped artifacts, so both are named rather than relied upon.
+      - name: fmt (this workspace and the two generated crates it excludes)
+        run: |
+          ( cd contracts && cargo fmt --all --check )
+          ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
+          ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
+
   publication-guard:
     name: publication allowlist (no confidential material leaks)
     runs-on: ubuntu-latest

@@ -17,8 +17,21 @@ bash scripts/check-dep-rules.sh
 # find it — so a single invocation would leave this gate reporting a pass while the contracts
 # workspace held a banned type. That is the shape of defect this gate exists to prevent, and CI
 # lints the two workspaces separately for the same reason.
+#
+# fmt needs four invocations, for a stronger version of the same reason, and had only one until
+# 30 differences had piled up behind it. `--all` means "the members of this workspace", and
+# neither generated policy crate is a member of one: `contracts` excludes both, each carrying its
+# own `[profile.release]` so it builds standalone. Running fmt in `contracts` happens to reach
+# golden-transfer-policy through the differential suite's dev-dependency on it — an edge that
+# exists for testing, not for coverage — and does not reach soroswap-swap-policy at all, because
+# nothing depends on that crate. Both are generated artifacts a reviewer reads, and four of the
+# 30 differences were in one of them: unformatted text there is a defect in the code generator,
+# not in a checked-in file.
 echo "== 2. fmt + clippy (fmt/clippy gates are part of the contract, §4.11) =="
 cargo fmt --all --check
+( cd contracts && cargo fmt --all --check )
+( cd contracts/golden-transfer-policy && cargo fmt --all --check )
+( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 cargo clippy --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --all-targets -- -D warnings )
 
