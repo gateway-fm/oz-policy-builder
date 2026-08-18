@@ -1222,15 +1222,22 @@ mod tests {
                 .collect();
             // What counts as a read is an identifier *token* in code: substring counting
             // would credit a declared name with occurrences inside any longer identifier,
-            // and text in a comment was never a read at all (every comment the emitter
-            // produces is a whole line, so filtering by line prefix is exact). Today's
-            // names happen to make substring and token counts agree — the `_XDR`/`_KEY`
-            // suffix follows the index, so no emitted name nests in another — but the
-            // checker must not lean on the naming scheme it exists to check.
+            // and text in a comment or a string literal was never a read at all. Comments
+            // are dropped by line prefix (every comment the emitter produces is a whole
+            // line); literals are dropped by keeping only the even-numbered segments
+            // between quotes, which is exact for this grammar because
+            // `every_string_literal_in_generated_source_is_a_bare_identifier_or_strkey`
+            // pins emitted literals to one quote-free, backslash-free line. The literal
+            // case is reachable, not theoretical: `TARGET` is a valid Soroban symbol, so a
+            // rule may allow a function of that name and emit `Symbol::new(e, "TARGET")`.
+            // Today's names happen to make substring and token counts agree — the
+            // `_XDR`/`_KEY` suffix follows the index, so no emitted name nests in another —
+            // but the checker must not lean on the naming scheme it exists to check.
             let tokens: Vec<&str> = source
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
-                .flat_map(|line| line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
+                .flat_map(|line| line.split('"').step_by(2))
+                .flat_map(|code| code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
                 .filter(|token| !token.is_empty())
                 .collect();
             let mut problems = Vec::new();
@@ -1299,6 +1306,26 @@ mod tests {
                 unbalanced_constants(commented),
                 vec!["`SIGNER_0_KEY` is declared and never read".to_string()],
                 "a constant read only by its own documentation is dead code"
+            );
+
+            // A string literal is not a read either, and the collision is reachable:
+            // `TARGET` is a valid Soroban symbol, so a spec may name a function after the
+            // constant, and the emitted `Symbol::new(e, "TARGET")` must not keep a constant
+            // alive whose real read has been lost…
+            let quoted = "const TARGET: &str = \"CAAAA\";\n\
+                          let fn_0_ok = c.fn_name == Symbol::new(e, \"TARGET\");\n";
+            assert_eq!(
+                unbalanced_constants(quoted),
+                vec!["`TARGET` is declared and never read".to_string()],
+                "a constant whose name appears only inside a string literal is dead code"
+            );
+            // …nor may a symbol that merely *looks* like a generated constant name conjure
+            // up a read of something never declared.
+            let shaped = "let fn_0_ok = c.fn_name == Symbol::new(e, \"CALL_0_ARG_0_XDR\");\n";
+            assert_eq!(
+                unbalanced_constants(shaped),
+                Vec::<String>::new(),
+                "a quoted symbol shaped like a constant name is not a read of one"
             );
         }
 
