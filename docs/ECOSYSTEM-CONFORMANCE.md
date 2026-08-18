@@ -418,7 +418,7 @@ authenticated signers always deny.
 spec can name a verifier address and a verifier wasm hash, but the runtime OpenZeppelin signer
 value carries only the verifier address and key — nothing at authorization time binds that
 address to the recognized code. Registry recognition of a caller-supplied hash does not prove
-the address runs that code, so validation rejects the shape (`E_SPEC_EXTERNAL_UNSUPPORTED`)
+the address runs that code, so validation rejects the shape (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`)
 until a later acquisition/install layer can bind address to observed executable and survive
 upgrades.
 

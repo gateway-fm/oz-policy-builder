@@ -28,7 +28,7 @@ promises; most of it narrows a promise to exactly what the code can keep.
       demonstrates exactly that: one field of one input changed to a syntactically valid lie,
       the same command as the permit path, and a required refusal.
 - [x] **External-verifier signers are rejected at validation**
-      (`E_SPEC_EXTERNAL_UNSUPPORTED`). The runtime OpenZeppelin signer value carries only the
+      (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`). The runtime OpenZeppelin signer value carries only the
       verifier address and key, so nothing at authorization time binds that address to the
       recognized verifier code; registry recognition of a caller-supplied hash proves nothing
       about the address. Until an acquisition/install layer can bind address to observed
