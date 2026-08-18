@@ -7,7 +7,6 @@
 //! evidence, not tautology.
 
 use generated_sub_transfer_r0::{GeneratedPolicy, GeneratedPolicyClient};
-use ozpb_evaluator as ev;
 use ozpb_policy_spec::{SignerSpec, ValidatedSpec};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext};
@@ -18,6 +17,23 @@ use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 const AMOUNT: i128 = 500_000_000;
 const VALID_UNTIL: u32 = 4_223_456;
 const MAX_CALLS: u32 = 12;
+
+// This suite executes one generated policy contract, not the independently deployed reviewed
+// spending-limit contract composed by the same PolicySpec. Keep the model side at exactly that
+// scope; the public full-spec evaluator correctly returns `indeterminate` for a permit candidate
+// while a reviewed policy remains unexecuted.
+mod ev {
+    pub use ozpb_evaluator::{ArgValue, DenyReason, EvalContext, Invocation, Verdict};
+    use ozpb_policy_spec::ValidatedSpec;
+
+    pub fn evaluate(
+        spec: &ValidatedSpec,
+        context: &EvalContext,
+        invocation: &Invocation,
+    ) -> Verdict {
+        ozpb_evaluator::evaluate_generated_rule(&spec.spec().rules[0], context, invocation)
+    }
+}
 
 // --- deny-reason mapping: evaluator reason -> generated PolicyError code -------------
 
