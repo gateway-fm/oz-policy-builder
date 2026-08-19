@@ -76,11 +76,39 @@ pub fn synthesize_policy(
         ));
     }
     // JSON supplied to this boundary is caller-controlled, even when it was originally emitted
-    // by `record_snapshot`. A serialized `rpc_reported` / `trusted_indexer` label is descriptive
-    // provenance, not an authenticated receipt. Downgrade it before it can drive synthesis; a
-    // future hosted acquisition service may add a separately verified receipt instead.
+    // by `record_snapshot`. Two consequences, handled in order:
+    //
+    // 1. Every decoded view must be re-derived from the bundle's own raw evidence before it
+    //    can drive synthesis — a serialized bundle's identity (its hash) proves nothing about
+    //    raw/decoded coherence.
+    // 2. A serialized `rpc_reported` / `trusted_indexer` label is descriptive provenance, not
+    //    an authenticated receipt. Weaken it to `self_supplied`; a future hosted acquisition
+    //    service may add a separately verified receipt instead. The weakening only ever
+    //    lowers a label — `incomplete` evidence stays `incomplete`, because a bundle that
+    //    was missing evidence when it was recorded is still missing it here.
+    //
+    // What this does *not* do, stated so nobody reads more into it: `trust` is an
+    // admission-time claim, like `execution`, and neither is re-derivable from the raw
+    // evidence the artifact carries (`RawEvidence` has no transaction result). So a caller
+    // who edits an `incomplete` bundle's `trust` to `self_supplied` is not caught here — the
+    // weakening is monotone in the *supplied* label, and `self_supplied` is synthesizable by
+    // design. What the boundary does enforce is the ceiling (no wire bundle earns more than
+    // `self_supplied`) and coherence (decoded views must be what the raw evidence derives).
+    // Making the outcome itself checkable from the artifact needs the transaction result
+    // inside the recording — a `recording/v2` change, because it moves every recording hash
+    // including published testnet evidence that cannot honestly be regenerated once those
+    // transactions leave RPC retention.
+    for (index, bundle) in bundles.iter().enumerate() {
+        bundle.verify().map_err(|error| {
+            let mapped = map_record_err(&error);
+            ToolError::new(
+                mapped.code,
+                format!("recording bundle {index}: {}", mapped.message),
+            )
+        })?;
+    }
     for bundle in &mut bundles {
-        bundle.trust = ozpb_domain::TrustLevel::self_supplied();
+        bundle.trust = bundle.trust.downgraded_to_self_supplied();
     }
     let mut account: ozpb_policy_spec::SmartAccountRecord = from_value(&input.account)?;
     let decisions: UserDecisions = from_value(&input.decisions)?;
@@ -456,6 +484,8 @@ fn map_record_err(e: &ozpb_recorder_core::RecordError) -> ToolError {
         R::TxFailed => EC::ETxFailed,
         R::UnsupportedMetaVersion(_) => EC::EUnsupportedMetaVersion,
         R::MetaParse(_) => EC::EMetaParse,
+        R::ResultMismatch(_) => EC::EResultMismatch,
+        R::EvidenceIncoherent(_) => EC::EEvidenceIncoherent,
         R::UnsupportedAddress(_) => EC::EUnsupportedAddress,
         R::AuthParse(_) => EC::EAuthParse,
         R::ResourceLimit(_) => EC::EResourceLimit,
@@ -469,6 +499,7 @@ fn map_synth_errs(errs: Vec<ozpb_synthesizer::SynthError>) -> ToolError {
     let code = match errs.first() {
         Some(S::NoEvidence) => EC::ENoEvidence,
         Some(S::EvidenceTrust(_, _)) => EC::EEvidenceTrust,
+        Some(S::FailedExecution(_)) => EC::ETxFailed,
         Some(S::NetworkMismatch) => EC::ENetworkMismatch,
         Some(S::AuthorizerNotFound(_)) => EC::EAuthorizerNotFound,
         Some(S::IncompatibleAccount(_)) => EC::EIncompatibleAccount,
@@ -523,7 +554,7 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use ozpb_policy_spec::SignerSpec;
-    use ozpb_recorder_core::fixtures::executed_snapshot;
+    use ozpb_recorder_core::fixtures::{executed_snapshot, imported_snapshot};
     use ozpb_registry::dev as registry_dev;
     use ozpb_synthesizer::fixtures as fx;
 
@@ -568,6 +599,61 @@ mod tests {
              to an agent: {}",
             error.message
         );
+    }
+
+    /// A structured error carries a code *and* a message, and an agent reads both. When a
+    /// message opens with an `E_…` prefix, that prefix is a claim about which failure this
+    /// is, so it must be the code the caller receives — otherwise the two halves of one
+    /// error name different failures. Messages that carry no `E_` prefix (the catch-all
+    /// `internal:`, uniform across the workspace's error enums) are outside the property by
+    /// construction rather than by exemption.
+    #[test]
+    fn a_recorder_errors_message_prefix_names_the_code_the_caller_gets() {
+        use ozpb_recorder_core::RecordError as R;
+        // One per variant. A new variant fails the exhaustive match below until it is named,
+        // which is the prompt to add it here too.
+        let all = vec![
+            R::EnvelopeParse("x".into()),
+            R::UnsupportedEnvelope("x".into()),
+            R::NoSorobanOp,
+            R::OperationSelection(2),
+            R::TxFailed,
+            R::UnsupportedMetaVersion(0),
+            R::MetaParse("x".into()),
+            R::ResultMismatch("x".into()),
+            R::EvidenceIncoherent("x".into()),
+            R::UnsupportedAddress("x".into()),
+            R::AuthParse("x".into()),
+            R::ResourceLimit("x".into()),
+            R::Internal("x".into()),
+        ];
+        for error in &all {
+            match error {
+                R::EnvelopeParse(_)
+                | R::UnsupportedEnvelope(_)
+                | R::NoSorobanOp
+                | R::OperationSelection(_)
+                | R::TxFailed
+                | R::UnsupportedMetaVersion(_)
+                | R::MetaParse(_)
+                | R::ResultMismatch(_)
+                | R::EvidenceIncoherent(_)
+                | R::UnsupportedAddress(_)
+                | R::AuthParse(_)
+                | R::ResourceLimit(_)
+                | R::Internal(_) => {}
+            }
+            let message = error.to_string();
+            let Some(prefix) = message.split(':').next().filter(|p| p.starts_with("E_")) else {
+                continue;
+            };
+            let code = map_record_err(error).code;
+            assert_eq!(
+                prefix,
+                code.as_str(),
+                "message prefix and wire code name different failures: {message}"
+            );
+        }
     }
 
     #[test]
@@ -896,6 +982,92 @@ mod tests {
             err.details
         );
     }
+
+    /// The boundary's trust handling must be a downgrade, not an assignment. An executed
+    /// import with no transaction result is recorded `incomplete` — and crossing the wire
+    /// must not promote it to a level the synthesis gate accepts. Runs the whole wire path
+    /// (record -> JSON bundle -> synthesize), because the in-process label was never the
+    /// exposed surface; the control case is the same evidence *with* its result, which must
+    /// still synthesize.
+    #[test]
+    fn a_wire_bundle_may_only_have_its_trust_lowered_at_the_synthesis_boundary() {
+        let synthesis_input = |bundle: serde_json::Value| SynthesizeInput {
+            bundles: vec![bundle],
+            selected_authorizer: fx::golden_account_strkey(),
+            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
+            signed_registry_snapshot: signed_registry_json(),
+            decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+            spending_limit_capability: Some(
+                fx::golden_input()
+                    .spending_limit_capability
+                    .unwrap()
+                    .to_hex(),
+            ),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+
+        // Control: the identical import that ships its transaction result is `self_supplied`
+        // and synthesizes. Without this, the assertion below could pass for any reason.
+        let complete = record_snapshot(&imported_snapshot(true), RecordOptions::default()).unwrap();
+        assert_eq!(complete.trust, "self_supplied");
+        assert!(
+            synthesize_policy(&synthesis_input(complete.bundle), &registry_trust()).is_ok(),
+            "an import with its transaction result must remain synthesizable"
+        );
+
+        // The finding: the same evidence minus the result is `incomplete` and must stay
+        // `incomplete` across the boundary.
+        let incomplete =
+            record_snapshot(&imported_snapshot(false), RecordOptions::default()).unwrap();
+        assert_eq!(incomplete.trust, "incomplete");
+        assert_eq!(
+            incomplete.bundle["trust"],
+            serde_json::json!("incomplete"),
+            "the wire bundle must carry the label the recorder derived"
+        );
+        let error =
+            synthesize_policy(&synthesis_input(incomplete.bundle), &registry_trust()).unwrap_err();
+        assert_eq!(
+            error.code,
+            EC::EEvidenceTrust,
+            "incomplete evidence must not be promoted to self_supplied at the boundary: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn incoherent_bundles_are_rejected_at_the_synthesis_boundary() {
+        // The audit reproduction at the wire: leave the raw evidence untouched, edit the
+        // decoded rule synthesis would consume. The bundle still hashes; the boundary
+        // must still refuse it.
+        let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+        let mut forged = rec.bundle.clone();
+        forged["authorizations"][0]["root"]["call"]["contract"]["fn_name"] =
+            serde_json::json!("drain_everything");
+        assert_ne!(forged, rec.bundle, "the mutation must land");
+        let input = SynthesizeInput {
+            bundles: vec![forged],
+            selected_authorizer: fx::golden_account_strkey(),
+            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
+            signed_registry_snapshot: signed_registry_json(),
+            decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+            spending_limit_capability: Some(
+                fx::golden_input()
+                    .spending_limit_capability
+                    .unwrap()
+                    .to_hex(),
+            ),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+        let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
+        assert_eq!(
+            err.code,
+            EC::EEvidenceIncoherent,
+            "an edited decoded view with untouched raw evidence must be refused: {}",
+            err.message
+        );
+    }
+
     #[test]
     fn caller_supplied_provenance_labels_are_downgraded_before_synthesis() {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();

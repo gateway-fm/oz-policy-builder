@@ -24,6 +24,7 @@
 
 use ozpb_source_rpc::{get_transaction, simulate_transaction, RpcError, RpcTransport};
 use std::cell::RefCell;
+use stellar_xdr::ReadXdr;
 
 const NETWORK: &str = "Test SDF Network ; September 2015";
 
@@ -139,6 +140,9 @@ fn the_captured_responses_carry_the_fields_the_parsers_read() {
     for field in [
         "status",
         "envelopeXdr",
+        // The success label is checked against this, not taken from `status` alone, so a
+        // fixture trimmed of it would make the executed path untestable against real data.
+        "resultXdr",
         "resultMetaXdr",
         "ledger",
         "createdAt",
@@ -148,6 +152,26 @@ fn the_captured_responses_carry_the_fields_the_parsers_read() {
             "getTransaction fixture lacks {field}"
         );
     }
+    // And it must still be a decodable TransactionResult whose outcome matches the captured
+    // status: a re-capture that truncates or re-encodes it should fail here, by name, rather
+    // than inside the parser's agreement check.
+    let result_xdr = tx
+        .get("resultXdr")
+        .and_then(|v| v.as_str())
+        .expect("resultXdr is base64 text");
+    let decoded =
+        stellar_xdr::TransactionResult::from_xdr_base64(result_xdr, ozpb_source_rpc::xdr_limits())
+            .expect("the captured resultXdr must decode as a TransactionResult");
+    let succeeded = matches!(
+        decoded.result,
+        stellar_xdr::TransactionResultResult::TxSuccess(_)
+            | stellar_xdr::TransactionResultResult::TxFeeBumpInnerSuccess(_)
+    );
+    assert_eq!(
+        succeeded,
+        tx.get("status").and_then(|v| v.as_str()) == Some("SUCCESS"),
+        "the captured resultXdr must agree with the captured status"
+    );
     // `createdAt` is a *string* on the wire even though it is a unix timestamp. Recording that
     // here because a fixture "corrected" to a number would hide a real parsing requirement.
     assert!(

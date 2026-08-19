@@ -18,9 +18,15 @@ pub struct ImportedBundle {
     pub network_passphrase: String,
     pub envelope_xdr_base64: String,
     pub result_meta_xdr_base64: Option<String>,
+    /// Raw `TransactionResult` XDR. The recorder checks it against `successful`; without
+    /// it the outcome is a bare claim and the import is labeled `incomplete` (recordable,
+    /// but synthesis refuses it).
+    #[serde(default)]
+    pub result_xdr_base64: Option<String>,
     pub ledger: Option<u32>,
     pub created_at_unix: Option<i64>,
-    /// Whether the supplier claims the transaction succeeded (unverified claim).
+    /// Whether the supplier claims the transaction succeeded (verified against
+    /// `result_xdr_base64` when recording).
     pub successful: bool,
 }
 
@@ -42,6 +48,7 @@ pub fn snapshot_from(bundle: ImportedBundle) -> EvidenceSnapshot {
         bundle.network_passphrase,
         bundle.envelope_xdr_base64,
         bundle.result_meta_xdr_base64,
+        bundle.result_xdr_base64,
         bundle.ledger,
         bundle.created_at_unix,
         bundle.successful,
@@ -52,16 +59,27 @@ pub fn snapshot_from(bundle: ImportedBundle) -> EvidenceSnapshot {
 mod tests {
     use super::*;
 
-    #[test]
-    fn imports_are_self_supplied_and_closed_schema() {
-        let json = r#"{
+    /// A bundle whose transaction result actually decodes to the claimed outcome — the only
+    /// shape that earns `self_supplied`; a placeholder value would not, since presence is not
+    /// backing.
+    fn backed_import_json() -> String {
+        format!(
+            r#"{{
             "network_passphrase": "Test SDF Network ; September 2015",
             "envelope_xdr_base64": "AAAA",
             "result_meta_xdr_base64": null,
+            "result_xdr_base64": "{}",
             "ledger": 123,
             "created_at_unix": 1780000000,
             "successful": true
-        }"#;
+        }}"#,
+            ozpb_recorder_core::fixtures::transaction_result_base64(true)
+        )
+    }
+
+    #[test]
+    fn imports_are_self_supplied_and_closed_schema() {
+        let json = &backed_import_json();
         let snap = import_json(json).unwrap();
         assert_eq!(snap.trust().as_str(), "self_supplied");
 
@@ -73,5 +91,44 @@ mod tests {
             import_json(&with_extra).is_err(),
             "an import must not be able to smuggle a trust level in"
         );
+    }
+
+    /// A result that cannot back the claim is no better than none: it parses, but the label
+    /// stays `incomplete` rather than overstating what the bundle proves.
+    #[test]
+    fn imports_whose_result_cannot_back_the_claim_are_incomplete() {
+        let unusable = backed_import_json().replace(
+            &ozpb_recorder_core::fixtures::transaction_result_base64(true),
+            "AAAA",
+        );
+        assert_eq!(
+            import_json(&unusable).unwrap().trust().as_str(),
+            "incomplete"
+        );
+
+        let contradicting = backed_import_json().replace(
+            &ozpb_recorder_core::fixtures::transaction_result_base64(true),
+            &ozpb_recorder_core::fixtures::transaction_result_base64(false),
+        );
+        assert_eq!(
+            import_json(&contradicting).unwrap().trust().as_str(),
+            "incomplete"
+        );
+    }
+
+    /// A bundle that ships no transaction result asserts an outcome with nothing to check
+    /// it against: it still parses, but as `incomplete` evidence.
+    #[test]
+    fn imports_without_a_transaction_result_are_incomplete() {
+        let json = r#"{
+            "network_passphrase": "Test SDF Network ; September 2015",
+            "envelope_xdr_base64": "AAAA",
+            "result_meta_xdr_base64": null,
+            "ledger": 123,
+            "created_at_unix": 1780000000,
+            "successful": true
+        }"#;
+        let snap = import_json(json).unwrap();
+        assert_eq!(snap.trust().as_str(), "incomplete");
     }
 }

@@ -1261,7 +1261,6 @@ version = "0.1.0"
 dependencies = [
  "ozpb-domain",
  "serde",
- "serde_json",
  "stellar-strkey 0.0.18",
  "stellar-xdr",
  "thiserror",
@@ -1332,6 +1331,7 @@ dependencies = [
  "ozpb-policy-spec",
  "ozpb-recorder-core",
  "ozpb-registry",
+ "ozpb-source-bundle",
  "ozpb-synthesizer",
  "serde",
  "serde_json",

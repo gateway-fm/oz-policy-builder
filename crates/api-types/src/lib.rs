@@ -10,178 +10,112 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Stable machine-readable error codes surfaced to agents (architecture §4.6). Kept in
-/// one place so the whole toolkit shares one vocabulary; new codes are appended, never
-/// renumbered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[non_exhaustive]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-#[schemars(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ErrorCode {
+/// One list, four derivations: the enum, the published [`ErrorCode::ALL`] vocabulary, the
+/// Serde/JSON-Schema spelling and [`ErrorCode::as_str`] all come from the arms below, so a
+/// code cannot exist without appearing in the vocabulary a caller publishes or in the
+/// round-trip test that walks it, and cannot be spelled one way on the wire and another in
+/// `as_str`.
+/// Before this was a macro, `as_str` was an exhaustive match the compiler kept honest while
+/// `ALL` was a hand-written array nothing tied to the variants — and two codes were missing
+/// from it, which silently narrowed the one test that iterates it.
+macro_rules! error_codes {
+    ($( $(#[$attr:meta])* $variant:ident => $wire:literal, )+) => {
+        /// Stable machine-readable error codes surfaced to agents (architecture §4.6). Kept
+        /// in one place so the whole toolkit shares one vocabulary; new codes are appended,
+        /// never renumbered.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+        #[non_exhaustive]
+        pub enum ErrorCode {
+            $(
+                $(#[$attr])*
+                // The literal, not a transliteration of the identifier: with `rename_all`,
+                // Serde and the schema derived the spelling from the Rust name while
+                // `as_str` read it from here, so a variant whose name does not transliterate
+                // to its intended code could disagree with itself.
+                #[serde(rename = $wire)]
+                #[schemars(rename = $wire)]
+                $variant,
+            )+
+        }
+
+        impl ErrorCode {
+            /// Complete stable-code vocabulary — every variant, by construction. Tests
+            /// serialize every entry; callers can publish it without maintaining a second
+            /// list.
+            pub const ALL: &'static [Self] = &[$( Self::$variant, )+];
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $wire, )+
+                }
+            }
+        }
+    };
+}
+
+error_codes! {
     // recorder
-    ETxNotFound,
-    ERetentionExpired,
-    EEnvelopeParse,
-    EUnsupportedEnvelope,
-    ENoSorobanOp,
-    EOperationSelection,
-    ETxFailed,
-    EUnsupportedMetaVersion,
-    EMetaParse,
-    EUnsupportedAddress,
-    EAuthParse,
-    EImportParse,
-    EResourceLimit,
+    ETxNotFound => "E_TX_NOT_FOUND",
+    ERetentionExpired => "E_RETENTION_EXPIRED",
+    EEnvelopeParse => "E_ENVELOPE_PARSE",
+    EUnsupportedEnvelope => "E_UNSUPPORTED_ENVELOPE",
+    ENoSorobanOp => "E_NO_SOROBAN_OP",
+    EOperationSelection => "E_OPERATION_SELECTION",
+    ETxFailed => "E_TX_FAILED",
+    EUnsupportedMetaVersion => "E_UNSUPPORTED_META_VERSION",
+    EMetaParse => "E_META_PARSE",
+    EResultMismatch => "E_RESULT_MISMATCH",
+    EUnsupportedAddress => "E_UNSUPPORTED_ADDRESS",
+    EAuthParse => "E_AUTH_PARSE",
+    EImportParse => "E_IMPORT_PARSE",
+    EResourceLimit => "E_RESOURCE_LIMIT",
     // synthesizer
-    ENoEvidence,
-    EEvidenceTrust,
-    ENetworkMismatch,
-    EAuthorizerNotFound,
-    EUnsupportedPattern,
-    EAmbiguousArgSemantics,
-    EUnregisteredPolicy,
-    ENeedsDecision,
+    ENoEvidence => "E_NO_EVIDENCE",
+    EEvidenceTrust => "E_EVIDENCE_TRUST",
+    /// A supplied recording's decoded views are not what the recorder derives from its
+    /// own raw evidence (or its schema/version is not current).
+    EEvidenceIncoherent => "E_EVIDENCE_INCOHERENT",
+    ENetworkMismatch => "E_NETWORK_MISMATCH",
+    EAuthorizerNotFound => "E_AUTHORIZER_NOT_FOUND",
+    EUnsupportedPattern => "E_UNSUPPORTED_PATTERN",
+    EAmbiguousArgSemantics => "E_AMBIGUOUS_ARG_SEMANTICS",
+    EUnregisteredPolicy => "E_UNREGISTERED_POLICY",
+    ENeedsDecision => "E_NEEDS_DECISION",
     // spec / codegen
-    ESpecInvalid,
-    ECodegen,
-    EBuildFailed,
-    EBuildTimeout,
-    EBuildResourceLimit,
+    ESpecInvalid => "E_SPEC_INVALID",
+    ECodegen => "E_CODEGEN",
+    EBuildFailed => "E_BUILD_FAILED",
+    EBuildTimeout => "E_BUILD_TIMEOUT",
+    EBuildResourceLimit => "E_BUILD_RESOURCE_LIMIT",
     /// The builder could not be started or configured at all — a misconfigured
     /// `stellar` binary path, an unusable build cache, a rejected operator setting.
     /// Distinct from `EBuildFailed` so an operator fault is never reported to an agent
     /// as "your spec does not compile".
-    EBuildUnavailable,
+    EBuildUnavailable => "E_BUILD_UNAVAILABLE",
     // registry
-    ERegistrySignature,
-    ERegistryRollback,
-    ERegistryNetwork,
-    ERegistryExpired,
-    ERegistryValidity,
-    ERegistryTransparency,
-    ERegistryRevoked,
-    EIncompatibleAccount,
-    EUnregisteredVerifier,
-    EUnregisteredTemplate,
-    ERegistryEmpty,
+    ERegistrySignature => "E_REGISTRY_SIGNATURE",
+    ERegistryRollback => "E_REGISTRY_ROLLBACK",
+    ERegistryNetwork => "E_REGISTRY_NETWORK",
+    ERegistryExpired => "E_REGISTRY_EXPIRED",
+    ERegistryValidity => "E_REGISTRY_VALIDITY",
+    ERegistryTransparency => "E_REGISTRY_TRANSPARENCY",
+    ERegistryRevoked => "E_REGISTRY_REVOKED",
+    EIncompatibleAccount => "E_INCOMPATIBLE_ACCOUNT",
+    EUnregisteredVerifier => "E_UNREGISTERED_VERIFIER",
+    EUnregisteredTemplate => "E_UNREGISTERED_TEMPLATE",
+    ERegistryEmpty => "E_REGISTRY_EMPTY",
     // policy recognition / authority surface
-    EPolicyBindingInvalid,
-    EAccountRuleEnumerationUnsupported,
-    EIncompleteAccountState,
-    EAdminRuleUnsafe,
-    EUnsafeCallSurface,
-    EUnsafeManagementSurface,
-    EScanBudgetExceeded,
+    EPolicyBindingInvalid => "E_POLICY_BINDING_INVALID",
+    EAccountRuleEnumerationUnsupported => "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED",
+    EIncompleteAccountState => "E_INCOMPLETE_ACCOUNT_STATE",
+    EAdminRuleUnsafe => "E_ADMIN_RULE_UNSAFE",
+    EUnsafeCallSurface => "E_UNSAFE_CALL_SURFACE",
+    EUnsafeManagementSurface => "E_UNSAFE_MANAGEMENT_SURFACE",
+    EScanBudgetExceeded => "E_SCAN_BUDGET_EXCEEDED",
     // rpc / transport
-    ERpc,
+    ERpc => "E_RPC",
     // catch-all internal
-    EInternal,
-}
-
-impl ErrorCode {
-    /// Complete stable-code vocabulary. Tests serialize every entry; callers can publish it
-    /// without maintaining a second list.
-    pub const ALL: &'static [Self] = &[
-        Self::ETxNotFound,
-        Self::ERetentionExpired,
-        Self::EEnvelopeParse,
-        Self::EUnsupportedEnvelope,
-        Self::ENoSorobanOp,
-        Self::EOperationSelection,
-        Self::ETxFailed,
-        Self::EUnsupportedMetaVersion,
-        Self::EMetaParse,
-        Self::EUnsupportedAddress,
-        Self::EAuthParse,
-        Self::EImportParse,
-        Self::EResourceLimit,
-        Self::ENoEvidence,
-        Self::EEvidenceTrust,
-        Self::ENetworkMismatch,
-        Self::EAuthorizerNotFound,
-        Self::EUnsupportedPattern,
-        Self::EAmbiguousArgSemantics,
-        Self::EUnregisteredPolicy,
-        Self::ENeedsDecision,
-        Self::ESpecInvalid,
-        Self::ECodegen,
-        Self::EBuildFailed,
-        Self::EBuildTimeout,
-        Self::EBuildResourceLimit,
-        Self::EBuildUnavailable,
-        Self::ERegistrySignature,
-        Self::ERegistryRollback,
-        Self::ERegistryNetwork,
-        Self::ERegistryExpired,
-        Self::ERegistryValidity,
-        Self::ERegistryTransparency,
-        Self::ERegistryRevoked,
-        Self::EIncompatibleAccount,
-        Self::EUnregisteredVerifier,
-        Self::EUnregisteredTemplate,
-        Self::ERegistryEmpty,
-        Self::EPolicyBindingInvalid,
-        Self::EAccountRuleEnumerationUnsupported,
-        Self::EIncompleteAccountState,
-        Self::EAdminRuleUnsafe,
-        Self::EUnsafeCallSurface,
-        Self::EUnsafeManagementSurface,
-        Self::EScanBudgetExceeded,
-        Self::ERpc,
-        Self::EInternal,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ETxNotFound => "E_TX_NOT_FOUND",
-            Self::ERetentionExpired => "E_RETENTION_EXPIRED",
-            Self::EEnvelopeParse => "E_ENVELOPE_PARSE",
-            Self::EUnsupportedEnvelope => "E_UNSUPPORTED_ENVELOPE",
-            Self::ENoSorobanOp => "E_NO_SOROBAN_OP",
-            Self::EOperationSelection => "E_OPERATION_SELECTION",
-            Self::ETxFailed => "E_TX_FAILED",
-            Self::EUnsupportedMetaVersion => "E_UNSUPPORTED_META_VERSION",
-            Self::EMetaParse => "E_META_PARSE",
-            Self::EUnsupportedAddress => "E_UNSUPPORTED_ADDRESS",
-            Self::EAuthParse => "E_AUTH_PARSE",
-            Self::EImportParse => "E_IMPORT_PARSE",
-            Self::EResourceLimit => "E_RESOURCE_LIMIT",
-            Self::ENoEvidence => "E_NO_EVIDENCE",
-            Self::EEvidenceTrust => "E_EVIDENCE_TRUST",
-            Self::ENetworkMismatch => "E_NETWORK_MISMATCH",
-            Self::EAuthorizerNotFound => "E_AUTHORIZER_NOT_FOUND",
-            Self::EUnsupportedPattern => "E_UNSUPPORTED_PATTERN",
-            Self::EAmbiguousArgSemantics => "E_AMBIGUOUS_ARG_SEMANTICS",
-            Self::EUnregisteredPolicy => "E_UNREGISTERED_POLICY",
-            Self::ENeedsDecision => "E_NEEDS_DECISION",
-            Self::ESpecInvalid => "E_SPEC_INVALID",
-            Self::ECodegen => "E_CODEGEN",
-            Self::EBuildFailed => "E_BUILD_FAILED",
-            Self::EBuildTimeout => "E_BUILD_TIMEOUT",
-            Self::EBuildResourceLimit => "E_BUILD_RESOURCE_LIMIT",
-            Self::EBuildUnavailable => "E_BUILD_UNAVAILABLE",
-            Self::ERegistrySignature => "E_REGISTRY_SIGNATURE",
-            Self::ERegistryRollback => "E_REGISTRY_ROLLBACK",
-            Self::ERegistryNetwork => "E_REGISTRY_NETWORK",
-            Self::ERegistryExpired => "E_REGISTRY_EXPIRED",
-            Self::ERegistryValidity => "E_REGISTRY_VALIDITY",
-            Self::ERegistryTransparency => "E_REGISTRY_TRANSPARENCY",
-            Self::ERegistryRevoked => "E_REGISTRY_REVOKED",
-            Self::EIncompatibleAccount => "E_INCOMPATIBLE_ACCOUNT",
-            Self::EUnregisteredVerifier => "E_UNREGISTERED_VERIFIER",
-            Self::EUnregisteredTemplate => "E_UNREGISTERED_TEMPLATE",
-            Self::ERegistryEmpty => "E_REGISTRY_EMPTY",
-            Self::EPolicyBindingInvalid => "E_POLICY_BINDING_INVALID",
-            Self::EAccountRuleEnumerationUnsupported => "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED",
-            Self::EIncompleteAccountState => "E_INCOMPLETE_ACCOUNT_STATE",
-            Self::EAdminRuleUnsafe => "E_ADMIN_RULE_UNSAFE",
-            Self::EUnsafeCallSurface => "E_UNSAFE_CALL_SURFACE",
-            Self::EUnsafeManagementSurface => "E_UNSAFE_MANAGEMENT_SURFACE",
-            Self::EScanBudgetExceeded => "E_SCAN_BUDGET_EXCEEDED",
-            Self::ERpc => "E_RPC",
-            Self::EInternal => "E_INTERNAL",
-        }
-    }
+    EInternal => "E_INTERNAL",
 }
 
 /// Uniform structured error returned by every tool on failure.
@@ -350,11 +284,16 @@ pub struct ImportRecordingInput {
     pub envelope_xdr_base64: String,
     #[serde(default)]
     pub result_meta_xdr_base64: Option<String>,
+    /// Raw `TransactionResult` XDR; checked against `successful` when recording. Without
+    /// it the import is labeled `incomplete` and cannot drive synthesis.
+    #[serde(default)]
+    pub result_xdr_base64: Option<String>,
     #[serde(default)]
     pub ledger: Option<u32>,
     #[serde(default)]
     pub created_at_unix: Option<i64>,
-    /// Unverified supplier claim that the transaction succeeded.
+    /// Supplier claim that the transaction succeeded (verified against
+    /// `result_xdr_base64` when recording).
     pub successful: bool,
 }
 
@@ -366,6 +305,10 @@ mod tests {
     use super::*;
     use crate::test_support::no_build_settings_on_the_wire;
 
+    /// `ALL` is generated from the same arms as the enum and `as_str`, so walking it walks
+    /// every declared code — which is what makes this table exhaustive rather than
+    /// exhaustive-looking. A count assertion is deliberately absent: it would pass a
+    /// substitution and only catch a deletion.
     #[test]
     fn error_codes_round_trip() {
         let mut serialized = std::collections::BTreeSet::new();
@@ -376,6 +319,64 @@ mod tests {
             let back: ErrorCode = serde_json::from_str(&json).unwrap();
             assert_eq!(code, back);
         }
+        // The two codes whose absence from a hand-written ALL is what motivated generating
+        // it; named explicitly so a regression is a failing assertion, not a silent gap.
+        for code in [ErrorCode::EResultMismatch, ErrorCode::EEvidenceIncoherent] {
+            assert!(
+                ErrorCode::ALL.contains(&code),
+                "{code:?} must be part of the published vocabulary"
+            );
+        }
+    }
+
+    /// The wire spelling has three consumers — `as_str`, Serde, and the JSON Schema an agent
+    /// reads — and a code is only stable if all three agree. Serde equality is asserted above;
+    /// this asserts the schema's enumeration is exactly the vocabulary, so a variant whose
+    /// Rust identifier does not transliterate to its intended code cannot slip through with a
+    /// correct `as_str` and a wrong schema.
+    #[test]
+    fn the_published_schema_enumerates_exactly_the_vocabulary() {
+        let schema = serde_json::to_value(schemars::schema_for!(ErrorCode))
+            .expect("the error-code schema must serialize");
+        // Documented variants become their own `const` branch rather than joining the flat
+        // `enum`, so gather from wherever the generator put them: the property is the set of
+        // codes a client can see, not the shape it is expressed in.
+        fn collect(value: &serde_json::Value, found: &mut std::collections::BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        match (key.as_str(), child) {
+                            ("const", serde_json::Value::String(code)) => {
+                                found.insert(code.clone());
+                            }
+                            ("enum", serde_json::Value::Array(codes)) => {
+                                found.extend(
+                                    codes.iter().filter_map(|c| c.as_str().map(str::to_string)),
+                                );
+                            }
+                            _ => collect(child, found),
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        collect(item, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut listed = std::collections::BTreeSet::new();
+        collect(&schema, &mut listed);
+        assert!(
+            !listed.is_empty(),
+            "the schema must enumerate its codes somewhere: {schema}"
+        );
+        let expected: std::collections::BTreeSet<String> = ErrorCode::ALL
+            .iter()
+            .map(|code| code.as_str().to_string())
+            .collect();
+        assert_eq!(listed, expected);
     }
 
     #[test]

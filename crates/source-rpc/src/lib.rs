@@ -17,16 +17,23 @@ use std::io::Read;
 use std::time::Duration;
 use stellar_xdr::{
     ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntryData, LedgerKey,
-    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope, WriteXdr,
+    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope,
+    TransactionResult, TransactionResultResult, WriteXdr,
 };
 
 // Keep acquisition aligned with recorder-core's per-value bound. Accepted evidence must remain
 // small enough for the recorder's canonical 4 MiB hash preimage after decoding and summarizing.
 const MAX_XDR_BYTES: usize = 512 * 1024;
+// The base64 form of the byte bound, named once: three fields are checked against it today
+// and each new XDR field the RPC gains is another chance to mistype the arithmetic.
+const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
 const MAX_XDR_DEPTH: u32 = 128;
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 
-fn xdr_limits() -> Limits {
+/// The limits every parse in this adapter runs under. Public so conformance tests decode
+/// captured responses under exactly the production configuration instead of restating the
+/// numbers, which would let the fixtures and the parser drift apart silently.
+pub fn xdr_limits() -> Limits {
     Limits {
         depth: MAX_XDR_DEPTH,
         len: MAX_XDR_BYTES,
@@ -159,7 +166,7 @@ fn parse_get_transaction(
         )));
     }
     let envelope = str_field(result, "envelopeXdr")?;
-    if envelope.len() > MAX_XDR_BYTES.div_ceil(3) * 4 {
+    if envelope.len() > MAX_XDR_BASE64_BYTES {
         return Err(RpcError::Malformed(
             "field 'envelopeXdr' exceeds the XDR size limit".to_string(),
         ));
@@ -178,6 +185,35 @@ fn parse_get_transaction(
     if computed_hash != tx_hash {
         return Err(RpcError::Malformed(format!(
             "envelopeXdr hashes to {computed_hash}, not requested transaction {tx_hash}"
+        )));
+    }
+    // The success label must be checkable against evidence: require the transaction result
+    // and reject a status string that contradicts it. The stored snapshot keeps
+    // status-derived success only after this agreement check.
+    //
+    // This is a stated requirement on the endpoint, not a tolerated omission. `resultXdr` is
+    // part of the documented `getTransaction` response for SUCCESS/FAILED (see the Stellar
+    // RPC method reference; the captured live testnet response in
+    // `tests/captured-testnet/getTransaction.json` carries it), so an endpoint that omits it
+    // cannot support checked acquisition. Accepting it anyway would mean labelling evidence
+    // `rpc_reported` while nothing verified the outcome — the unchecked boolean this whole
+    // path exists to remove — so the response is refused instead.
+    let result_xdr = str_field(result, "resultXdr")?;
+    if result_xdr.len() > MAX_XDR_BASE64_BYTES {
+        return Err(RpcError::Malformed(
+            "field 'resultXdr' exceeds the XDR size limit".to_string(),
+        ));
+    }
+    let decoded_result = TransactionResult::from_xdr_base64(&result_xdr, xdr_limits())
+        .map_err(|error| RpcError::Malformed(format!("invalid resultXdr: {error}")))?;
+    let result_success = matches!(
+        decoded_result.result,
+        TransactionResultResult::TxSuccess(_) | TransactionResultResult::TxFeeBumpInnerSuccess(_)
+    );
+    if result_success != (status == "SUCCESS") {
+        return Err(RpcError::Malformed(format!(
+            "status '{status}' contradicts the decoded transaction result, which records {}",
+            if result_success { "success" } else { "failure" }
         )));
     }
     let meta = result
@@ -320,7 +356,7 @@ fn parse_contract_executables(
                     "getLedgerEntries entry {index} lastModifiedLedgerSeq exceeds u32"
                 ))
             })?;
-        if encoded.len() > MAX_XDR_BYTES.div_ceil(3) * 4 {
+        if encoded.len() > MAX_XDR_BASE64_BYTES {
             return Err(RpcError::Malformed(format!(
                 "getLedgerEntries entry {index} exceeds the XDR size limit"
             )));
@@ -635,6 +671,7 @@ mod tests {
                 "status": "SUCCESS",
                 "txHash": tx_hash.clone(),
                 "envelopeXdr": envelope,
+                "resultXdr": result_xdr(true),
                 "resultMetaXdr": meta,
                 "ledger": 4200100,
                 "createdAt": "1780000000"
@@ -679,6 +716,7 @@ mod tests {
             "status": "SUCCESS",
             "txHash": actual,
             "envelopeXdr": envelope,
+            "resultXdr": result_xdr(true),
             "resultMetaXdr": meta,
             "ledger": 4200100,
             "createdAt": "1780000000"
@@ -690,12 +728,78 @@ mod tests {
             "status": "SUCCESS",
             "txHash": requested,
             "envelopeXdr": envelope,
+            "resultXdr": result_xdr(true),
             "resultMetaXdr": meta,
             "ledger": 4200100,
             "createdAt": "1780000000"
         });
         let error = parse_get_transaction(NET, &requested, &response).unwrap_err();
         assert!(error.to_string().contains("envelopeXdr hashes to"));
+    }
+
+    /// The recorder fixture's encoder, not a second one: these tests already build their
+    /// envelope and meta from `fixtures`, and two ways to encode the same transaction result
+    /// is two things to keep in step.
+    fn result_xdr(success: bool) -> String {
+        fx::transaction_result_base64(success)
+    }
+
+    /// The success label must be checkable against evidence, not lifted from a bare
+    /// status string: `resultXdr` is required for executed transactions.
+    #[test]
+    fn executed_rpc_evidence_requires_the_transaction_result() {
+        let (envelope, meta) = fixture_envelope_and_meta();
+        let tx_hash = transaction_hash(&envelope);
+        let response = json!({
+            "status": "SUCCESS",
+            "txHash": tx_hash,
+            "envelopeXdr": envelope,
+            "resultMetaXdr": meta,
+            "ledger": 4200100,
+            "createdAt": "1780000000"
+        });
+        let error = parse_get_transaction(NET, &tx_hash, &response).unwrap_err();
+        assert!(
+            error.to_string().contains("resultXdr"),
+            "an executed transaction without a result must be rejected: {error}"
+        );
+    }
+
+    /// A status string that contradicts the decoded TransactionResult is rejected in both
+    /// directions: neither a failure sold as SUCCESS nor a success sold as FAILED may
+    /// become an evidence snapshot.
+    #[test]
+    fn rpc_status_must_agree_with_the_decoded_transaction_result() {
+        let (envelope, meta) = fixture_envelope_and_meta();
+        let tx_hash = transaction_hash(&envelope);
+        for (status, result_success) in [("SUCCESS", false), ("FAILED", true)] {
+            let response = json!({
+                "status": status,
+                "txHash": tx_hash,
+                "envelopeXdr": envelope,
+                "resultXdr": result_xdr(result_success),
+                "resultMetaXdr": meta,
+                "ledger": 4200100,
+                "createdAt": "1780000000"
+            });
+            let error = parse_get_transaction(NET, &tx_hash, &response).unwrap_err();
+            assert!(
+                error.to_string().contains("contradicts"),
+                "status {status} with success={result_success} result must be rejected: {error}"
+            );
+        }
+
+        // And an undecodable result is malformed evidence, not a shrug.
+        let response = json!({
+            "status": "SUCCESS",
+            "txHash": tx_hash,
+            "envelopeXdr": envelope,
+            "resultXdr": "not base64 xdr",
+            "resultMetaXdr": meta,
+            "ledger": 4200100,
+            "createdAt": "1780000000"
+        });
+        assert!(parse_get_transaction(NET, &tx_hash, &response).is_err());
     }
 
     #[test]
@@ -739,6 +843,7 @@ mod tests {
                 "getTransaction" => Ok(json!({
                     "status": "SUCCESS",
                     "envelopeXdr": self.envelope,
+                    "resultXdr": result_xdr(true),
                     "resultMetaXdr": self.meta,
                     "ledger": 4200100,
                     "createdAt": "1780000000"
@@ -766,12 +871,14 @@ mod tests {
             json!({
                 "status": "SUCCESS",
                 "envelopeXdr": envelope,
+                "resultXdr": result_xdr(true),
                 "resultMetaXdr": meta,
                 "createdAt": "1780000000"
             }),
             json!({
                 "status": "SUCCESS",
                 "envelopeXdr": envelope,
+                "resultXdr": result_xdr(true),
                 "resultMetaXdr": meta,
                 "ledger": 4200100
             }),
@@ -904,6 +1011,7 @@ mod tests {
                 "status": "SUCCESS",
                 "txHash": tx_hash.clone(),
                 "envelopeXdr": envelope,
+                "resultXdr": result_xdr(true),
                 "resultMetaXdr": meta,
                 "ledger": 4200100,
                 "createdAt": "1780000000"

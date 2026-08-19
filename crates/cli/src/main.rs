@@ -95,7 +95,8 @@ enum Command {
         #[arg(long)]
         network: String,
     },
-    /// Record from an imported raw-XDR evidence bundle (offline; self_supplied).
+    /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
+    /// incomplete without the transaction result XDR).
     Import {
         #[arg(long)]
         bundle: PathBuf,

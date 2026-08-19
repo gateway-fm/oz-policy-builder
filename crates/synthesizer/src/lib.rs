@@ -19,8 +19,8 @@ use ozpb_policy_spec::{
     TargetHashRole, ValidUntil, GENERATED_POLICY_KIND, SPEC_SCHEMA,
 };
 use ozpb_recorder_core::{
-    ArgSummary, AuthorizedCall, InvocationNode, MovementKind, ObservedExecutable, RecordingBundle,
-    TokenMovement,
+    ArgSummary, AuthorizedCall, Execution, InvocationNode, MovementKind, ObservedExecutable,
+    RecordingBundle, TokenMovement,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -137,6 +137,11 @@ pub enum SynthError {
     NoEvidence,
     #[error("E_EVIDENCE_TRUST: bundle {0} has trust level '{1}' which cannot drive synthesis")]
     EvidenceTrust(usize, String),
+    #[error(
+        "E_TX_FAILED: bundle {0} records a failed execution; failed executions are not \
+         behavior examples"
+    )]
+    FailedExecution(usize),
     #[error("E_NETWORK_MISMATCH: bundles span different networks")]
     NetworkMismatch,
     #[error("E_AUTHORIZER_NOT_FOUND: no authorization by {0} in the supplied recordings")]
@@ -182,6 +187,20 @@ pub fn synthesize(
     for (i, b) in input.bundles.iter().enumerate() {
         if !b.trust.allows_synthesis() {
             errors.push(SynthError::EvidenceTrust(i, b.trust.as_str().to_string()));
+        }
+        // Failure-analysis recordings (record --allow-failed) are for understanding a
+        // denial, never behavior examples: what a failed transaction attempted is not
+        // evidence of what a policy should permit.
+        //
+        // Scope, stated exactly: this stops an *honestly recorded* failure from becoming a
+        // policy. It is not an anti-forgery check and cannot be one — `execution` is an
+        // admission-time claim carried in the artifact (no part of the raw evidence encodes
+        // the result code), so an edited `executed_success` remains coherent here. The
+        // forgery is refused where the outcome is provable: E_RESULT_MISMATCH against the
+        // import's transaction result, and the resultXdr/status agreement check in the RPC
+        // adapter.
+        if b.execution == Execution::ExecutedFailed {
+            errors.push(SynthError::FailedExecution(i));
         }
     }
     let network = input.bundles[0].network_id;
@@ -1620,6 +1639,21 @@ mod tests {
                 simulated_auth_xdr_base64: vec![],
             },
         }
+    }
+
+    /// A failure-analysis recording must never silently become a behavior example: the
+    /// recorder refuses failed executions without --allow-failed, and synthesis refuses
+    /// them always.
+    #[test]
+    fn failed_executions_are_not_behavior_examples_for_synthesis() {
+        let mut i = input();
+        i.bundles[0].execution = Execution::ExecutedFailed;
+        let errs = synthesize(&i, &decisions()).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, SynthError::FailedExecution(0))),
+            "expected FailedExecution, got {errs:?}"
+        );
     }
 
     #[test]

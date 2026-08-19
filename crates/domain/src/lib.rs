@@ -271,6 +271,24 @@ impl TrustLevel {
     pub fn allows_synthesis(&self) -> bool {
         !matches!(self.0, Level::Incomplete)
     }
+
+    /// Weaken an unauthenticated provenance claim to `self_supplied` — the strongest level
+    /// a serialized bundle can earn without an authenticated acquisition receipt.
+    ///
+    /// This can only ever lower a label. `incomplete` is *weaker* than `self_supplied`, so
+    /// it survives untouched: evidence that was missing does not become present by crossing
+    /// a wire, and assigning `self_supplied` unconditionally would promote it past
+    /// [`Self::allows_synthesis`]. The match is exhaustive over the private discriminant on
+    /// purpose — a future stronger level (`ledger_verified`) cannot be added without
+    /// deciding here whether it survives this boundary.
+    pub fn downgraded_to_self_supplied(self) -> Self {
+        match self.0 {
+            Level::Incomplete => self,
+            Level::RpcReported | Level::TrustedIndexer | Level::SelfSupplied => {
+                TrustLevel::self_supplied()
+            }
+        }
+    }
 }
 
 impl Serialize for TrustLevel {
@@ -457,6 +475,31 @@ mod tests {
         // accept `ledger_verified` — it would be an unearned trust claim.
         let r: Result<TrustLevel, _> = serde_json::from_str("\"ledger_verified\"");
         assert!(r.is_err());
+    }
+
+    /// Downgrading is monotone: every level ends at most as trusted as it started, and
+    /// `incomplete` is never raised to something a synthesis gate would accept.
+    #[test]
+    fn downgrading_to_self_supplied_never_raises_a_level() {
+        for level in [
+            TrustLevel::rpc_reported(),
+            TrustLevel::trusted_indexer(),
+            TrustLevel::self_supplied(),
+        ] {
+            assert_eq!(
+                level.downgraded_to_self_supplied().as_str(),
+                "self_supplied",
+                "{} must weaken to self_supplied",
+                level.as_str()
+            );
+        }
+        let incomplete = TrustLevel::incomplete().downgraded_to_self_supplied();
+        assert_eq!(
+            incomplete.as_str(),
+            "incomplete",
+            "missing evidence must not become self_supplied by crossing a boundary"
+        );
+        assert!(!incomplete.allows_synthesis());
     }
 
     #[test]

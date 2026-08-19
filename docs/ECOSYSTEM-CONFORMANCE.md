@@ -606,9 +606,14 @@ installation, or live account state — later-milestone evidence, not implied by
 
 ## 12. MCP surface and machine-readable failures ✅
 
-**What we have.** Request DTOs are closed schemas and reject unknown fields. Every declared
-error code is included in an exhaustive serialization round-trip table, standardized as
-`SCREAMING_SNAKE_CASE`, and public DTOs generate JSON Schema. Tool execution and validation
+**What we have.** Request DTOs are closed schemas and reject unknown fields. The enum, the
+published `ErrorCode::ALL` vocabulary and the wire spelling are generated from one list, so
+every declared error code is necessarily in the vocabulary and in the serialization
+round-trip table that walks it — exhaustive by construction rather than by diligence, which
+is the fix for two codes that had been added to the enum and to `as_str` (a match the
+compiler checks) while missing from `ALL` (an array nothing tied to the variants), silently
+narrowing that table. Codes are standardized as `SCREAMING_SNAKE_CASE`, and public DTOs
+generate JSON Schema. Tool execution and validation
 failures return as MCP `CallToolResult` values with `isError: true` and structured
 `{code, message, details}` data rather than being misclassified as JSON-RPC protocol failures,
 so an agent can distinguish transaction-not-found, network mismatch, import parse, build

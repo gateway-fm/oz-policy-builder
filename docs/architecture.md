@@ -163,7 +163,8 @@ replay-invariant **RecordingBundle** with an acquisition-derived evidence label.
 
 - *Executed:* Soroban RPC `getTransaction(hash)` → decode `envelopeXdr` →
   `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the authorization tree the
-  network actually verified), plus `resultMetaXdr` for effects. **Retention caveat
+  network actually verified), plus `resultXdr` — whose decoded outcome must agree with the
+  reported status before the response becomes evidence — and `resultMetaXdr` for effects. **Retention caveat
   (documented, surfaced in the UI):** standard RPC retention is short (typically 24 hours,
   up to 7 days) — recording by hash only works within that window.
 - *Simulated:* build/accept an unsigned envelope, call `simulateTransaction` with explicit
@@ -205,15 +206,23 @@ classification for display and audit:
 3. **State diffs:** `LedgerEntryChanges` pairs (`STATE`→`UPDATED`, `CREATED`, `REMOVED`,
    `RESTORED`) from operation meta, or `stateChanges` from simulation.
 4. **Anchors:** ledger sequence + close time (`ledger`, `createdAt`), network ID (hash of the
-   passphrase from `getNetwork`), protocol and meta versions, target-contract executable
-   hashes observed at recording time.
+   passphrase from `getNetwork`), and target-contract executable hashes observed at recording
+   time. The meta version is self-describing inside the preserved raw meta XDR rather than
+   duplicated as a decoded field. A per-transaction protocol-version anchor is **not** captured
+   in Phase 1: the historical ledger's protocol version is not part of the transaction evidence
+   itself, and the RPC's current `getNetwork.protocolVersion` would describe the wrong ledger —
+   recording a plausible-but-wrong anchor would be worse than recording none.
 
 **Evidence vs enforcement.** Only the authorization tree is an enforcement fact. Events and
 state diffs are *explanatory evidence*: they help the user and the synthesizer understand
 what happened, but they never drive automatic constraints on their own, because effects
-cannot always be causally attributed to a specific authorization entry. Every piece of
-evidence carries its source and attribution confidence; unattributable effects are labeled
-as such.
+cannot always be causally attributed to a specific authorization entry. State diffs carry
+their meta/simulation source; token movements are typed only from well-formed token events —
+of the selected operation for meta V4, or the transaction-level event list for meta V3, which
+predates per-operation attribution; anything that cannot be confidently decoded and
+attributed stays in the raw meta and is surfaced as a labeled unattributed note, never
+guessed into a typed effect. (A per-effect numeric confidence field is not part of the v1
+recording schema.)
 
 **Authorizer selection and account recognition.** A transaction may contain several
 authorizing addresses (including ordinary G-accounts). Recording requires selecting *which*
@@ -251,9 +260,13 @@ definitions and CAP-46-11):
 
 - **Authorization fingerprint** — `sha256` over canonical XDR of
   `(authorizer address, rootInvocation)`; groups equivalent authorization contexts.
-- **Full recording hash** — over network ID, raw envelope/result/meta XDR, operation index,
-  selected authorizer, ledger anchor, decoded evidence, evidence trust level, schema
-  version, and canonicalization version; uniquely identifies the complete synthesis input.
+- **Full recording hash** — over network ID, raw envelope/meta/simulated-auth XDR, the
+  selected operation index, ledger anchor, decoded evidence and notes, executable
+  observations, evidence trust level, schema version, and canonicalization version; uniquely
+  identifies one recording. Authorizer selection and multi-recording grouping happen in
+  synthesis, not in the recording: a bundle carries **all** authorizers, and the resulting
+  PolicySpec pins the recording hashes it was derived from next to the selected smart
+  account.
 
 Raw XDR is always preserved alongside decoded views — decoding never replaces evidence.
 Recording sessions group multiple transactions (the RFP's canonical "claim on Blend, then
@@ -669,7 +682,7 @@ endpoint; API role + isolated sandbox-worker role, §3).
 |---|---|---|
 | `record_transaction` | network read | tx hash (+ network) → RecordingBundle (`rpc_reported`) |
 | `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`) |
-| `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied`; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
+| `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied` when the bundle's transaction result XDR backs its claimed outcome, `incomplete` without it — synthesis refuses the latter; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
 | `synthesize_policy` | pure | bundle(s) + user decisions → PolicySpec + per-constraint rationale + open questions |
 | `evaluate_spec` | pure | PolicySpec + candidate invocation → reference-evaluator verdict for the generated scope; `indeterminate` if an attached reviewed policy is unmodelled |
 | `generate_code` | pure render + **sandboxed build** | PolicySpec → Rust source (pure) + reproducible wasm (resource-consuming compilation, isolated worker) + BuildManifest attestation |

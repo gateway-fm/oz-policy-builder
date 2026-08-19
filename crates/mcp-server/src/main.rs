@@ -262,12 +262,14 @@ impl PolicyBuilderServer {
     }
 
     /// Import a raw-XDR evidence bundle (offline) into a RecordingBundle. PURE. For
-    /// transactions outside RPC retention; the result is `self_supplied` trust.
+    /// transactions outside RPC retention; `self_supplied` trust at most — `incomplete`
+    /// without the transaction result XDR.
     #[tool(
         name = "import_recording",
         description = "Record from a self-contained raw-XDR evidence bundle (offline). \
-                       Pure; the result carries self_supplied trust (internally consistent \
-                       but not network-verified)."
+                       Pure; carries self_supplied trust (internally consistent but not \
+                       network-verified) when the transaction result XDR is supplied and \
+                       agrees with the claimed outcome, incomplete without it."
     )]
     async fn import_recording(
         &self,
@@ -277,6 +279,7 @@ impl PolicyBuilderServer {
             "network_passphrase": input.network_passphrase,
             "envelope_xdr_base64": input.envelope_xdr_base64,
             "result_meta_xdr_base64": input.result_meta_xdr_base64,
+            "result_xdr_base64": input.result_xdr_base64,
             "ledger": input.ledger,
             "created_at_unix": input.created_at_unix,
             "successful": input.successful,

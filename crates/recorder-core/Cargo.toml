@@ -10,10 +10,6 @@ description = "Pure recorder: EvidenceSnapshot -> RecordingBundle (auth trees, e
 [dependencies]
 ozpb-domain = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
