@@ -15,7 +15,8 @@
 #     in floats could not express itself on-chain at all. Amounts are `i128` in stroops, ledger
 #     numbers are `u32`, and a rate belongs in integer basis points.
 #
-# This was previously a rule stated in a doc comment above `canonical_json_bytes`. A stated rule
+# This was previously a rule stated in a doc comment above the since-removed v1 JSON
+# canonicalization helper. A stated rule
 # that nothing checks is how the next contributor breaks a hash without a single failing test —
 # and the same class of "green for the wrong reason" has bitten this repository repeatedly. The
 # lint is type-aware, so it also catches aliases and re-exports that a grep would miss.

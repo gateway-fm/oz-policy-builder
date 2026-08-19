@@ -1,8 +1,9 @@
 //! Shared domain vocabulary for the OZ Accounts Policy Builder.
 //!
 //! Architecture §4.11: this crate is pure — no I/O, no async, no framework deps.
-//! Everything hashed in the toolkit goes through the domain-separated helpers here,
-//! and all canonical serialization rules are documented on [`canonical_json_bytes`].
+//! Everything hashed in the toolkit goes through [`canonical_hash`] / [`canonical_hash_of`];
+//! the `canonical` module documents the encoding rules, and `docs/CANONICAL-HASHING.md`
+//! specifies them for an implementation that is not this crate.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
@@ -20,7 +21,7 @@ pub use canonical::{
 /// hashed structure changes; it participates in every full recording / spec hash.
 ///
 /// **v2** encodes every hashed structure as an `ScVal` and hashes its XDR — see
-/// [`canonical`] for the rules and `docs/CANONICAL-HASHING.md` for the specification an
+/// the `canonical` module for the rules and `docs/CANONICAL-HASHING.md` for the specification an
 /// external implementation follows. v1 hashed `serde_json` output, whose byte layout was
 /// specified only by this crate's source, so nobody outside it could reproduce a hash.
 pub const CANONICALIZATION_VERSION: u32 = 2;
@@ -32,8 +33,9 @@ pub const CANONICALIZATION_VERSION: u32 = 2;
 /// separation this module exists to provide, and an unused constant is not evidence that some
 /// other value belongs under it — it means the structure it names has not been hashed yet.
 ///
-/// Adding a domain means adding it to [`ALL`] as well; `all_domains_are_declared_in_all` fails
-/// otherwise, so the list cannot silently fall behind the constants.
+/// Adding a domain means adding it to [`ALL`](domains::ALL) as well;
+/// `all_domains_are_declared_in_all` fails otherwise, so the list cannot silently fall behind
+/// the constants.
 pub mod domains {
     pub const AUTH_FINGERPRINT: &str = "ozpb:v1:auth-fingerprint";
     pub const RECORDING: &str = "ozpb:v1:recording";
@@ -181,15 +183,6 @@ impl<'de> Deserialize<'de> for Hash32 {
     }
 }
 
-/// Domain-separated SHA-256: `sha256(domain || 0x00 || payload)`.
-pub fn hash_with_domain(domain: &str, payload: &[u8]) -> Hash32 {
-    let mut h = Sha256::new();
-    h.update(domain.as_bytes());
-    h.update([0u8]);
-    h.update(payload);
-    Hash32(h.finalize().into())
-}
-
 /// Plain SHA-256 (used only where an external format fixes the hashing, e.g. network IDs).
 pub fn sha256(payload: &[u8]) -> Hash32 {
     let mut h = Sha256::new();
@@ -217,12 +210,21 @@ pub struct LedgerSeq(pub u32);
 
 /// Evidence trust level — architecture §4.1.
 ///
-/// Trust levels are **derived by code from the acquisition path, never selectable by the
-/// caller**. The inner discriminant is private; values can only be minted through the
-/// constructors below, and `ledger_verified` has **no constructor at all** in Phase 1 —
-/// it can only ever be the output of a future inclusion-proof checker (a proof-checking
-/// typestate, per §4.11). Deserialization of persisted bundles accepts only levels this
-/// toolkit version can mint.
+/// A **descriptive provenance label, not a capability**. The constructors below are public
+/// and deserialization accepts every Phase 1 level, so any caller — in code or in JSON — can
+/// attach `rpc_reported` or `trusted_indexer` to evidence it invented. Acquisition adapters
+/// label what they did honestly; no private field in this type can force a direct library
+/// caller to do the same. A consumer must therefore treat the label as a claim whose weight
+/// comes from where the value crossed into the process: the toolkit downgrades every bundle
+/// arriving as JSON to `self_supplied` before it can drive synthesis (`ozpb-toolkit`,
+/// `synthesize_policy`), and synthesis itself gates only on
+/// [`allows_synthesis`](TrustLevel::allows_synthesis) — beyond that gate the level is
+/// recorded in the spec's evidence, never widening what is generated.
+///
+/// One guarantee **is** type-level: `ledger_verified` has no constructor and no accepted
+/// wire form in Phase 1, so it cannot exist until a future inclusion-proof checker mints it
+/// (a proof-checking typestate, per §4.11). A forged label can overclaim acquisition,
+/// never proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrustLevel(Level);
 
@@ -319,17 +321,6 @@ pub enum Provenance {
     AdapterDerived { adapter: String, code_hash: Hash32 },
 }
 
-/// Canonical JSON bytes (canonicalization v1).
-///
-/// Rules: serde struct-field declaration order is fixed by the type definitions; every
-/// map anywhere in a hashed structure MUST be a `BTreeMap` (Rust's `HashMap` iteration
-/// order is randomized per process — silent death for canonical hashing); compact
-/// separators; UTF-8. Types participating in hashing must derive `Serialize`
-/// deterministically under these rules.
-pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, DomainError> {
-    serde_json::to_vec(value).map_err(|e| DomainError::Serialization(e.to_string()))
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DomainError {
     #[error("invalid 32-byte hex hash: {0}")]
@@ -346,8 +337,8 @@ mod tests {
 
     #[test]
     fn same_payload_different_domain_gives_different_hash() {
-        let a = hash_with_domain(domains::AUTH_FINGERPRINT, b"payload");
-        let b = hash_with_domain(domains::RECORDING, b"payload");
+        let a = canonical_hash(domains::AUTH_FINGERPRINT, &"payload").unwrap();
+        let b = canonical_hash(domains::RECORDING, &"payload").unwrap();
         assert_ne!(a, b, "domain separation must isolate artifact kinds");
     }
 
@@ -390,16 +381,17 @@ mod tests {
 
     #[test]
     fn hashing_is_stable_across_calls() {
-        let a = hash_with_domain(domains::POLICY_SPEC, b"x");
-        let b = hash_with_domain(domains::POLICY_SPEC, b"x");
+        let a = canonical_hash(domains::POLICY_SPEC, &"x").unwrap();
+        let b = canonical_hash(domains::POLICY_SPEC, &"x").unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn domain_boundary_is_unambiguous() {
-        // The 0x00 separator prevents ("ab", "c") colliding with ("a", "bc").
-        let a = hash_with_domain("ab", b"c");
-        let b = hash_with_domain("a", b"bc");
+        // The domain and the value are separate length-prefixed fields of the XDR preimage,
+        // so ("ab", "c") cannot collide with ("a", "bc") the way a raw concatenation would.
+        let a = canonical_hash("ab", &"c").unwrap();
+        let b = canonical_hash("a", &"bc").unwrap();
         assert_ne!(a, b);
     }
 
@@ -483,24 +475,11 @@ mod tests {
         assert!(r.is_err(), "closed schemas reject unknown fields");
     }
 
-    // --- canonical bytes ---------------------------------------------------------------
-
-    #[test]
-    fn canonical_bytes_are_stable_for_btreemap() {
-        use std::collections::BTreeMap;
-        let mut m = BTreeMap::new();
-        m.insert("zeta", 1);
-        m.insert("alpha", 2);
-        let a = canonical_json_bytes(&m).unwrap();
-        let b = canonical_json_bytes(&m).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(String::from_utf8(a).unwrap(), r#"{"alpha":2,"zeta":1}"#);
-    }
-
     proptest::proptest! {
         #[test]
         fn hashing_never_panics(domain in "\\PC*", payload in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
-            let _ = hash_with_domain(&domain, &payload);
+            // An unencodable input must surface as an Err, never as a panic.
+            let _ = canonical_hash(&domain, &payload);
         }
     }
 }

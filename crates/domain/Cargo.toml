@@ -9,7 +9,6 @@ description = "Shared vocabulary: domain-separated hashes, newtypes, trust level
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
@@ -17,3 +16,4 @@ stellar-xdr = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+serde_json = { workspace = true }

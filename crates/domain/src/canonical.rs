@@ -469,6 +469,12 @@ impl ser::SerializeTupleVariant for SeqBuilder {
 
 /// Maps. Keys are encoded by the ordinary rules — they are data, not schema — and ordering is
 /// delegated to `ScMap::sorted_from_entries`.
+///
+/// Serde's map contract — key, then value, alternating, every key consumed — is upheld by every
+/// derived implementation, but [`to_scval`] is generic over any `Serialize`, so a hand-written
+/// implementation can break it. Each violation is refused rather than normalized: silently
+/// dropping an orphaned key would let two different event streams collapse into the same
+/// logical map, and this serializer exists to make bytes an argument, not a coincidence.
 struct MapBuilder {
     pairs: Vec<(ScVal, ScVal)>,
     pending_key: Option<ScVal>,
@@ -479,6 +485,11 @@ impl ser::SerializeMap for MapBuilder {
     type Error = DomainError;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), DomainError> {
+        if self.pending_key.is_some() {
+            return Err(DomainError::Serialization(
+                "map key serialized while the previous key still has no value".to_string(),
+            ));
+        }
         self.pending_key = Some(to_scval(&key)?);
         Ok(())
     }
@@ -492,6 +503,11 @@ impl ser::SerializeMap for MapBuilder {
     }
 
     fn end(self) -> Result<ScVal, DomainError> {
+        if self.pending_key.is_some() {
+            return Err(DomainError::Serialization(
+                "map ended while its last key still has no value".to_string(),
+            ));
+        }
         map(self.pairs)
     }
 }
@@ -675,6 +691,52 @@ mod tests {
         assert!(
             format!("{err}").contains("Symbol"),
             "the refusal must name the constraint: {err}"
+        );
+    }
+
+    /// Serde's map contract is strictly key-then-value, but `canonical_hash` is generic over
+    /// any `Serialize`, so a hand-written implementation can violate it. The builder must
+    /// refuse such a stream: normalizing it instead would let two different event streams
+    /// collapse into the same logical map — and therefore into the same hash.
+    #[test]
+    fn a_key_replacing_an_unconsumed_key_is_refused_not_normalized() {
+        struct DoubleKey;
+        impl Serialize for DoubleKey {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeMap;
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_key("overwritten")?;
+                m.serialize_key("kept")?;
+                m.serialize_value(&1u32)?;
+                m.end()
+            }
+        }
+        let err = to_scval(&DoubleKey)
+            .expect_err("a stream that would silently drop a key must not encode");
+        assert!(
+            format!("{err}").contains("previous key still has no value"),
+            "the refusal must name this violation, not just some map error: {err}"
+        );
+    }
+
+    /// The dual of the test above: a map that ends while its last key is still waiting for a
+    /// value must fail rather than encode as if the key had never been serialized.
+    #[test]
+    fn a_map_ending_on_a_dangling_key_is_refused_not_normalized() {
+        struct DanglingKey;
+        impl Serialize for DanglingKey {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeMap;
+                let mut m = s.serialize_map(Some(1))?;
+                m.serialize_key("dangling")?;
+                m.end()
+            }
+        }
+        let err = to_scval(&DanglingKey)
+            .expect_err("a stream that would silently drop a key must not encode");
+        assert!(
+            format!("{err}").contains("ended while its last key still has no value"),
+            "the refusal must name this violation, not just some map error: {err}"
         );
     }
 
