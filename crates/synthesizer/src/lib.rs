@@ -16,7 +16,7 @@ use ozpb_policy_spec::{
     AddressRef, AllowedCall, ArgConstraint, AuthorizationSpec, Constraint, ContextSpec,
     ContextType, DriftResponse, Evidence, PolicyRef, PolicySpec, PredicateKind, RecordingRef,
     ReviewedParams, RuleSpec, SignerSpec, SmartAccountRecord, StateSpec, TargetCodeHash,
-    TargetHashRole, ValidUntil, SPEC_SCHEMA,
+    TargetHashRole, ValidUntil, GENERATED_POLICY_KIND, SPEC_SCHEMA,
 };
 use ozpb_recorder_core::{
     ArgSummary, AuthorizedCall, InvocationNode, MovementKind, ObservedExecutable, RecordingBundle,
@@ -457,7 +457,7 @@ pub fn synthesize(
         // The generated scope(+count) policy always carries the signer predicate and
         // tuple scoping; identified pre-build by template family (§4.10).
         policies.push(PolicyRef::Generated {
-            kind: "gen:scope+count".to_string(),
+            kind: GENERATED_POLICY_KIND.to_string(),
             template_family: input.template_family.clone(),
             capability_schema: input.template_capability_schema,
         });

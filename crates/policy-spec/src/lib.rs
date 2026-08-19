@@ -10,12 +10,18 @@
 
 use ozpb_domain::{domains, Hash32, LedgerSeq, NetworkId, Provenance};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use stellar_xdr::{
     Limits, ReadXdr, ScBytes, ScString, ScSymbol, ScVal, StringM, Validate, WriteXdr,
 };
 
 pub const SPEC_SCHEMA: &str = "policy-spec/v1";
+
+/// The one generated-policy kind Phase 1 codegen implements: the scope+count signer-enforcing
+/// template. The validator counts a rule's `PolicyRef::Generated` entry as its required
+/// signer-enforcing policy, so the claimed kind must be the kind codegen actually mints —
+/// codegen itself never reads it.
+pub const GENERATED_POLICY_KIND: &str = "gen:scope+count";
 
 /// On-chain limits of the pinned `stellar-accounts` release (enforced at validation).
 pub const MAX_POLICIES_PER_RULE: usize = 5;
@@ -23,6 +29,12 @@ pub const MAX_SIGNERS_PER_RULE: usize = 15;
 pub const MAX_NAME_BYTES: usize = 20;
 /// Defensive off-chain bounds. These are intentionally below Soroban collection limits so
 /// validation, canonical hashing, code generation, and review remain predictably bounded.
+///
+/// The per-item limits below bound single items, **not** their composition: a spec at several
+/// maxima at once (a maximal-shape rule alone costs ≈166 KiB of canonical preimage) can exceed
+/// [`ozpb_domain::MAX_CANONICAL_PREIMAGE_BYTES`] long before every count is at its cap. That
+/// global budget is enforced during validation as `E_SPEC_LIMITS`, measured by the canonical
+/// encoder itself, and is the authoritative whole-spec bound.
 pub const MAX_RULES: usize = 32;
 pub const MAX_CALLS_PER_RULE: usize = 32;
 pub const MAX_ARGS_PER_CALL: usize = 32;
@@ -73,6 +85,14 @@ pub struct SmartAccountRecord {
 #[serde(deny_unknown_fields)]
 pub struct RuleSpec {
     pub context: ContextSpec,
+    /// Grant lifetime. `None` — a never-expiring grant — is not hidden state: it is visible
+    /// in the hashed artifact exactly as broad as it is, and the synthesizer refuses to
+    /// produce it without the explicit high-blast-radius acknowledgement in
+    /// `UserDecisions::no_expiry_acknowledged`. What schema v1 does **not** carry is the
+    /// acknowledgement itself: like every `UserDecisions` field, it is an input to
+    /// synthesis, recorded in the synthesis rationale rather than in the spec. Persisting
+    /// per-rule lifetime provenance is a v2 schema question, because adding a field moves
+    /// every spec hash, including the ones sealed into published testnet evidence.
     pub valid_until: Option<ValidUntil>,
     pub authorization: AuthorizationSpec,
     /// Disjunction of COMPLETE argument tuples — never per-index allowlists.
@@ -181,12 +201,14 @@ impl SignerSpec {
     /// # Why the address is its strkey and not a parsed `ScVal::Address`
     ///
     /// `ScVal::Address` would be the exact on-chain type, and the first version of this used it.
-    /// It made the function fallible, because parsing a strkey verifies its checksum — and this
-    /// schema admits addresses that do not have one. `validate` checks an address's charset and
-    /// length, never its checksum, so a spec carrying an unparseable address is a spec this crate
-    /// accepts. A fallible hash over input the schema allows is how the caller ends up comparing
-    /// two `Result`s, which is precisely the fail-open this replaced: two `Err`s compare equal, so
-    /// an unencodable signer set silently matched every other unencodable one.
+    /// It made the function fallible, because parsing a strkey verifies its checksum — and not
+    /// every input this helper hashes has passed [`PolicySpec::validate`]. Validation does
+    /// refuse specs whose addresses fail a checksummed strkey parse, but this helper is also
+    /// the evaluator's strict-set comparator over the **live** signer set from the evaluation
+    /// context — exactly the unvalidated side of that comparison. A fallible hash over input
+    /// the schema can carry is how the caller ends up comparing two `Result`s, which is
+    /// precisely the fail-open this replaced: two `Err`s compare equal, so an unencodable
+    /// signer set silently matched every other unencodable one.
     ///
     /// A strkey is a checksummed, canonical encoding of exactly one address, so carrying it as a
     /// string is injective with respect to the address it denotes — nothing is conflated. What the
@@ -244,6 +266,11 @@ fn scval_vec(items: Vec<ScVal>) -> Result<ScVal, SpecError> {
 /// comparison `ScMap` uses to canonicalise its keys — so the set has one encoding regardless of
 /// the order the signers were listed in, and that ordering is a published rule rather than one
 /// invented here.
+///
+/// Like [`SignerSpec::to_stored_scval`], this is a hash over whatever the schema can carry, not
+/// a validator: it accepts signer values [`PolicySpec::validate`] would refuse (including the
+/// external signers Phase 1 rejects in specs), because the evaluator must be able to hash the
+/// *live* signer set an account actually stores. Refusing signer strings is validation's job.
 pub fn signer_set_hash(signers: &[SignerSpec]) -> Result<Hash32, SpecError> {
     let mut encoded = signers
         .iter()
@@ -316,8 +343,9 @@ pub enum Constraint {
     GeI128 { min: String },
     /// Accept ANY value at this argument position — the maximal widening (e.g. W3's
     /// caller-chosen `deadline`). Only reachable through an explicit, high-blast-radius
-    /// user decision; the report states the argument is unconstrained. Arity is still
-    /// enforced (the argument must be present).
+    /// user decision or a target-bound adapter derivation — validation enforces both — and
+    /// the report states the argument is unconstrained. Arity is still enforced (the
+    /// argument must be present).
     AnyValue,
 }
 
@@ -436,7 +464,10 @@ pub enum StateSpec {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Evidence {
-    /// Canonically ordered, deduplicated recording references.
+    /// Recording references, sorted ascending by hash and deduplicated — enforced at
+    /// validation, not merely produced by the synthesizer. `justified_by` references these
+    /// entries by index, so the ordering is part of the document's meaning; the canonical
+    /// order guarantees one recording set has one encoding and therefore one spec hash.
     pub recordings: Vec<RecordingRef>,
 }
 
@@ -444,6 +475,11 @@ pub struct Evidence {
 #[serde(deny_unknown_fields)]
 pub struct RecordingRef {
     pub hash: Hash32,
+    /// Acquisition trust as known to the process that synthesized this spec. In a
+    /// *serialized* spec this is descriptive text, not an authenticated receipt: the JSON
+    /// tool boundary downgrades bundle trust to `self_supplied` before synthesis and the
+    /// build boundary refuses specs claiming anything stronger, so labels above
+    /// `self_supplied` exist only in-process between recording and synthesis.
     pub trust: ozpb_domain::TrustLevel,
 }
 
@@ -525,6 +561,11 @@ pub enum SpecError {
     Symbol { field: String, value: String },
     #[error("E_SPEC_TEMPLATE_FAMILY: rule {rule}: invalid template_family: {value}")]
     TemplateFamily { rule: usize, value: String },
+    #[error(
+        "E_SPEC_GENERATED_KIND: rule {rule}: a generated policy must claim the kind this \
+         toolkit's codegen builds ({GENERATED_POLICY_KIND}); got {value:?}"
+    )]
+    GeneratedKind { rule: usize, value: String },
     #[error("E_SPEC_SCVAL: rule {rule}, call '{call}', arg {arg}: {reason}")]
     Scval {
         rule: usize,
@@ -545,9 +586,23 @@ pub enum SpecError {
     #[error("E_SPEC_DUPLICATE_EVIDENCE: recordings {first} and {duplicate} have the same hash")]
     DuplicateEvidence { first: usize, duplicate: usize },
     #[error(
+        "E_SPEC_EVIDENCE_ORDER: recordings must be sorted ascending by hash; recording {index} \
+         is out of order"
+    )]
+    EvidenceOrder { index: usize },
+    #[error(
         "E_SPEC_EVIDENCE_REF: rule {rule}, call '{call}': invalid evidence reference {value:?}"
     )]
     EvidenceReference {
+        rule: usize,
+        call: String,
+        value: String,
+    },
+    #[error(
+        "E_SPEC_DUPLICATE_JUSTIFICATION: rule {rule}, call '{call}': justification {value:?} \
+         is listed more than once"
+    )]
+    DuplicateJustification {
         rule: usize,
         call: String,
         value: String,
@@ -589,6 +644,19 @@ pub enum SpecError {
          require user_widened or adapter_derived provenance — never observed_exact"
     )]
     WideningProvenance(usize, String, u32),
+    #[error("E_SPEC_ADAPTER_BINDING: rule {rule}, call '{call}', arg {arg}: {reason}")]
+    AdapterBinding {
+        rule: usize,
+        call: String,
+        arg: u32,
+        reason: String,
+    },
+    #[error(
+        "E_SPEC_ANY_VALUE_BLAST_RADIUS: rule {0}, call '{1}', arg {2}: an unconstrained \
+         argument requires an explicit high-blast-radius user decision or a target-bound \
+         adapter derivation"
+    )]
+    AnyValueBlastRadius(usize, String, u32),
     #[error("E_SPEC_NO_EVIDENCE: spec carries no recording references")]
     NoEvidence,
     #[error("E_SPEC_UNJUSTIFIED: rule {0}, call '{1}' maps to no justifying recording")]
@@ -633,6 +701,11 @@ impl PolicySpec {
                     first,
                     duplicate: index,
                 });
+            }
+        }
+        for (index, pair) in self.evidence.recordings.windows(2).enumerate() {
+            if pair[1].hash < pair[0].hash {
+                errors.push(SpecError::EvidenceOrder { index: index + 1 });
             }
         }
         validate_text(
@@ -836,13 +909,10 @@ impl PolicySpec {
                 }
                 let identity = match logical_signer_identity(signer) {
                     Ok(identity) => identity,
-                    Err(()) => {
-                        errors.push(SpecError::ExternalKey {
-                            rule: ri,
-                            signer: si,
-                        });
-                        continue;
-                    }
+                    // Identity construction fails only on non-hex external key material,
+                    // which the signer branch above has already reported as `ExternalKey`;
+                    // reporting it again here would duplicate the error.
+                    Err(()) => continue,
                 };
                 if let Some(first) = signer_identities.insert(identity, si) {
                     errors.push(SpecError::DuplicateSigner {
@@ -878,7 +948,8 @@ impl PolicySpec {
             if rule.state.len() > 1 {
                 errors.push(SpecError::State {
                     rule: ri,
-                    reason: "only one lifetime call-count declaration is supported".to_string(),
+                    reason: "only one per-installation call-count declaration is supported"
+                        .to_string(),
                 });
             }
             for state in &rule.state {
@@ -979,26 +1050,86 @@ impl PolicySpec {
                             arg.index,
                         ));
                     }
+                    // AnyValue is the maximal widening; its schema contract says it exists
+                    // only behind an explicit high-blast-radius acknowledgement. A user
+                    // decision labelled low/medium is a contradiction the artifact must not
+                    // carry. (ObservedExact is rejected above; an adapter derivation is
+                    // target-bound by the adapter-binding checks below.)
+                    if matches!(arg.constraint, Constraint::AnyValue) {
+                        if let Provenance::UserWidened { blast_radius, .. } = &arg.provenance {
+                            if *blast_radius != ozpb_domain::BlastRadius::High {
+                                errors.push(SpecError::AnyValueBlastRadius(
+                                    ri,
+                                    call.fn_name.clone(),
+                                    arg.index,
+                                ));
+                            }
+                        }
+                    }
                     match &arg.provenance {
                         Provenance::ObservedExact => {}
-                        Provenance::UserWidened { intent, .. } => validate_text(
-                            intent,
-                            MAX_SHORT_METADATA_BYTES,
-                            &format!(
-                                "rules[{ri}].allowed_calls[{}].args[{}].prov.intent",
-                                call.fn_name, arg.index
-                            ),
-                            &mut errors,
-                        ),
-                        Provenance::AdapterDerived { adapter, .. } => validate_text(
-                            adapter,
-                            MAX_SHORT_METADATA_BYTES,
-                            &format!(
-                                "rules[{ri}].allowed_calls[{}].args[{}].prov.adapter",
-                                call.fn_name, arg.index
-                            ),
-                            &mut errors,
-                        ),
+                        Provenance::UserWidened { intent, .. } => {
+                            validate_text(
+                                intent,
+                                MAX_SHORT_METADATA_BYTES,
+                                &format!(
+                                    "rules[{ri}].allowed_calls[{}].args[{}].prov.intent",
+                                    call.fn_name, arg.index
+                                ),
+                                &mut errors,
+                            );
+                        }
+                        Provenance::AdapterDerived { adapter, code_hash } => {
+                            validate_text(
+                                adapter,
+                                MAX_SHORT_METADATA_BYTES,
+                                &format!(
+                                    "rules[{ri}].allowed_calls[{}].args[{}].prov.adapter",
+                                    call.fn_name, arg.index
+                                ),
+                                &mut errors,
+                            );
+                            // An adapter claim is only meaningful against the exact target
+                            // code it was reviewed for (§6.1): the rule must pin that hash,
+                            // the provenance must carry the same hash, and the rule must
+                            // refuse to outlive it. Anything looser lets an edited spec
+                            // widen an argument under adapter authority that was never
+                            // bound to this contract.
+                            let mut adapter_binding = |reason: &str| {
+                                errors.push(SpecError::AdapterBinding {
+                                    rule: ri,
+                                    call: call.fn_name.clone(),
+                                    arg: arg.index,
+                                    reason: reason.to_string(),
+                                });
+                            };
+                            match &rule.context.target_code_hash {
+                                None => adapter_binding(
+                                    "adapter-derived constraints require the rule to pin \
+                                     context.target_code_hash",
+                                ),
+                                Some(target) => {
+                                    if *code_hash != target.hash {
+                                        adapter_binding(
+                                            "adapter provenance code_hash must equal the \
+                                             rule's target code hash",
+                                        );
+                                    }
+                                    if target.role != TargetHashRole::AdapterRequired {
+                                        adapter_binding(
+                                            "adapter-derived constraints require target hash \
+                                             role adapter_required",
+                                        );
+                                    }
+                                    if target.on_drift != DriftResponse::Refuse {
+                                        adapter_binding(
+                                            "adapter-derived constraints require on_drift \
+                                             refuse",
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 if call.justified_by.is_empty() {
@@ -1014,11 +1145,19 @@ impl PolicySpec {
                         ),
                     ));
                 }
+                let mut seen_references: BTreeSet<&str> = BTreeSet::new();
                 for reference in &call.justified_by {
                     if reference.len() > MAX_SHORT_METADATA_BYTES
                         || !evidence_reference_is_valid(reference, self.evidence.recordings.len())
                     {
                         errors.push(SpecError::EvidenceReference {
+                            rule: ri,
+                            call: call.fn_name.clone(),
+                            value: reference.clone(),
+                        });
+                    }
+                    if !seen_references.insert(reference) {
+                        errors.push(SpecError::DuplicateJustification {
                             rule: ri,
                             call: call.fn_name.clone(),
                             value: reference.clone(),
@@ -1054,12 +1193,22 @@ impl PolicySpec {
                         template_family,
                         ..
                     } => {
-                        validate_text(
+                        // Bound the text before judging its value: an oversized or
+                        // control-character kind is refused as text, and only text that
+                        // passed the bound is compared — so the mismatch error can never
+                        // clone an unbounded string into its message.
+                        if validate_text(
                             kind,
                             MAX_SHORT_METADATA_BYTES,
                             &format!("rules[{ri}].policies.generated.kind"),
                             &mut errors,
-                        );
+                        ) && kind != GENERATED_POLICY_KIND
+                        {
+                            errors.push(SpecError::GeneratedKind {
+                                rule: ri,
+                                value: kind.clone(),
+                            });
+                        }
                         if !template_family_is_valid(template_family) {
                             errors.push(SpecError::TemplateFamily {
                                 rule: ri,
@@ -1160,7 +1309,10 @@ fn template_family_is_valid(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'@'))
 }
 
-fn validate_text(value: &str, max: usize, field: &str, errors: &mut Vec<SpecError>) {
+/// Bound a free-text field, reporting whether it passed. The boolean lets a caller that
+/// also inspects the *value* run its check only on text already known to be bounded — an
+/// unbounded value must never reach an error that clones it into a message.
+fn validate_text(value: &str, max: usize, field: &str, errors: &mut Vec<SpecError>) -> bool {
     let reason = if value.is_empty() {
         Some("must not be empty".to_string())
     } else if value.len() > max {
@@ -1170,11 +1322,15 @@ fn validate_text(value: &str, max: usize, field: &str, errors: &mut Vec<SpecErro
     } else {
         None
     };
-    if let Some(reason) = reason {
-        errors.push(SpecError::Text {
-            field: field.to_string(),
-            reason,
-        });
+    match reason {
+        Some(reason) => {
+            errors.push(SpecError::Text {
+                field: field.to_string(),
+                reason,
+            });
+            false
+        }
+        None => true,
     }
 }
 
@@ -1222,6 +1378,20 @@ fn same_grant(left: &AllowedCall, right: &AllowedCall) -> bool {
     left_args == right_args
 }
 
+/// Parse an evidence-path index in its single canonical spelling: ASCII digits with no
+/// leading zero (and no sign — `usize::from_str` would accept a leading `+`). References
+/// are hashed strings, so each recorded invocation must have exactly one spelling; aliases
+/// like `auth[01]` or `auth[+1]` would name it under several distinct hashed forms.
+fn canonical_index(value: &str) -> Option<usize> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse().ok()
+}
+
 fn evidence_reference_is_valid(value: &str, recording_count: usize) -> bool {
     let Some(rest) = value.strip_prefix("recordings[") else {
         return false;
@@ -1229,7 +1399,7 @@ fn evidence_reference_is_valid(value: &str, recording_count: usize) -> bool {
     let Some((recording, rest)) = rest.split_once(']') else {
         return false;
     };
-    let Ok(recording): Result<usize, _> = recording.parse() else {
+    let Some(recording) = canonical_index(recording) else {
         return false;
     };
     if recording >= recording_count || !rest.starts_with("/auth[") {
@@ -1238,14 +1408,14 @@ fn evidence_reference_is_valid(value: &str, recording_count: usize) -> bool {
     let Some((auth, mut rest)) = rest[6..].split_once(']') else {
         return false;
     };
-    if auth.parse::<usize>().is_err() {
+    if canonical_index(auth).is_none() {
         return false;
     }
     while let Some(after_prefix) = rest.strip_prefix("/sub[") {
         let Some((sub, after)) = after_prefix.split_once(']') else {
             return false;
         };
-        if sub.parse::<usize>().is_err() {
+        if canonical_index(sub).is_none() {
             return false;
         }
         rest = after;
@@ -1289,8 +1459,19 @@ fn name_is_valid(name: &str) -> bool {
 }
 
 fn spec_hash(spec: &PolicySpec) -> Result<Hash32, Vec<SpecError>> {
-    ozpb_domain::canonical_hash(domains::POLICY_SPEC, spec)
-        .map_err(|e| vec![SpecError::Canonicalization(e.to_string())])
+    ozpb_domain::canonical_hash(domains::POLICY_SPEC, spec).map_err(|error| {
+        vec![match error {
+            // The bounded canonical encoder is the arbiter of the global budget: it measures
+            // the real preimage, so the check cannot drift from the encoding the way a
+            // reimplemented byte estimate would. Its refusal is a limit, and is reported as
+            // one — not as a canonicalization accident.
+            ozpb_domain::DomainError::PreimageTooLarge(max) => SpecError::GlobalLimits(format!(
+                "canonical spec preimage exceeds the {max}-byte budget (per-field limits bound \
+                 single items; this budget bounds their composition)"
+            )),
+            other => SpecError::Canonicalization(other.to_string()),
+        }]
+    })
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1523,15 +1704,22 @@ mod tests {
     }
 
     #[test]
-    fn external_signers_are_rejected_until_verifier_code_is_bound_at_runtime() {
+    fn invalid_external_key_is_reported_once() {
         let mut spec = subscription_spec();
         spec.rules[0].authorization.signers = vec![SignerSpec::External {
             verifier: fixtures::TOKEN.to_string(),
             verifier_code_hash: ozpb_domain::sha256(b"fixture-verifier-wasm"),
-            key_hex: "aa".repeat(32),
+            key_hex: "not hex".to_string(),
         }];
         let errors = spec.validate().unwrap_err();
-        assert!(errors.contains(&SpecError::ExternalSignerUnsupported { rule: 0, signer: 0 }));
+        let key_errors = errors
+            .iter()
+            .filter(|e| matches!(e, SpecError::ExternalKey { rule: 0, signer: 0 }))
+            .count();
+        assert_eq!(
+            key_errors, 1,
+            "one invalid key must be reported exactly once: {errors:?}"
+        );
     }
 
     #[test]
@@ -1717,6 +1905,196 @@ mod tests {
                 if reason.contains("exact ScVal XDR totals"))));
     }
 
+    /// The shape the synthesizer emits for an adapter-derived widening: the rule pins the
+    /// target's code hash as adapter-required/refuse-on-drift, and the provenance carries
+    /// that same hash.
+    fn adapter_derived_spec() -> PolicySpec {
+        let mut spec = subscription_spec();
+        let target = spec.rules[0].context.target_code_hash.as_mut().unwrap();
+        target.role = TargetHashRole::AdapterRequired;
+        target.on_drift = DriftResponse::Refuse;
+        let code_hash = target.hash;
+        spec.rules[0].allowed_calls[0].args[2].constraint = Constraint::LeI128 {
+            max: "500000000".to_string(),
+        };
+        spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::AdapterDerived {
+            adapter: "soroswap-router@1".to_string(),
+            code_hash,
+        };
+        spec
+    }
+
+    #[test]
+    fn every_reported_message_renders_as_one_readable_line() {
+        // Rust's string-continuation escape (`\` before a newline) drops the newline *and*
+        // the next line's leading whitespace, which is why the wrapped literals in this file
+        // render as single spaced sentences. This pins that: a message must never carry a
+        // newline or a run of two spaces, so a literal that loses the space before its
+        // continuation — or grows an indented raw string — fails here instead of reaching a
+        // user.
+        let mut hostile = adapter_derived_spec();
+        hostile.rules[0].context.target_code_hash = None;
+        hostile.rules[0].authorization.strict_signer_set = false;
+        hostile.rules[0].state = vec![
+            StateSpec::CallCountPerInstallation { max_calls: 0 },
+            StateSpec::CallCountPerInstallation { max_calls: 3 },
+        ];
+        hostile.rules[0].allowed_calls[0].justified_by = vec![
+            "recordings[00]/auth[0]".to_string(),
+            "recordings[00]/auth[0]".to_string(),
+        ];
+        hostile.rules[0]
+            .policies
+            .retain(|policy| !matches!(policy, PolicyRef::Generated { .. }));
+
+        let mut unordered = subscription_spec();
+        let trust = ozpb_domain::TrustLevel::self_supplied();
+        unordered.evidence.recordings = vec![
+            RecordingRef {
+                hash: ozpb_domain::sha256(b"zzz"),
+                trust,
+            },
+            RecordingRef {
+                hash: ozpb_domain::sha256(b"aaa"),
+                trust,
+            },
+        ];
+        unordered.rules[0].allowed_calls[0].args[2].constraint = Constraint::AnyValue;
+        unordered.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+            intent: "unacknowledged wildcard".to_string(),
+            blast_radius: ozpb_domain::BlastRadius::Low,
+        };
+
+        let errors: Vec<SpecError> = [hostile, unordered]
+            .into_iter()
+            .flat_map(|spec| spec.validate().unwrap_err())
+            .collect();
+        assert!(
+            errors.len() > 8,
+            "the hostile specs must exercise many message shapes: {errors:?}"
+        );
+        for error in &errors {
+            let rendered = error.to_string();
+            assert!(
+                !rendered.contains('\n') && !rendered.contains("  "),
+                "message carries embedded layout: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adapter_derived_widening_requires_the_full_target_binding() {
+        let bound = adapter_derived_spec();
+        assert!(
+            bound.validate().is_ok(),
+            "the synthesizer's bound shape must stay valid"
+        );
+
+        let mut no_target = adapter_derived_spec();
+        no_target.rules[0].context.target_code_hash = None;
+        let mut wrong_hash = adapter_derived_spec();
+        wrong_hash.rules[0].allowed_calls[0].args[2].provenance = Provenance::AdapterDerived {
+            adapter: "soroswap-router@1".to_string(),
+            code_hash: ozpb_domain::sha256(b"unrelated contract code"),
+        };
+        let mut evidence_only = adapter_derived_spec();
+        evidence_only.rules[0]
+            .context
+            .target_code_hash
+            .as_mut()
+            .unwrap()
+            .role = TargetHashRole::EvidenceOnly;
+        let mut warns_on_drift = adapter_derived_spec();
+        warns_on_drift.rules[0]
+            .context
+            .target_code_hash
+            .as_mut()
+            .unwrap()
+            .on_drift = DriftResponse::Warn;
+
+        for (name, spec) in [
+            ("missing target hash", no_target),
+            ("provenance hash mismatch", wrong_hash),
+            ("evidence-only role", evidence_only),
+            ("warn-on-drift", warns_on_drift),
+        ] {
+            assert!(
+                spec.validate()
+                    .unwrap_err()
+                    .iter()
+                    .any(|error| matches!(error, SpecError::AdapterBinding { rule: 0, .. })),
+                "{name}: an adapter claim with no target binding must not validate"
+            );
+        }
+    }
+
+    #[test]
+    fn any_value_demands_high_blast_radius_or_a_bound_adapter() {
+        let any_value_with = |blast_radius| {
+            let mut spec = subscription_spec();
+            // The spending limit requires an i128-constrained transfer amount, which an
+            // unconstrained argument 2 deliberately is not.
+            spec.rules[0].policies.remove(0);
+            spec.rules[0].allowed_calls[0].args[2].constraint = Constraint::AnyValue;
+            spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+                intent: "let the caller choose the value".to_string(),
+                blast_radius,
+            };
+            spec
+        };
+
+        for blast_radius in [
+            ozpb_domain::BlastRadius::Low,
+            ozpb_domain::BlastRadius::Medium,
+        ] {
+            assert!(
+                any_value_with(blast_radius)
+                    .validate()
+                    .unwrap_err()
+                    .iter()
+                    .any(|error| matches!(error, SpecError::AnyValueBlastRadius(0, _, 2))),
+                "an unconstrained argument acknowledged as {blast_radius:?} contradicts the \
+                 schema's contract"
+            );
+        }
+        assert!(any_value_with(ozpb_domain::BlastRadius::High)
+            .validate()
+            .is_ok());
+
+        // The only non-user path to AnyValue: an adapter derivation bound to the target's
+        // code hash (the W3 caller-chosen deadline).
+        let mut adapter = adapter_derived_spec();
+        adapter.rules[0].policies.remove(0);
+        adapter.rules[0].allowed_calls[0].args[2].constraint = Constraint::AnyValue;
+        assert!(adapter.validate().is_ok());
+    }
+
+    #[test]
+    fn bounded_widenings_accept_every_declared_blast_radius() {
+        // The high-blast-radius demand is AnyValue's alone. A bounded widening still
+        // constrains the argument, and its blast radius is the user's honest assessment —
+        // Low included; tightening this to "at least Medium" would be a schema change in
+        // validator's clothing.
+        for blast_radius in [
+            ozpb_domain::BlastRadius::Low,
+            ozpb_domain::BlastRadius::Medium,
+            ozpb_domain::BlastRadius::High,
+        ] {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].args[2].constraint = Constraint::LeI128 {
+                max: "500000000".to_string(),
+            };
+            spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+                intent: "cap the amount".to_string(),
+                blast_radius,
+            };
+            assert!(
+                spec.validate().is_ok(),
+                "a bounded widening declared {blast_radius:?} must validate"
+            );
+        }
+    }
+
     #[test]
     fn widening_with_observed_exact_provenance_fails() {
         let mut s = subscription_spec();
@@ -1814,9 +2192,15 @@ mod tests {
             .push(StateSpec::CallCountPerInstallation { max_calls: 20 });
         let errs = duplicate.validate().unwrap_err();
         assert!(
-            errs.iter()
-                .any(|e| e.to_string().starts_with("E_SPEC_STATE:")),
-            "duplicate state declarations currently emit duplicate constants and must fail: {errs:?}"
+            errs.iter().any(|e| {
+                let message = e.to_string();
+                // The counter is per installation — `uninstall` removes it and a later
+                // `install` restarts it — and the deliberately renamed public variant
+                // says so; the error text must not resurrect the old "lifetime" claim.
+                message.starts_with("E_SPEC_STATE:") && message.contains("per-installation")
+            }),
+            "duplicate state declarations currently emit duplicate constants and must fail, \
+             stating the per-installation semantics: {errs:?}"
         );
     }
 
@@ -1920,6 +2304,70 @@ mod tests {
     }
 
     #[test]
+    fn an_unbounded_generated_kind_is_refused_by_the_bound_not_echoed() {
+        // The value-pinning check must not become a way around the text bounds: an
+        // oversized or control-character `kind` has to be refused as text, and its bytes
+        // must never reach the mismatch error that clones the value into a message.
+        for (name, bad) in [
+            ("oversized", "g".repeat(MAX_SHORT_METADATA_BYTES + 1)),
+            (
+                "control characters",
+                "gen:scope+count\n#![cfg(any())]".to_string(),
+            ),
+            ("empty", String::new()),
+        ] {
+            let mut spec = subscription_spec();
+            let PolicyRef::Generated { kind, .. } = &mut spec.rules[0].policies[1] else {
+                panic!("fixture must carry its generated policy");
+            };
+            *kind = bad;
+            let errors = spec.validate().unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error, SpecError::Text { field, .. }
+                        if field.ends_with("policies.generated.kind"))),
+                "{name}: the text bound must refuse it: {errors:?}"
+            );
+            assert!(
+                !errors
+                    .iter()
+                    .any(|error| matches!(error, SpecError::GeneratedKind { .. })),
+                "{name}: an unbounded value must not be cloned into the mismatch error: \
+                 {errors:?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .all(|error| error.to_string().len() <= 2 * MAX_SHORT_METADATA_BYTES),
+                "{name}: every reported message must stay bounded"
+            );
+        }
+    }
+
+    #[test]
+    fn the_generated_policy_claims_the_kind_codegen_builds() {
+        // Codegen renders exactly one template pathway in Phase 1 and never reads the
+        // claimed kind; the validator counts the Generated entry as the rule's
+        // signer-enforcing policy. A spec claiming any other kind would receive
+        // scope+count code minted under a false label.
+        for wrong in ["not-a-signer-policy", "gen:scope", "GEN:SCOPE+COUNT"] {
+            let mut spec = subscription_spec();
+            let PolicyRef::Generated { kind, .. } = &mut spec.rules[0].policies[1] else {
+                panic!("fixture must carry its generated policy");
+            };
+            *kind = wrong.to_string();
+            assert!(
+                spec.validate()
+                    .unwrap_err()
+                    .iter()
+                    .any(|error| matches!(error, SpecError::GeneratedKind { rule: 0, .. })),
+                "kind {wrong:?} does not denote the built-in signer template"
+            );
+        }
+    }
+
+    #[test]
     fn template_family_and_metadata_are_bounded_source_safe_text() {
         for bad in [
             "scope@1\n#![cfg(any())]".to_string(),
@@ -1979,6 +2427,66 @@ mod tests {
         }
     }
 
+    /// A rule carrying `calls` distinct grants of one ~63 KiB exact ScVal each — individually
+    /// below every per-item limit, so only aggregate budgets can refuse a stack of them.
+    fn scval_heavy_rule(calls: usize) -> RuleSpec {
+        let value = ScVal::Bytes(ScBytes(vec![7_u8; 63 * 1024].try_into().unwrap()));
+        let xdr_base64 = value
+            .to_xdr_base64(Limits {
+                depth: 64,
+                len: MAX_SCVAL_XDR_BYTES,
+            })
+            .unwrap();
+        let mut rule = subscription_spec().rules[0].clone();
+        rule.policies.remove(0); // the spending limit constrains transfer shapes only
+        rule.allowed_calls = (0..calls)
+            .map(|call| AllowedCall {
+                fn_name: format!("fn_{call}"),
+                args: vec![ArgConstraint {
+                    index: 0,
+                    constraint: Constraint::EqScval {
+                        xdr_base64: xdr_base64.clone(),
+                    },
+                    provenance: Provenance::ObservedExact,
+                }],
+                justified_by: vec![format!("recordings[0]/auth[{call}]")],
+            })
+            .collect();
+        rule
+    }
+
+    #[test]
+    fn the_global_preimage_budget_is_a_named_limit_not_a_hashing_accident() {
+        // Every rule is below every per-item limit; composition is what the global budget
+        // bounds. Twelve such rules encode within the canonical ceiling and must hash.
+        let mut fits = subscription_spec();
+        fits.rules = vec![scval_heavy_rule(4); 12];
+        assert!(
+            fits.validate().is_ok(),
+            "a spec inside the global budget must validate and hash"
+        );
+
+        // Thirteen exceed it — the tightest whole-rule step over the ceiling, so a budget
+        // drift in either direction moves one of these two assertions. The refusal must
+        // name the budget (E_SPEC_LIMITS), not surface as a canonicalization accident
+        // (E_SPEC_CANONICAL).
+        let mut exceeds = subscription_spec();
+        exceeds.rules = vec![scval_heavy_rule(4); 13];
+        let errors = exceeds.validate().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().starts_with("E_SPEC_LIMITS:")),
+            "exceeding the global budget must be a named limit: {errors:?}"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|error| matches!(error, SpecError::Canonicalization(_))),
+            "the budget refusal must not present as a canonicalization failure: {errors:?}"
+        );
+    }
+
     #[test]
     fn duplicate_grants_and_evidence_are_rejected() {
         let mut duplicate_call = subscription_spec();
@@ -2028,6 +2536,72 @@ mod tests {
     }
 
     #[test]
+    fn evidence_reference_indexes_admit_no_aliases() {
+        // Every index has exactly one canonical spelling. Leading zeros and signs would
+        // let one recorded invocation be referenced under several distinct hashed strings.
+        for alias in [
+            "recordings[00]/auth[0]",
+            "recordings[+0]/auth[0]",
+            "recordings[0]/auth[01]",
+            "recordings[0]/auth[+1]",
+            "recordings[0]/auth[0]/sub[02]",
+            "recordings[0]/auth[0]/sub[+2]",
+        ] {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].justified_by = vec![alias.to_string()];
+            assert!(
+                spec.validate()
+                    .unwrap_err()
+                    .iter()
+                    .any(|error| matches!(error, SpecError::EvidenceReference { .. })),
+                "alias {alias:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_justifications_within_a_call_are_rejected() {
+        let mut spec = subscription_spec();
+        spec.rules[0].allowed_calls[0].justified_by = vec![
+            "recordings[0]/auth[0]/root".to_string(),
+            "recordings[0]/auth[0]/root".to_string(),
+        ];
+        assert!(spec
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::DuplicateJustification { .. })));
+    }
+
+    #[test]
+    fn evidence_recordings_must_be_sorted_by_hash() {
+        let a = ozpb_domain::sha256(b"recording-a");
+        let b = ozpb_domain::sha256(b"recording-b");
+        let (low, high) = if a < b { (a, b) } else { (b, a) };
+        let trust = ozpb_domain::TrustLevel::self_supplied();
+
+        let mut sorted = subscription_spec();
+        sorted.evidence.recordings = vec![
+            RecordingRef { hash: low, trust },
+            RecordingRef { hash: high, trust },
+        ];
+        assert!(sorted.validate().is_ok());
+
+        // `justified_by` references recordings by index, so a permutation is a different
+        // document; the schema promises one canonical ordering and must enforce it.
+        let mut reversed = subscription_spec();
+        reversed.evidence.recordings = vec![
+            RecordingRef { hash: high, trust },
+            RecordingRef { hash: low, trust },
+        ];
+        assert!(reversed
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::EvidenceOrder { index: 1 })));
+    }
+
+    #[test]
     fn expiry_must_follow_the_ledger_bound_evidence() {
         for ledger in [4_099_999, 4_100_000] {
             let mut spec = subscription_spec();
@@ -2052,18 +2626,18 @@ mod tests {
             key_hex: hex::encode([7u8; 32]),
         }];
         let errors = spec.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|error| matches!(error, SpecError::ExternalSignerUnsupported { .. })));
+        assert!(errors.contains(&SpecError::ExternalSignerUnsupported { rule: 0, signer: 0 }));
     }
 
     #[test]
     fn signer_set_hash_is_order_independent_and_value_sensitive() {
         let a = SignerSpec::Delegated {
-            address: "GA".to_string(),
+            address: fixtures::DELEGATE.to_string(),
         };
+        // A live account can store Signer::External even though Phase 1 refuses external
+        // signers in specs — the helper hashes stored sets, so the case stays covered here.
         let b = SignerSpec::External {
-            verifier: "CV".to_string(),
+            verifier: fixtures::TOKEN.to_string(),
             verifier_code_hash: ozpb_domain::sha256(b"v"),
             key_hex: "aabb".to_string(),
         };

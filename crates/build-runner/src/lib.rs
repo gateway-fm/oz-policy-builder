@@ -79,6 +79,12 @@ pub struct BuildManifest {
     /// old name could not be encoded in a canonical preimage at all.
     pub schema: String,
     pub spec_hash: Hash32,
+    /// Carried from the spec, which recorded the snapshot synthesis resolved against — the
+    /// build does not re-resolve it. What this manifest attests is that this wasm was built
+    /// from this spec; whether the spec's registry and capability references resolve against
+    /// a signed snapshot is proven at synthesis (Tranche 1) and by the verification
+    /// operations that resolve bindings against pinned roots (Tranche 2), never by the
+    /// build step.
     pub registry_snapshot: Hash32,
     pub rule_index: u32,
     pub template_family: String,

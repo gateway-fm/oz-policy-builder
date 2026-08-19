@@ -274,6 +274,34 @@ pub fn generate_code_with_build_config(
     build_config: &ozpb_build_runner::BuildConfig,
 ) -> Result<GenerateCodeOutput, ToolError> {
     let spec: PolicySpec = from_value(&input.spec)?;
+    // A serialized spec is caller-controlled text, and this is the boundary that seals its
+    // claims into the hashed BuildManifest chain. `self_supplied` is the only label a wire
+    // spec can carry legitimately, and each departure is refused for its own reason: a
+    // stronger label (rpc_reported, trusted_indexer) is an acquisition claim this boundary
+    // cannot authenticate — and none this toolkit emitted, because `synthesize_policy`
+    // downgrades bundle trust for the same reason — while `incomplete` marks evidence the
+    // recorder ruled out of synthesis, so no legitimate pipeline produced a spec citing it.
+    // Refuse rather than downgrade: silently rewriting the label would change the spec hash
+    // the caller reviewed.
+    for (index, recording) in spec.evidence.recordings.iter().enumerate() {
+        if recording.trust == ozpb_domain::TrustLevel::self_supplied() {
+            continue;
+        }
+        let reason = if recording.trust == ozpb_domain::TrustLevel::incomplete() {
+            format!(
+                "evidence.recordings[{index}] is labelled 'incomplete'; evidence the \
+                 recorder ruled out of synthesis cannot justify a build"
+            )
+        } else {
+            format!(
+                "evidence.recordings[{index}] claims acquisition trust '{}' across the \
+                 JSON tool boundary; a supplied spec cannot authenticate acquisition \
+                 context, so only 'self_supplied' can be sealed into a build",
+                recording.trust.as_str()
+            )
+        };
+        return Err(ToolError::new(EC::ESpecInvalid, reason));
+    }
     let validated = spec.validate().map_err(|errs| spec_error(&errs))?;
     let pins = Pins::default();
     let g = generate(&validated, input.rule_index, &pins)
@@ -523,7 +551,7 @@ mod tests {
 
     #[test]
     fn a_misconfigured_builder_is_not_reported_as_a_spec_that_will_not_compile() {
-        let spec = fx::golden_spec();
+        let spec = wire_spec();
         let input = GenerateCodeInput {
             spec: to_value(spec.spec()).unwrap(),
             rule_index: 0,
@@ -538,6 +566,54 @@ mod tests {
             EC::EBuildUnavailable,
             "an operator's broken builder path must not read as ESpecInvalid/EBuildFailed \
              to an agent: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn generate_refuses_trust_labels_the_wire_cannot_authenticate() {
+        // A serialized spec is caller-controlled text: a `rpc_reported` label in it is an
+        // unverifiable claim, and generate_code would seal that claim into the hashed
+        // BuildManifest chain. The boundary must refuse it the way synthesize_policy
+        // downgrades bundle trust — nothing legitimately produced by this toolkit carries
+        // anything but self_supplied across the wire.
+        let mut spec = serde_json::to_value(wire_spec().spec()).unwrap();
+        spec["evidence"]["recordings"][0]["trust"] = serde_json::json!("rpc_reported");
+        let error = generate_code_with_build_config(
+            &GenerateCodeInput {
+                spec,
+                rule_index: 0,
+            },
+            &build_config(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, EC::ESpecInvalid);
+        assert!(
+            error.message.contains("trust"),
+            "the refusal must name the unauthenticated claim: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn generate_refuses_incomplete_evidence_for_its_own_reason() {
+        // `incomplete` is not a forged strength claim — it is evidence the recorder ruled
+        // out of synthesis, which no legitimate pipeline ever cites in a spec. The refusal
+        // must say that, not accuse it of claiming acquisition context.
+        let mut spec = serde_json::to_value(wire_spec().spec()).unwrap();
+        spec["evidence"]["recordings"][0]["trust"] = serde_json::json!("incomplete");
+        let error = generate_code_with_build_config(
+            &GenerateCodeInput {
+                spec,
+                rule_index: 0,
+            },
+            &build_config(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, EC::ESpecInvalid);
+        assert!(
+            error.message.contains("ruled out of synthesis"),
+            "the refusal must state the incomplete-specific reason: {}",
             error.message
         );
     }
@@ -618,7 +694,7 @@ mod tests {
     #[test]
     fn generated_artifact_includes_wasm_and_a_binding_manifest() {
         let input = GenerateCodeInput {
-            spec: serde_json::to_value(fx::golden_spec().spec()).unwrap(),
+            spec: serde_json::to_value(wire_spec().spec()).unwrap(),
             rule_index: 0,
         };
         let config = build_config();

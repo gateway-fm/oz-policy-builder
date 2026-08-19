@@ -31,6 +31,20 @@ pub(crate) fn registry_trust() -> RegistryTrust {
     }
 }
 
+/// The golden spec as it can legitimately arrive over the JSON tool boundary.
+///
+/// `synthesize_policy` downgrades bundle trust to `self_supplied` before synthesis, so a
+/// wire-carried spec never claims stronger acquisition context; the in-process golden fixture's
+/// `rpc_reported` is the one thing about it that cannot survive serialization honestly.
+pub(crate) fn wire_spec() -> ozpb_policy_spec::ValidatedSpec {
+    let mut raw = ozpb_synthesizer::fixtures::golden_spec().spec().clone();
+    for recording in &mut raw.evidence.recordings {
+        recording.trust = ozpb_domain::TrustLevel::self_supplied();
+    }
+    raw.validate()
+        .expect("downgrading trust preserves validity")
+}
+
 pub(crate) fn build_config() -> ozpb_build_runner::BuildConfig {
     // Hermetic + deterministic: the toolkit's verify/binding/manifest logic only needs a
     // reproducible builder, not the real toolchain. This keeps `cargo test` free of a

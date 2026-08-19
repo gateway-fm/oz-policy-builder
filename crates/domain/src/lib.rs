@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 mod canonical;
 pub use canonical::{
     canonical_hash, canonical_hash_of, canonical_preimage_bytes, canonical_preimage_bytes_of,
-    to_scval,
+    to_scval, MAX_CANONICAL_PREIMAGE_BYTES,
 };
 
 /// Canonicalization scheme version. Bumped whenever the canonical byte encoding of any
@@ -327,6 +327,8 @@ pub enum DomainError {
     InvalidHash(String),
     #[error("serialization failure: {0}")]
     Serialization(String),
+    #[error("canonical preimage exceeds the {0}-byte ceiling")]
+    PreimageTooLarge(usize),
 }
 
 #[cfg(test)]
@@ -334,6 +336,15 @@ mod tests {
     use super::*;
 
     // --- domain-separated hashing -------------------------------------------------
+
+    #[test]
+    fn oversized_preimages_fail_as_the_size_budget_not_as_serialization() {
+        let oversized = "x".repeat(MAX_CANONICAL_PREIMAGE_BYTES + 1);
+        assert_eq!(
+            canonical_hash(domains::POLICY_SPEC, &oversized).unwrap_err(),
+            DomainError::PreimageTooLarge(MAX_CANONICAL_PREIMAGE_BYTES),
+        );
+    }
 
     #[test]
     fn same_payload_different_domain_gives_different_hash() {

@@ -677,7 +677,9 @@ mod tests {
     fn widened() -> ozpb_domain::Provenance {
         ozpb_domain::Provenance::UserWidened {
             intent: "test".to_string(),
-            blast_radius: ozpb_domain::BlastRadius::Medium,
+            // High: the shared helper also labels AnyValue, which validation holds to a
+            // high-blast-radius acknowledgement; bounds accept any radius.
+            blast_radius: ozpb_domain::BlastRadius::High,
         }
     }
 

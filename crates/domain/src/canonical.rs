@@ -97,19 +97,25 @@
 use crate::{DomainError, CANONICALIZATION_VERSION};
 use serde::{ser, Serialize};
 use stellar_xdr::{
-    Int128Parts, Limits, ScMap, ScMapEntry, ScString, ScSymbol, ScVal, StringM, UInt128Parts,
-    Validate, WriteXdr,
+    Error as XdrError, Int128Parts, Limits, ScMap, ScMapEntry, ScString, ScSymbol, ScVal, StringM,
+    UInt128Parts, Validate, WriteXdr,
 };
+
+/// Byte ceiling for any canonical preimage this toolkit hashes. Published so schema crates can
+/// treat it as a validated global budget — their per-field limits bound single items, and this
+/// bounds what the items may compose into (exceeding it is [`DomainError::PreimageTooLarge`],
+/// a limit, not a serialization accident).
+pub const MAX_CANONICAL_PREIMAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// XDR read/write limits for preimage encoding.
 ///
-/// Depth is the default; length is bounded well above any preimage this toolkit builds but far
-/// below the default 32 MiB, so a structure that grows pathologically fails here rather than
-/// producing a hash over megabytes nobody will read.
+/// Depth is the default; length is [`MAX_CANONICAL_PREIMAGE_BYTES`] — bounded well above any
+/// preimage this toolkit builds but far below the default 32 MiB, so a structure that grows
+/// pathologically fails here rather than producing a hash over megabytes nobody will read.
 fn preimage_limits() -> Limits {
     Limits {
         depth: 100,
-        len: 4 * 1024 * 1024,
+        len: MAX_CANONICAL_PREIMAGE_BYTES,
     }
 }
 
@@ -149,9 +155,15 @@ pub fn canonical_preimage_bytes_of(domain: &str, value: ScVal) -> Result<Vec<u8>
     Validate::validate(&preimage).map_err(|e| {
         DomainError::Serialization(format!("the assembled preimage is not a valid ScVal: {e}"))
     })?;
-    preimage
-        .to_xdr(preimage_limits())
-        .map_err(|e| DomainError::Serialization(format!("encoding the preimage as XDR: {e}")))
+    preimage.to_xdr(preimage_limits()).map_err(|e| match e {
+        // The bounded writer aborting on length is the global size budget refusing the
+        // value, not an encoding defect; give callers a variant they can translate into
+        // their own limit errors.
+        XdrError::LengthLimitExceeded => {
+            DomainError::PreimageTooLarge(MAX_CANONICAL_PREIMAGE_BYTES)
+        }
+        other => DomainError::Serialization(format!("encoding the preimage as XDR: {other}")),
+    })
 }
 
 /// Domain-separated canonical hash: SHA-256 over [`canonical_preimage_bytes`].

@@ -936,7 +936,13 @@ mod tests {
             if constraint.is_widening() {
                 Provenance::UserWidened {
                     intent: "property-test widening".to_string(),
-                    blast_radius: BlastRadius::Medium,
+                    // AnyValue is the maximal widening: validation holds it to the
+                    // high-blast-radius acknowledgement its schema contract states.
+                    blast_radius: if matches!(constraint, Constraint::AnyValue) {
+                        BlastRadius::High
+                    } else {
+                        BlastRadius::Medium
+                    },
                 }
             } else {
                 Provenance::ObservedExact

@@ -349,7 +349,11 @@ are referenced **by template family**, never by a wasm hash that doesn't exist y
     ]
   }],
   "evidence": {
-    "recordings": [ { "hash": "sha256:…", "trust": "rpc_reported" } ]  // canonical order, deduped
+    // Sorted ascending by hash, deduplicated. Across the JSON tool boundary the label is
+    // always "self_supplied": serialized trust is a claim the boundary cannot authenticate,
+    // so synthesis downgrades it and generation refuses anything stronger. Stronger labels
+    // exist only in-process, between recording and synthesis.
+    "recordings": [ { "hash": "sha256:…", "trust": "self_supplied" } ]
   }
 }
 ```
@@ -498,7 +502,10 @@ what edits cost):**
 
 - **Verified generated mode (default):** users edit the *spec*, and source is regenerated.
   All reproducibility, spec-conformance, differential-testing, and template-audit claims
-  apply.
+  apply. Those claims are about the code: an edited spec re-enters generation through
+  structural validation only, so its registry snapshot and capability references are
+  claims resolved at synthesis — carried, not re-verified, by the build — and proven again
+  only by the verification operations that resolve bindings against pinned registry roots.
 - **Custom source mode:** any manual edit to generated Rust creates a **new custom
   artifact**: it invalidates automated spec conformance (no evaluator can generally prove
   arbitrary Rust equivalent to the spec), requires its own BuildManifest, test run, and
