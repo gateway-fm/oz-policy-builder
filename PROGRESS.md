@@ -134,7 +134,7 @@ milestone delivers, all now closed:
       caller-chosen builder path arbitrary execution. `Builder::Stub` is unreachable from
       configuration (tested), and operator faults now map to `EBuildUnavailable` instead of
       reading to an agent as "your spec does not compile".
-- [x] **4. Rendering safety was convention, not structure** (§4.4:562). A future `Constraint`
+- [x] **4. Rendering safety was convention, not structure** (§4.4). A future `Constraint`
       variant carrying a `String` would have slipped past the `_ => {}` arm unvalidated. Now
       `crates/codegen/src/render.rs` holds validator-only-constructible literal types, the
       emitter takes a `RenderRule` and never sees a `RuleSpec`, and the conversion is
@@ -201,11 +201,13 @@ regression test:
    and that verdict is derived from an account snapshot no adapter here acquires. Excluded from
    this pass because it is only verifiable against a live network, so most of it cannot be
    test-driven offline. **This is the next pass.**
-2. **Containerized build + the missing BuildManifest provenance fields** (§4.4:568, §6.3:1198
-   — container image digest, source commit + dirty-tree status, template-pack hash). The
-   builder is still honestly labelled `local-unattested`. Adding manifest fields rehashes every
-   manifest, so both land together at a release gate. Memory / disk / cgroup limits from
-   §4.6:668 remain part of that work and are **not** claimed today.
+2. **Containerized build + the missing BuildManifest provenance fields** (§4.4, §6.3 — container
+   image digest, source commit + dirty-tree status, template-pack hash, canonicalization version,
+   build target). The builder is still honestly labelled `local-unattested`. Adding manifest
+   fields rehashes every manifest, so both land together at a release gate. Memory / disk / cgroup
+   limits from §4.6 remain part of that work and are **not** claimed today. §6.3 now carries a
+   scope note listing the fields the manifest holds against the ones it does not, so the document
+   states the gap instead of leaving a reader to diff it against the struct.
 3. **Real reviewed policy wasm at layer 2** (F5d). The blocker is not a dependency bump:
    `stellar-accounts` 0.7.2 ships `src/policies/*.rs` as *library helpers* and its `#[contract]`
    wrappers exist only under `src/*/test/`, so **OpenZeppelin publishes no policy wasm**.

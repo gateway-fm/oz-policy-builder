@@ -1898,7 +1898,15 @@ mod tests {
             assert_eq!(
                 &committed, content,
                 "golden {rel} drifted from codegen output; regenerate deliberately with \
-                 UPDATE_GOLDEN=1 (custom-source edits are not allowed on the golden)"
+                 UPDATE_GOLDEN=1 (custom-source edits are not allowed on the golden).\n\
+                 If the emitter changed rather than the spec, that is a change to the template \
+                 family: decide whether it needs a new one. A behavioural change — a different \
+                 check, a different order, a different deny path — is a new family \
+                 (`scope@N+1`), because installed policies and their BuildManifests name the \
+                 family they were built from and nothing else distinguishes two emitters that \
+                 share a name. A change that cannot alter what a policy permits (a comment, a \
+                 doc header) keeps the family. Say which one it is in the commit message either \
+                 way."
             );
         }
     }
