@@ -461,7 +461,7 @@ policy code hash alone (a threshold policy over a mutable live signer set does n
 fixed-identity predicate; that is exactly what strict mode exists for). Unknown or
 unregistered policies cannot satisfy the predicate and fail validation.
 
-### 4.4 Code generation (`crates/codegen` + `contracts/templates`)
+### 4.4 Code generation (`crates/codegen`)
 
 **Design decision — templates, not free-form generation.** The RFP demands deterministic
 behavior and an audit of the synthesizer itself; free-form LLM code generation (the approach
@@ -591,7 +591,9 @@ impl Policy for GeneratedPolicy {
   Reproducible wasm: pinned Rust toolchain (`rust-toolchain.toml`), `--locked` builds, and the
   pinned `stellar contract build` whose version the manifest records and the artifact's own
   metadata confirms; a containerized builder identified by image digest is future work (§6.3).
-  Full provenance lives in the BuildManifest (§6.3), and `verify` (§4.6) automates re-derivation.
+  Provenance lives in the BuildManifest, within the field set §6.3's scope note names — not all
+  of what that section lists is carried yet. Re-derivation is automated by `verify` (§4.6), which
+  arrives with that section's milestone.
 
 ### 4.5 Dry-run harness (`crates/harness`)
 
@@ -1000,13 +1002,15 @@ not exist yet, so the paths are split:
   source/build/audit and capability set.
 - **Toolkit-generated policies:** PolicySpec → **normalized codegen-input hash** → audited
   **template-family capability algebra** (the template pack's reviewed entry *records* which
-  predicate/constraint capabilities an instantiation implements; pre-build validation resolves
-  the family and its capability schema hash against the signed snapshot, and holding a spec's
-  constraint and predicate kinds to the recorded lists is a later control — the lists are
-  corrected when the capability schema is next versioned, alongside the typed snapshot model)
+  predicate/constraint capabilities an instantiation implements. **Synthesis** is what resolves
+  it: it loads the signed snapshot, resolves the family, and stamps the entry's capability-schema
+  hash into the spec. Code generation resolves nothing — it validates the spec structurally and
+  reads the family name out of it, so the recorded lists are not consulted at build time by
+  anything, and holding a spec's constraint and predicate kinds to them is a control that does
+  not exist yet; §6.3 records what the resulting manifest does and does not bind)
   → deterministic source/wasm derivation → **BuildManifest
   attestation** binding the resulting exact source/wasm hash to the template-pack identity
-  and PolicySpec. Post-build, `verify` reproduces the artifact and checks the binding.
+  and PolicySpec. Post-build, `verify` (§4.6) reproduces the artifact and checks the binding.
   `check_against_policy` and wallet recognition accept either a static reviewed entry **or**
   a fully verified generated-artifact attestation. **"Fully verified" is defined, not
   assumed:** an attestation counts only when the verifier has locally reproduced the
@@ -1226,12 +1230,18 @@ reviewed.
 
 ### 6.3 Reproducibility and artifact provenance
 
-> **Scope.** The reproducibility claim at the end of this section is shipped and gated. The
-> **field list** immediately below is the target manifest, not the current one. Today's
+> **Scope.** The reproducibility claim below — *the same canonical PolicySpec plus identical
+> pinned build inputs produce byte-identical source and wasm* — is shipped and gated. The
+> sentence after it, about `verify` reporting each dimension separately, describes §4.6's
+> milestone, and so do `DeploymentRecord`, `InstallationRecord` and publishing manifests keyed by
+> wasm hash: none of those three exists as a type or an implementation here. The **field list**
+> immediately below is likewise the target manifest, not the current one. Today's
 > `BuildManifest` carries: `schema`, `spec_hash`, `registry_snapshot`, `rule_index`,
 > `template_family`, `normalized_input_hash`, `source_hash`, `lockfile_hash`, `wasm_hash`,
-> `wasm_size`, `soroban_sdk_version`, `stellar_accounts_version`, `toolchain` (rustc + CLI,
-> reconciled against the wasm's own metadata) and `build_args`. Absent: source commit and
+> `wasm_size`, `soroban_sdk_version`, `stellar_accounts_version`, `toolchain` (rustc version,
+> stellar-cli version, and which builder produced the artifact — a real build's two version
+> claims are reconciled against the wasm's own SEP-46 metadata, and only the hermetic test stub
+> is exempt) and `build_args`. Absent: source commit and
 > dirty-tree status, template-pack hash, build-container image digest, canonicalization version,
 > and build target. Adding a field rehashes every manifest, so those land together with the
 > containerized builder at a release gate — tracked in PROGRESS.md under "Deliberately out of
@@ -1239,8 +1249,6 @@ reviewed.
 > recorded, and stay that way by design: the RecordingBundle hashes and the reviewed
 > policy/account/verifier code hashes are reached through `spec_hash` and `registry_snapshot`
 > instead of being copied into the manifest, which is what keeps the artifact chain acyclic.
-> `DeploymentRecord` and `InstallationRecord` are described in §4.8 and do not exist as types
-> yet; publishing manifests keyed by wasm hash has no implementation in this repository.
 
 A version string is not provenance, and outputs are never hashed into their own inputs — the
 artifact chain is acyclic (§4.2). The **BuildManifest** references the canonical PolicySpec

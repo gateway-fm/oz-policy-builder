@@ -1369,7 +1369,8 @@ mod tests {
         ///
         /// That is what makes the generated crates `cargo fmt --check`-clean without running
         /// rustfmt over codegen's output, which would put the rustfmt version among the inputs
-        /// to every shipped wasm hash. The fmt gate adjudicates the two committed crates; this
+        /// to every shipped wasm hash. The fmt gate adjudicates whichever crates a milestone
+        /// commits; this
         /// covers the shapes they do not contain, choosing the awkward ones deliberately: the
         /// longest symbol Soroban accepts, an `ScVal` long enough to wrap, and more than one
         /// allowed call.
@@ -1922,5 +1923,58 @@ mod tests {
         assert!(lockfile.contains("version = \"26.1.0\""));
         assert!(lockfile.contains("name = \"stellar-accounts\""));
         assert!(lockfile.contains("version = \"0.7.2\""));
+    }
+
+    /// W3's emission shapes, held to the checks they claim — held to the text they emit.
+    ///
+    /// This milestone commits one generated crate, the transfer
+    /// golden, whose sole comparator is an exact `EqI128` (`if x != 500000000i128`), so
+    /// `LeI128`, `GeI128`, `EqScval` and `AnyValue` reach no committed artifact here. The
+    /// property test (`any_validated_spec_generates_parseable_rust`) reaches them but checks
+    /// shape alone: parses as Rust, stays inside rustfmt's width, balances its constants. An
+    /// inverted comparison, a cap and floor swapped between arguments, or an `AnyValue` arm that
+    /// bound the value it was widened away from satisfies all of that and still permits the
+    /// wrong call.
+    ///
+    /// `soroswap_swap_spec` reaches all four at once and needs no committed crate. Which is why the assertions are bound to the argument each
+    /// constraint belongs to.
+    #[test]
+    fn w3_emission_shapes_are_held_to_the_checks_they_claim() {
+        let spec = ozpb_synthesizer::walkthroughs::soroswap_swap_spec();
+        let lib = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+        // arg 0 — amount_in, capped: an upper bound denies above it.
+        assert!(
+            lib.contains(
+                "let Some(v0) = args.get(0u32) else {\n        return false;\n    };\n    \
+                 match i128::try_from_val(e, &v0) {\n        Ok(x) => {\n            \
+                 if x > 1000000000i128 {"
+            ),
+            "amount_in cap must be the bound on arg 0"
+        );
+        // arg 1 — amount_out_min, floored: a lower bound denies below it.
+        assert!(
+            lib.contains(
+                "let Some(v1) = args.get(1u32) else {\n        return false;\n    };\n    \
+                 match i128::try_from_val(e, &v1) {\n        Ok(x) => {\n            \
+                 if x < 950000000i128 {"
+            ),
+            "amount_out_min floor must be the bound on arg 1"
+        );
+        // arg 2 — the exact route, compared against the bytes hoisted for this (call, arg).
+        assert!(
+            lib.contains("if v2.to_xdr(e) != Bytes::from_slice(e, &CALL_0_ARG_2_XDR)"),
+            "exact path must compare arg 2 against its own hoisted constant"
+        );
+        // arg 4 — the caller-chosen deadline: arity only...
+        assert!(
+            lib.contains("if args.get(4u32).is_none()"),
+            "any-deadline arity-only check"
+        );
+        // ...and never bound, which is the whole point of the widening. Bindings are named
+        // `v{index}`, so the absence of this one is what says the AnyValue arm ran.
+        assert!(
+            !lib.contains("let Some(v4)"),
+            "AnyValue must not bind the argument it leaves unconstrained"
+        );
     }
 }
