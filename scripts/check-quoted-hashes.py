@@ -22,14 +22,17 @@ itself unchecked proves that two files agree and nothing more:
   * `pinned_upstream` in crates/domain/src/lib.rs — read from the `Hash32([...])` byte
     literals, NOT from any hex spelling of them. A gate that compared prose against
     prose could be satisfied by two documents copying the same stale value.
-  * the `Normalized codegen input hash:` header of each generated policy crate, which
-    `golden_crate_matches_committed_output` (and its W3 twin) hold to codegen's output.
+  * the `Normalized codegen input hash:` header of each committed generated policy crate,
+    which that crate's golden test holds to codegen's output. Stated per crate rather than
+    by naming the tests, because which crates a milestone commits is itself a milestone
+    decision: any sentence that counted them, or that named a test only some trees have,
+    is false wherever that set is different.
   * the SHA-256 of each generated crate's `src/lib.rs`, computed here. Those files are
     byte-for-byte what `ozpb generate` emits, so this is exactly the digest a reader
     gets by running it — and it moves whenever the codegen-input hash in the header
     moves, which is what makes it the value most likely to be left behind.
-Deliberately NOT authoritative: a committed `build-manifest.json`. Nothing regenerates
-or validates one — `ozpb verify` is an operator command, not a gate — so a stale or
+Deliberately NOT authoritative: a committed `build-manifest.json`. No gate regenerates or
+validates one — re-derivation is operator-invoked where it exists at all — so a stale or
 hand-edited manifest would make an equally stale document pass, which is the failure this
 check exists to prevent rather than a source it can rely on. It would also admit
 `wasm_hash`, contradicting the exclusion of wasm hashes stated below. None is committed
@@ -46,8 +49,9 @@ WHAT THIS DELIBERATELY DOES NOT COVER, so that a pass is not read as more than i
     Precision is the point: a check that fired on every 64-hex string would hit
     lockfile checksums, transaction hashes and commit SHAs, and would be routed around
     within a week.
-  * Cargo.lock, in all four workspaces. Those are crates.io registry checksums: a
-    different kind of hash, thousands of them, and `--locked` builds are their check.
+  * Cargo.lock, wherever one lives — the workspace roots and each standalone generated
+    crate. Those are crates.io registry checksums: a different kind of hash, thousands of
+    them, and `--locked` builds are their check.
   * Rust sources and tests under crates/. Test vectors belong to their tests, and doc
     comments there quote counterfactual hashes on purpose — the `pinned_upstream`
     provenance table cites the value a *different* compiler produces, precisely to show
