@@ -114,8 +114,8 @@ pub fn synthesize_policy(
         .resolve_template(&input.template_family)
         .map_err(map_registry_err)?;
     let template_capability_schema = template.capability_schema;
-    let declared_constraint_kinds = template.constraint_kinds.clone();
-    let declared_signer_predicates = template.signer_predicates.clone();
+    let declared_constraint_kinds = &template.constraint_kinds;
+    let declared_signer_predicates = &template.signer_predicates;
     let spending_limit_capability = match &input.spending_limit_capability {
         Some(h) => {
             let hash = parse_hash(h)?;
@@ -153,8 +153,8 @@ pub fn synthesize_policy(
     within_declared_capabilities(
         &out.spec,
         &input.template_family,
-        &declared_constraint_kinds,
-        &declared_signer_predicates,
+        declared_constraint_kinds,
+        declared_signer_predicates,
     )?;
     // Validate immediately: the wire always carries a spec that passed validation.
     let validated = out
