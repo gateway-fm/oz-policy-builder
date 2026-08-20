@@ -9,7 +9,13 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+// Verification is deliberately `verify_strict`, never the `Verifier` trait's `verify`: the
+// strict path additionally rejects small-order public keys and small-order signature `R`
+// points (see `VerifyingKey::verify_strict` in ed25519-dalek). Together with the weak-key
+// rejection in `with_pinned_roots` this closes the constant-signature forgery under a
+// small-order root. A change of signature library or version is a security-review event:
+// re-check that both protections still hold.
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use ozpb_domain::pinned_upstream;
 use ozpb_domain::{domains, Hash32, NetworkId};
 use serde::{Deserialize, Serialize};
@@ -139,6 +145,14 @@ pub fn snapshot_root(snapshot: &RegistrySnapshot) -> Result<Hash32, RegistryErro
 }
 
 /// Sign a snapshot with a root key (bootstrap/ops tooling and tests).
+///
+/// This is a low-level signing primitive, **not** a validation gate: it hashes and signs any
+/// freely constructed [`RegistrySnapshot`], running none of the schema, validity-interval,
+/// key, revocation, cross-role, chain or root-policy checks that [`Registry::load_at`]
+/// applies. It can therefore mint a cryptographically authentic snapshot that loading will
+/// reject (this is deliberate — verifier tests need such snapshots). Release tooling must not
+/// treat a produced [`SignedSnapshot`] as loadable: load-verify it under the intended pinned
+/// [`RootPolicy`], network, and version/checkpoint before distributing it.
 pub fn sign_snapshot(
     key: &SigningKey,
     snapshot: RegistrySnapshot,
@@ -219,6 +233,14 @@ pub enum RegistryError {
 }
 
 /// Registry client with a pinned root key. Fail-closed everywhere.
+///
+/// **Verification happens at load, not at resolve.** [`Self::load_at`] checks the signature,
+/// network, validity interval, rollback floor and transparency chain against the trusted time
+/// supplied *then*; the `resolve_*` methods take no time and do not re-check `expires_at_unix`.
+/// A `Registry` is therefore a snapshot verified as of its load time: a long-lived instance
+/// will keep resolving capabilities after the snapshot expires, so a caller that caches one
+/// across time must reload before `expires_at_unix` and fail closed if it cannot. The Phase 1
+/// toolkit sidesteps this by constructing and loading a fresh registry per synthesis call.
 pub struct Registry {
     root_keys: BTreeMap<String, VerifyingKey>,
     root_threshold: u32,
@@ -234,13 +256,39 @@ struct Loaded {
 }
 
 impl Registry {
-    pub fn with_pinned_root(root_key_bytes: &[u8; 32]) -> Result<Self, RegistryError> {
+    /// Single-root, no network, no rollback floor — the weakest construction in this type, and
+    /// deliberately **not public**. An instance built this way accepts a correctly signed
+    /// snapshot for *any* network and, having no persisted version floor or checkpoint, accepts
+    /// an old one after a restart. It exists for this crate's own tests; the audit's cheapest
+    /// resolution for the constructor footgun was to keep the weak variants private, and with
+    /// no caller outside this file there is nothing to break. `cfg(test)` rather than
+    /// `pub(crate)`: nothing in the shipped library uses it, so it should not exist there.
+    #[cfg(test)]
+    fn with_pinned_root(root_key_bytes: &[u8; 32]) -> Result<Self, RegistryError> {
         Self::with_pinned_roots(RootPolicy {
             threshold: 1,
             keys: BTreeMap::from([("legacy".to_string(), *root_key_bytes)]),
         })
     }
 
+    /// Pin a threshold root policy, and **nothing else**: no expected network and no rollback
+    /// floor. This is now the weakest public constructor, and both omissions are load-bearing.
+    ///
+    /// - No network: a correctly signed snapshot for *any* Stellar network is accepted, so a
+    ///   testnet snapshot loads in a mainnet process. Pin the network unless the caller
+    ///   independently verifies `network_id` against the recording it will synthesize from.
+    /// - No rollback floor: with neither a persisted minimum version nor a checkpoint, a fresh
+    ///   process accepts an older but correctly signed snapshot — a rollback/freeze replay
+    ///   across restarts. In-process monotonicity still holds once a snapshot is loaded.
+    ///
+    /// Production consumers should use [`Self::with_pinned_roots_for_network_at_version`] or
+    /// [`Self::with_pinned_roots_for_network_at_checkpoint`]. This variant stays public for
+    /// validating a root policy on its own — the toolkit uses it to reject a bad operator
+    /// configuration at startup, before any snapshot exists — and for offline tooling that
+    /// checks network and version by other means.
+    ///
+    /// Root keys are validated here: threshold within `1..=keys.len()`, no empty signer id, no
+    /// key repeated under two ids, every key a well-formed non-small-order ed25519 point.
     pub fn with_pinned_roots(policy: RootPolicy) -> Result<Self, RegistryError> {
         if policy.threshold == 0 || policy.threshold as usize > policy.keys.len() {
             return Err(RegistryError::RootPolicy(format!(
@@ -265,9 +313,27 @@ impl Registry {
             .keys
             .into_iter()
             .map(|(id, bytes)| {
-                VerifyingKey::from_bytes(&bytes)
-                    .map(|key| (id, key))
-                    .map_err(|_| RegistryError::RootPolicy("invalid ed25519 root key".to_string()))
+                let key = VerifyingKey::from_bytes(&bytes).map_err(|_| {
+                    RegistryError::RootPolicy("invalid ed25519 root key".to_string())
+                })?;
+                // A small-order ("weak") public key verifies a forgeable constant signature
+                // for almost every message; accepting one as a governance root would let a
+                // single malformed or adversarial key entry defeat the whole threshold
+                // policy. Root configuration is exactly the boundary this constructor
+                // validates, so reject the key here rather than trusting later verification.
+                if key.is_weak() {
+                    // `{id:?}` rather than `{id}`: signer ids come from operator-supplied JSON,
+                    // and this string reaches logs and terminals. Debug formatting escapes
+                    // control characters and makes whitespace visible, so an id cannot forge log
+                    // lines or hide as blank text. Same reason `validate_template_family` quotes
+                    // the family it rejects. Bounding id length/charset belongs with the
+                    // deferred registry limits, not here.
+                    return Err(RegistryError::RootPolicy(format!(
+                        "root key {id:?} is a small-order (weak) ed25519 point and can never \
+                         carry a governance approval"
+                    )));
+                }
+                Ok((id, key))
             })
             .collect::<Result<_, _>>()?;
         Ok(Registry {
@@ -280,10 +346,18 @@ impl Registry {
         })
     }
 
-    /// Construct a registry verifier pinned to both a governance root and one Stellar
-    /// network. Production consumers should use this constructor; the root-only constructor
-    /// remains for offline migration tooling that validates network separately.
-    pub fn with_pinned_root_for_network(
+    /// Construct a registry verifier pinned to a governance root and one Stellar network,
+    /// but with **no persisted rollback floor**. Because it carries no minimum version or
+    /// checkpoint, a fresh process built this way will accept an old but correctly signed
+    /// snapshot — a rollback/freeze replay after restart. It is therefore not the production
+    /// constructor: production consumers must persist anti-rollback state across processes and
+    /// use [`Self::with_pinned_roots_for_network_at_version`] or
+    /// [`Self::with_pinned_roots_for_network_at_checkpoint`]. This variant is for offline
+    /// migration/bootstrap tooling and single-process tests where no prior snapshot exists to
+    /// roll back to. Kept **crate-private** for that reason: it had no caller outside this
+    /// file, so restricting it costs nothing and removes the footgun from the public surface.
+    #[cfg(test)]
+    fn with_pinned_root_for_network(
         root_key_bytes: &[u8; 32],
         expected_network: NetworkId,
     ) -> Result<Self, RegistryError> {
@@ -347,6 +421,15 @@ impl Registry {
 
     /// Verify and load at a caller-supplied trusted time. This makes expiry tests and offline
     /// verification deterministic while keeping the validity decision explicit.
+    ///
+    /// Signature policy is **strict on every supplied signature**, by design: each entry must
+    /// name a configured signer and verify, and any unknown id or invalid signature rejects the
+    /// whole snapshot even if a valid trusted threshold is otherwise present. This is
+    /// fail-closed input handling, not threshold counting that ignores extras — a snapshot
+    /// carrying an unrecognized or malformed signature is treated as malformed. It grants an
+    /// attacker no new authorization (one who can add or alter a signature in transit can also
+    /// remove a required one); the trade is that an altered optional extra signature can
+    /// invalidate an otherwise-valid quorum. Keep supplied signatures to the configured roots.
     pub fn load_at(
         &mut self,
         signed: &SignedSnapshot,
@@ -367,7 +450,9 @@ impl Registry {
                 .try_into()
                 .map_err(|_| RegistryError::Signature)?;
             let signature = Signature::from_bytes(&sig_bytes);
-            key.verify(&root.0, &signature)
+            // Strict verification: defense in depth behind the constructor's weak-key
+            // rejection (see the module-level note on the ed25519-dalek import).
+            key.verify_strict(&root.0, &signature)
                 .map_err(|_| RegistryError::Signature)?;
             valid_signatures = valid_signatures.saturating_add(1);
         }
@@ -486,12 +571,31 @@ impl Registry {
         Ok(root)
     }
 
+    /// Parse and load a signed snapshot from JSON.
+    ///
+    /// **Parsing is not resource-bounded, and this crate publishes no registry limits.** The
+    /// string is deserialized into unbounded maps, vectors and strings before any check runs;
+    /// signer identifiers and the signature map are unbounded too. The 4 MiB ceiling in the
+    /// canonical encoder is *not* a mitigation for this: it bounds the **hash preimage**, so it
+    /// stops the hash from covering megabytes, but only after the whole input has been parsed
+    /// and materialized. Measured: a 6.3 MB snapshot JSON parses completely and then fails
+    /// during canonicalization, and it fails as [`RegistryError::Internal`] — which the toolkit
+    /// maps to the wire code `E_INTERNAL`, so a caller's oversized input is reported as an
+    /// internal server fault rather than a stable input error.
+    ///
+    /// A hosted deployment must therefore bound the request body itself; note the MCP server's
+    /// cap is operator-settable *above* the preimage ceiling, so this path is reachable in a
+    /// supported configuration, not merely in theory. Composable registry limits (encoded
+    /// bytes, entries per map, signature count, identifier/value lengths) with a stable
+    /// input-error code are deferred, not implemented.
     pub fn load_json(&mut self, json: &str) -> Result<Hash32, RegistryError> {
         let signed: SignedSnapshot =
             serde_json::from_str(json).map_err(|e| RegistryError::Parse(e.to_string()))?;
         self.load(&signed)
     }
 
+    /// As [`Self::load_json`], at a caller-supplied trusted time. The same unbounded-parsing
+    /// caveat applies.
     pub fn load_json_at(&mut self, json: &str, now_unix: i64) -> Result<Hash32, RegistryError> {
         let signed: SignedSnapshot =
             serde_json::from_str(json).map_err(|e| RegistryError::Parse(e.to_string()))?;
@@ -603,6 +707,33 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
             }
         }
     }
+    // The three code-hash maps are role-separated so a hash resolves to exactly one kind; a
+    // hash listed under two roles would let `resolve_*` hand back a capability of the wrong
+    // kind for the same wasm. Governance signs the snapshot, so this guards against ambiguous
+    // reviewed metadata rather than an untrusted request, but the confusion it prevents is one
+    // the registry's own conformance language promises against — enforce it at load, not only
+    // for the shipped dev fixture.
+    // Probed rather than collected into sets: the maps are already keyed and sorted, so a
+    // membership probe needs no allocation on a path that runs on every load. `or_else` keeps
+    // the pairs lazy, so a first-pair collision never scans the other two.
+    let collision = first_shared_key(&snapshot.policies, &snapshot.accounts)
+        .map(|hash| (hash, "policy", "account"))
+        .or_else(|| {
+            first_shared_key(&snapshot.policies, &snapshot.verifiers)
+                .map(|hash| (hash, "policy", "verifier"))
+        })
+        .or_else(|| {
+            first_shared_key(&snapshot.accounts, &snapshot.verifiers)
+                .map(|hash| (hash, "account", "verifier"))
+        });
+    if let Some((shared, left_kind, right_kind)) = collision {
+        // Phrased without indefinite articles so no kind needs "a"/"an" agreement — the
+        // previous wording read "both a policy and a account".
+        return Err(RegistryError::Parse(format!(
+            "wasm hash {shared} is registered under two capability roles, \
+             {left_kind} and {right_kind}"
+        )));
+    }
     for family in snapshot.templates.keys() {
         validate_template_family(family)?;
     }
@@ -628,6 +759,23 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
         }
     }
     Ok(())
+}
+
+/// The lowest key present in both maps, or `None` if they are disjoint.
+///
+/// Scans the smaller map and probes the larger, so the cost is `O(min · log max)` with no
+/// allocation. Both maps are sorted, so the first key found is the smallest shared one whichever
+/// side is scanned — the reported hash stays deterministic, which matters because it appears in
+/// an error message that tests and operators read.
+fn first_shared_key<'a, L, R>(
+    left: &'a BTreeMap<String, L>,
+    right: &'a BTreeMap<String, R>,
+) -> Option<&'a String> {
+    if left.len() <= right.len() {
+        left.keys().find(|key| right.contains_key(*key))
+    } else {
+        right.keys().find(|key| left.contains_key(*key))
+    }
 }
 
 fn is_canonical_hash(value: &str) -> bool {
@@ -991,6 +1139,152 @@ mod tests {
         registry.load(&signed).unwrap();
     }
 
+    /// The compressed encodings of **all eight** ed25519 small-order (torsion) points, in
+    /// curve25519-dalek's `EIGHT_TORSION` order so they can be diffed against that published
+    /// constant directly. A signature under any of them verifies for almost every message, so
+    /// one of these entering a root policy would turn threshold governance into universal
+    /// forgery. Hex rather than byte arrays precisely so the values stay comparable by eye: an
+    /// earlier revision of this test carried six of the eight while claiming all eight, which
+    /// hand-written byte rows hid.
+    const EIGHT_TORSION_ROOT_KEYS: [&str; 8] = [
+        // Order 1: the identity point.
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        // Order 8.
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        // Order 4: y = 0, with the sign bit set.
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        // Order 8.
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+        // Order 2: y = -1.
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        // Order 8.
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        // Order 4: y = 0, sign bit clear.
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        // Order 8.
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+    ];
+
+    fn torsion_key(encoded: &str) -> [u8; 32] {
+        hex::decode(encoded)
+            .expect("a torsion vector must be hex")
+            .try_into()
+            .expect("a torsion vector must be 32 bytes")
+    }
+
+    #[test]
+    fn small_order_root_keys_are_rejected_at_construction() {
+        // Coverage self-check: eight *distinct* vectors. A duplicated row would otherwise
+        // silently shrink the set while the count still read as complete.
+        let distinct: std::collections::BTreeSet<&str> =
+            EIGHT_TORSION_ROOT_KEYS.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            8,
+            "the torsion set must hold eight distinct encodings"
+        );
+
+        for (index, encoded) in EIGHT_TORSION_ROOT_KEYS.iter().enumerate() {
+            let bytes = torsion_key(encoded);
+            // Self-check each vector before asserting on the constructor: it must decompress
+            // and must be what the test claims it is — a weak key. This is what makes the
+            // "all eight" claim machine-checked rather than a comment.
+            let key = VerifyingKey::from_bytes(&bytes)
+                .unwrap_or_else(|_| panic!("torsion vector {index} ({encoded}) must decompress"));
+            assert!(
+                key.is_weak(),
+                "vector {index} ({encoded}) is not actually small-order"
+            );
+            assert!(
+                matches!(
+                    Registry::with_pinned_roots(RootPolicy {
+                        threshold: 1,
+                        keys: BTreeMap::from([("root".to_string(), bytes)]),
+                    }),
+                    Err(RegistryError::RootPolicy(_))
+                ),
+                "small-order root {index} ({encoded}) was accepted as a governance root"
+            );
+        }
+
+        // One weak key poisons the whole policy even alongside a strong root: in an m-of-n
+        // policy every accepted weak root reduces the number of real approvals needed.
+        let mixed = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([
+                ("strong".to_string(), dev::dev_root_verifying_bytes()),
+                ("weak".to_string(), torsion_key(EIGHT_TORSION_ROOT_KEYS[0])),
+            ]),
+        };
+        assert!(matches!(
+            Registry::with_pinned_roots(mixed),
+            Err(RegistryError::RootPolicy(_))
+        ));
+    }
+
+    /// Signer ids arrive from operator-supplied JSON, so a rejected id must not be able to forge
+    /// log lines through the error message that quotes it.
+    #[test]
+    fn a_rejected_signer_id_cannot_inject_control_characters_into_the_message() {
+        let policy = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([(
+                "governance\n[ERROR] all roots trusted".to_string(),
+                torsion_key(EIGHT_TORSION_ROOT_KEYS[0]),
+            )]),
+        };
+        let Err(RegistryError::RootPolicy(message)) = Registry::with_pinned_roots(policy) else {
+            panic!("a weak root must be refused whatever its id");
+        };
+        assert!(
+            !message.contains('\n'),
+            "the message carries a raw newline and can forge a log line: {message}"
+        );
+        assert!(
+            message.contains("\\n"),
+            "the id should appear escaped, so an operator can still see what was configured: \
+             {message}"
+        );
+    }
+
+    /// The exact forgery shape from the R-01 audit reproduction: the compressed Edwards
+    /// identity as the pinned root, and the constant signature (R = identity, S = 0), which
+    /// requires no secret key and verifies for every message under non-strict verification.
+    #[test]
+    fn the_identity_root_and_constant_signature_cannot_load_a_snapshot() {
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        // First line of defense: the constructor refuses the weak root outright.
+        assert!(matches!(
+            Registry::with_pinned_root(&identity),
+            Err(RegistryError::RootPolicy(_))
+        ));
+
+        // Second line: even a registry assembled around the constructor (possible only inside
+        // this crate — the fields are private) must reject the constant signature, because
+        // verification is strict and strict verification rejects small-order keys and R.
+        let key = VerifyingKey::from_bytes(&identity).unwrap();
+        assert!(key.is_weak());
+        let mut registry = Registry {
+            root_keys: BTreeMap::from([("legacy".to_string(), key)]),
+            root_threshold: 1,
+            expected_network: None,
+            minimum_version: 0,
+            pinned_checkpoint: None,
+            current: None,
+        };
+        let mut constant_signature = [0u8; 64];
+        constant_signature[0] = 1; // R = identity point, S = 0.
+        let forged = SignedSnapshot {
+            snapshot: dev::dev_snapshot(network(), 1),
+            signatures: BTreeMap::from([("legacy".to_string(), hex::encode(constant_signature))]),
+        };
+        assert_eq!(
+            registry.load_at(&forged, 0).unwrap_err(),
+            RegistryError::Signature
+        );
+    }
+
     #[test]
     fn threshold_root_policy_rejects_the_same_key_under_multiple_ids() {
         let key = dev::dev_root_verifying_bytes();
@@ -1302,6 +1596,92 @@ mod tests {
                 registry().load(&signed),
                 Err(RegistryError::Parse(_))
             ));
+        }
+    }
+
+    #[test]
+    fn the_same_wasm_hash_cannot_hold_two_capability_roles() {
+        // The role-separated maps exist to stop a verifier from resolving as a policy (or any
+        // other cross-role confusion). A signed snapshot that lists one hash under two roles is
+        // ambiguous reviewed metadata; loading must reject it rather than let `resolve_*` return
+        // a capability of the wrong kind for the same code.
+        // An enum, not string matching: the check is pairwise over three maps, so the test
+        // enumerates all three pairs and the compiler — not a `_` arm — decides that every role
+        // is handled. The earlier version matched on `"account"` with a catch-all that would
+        // have silently treated a fourth role as `verifier`.
+        #[derive(Clone, Copy, Debug)]
+        enum Role {
+            Policy,
+            Account,
+            Verifier,
+        }
+
+        fn insert_under(snapshot: &mut RegistrySnapshot, role: Role, hash: &str) {
+            match role {
+                Role::Policy => {
+                    snapshot.policies.insert(
+                        hash.to_string(),
+                        PolicyCapability {
+                            kind: "collision".to_string(),
+                            signer_predicates: vec![],
+                            security_relevant_methods: vec![],
+                            review_reference: "collision".to_string(),
+                        },
+                    );
+                }
+                Role::Account => {
+                    snapshot.accounts.insert(
+                        hash.to_string(),
+                        AccountCapability {
+                            release: "collision".to_string(),
+                            rule_enumeration: "none".to_string(),
+                            management_evidence: "none".to_string(),
+                            review_reference: "collision".to_string(),
+                        },
+                    );
+                }
+                Role::Verifier => {
+                    snapshot.verifiers.insert(
+                        hash.to_string(),
+                        VerifierCapability {
+                            implementation: "collision".to_string(),
+                            key_encoding: "raw ed25519 public key (32 bytes)".to_string(),
+                            immutable: true,
+                            review_reference: "collision".to_string(),
+                        },
+                    );
+                }
+            }
+        }
+
+        // A hash that is in none of the dev fixture's maps, so each case below registers it
+        // under exactly the two roles under test — including account/verifier, the pair the
+        // previous version of this test never reached.
+        let shared = sha256(b"cross-role-collision-subject").to_hex();
+        for (first, second) in [
+            (Role::Policy, Role::Account),
+            (Role::Policy, Role::Verifier),
+            (Role::Account, Role::Verifier),
+        ] {
+            let mut snapshot = dev::dev_snapshot(network(), 1);
+            insert_under(&mut snapshot, first, &shared);
+            insert_under(&mut snapshot, second, &shared);
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            assert!(
+                matches!(registry().load(&signed), Err(RegistryError::Parse(_))),
+                "a hash shared between {first:?} and {second:?} must fail closed"
+            );
+        }
+
+        // Control: the same hash under one role only must still load, so the assertions above
+        // are detecting the collision rather than the injected entry.
+        for role in [Role::Policy, Role::Account, Role::Verifier] {
+            let mut snapshot = dev::dev_snapshot(network(), 1);
+            insert_under(&mut snapshot, role, &shared);
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            registry()
+                .load(&signed)
+                .unwrap_or_else(|e| panic!("one {role:?} entry alone must load, got {e}"));
         }
     }
 

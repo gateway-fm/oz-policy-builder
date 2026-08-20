@@ -558,6 +558,49 @@ mod tests {
     use ozpb_registry::dev as registry_dev;
     use ozpb_synthesizer::fixtures as fx;
 
+    /// The registry's small-order root rejection has to reach the boundary an operator actually
+    /// configures — a roots JSON file — not just the Rust constructor. `registry_trust_from_roots_json`
+    /// validates the policy through `Registry::with_pinned_roots` before returning trust, so a
+    /// weak governance key is refused at startup rather than at first load.
+    ///
+    /// This also pins where the refusal lands on the wire: there is no `E_REGISTRY_ROOT_POLICY`
+    /// error code, so it arrives as `E_REGISTRY_SIGNATURE` carrying the root-policy message. A
+    /// root-policy *configuration* fault reported under a *signature* code is worth knowing
+    /// about; the test records today's behavior rather than asserting a code that exists.
+    #[test]
+    fn a_small_order_governance_root_is_refused_at_the_operator_boundary() {
+        // The compressed Edwards identity: the audit's forgery root.
+        let identity = format!("01{}", "00".repeat(31));
+        let roots_json = format!(r#"{{"threshold":1,"keys":{{"governance":"{identity}"}}}}"#);
+        let error = registry_trust_from_roots_json(&roots_json, 0)
+            .expect_err("a small-order governance root must not configure registry trust");
+        // Semantic content first: the refusal must name the offending signer id and the reason,
+        // which is what an operator reading a startup failure needs.
+        assert!(
+            error.message.contains("governance") && error.message.contains("small-order"),
+            "the refusal must name the key and the reason, got: {}",
+            error.message
+        );
+        // Deliberate tripwires for the code/message mismatch described above, not incidental
+        // string coupling: the wire code says "signature" while the message says
+        // "E_REGISTRY_ROOT_POLICY". Both assertions are expected to be revisited together when
+        // the error vocabulary gains a root-policy code — that is the point of pinning them.
+        assert_eq!(error.code, EC::ERegistrySignature);
+        assert!(
+            error.message.contains("E_REGISTRY_ROOT_POLICY"),
+            "the message still carries the root-policy label, got: {}",
+            error.message
+        );
+
+        // Control: the same JSON shape with a sound root configures trust, so the assertion
+        // above is detecting the weak key and not a malformed file.
+        let sound = hex::encode(registry_dev::dev_root_verifying_bytes());
+        let roots_json = format!(r#"{{"threshold":1,"keys":{{"governance":"{sound}"}}}}"#);
+        let trust = registry_trust_from_roots_json(&roots_json, 0)
+            .expect("a sound root must configure registry trust");
+        assert_eq!(trust.root_policy.threshold, 1);
+    }
+
     #[test]
     fn build_errors_map_to_distinct_wire_codes_per_cause() {
         use ozpb_build_runner::BuildError;
