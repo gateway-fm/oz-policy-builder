@@ -1274,6 +1274,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "ozpb-domain",
+ "ozpb-policy-spec",
  "serde",
  "serde_json",
  "thiserror",

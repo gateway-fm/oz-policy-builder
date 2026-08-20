@@ -321,6 +321,54 @@ pub enum Constraint {
     AnyValue,
 }
 
+/// One list, two derivations: the `KINDS` vocabulary a capability registry declares and the
+/// `kind_name` a checker reads off a value. Both come from the arms below, so a kind cannot
+/// exist without appearing in the vocabulary, and cannot be spelled one way in a signed
+/// snapshot and another when a spec is checked against it.
+///
+/// Written as a macro for the reason `ozpb_api_types::ErrorCode` is: the vocabulary used to be
+/// a hand-written literal in `ozpb_registry::dev`, compared in a test against a second
+/// hand-written literal. Two entries in it named things that are not kinds at all and two real
+/// kinds were missing, and nothing failed — because both sides of the comparison were prose.
+/// The `match` below is exhaustive, so a new variant is a compile error here and the vocabulary
+/// grows with it instead of silently narrowing the check that reads it.
+///
+/// Order is the serialized order, kept sorted so an entry built from `KINDS` needs no sorting
+/// step and a reader can diff it against the enum by eye; `kinds_are_sorted` holds it.
+macro_rules! kind_vocabulary {
+    ($enum:ident { $( $pattern:pat => $wire:literal, )+ }) => {
+        impl $enum {
+            /// Every kind this type can be, as a capability registry spells them. Sorted.
+            pub const KINDS: &'static [&'static str] = &[$($wire),+];
+
+            /// This value's kind, as `KINDS` spells it.
+            pub fn kind_name(&self) -> &'static str {
+                match self {
+                    $( $pattern => $wire, )+
+                }
+            }
+        }
+    };
+}
+
+kind_vocabulary!(Constraint {
+    Constraint::AnyValue => "any_value",
+    Constraint::EqAddress { .. } => "eq_address",
+    Constraint::EqI128 { .. } => "eq_i128",
+    Constraint::EqScval { .. } => "eq_scval",
+    Constraint::GeI128 { .. } => "ge_i128",
+    Constraint::LeI128 { .. } => "le_i128",
+});
+
+// `PredicateKind` is declared above; the vocabulary sits here because a `macro_rules!` is only
+// in scope after its definition.
+kind_vocabulary!(PredicateKind {
+    PredicateKind::AllOf => "all_of",
+    PredicateKind::AnyOf => "any_of",
+    PredicateKind::AnyOfCurrentRuleSigners => "any_of_current_rule_signers",
+    PredicateKind::Threshold { .. } => "threshold",
+});
+
 impl Constraint {
     /// Bounds and wildcards are widenings by definition; exact equality is the observed
     /// minimum.

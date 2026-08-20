@@ -152,6 +152,7 @@ pub fn synthesize_policy(
     let out = synthesize(&syn_input, &decisions).map_err(map_synth_errs)?;
     within_declared_capabilities(
         &out.spec,
+        &input.template_family,
         &declared_constraint_kinds,
         &declared_signer_predicates,
     )?;
@@ -340,35 +341,6 @@ fn spec_error(errs: &[ozpb_policy_spec::SpecError]) -> ToolError {
         .with_details(errs.iter().map(|e| e.to_string()).collect())
 }
 
-/// The serialized name of a constraint, as the registry's `constraint_kinds` spells it.
-///
-/// Matched exhaustively rather than through `serde_json`, for the same reason
-/// `RenderRule::from_rule` is exhaustive: a new `Constraint` variant must be a compile error
-/// here. Deriving the name from serialization would silently admit the new variant, and this
-/// check would then vouch for a capability the reviewed template never declared.
-fn constraint_kind_name(constraint: &ozpb_policy_spec::Constraint) -> &'static str {
-    use ozpb_policy_spec::Constraint as C;
-    match constraint {
-        C::EqAddress { .. } => "eq_address",
-        C::EqScval { .. } => "eq_scval",
-        C::EqI128 { .. } => "eq_i128",
-        C::LeI128 { .. } => "le_i128",
-        C::GeI128 { .. } => "ge_i128",
-        C::AnyValue => "any_value",
-    }
-}
-
-/// Likewise for the signer predicate.
-fn predicate_kind_name(kind: &ozpb_policy_spec::PredicateKind) -> &'static str {
-    use ozpb_policy_spec::PredicateKind as P;
-    match kind {
-        P::AnyOf => "any_of",
-        P::AllOf => "all_of",
-        P::Threshold { .. } => "threshold",
-        P::AnyOfCurrentRuleSigners => "any_of_current_rule_signers",
-    }
-}
-
 /// Refuse a spec that uses a constraint or predicate the resolved template does not declare.
 ///
 /// The registry entry for a template family records which predicate and constraint kinds a
@@ -377,49 +349,49 @@ fn predicate_kind_name(kind: &ozpb_policy_spec::PredicateKind) -> &'static str {
 /// vocabulary narrower or wider than the template's without any gate noticing — which is how
 /// two entries came to name things that are not constraints or predicates at all.
 ///
-/// Today this can only fire if the two drift apart, because synthesis emits exactly what
-/// `exact_for` and the user's widenings produce and the corrected lists cover all of it. That
-/// is the point: it is a tripwire for the next `Constraint` variant, or for the first
-/// adapter-derived constraint, reaching a spec before the reviewed template claims to
-/// implement it. `constraint_kind_name` is exhaustive so the variant cannot arrive unnoticed,
-/// and this refuses if the registry has not caught up.
+/// Against the dev snapshot this repository ships it cannot fire, because that entry declares
+/// both types' full vocabularies and synthesis emits nothing outside them. That is a property
+/// of the shipped fixture, not of this function: `signed_registry_snapshot` is a caller input,
+/// so any narrower production entry can refuse here — which is what the check is for. Its
+/// standing job is to be the tripwire when a new `Constraint` variant, or the first
+/// adapter-derived constraint, reaches a spec before the reviewed template claims to implement
+/// it. `Constraint::kind_name` is generated from the same exhaustive list as `Constraint::KINDS`,
+/// so the variant is a compile error in `ozpb-policy-spec` rather than a silent admission here.
 ///
-/// Scoped to the synthesize path deliberately: `generate_code` and `verify` take a
-/// caller-supplied spec and are given no registry, so neither can perform this check. Closing
-/// that path means making the signed snapshot a required input to those operations, which
-/// changes the wire contract — later-milestone work, and stated here rather than left as an
-/// implied guarantee.
+/// Two things it does NOT cover, so the guarantee is not read wider than it is. `rule.state`
+/// carries `StateSpec`, for which `TemplateCapability` declares no vocabulary at all — adding
+/// one is a snapshot-shape change, and until then removing the (mis-filed)
+/// `call_count_per_installation` entry left state capabilities undeclared rather than
+/// unchecked, since nothing checked them before either. And `generate_code` / `verify` take a
+/// caller-supplied spec and are handed no snapshot, so neither can run this; closing that path
+/// means making the snapshot a required input to those operations, which breaks the wire
+/// contract and, for `verify`, belongs to a later milestone regardless.
 fn within_declared_capabilities(
     spec: &PolicySpec,
+    resolved_family: &str,
     declared_constraint_kinds: &[String],
     declared_signer_predicates: &[String],
 ) -> Result<(), ToolError> {
     let mut undeclared: Vec<String> = Vec::new();
     for (rule_index, rule) in spec.rules.iter().enumerate() {
-        let predicate = predicate_kind_name(&rule.authorization.kind);
+        let predicate = rule.authorization.kind.kind_name();
         if !declared_signer_predicates.iter().any(|d| d == predicate) {
             undeclared.push(format!(
-                "rules[{rule_index}] uses signer predicate '{predicate}', which \
-                 {} does not declare",
-                spec.rules[rule_index]
-                    .policies
-                    .iter()
-                    .find_map(|policy| match policy {
-                        PolicyRef::Generated {
-                            template_family, ..
-                        } => Some(template_family.as_str()),
-                        PolicyRef::Reviewed { .. } => None,
-                    })
-                    .unwrap_or("the resolved template family")
+                "rules[{rule_index:02}] signer predicate '{predicate}'"
             ));
         }
-        for call in &rule.allowed_calls {
+        // The tuple index, not just the function name: `allowed_calls` is a disjunction of
+        // complete tuples, so one rule can hold several entries for the same function, and a
+        // detail naming only the function would collapse two distinct offending tuples into
+        // one line under the dedup below. Both indexes are zero-padded so the sort orders them
+        // numerically rather than putting `rules[10]` before `rules[2]`.
+        for (call_index, call) in rule.allowed_calls.iter().enumerate() {
             for arg in &call.args {
-                let kind = constraint_kind_name(&arg.constraint);
+                let kind = arg.constraint.kind_name();
                 if !declared_constraint_kinds.iter().any(|d| d == kind) {
                     undeclared.push(format!(
-                        "rules[{rule_index}]/{}/arg {} uses constraint kind '{kind}', which the \
-                         resolved template family does not declare",
+                        "rules[{rule_index:02}]/allowed_calls[{call_index:02}] {}/arg {} \
+                         constraint kind '{kind}'",
                         call.fn_name, arg.index
                     ));
                 }
@@ -431,9 +403,17 @@ fn within_declared_capabilities(
     }
     undeclared.sort();
     undeclared.dedup();
+    // Deliberately NOT `EUnregisteredTemplate`: that code means "no audited family by this
+    // name", and an agent reading it would tell the user their family is unregistered or their
+    // snapshot is stale. Here the family resolved fine and declares less than the spec uses,
+    // and the remedy is the opposite — narrow the spec, or update the template entry. The
+    // message leads with the family so the distinction survives even where the code is coarse.
     Err(ToolError::new(
-        EC::EUnregisteredTemplate,
-        "the synthesized spec uses capabilities the resolved template family does not declare",
+        EC::EUnsupportedPattern,
+        format!(
+            "template family '{resolved_family}' is registered but does not declare every \
+             capability this spec uses"
+        ),
     )
     .with_details(undeclared))
 }
@@ -826,7 +806,12 @@ mod tests {
         };
 
         let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
-        assert_eq!(err.code, EC::EUnregisteredTemplate);
+        assert_eq!(err.code, EC::EUnsupportedPattern);
+        assert!(
+            err.message.contains("policy-templates/scope@1"),
+            "the refusal must name the family that resolved: {}",
+            err.message
+        );
         assert!(
             err.details
                 .iter()

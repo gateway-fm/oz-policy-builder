@@ -658,6 +658,7 @@ fn validate_template_family(family: &str) -> Result<(), RegistryError> {
 pub mod dev {
     use super::*;
     use ozpb_domain::sha256;
+    use ozpb_policy_spec::{Constraint, PredicateKind};
 
     /// Deterministic development root key (NOT a production root; production roots are
     /// threshold-held and pinned at release time).
@@ -751,32 +752,28 @@ pub mod dev {
             "policy-templates/scope@1".to_string(),
             TemplateCapability {
                 capability_schema: sha256(b"policy-templates/scope@1:capability-algebra"),
-                // Both lists are the serialized vocabularies of the types a spec is built
-                // from — `PredicateKind` and `Constraint` — and nothing else. Two entries
-                // used to come from neither: `strict_signer_set` is a `bool` on
-                // `AuthorizationSpec`, not a predicate a rule can choose, and
-                // `call_count_per_installation` is a `StateSpec`, not an argument
-                // constraint. Declaring them here made the signed snapshot describe a
-                // vocabulary that does not exist, while omitting two that do.
+                // Taken from the types a spec is built from, not written out here. Both used
+                // to be hand-written literals, and both were wrong in both directions:
+                // `strict_signer_set` is a `bool` on `AuthorizationSpec` and
+                // `call_count_per_installation` is a `StateSpec` — neither is a kind a rule
+                // can choose — while `any_of_current_rule_signers` and `any_value`, which
+                // are, were missing. Nothing failed, because the only test compared the
+                // literal against a second literal.
                 //
-                // Sorted, and kept sorted: a reader comparing this against the enum should
-                // not have to hold an arbitrary order in their head, and `resolve_template`
-                // callers now reject anything absent from these lists — so a missing entry
-                // is a refusal, which is the reason they must be complete.
-                signer_predicates: vec![
-                    "all_of".into(),
-                    "any_of".into(),
-                    "any_of_current_rule_signers".into(),
-                    "threshold".into(),
-                ],
-                constraint_kinds: vec![
-                    "any_value".into(),
-                    "eq_address".into(),
-                    "eq_i128".into(),
-                    "eq_scval".into(),
-                    "ge_i128".into(),
-                    "le_i128".into(),
-                ],
+                // Deriving them removes that whole class: `KINDS` and the `kind_name` a
+                // checker reads are generated from one exhaustive list in `ozpb-policy-spec`,
+                // so a new variant is a compile error there and this entry grows with it. The
+                // scope template implements the full vocabulary of both types; a future
+                // family that implements a subset would name that subset instead, which is
+                // what makes these lists worth declaring at all.
+                signer_predicates: PredicateKind::KINDS
+                    .iter()
+                    .map(|kind| (*kind).to_string())
+                    .collect(),
+                constraint_kinds: Constraint::KINDS
+                    .iter()
+                    .map(|kind| (*kind).to_string())
+                    .collect(),
                 review_reference: "audited with the template pack".to_string(),
             },
         );
@@ -800,6 +797,7 @@ pub mod dev {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ozpb_policy_spec::{Constraint, PredicateKind};
 
     /// The shipped snapshot must carry the *pinned upstream* hashes, not values derived
     /// locally. It previously held `sha256("dev:oz:spending_limit:wasm")` — a hash of a text
@@ -898,36 +896,41 @@ mod tests {
             cap.signer_predicates.is_empty(),
             "spending limit enforces no configured predicate"
         );
-        // The declared lists are the serialized vocabularies of `PredicateKind` and
-        // `Constraint`, exactly. Asserted as whole sets rather than by probing for one entry:
-        // the previous form checked that `strict_signer_set` was present, which kept passing
-        // while the list named a `bool` field that is not a predicate at all and omitted
-        // `any_of_current_rule_signers`, which is. A set comparison cannot miss either
-        // direction, and `ozpb_toolkit` now refuses a spec whose kinds fall outside these —
-        // so an entry missing here is a refused synthesis, not a cosmetic gap.
+        // Compared against the generated vocabularies, never against a second literal. The
+        // previous form probed for one entry (`strict_signer_set`) and kept passing while the
+        // list named two things that are not kinds and omitted two that are. A literal set
+        // written out here would have the same defect one step later: add a `Constraint`
+        // variant, satisfy the compiler, and both sides of the comparison stay stale together
+        // — green CI, and the first spec reaching the new kind refused in production. Since
+        // `KINDS` is generated from the same exhaustive list as `kind_name`, this assertion
+        // grows with the enum and cannot be quietly narrowed.
         let t = r.resolve_template("policy-templates/scope@1").unwrap();
         assert_eq!(
             t.signer_predicates,
-            vec![
-                "all_of".to_string(),
-                "any_of".to_string(),
-                "any_of_current_rule_signers".to_string(),
-                "threshold".to_string(),
-            ],
-            "declared predicates must be PredicateKind's vocabulary, sorted"
+            PredicateKind::KINDS,
+            "the scope template declares PredicateKind's full vocabulary"
         );
         assert_eq!(
             t.constraint_kinds,
-            vec![
-                "any_value".to_string(),
-                "eq_address".to_string(),
-                "eq_i128".to_string(),
-                "eq_scval".to_string(),
-                "ge_i128".to_string(),
-                "le_i128".to_string(),
-            ],
-            "declared constraints must be Constraint's vocabulary, sorted"
+            Constraint::KINDS,
+            "the scope template declares Constraint's full vocabulary"
         );
+    }
+
+    /// `KINDS` is written in sorted order and consumed as-is by `dev_snapshot`, so an entry
+    /// added out of order would put an unsorted list into a signed document — legal, but it
+    /// makes a reader diffing the entry against the enum do needless work, and it is free to
+    /// prevent here.
+    #[test]
+    fn kinds_are_sorted() {
+        for (label, kinds) in [
+            ("Constraint", Constraint::KINDS),
+            ("PredicateKind", PredicateKind::KINDS),
+        ] {
+            let mut sorted = kinds.to_vec();
+            sorted.sort_unstable();
+            assert_eq!(kinds, sorted.as_slice(), "{label}::KINDS must be sorted");
+        }
     }
 
     #[test]

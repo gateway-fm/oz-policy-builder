@@ -9,6 +9,7 @@ description = "Signed capability registries (policy/account/verifier/template) w
 
 [dependencies]
 ozpb-domain = { workspace = true }
+ozpb-policy-spec = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -322,11 +322,17 @@ absent — so "a new grant" is a new marker, never a resumed one.
 
 **The code has followed.** The rename reached the generated artifact's header, the reference
 evaluator's message, the spec type (`StateSpec::CallCountPerInstallation`) and — the expensive
-one — the wire field, which is now `call_count_per_installation` in the committed example spec
-and in the signed registry snapshot's list of permitted constraint kinds. That last one changes a
-signed artifact and every consumer that parses a spec, which is why it was taken together with
-the canonicalization change rather than paid for separately: both break the schema, and one break
-is cheaper than two.
+one — the wire field, which is now `call_count_per_installation` in the committed example spec.
+That last one changes a signed artifact and every consumer that parses a spec, which is why it
+was taken together with the canonicalization change rather than paid for separately: both break
+the schema, and one break is cheaper than two.
+
+The signed registry snapshot briefly carried the same name in its list of permitted *constraint*
+kinds. That was a filing error rather than part of the rename — a call cap is a `StateSpec`, not
+an argument constraint — and that list is now exactly `Constraint`'s vocabulary, derived from the
+enum. State capabilities are consequently not declared by a template entry at all:
+`TemplateCapability` has no `state_kinds`, and adding one changes the snapshot's shape. Nothing
+read the entry while it was there, so this removed a declaration and no control.
 
 **Operational verdict — conforms since the hardening pass.** The earlier divergence was that
 the policy extended nothing, leaving rent, restoration fees, and the moment of archival
@@ -666,7 +672,7 @@ The knobs and caps the release ships with, and what each one does and does not p
 | 8 | Settle where a generated contract's source archive is published, and by whom — SEP-58 requires `source_sha256` over its bytes and leaves `source_uri` optional | 2 | unresolved |
 | 9 | Decide whether to publish an event on a **successful** `enforce`; denials come from RPC diagnostics | 6 | unresolved |
 | 10 | Decide whether to build inside a digest-pinned container image and record it as SEP-58 `bldimg`; pinning rustc and dependency versions pins neither the OS nor the container | 2 | compatibility |
-| 11 | ~~Rename the cap from "lifetime" to per-installation~~ — **done**, including the wire field, now `call_count_per_installation` in the committed example and in the signed registry snapshot. Taken together with row 1 because both break the schema, and one break is cheaper than two | 3 | done |
+| 11 | ~~Rename the cap from "lifetime" to per-installation~~ — **done**, including the wire field, now `call_count_per_installation` in the committed example. Taken together with row 1 because both break the schema, and one break is cheaper than two. The registry snapshot no longer names it: a call cap is a `StateSpec`, and the snapshot's list is `Constraint`'s vocabulary | 3 | done |
 
 Not on the list, and deliberately so: rejecting a policy at generation time because
 `valid_until` exceeds `max_ttl()`. That bound is sliding, measured from the current ledger, so a
