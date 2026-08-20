@@ -168,9 +168,10 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
-`docs/MCP-WALKTHROUGH.md` drives this server by hand, start to finish: the handshake, a real
-tool call against the committed examples, and what a refusal looks like. Read that to *see*
-the surface; read on here for what it is.
+`docs/MCP-WALKTHROUGH.md` is how to use this server: build it once and Claude Code picks it
+up from `.mcp.json` — a stdio server is spawned by the client per session, so there is nothing
+to start or connect to. That page also covers what each tool needs, the two answers that look
+like bugs and are not, and, in an appendix, the raw JSON-RPC for when you want the wire.
 
 ```bash
 cargo build -r -p ozpb-mcp-server
