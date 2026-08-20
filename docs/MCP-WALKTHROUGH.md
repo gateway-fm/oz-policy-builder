@@ -35,7 +35,33 @@ The agent composes the tool calls and you watch it work — while it still holds
 deploys nothing. That is the point of shipping an MCP server rather than only a CLI: the
 person who needs a scoped policy does not have to know the pipeline exists.
 
-Two things worth doing in your first session, because they are what a reviewer will ask:
+### The one command to show it works
+
+If all you want is to demonstrate that the server is live and doing real work, this is
+enough — one sentence, no tool names, no file paths:
+
+> Record Stellar testnet transaction `<hash>` for me, using RPC
+> `https://rpc.testnet.stellar.gateway.fm`, and tell me what authorization it required.
+
+The agent picks `record_transaction`, and you get back the authorization tree, the observed
+code hash of every contract involved, and the evidence trust level. That is the recording
+layer — RFP requirement #1 — answering from a hash you can paste from an explorer.
+
+The hash has to be recent: RPC retention drops transactions after a few days, and an expired
+one comes back as `E_RETENTION_EXPIRED` rather than a guess. If you have no hash to hand, run
+`bash scripts/demo-tranche1.sh` and use the account it prints, or ask for the *simulated*
+path instead — "what would a transfer of 1 XLM from `C…` to `G…` require?" — which needs no
+hash and no signature.
+
+**Going further than one command is better done with the skill.** The full flow needs
+decisions only you can make — how long the grant lives, a call cap, a spend limit, which
+signer — and a bare agent asks for those unevenly, or guesses. Systematically asking them is
+the skill's job, and the skill is a later milestone (§4.7). Driving the rest by hand is
+covered in the appendix; driving it conversationally is worth waiting for.
+
+### Two more things worth trying
+
+Because they are what a reviewer will ask:
 
 - **Ask it what tools it has.** The answer comes from the server, not from this page. the
   served set is what this milestone ships, and a list written here would go stale the moment
