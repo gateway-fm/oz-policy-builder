@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-exclude = ["contracts"]
+# `demo-runs` holds the artifacts of `scripts/demo-tranche1.sh`, and each run writes a complete
+# standalone policy crate into it. Without the exclusion cargo walks up from that crate, finds
+# this manifest, and refuses to build it as a non-member — so `stellar contract build` fails in
+# step 6 on a crate that is perfectly valid, for a reason that has nothing to do with the crate.
+exclude = ["contracts", "demo-runs"]
 members = [
     "crates/domain",
     "crates/policy-spec",

@@ -8,8 +8,14 @@
 # reasons: an endpoint that changed shape, a contract that expired from state archival, a
 # transaction that aged out of RPC retention.
 #
-#   bash scripts/demo-tranche1.sh                # uses/creates its own testnet identities
-#   OZPB_ACCOUNT=C... bash scripts/demo-tranche1.sh   # reuse an existing OZ smart account
+#   bash scripts/demo-tranche1.sh                     # uses/creates its own testnet identities
+#   OZPB_ACCOUNT=C... bash scripts/demo-tranche1.sh    # reuse an existing OZ smart account
+#   OZPB_DEMO_OUT=/tmp/run bash scripts/demo-tranche1.sh   # choose where the artifacts land
+#
+# Every file the run produces is kept, named by the step that produced it, under
+# `demo-runs/<UTC timestamp>/` — with a `MANIFEST.md` saying what each one is. That directory is
+# the thing to read after a run, or to zip and hand to a reviewer: the terminal output is a
+# narration of it, not the evidence itself.
 #
 # Three things worth knowing before you present it.
 #
@@ -52,10 +58,40 @@ for tool in stellar cargo python3 curl; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required"; exit 1; }
 done
 
-WORK="$(mktemp -d)"
-export STELLAR_CONFIG_HOME="$WORK/stellar"   # throwaway identities, never the user's own
+# Two directories, and the split is a security boundary rather than tidiness.
+#
+# WORK is a run directory that SURVIVES the run, because the point of the run is the artifacts:
+# every input the toolkit consumed and every file it produced, named by the step that made it,
+# so a reviewer can read them, diff them, or be sent them. Default `demo-runs/<UTC timestamp>/`
+# under the repository (gitignored); override with OZPB_DEMO_OUT to put it anywhere.
+#
+# SECRETS is a temp directory that does NOT survive, and nothing in it is ever an artifact: it
+# holds STELLAR_CONFIG_HOME, which is where `stellar keys generate` writes the throwaway
+# identities' SECRET keys. They are worthless — testnet, Friendbot-funded, generated for this
+# run — but a run directory meant to be zipped and handed to someone must not have private keys
+# in it, so the two are separate and only one of them is printed.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+WORK="${OZPB_DEMO_OUT:-demo-runs/$RUN_ID}"
+mkdir -p "$WORK"
+WORK="$(cd "$WORK" && pwd)"          # absolute, so the paths printed below can be copied anywhere
+SECRETS="$(mktemp -d)"
+trap 'rm -rf "$SECRETS"' EXIT
+export STELLAR_CONFIG_HOME="$SECRETS/stellar"
 mkdir -p "$STELLAR_CONFIG_HOME"
+
 say() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
+
+# Every artifact is announced by the step that wrote it, and the same call records it in the
+# run's manifest. One function for both so a file cannot be printed without being described,
+# or described without being printed — a manifest that drifts from the directory is worse than
+# no manifest, because it is read as an inventory.
+MANIFEST="$WORK/MANIFEST.md"
+printf '# Demo run %s\n\nProduced by `scripts/demo-tranche1.sh` against Stellar testnet.\nEach entry is a file in this directory and what it is.\n\n' "$RUN_ID" > "$MANIFEST"
+artifact() {   # $1 = path relative to WORK, $2 = one-line description
+    printf '  → %s\n' "$1"
+    printf -- '- `%s` — %s\n' "$1" "$2" >> "$MANIFEST"
+}
+step_note() { printf '\n## %s\n\n' "$1" >> "$MANIFEST"; }
 
 say "0. setup: throwaway testnet identities (Friendbot-funded, no real value)"
 # Three addresses, none of them anyone's:
@@ -75,6 +111,9 @@ SAC="$(stellar contract id asset --asset native --network testnet)"
 echo "  fee payer : $PAYER"
 echo "  recipient : $PAYEE"
 echo "  native SAC: $SAC"
+step_note "0. Setup"
+{ printf 'Public addresses only; the secret keys stayed in a temp directory this run deleted.\n\n'
+  printf -- '- fee payer  `%s`\n- recipient  `%s`\n- native SAC `%s`\n' "$PAYER" "$PAYEE" "$SAC"; } >> "$MANIFEST"
 
 ACCOUNT="${OZPB_ACCOUNT:-}"
 if [ -z "$ACCOUNT" ]; then
@@ -155,13 +194,15 @@ say "3. record: what authorization would this transfer require?"
 ENVELOPE="$(stellar contract invoke --id "$SAC" --source payer --network testnet --build-only -- \
     transfer --from "$ACCOUNT" --to "$PAYEE" --amount 10000000 2>/dev/null)"
 cargo run -q -p ozpb-cli -- simulate --envelope-xdr "$ENVELOPE" \
-    --rpc-url "$RPC_URL" --network "$NETWORK_PASSPHRASE" > "$WORK/recording.json"
-python3 scripts/demo/summarize_recording.py "$WORK/recording.json"
+    --rpc-url "$RPC_URL" --network "$NETWORK_PASSPHRASE" > "$WORK/03-recording.json"
+python3 scripts/demo/summarize_recording.py "$WORK/03-recording.json"
+step_note "3. Recording"
+artifact "03-recording.json" "what RPC said this transfer would require: the authorization tree, the observed code hash of every contract involved, and the evidence trust level. Input to step 4."
 # An assertion, not more output: the account's code hash as the network reports it must equal
 # the pin, or the registry would not recognize the account and every step after this one would
 # be evidence about some other contract. A mismatch exits non-zero and `set -e` stops here.
 python3 scripts/demo/assert_account_matches_pin.py \
-    "$WORK/recording.json" "$ACCOUNT" "$PINNED_ACCOUNT_WASM"
+    "$WORK/03-recording.json" "$ACCOUNT" "$PINNED_ACCOUNT_WASM"
 
 say "4. synthesize: a minimum-permission PolicySpec"
 # Synthesis is pure: no network, no keys, no clock. Beyond the recording it takes three kinds
@@ -194,52 +235,77 @@ say "4. synthesize: a minimum-permission PolicySpec"
 # definition is what makes that comparison worth anything.
 synthesize() {   # $1 = account record; prints the synthesis JSON on stdout
     cargo run -q -p ozpb-cli -- synthesize \
-        --bundle "$WORK/recording.json" --selected-authorizer "$ACCOUNT" \
+        --bundle "$WORK/03-recording.json" --selected-authorizer "$ACCOUNT" \
         --account "$1" \
         --signed-registry docs/examples/registry.signed.json \
         --registry-roots docs/examples/registry-roots.json --registry-min-version 1 \
-        --decisions "$WORK/decisions.json" \
+        --decisions "$WORK/04-decisions.json" \
         --template-family policy-templates/scope@1 \
         --spending-limit-capability "$PINNED_SPENDING_LIMIT"
 }
 curl --fail --silent --show-error --max-time 30 \
     -H 'Content-Type: application/json' \
     --data '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger","params":{}}' \
-    "$RPC_URL" > "$WORK/latest-ledger.json"
+    "$RPC_URL" > "$WORK/04-latest-ledger.json"
 python3 scripts/demo/write_live_decisions.py \
-    "$WORK/latest-ledger.json" docs/examples/decisions.json "$WORK/decisions.json"
+    "$WORK/04-latest-ledger.json" docs/examples/decisions.json "$WORK/04-decisions.json"
 python3 scripts/demo/write_account_record.py \
-    "$WORK/account.json" "$ACCOUNT" "$PINNED_ACCOUNT_WASM"
-synthesize "$WORK/account.json" > "$WORK/synthesis.json"
-python3 scripts/demo/summarize_synthesis.py "$WORK/synthesis.json"
+    "$WORK/04-account.json" "$ACCOUNT" "$PINNED_ACCOUNT_WASM"
+synthesize "$WORK/04-account.json" > "$WORK/04-synthesis.json"
+python3 scripts/demo/summarize_synthesis.py "$WORK/04-synthesis.json"
 # `ozpb generate` takes a PolicySpec, while synthesis printed the spec inside an envelope with
 # its hash and rationale, so hand codegen the spec on its own.
-python3 scripts/demo/extract_spec.py "$WORK/synthesis.json" "$WORK/spec.json"
+python3 scripts/demo/extract_spec.py "$WORK/04-synthesis.json" "$WORK/04-spec.json"
+step_note "4. Synthesis"
+artifact "04-latest-ledger.json" "RPC's unedited answer to getLatestLedger. The step reads one field of it, result.sequence, and derives the grant's expiry from that — which is why a committed absolute ledger would go stale. Kept whole rather than trimmed, so it is the response and not our summary of one; that is also why it is the largest file here, since ~460 KB of it is the metadataXdr blob nothing in this run touches."
+artifact "04-decisions.json" "what the user asked for: expiry ledger, call cap, spend limit, signers. docs/examples/decisions.json with the expiry made live."
+artifact "04-account.json" "which smart account this grant is for and what code it runs. The toolkit overwrites registry_resolution with the entry it actually resolved."
+artifact "04-synthesis.json" "the synthesis output: the PolicySpec, its canonical hash, and the rationale lines printed above."
+artifact "04-spec.json" "the PolicySpec alone, lifted out of the envelope. What codegen consumes, and the identity the BuildManifest refers back to."
 
 say "5. generate the policy crate"
 # Codegen writes a complete, standalone Soroban crate — source, manifest, pinned lockfile and
 # toolchain file — builds it to Wasm, and records what went into it in a BuildManifest. It
 # never deploys and never signs.
-cargo run -q -p ozpb-cli -- generate --spec "$WORK/spec.json" --rule 0 --out "$WORK/policy" >/dev/null
+cargo run -q -p ozpb-cli -- generate --spec "$WORK/04-spec.json" --rule 0 --out "$WORK/05-policy" >/dev/null
 # The two greps are the readability claim, made against the generated source rather than
 # asserted in prose: the limits are `const`s at the top of the file, so what the policy allows
 # can be read without following any configuration, and the error enum names every way the
 # policy can refuse, so the deny paths are enumerable by reading too.
 echo "  the limits are visible in the source, not buried in configuration:"
-grep -E "^const (TARGET|VALID_UNTIL_LEDGER|MAX_CALLS)" "$WORK/policy/src/lib.rs" | sed 's/^/    /'
+grep -E "^const (TARGET|VALID_UNTIL_LEDGER|MAX_CALLS)" "$WORK/05-policy/src/lib.rs" | sed 's/^/    /'
 echo "  and every rejection path is named:"
-grep -oE "PolicyError::[A-Za-z]+" "$WORK/policy/src/lib.rs" | sort -u | tr '\n' ' ' | sed 's/^/    /'; echo
+grep -oE "PolicyError::[A-Za-z]+" "$WORK/05-policy/src/lib.rs" | sort -u | tr '\n' ' ' | sed 's/^/    /'; echo
+
+step_note "5. Generated crate"
+artifact "05-policy/" "a complete standalone Soroban crate: src/lib.rs, Cargo.toml, the pinned Cargo.lock and rust-toolchain.toml, the unoptimised .wasm, and build-manifest.json. Nothing here was hand-edited."
+artifact "05-policy/src/lib.rs" "the policy a reviewer reads: limits as consts at the top, PolicyError naming every way it can refuse."
+artifact "05-policy/build-manifest.json" "what went into the build — spec hash, registry snapshot root, source and wasm hashes, toolchain, exact build arguments."
 
 say "6. THE OUTCOME: the real toolchain accepts it"
+BUILD_STEP_DIR="$WORK/05-policy"
 # The claim of this milestone in one command: the crate that came out of a recorded transaction
 # compiles to Wasm under the pinned `stellar contract build`, with nothing edited by hand.
-( cd "$WORK/policy" && stellar contract build )
-
+( cd "$BUILD_STEP_DIR" && stellar contract build )
+# That build writes ~280 MB of intermediates and its own optimised wasm into the crate's
+# `target/`, which would be 99% of a directory whose whole purpose is to be readable and
+# sendable. Both are deliberately not evidence: the optimised artifact is not what this project
+# pins (see below), and the intermediates are not what anyone reviews. Removing it leaves the
+# crate exactly as codegen wrote it, which is also what step 7 compares against.
+rm -rf "$BUILD_STEP_DIR/target"
+step_note "6. The outcome"
+{ printf 'The pinned `stellar contract build` accepted the generated crate unmodified.\n\n'
+  printf 'Its optimised output is deliberately not kept. The hash this project pins is the\n'
+  printf 'unoptimised one recorded in `05-policy/build-manifest.json`, and that is what a later\n'
+  printf 'milestone deploys — so keeping an optimised blob here would only invite comparing the\n'
+  printf 'wrong two values.\n'; } >> "$MANIFEST"
 say "7. determinism: the same spec produces the same source"
 # Generate a second time from the same spec into a different directory, then assert the two
 # agree — on the source a reviewer reads, and on the wasm hash the build manifest records.
-cargo run -q -p ozpb-cli -- generate --spec "$WORK/spec.json" --rule 0 --out "$WORK/policy-again" >/dev/null
-python3 scripts/demo/assert_regenerated_identically.py "$WORK/policy" "$WORK/policy-again"
+cargo run -q -p ozpb-cli -- generate --spec "$WORK/04-spec.json" --rule 0 --out "$WORK/07-policy-again" >/dev/null
+python3 scripts/demo/assert_regenerated_identically.py "$WORK/05-policy" "$WORK/07-policy-again"
+step_note "7. Determinism"
+artifact "07-policy-again/" "a second generation from the same spec into a different directory. Byte-identical to 05-policy/ — diff them yourself; that equality is the claim."
 echo "  (the hash from step 6 differs because \`stellar contract build\` optimizes;"
 echo "   \`ozpb generate\` builds unoptimized so the artifact stays reviewable)"
 
@@ -254,24 +320,45 @@ say "8. fail-closed: the same synthesis refuses an unregistered account code has
 # valid but unknown value; synthesis must refuse before it can construct a spec.
 UNREGISTERED_ACCOUNT_WASM="$(printf '00%.0s' {1..32})"
 python3 scripts/demo/write_account_record.py \
-    "$WORK/account-tampered.json" "$ACCOUNT" "$UNREGISTERED_ACCOUNT_WASM"
+    "$WORK/08-account-tampered.json" "$ACCOUNT" "$UNREGISTERED_ACCOUNT_WASM"
 echo "  input differs from step 4 in one field: observed_code_hash is now all zeroes"
 # Wrapped in `if` rather than called plainly, because `set -e` would read the expected non-zero
 # exit as the end of the demo. Note which branch is which: the *success* branch below is the
 # failure case, since a spec produced from an account the toolkit cannot vouch for is the defect
 # this step exists to catch. The refusal falls through to the assertion.
-if synthesize "$WORK/account-tampered.json" > "$WORK/tampered-synthesis.json" 2> "$WORK/tampered.err"
+if synthesize "$WORK/08-account-tampered.json" > "$WORK/08-tampered-synthesis.json" 2> "$WORK/08-refusal.txt"
 then
     echo "  FAIL-CLOSED CHECK FAILED: synthesis SUCCEEDED with unregistered account code."
     echo "  A spec was written for an account hash absent from the signed registry:"
-    echo "  $WORK/tampered-synthesis.json"
+    echo "  $WORK/08-tampered-synthesis.json"
     exit 1
 fi
-python3 scripts/demo/assert_refused_for_account_hash.py "$WORK/tampered.err"
+python3 scripts/demo/assert_refused_for_account_hash.py "$WORK/08-refusal.txt"
+# Empty, because the refusal happened before a spec could be written. Keeping a zero-byte file
+# next to the real artifacts would read as "a spec was produced and it was blank".
+rm -f "$WORK/08-tampered-synthesis.json"
+step_note "8. Fail-closed"
+artifact "08-account-tampered.json" "step 4's account record with one field changed: observed_code_hash is all zeroes. Diff it against 04-account.json — that is the whole difference."
+artifact "08-refusal.txt" "the refusal as the toolkit wrote it: E_INCOMPATIBLE_ACCOUNT, no registry entry recognises that code hash. This step passing MEANS this file exists."
 
 say "done"
 echo "  account   https://stellar.expert/explorer/testnet/contract/$ACCOUNT"
-echo "  artifacts $WORK/policy  (crate, wasm, build-manifest.json)"
+{ printf '\n## Not in this run, deliberately\n\n'
+  printf 'The permit/deny dry-run report, the wallet install flow and the hosted endpoint are the\n'
+  printf 'next tranche. Nothing here deploys a policy or signs anything: the recording is a\n'
+  printf 'simulation, and the generated crate is built but never installed.\n'
+  printf -- '\n- account on chain: https://stellar.expert/explorer/testnet/contract/%s\n' "$ACCOUNT"; } >> "$MANIFEST"
+
+# The run directory is the deliverable, so end by showing it rather than by naming one path
+# inside it. `find` and not `ls -R`, because the generated crates are the interesting part and
+# they are two levels down; the depth cap keeps each crate to its own files rather than the
+# hundreds under its `target/` if a reader has built one by hand since.
+echo "  artifacts $WORK"
+echo
+( cd "$WORK" && find . -maxdepth 2 -name target -prune -o -not -name '.' -print | sort | sed 's|^\./|    |' )
+echo
+echo "  MANIFEST.md in that directory says what each file is, so the directory can be zipped"
+echo "  and read by someone who did not watch it run."
 echo
 echo "  Not shown, deliberately: the permit/deny dry-run report, the wallet install flow and"
 echo "  the hosted endpoint are the next tranche's deliverables."
