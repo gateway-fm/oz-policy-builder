@@ -16,7 +16,6 @@ ozpb-toolkit = { workspace = true }
 ozpb-api-types = { workspace = true }
 ozpb-recorder-core = { workspace = true }
 ozpb-source-rpc = { workspace = true }
-ozpb-source-bundle = { workspace = true }
 rmcp = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

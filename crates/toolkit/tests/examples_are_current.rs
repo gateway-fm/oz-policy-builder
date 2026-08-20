@@ -186,13 +186,16 @@ fn the_committed_import_bundle_is_the_fixture() {
     sorted.sort();
     assert_eq!(keys, sorted, "the committed example's keys must be sorted");
 
-    // Byte equality would still pass if the bytes no longer parsed as an import, so assert
-    // the property the file exists for, through the path a reader takes.
-    let snapshot = ozpb_source_bundle::import_json(&committed("import-bundle.json"))
-        .expect("the committed example must parse as an import");
+    // Byte equality would still pass if the bytes no longer imported, so assert the property
+    // the file exists for, through the operation a reader's `import_recording` call runs —
+    // parsing alone would not notice bytes that stopped recording.
+    let imported = ozpb_toolkit::import_recording(
+        &committed("import-bundle.json"),
+        ozpb_recorder_core::RecordOptions::default(),
+    )
+    .expect("the committed example must import and record");
     assert_eq!(
-        snapshot.trust().as_str(),
-        "self_supplied",
+        imported.trust, "self_supplied",
         "the committed example must carry the transaction result that earns self_supplied"
     );
 }

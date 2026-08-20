@@ -18,9 +18,11 @@ ozpb-toolkit = { workspace = true }
 ozpb-api-types = { workspace = true }
 ozpb-recorder-core = { workspace = true }
 ozpb-source-rpc = { workspace = true }
-ozpb-source-bundle = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 anyhow = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

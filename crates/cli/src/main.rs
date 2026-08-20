@@ -14,8 +14,8 @@ use ozpb_api_types::{
     EvaluateSpecInput, GenerateCodeInput, RecordOutput, SynthesizeInput, SynthesizeOutput,
 };
 use ozpb_recorder_core::RecordOptions;
-use ozpb_source_bundle::import_json;
 use ozpb_source_rpc::{get_transaction, simulate_transaction, HttpTransport};
+use ozpb_toolkit::{ImportError, MAX_IMPORT_JSON_BYTES};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -167,6 +167,53 @@ fn read_json(path: &PathBuf) -> Result<serde_json::Value> {
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
+/// Read an import document without allocating for one that cannot be admitted. The reader
+/// stops one byte past `MAX_IMPORT_JSON_BYTES`, so an oversized file costs a bounded read
+/// rather than being loaded in full to reach the same refusal.
+///
+/// Bytes, not a `String`. The cut lands at a fixed offset with no regard for what is there, so
+/// on an oversized file it can fall inside a multi-byte character — and decoding that prefix as
+/// UTF-8 fails with an encoding error, which would replace a named `E_RESOURCE_LIMIT` with an
+/// unnamed read failure for the very input the bound exists to refuse. The length is decided
+/// first, and only an admissible document is decoded.
+///
+/// The size reported is the file's, not the prefix we stopped at: a caller told its document is
+/// one byte over when it is five gigabytes over cannot act on that. Floored at the bytes actually
+/// read, so it can never name a size the ceiling would have admitted.
+fn read_import_document(path: &PathBuf) -> Result<String> {
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(MAX_IMPORT_JSON_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    if bytes.len() > MAX_IMPORT_JSON_BYTES {
+        return Err(ImportError::TooLarge {
+            bytes: reported_document_size(file.metadata().ok().map(|meta| meta.len()), bytes.len()),
+            max: MAX_IMPORT_JSON_BYTES,
+        }
+        .into());
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| anyhow::anyhow!("{} is not valid UTF-8: {error}", path.display()))
+}
+
+/// The size to report with an oversized-document refusal: the file's length, floored at the bytes
+/// actually read.
+///
+/// The floor is the whole point. `u64 -> usize` is not lossless on a 32-bit target, so an
+/// unchecked cast of a 4 GiB length yields zero — a refusal for exceeding a ceiling that names a
+/// figure satisfying it, which is the caller-misleading shape this reader exists to avoid. The
+/// same floor covers a stat that failed and a file that shrank between the read and the stat.
+fn reported_document_size(file_len: Option<u64>, read: usize) -> usize {
+    file_len
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(0)
+        .max(read)
+}
+
 fn print_json<T: serde::Serialize>(v: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())
@@ -204,10 +251,11 @@ fn main() -> Result<()> {
             print_json(&out)?;
         }
         Command::Import { bundle } => {
-            let text = std::fs::read_to_string(&bundle)
-                .with_context(|| format!("reading {}", bundle.display()))?;
-            let snapshot = import_json(&text)?;
-            let out = record(&snapshot, RecordOptions::default())?;
+            let out = ozpb_toolkit::import_recording(
+                &read_import_document(&bundle)?,
+                RecordOptions::default(),
+            )
+            .map_err(anyhow::Error::from)?;
             print_json(&out)?;
         }
         Command::Synthesize {
@@ -333,6 +381,96 @@ fn record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An oversized import must be refused by name, whatever happens to sit on the cut.
+    ///
+    /// The bounded read stops at a fixed offset, so on one document the byte at that offset is
+    /// ASCII and on another it is the middle of a multi-byte character. The pair differs in
+    /// nothing else — the same length, the same padding, one `é` moved onto the boundary — and
+    /// both must arrive as `E_RESOURCE_LIMIT`, naming the file's real size rather than the
+    /// prefix the reader stopped at.
+    #[test]
+    fn an_oversized_import_is_refused_by_name_even_when_the_cut_splits_a_character() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Two bytes over the ceiling, so the read stops with one byte to spare either way.
+        let over = MAX_IMPORT_JSON_BYTES + 2;
+        let write = |name: &str, body: String| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).expect("writing the fixture");
+            path
+        };
+
+        let ascii = write("ascii.json", "A".repeat(over));
+        // 'é' is two bytes; placing it so its first byte is the last one read puts the cut
+        // inside the character.
+        let mut split = "A".repeat(MAX_IMPORT_JSON_BYTES);
+        split.push('é');
+        assert_eq!(split.len(), over, "the pair must be the same length");
+        let split = write("split.json", split);
+
+        for path in [&ascii, &split] {
+            let error = read_import_document(path)
+                .expect_err("a document over the ceiling must be refused");
+            let message = error.to_string();
+            assert!(
+                message.starts_with("E_RESOURCE_LIMIT: "),
+                "the refusal must name the code the caller receives, got: {message}"
+            );
+            assert!(
+                message.contains(&over.to_string()),
+                "the refusal must name the file's size, not the prefix read, got: {message}"
+            );
+        }
+
+        // Control: the same reader accepts a document under the ceiling, multi-byte character
+        // and all, so the cases above fail on size and not on the reader refusing everything.
+        let ok = write("ok.json", "\"é\"".to_string());
+        assert_eq!(
+            read_import_document(&ok).expect("under the ceiling"),
+            "\"é\""
+        );
+    }
+
+    /// The size attached to an oversized-document refusal may never be one the ceiling would have
+    /// admitted, whatever the filesystem said — including a length that does not survive the
+    /// target's pointer width.
+    ///
+    /// Asserted as the invariant over adversarial lengths rather than as a value, because the
+    /// truthful answer for a stat that reports 4 GiB differs between a 32- and a 64-bit target
+    /// while the property does not. The 32-bit truncation itself is unreachable from the test
+    /// above: it needs a 4 GiB fixture.
+    #[test]
+    fn the_reported_document_size_never_names_an_admissible_figure() {
+        let read = MAX_IMPORT_JSON_BYTES + 1;
+        for file_len in [
+            None,                     // stat failed
+            Some(0),                  // stat disagrees with the read
+            Some(1),                  // ditto, and under the ceiling
+            Some(read as u64),        // stat agrees
+            Some(read as u64 + 4096), // the file grew after the read
+            Some(1 << 32),            // truncates to zero on a 32-bit target
+            Some(5 * (1 << 30)),      // the five-gigabyte document
+            Some(u64::MAX),           // does not fit any pointer width we build for
+        ] {
+            let reported = reported_document_size(file_len, read);
+            assert!(
+                reported >= read,
+                "reported {reported} is below the {read} bytes actually read (stat: {file_len:?})"
+            );
+            assert!(
+                reported > MAX_IMPORT_JSON_BYTES,
+                "reported {reported} satisfies the ceiling it is refused against \
+                 ({MAX_IMPORT_JSON_BYTES}), for stat {file_len:?}"
+            );
+        }
+
+        // Control: when the file's length is both representable and larger than what was read, it
+        // is the length that gets reported — the floor must not flatten the real size away.
+        assert_eq!(
+            reported_document_size(Some(read as u64 + 4096), read),
+            read + 4096
+        );
+    }
 
     fn args() -> BuildConfigArgs {
         BuildConfigArgs {

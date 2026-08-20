@@ -29,7 +29,11 @@ pub const RECORDING_SCHEMA: &str = "recording/v1";
 // incompatible 4 MiB limit only after decoding and summarizing it.
 const MAX_XDR_BYTES: usize = 512 * 1024;
 const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
-const MAX_TOTAL_EVIDENCE_BASE64_BYTES: usize = 1024 * 1024;
+/// The most encoded evidence any recording can carry. Public because an acquisition adapter
+/// reading caller-controlled input has to bound that input *before* parsing it, and the bound
+/// it should use is this one — a document carrying more than this describes evidence
+/// [`record`] will refuse, so two independently chosen numbers would only drift apart.
+pub const MAX_TOTAL_EVIDENCE_BASE64_BYTES: usize = 1024 * 1024;
 const MAX_XDR_DEPTH: u32 = 128;
 const MAX_SIMULATED_AUTH_ENTRIES: usize = 256;
 const MAX_SIMULATED_STATE_CHANGES: usize = 4_096;

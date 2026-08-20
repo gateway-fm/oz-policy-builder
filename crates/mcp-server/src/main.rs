@@ -18,7 +18,6 @@ use ozpb_api_types::{
     SynthesizeInput, SynthesizeOutput, ToolError,
 };
 use ozpb_recorder_core::RecordOptions;
-use ozpb_source_bundle::import_json;
 use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -285,14 +284,8 @@ impl PolicyBuilderServer {
             "successful": input.successful,
         })
         .to_string();
-        let snapshot = import_json(&bundle_json).map_err(|error| {
-            tool_err(ToolError::new(
-                ozpb_api_types::ErrorCode::EImportParse,
-                error.to_string(),
-            ))
-        })?;
-        let out =
-            ozpb_toolkit::record_snapshot(&snapshot, RecordOptions::default()).map_err(tool_err)?;
+        let out = ozpb_toolkit::import_recording(&bundle_json, RecordOptions::default())
+            .map_err(tool_err)?;
         Ok(Json(out))
     }
 }

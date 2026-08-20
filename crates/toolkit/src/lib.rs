@@ -33,6 +33,17 @@ pub use ozpb_build_runner::{
     BuildConfig, ENV_BUILD_CACHE_DIR, ENV_BUILD_JOBS, ENV_BUILD_TIMEOUT_SECS, ENV_STELLAR_BINARY,
 };
 
+/// The two names a shell needs to read an import document itself, re-exported for the same
+/// reason as the build configuration above: reading a file is the shell's job — this crate
+/// touches no I/O — but the ceiling it must stop at, and the refusal it reports on reaching it,
+/// belong to the operation in this facade. Without these a shell would either depend on the
+/// adapter directly or hand-write the bound and its error code.
+///
+/// `ImportedBundle` and `import_json` are deliberately not re-exported: importing *through* the
+/// facade is [`import_recording`], and a second path to a snapshot is what that operation
+/// exists to prevent.
+pub use ozpb_source_bundle::{ImportError, MAX_IMPORT_JSON_BYTES};
+
 #[derive(Clone, Debug)]
 pub struct RegistryTrust {
     pub root_policy: RootPolicy,
@@ -58,6 +69,22 @@ pub fn record_snapshot(
         recording_hash: recording_hash.to_hex(),
         bundle: to_value(&bundle)?,
     })
+}
+
+/// Import a raw-XDR evidence bundle and record it, as one operation.
+///
+/// The halves are not separable by a caller on purpose. `import_json` parses the document and
+/// labels it for what its transaction result proves, but only [`record`] decodes the envelope
+/// and result meta the document *names* — so a caller that stopped after parsing would report
+/// a successful import of evidence that cannot be recorded at all. Both shells import through
+/// here, so neither can forget the second half or perform it in the wrong order.
+///
+/// Errors keep the code of the stage that produced them — import codes for the document,
+/// recorder codes for the evidence it named — instead of being flattened into one import
+/// failure that tells an agent nothing about which half to fix.
+pub fn import_recording(json: &str, options: RecordOptions) -> Result<RecordOutput, ToolError> {
+    let snapshot = ozpb_source_bundle::import_json(json).map_err(|e| map_import_err(&e))?;
+    record_snapshot(&snapshot, options)
 }
 
 pub fn synthesize_policy(
@@ -494,6 +521,28 @@ fn map_record_err(e: &ozpb_recorder_core::RecordError) -> ToolError {
     ToolError::new(code, e.to_string())
 }
 
+/// Per variant, not one code for the enum: an oversized document is a resource refusal, and an
+/// agent told its JSON was malformed would go looking for a syntax error in a document that is
+/// merely too big.
+///
+/// The code is stripped from the message it is paired with. `ImportError` opens its `Display`
+/// with the code — the property a caller relies on when it reads a bare error string — but
+/// `ToolError` prepends the code again when it renders, so passing the string through verbatim
+/// produced `E_IMPORT_PARSE: E_IMPORT_PARSE: …`. Stripping is safe precisely because the two are
+/// asserted equal below.
+fn map_import_err(e: &ozpb_source_bundle::ImportError) -> ToolError {
+    use ozpb_source_bundle::ImportError as I;
+    let code = match e {
+        I::Parse(_) => EC::EImportParse,
+        I::TooLarge { .. } => EC::EResourceLimit,
+    };
+    let rendered = e.to_string();
+    let message = rendered
+        .strip_prefix(&format!("{}: ", code.as_str()))
+        .unwrap_or(&rendered);
+    ToolError::new(code, message)
+}
+
 fn map_synth_errs(errs: Vec<ozpb_synthesizer::SynthError>) -> ToolError {
     use ozpb_synthesizer::SynthError as S;
     let code = match errs.first() {
@@ -695,6 +744,78 @@ mod tests {
                 prefix,
                 code.as_str(),
                 "message prefix and wire code name different failures: {message}"
+            );
+        }
+    }
+
+    /// The facade's import runs both halves, and each half keeps its own code.
+    ///
+    /// A document can be well-formed and still name evidence that does not decode — the
+    /// envelope is not looked at until the recorder sees it. So the envelope failure below is
+    /// exactly what a caller who stopped after parsing would have reported as a successful
+    /// import, and it must arrive under the recorder's code: an agent told `E_IMPORT_PARSE`
+    /// would go and fix its JSON, which is not what is wrong.
+    #[test]
+    fn the_atomic_import_runs_both_halves_and_each_keeps_its_code() {
+        let document =
+            |bundle: &ozpb_source_bundle::ImportedBundle| to_value(bundle).unwrap().to_string();
+        let names_an_undecodable_envelope = ozpb_source_bundle::ImportedBundle {
+            network_passphrase: ozpb_domain::TESTNET_PASSPHRASE.to_string(),
+            envelope_xdr_base64: "AAAA".to_string(),
+            result_meta_xdr_base64: None,
+            result_xdr_base64: None,
+            ledger: None,
+            created_at_unix: None,
+            successful: true,
+        };
+        assert_eq!(
+            import_recording(
+                &document(&names_an_undecodable_envelope),
+                RecordOptions::default()
+            )
+            .unwrap_err()
+            .code,
+            EC::EEnvelopeParse,
+            "the recording half ran, and named its own failure"
+        );
+        assert_eq!(
+            import_recording("{", RecordOptions::default())
+                .unwrap_err()
+                .code,
+            EC::EImportParse,
+            "and the parsing half still names its own"
+        );
+    }
+
+    /// The same property for the import boundary's errors, which reach a caller through the
+    /// same structured channel.
+    #[test]
+    fn an_import_errors_message_prefix_names_the_code_the_caller_gets() {
+        use ozpb_source_bundle::ImportError as I;
+        // One per variant; the exhaustive match stops compiling when the enum grows.
+        let all = vec![I::Parse("x".into()), I::TooLarge { bytes: 2, max: 1 }];
+        for error in &all {
+            match error {
+                I::Parse(_) | I::TooLarge { .. } => {}
+            }
+            let message = error.to_string();
+            let prefix = message
+                .split(':')
+                .next()
+                .filter(|prefix| prefix.starts_with("E_"))
+                .expect("every import error opens its message with its code");
+            let mapped = map_import_err(error);
+            assert_eq!(
+                prefix,
+                mapped.code.as_str(),
+                "message prefix and wire code name different failures: {message}"
+            );
+            // And the caller reads the code once. ToolError renders "{code}: {message}", so a
+            // message that still carried its own prefix would arrive doubled.
+            assert!(
+                !mapped.message.starts_with("E_"),
+                "the mapped message repeats the code: {}",
+                mapped
             );
         }
     }

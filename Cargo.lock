@@ -1175,11 +1175,11 @@ dependencies = [
  "ozpb-domain",
  "ozpb-recorder-core",
  "ozpb-registry",
- "ozpb-source-bundle",
  "ozpb-source-rpc",
  "ozpb-toolkit",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1232,7 +1232,6 @@ dependencies = [
  "axum",
  "ozpb-api-types",
  "ozpb-recorder-core",
- "ozpb-source-bundle",
  "ozpb-source-rpc",
  "ozpb-toolkit",
  "rmcp",
