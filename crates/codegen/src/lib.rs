@@ -1925,10 +1925,10 @@ mod tests {
         assert!(lockfile.contains("version = \"0.7.2\""));
     }
 
-    /// W3's emission shapes, held to the checks they claim — held to the text they emit.
+    /// The comparators no committed crate exercises, held to the text they emit.
     ///
-    /// This milestone commits one generated crate, the transfer
-    /// golden, whose sole comparator is an exact `EqI128` (`if x != 500000000i128`), so
+    /// This milestone commits one generated crate, the transfer golden, and its only argument
+    /// comparator is an exact `EqI128` (`if x != 500000000i128`), so
     /// `LeI128`, `GeI128`, `EqScval` and `AnyValue` reach no committed artifact here. The
     /// property test (`any_validated_spec_generates_parseable_rust`) reaches them but checks
     /// shape alone: parses as Rust, stays inside rustfmt's width, balances its constants. An
@@ -1936,8 +1936,10 @@ mod tests {
     /// bound the value it was widened away from satisfies all of that and still permits the
     /// wrong call.
     ///
-    /// `soroswap_swap_spec` reaches all four at once and needs no committed crate. Which is why the assertions are bound to the argument each
-    /// constraint belongs to.
+    /// `soroswap_swap_spec` is the fixture that reaches all four at once, and it needs only the
+    /// spec and the emitter. Which is why each assertion is bound to the argument its
+    /// constraint belongs to: every arm shadows its value as `x`, so `if x > 1000000000i128`
+    /// alone would not say *which* argument is capped.
     #[test]
     fn w3_emission_shapes_are_held_to_the_checks_they_claim() {
         let spec = ozpb_synthesizer::walkthroughs::soroswap_swap_spec();

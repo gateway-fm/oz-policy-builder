@@ -63,7 +63,7 @@ covered in the appendix; driving it conversationally is worth waiting for.
 
 Because they are what a reviewer will ask:
 
-- **Ask it what tools it has.** The answer comes from the server, not from this page. the
+- **Ask it what tools it has.** The answer comes from the server, not from this page: the
   served set is what this milestone ships, and a list written here would go stale the moment
   it changes.
 - **Give it something impossible** — a spec that is not a spec, a transaction hash that never
