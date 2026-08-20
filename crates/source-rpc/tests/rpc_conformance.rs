@@ -130,6 +130,22 @@ fn a_captured_simulation_response_records() {
         !bundle.authorizations.is_empty(),
         "record-mode simulation returns the auth entries it recorded"
     );
+    // The captured pair is two classic accounts paying and receiving the native asset, so the
+    // decoded keys say `account`. Asserting the summary — not just that changes exist — is what
+    // proves the key/entry decoding ran against a real response rather than a mock of our own
+    // assumption: `before` here is a whole `LedgerEntry` (it carries `lastModifiedLedgerSeq`),
+    // not the bare `LedgerEntryData` that `getLedgerEntries` puts in its `xdr`.
+    assert_eq!(bundle.state_changes.len(), 2);
+    for change in &bundle.state_changes {
+        assert_eq!(
+            change.entry, "account",
+            "the captured simulation changes two account entries"
+        );
+        assert!(
+            change.before_xdr_base64.is_some() && change.after_xdr_base64.is_some(),
+            "the captured changes are updates and carry both sides"
+        );
+    }
 }
 
 #[test]
@@ -179,10 +195,45 @@ fn the_captured_responses_carry_the_fields_the_parsers_read() {
         "createdAt is a string on the wire; the parser must accept that form"
     );
 
-    assert!(captured("getNetwork").get("passphrase").is_some());
+    let network = captured("getNetwork");
+    assert!(network.get("passphrase").is_some());
+    // The acquisition refuses a protocol its XDR cannot cover, so a fixture trimmed of this
+    // field would make the captured network response untestable against the real check.
+    assert!(
+        network
+            .get("protocolVersion")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "getNetwork fixture lacks an integer protocolVersion"
+    );
 
     let sim = captured("simulateTransaction");
     assert!(sim.get("stateChanges").is_some_and(|v| v.is_array()));
+    // Which XDR type each state-change field carries is the assumption a self-authored mock
+    // cannot test. Pin it against the captured response, by field name: `key` is a `LedgerKey`,
+    // `before`/`after` are whole `LedgerEntry`s, and both sides belong to that key.
+    for (index, change) in sim["stateChanges"].as_array().unwrap().iter().enumerate() {
+        let key = stellar_xdr::LedgerKey::from_xdr_base64(
+            change["key"].as_str().expect("state change key is text"),
+            ozpb_source_rpc::xdr_limits(),
+        )
+        .unwrap_or_else(|error| panic!("stateChanges[{index}].key must be a LedgerKey: {error}"));
+        for side in ["before", "after"] {
+            let Some(text) = change.get(side).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let entry =
+                stellar_xdr::LedgerEntry::from_xdr_base64(text, ozpb_source_rpc::xdr_limits())
+                    .unwrap_or_else(|error| {
+                        panic!("stateChanges[{index}].{side} must be a LedgerEntry: {error}")
+                    });
+            assert_eq!(
+                entry.to_key(),
+                key,
+                "stateChanges[{index}].{side} must be an entry for that change's key"
+            );
+        }
+    }
     assert!(sim
         .get("results")
         .and_then(|r| r.get(0))

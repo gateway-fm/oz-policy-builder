@@ -1287,7 +1287,7 @@ fn collect_changes(
             C::Updated(e) => (StateChangeKind::Updated, entry_summary(&e.data)),
             C::State(e) => (StateChangeKind::State, entry_summary(&e.data)),
             C::Restored(e) => (StateChangeKind::Restored, entry_summary(&e.data)),
-            C::Removed(k) => (StateChangeKind::Removed, key_summary(k)),
+            C::Removed(k) => (StateChangeKind::Removed, ledger_key_summary(k)),
         };
         out.push(StateChange {
             kind,
@@ -1320,7 +1320,13 @@ fn entry_summary(data: &stellar_xdr::LedgerEntryData) -> (String, Option<String>
     }
 }
 
-fn key_summary(key: &stellar_xdr::LedgerKey) -> (String, Option<String>) {
+/// The `(entry kind, owning contract)` pair a [`StateChange`] carries for a ledger key.
+///
+/// Public because the RPC acquisition adapter summarizes simulation state changes from the
+/// `LedgerKey` the endpoint returns for each one. Two vocabularies for one field would drift,
+/// and a reader of a recording could not then tell whether `contract_data` in a
+/// simulation-sourced change means the same thing as `contract_data` in a meta-derived one.
+pub fn ledger_key_summary(key: &stellar_xdr::LedgerKey) -> (String, Option<String>) {
     use stellar_xdr::LedgerKey as K;
     match key {
         K::ContractData(cd) => (
