@@ -79,7 +79,7 @@ Only two are pure. Knowing which is which saves a confusing failure.
 | `import_recording` | nothing, but anything arriving this way is labelled `self_supplied`: a `trust` field in caller JSON is a claim, not a receipt |
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
 | `record_simulation` | the network, but no signature and no custody: it asks what an *unsigned* envelope would require. This is the path the demo script uses |
-| `synthesize_policy` | the signed registry snapshot and its root keys. `docs/examples/registry.signed.json` and `registry-roots.json` are the committed pair, and the same bytes the demo feeds it |
+| `synthesize_policy` | the signed registry snapshot and its root keys. `docs/examples/registry.signed.json` and `docs/examples/registry-roots.json` are the committed pair, and the same bytes the demo feeds it |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |
 
 To see them in sequence without an agent, run `bash scripts/demo-tranche1.sh`: it drives the
