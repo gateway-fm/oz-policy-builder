@@ -47,8 +47,12 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-| ./target/release/ozpb-mcp-server 2>/dev/null | python3 -m json.tool --json-lines
+| ./target/release/ozpb-mcp-server 2>/dev/null \
+| python3 -c 'import sys,json; [print(json.dumps(json.loads(l), indent=2)) for l in sys.stdin]'
 ```
+
+(`json.tool --json-lines` would be shorter, but that flag only exists in recent Python 3.x
+and this page is meant to be pasted, not adapted.)
 
 `tools/list` is the answer to "what does this milestone expose" — ask the server rather
 than trusting a list in a document, including this one. Each entry carries an
@@ -100,11 +104,15 @@ allowed tuple does not name — and the verdict is definite:
 ## 4. See what a failure looks like
 
 Worth demoing deliberately, because agents recover from errors and the shape is the
-contract. Send a spec that is not one:
+contract. Send a spec that is not one — the handshake first, as always, since a bare
+`tools/call` is refused:
 
-```json
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"evaluate_spec",
- "arguments":{"spec":{"schema":"nope"},"context":{},"invocation":{}}}}
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"evaluate_spec","arguments":{"spec":{"schema":"nope"},"context":{},"invocation":{}}}}' \
+| ./target/release/ozpb-mcp-server 2>/dev/null | tail -1
 ```
 
 ```json
