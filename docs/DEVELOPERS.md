@@ -168,6 +168,10 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
+`docs/MCP-WALKTHROUGH.md` drives this server by hand, start to finish: the handshake, a real
+tool call against the committed examples, and what a refusal looks like. Read that to *see*
+the surface; read on here for what it is.
+
 ```bash
 cargo build -r -p ozpb-mcp-server
 # stdio (Claude Code, default) — see .mcp.json; the agent skill it pairs with is Tranche 2
