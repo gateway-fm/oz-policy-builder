@@ -40,18 +40,18 @@
       "policy-templates/scope@1": {
         "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
         "signer_predicates": [
-          "any_of",
           "all_of",
-          "threshold",
-          "strict_signer_set"
+          "any_of",
+          "any_of_current_rule_signers",
+          "threshold"
         ],
         "constraint_kinds": [
+          "any_value",
           "eq_address",
           "eq_i128",
           "eq_scval",
-          "le_i128",
           "ge_i128",
-          "call_count_per_installation"
+          "le_i128"
         ],
         "review_reference": "audited with the template pack"
       }
@@ -59,6 +59,6 @@
     "revocations": {}
   },
   "signatures": {
-    "legacy": "2e81008f37c3b4de7d9f56ef465a64fc9dee1f9db026734d4663f33ead5b5264ab8687b3b4305069a8838a4189feff2db58d29389709c597e662d6428433dd0e"
+    "legacy": "455f063f6a61148f0db222f41e0f6049c578be9d69d35bd50c23872dd7c96924e400ae9cfb64b9298525b11144e1e04862909c01961b5df29be9084032f29309"
   }
 }

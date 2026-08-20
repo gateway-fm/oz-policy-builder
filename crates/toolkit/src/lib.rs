@@ -114,6 +114,8 @@ pub fn synthesize_policy(
         .resolve_template(&input.template_family)
         .map_err(map_registry_err)?;
     let template_capability_schema = template.capability_schema;
+    let declared_constraint_kinds = template.constraint_kinds.clone();
+    let declared_signer_predicates = template.signer_predicates.clone();
     let spending_limit_capability = match &input.spending_limit_capability {
         Some(h) => {
             let hash = parse_hash(h)?;
@@ -148,6 +150,11 @@ pub fn synthesize_policy(
     };
 
     let out = synthesize(&syn_input, &decisions).map_err(map_synth_errs)?;
+    within_declared_capabilities(
+        &out.spec,
+        &declared_constraint_kinds,
+        &declared_signer_predicates,
+    )?;
     // Validate immediately: the wire always carries a spec that passed validation.
     let validated = out
         .spec
@@ -331,6 +338,104 @@ fn parse_hash(hex: &str) -> Result<Hash32, ToolError> {
 fn spec_error(errs: &[ozpb_policy_spec::SpecError]) -> ToolError {
     ToolError::new(EC::ESpecInvalid, "PolicySpec failed validation")
         .with_details(errs.iter().map(|e| e.to_string()).collect())
+}
+
+/// The serialized name of a constraint, as the registry's `constraint_kinds` spells it.
+///
+/// Matched exhaustively rather than through `serde_json`, for the same reason
+/// `RenderRule::from_rule` is exhaustive: a new `Constraint` variant must be a compile error
+/// here. Deriving the name from serialization would silently admit the new variant, and this
+/// check would then vouch for a capability the reviewed template never declared.
+fn constraint_kind_name(constraint: &ozpb_policy_spec::Constraint) -> &'static str {
+    use ozpb_policy_spec::Constraint as C;
+    match constraint {
+        C::EqAddress { .. } => "eq_address",
+        C::EqScval { .. } => "eq_scval",
+        C::EqI128 { .. } => "eq_i128",
+        C::LeI128 { .. } => "le_i128",
+        C::GeI128 { .. } => "ge_i128",
+        C::AnyValue => "any_value",
+    }
+}
+
+/// Likewise for the signer predicate.
+fn predicate_kind_name(kind: &ozpb_policy_spec::PredicateKind) -> &'static str {
+    use ozpb_policy_spec::PredicateKind as P;
+    match kind {
+        P::AnyOf => "any_of",
+        P::AllOf => "all_of",
+        P::Threshold { .. } => "threshold",
+        P::AnyOfCurrentRuleSigners => "any_of_current_rule_signers",
+    }
+}
+
+/// Refuse a spec that uses a constraint or predicate the resolved template does not declare.
+///
+/// The registry entry for a template family records which predicate and constraint kinds a
+/// reviewed instantiation implements. Until now nothing read those lists: they were an
+/// assertion inside a signed document that no code checked, so the snapshot could describe a
+/// vocabulary narrower or wider than the template's without any gate noticing — which is how
+/// two entries came to name things that are not constraints or predicates at all.
+///
+/// Today this can only fire if the two drift apart, because synthesis emits exactly what
+/// `exact_for` and the user's widenings produce and the corrected lists cover all of it. That
+/// is the point: it is a tripwire for the next `Constraint` variant, or for the first
+/// adapter-derived constraint, reaching a spec before the reviewed template claims to
+/// implement it. `constraint_kind_name` is exhaustive so the variant cannot arrive unnoticed,
+/// and this refuses if the registry has not caught up.
+///
+/// Scoped to the synthesize path deliberately: `generate_code` and `verify` take a
+/// caller-supplied spec and are given no registry, so neither can perform this check. Closing
+/// that path means making the signed snapshot a required input to those operations, which
+/// changes the wire contract — later-milestone work, and stated here rather than left as an
+/// implied guarantee.
+fn within_declared_capabilities(
+    spec: &PolicySpec,
+    declared_constraint_kinds: &[String],
+    declared_signer_predicates: &[String],
+) -> Result<(), ToolError> {
+    let mut undeclared: Vec<String> = Vec::new();
+    for (rule_index, rule) in spec.rules.iter().enumerate() {
+        let predicate = predicate_kind_name(&rule.authorization.kind);
+        if !declared_signer_predicates.iter().any(|d| d == predicate) {
+            undeclared.push(format!(
+                "rules[{rule_index}] uses signer predicate '{predicate}', which \
+                 {} does not declare",
+                spec.rules[rule_index]
+                    .policies
+                    .iter()
+                    .find_map(|policy| match policy {
+                        PolicyRef::Generated {
+                            template_family, ..
+                        } => Some(template_family.as_str()),
+                        PolicyRef::Reviewed { .. } => None,
+                    })
+                    .unwrap_or("the resolved template family")
+            ));
+        }
+        for call in &rule.allowed_calls {
+            for arg in &call.args {
+                let kind = constraint_kind_name(&arg.constraint);
+                if !declared_constraint_kinds.iter().any(|d| d == kind) {
+                    undeclared.push(format!(
+                        "rules[{rule_index}]/{}/arg {} uses constraint kind '{kind}', which the \
+                         resolved template family does not declare",
+                        call.fn_name, arg.index
+                    ));
+                }
+            }
+        }
+    }
+    if undeclared.is_empty() {
+        return Ok(());
+    }
+    undeclared.sort();
+    undeclared.dedup();
+    Err(ToolError::new(
+        EC::EUnregisteredTemplate,
+        "the synthesized spec uses capabilities the resolved template family does not declare",
+    )
+    .with_details(undeclared))
 }
 
 fn map_record_err(e: &ozpb_recorder_core::RecordError) -> ToolError {
@@ -674,6 +779,62 @@ mod tests {
             .any(|detail| detail.contains("external verifiers are unavailable in Phase 1")));
     }
 
+    /// A spec may only use capabilities the resolved template family declares.
+    ///
+    /// The registry's `constraint_kinds` and `signer_predicates` were, until now, an assertion
+    /// inside a signed document that no code read. This asserts they are read, and it does so
+    /// the only way that can fail today: by narrowing the snapshot rather than widening the
+    /// spec, because synthesis emits exactly what the corrected lists already cover. Take the
+    /// dev snapshot, drop `eq_address` from the template's declared constraints, re-sign it
+    /// with the dev key, and synthesize the golden spec — whose first argument is `SELF`, an
+    /// `eq_address`. It must refuse.
+    ///
+    /// Narrowing the snapshot is also what the check is *for*: the failure it guards against is
+    /// the reviewed template and the signed description of it drifting apart, in either
+    /// direction.
+    #[test]
+    fn a_spec_may_not_use_capabilities_the_template_does_not_declare() {
+        let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+        let mut narrowed_snapshot = ozpb_registry::dev::dev_snapshot(
+            ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
+            1,
+        );
+        let template = narrowed_snapshot
+            .templates
+            .get_mut("policy-templates/scope@1")
+            .expect("the dev snapshot declares the scope template");
+        template
+            .constraint_kinds
+            .retain(|kind| kind != "eq_address");
+        let re_signed =
+            ozpb_registry::sign_snapshot(&registry_dev::dev_signing_key(), narrowed_snapshot)
+                .expect("re-signing the dev snapshot");
+
+        let input = SynthesizeInput {
+            bundles: vec![rec.bundle],
+            selected_authorizer: fx::golden_account_strkey(),
+            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
+            signed_registry_snapshot: serde_json::to_value(&re_signed).unwrap(),
+            decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+            spending_limit_capability: Some(
+                fx::golden_input()
+                    .spending_limit_capability
+                    .unwrap()
+                    .to_hex(),
+            ),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+
+        let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::EUnregisteredTemplate);
+        assert!(
+            err.details
+                .iter()
+                .any(|detail| detail.contains("'eq_address'")),
+            "the refusal must name the undeclared kind: {:?}",
+            err.details
+        );
+    }
     #[test]
     fn caller_supplied_provenance_labels_are_downgraded_before_synthesis() {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();

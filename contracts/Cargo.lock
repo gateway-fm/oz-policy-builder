@@ -1075,7 +1075,6 @@ dependencies = [
  "hex",
  "ozpb-domain",
  "serde",
- "serde_json",
  "stellar-strkey 0.0.18",
  "stellar-xdr 27.0.0",
  "thiserror 2.0.19",

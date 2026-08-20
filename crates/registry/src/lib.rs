@@ -751,19 +751,31 @@ pub mod dev {
             "policy-templates/scope@1".to_string(),
             TemplateCapability {
                 capability_schema: sha256(b"policy-templates/scope@1:capability-algebra"),
+                // Both lists are the serialized vocabularies of the types a spec is built
+                // from — `PredicateKind` and `Constraint` — and nothing else. Two entries
+                // used to come from neither: `strict_signer_set` is a `bool` on
+                // `AuthorizationSpec`, not a predicate a rule can choose, and
+                // `call_count_per_installation` is a `StateSpec`, not an argument
+                // constraint. Declaring them here made the signed snapshot describe a
+                // vocabulary that does not exist, while omitting two that do.
+                //
+                // Sorted, and kept sorted: a reader comparing this against the enum should
+                // not have to hold an arbitrary order in their head, and `resolve_template`
+                // callers now reject anything absent from these lists — so a missing entry
+                // is a refusal, which is the reason they must be complete.
                 signer_predicates: vec![
-                    "any_of".into(),
                     "all_of".into(),
+                    "any_of".into(),
+                    "any_of_current_rule_signers".into(),
                     "threshold".into(),
-                    "strict_signer_set".into(),
                 ],
                 constraint_kinds: vec![
+                    "any_value".into(),
                     "eq_address".into(),
                     "eq_i128".into(),
                     "eq_scval".into(),
-                    "le_i128".into(),
                     "ge_i128".into(),
-                    "call_count_per_installation".into(),
+                    "le_i128".into(),
                 ],
                 review_reference: "audited with the template pack".to_string(),
             },
@@ -886,10 +898,36 @@ mod tests {
             cap.signer_predicates.is_empty(),
             "spending limit enforces no configured predicate"
         );
+        // The declared lists are the serialized vocabularies of `PredicateKind` and
+        // `Constraint`, exactly. Asserted as whole sets rather than by probing for one entry:
+        // the previous form checked that `strict_signer_set` was present, which kept passing
+        // while the list named a `bool` field that is not a predicate at all and omitted
+        // `any_of_current_rule_signers`, which is. A set comparison cannot miss either
+        // direction, and `ozpb_toolkit` now refuses a spec whose kinds fall outside these —
+        // so an entry missing here is a refused synthesis, not a cosmetic gap.
         let t = r.resolve_template("policy-templates/scope@1").unwrap();
-        assert!(t
-            .signer_predicates
-            .contains(&"strict_signer_set".to_string()));
+        assert_eq!(
+            t.signer_predicates,
+            vec![
+                "all_of".to_string(),
+                "any_of".to_string(),
+                "any_of_current_rule_signers".to_string(),
+                "threshold".to_string(),
+            ],
+            "declared predicates must be PredicateKind's vocabulary, sorted"
+        );
+        assert_eq!(
+            t.constraint_kinds,
+            vec![
+                "any_value".to_string(),
+                "eq_address".to_string(),
+                "eq_i128".to_string(),
+                "eq_scval".to_string(),
+                "ge_i128".to_string(),
+                "le_i128".to_string(),
+            ],
+            "declared constraints must be Constraint's vocabulary, sorted"
+        );
     }
 
     #[test]
