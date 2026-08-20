@@ -70,7 +70,10 @@ done
 # identities' SECRET keys. They are worthless — testnet, Friendbot-funded, generated for this
 # run — but a run directory meant to be zipped and handed to someone must not have private keys
 # in it, so the two are separate and only one of them is printed.
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+# Second precision plus the PID. Two runs started in the same second would otherwise share a
+# directory, and the second one truncates MANIFEST.md while the first is still appending to it —
+# so the failure is a corrupted inventory, not a harmless overwrite.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK="${OZPB_DEMO_OUT:-demo-runs/$RUN_ID}"
 mkdir -p "$WORK"
 WORK="$(cd "$WORK" && pwd)"          # absolute, so the paths printed below can be copied anywhere
@@ -350,12 +353,12 @@ echo "  account   https://stellar.expert/explorer/testnet/contract/$ACCOUNT"
   printf -- '\n- account on chain: https://stellar.expert/explorer/testnet/contract/%s\n' "$ACCOUNT"; } >> "$MANIFEST"
 
 # The run directory is the deliverable, so end by showing it rather than by naming one path
-# inside it. `find` and not `ls -R`, because the generated crates are the interesting part and
-# they are two levels down; the depth cap keeps each crate to its own files rather than the
-# hundreds under its `target/` if a reader has built one by hand since.
+# inside it. Depth 3 because the file a reviewer opens first is `05-policy/src/lib.rs`, and
+# `target` is pruned rather than depth-capped: a reader who builds a crate by hand afterwards
+# would otherwise get hundreds of lines of intermediates in this listing.
 echo "  artifacts $WORK"
 echo
-( cd "$WORK" && find . -maxdepth 2 -name target -prune -o -not -name '.' -print | sort | sed 's|^\./|    |' )
+( cd "$WORK" && find . -maxdepth 3 -name target -prune -o -not -name '.' -print | sort | sed 's|^\./|    |' )
 echo
 echo "  MANIFEST.md in that directory says what each file is, so the directory can be zipped"
 echo "  and read by someone who did not watch it run."
