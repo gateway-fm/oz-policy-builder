@@ -584,8 +584,10 @@ operations, monitoring, and an incident process. (Also recorded in PROGRESS.md a
 consumes no generated Rust and cannot depend on codegen — the missing edge is enforced in the
 cargo dependency graph by `scripts/check-dep-rules.sh`. Structural independence reduces common
 implementation coupling; it does not make either side correct by definition, which is why
-property tests, mutation tests, canonical fixtures, and the compiled-contract comparison all
-still run.
+property tests, canonical fixtures, and the compiled-contract comparison all still run.
+Mutation testing is not among them: it was used during the hardening pass to find what those
+leave uncovered — two comments in `crates/evaluator/src/lib.rs` record what it caught — but its
+harness is not part of this tree, so it is history here rather than a gate a reader can re-run.
 
 Since the hardening pass the full-spec evaluator is **honest about composition**: it returns
 `deny` when the generated conjunct conclusively denies, `permit` only when every relevant
