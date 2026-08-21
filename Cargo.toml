@@ -4,7 +4,16 @@ resolver = "2"
 # standalone policy crate into it. Without the exclusion cargo walks up from that crate, finds
 # this manifest, and refuses to build it as a non-member — so `stellar contract build` fails in
 # step 6 on a crate that is perfectly valid, for a reason that has nothing to do with the crate.
-exclude = ["contracts", "demo-runs"]
+#
+# `.claude/worktrees` is the same hazard one level further out, and it bites from inside rather
+# than from here. A worktree is a complete checkout of this repository placed under that path, so
+# a standalone crate in it — `contracts/golden-transfer-policy`, excluded by the worktree's own
+# copy of this manifest — keeps walking up and lands on THIS one, which used to claim it. The
+# result was `cargo fmt` and `stellar contract build` failing inside every worktree with a
+# workspace-membership error about a crate that is fine, while the same commands passed from the
+# main checkout. Since the work here happens in worktrees, that is where those gates were not
+# running.
+exclude = ["contracts", "demo-runs", ".claude/worktrees"]
 members = [
     "crates/domain",
     "crates/policy-spec",
