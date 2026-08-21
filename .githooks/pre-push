@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Run the publication gate before anything leaves the machine.
+#
+# This is where it belongs. The gate's strong half compares the tracked tree against the
+# private root that sits beside this checkout, and that root exists here and nowhere else —
+# CI checks out one repository and `..` is empty there. So the check that can actually see
+# what it is protecting runs at push time, and CI keeps the weaker pattern-only half as the
+# backstop for anything pushed past this hook with `--no-verify`.
+#
+# Enable once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# Hooks are not tracked by git and not shared by cloning, which is why this lives in a
+# tracked directory and is pointed at rather than copied into `.git/hooks`.
+set -euo pipefail
+
+echo "pre-push: publication gate"
+bash "$(git rev-parse --show-toplevel)/scripts/check-publication-allowlist.sh"

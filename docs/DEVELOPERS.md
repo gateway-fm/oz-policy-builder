@@ -10,6 +10,24 @@ policy primitive. (Design rationale lives in `architecture.md`; this is the work
 > claimed as working": marked operations are named so the shape of the whole flow is visible,
 > and are described rather than demonstrated.
 
+## 0. One-time setup for a new clone
+
+```sh
+git config core.hooksPath .githooks
+```
+
+That points git at `.githooks/pre-push`, which runs the publication gate before anything
+leaves the machine. Git does not track `.git/hooks` and cloning does not carry hooks, which is
+why the hook lives in a tracked directory and is pointed at rather than installed.
+
+It matters here more than the one command suggests. The gate's strong check compares this
+tracked tree against the private root that sits beside the checkout — by filename and by
+content hash, so a confidential document is caught whatever it is renamed to — and that root
+exists on a working machine and nowhere else. CI checks out one repository, `..` is empty
+there, and it says so rather than reporting a pass it did not earn; what CI can still do is
+match the shapes confidential material takes, which is its half of the check and the backstop
+for anything pushed with `--no-verify`.
+
 ## 1. Using the toolkit
 
 Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
