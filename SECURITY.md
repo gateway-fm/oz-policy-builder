@@ -45,5 +45,5 @@ them is *false* — that a claimed fail-closed path can be made to open — is t
 
 ## Supported versions
 
-This repository publishes one milestone. Fixes land on `main`; there are no maintained release
-branches, and no backports.
+One milestone is implemented so far, and later ones land in this same repository. Fixes go on
+`main`; there are no maintained release branches, and no backports.

@@ -10,14 +10,14 @@ human-readable Rust implementing the OpenZeppelin `Policy` trait, produced by a
 deterministic, auditable pipeline. **Code-first, deploy-second:** nothing is ever deployed
 automatically.
 
-The full technical architecture (v0.8) lives in `docs/architecture.md`. This repository is
-the Phase 1 implementation: the core pipeline — recorder → PolicySpec → synthesizer →
-codegen — plus the independent reference evaluator, capability registries, and an MCP
-server (stdio) exposing `record_transaction`, `record_simulation`, `import_recording`,
-`synthesize_policy`, `evaluate_spec`, and `generate_code`.
+The full technical architecture (v0.8) lives in `docs/architecture.md`, and this repository is
+where all of it is built. What is implemented so far is Phase 1: the core pipeline — recorder →
+PolicySpec → synthesizer → codegen — plus the independent reference evaluator, capability
+registries, and an MCP server (stdio) exposing `record_transaction`, `record_simulation`,
+`import_recording`, `synthesize_policy`, `evaluate_spec`, and `generate_code`.
 
-Later phases are described in the architecture and marked there; they are not shipped, not
-verified, and not claimed complete by this repository.
+Later phases are described in the architecture and marked there. They are not shipped, not
+verified, and not claimed complete — but they belong here, and this is where they will land.
 
 ## Design invariants (enforced, not aspirational)
 
