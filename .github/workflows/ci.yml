@@ -4,6 +4,14 @@ on:
     branches: [main]
   pull_request:
 
+# Every job here reads the checkout and writes nothing back. The repository default for the
+# workflow token is read/write, and this is the only workflow a fork's pull request can
+# trigger, so the grant is narrowed at the workflow rather than left to a repository setting
+# that a later admin change can widen without touching this file. `nightly live` declares the
+# same thing for the same reason.
+permissions:
+  contents: read
+
 jobs:
   host:
     name: host workspace (fmt · clippy · test · dep-rules · determinism)
