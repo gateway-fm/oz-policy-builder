@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! GENERATED POLICY — template family `policy-templates/scope@1`.
 //! Normalized codegen input hash: 662ad7a94de0d249461d9e8b2c6525a95ab64f4e46f5ca0abf78479cf6181260
 //!

@@ -81,6 +81,15 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 EXEMPTIONS = "scripts/quoted-hash-exemptions.txt"
+
+# A generated crate is recognised by its header marker, looked for near the top of the file rather
+# than at byte zero. It was `startswith` until the generator began emitting an SPDX line above the
+# doc comment: every generated crate stopped being recognised at once, and the gate exited saying
+# it had found none — loudly, which is the only reason this was a five-minute problem. Anchoring on
+# "the marker is in the header" instead survives another line landing above it, and the exit above
+# still fires if a file has no marker at all, so the check cannot go quietly vacuous.
+GENERATED_MARKER = "//! GENERATED POLICY"
+GENERATED_MARKER_WINDOW = 512
 PROVENANCE = "crates/domain/src/lib.rs"
 
 # A full hash as the toolkit writes it (`hex::encode`, lowercase), bounded so a 128-hex
@@ -177,7 +186,7 @@ def generated_crate_hashes(paths: list[str]) -> set[str]:
         p
         for p in paths
         if re.fullmatch(r"contracts/[^/]+/src/lib\.rs", p)
-        and text(p).startswith("//! GENERATED POLICY")
+        and GENERATED_MARKER in text(p)[:GENERATED_MARKER_WINDOW]
     ]
     if not sources:
         sys.exit(

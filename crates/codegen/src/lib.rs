@@ -295,6 +295,7 @@ fn emit_cargo_toml(crate_name: &str, pins: &Pins) -> String {
 name = "{crate_name}"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0 OR MIT"
 publish = false
 
 [lib]
@@ -343,7 +344,8 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
 
     let mut out = String::new();
     out.push_str(&format!(
-        "//! GENERATED POLICY — template family `{template_family}`.\n\
+        "// SPDX-License-Identifier: Apache-2.0 OR MIT\n\
+         //! GENERATED POLICY — template family `{template_family}`.\n\
          //! Normalized codegen input hash: {hash}\n\
          //!\n\
          //! DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM\n\
