@@ -1,0 +1,14 @@
+OZ Accounts Policy Builder
+Copyright 2026 Gateway.fm
+
+This product is offered under either the Apache License, Version 2.0 or the
+MIT license, at your option. See LICENSE-APACHE and LICENSE-MIT.
+
+The policy crates this toolkit generates are offered under the same terms, and
+their generated source says so. Nothing in either licence requires the author
+of a generated policy to carry this notice into a contract they deploy.
+
+This product depends on, and its generated crates link against, software from
+the Stellar Development Foundation (soroban-sdk, stellar-xdr, and related
+crates; Apache-2.0) and from OpenZeppelin (stellar-accounts; MIT). Those
+projects' own notices and licence terms apply to their code, not to this one.

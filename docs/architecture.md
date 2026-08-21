@@ -11,7 +11,8 @@ rules indirectly, so the management surface is checked with the same rigor as th
 policy surface; plus exact-ledger verdict semantics (freshness = retry policy, never a
 security interval), `E_INCOMPLETE_ACCOUNT_STATE` with structured causes, extant-rule
 `Count` terminology, and `call-surface-core` added to the enforced core-crate list.)
-**License:** Apache-2.0 (all deliverables, built in the open under `github.com/gateway-fm`)
+**License:** Apache-2.0 OR MIT, at the user's option (all deliverables, built in the open under
+`github.com/gateway-fm`); contributions under the Developer Certificate of Origin
 
 ---
 
@@ -62,7 +63,7 @@ and delivered then:
 | 8 | Documentation + ≥3 end-to-end walkthroughs (Blend yield, SEP-41 subscription, bounded Soroswap) | §7 Walkthroughs, §10 Deliverables — walkthroughs **Tranche 2**, full documentation **Tranche 3** |
 | 9 | Configurable composition/generation mode; user can inspect and modify generated code | §4.3 (compose-first decision tree), §4.4 (verified vs custom source modes) — **Tranche 1** |
 | 10 | Code-first, deploy-second; deployment never automatic | §6 Trust model — **Tranche 1**, and every milestone after it |
-| 11 | Open source, permissive license | Apache-2.0, public repos from day one — **Tranche 0** |
+| 11 | Open source, permissive license | Apache-2.0 OR MIT, public repos from day one — **Tranche 0** |
 
 Track-level requirements (visual diagram, plain-English stack description, decentralization,
 infrastructure, privacy, maintenance plan) are covered in §3, §6, §9, and §10.
@@ -1439,7 +1440,7 @@ are intentionally out of scope for this document.)
 
 **Phase 0 — Setup.** **Structural public/private split established first** (separate private
 root; allowlist-derived public repos; sentinel-file negative test in CI — §6.5); public repos
-(Apache-2.0) under `github.com/gateway-fm`, public project board, OpenZeppelin review channel
+(Apache-2.0 OR MIT) under `github.com/gateway-fm`, public project board, OpenZeppelin review channel
 opened, pinned dependency matrix (OZ release, SDK, protocol, management return/event schemas)
 agreed.
 
@@ -1549,7 +1550,7 @@ as the toolkit's stewards.
   verifier hashes, template snippet library, generated-code final form, and adapter design.
   Constraints that recur but exceed template expressiveness are written up as candidate
   primitives to upstream into the OZ accounts package, with reference implementations
-  offered under Apache-2.0.
+  offered under Apache-2.0 OR MIT, so the MIT-licensed accounts package can take them as they are.
 - **C-Address Tooling cohort:** pollywallet first (named by the RFP), then an integration
   guide + typed client so other cohort wallets can adopt the same flow with days, not weeks,
   of work; the wallet-facing surface is deliberately small

@@ -2,7 +2,7 @@
 # License & supply-chain gate (architecture §4.11 engineering gate).
 #
 # Enforces the RFP's "open source, permissive license" requirement across the ENTIRE
-# dependency tree — our own crates (Apache-2.0) plus every transitive dependency — for
+# dependency tree — our own crates (Apache-2.0 OR MIT) plus every transitive dependency — for
 # BOTH the toolkit workspace and the on-chain `contracts/` workspace. Also verifies crates
 # come only from allowed sources and flags known security advisories. Config: deny.toml.
 #

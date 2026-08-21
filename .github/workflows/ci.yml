@@ -140,6 +140,7 @@ jobs:
       - name: cargo-deny (pinned)
         run: cargo install cargo-deny --locked --version 0.20.2
       # deny.toml: every crate (ours + transitive, both workspaces) must be permissively
-      # licensed and compatible with shipping under Apache-2.0; flags advisories too.
+      # licensed and compatible with shipping under either of this project's licences; flags
+      # advisories too.
       - name: license & supply-chain gate
         run: bash scripts/check-licenses.sh

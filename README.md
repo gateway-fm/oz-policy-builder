@@ -71,4 +71,16 @@ the evidence that has actually been run; test counts alone are not treated as as
 
 ## License
 
-Apache-2.0. Built in the open by [Gateway.fm](https://gateway.fm).
+Licensed under either of **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)) or **MIT**
+([LICENSE-MIT](LICENSE-MIT)), at your option. This is the Rust ecosystem's convention, and here it
+also has a specific purpose: the policy primitives this project expects to upstream live in
+OpenZeppelin's MIT-licensed `stellar-accounts`, and a contribution that arrives under both licences
+can go there without anyone being asked to relicense it afterwards.
+
+The policy crates this toolkit generates carry the same dual licence, stated in the generated
+source, so deploying one puts no obligation on you.
+
+Contributions are taken under the [Developer Certificate of Origin](https://developercertificate.org/)
+— one `Signed-off-by` line per commit, `git commit -s`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Built in the open by [Gateway.fm](https://gateway.fm).

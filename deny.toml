@@ -1,9 +1,9 @@
 # cargo-deny configuration (architecture §4.11 engineering gate).
 #
 # Enforces the RFP's "open source, permissive license" requirement *for the whole
-# dependency tree*, not just our own crates: every crate we compile — ours (Apache-2.0)
+# dependency tree*, not just our own crates: every crate we compile — ours (Apache-2.0 OR MIT)
 # and all transitive dependencies — must carry a license compatible with redistributing
-# this toolkit under Apache-2.0. Also flags security advisories and yanked crates.
+# this toolkit under either of its own licences. Also flags security advisories and yanked crates.
 #
 # Run via `scripts/check-licenses.sh` (wired into the verify gates). License/bans/sources
 # checks are fully offline; the advisory check fetches the RustSec DB when network is
@@ -13,7 +13,7 @@
 # cargo-deny v2 semantics: anything NOT in `allow` is denied. No copyleft blanket-allow.
 version = 2
 confidence-threshold = 0.9
-# Permissive licenses compatible with distributing under Apache-2.0. Copyleft
+# Permissive licenses compatible with distributing under Apache-2.0 or MIT. Copyleft
 # (GPL/AGPL/LGPL) and file-level-copyleft (MPL) are intentionally absent — if a real
 # dependency needs one, it surfaces here and becomes a documented Legal decision, not a
 # silent allow.
@@ -36,7 +36,7 @@ allow = [
 #
 # webpki-roots bundles Mozilla's root-CA trust store (used by the `ureq` RPC client) as
 # DATA under CDLA-Permissive-2.0, a permissive data license. It carries no copyleft and
-# permits redistribution, so it is compatible with shipping this toolkit under Apache-2.0.
+# permits redistribution, so it is compatible with shipping this toolkit under either licence.
 # Scoped to this crate rather than globally allowed. (Legal/Compliance may veto; reversible.)
 exceptions = [
     { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
