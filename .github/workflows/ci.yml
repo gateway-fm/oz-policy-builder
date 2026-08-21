@@ -13,6 +13,46 @@ permissions:
   contents: read
 
 jobs:
+  # The contribution model is DCO (CONTRIBUTING.md): one `Signed-off-by` per commit, matching its
+  # author. Enforced as a job rather than by an installed app so the rule lives in the tree with
+  # everything else that gates a merge, and so a fork's pull request is checked with no app to
+  # authorize. Pull requests only — the check is about incoming commits, and applying it to the
+  # history that predates the decision would fail every push.
+  dco:
+    name: DCO (every commit in a pull request is signed off)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: every commit carries a Signed-off-by matching its author
+        env:
+          # Through the environment, not interpolated into the script: these come from the event
+          # payload, and a workflow that splices event fields straight into `run` is the standard
+          # script-injection shape even when the field in question is only ever hex.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for commit in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+            author="$(git log -1 --format='%an <%ae>' "$commit")"
+            if ! git log -1 --format='%B' "$commit" | grep -qiF "Signed-off-by: $author"; then
+              missing="$missing  $(git log -1 --format='%h %s' "$commit")
+    author: $author
+"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::commits without a Signed-off-by matching their author:"
+            printf '%s\n' "$missing"
+            echo "Add it with 'git commit -s', or 'git rebase --signoff $BASE_SHA' for a branch"
+            echo "that already exists. See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "every commit in this pull request is signed off"
+
   host:
     name: host workspace (fmt · clippy · test · dep-rules · determinism)
     runs-on: ubuntu-latest

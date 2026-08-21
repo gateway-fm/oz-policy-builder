@@ -3,6 +3,25 @@
 Bug reports, failing test cases, and patches are all welcome. Security reports go through the
 private channel in `SECURITY.md` instead — not a pull request, and not a public issue.
 
+## Contribution model: DCO
+
+Contributions are taken under the [Developer Certificate of Origin](https://developercertificate.org/)
+version 1.1. Every commit needs one sign-off line:
+
+```sh
+git commit -s          # appends Signed-off-by: Your Name <your@email>
+```
+
+The line has to match the commit's author. It certifies that you wrote the change, or have the
+right to submit it under the project's licence — nothing more; you keep your copyright, and no
+rights are assigned to us. CI checks every commit in a pull request and fails the `DCO` job on a
+missing or mismatched line; `git rebase --signoff <base>` fixes a branch that already exists.
+
+There is no CLA. The dual `Apache-2.0 OR MIT` licence is what makes one unnecessary: a
+contribution arrives under both, so the code can be relicensed to either when it moves — which
+matters here, because the policy primitives this project expects to upstream go to OpenZeppelin's
+MIT-licensed accounts package.
+
 ## Before your first push
 
 ```sh
