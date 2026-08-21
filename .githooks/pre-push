@@ -1,19 +1,76 @@
 #!/usr/bin/env bash
-# Run the publication gate before anything leaves the machine.
-#
-# This is where it belongs. The gate's strong half compares the tracked tree against the
-# private root that sits beside this checkout, and that root exists here and nowhere else —
-# CI checks out one repository and `..` is empty there. So the check that can actually see
-# what it is protecting runs at push time, and CI keeps the weaker pattern-only half as the
-# backstop for anything pushed past this hook with `--no-verify`.
+# Two checks before anything leaves the machine.
 #
 # Enable once per clone:
 #
 #     git config core.hooksPath .githooks
 #
-# Hooks are not tracked by git and not shared by cloning, which is why this lives in a
-# tracked directory and is pointed at rather than copied into `.git/hooks`.
+# Hooks are not tracked by git and not shared by cloning, which is why this lives in a tracked
+# directory and is pointed at rather than copied into `.git/hooks`.
 set -euo pipefail
 
+ROOT="$(git rev-parse --show-toplevel)"
+REMOTE_NAME="${1:-}"
+REMOTE_URL="${2:-}"
+
+# ── 1. The publication gate ──────────────────────────────────────────────────────────────
+#
+# Its strong half compares the tracked tree against the private root beside the repository, and
+# that root exists on a working machine and nowhere else — CI checks out one repository and has
+# nothing to compare against. So the check that can see what it is protecting runs at push time,
+# and CI keeps the pattern-only half as the backstop for anything pushed with `--no-verify`.
 echo "pre-push: publication gate"
-bash "$(git rev-parse --show-toplevel)/scripts/check-publication-allowlist.sh"
+bash "$ROOT/scripts/check-publication-allowlist.sh"
+
+# ── 2. Where the change was authored ─────────────────────────────────────────────────────
+#
+# The agreed order is: fix in the private repository, where the harness and the later-milestone
+# tests can say whether the change breaks anything, then carry it across. A commit authored
+# straight into the extracted public tree skips that, and the skip is invisible afterwards —
+# which is exactly how it happened once already.
+#
+# So a push to the publication repository requires every commit to declare which it is: carried
+# across (`git cherry-pick -x` writes the provenance line) or deliberately public-only (say why).
+# Pushes anywhere else — the private repository, a fork, a mirror — are not this rule's business.
+target="$(basename "${REMOTE_URL%.git}")"
+if [ "$target" != "oz-policy-builder" ]; then
+    exit 0
+fi
+
+zero='0000000000000000000000000000000000000000'
+unmarked=""
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue                 # branch deletion
+    if [ "$remote_sha" = "$zero" ]; then
+        range=$(git rev-list "$local_sha" --not --remotes="$REMOTE_NAME")
+    else
+        range=$(git rev-list "$remote_sha..$local_sha")
+    fi
+    for commit in $range; do
+        body="$(git log -1 --format='%B' "$commit")"
+        case "$body" in
+            *"cherry picked from commit"*) continue ;;
+            *"Public-only:"*)              continue ;;
+        esac
+        unmarked="$unmarked$(git log -1 --format='  %h %s' "$commit")
+"
+    done
+done
+
+if [ -n "$unmarked" ]; then
+    cat >&2 <<EOF
+pre-push: refused — these commits were authored straight into the public tree:
+
+$unmarked
+Either carry the change across from the private repository, where the later-milestone tests
+can see it:
+
+    git -C <private checkout> cherry-pick -x <sha>     # writes the provenance line
+
+or, if it genuinely belongs only here — a document naming a file this tree does not have, a
+workflow that differs between the two — say so in the commit message:
+
+    Public-only: <why this cannot live in the private repository>
+EOF
+    exit 1
+fi

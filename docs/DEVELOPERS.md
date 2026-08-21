@@ -16,9 +16,9 @@ policy primitive. (Design rationale lives in `architecture.md`; this is the work
 git config core.hooksPath .githooks
 ```
 
-That points git at `.githooks/pre-push`, which runs the publication gate before anything
-leaves the machine. Git does not track `.git/hooks` and cloning does not carry hooks, which is
-why the hook lives in a tracked directory and is pointed at rather than installed.
+That points git at `.githooks/pre-push`, which runs two checks before anything leaves the
+machine. Git does not track `.git/hooks` and cloning does not carry hooks, which is why the hook
+lives in a tracked directory and is pointed at rather than installed.
 
 It matters here more than the one command suggests. The gate's strong check compares this
 tracked tree against the private root that sits beside the checkout — by filename and by
@@ -27,6 +27,14 @@ exists on a working machine and nowhere else. CI checks out one repository, `..`
 there, and it says so rather than reporting a pass it did not earn; what CI can still do is
 match the shapes confidential material takes, which is its half of the check and the backstop
 for anything pushed with `--no-verify`.
+
+The second check applies only to a push at the publication repository, and only there. Changes
+are authored here, in the repository that carries the later-milestone code and tests, and then
+carried across with `git cherry-pick -x`, which records where each one came from. A commit
+written straight into the extracted tree skips the only place that can tell you it broke a
+later milestone, and afterwards nothing says it happened — so the hook asks every commit in the
+push to declare itself: carried across, or `Public-only: <why>` in the message for the cases
+that genuinely cannot live here, such as a document naming a file the other tree does not have.
 
 ## 1. Using the toolkit
 
