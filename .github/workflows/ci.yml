@@ -131,10 +131,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Architecture §6.5: the public repo is produced from an allowlist; this is the
-      # negative test — a planted sentinel filename/fingerprint must fail the build.
+      # Architecture §6.5: the public repo is produced from an allowlist. Two steps, because
+      # this one only ever sees a tree with nothing planted in it — it says the current tree is
+      # clean, which is necessary but is not the negative test §6.5 promises.
       - name: forbidden-content scan
         run: bash scripts/check-publication-allowlist.sh
+      # The negative test itself: sentinels are planted into a scratch tree and the gate must
+      # refuse each one. It needs no private root, so it means the same thing here as on a
+      # developer machine — which matters, because the byte-for-byte half of the gate above
+      # cannot run in CI at all, and without this step CI's half was two regexes.
+      - name: publication gate refuses a planted sentinel
+        run: bash scripts/test-check-publication-allowlist.sh
 
   unused-deps:
     name: unused dependencies (every manifest in the tree, both workspaces)
