@@ -575,8 +575,10 @@ mod tests {
         assert!(policy
             .authorize("http://rpc.testnet.stellar.gateway.fm")
             .is_err());
+        // Credentials are refused even against an allowlisted host — the allowlist is not a
+        // substitute for stripping them.
         assert!(policy
-            .authorize("https://user:pass@rpc.testnet.stellar.gateway.fm")
+            .authorize("https://user:pass@soroban.example/rpc")
             .is_err());
         assert!(policy
             .authorize("https://rpc.testnet.stellar.gateway.fm#frag")
