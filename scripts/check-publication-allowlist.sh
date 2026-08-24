@@ -36,11 +36,32 @@ SELF="scripts/check-publication-allowlist.sh"
 # filesystem was a hole: a secret could sit in the commit while the path was deleted or edited
 # locally, and this gate would hash the clean file and pass. `.githooks/pre-push` passes the
 # commit it is about to push; CI and `verify-phase1.sh` default to what is committed here.
-REF="${1:-HEAD}"
-if ! git rev-parse --verify --quiet "$REF^{tree}" >/dev/null; then
-    echo "publication allowlist: '$REF' does not name a tree" >&2
-    exit 1
-fi
+#
+# `--require-private-root` says the caller knows the byte-for-byte half must run here, so a
+# missing or empty private root is a failure rather than a skip. `.githooks/pre-push` passes it,
+# because a developer machine is where a private document can be committed by accident and is
+# also the only place the comparison is possible. CI does not: a runner checks out one
+# repository, its parent is a workspace directory holding nothing, and demanding the comparison
+# there would fail every clean build — which it did, before this flag existed.
+# Several refs, because one is not enough. A push introducing a commit that adds a private file
+# and a later one that deletes it leaves a clean tip tree while publishing the blob in history,
+# so `.githooks/pre-push` passes every commit it is about to introduce and each is scanned.
+REFS=()
+REQUIRE_PRIVATE_ROOT=0
+for arg in "$@"; do
+    case "$arg" in
+        --require-private-root) REQUIRE_PRIVATE_ROOT=1 ;;
+        -*) echo "publication allowlist: unknown option $arg" >&2; exit 2 ;;
+        *)  REFS+=("$arg") ;;
+    esac
+done
+[ "${#REFS[@]}" -eq 0 ] && REFS=(HEAD)
+for ref in "${REFS[@]}"; do
+    if ! git rev-parse --verify --quiet "$ref^{tree}" >/dev/null; then
+        echo "publication allowlist: '$ref' does not name a tree" >&2
+        exit 1
+    fi
+done
 
 # The private root is the directory the repository itself sits in — and "the repository" means
 # its main checkout, not wherever this copy happens to be. Both repositories carry registered
@@ -48,7 +69,15 @@ fi
 # the comparison below would find no private documents and quietly downgrade itself to the
 # pattern-only half. `--git-common-dir` points at the one `.git` all worktrees share, so its
 # parent is the main checkout and its grandparent is the root we mean, from anywhere.
-PRIVATE_ROOT="$(dirname "$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")")"
+# `OZPB_PRIVATE_ROOT` states the root outright. Set, it is authoritative and holding nothing is
+# a fault; unset, the path below is a guess about the layout, and a guess that lands on a
+# directory with no private documents means "not that layout here", not "misconfigured".
+if [ -n "${OZPB_PRIVATE_ROOT:-}" ]; then
+    PRIVATE_ROOT="$OZPB_PRIVATE_ROOT"
+    REQUIRE_PRIVATE_ROOT=1
+else
+    PRIVATE_ROOT="$(dirname "$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")")"
+fi
 
 # `architecture.md` exists in both roots on purpose: the public copy under docs/ is a
 # deliverable and the private root holds its working copy. Comparison must not flag it.
@@ -71,20 +100,22 @@ SHARED_NAMES="architecture.md"
 # and nothing has to be read out of the working tree to notice it.
 TRACKED_LIST="$(mktemp)"
 trap 'rm -f "$TRACKED_LIST"' EXIT
-git ls-tree -r -z "$REF" > "$TRACKED_LIST"
+for ref in "${REFS[@]}"; do
+    git ls-tree -r -z "$ref" >> "$TRACKED_LIST"
+done
 
 # ── The comparison, where there is something to compare against ──────────────────────────
 #
 # One `python3` rather than a `shasum`/`sha256sum` per file: the two spellings are not both
 # present on macOS and on the CI image, and this reads whole documents rather than short
 # strings. `python3` is already a dependency of the quoted-hash gate.
-COMPARISON="$(SHARED_NAMES="$SHARED_NAMES" PRIVATE_ROOT="$PRIVATE_ROOT" REF="$REF" SELF="$SELF" \
-    python3 - "$TRACKED_LIST" <<'PYEOF'
+COMPARISON="$(SHARED_NAMES="$SHARED_NAMES" PRIVATE_ROOT="$PRIVATE_ROOT" SELF="$SELF" \
+    REFS="$(printf '%s\n' "${REFS[@]}")" python3 - "$TRACKED_LIST" <<'PYEOF'
 import os, pathlib, subprocess, sys
 
 shared = set(os.environ["SHARED_NAMES"].split())
 private_root = pathlib.Path(os.environ["PRIVATE_ROOT"])
-ref = os.environ["REF"]
+refs = [r for r in os.environ["REFS"].splitlines() if r]
 self_path = os.environ["SELF"]
 
 # Absent and empty are different answers and get different verdicts. CI checks out one
@@ -112,8 +143,13 @@ for entry in entries:
         ["git", "hash-object", "--no-filters", "--", str(entry)],
         capture_output=True, text=True,
     )
-    if done.returncode == 0:
-        private_by_oid[done.stdout.strip()] = entry.name
+    if done.returncode != 0:
+        # Skipping it would drop the document from the comparison silently, and a byte-identical
+        # copy committed under another name would then pass the half that exists to catch it.
+        # A private document this script cannot read is a reason to stop, not to continue.
+        print(f"UNREADABLE\t{entry.name}\t{done.stderr.strip() or 'git hash-object failed'}")
+        raise SystemExit(0)
+    private_by_oid[done.stdout.strip()] = entry.name
 
 # `<mode> SP blob SP <oid> TAB <path>`, NUL-terminated.
 tracked = []
@@ -127,7 +163,11 @@ with open(sys.argv[1], "rb") as handle:
             continue
         tracked.append((raw_path.decode("utf-8", "surrogateescape"), fields[2].decode()))
 
+seen = set()
 for path, oid in tracked:
+    if (path, oid) in seen:
+        continue
+    seen.add((path, oid))
     name = os.path.basename(path)
     if name in private_by_name:
         print(f"FILE\t{path}\t{name}")
@@ -143,29 +183,41 @@ for path, oid in tracked:
 # `.DS_Store`, `.gitignore` - and appear in ignore files and setup docs for reasons that
 # disclose nothing, so a name match there is noise rather than signal. Their *bytes* stay
 # covered: a hidden private file committed here, under its own name or another, is caught above.
+reported = set()
 for name in (n for n in private_by_name if not n.startswith(".")):
-    done = subprocess.run(
-        ["git", "grep", "-l", "-I", "-F", "-e", name, ref, "--", "."],
-        capture_output=True, text=True,
-    )
-    for line in done.stdout.splitlines():
-        # `git grep <ref>` prefixes each hit with `<ref>:`.
-        path = line.split(":", 1)[1] if ":" in line else line
-        if path == self_path:
-            continue
-        print(f"MENTION\t{path}\t{name}")
+    for ref in refs:
+        done = subprocess.run(
+            ["git", "grep", "-l", "-I", "-F", "-e", name, ref, "--", "."],
+            capture_output=True, text=True,
+        )
+        for line in done.stdout.splitlines():
+            # `git grep <ref>` prefixes each hit with `<ref>:`. Stripped as a literal prefix,
+            # not by splitting on the first colon, which a ref containing one would break.
+            path = line[len(ref) + 1:] if line.startswith(ref + ":") else line
+            if path == self_path or (path, name) in reported:
+                continue
+            reported.add((path, name))
+            print(f"MENTION\t{path}\t{name}")
 PYEOF
 )"
 
-if [ "$COMPARISON" = "NO_PRIVATE_ROOT" ]; then
-    echo "  (no private root at $PRIVATE_ROOT: the byte-for-byte half cannot run here)"
-elif [ "$COMPARISON" = "EMPTY_PRIVATE_ROOT" ]; then
-    # The directory is there and holds nothing to compare. Either the path is wrong or the
-    # documents moved; both mean the strong half is not running, and saying so quietly would
-    # leave the pattern-only half passing as if it were the whole check.
-    echo "publication allowlist: $PRIVATE_ROOT exists but holds no private documents" >&2
-    echo "  the byte-for-byte half cannot run, so this gate would only be the pattern scan." >&2
-    echo "  Fix the path, or run from a checkout whose parent is the private root." >&2
+if [ "$COMPARISON" = "NO_PRIVATE_ROOT" ] || [ "$COMPARISON" = "EMPTY_PRIVATE_ROOT" ]; then
+    # Nothing to compare against. Whether that is a fact about the environment or a fault
+    # depends on who is asking: a runner has no private root and never did, while a pre-push
+    # hook asked for the comparison precisely because it can be made here.
+    if [ "$REQUIRE_PRIVATE_ROOT" -eq 1 ]; then
+        echo "publication allowlist: no private documents to compare at $PRIVATE_ROOT" >&2
+        echo "  the byte-for-byte half cannot run, so this gate would only be the pattern scan," >&2
+        echo "  and it was asked to run. Point OZPB_PRIVATE_ROOT at the private root, or run" >&2
+        echo "  from a checkout whose parent is it." >&2
+        exit 1
+    fi
+    echo "  (no private documents at $PRIVATE_ROOT: the byte-for-byte half cannot run here)"
+elif [ "${COMPARISON%%$(printf '\t')*}" = "UNREADABLE" ]; then
+    echo "publication allowlist: a private document could not be read, so the comparison" >&2
+    printf '%s\n' "$COMPARISON" | while IFS="$(printf '\t')" read -r _kind name reason; do
+        echo "  would have been incomplete: $PRIVATE_ROOT/$name — $reason" >&2
+    done
     exit 1
 elif [ -n "$COMPARISON" ]; then
     printf '%s\n' "$COMPARISON" | while IFS="$(printf '\t')" read -r kind path name; do
@@ -192,8 +244,21 @@ FORBIDDEN_FINGERPRINT_PATTERNS=(
 # gate slow — the recursive filesystem form walked `target/` and every registered worktree, tens
 # of gigabytes of build output, once per pattern.
 for fp in "${FORBIDDEN_FINGERPRINT_PATTERNS[@]}"; do
-    hits="$(git grep -l -I -E -e "$fp" "$REF" -- . 2>/dev/null | sed "s/^${REF}://" \
-            | grep -v "^${SELF}$" || true)"
+    # `git grep <ref>` prefixes each hit with `<ref>:`. Stripped by literal parameter expansion,
+    # not by `sed "s/^${REF}://"`: a ref like `feature/x` made `/` the substitution delimiter,
+    # sed failed, `|| true` swallowed it, `hits` came back empty and the scan was skipped while
+    # the gate printed OK. A gate that reports success having checked nothing is the one outcome
+    # worth more care than the check itself.
+    hits=""
+    for ref in "${REFS[@]}"; do
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            path="${line#"$ref":}"
+            [ "$path" = "$SELF" ] && continue
+            case "$hits" in *"$path"$'\n'*) continue ;; esac
+            hits="$hits$path"$'\n'
+        done < <(git grep -l -I -E -e "$fp" "$ref" -- . 2>/dev/null || true)
+    done
     if [ -n "$hits" ]; then
         echo "FORBIDDEN CONTENT fingerprint present, matching /$fp/"
         printf '%s\n' "$hits" | sed 's/^/  /'
