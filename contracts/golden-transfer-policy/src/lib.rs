@@ -34,23 +34,53 @@ use stellar_accounts::{
     smart_account::{ContextRule, Signer},
 };
 
+/// Every reason this policy can refuse an authorization, an install or an
+/// uninstall.
+///
+/// The numbering is the published deny-reason contract rather than a position
+/// in a range: a code identifies one refusal, an independently written
+/// reference evaluator asserts the same mapping, and every variant is declared
+/// in every generated policy whatever its rule's shape — so a reader can read a
+/// code the same way across artifacts.
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
 pub enum PolicyError {
+    /// No signer authenticated this authorization. The account defers signer
+    /// validation to its policies, so an empty set has to be refused here.
     ZeroSigners = 1,
+    /// The authenticated signers do not satisfy the rule's signer predicate.
     PredicateUnsatisfied = 2,
+    /// The context rule's live signer set is no longer the one compiled in, so
+    /// the grant a reader approved is not the grant being exercised.
     SignerSetDiverged = 3,
+    /// The invoked contract is not the one this policy is scoped to.
     TargetMismatch = 4,
+    /// The invoked function is not one of the allowed calls, or the
+    /// authorization is not a contract invocation at all.
     FunctionNotAllowed = 5,
+    /// The arguments satisfy no allowed call tuple: arity, a constraint, or
+    /// both.
     NoTupleMatched = 6,
+    /// This installation has used every call its cap allows. The count never
+    /// resets within an installation.
     CallCountExceeded = 7,
+    /// State this policy owns for the (smart account, context rule) is absent.
+    /// Missing state denies rather than reading as zero.
     MissingState = 8,
+    /// The ledger is past the rule's validity window.
     RuleExpired = 9,
+    /// The policy is already installed for this (smart account, context rule).
     AlreadyInstalled = 10,
+    /// The policy is not installed for this (smart account, context rule).
     NotInstalled = 11,
 }
 
+/// Keys for the state this policy owns.
+///
+/// Every variant is segregated by (smart account, context rule id), which is
+/// what lets one deployment serve any number of accounts without their
+/// installations observing each other.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum DataKey {
@@ -129,13 +159,69 @@ fn check_call_0(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {
     true
 }
 
+/// This rule, compiled to a policy contract.
+///
+/// One deployment serves any number of smart accounts: everything the rule
+/// fixes is a constant in this file, and everything that varies per
+/// installation is keyed by (smart account, context rule id). There are no
+/// setters and no upgrade entry point, so reconfiguration is
+/// remove-and-reinstall — which is what makes the wasm hash a statement about
+/// behaviour rather than about a starting state.
 #[contract]
 pub struct GeneratedPolicy;
 
 #[contractimpl]
 impl Policy for GeneratedPolicy {
+    /// Installation parameters. A generated policy has none — every limit is
+    /// compiled in — so this is a placeholder the smart account's `install`
+    /// call has to pass something for.
     type AccountParams = u32;
 
+    /// Enforces this policy for one authorization attempt.
+    ///
+    /// Returning is the permit; every refusal is a panic carrying the code that
+    /// names it.
+    ///
+    /// # Arguments
+    ///
+    /// * `e` - Access to the Soroban environment.
+    /// * `context` - The authorization context being enforced.
+    /// * `authenticated_signers` - The signers the smart account has already
+    ///   verified. The account defers signer validation to its policies, so
+    ///   this list is checked here rather than trusted.
+    /// * `context_rule` - The context rule this policy is attached to.
+    /// * `smart_account` - The smart account being authorized.
+    ///
+    /// # Errors
+    ///
+    /// * [`PolicyError::MissingState`] - When no installation marker exists for
+    ///   this smart account and context rule. Missing state denies rather than
+    ///   reading as zero.
+    /// * [`PolicyError::RuleExpired`] - When the ledger sequence is past the
+    ///   rule's validity window.
+    /// * [`PolicyError::ZeroSigners`] - When no signer authenticated this
+    ///   authorization.
+    /// * [`PolicyError::PredicateUnsatisfied`] - When the authenticated signers
+    ///   do not satisfy the rule's signer predicate.
+    /// * [`PolicyError::SignerSetDiverged`] - When the context rule's live
+    ///   signer set is no longer the one compiled in.
+    /// * [`PolicyError::FunctionNotAllowed`] - When the authorization is not a
+    ///   contract invocation, or invokes a function outside the allowed calls.
+    /// * [`PolicyError::TargetMismatch`] - When the invoked contract is not the
+    ///   one this policy is scoped to.
+    /// * [`PolicyError::NoTupleMatched`] - When the arguments satisfy no
+    ///   allowed call tuple.
+    /// * [`PolicyError::CallCountExceeded`] - When this installation has
+    ///   already used every call its cap allows.
+    ///
+    /// # Notes
+    ///
+    /// * Refusals are ordered: the code a caller sees is the first condition
+    ///   that failed, in the order the crate header documents, not an arbitrary
+    ///   one of several.
+    /// * The call counter is advanced only on the permitting path, and a panic
+    ///   anywhere later in the invocation reverts that increment along with
+    ///   everything else.
     fn enforce(
         e: &Env,
         context: Context,
@@ -219,6 +305,29 @@ impl Policy for GeneratedPolicy {
         }
     }
 
+    /// Installs this policy for one context rule of one smart account.
+    ///
+    /// Writes the installation marker and the call counter and extends the
+    /// lifetime of the entries this policy depends on. `_install_params` is
+    /// accepted and ignored: every limit is compiled in, so there is nothing an
+    /// installation could configure.
+    ///
+    /// # Arguments
+    ///
+    /// * `e` - Access to the Soroban environment.
+    /// * `_install_params` - Unused; see above.
+    /// * `context_rule` - The context rule this policy is being attached to.
+    /// * `smart_account` - The smart account installing this policy.
+    ///
+    /// # Errors
+    ///
+    /// * [`PolicyError::RuleExpired`] - When the ledger sequence is already
+    ///   past the rule's validity window, so the installation could never
+    ///   permit anything.
+    /// * [`PolicyError::AlreadyInstalled`] - When this (smart account, context
+    ///   rule) already carries an installation. Re-installing would be the one
+    ///   way to reset the state a rule relies on, so it is refused rather than
+    ///   made idempotent.
     fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
         if e.ledger().sequence() > VALID_UNTIL_LEDGER {
@@ -246,6 +355,23 @@ impl Policy for GeneratedPolicy {
         }
     }
 
+    /// Removes this policy's own state for one context rule of one smart
+    /// account — the installation marker and the call count.
+    ///
+    /// Extends nothing on the way out: buying rent for entries being removed,
+    /// on behalf of an account detaching from this contract, is the one place
+    /// where the extension would be spent for nobody.
+    ///
+    /// # Arguments
+    ///
+    /// * `e` - Access to the Soroban environment.
+    /// * `context_rule` - The context rule this policy is being removed from.
+    /// * `smart_account` - The smart account uninstalling this policy.
+    ///
+    /// # Errors
+    ///
+    /// * [`PolicyError::NotInstalled`] - When this (smart account, context
+    ///   rule) carries no installation.
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
         let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);

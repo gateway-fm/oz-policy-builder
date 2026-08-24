@@ -252,6 +252,43 @@ targets = ["wasm32v1-none"]
     )
 }
 
+/// A doc comment in OpenZeppelin's prescribed shape.
+///
+/// `paragraphs` becomes the summary and any prose after it, then each non-empty section is
+/// emitted as a `# Heading` and a `*`-bullet list. Callers pass the sections in the order their
+/// conventions fix — `# Arguments` → `# Errors` → `# Events` → `# Notes` → `# Security Warning`,
+/// skipping what does not apply but never reordering — and an empty list drops its heading, which
+/// is what makes "skip what does not apply" a property of the data rather than of every call site.
+///
+/// Built rather than written out because an `# Errors` list is a function of the rule. A policy
+/// with no validity window can never raise `RuleExpired` and one with no call cap can never raise
+/// `CallCountExceeded`; a doc listing them regardless would be prose overclaiming its code, in the
+/// one artifact whose whole value is that its prose can be trusted against its behaviour.
+fn emit_doc(indent: &str, paragraphs: &[String], sections: &[(&str, Vec<String>)]) -> String {
+    let blank = format!("{indent}///\n");
+    let mut out = String::new();
+    for paragraph in paragraphs {
+        if !out.is_empty() {
+            out.push_str(&blank);
+        }
+        out.push_str(&render::wrap_comment(&format!("{indent}/// "), paragraph));
+    }
+    for (heading, bullets) in sections {
+        if bullets.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(&blank);
+        }
+        out.push_str(&format!("{indent}/// {heading}\n"));
+        out.push_str(&blank);
+        for bullet in bullets {
+            out.push_str(&render::wrap_comment_bullet(indent, bullet));
+        }
+    }
+    out
+}
+
 /// OpenZeppelin's own rustfmt configuration, shipped inside the generated crate.
 ///
 /// The option set is copied verbatim from `OpenZeppelin/stellar-contracts` at v0.7.2
@@ -512,10 +549,106 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     out.push('\n');
 
     // Error enum (stable numbering; mirrors the reference evaluator's deny reasons).
+    //
+    // Every variant is declared whatever the rule's shape, so a code means the same thing across
+    // artifacts — which is also why the per-entry-point `# Errors` lists below are built from the
+    // shape instead of copying this list: the enum is the vocabulary, not the set of reachable
+    // refusals for a given policy.
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "Every reason this policy can refuse an authorization, an install or an uninstall."
+                .to_string(),
+            "The numbering is the published deny-reason contract rather than a position in a \
+             range: a code identifies one refusal, an independently written reference evaluator \
+             asserts the same mapping, and every variant is declared in every generated policy \
+             whatever its rule's shape — so a reader can read a code the same way across \
+             artifacts."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str(
-        "#[contracterror]\n#[derive(Copy, Clone, Debug, PartialEq)]\n#[repr(u32)]\npub enum PolicyError {\n    ZeroSigners = 1,\n    PredicateUnsatisfied = 2,\n    SignerSetDiverged = 3,\n    TargetMismatch = 4,\n    FunctionNotAllowed = 5,\n    NoTupleMatched = 6,\n    CallCountExceeded = 7,\n    MissingState = 8,\n    RuleExpired = 9,\n    AlreadyInstalled = 10,\n    NotInstalled = 11,\n}\n\n",
+        "#[contracterror]\n#[derive(Copy, Clone, Debug, PartialEq)]\n#[repr(u32)]\npub enum PolicyError {\n",
     );
+    for (variant, code, doc) in [
+        (
+            "ZeroSigners",
+            1,
+            "No signer authenticated this authorization. The account defers signer validation \
+             to its policies, so an empty set has to be refused here.",
+        ),
+        (
+            "PredicateUnsatisfied",
+            2,
+            "The authenticated signers do not satisfy the rule's signer predicate.",
+        ),
+        (
+            "SignerSetDiverged",
+            3,
+            "The context rule's live signer set is no longer the one compiled in, so the grant \
+             a reader approved is not the grant being exercised.",
+        ),
+        (
+            "TargetMismatch",
+            4,
+            "The invoked contract is not the one this policy is scoped to.",
+        ),
+        (
+            "FunctionNotAllowed",
+            5,
+            "The invoked function is not one of the allowed calls, or the authorization is not \
+             a contract invocation at all.",
+        ),
+        (
+            "NoTupleMatched",
+            6,
+            "The arguments satisfy no allowed call tuple: arity, a constraint, or both.",
+        ),
+        (
+            "CallCountExceeded",
+            7,
+            "This installation has used every call its cap allows. The count never resets \
+             within an installation.",
+        ),
+        (
+            "MissingState",
+            8,
+            "State this policy owns for the (smart account, context rule) is absent. Missing \
+             state denies rather than reading as zero.",
+        ),
+        (
+            "RuleExpired",
+            9,
+            "The ledger is past the rule's validity window.",
+        ),
+        (
+            "AlreadyInstalled",
+            10,
+            "The policy is already installed for this (smart account, context rule).",
+        ),
+        (
+            "NotInstalled",
+            11,
+            "The policy is not installed for this (smart account, context rule).",
+        ),
+    ] {
+        out.push_str(&render::wrap_comment("    /// ", doc));
+        out.push_str(&format!("    {variant} = {code},\n"));
+    }
+    out.push_str("}\n\n");
 
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "Keys for the state this policy owns.".to_string(),
+            "Every variant is segregated by (smart account, context rule id), which is what lets \
+             one deployment serve any number of accounts without their installations observing \
+             each other."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str(
         "#[contracttype]\n#[derive(Clone, Debug)]\npub enum DataKey {\n    /// Installation marker, segregated by (smart account, context rule id).\n    Installed(Address, u32),\n",
     );
@@ -664,11 +797,120 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
 
     // The contract.
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "This rule, compiled to a policy contract.".to_string(),
+            "One deployment serves any number of smart accounts: everything the rule fixes is a \
+             constant in this file, and everything that varies per installation is keyed by \
+             (smart account, context rule id). There are no setters and no upgrade entry point, \
+             so reconfiguration is remove-and-reinstall — which is what makes the wasm hash a \
+             statement about behaviour rather than about a starting state."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str("#[contract]\npub struct GeneratedPolicy;\n\n");
     out.push_str("#[contractimpl]\nimpl Policy for GeneratedPolicy {\n");
+    out.push_str(&render::wrap_comment(
+        "    /// ",
+        "Installation parameters. A generated policy has none — every limit is compiled in — so \
+         this is a placeholder the smart account's `install` call has to pass something for.",
+    ));
     out.push_str("    type AccountParams = u32;\n\n");
 
     // enforce()
+    //
+    // The `# Errors` list is assembled from the same conditions that decide which checks are
+    // emitted, so a check and its documentation cannot get out of step: adding a refusal to the
+    // body without listing it here, or listing one the body cannot raise, would take a second
+    // edit in the same expression rather than in a distant string.
+    let mut enforce_errors = vec![
+        "[`PolicyError::MissingState`] - When no installation marker exists for this smart \
+         account and context rule. Missing state denies rather than reading as zero."
+            .to_string(),
+    ];
+    if rule.valid_until_ledger.is_some() {
+        enforce_errors.push(
+            "[`PolicyError::RuleExpired`] - When the ledger sequence is past the rule's \
+             validity window."
+                .to_string(),
+        );
+    }
+    enforce_errors.push(
+        "[`PolicyError::ZeroSigners`] - When no signer authenticated this authorization."
+            .to_string(),
+    );
+    enforce_errors.push(
+        "[`PolicyError::PredicateUnsatisfied`] - When the authenticated signers do not satisfy \
+         the rule's signer predicate."
+            .to_string(),
+    );
+    if rule.strict_signer_set && !dynamic {
+        enforce_errors.push(
+            "[`PolicyError::SignerSetDiverged`] - When the context rule's live signer set is no \
+             longer the one compiled in."
+                .to_string(),
+        );
+    }
+    enforce_errors.push(
+        "[`PolicyError::FunctionNotAllowed`] - When the authorization is not a contract \
+         invocation, or invokes a function outside the allowed calls."
+            .to_string(),
+    );
+    enforce_errors.push(
+        "[`PolicyError::TargetMismatch`] - When the invoked contract is not the one this policy \
+         is scoped to."
+            .to_string(),
+    );
+    enforce_errors.push(
+        "[`PolicyError::NoTupleMatched`] - When the arguments satisfy no allowed call tuple."
+            .to_string(),
+    );
+    if has_state {
+        enforce_errors.push(
+            "[`PolicyError::CallCountExceeded`] - When this installation has already used every \
+             call its cap allows."
+                .to_string(),
+        );
+    }
+    let mut enforce_notes = vec![
+        "Refusals are ordered: the code a caller sees is the first condition that failed, in the \
+         order the crate header documents, not an arbitrary one of several."
+            .to_string(),
+    ];
+    if has_state {
+        enforce_notes.push(
+            "The call counter is advanced only on the permitting path, and a panic anywhere later \
+             in the invocation reverts that increment along with everything else."
+                .to_string(),
+        );
+    }
+    out.push_str(&emit_doc(
+        "    ",
+        &[
+            "Enforces this policy for one authorization attempt.".to_string(),
+            "Returning is the permit; every refusal is a panic carrying the code that names it."
+                .to_string(),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`context` - The authorization context being enforced.".to_string(),
+                    "`authenticated_signers` - The signers the smart account has already \
+                     verified. The account defers signer validation to its policies, so this \
+                     list is checked here rather than trusted."
+                        .to_string(),
+                    "`context_rule` - The context rule this policy is attached to.".to_string(),
+                    "`smart_account` - The smart account being authorized.".to_string(),
+                ],
+            ),
+            ("# Errors", enforce_errors),
+            ("# Notes", enforce_notes),
+        ],
+    ));
     out.push_str(
         "    fn enforce(\n        e: &Env,\n        context: Context,\n        authenticated_signers: Vec<Signer>,\n        context_rule: ContextRule,\n        smart_account: Address,\n    ) {\n        smart_account.require_auth();\n\n",
     );
@@ -818,7 +1060,87 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // `install` extends; `uninstall` deliberately does not. Extending on the way out would buy
     // rent for an entry being removed and for a contract the account is detaching from — and if
     // the code were archived, the call could not be executing in the first place.
+    let mut install_errors = Vec::new();
+    if rule.valid_until_ledger.is_some() {
+        install_errors.push(
+            "[`PolicyError::RuleExpired`] - When the ledger sequence is already past the rule's \
+             validity window, so the installation could never permit anything."
+                .to_string(),
+        );
+    }
+    install_errors.push(
+        "[`PolicyError::AlreadyInstalled`] - When this (smart account, context rule) already \
+         carries an installation. Re-installing would be the one way to reset the state a rule \
+         relies on, so it is refused rather than made idempotent."
+            .to_string(),
+    );
+    let install_doc = emit_doc(
+        "    ",
+        &[
+            "Installs this policy for one context rule of one smart account.".to_string(),
+            format!(
+                "Writes the installation marker{} and extends the lifetime of the entries this \
+                 policy depends on. `_install_params` is accepted and ignored: every limit is \
+                 compiled in, so there is nothing an installation could configure.",
+                if has_state {
+                    " and the call counter"
+                } else {
+                    ""
+                }
+            ),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`_install_params` - Unused; see above.".to_string(),
+                    "`context_rule` - The context rule this policy is being attached to."
+                        .to_string(),
+                    "`smart_account` - The smart account installing this policy.".to_string(),
+                ],
+            ),
+            ("# Errors", install_errors),
+        ],
+    );
+    let uninstall_doc = emit_doc(
+        "    ",
+        &[
+            format!(
+                "Removes this policy's own state for one context rule of one smart account{}.",
+                if has_state {
+                    " — the installation marker and the call count"
+                } else {
+                    ""
+                }
+            ),
+            "Extends nothing on the way out: buying rent for entries being removed, on behalf of \
+             an account detaching from this contract, is the one place where the extension would \
+             be spent for nobody."
+                .to_string(),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`context_rule` - The context rule this policy is being removed from."
+                        .to_string(),
+                    "`smart_account` - The smart account uninstalling this policy.".to_string(),
+                ],
+            ),
+            (
+                "# Errors",
+                vec![
+                    "[`PolicyError::NotInstalled`] - When this (smart account, context rule) \
+                     carries no installation."
+                        .to_string(),
+                ],
+            ),
+        ],
+    );
     if has_state {
+        out.push_str(&install_doc);
         out.push_str(
             "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
         );
@@ -831,10 +1153,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
         );
         out.push_str(&ttl_extension_block(true));
+        out.push_str("    }\n\n");
+        out.push_str(&uninstall_doc);
         out.push_str(
-            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     } else {
+        out.push_str(&install_doc);
         out.push_str(
             "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
         );
@@ -847,8 +1172,10 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
         );
         out.push_str(&ttl_extension_block(false));
+        out.push_str("    }\n\n");
+        out.push_str(&uninstall_doc);
         out.push_str(
-            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     }
     out.push_str("}\n");
@@ -1158,7 +1485,7 @@ mod tests {
         }
 
         /// Build a spec by replacing only the wasm-relevant fields of the fixture rule.
-        fn spec_with(
+        pub(super) fn spec_with(
             calls: Vec<AllowedCall>,
             predicate: (PredicateKind, bool),
             valid_until: Option<u32>,
@@ -1914,6 +2241,249 @@ mod tests {
             !lib.contains(&format!("{}i128", i128::MIN)),
             "the overflowing positive literal must never be emitted as a source token"
         );
+    }
+
+    /// Every public item carries a doc comment, and every entry point an `# Errors` section.
+    ///
+    /// OpenZeppelin's conventions ask for a one-line summary on every public item and an
+    /// `# Errors` section on every public function that can panic; ours panic several ways each.
+    /// The asymmetry this removes is worth naming: the private `ttl_target` helper carried three
+    /// paragraphs while `enforce`, `install` and `uninstall` — the whole callable surface of the
+    /// artifact — carried none.
+    ///
+    /// Checked through `syn` rather than by searching for `///`, because the property is about
+    /// items and not about text: a substring search cannot tell a doc comment attached to the
+    /// enum from one attached to its first variant, and the variants are half of what was
+    /// missing. `syn` is already a dev-dependency here for the parse check.
+    #[test]
+    fn every_public_item_of_the_generated_crate_is_documented() {
+        fn documented(attrs: &[syn::Attribute]) -> bool {
+            attrs.iter().any(|attr| attr.path().is_ident("doc"))
+        }
+        fn public(vis: &syn::Visibility) -> bool {
+            matches!(vis, syn::Visibility::Public(_))
+        }
+
+        let mut stateless = golden_spec().spec().clone();
+        stateless.rules[0].state.clear();
+        stateless.rules[0].valid_until = None;
+        let stateless = stateless
+            .validate()
+            .expect("a stateless rule with no window is a valid spec");
+
+        for (label, spec) in [
+            ("golden transfer", golden_spec()),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+            ("stateless, no window", stateless),
+        ] {
+            let source = generate(&spec, 0, &Pins::default())
+                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
+                .files["src/lib.rs"]
+                .clone();
+            let parsed = syn::parse_file(&source).expect("emitted source must parse");
+
+            let mut undocumented: Vec<String> = Vec::new();
+            let mut entry_points: Vec<String> = Vec::new();
+            for item in &parsed.items {
+                match item {
+                    syn::Item::Enum(item) if public(&item.vis) => {
+                        if !documented(&item.attrs) {
+                            undocumented.push(format!("enum {}", item.ident));
+                        }
+                        for variant in &item.variants {
+                            if !documented(&variant.attrs) {
+                                undocumented
+                                    .push(format!("variant {}::{}", item.ident, variant.ident));
+                            }
+                        }
+                    }
+                    syn::Item::Struct(item) if public(&item.vis) => {
+                        if !documented(&item.attrs) {
+                            undocumented.push(format!("struct {}", item.ident));
+                        }
+                    }
+                    // Trait-impl members carry no `pub` of their own — they are as public as the
+                    // trait — so visibility cannot be the filter here. This is the artifact's
+                    // callable surface, which is exactly why it is checked.
+                    syn::Item::Impl(item) => {
+                        for member in &item.items {
+                            let (kind, ident, attrs) = match member {
+                                syn::ImplItem::Fn(member) => {
+                                    ("fn", member.sig.ident.to_string(), member.attrs.clone())
+                                }
+                                syn::ImplItem::Type(member) => {
+                                    ("type", member.ident.to_string(), member.attrs.clone())
+                                }
+                                _ => continue,
+                            };
+                            if !documented(&attrs) {
+                                undocumented.push(format!("{kind} {ident}"));
+                            }
+                            if kind == "fn" {
+                                entry_points.push(ident);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                undocumented.is_empty(),
+                "{label}: public items without a doc comment: {undocumented:?}"
+            );
+            // Non-vacuity: an empty walk would also report nothing undocumented.
+            entry_points.sort();
+            assert_eq!(
+                entry_points,
+                vec!["enforce", "install", "uninstall"],
+                "{label}: the walk did not reach the three entry points"
+            );
+
+            for entry in ["enforce", "install", "uninstall"] {
+                let doc = docs_of(&source, entry);
+                assert!(
+                    doc.contains("# Errors"),
+                    "{label}: `{entry}` has no `# Errors` section:\n{doc}"
+                );
+                assert!(
+                    doc.contains("# Arguments"),
+                    "{label}: `{entry}` has no `# Arguments` section:\n{doc}"
+                );
+                // Their section order is fixed: Arguments before Errors, never reordered.
+                assert!(
+                    doc.find("# Arguments") < doc.find("# Errors"),
+                    "{label}: `{entry}` lists its sections out of order:\n{doc}"
+                );
+            }
+        }
+    }
+
+    /// The doc comment immediately above `fn <name>`, as one string.
+    ///
+    /// Read off the emitted text rather than through `syn`, because what is under test is what a
+    /// reader sees — the rendered section headings and bullets, not a token stream.
+    fn docs_of(source: &str, name: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with(&format!("fn {name}(")))
+            .unwrap_or_else(|| panic!("no `fn {name}` in the emitted source"));
+        let mut start = at;
+        while start > 0 && lines[start - 1].trim_start().starts_with("///") {
+            start -= 1;
+        }
+        lines[start..at].join("\n")
+    }
+
+    /// An `# Errors` list names every refusal the emitted body can raise, and no others.
+    ///
+    /// This is the property that makes the section worth having in a generated artifact. The enum
+    /// declares all eleven codes whatever the rule's shape, so copying that list into every
+    /// entry point's docs would be easy and would be wrong: a rule with no validity window can
+    /// never raise `RuleExpired`, and one with no call cap can never raise `CallCountExceeded`.
+    ///
+    /// Checked in both directions against the body itself — every `panic_with_error!` reachable
+    /// from the function is listed, and every listed error appears in one — so the test reads the
+    /// code rather than a second copy of the author's intent.
+    #[test]
+    fn each_entry_point_documents_exactly_the_refusals_its_body_can_raise() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            for entry in ["enforce", "install", "uninstall"] {
+                let doc = docs_of(&source, entry);
+                let listed: Vec<String> = doc
+                    .lines()
+                    .filter_map(|line| line.split("[`PolicyError::").nth(1))
+                    .filter_map(|rest| rest.split('`').next())
+                    .map(str::to_string)
+                    .collect();
+                let raised: Vec<String> = body_of(&source, entry)
+                    .split("panic_with_error!(e, PolicyError::")
+                    .skip(1)
+                    .filter_map(|rest| rest.split(')').next())
+                    .map(str::to_string)
+                    .collect();
+
+                for error in &raised {
+                    assert!(
+                        listed.contains(error),
+                        "{shape}: `{entry}` can raise {error} and does not document it: \
+                         {listed:?}"
+                    );
+                }
+                for error in &listed {
+                    assert!(
+                        raised.contains(error),
+                        "{shape}: `{entry}` documents {error}, which its body cannot raise: \
+                         {raised:?}"
+                    );
+                }
+                assert!(
+                    !raised.is_empty(),
+                    "{shape}: no refusal found in `{entry}`, so this proves nothing"
+                );
+            }
+
+            // The shape-dependent pair, stated directly: these are the two errors a copied list
+            // would carry into a policy that cannot raise them.
+            let enforce_doc = docs_of(&source, "enforce");
+            assert_eq!(
+                enforce_doc.contains("PolicyError::RuleExpired"),
+                valid_until.is_some(),
+                "{shape}: `RuleExpired` is documented iff the rule has a window"
+            );
+            assert_eq!(
+                enforce_doc.contains("PolicyError::CallCountExceeded"),
+                max_calls.is_some(),
+                "{shape}: `CallCountExceeded` is documented iff the rule caps calls"
+            );
+        }
+    }
+
+    /// The body of `fn <name>`, from its signature to the line that closes it.
+    ///
+    /// Brace counting rather than `syn`, because the doc list above is compared against the
+    /// emitted `panic_with_error!` calls and both should be read from the same text.
+    fn body_of(source: &str, name: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with(&format!("fn {name}(")))
+            .unwrap_or_else(|| panic!("no `fn {name}` in the emitted source"));
+        let mut depth = 0i32;
+        let mut end = at;
+        let mut opened = false;
+        for (offset, line) in lines[at..].iter().enumerate() {
+            depth += line.matches('{').count() as i32;
+            depth -= line.matches('}').count() as i32;
+            if line.contains('{') {
+                opened = true;
+            }
+            if opened && depth <= 0 {
+                end = at + offset;
+                break;
+            }
+        }
+        lines[at..=end].join("\n")
     }
 
     /// `wrap_comments` bounds a doc comment and an ordinary comment from different columns.

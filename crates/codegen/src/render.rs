@@ -86,6 +86,16 @@ pub fn comment_is_overlong(line: &str) -> bool {
     line.chars().count() > comment_budget(line)
 }
 
+/// One `* …` bullet of an `# Errors`/`# Arguments` list, wrapped as rustfmt wraps one.
+///
+/// A bullet is its own paragraph — rustfmt never runs two items together — and its
+/// continuation lines are indented two columns past the marker, which is why the two prefixes
+/// are separate arguments. Measured on the pinned toolchain's rustfmt, at both module level and
+/// inside an `impl`.
+pub fn wrap_comment_bullet(indent: &str, text: &str) -> String {
+    wrap_comment_item(&format!("{indent}/// * "), &format!("{indent}///   "), text)
+}
+
 fn wrap_comment_item(first: &str, continuation: &str, text: &str) -> String {
     let mut out = String::new();
     let mut line = String::new();
