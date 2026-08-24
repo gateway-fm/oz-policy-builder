@@ -34,13 +34,11 @@ use std::fmt;
 /// number for calls and arrays any more: a call or an array literal stays on one line whenever
 /// the whole line fits, and `ARRAY_WIDTH` went with the setting that gave it a separate value.
 ///
-/// `COMMENT_WIDTH` is `comment_width`, which `wrap_comments = true` makes load-bearing.
-/// **Measured, and not what the name suggests**: rustfmt applies it to the comment *from its
-/// `//` onward*, ignoring the indentation in front — so an 88-column line at indent 8 is left
-/// alone while an 81-column line at indent 0 is rewritten. Probed against the pinned
-/// toolchain's rustfmt across indents 0, 4, 8 and 12 rather than read off the option's
-/// description. A comment whose prefix-to-end width is within this budget is a fixed point;
-/// exceed it anywhere in a paragraph and rustfmt re-flows the whole paragraph.
+/// `COMMENT_WIDTH` is `comment_width`, which `wrap_comments = true` makes load-bearing. What it
+/// is measured *from* differs between doc comments and ordinary ones — see [`comment_budget`],
+/// which is where that was pinned down against the pinned toolchain's rustfmt. A comment inside
+/// its budget is a fixed point; exceed it anywhere in a paragraph and rustfmt re-flows the whole
+/// paragraph.
 pub const MAX_WIDTH: usize = 100;
 pub const COMMENT_WIDTH: usize = 80;
 
@@ -52,20 +50,55 @@ pub const COMMENT_WIDTH: usize = 80;
 /// budget still gets its own line, since rustfmt does not break inside a word either. A 64-hex
 /// digest is exactly that case, which is why the header's hash lands on a line of its own.
 pub fn wrap_comment(prefix: &str, text: &str) -> String {
-    let marker_offset = prefix.len() - prefix.trim_start().len();
-    let budget = COMMENT_WIDTH + marker_offset;
+    wrap_comment_item(prefix, prefix, text)
+}
+
+/// The greatest **total** line width rustfmt leaves alone for a comment starting with `line`.
+///
+/// Two rules, not one, and the difference is not something the option's name would suggest:
+///
+///   * a doc comment (`///`, `//!`) is bounded by `comment_width` measured from column zero, so
+///     its indentation is spent out of the same budget as its text;
+///   * an ordinary `//` comment is bounded by `comment_width` measured from its own marker, so
+///     the indentation costs it nothing.
+///
+/// The asymmetry is real and load-bearing: at indent 8 a `//` comment may run to 88 columns while
+/// a `///` comment on the same line may not pass 80. Both numbers were measured against the
+/// pinned toolchain's rustfmt across indents 0, 4 and 8 with single-character words, so the
+/// boundary is exact rather than inferred from where some sentence happened to break. Getting the
+/// doc-comment rule backwards is the specific mistake this function exists to prevent — it
+/// produces a generated crate that our own width test passes and `cargo fmt --check` rewrites.
+fn comment_budget(line: &str) -> usize {
+    let marker = line.trim_start();
+    let indent = line.len() - marker.len();
+    if marker.starts_with("///") || marker.starts_with("//!") {
+        COMMENT_WIDTH
+    } else {
+        COMMENT_WIDTH + indent
+    }
+}
+
+/// True when `line` is a comment rustfmt would have to re-flow.
+///
+/// The one place the two budgets above are applied to finished text; emission and the width test
+/// both read it, so a rule cannot hold in one and not the other.
+pub fn comment_is_overlong(line: &str) -> bool {
+    line.chars().count() > comment_budget(line)
+}
+
+fn wrap_comment_item(first: &str, continuation: &str, text: &str) -> String {
     let mut out = String::new();
     let mut line = String::new();
     for word in text.split_whitespace() {
         let candidate = if line.is_empty() {
-            format!("{prefix}{word}")
+            format!("{first}{word}")
         } else {
             format!("{line} {word}")
         };
-        if !line.is_empty() && candidate.chars().count() > budget {
+        if !line.is_empty() && comment_is_overlong(&candidate) {
             out.push_str(&line);
             out.push('\n');
-            line = format!("{prefix}{word}");
+            line = format!("{continuation}{word}");
         } else {
             line = candidate;
         }

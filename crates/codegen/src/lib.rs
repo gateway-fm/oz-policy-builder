@@ -1479,12 +1479,11 @@ mod tests {
         /// second copy of either number here would let the two drift, and the drift would show up
         /// as a passing test over source `cargo fmt --check` rejects.
         ///
-        /// Comments are **included** now, and measured differently from code, because the shipped
-        /// `rustfmt.toml` sets `wrap_comments = true`: a comment is re-flowed on `comment_width`
-        /// counted from its `//`, ignoring the indentation in front of it, while code is bounded
-        /// by `max_width` counted from the start of the line. Two rules, so the reported column
-        /// count is the one that rule uses — a comment reported at 74 columns is a comment 74
-        /// wide from its marker, whatever its indentation.
+        /// Comments are **included** now, because the shipped `rustfmt.toml` sets
+        /// `wrap_comments = true`. Their budget is not `max_width`, and it is not one number
+        /// either: [`render::comment_is_overlong`] holds both rules, and this reads it rather than
+        /// restating them, so the emitter and the test cannot disagree about where a comment ends.
+        /// The reported column count is always the whole line, whichever budget rejected it.
         ///
         /// This closes the hole that made the previous exclusion necessary: the header carries a
         /// template-family identifier and a 64-character digest, neither of whose width is ours
@@ -1493,20 +1492,17 @@ mod tests {
         /// re-flow, so the condition is exact rather than approximate: nothing over the budget
         /// means nothing to re-flow, and rustfmt never joins lines it does not have to.
         pub(super) fn overlong_lines(source: &str) -> Vec<(usize, usize)> {
-            use render::{COMMENT_WIDTH, MAX_WIDTH};
             source
                 .lines()
                 .enumerate()
-                .map(|(index, line)| {
-                    let comment = line.trim_start();
-                    if comment.starts_with("//") {
-                        (index + 1, comment.chars().count(), COMMENT_WIDTH)
+                .filter(|(_, line)| {
+                    if line.trim_start().starts_with("//") {
+                        render::comment_is_overlong(line)
                     } else {
-                        (index + 1, line.chars().count(), MAX_WIDTH)
+                        line.chars().count() > render::MAX_WIDTH
                     }
                 })
-                .filter(|(_, columns, budget)| columns > budget)
-                .map(|(line, columns, _)| (line, columns))
+                .map(|(index, line)| (index + 1, line.chars().count()))
                 .collect()
         }
 
@@ -1918,6 +1914,89 @@ mod tests {
             !lib.contains(&format!("{}i128", i128::MIN)),
             "the overflowing positive literal must never be emitted as a source token"
         );
+    }
+
+    /// `wrap_comments` bounds a doc comment and an ordinary comment from different columns.
+    ///
+    /// This is the one rule in the emitted layout that no amount of reading the option's
+    /// description would produce, and getting it backwards is invisible in exactly the wrong
+    /// direction: emission would look right, this file's own width test would pass, and
+    /// `cargo fmt --check` on the shipped artifact would rewrite it.
+    ///
+    /// Measured against the pinned toolchain's rustfmt with single-character words, so each
+    /// boundary below is the exact last accepted width rather than wherever some sentence
+    /// happened to break:
+    ///
+    ///   * `///` and `//!` are bounded by `comment_width` from **column zero** — 80 columns at
+    ///     indent 0, and still 80 at indent 4 or 8, so the indentation is spent out of the same
+    ///     budget as the text;
+    ///   * `//` is bounded by `comment_width` from **its own marker** — 84 columns at indent 4,
+    ///     88 at indent 8 — so the indentation costs it nothing.
+    ///
+    /// The pair at indent 8 is the whole point: 88 columns is a fixed point for `//` and eight
+    /// columns too wide for `///`.
+    ///
+    /// The boundary is asserted through [`render::comment_is_overlong`] at width B and B+1 rather
+    /// than by reading the widest line the wrapper produces. That reading is parity-dependent —
+    /// with one-character words a `///` line at indent 0 can only land on odd widths, so it stops
+    /// at 79 under a budget of 80 — and a test that expected 79 would be pinning the test's own
+    /// word list instead of rustfmt's rule.
+    #[test]
+    fn a_doc_comment_and_a_plain_comment_are_bounded_from_different_columns() {
+        for (indent, marker, budget) in [
+            ("", "///", 80usize),
+            ("", "//!", 80),
+            ("    ", "///", 80),
+            ("        ", "///", 80),
+            ("    ", "//", 84),
+            ("        ", "//", 88),
+        ] {
+            let prefix = format!("{indent}{marker} ");
+            let at = |width: usize| format!("{prefix}{}", "a".repeat(width - prefix.len()));
+            assert!(
+                !render::comment_is_overlong(&at(budget)),
+                "{marker} at indent {}: {budget} columns must be a fixed point",
+                indent.len()
+            );
+            assert!(
+                render::comment_is_overlong(&at(budget + 1)),
+                "{marker} at indent {}: {} columns must not be",
+                indent.len(),
+                budget + 1
+            );
+
+            // The wrapper's output is a fixed point *and* greedily filled: every line fits, and
+            // no line could have taken the next line's first word. Together those are exactly
+            // what rustfmt leaves alone, so this is the property rather than a proxy for it.
+            let wrapped = render::wrap_comment(&prefix, &"a ".repeat(120));
+            let lines: Vec<&str> = wrapped.lines().collect();
+            assert!(
+                lines.len() > 1,
+                "{marker} at indent {} did not wrap at all",
+                indent.len()
+            );
+            for (index, line) in lines.iter().enumerate() {
+                assert!(
+                    !render::comment_is_overlong(line),
+                    "wrapped line {} is over budget: {line:?}",
+                    index + 1
+                );
+                if let Some(next) = lines.get(index + 1) {
+                    let first_word = next
+                        .trim_start()
+                        .trim_start_matches('/')
+                        .split_whitespace()
+                        .next()
+                        .expect("a wrapped line carries at least one word");
+                    assert!(
+                        render::comment_is_overlong(&format!("{line} {first_word}")),
+                        "line {} left room for {first_word:?}, so the fill is not greedy: \
+                         {line:?}",
+                        index + 1
+                    );
+                }
+            }
+        }
     }
 
     /// The import block is one grouped `use` per crate, filled the way rustfmt fills one.
