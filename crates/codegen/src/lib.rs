@@ -417,8 +417,19 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 publish = false
 
+# Every package in OpenZeppelin's workspace declares this, so a generated crate dropped into it
+# is shaped like the rest. Cargo ignores `package.metadata`, and the key is inert in a standalone
+# crate, which is what makes carrying it free.
+[package.metadata.stellar]
+cargo_inherit = true
+
+# `crate-type` keeps `lib` alongside `cdylib`, which their example policies do not: the
+# in-process differential suite links this crate directly, so `lib` is load-bearing here in a way
+# it is not for them. `doctest = false` is theirs, and applies for the same reason — a contract
+# crate has no doctests to run.
 [lib]
 crate-type = ["lib", "cdylib"]
+doctest = false
 
 [dependencies]
 soroban-sdk = "={sdk}"
@@ -2737,6 +2748,18 @@ mod tests {
         let manifest = &g.files["Cargo.toml"];
         assert!(manifest.contains("soroban-sdk = \"=26.1.0\""));
         assert!(manifest.contains("stellar-accounts = \"=0.7.2\""));
+        // The two declarations OpenZeppelin's packages all carry. `doctest = false` sits under
+        // `[lib]`, so the assertion pins the block it belongs to rather than the bare line —
+        // `doctest` is a valid key in `[dev-dependencies]`-adjacent tables too, and a stray one
+        // elsewhere in the file would satisfy a substring search while changing nothing.
+        assert!(
+            manifest.contains("[package.metadata.stellar]\ncargo_inherit = true\n"),
+            "the manifest must declare `[package.metadata.stellar] cargo_inherit`:\n{manifest}"
+        );
+        assert!(
+            manifest.contains("[lib]\ncrate-type = [\"lib\", \"cdylib\"]\ndoctest = false\n"),
+            "`[lib]` must keep the load-bearing `lib` and declare `doctest = false`:\n{manifest}"
+        );
     }
 
     /// The generated crate ships OpenZeppelin's rustfmt configuration, option for option.

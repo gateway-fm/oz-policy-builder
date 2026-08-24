@@ -6,8 +6,19 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 publish = false
 
+# Every package in OpenZeppelin's workspace declares this, so a generated crate dropped into it
+# is shaped like the rest. Cargo ignores `package.metadata`, and the key is inert in a standalone
+# crate, which is what makes carrying it free.
+[package.metadata.stellar]
+cargo_inherit = true
+
+# `crate-type` keeps `lib` alongside `cdylib`, which their example policies do not: the
+# in-process differential suite links this crate directly, so `lib` is load-bearing here in a way
+# it is not for them. `doctest = false` is theirs, and applies for the same reason — a contract
+# crate has no doctests to run.
 [lib]
 crate-type = ["lib", "cdylib"]
+doctest = false
 
 [dependencies]
 soroban-sdk = "=26.1.0"
