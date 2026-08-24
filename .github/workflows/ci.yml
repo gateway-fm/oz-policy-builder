@@ -133,6 +133,26 @@ jobs:
         working-directory: contracts
         run: cargo clippy --all-targets -- -D warnings
 
+      # The generated crates, which the step above does not reach for a reason that is easy to
+      # miss: clippy does not lint dependencies. `contracts` excludes both crates, so
+      # golden-transfer-policy enters that invocation only as a path dependency of the
+      # differential suite — compiled, never linted — and soroswap-swap-policy does not enter it
+      # at all, because nothing depends on it. So the two artifacts this project actually ships
+      # were the only Rust in the tree no clippy invocation covered.
+      #
+      # What was behind the hole was not hypothetical. The emitter wrote
+      # `authenticated_signers.len() == 0` — `clippy::len_zero`, warn-by-default, therefore a
+      # `-D warnings` failure — into every policy it has ever generated, and OpenZeppelin's
+      # conventions rule out silencing it, so there was nothing to do but fix the emitter.
+      #
+      # `--all-targets` rather than a bare invocation: it compiles the test target too, which is
+      # what makes this also the standing check that a generated crate's committed lockfile is a
+      # resolution `soroban-sdk`'s `testutils` can build. It was not, until this branch.
+      - name: clippy (the two generated crates, which linting a dependency does not cover)
+        run: |
+          ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
+          ( cd contracts/soroswap-swap-policy && cargo clippy --all-targets -- -D warnings )
+
       # The same hole as the step above, left open when clippy was extended to two workspaces
       # and fmt was not: the host job's `cargo fmt --all --check` cannot reach here either.
       # 30 differences had accumulated behind it, and 4 of them were in a *generated* crate —
