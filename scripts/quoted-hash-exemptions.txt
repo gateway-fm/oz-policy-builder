@@ -35,4 +35,4 @@
 # a wasm hash quoted in prose is worth reading with suspicion.
 b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golden policy under CLI 27.0.0, on the golden source as it stood when the pair was measured — a superseded source, kept because the pair is evidence about the CLI rather than about today's artifact
 90792361630c2bc7d5cbaa5f3b217a59cf7fcef0caa396ef380b3313dd794386|wasm-hash|the same source under CLI 27.1.0, kept as the evidence that the CLI alone moves the hash
-5c54d021284c492ee14f527807f649196c316dc795d0bbda794dde68e4e89367|wasm-hash|golden policy under the pinned rustc 1.91.1 and CLI 27.0.0, re-measured after the OpenZeppelin code-quality conformance pass moved the emission; quoted abbreviated by PROGRESS.md, recorded here at full length
+51f7bc4ce931405f5f3becdc381b2faf558098655fd2ab6621b3f161c4fcce37|wasm-hash|golden policy under the pinned rustc 1.91.1 and CLI 27.0.0, re-measured after the OpenZeppelin code-quality conformance pass moved the emission; quoted abbreviated by PROGRESS.md, recorded here at full length

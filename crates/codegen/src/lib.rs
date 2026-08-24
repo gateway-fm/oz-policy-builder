@@ -183,7 +183,9 @@ pub fn generate(
     files.insert("Cargo.toml".to_string(), emit_cargo_toml(&crate_name, pins));
     files.insert("rust-toolchain.toml".to_string(), emit_rust_toolchain(pins));
     files.insert("rustfmt.toml".to_string(), emit_rustfmt_toml());
-    files.insert("src/lib.rs".to_string(), emit_lib(&render_rule, &hash));
+    let (crate_root, contract) = emit_lib(&render_rule, &hash);
+    files.insert("src/lib.rs".to_string(), crate_root);
+    files.insert("src/contract.rs".to_string(), contract);
 
     let generated_bytes = files.values().try_fold(0usize, |total, body| {
         total
@@ -500,7 +502,7 @@ lto = true
 /// Takes a [`RenderRule`], never a `RuleSpec`: every value here has already been through its
 /// validating constructor, so no raw spec string is in scope to interpolate (§4.4 rendering
 /// safety). Emission is infallible for a well-formed `RenderRule`.
-fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
+fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     let template_family = &rule.template_family;
     let has_state = rule.has_state();
     let has_scval = rule.has_scval();
@@ -558,7 +560,29 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             out.push_str(&render::wrap_comment("//! ", &paragraph));
         }
     }
-    out.push_str("#![no_std]\n\n");
+    // The crate root ends here, and the contract goes in a module of its own. That is the shape
+    // OpenZeppelin's example policies have — `#![no_std]` and a `mod contract;`, with the contract
+    // in `src/contract.rs` — and the layout rule their checklist states for an example crate.
+    //
+    // `pub mod`, not `mod`. Theirs are `cdylib`-only, so nothing needs to name the types from
+    // outside; ours also builds as a `lib` for the in-process differential suite, which imports
+    // `PolicyStorageKey` and the contract type. `pub mod` keeps them reachable and keeps the crate
+    // root to declarations alone, which is the other half of their rule.
+    //
+    // Their example roots also carry `#![allow(dead_code)]`. Ours must not: a suppression is a
+    // violation of their own lint rule, and this emitter goes to some length to emit no dead code
+    // — `unbalanced_constants` exists to prove a constant is never emitted without its use site —
+    // so the attribute would hide the very thing that test checks for.
+    out.push_str("#![no_std]\n\npub mod contract;\n");
+    let crate_root = out;
+
+    let mut out = String::new();
+    out.push_str(&render::wrap_comment(
+        "//! ",
+        "The compiled rule. Its guarantees, its check order and the hash of the codegen input it \
+         came from are stated in the crate root.",
+    ));
+    out.push('\n');
 
     // Imports (conditional to keep the generated crate warning-free).
     //
@@ -1501,12 +1525,61 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     out.push_str(&section("LOW-LEVEL HELPERS"));
     out.push_str(&helpers);
 
-    out
+    (crate_root, out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every emitted Rust file, joined for searching.
+    ///
+    /// Emission produces two source files — a crate root carrying the header and the module
+    /// declaration, and `src/contract.rs` carrying the contract — so a test that read
+    /// `files["src/lib.rs"]` would be asking about the header alone. Joined rather than picked
+    /// apart because almost every assertion here is about *what was emitted* and not about which
+    /// file it landed in; the few that care name the file directly, and anything that parses the
+    /// source has to do so per file, since two sets of inner attributes cannot share one file.
+    fn emitted_rust(generated: &GeneratedCrate) -> String {
+        rust_files(generated)
+            .into_iter()
+            .map(|(_, body)| body)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The emitted Rust files in path order, as `(path, contents)`.
+    fn rust_files(generated: &GeneratedCrate) -> Vec<(String, String)> {
+        let files: Vec<(String, String)> = generated
+            .files
+            .iter()
+            .filter(|(path, _)| path.ends_with(".rs"))
+            .map(|(path, body)| (path.clone(), body.clone()))
+            .collect();
+        assert_eq!(
+            files
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/contract.rs", "src/lib.rs"],
+            "the emitted source file set changed; these helpers decide what every test reads"
+        );
+        files
+    }
+
+    /// Emission for `spec`, joined for searching. The shape most tests want.
+    fn emitted_for(spec: &ValidatedSpec) -> String {
+        emitted_rust(&generate(spec, 0, &Pins::default()).expect("the spec must generate"))
+    }
+
+    /// Every emitted file must parse as Rust — checked per file, because each carries its own
+    /// inner attributes and two sets of them cannot share one parse.
+    fn each_file_parses(generated: &GeneratedCrate) {
+        for (path, body) in rust_files(generated) {
+            syn::parse_file(&body)
+                .unwrap_or_else(|error| panic!("generated {path} must parse: {error}\n{body}"));
+        }
+    }
     use ozpb_synthesizer::fixtures::{golden_delegate_strkey, golden_spec};
 
     // --- rendering safety (§4.4: untrusted values never reach source fragments) -----------
@@ -1648,7 +1721,7 @@ mod tests {
                 ozpb_synthesizer::walkthroughs::blend_claim_spec(),
             ),
         ] {
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
             let mut rest = source.as_str();
             let mut literals = 0usize;
             while let Some(open) = rest.find('"') {
@@ -1859,10 +1932,10 @@ mod tests {
                     false,
                 )
                 .unwrap_or_else(|| panic!("spec must validate for {label}"));
-                let source = generate(&spec, 0, &Pins::default())
-                    .unwrap_or_else(|e| panic!("codegen refused {label}: {e}"))
-                    .files["src/lib.rs"]
-                    .clone();
+                let source = emitted_rust(
+                    &generate(&spec, 0, &Pins::default())
+                        .unwrap_or_else(|e| panic!("codegen refused {label}: {e}")),
+                );
 
                 // The window clamp is emitted only when there is a window to clamp to.
                 assert_eq!(
@@ -1922,7 +1995,7 @@ mod tests {
             let calls = golden_spec().spec().rules[0].allowed_calls.clone();
             let spec = spec_with(calls, (PredicateKind::AnyOf, true), None, None, false)
                 .expect("stateless no-expiry rule validates");
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
 
             assert!(source.contains("Installed(Address, u32)"));
             assert!(!source.contains("CallCount(Address, u32)"));
@@ -1959,19 +2032,23 @@ mod tests {
                     .map_err(|e| proptest::test_runner::TestCaseError::fail(
                         format!("codegen refused a ValidatedSpec: {e}")
                     ))?;
-                let source = &generated.files["src/lib.rs"];
-                syn::parse_file(source).map_err(|e| {
-                    proptest::test_runner::TestCaseError::fail(format!(
-                        "generated source does not parse as Rust: {e}\n--- source ---\n{source}"
-                    ))
-                })?;
-                let wide = overlong_lines(source);
-                if !wide.is_empty() {
-                    return Err(proptest::test_runner::TestCaseError::fail(format!(
-                        "generated source has lines rustfmt would reflow: {wide:?}\
-                         \n--- source ---\n{source}"
-                    )));
+                // Per file: two sets of inner attributes cannot share one parse, so the crate
+                // root and the contract module are checked separately rather than joined.
+                for (path, source) in rust_files(&generated) {
+                    syn::parse_file(&source).map_err(|e| {
+                        proptest::test_runner::TestCaseError::fail(format!(
+                            "generated {path} does not parse as Rust: {e}\n--- source ---\n{source}"
+                        ))
+                    })?;
+                    let wide = overlong_lines(&source);
+                    if !wide.is_empty() {
+                        return Err(proptest::test_runner::TestCaseError::fail(format!(
+                            "generated {path} has lines rustfmt would reflow: {wide:?}\
+                             \n--- source ---\n{source}"
+                        )));
+                    }
                 }
+                let source = &emitted_rust(&generated);
                 let unbalanced = unbalanced_constants(source);
                 if !unbalanced.is_empty() {
                     return Err(proptest::test_runner::TestCaseError::fail(format!(
@@ -2201,10 +2278,10 @@ mod tests {
                 },
             ];
             let spec = spec.validate().expect("the awkward spec must validate");
-            let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept the awkward spec")
-                .files["src/lib.rs"]
-                .clone();
+            let source = emitted_rust(
+                &generate(&spec, 0, &Pins::default())
+                    .expect("codegen must accept the awkward spec"),
+            );
 
             // Non-vacuity: a pass means nothing unless the awkward shapes are really emitted.
             for expected in ["const CALL_0_ARG_0_XDR: [u8; 48] = [", "let fn_1_ok = "] {
@@ -2357,10 +2434,9 @@ mod tests {
             let spec = spec
                 .validate()
                 .expect("the spec-size boundary is a valid spec");
-            let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept the boundary spec")
-                .files["src/lib.rs"]
-                .clone();
+            let generated = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept the boundary spec");
+            let source = emitted_rust(&generated);
 
             // Non-vacuity: every bound must actually be reached in the emitted source.
             for expected in [
@@ -2414,7 +2490,7 @@ mod tests {
                 );
             }
 
-            syn::parse_file(&source).expect("the boundary emission must parse");
+            each_file_parses(&generated);
             let unbalanced = unbalanced_constants(&source);
             assert!(
                 unbalanced.is_empty(),
@@ -2447,12 +2523,10 @@ mod tests {
                 "the rule must carry the signers under test"
             );
 
-            let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept a dynamic rule carrying named signers")
-                .files["src/lib.rs"]
-                .clone();
-
-            syn::parse_file(&source).expect("generated source must parse");
+            let generated = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept a dynamic rule carrying named signers");
+            each_file_parses(&generated);
+            let source = emitted_rust(&generated);
             for absent in [
                 "SIGNER_",
                 "expected_signers",
@@ -2488,7 +2562,7 @@ mod tests {
         let a = generate(&spec, 0, &Pins::default()).unwrap();
         let b = generate(&spec, 0, &Pins::default()).unwrap();
         assert_eq!(a, b);
-        assert_eq!(a.files["src/lib.rs"], b.files["src/lib.rs"]);
+        assert_eq!(emitted_rust(&a), emitted_rust(&b));
     }
 
     #[test]
@@ -2506,7 +2580,8 @@ mod tests {
         let b = generate(&renamed, 0, &Pins::default()).unwrap();
         assert_eq!(a.normalized_input_hash, b.normalized_input_hash);
         assert_eq!(
-            a.files["src/lib.rs"], b.files["src/lib.rs"],
+            emitted_rust(&a),
+            emitted_rust(&b),
             "lib.rs must be identical for identical constraint content"
         );
         assert_ne!(
@@ -2532,7 +2607,7 @@ mod tests {
         let a = generate(&base, 0, &Pins::default()).unwrap();
         let b = generate(&widened, 0, &Pins::default()).unwrap();
         assert_ne!(a.normalized_input_hash, b.normalized_input_hash);
-        assert!(b.files["src/lib.rs"].contains("if x > 1000000000i128"));
+        assert!(emitted_rust(&b).contains("if x > 1000000000i128"));
     }
 
     #[test]
@@ -2552,7 +2627,7 @@ mod tests {
         let spec = spec
             .validate()
             .expect("i128::MIN is a canonical, valid i128 constraint");
-        let lib = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+        let lib = emitted_for(&spec);
         assert!(
             lib.contains("if x != i128::MIN"),
             "i128::MIN must be emitted as the named constant, got:\n{lib}"
@@ -2589,7 +2664,7 @@ mod tests {
                 false,
             )
             .expect("every shape of the golden rule validates");
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
             let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
 
             for (verb, entry) in [
@@ -2599,9 +2674,16 @@ mod tests {
             ] {
                 let event = format!("GeneratedPolicy{verb}");
                 assert!(
-                    source.contains(&format!("#[contractevent]\n#[derive(Clone"))
-                        && source.contains(&format!("pub struct {event} {{\n")),
-                    "{shape}: {event} must be a `#[contractevent]` struct:\n{source}"
+                    source.contains(&format!(
+                        "#[contractevent]\n#[derive(Clone{}\npub struct {event} {{\n",
+                        if verb == "Enforced" {
+                            ")]"
+                        } else {
+                            ", Debug, Eq, PartialEq)]"
+                        }
+                    )),
+                    "{shape}: {event} must be a `#[contractevent]` struct with the derives its \
+                     fields allow:\n{source}"
                 );
                 // The single topic is the smart account, as it is in all three library policies.
                 let declaration = &source[source
@@ -2701,7 +2783,7 @@ mod tests {
                 false,
             )
             .expect("every shape of the golden rule validates");
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
             let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
 
             // The inherent block is the one their conventions reserve plain `#[contractimpl]`
@@ -2801,10 +2883,10 @@ mod tests {
                 ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
             ),
         ] {
-            let source = generate(&spec, 0, &Pins::default())
-                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
-                .files["src/lib.rs"]
-                .clone();
+            let source = emitted_rust(
+                &generate(&spec, 0, &Pins::default())
+                    .unwrap_or_else(|error| panic!("{label} must generate: {error}")),
+            );
 
             // Every delimiter in the file, in the order it appears, read back from the text.
             let found: Vec<String> = source
@@ -2892,15 +2974,30 @@ mod tests {
             ),
             ("stateless, no window", stateless, false),
         ] {
-            let source = generate(&spec, 0, &Pins::default())
-                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
-                .files["src/lib.rs"]
-                .clone();
-            let parsed = syn::parse_file(&source).expect("emitted source must parse");
+            let generated = generate(&spec, 0, &Pins::default())
+                .unwrap_or_else(|error| panic!("{label} must generate: {error}"));
+            each_file_parses(&generated);
+
+            // Items from every emitted file. `pub mod contract;` is deliberately not among the
+            // items checked below: a module's documentation is the `//!` block inside its own
+            // file, which is asserted separately, and rustdoc renders it in the same place a
+            // `///` on the declaration would have gone.
+            let mut items: Vec<syn::Item> = Vec::new();
+            for (path, body) in rust_files(&generated) {
+                let parsed = syn::parse_file(&body).expect("just asserted to parse");
+                if path == "src/contract.rs" {
+                    assert!(
+                        body.starts_with("//! "),
+                        "{label}: the contract module must open with its own `//!` doc:\n{body}"
+                    );
+                }
+                items.extend(parsed.items);
+            }
+            let source = emitted_rust(&generated);
 
             let mut undocumented: Vec<String> = Vec::new();
             let mut entry_points: Vec<String> = Vec::new();
-            for item in &parsed.items {
+            for item in &items {
                 match item {
                     syn::Item::Enum(item) if public(&item.vis) => {
                         if !documented(&item.attrs) {
@@ -3026,7 +3123,7 @@ mod tests {
                 false,
             )
             .expect("every shape of the golden rule validates");
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
             let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
 
             for entry in ["enforce", "install", "uninstall"] {
@@ -3225,10 +3322,10 @@ mod tests {
                  Env, Symbol, TryFromVal, Val, Vec,\n};\n",
             ),
         ] {
-            let source = generate(&spec, 0, &Pins::default())
-                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
-                .files["src/lib.rs"]
-                .clone();
+            let source = emitted_rust(
+                    &generate(&spec, 0, &Pins::default())
+                        .unwrap_or_else(|error| panic!("{label} must generate: {error}")),
+                );
             assert!(
                 source.contains(expected_sdk),
                 "{label}: soroban_sdk import block is not rustfmt's grouped form\n\
@@ -3314,10 +3411,10 @@ mod tests {
             ),
             ("dynamic predicate", dynamic),
         ] {
-            let source = generate(&spec, 0, &Pins::default())
-                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
-                .files["src/lib.rs"]
-                .clone();
+            let source = emitted_rust(
+                &generate(&spec, 0, &Pins::default())
+                    .unwrap_or_else(|error| panic!("{label} must generate: {error}")),
+            );
             // Non-vacuity: a pass means nothing unless the predicate check is really emitted.
             assert!(
                 source.contains("PolicyError::ZeroSigners"),
@@ -3343,7 +3440,7 @@ mod tests {
     fn emitted_code_contains_the_generated_code_contract() {
         let spec = golden_spec();
         let g = generate(&spec, 0, &Pins::default()).unwrap();
-        let lib = &g.files["src/lib.rs"];
+        let lib = &emitted_rust(&g);
         // Signer predicate first, with strict set.
         assert!(lib.contains("PolicyError::ZeroSigners"));
         assert!(lib.contains("SignerSetDiverged"));
@@ -3568,10 +3665,11 @@ mod tests {
         // removing it would be a special case that later hides a real change, but the drift it
         // looks for is structurally impossible here.
         //
-        // Lockfile drift is caught elsewhere instead: a lockfile that is not a complete
+        // Lockfile drift is caught in two other places instead. A lockfile that is not a complete
         // resolution of the emitted manifest fails the `--locked` build in `BUILD_ARGS`, which is
-        // what `ozpb generate` and the nightly wasm job run. With one committed generated crate in
-        // the tree there is no second committed lockfile for this one to drift from.
+        // what `ozpb generate` and the nightly wasm job run. And the W3 golden below compares the
+        // *other* generated crate's committed lockfile against this one, which is what detects the
+        // two drifting apart.
         for (rel, content) in &g.files {
             let committed = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|_| {
                 panic!("missing committed golden file {rel}; run with UPDATE_GOLDEN=1")
@@ -3605,25 +3703,24 @@ mod tests {
         assert!(lockfile.contains("version = \"0.7.2\""));
     }
 
-    /// The comparators no committed crate exercises, held to the text they emit.
+    /// W3 (Soroswap) exercises the hardest emission shapes — LeI128 / GeI128 bounds,
+    /// EqScval (path), AnyValue (deadline). The committed crate must match regeneration
+    /// and (via the contracts workspace) compile to wasm.
     ///
-    /// This milestone commits one generated crate, the transfer golden, and its only argument
-    /// comparator is an exact `EqI128` (`if x != 500000000i128`), so
-    /// `LeI128`, `GeI128`, `EqScval` and `AnyValue` reach no committed artifact here. The
-    /// property test (`any_validated_spec_generates_parseable_rust`) reaches them but checks
-    /// shape alone: parses as Rust, stays inside rustfmt's width, balances its constants. An
-    /// inverted comparison, a cap and floor swapped between arguments, or an `AnyValue` arm that
-    /// bound the value it was widened away from satisfies all of that and still permits the
-    /// wrong call.
-    ///
-    /// `soroswap_swap_spec` is the fixture that reaches all four at once, and it needs only the
-    /// spec and the emitter. Which is why each assertion is bound to the argument its
-    /// constraint belongs to: every arm shadows its value as `x`, so `if x > 1000000000i128`
-    /// alone would not say *which* argument is capped.
+    /// The assertions below are bound to the argument each constraint belongs to, not just to
+    /// the comparison text. Every arm shadows its value as `x`, so `if x > 1000000000i128`
+    /// alone says nothing about *which* argument is capped — the identical string is asserted
+    /// elsewhere in this file for arg 2 of the transfer spec. An emitter that mapped the cap to
+    /// `amount_out_min` and the floor to `amount_in` would emit both strings and satisfy
+    /// unbound assertions, which is a misattribution the byte-for-byte comparison below does
+    /// catch and a substring does not. Keeping both is deliberate: the comparison names the
+    /// file that drifted, these name what the drift means.
     #[test]
-    fn w3_emission_shapes_are_held_to_the_checks_they_claim() {
+    fn w3_golden_crate_matches_committed_output() {
         let spec = ozpb_synthesizer::walkthroughs::soroswap_swap_spec();
-        let lib = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+        let g = generate(&spec, 0, &Pins::default()).unwrap();
+        // W3 must emit a bound check, a scval-equality check, and an arity-only AnyValue.
+        let lib = &emitted_rust(&g);
         // arg 0 — amount_in, capped: an upper bound denies above it.
         assert!(
             lib.contains(
@@ -3658,5 +3755,42 @@ mod tests {
             !lib.contains("let Some(v4)"),
             "AnyValue must not bind the argument it leaves unconstrained"
         );
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/soroswap-swap-policy");
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for (rel, content) in &g.files {
+                std::fs::write(root.join(rel), content).unwrap();
+            }
+            return;
+        }
+        // Every file, `Cargo.lock` included. It used to be exempted in favour of a substring check
+        // on the *generated* content, which never read the committed file at all — so the committed
+        // lockfile drifted from what codegen emits and nothing reported it. There is no reason for
+        // the exemption: `emit_lockfile` includes one tracked lockfile and substitutes the package
+        // name, so the output is a pure function of a committed file, and both generated crates
+        // declare byte-identical manifests apart from that name.
+        //
+        // Unlike the W1 golden, this comparison can genuinely fail, and it is the only in-repo
+        // check that detects the two committed lockfiles diverging.
+        for (rel, content) in &g.files {
+            let committed = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|_| {
+                panic!("missing committed W3 golden {rel}; run with UPDATE_GOLDEN=1")
+            });
+            // Naming the file that drifted matters for the lockfile in particular: the generated
+            // content comes from `contracts/golden-transfer-policy/Cargo.lock`, so editing *that*
+            // file surfaces here, and a message blaming "W3" would point at the one file that did
+            // not change.
+            assert_eq!(
+                &committed, content,
+                "committed contracts/soroswap-swap-policy/{rel} differs from what codegen emits \
+                 for it. For Cargo.lock the emitted content is \
+                 contracts/golden-transfer-policy/Cargo.lock with the package name substituted, \
+                 so a change to that file lands here too. Regenerate deliberately with \
+                 UPDATE_GOLDEN=1. If the emitter changed rather than the spec, decide whether \
+                 the template family needs a new version — see the note on the transfer golden."
+            );
+        }
     }
 }

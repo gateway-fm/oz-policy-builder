@@ -161,6 +161,37 @@ enum Command {
     },
 }
 
+/// Every `.rs` file under `dir`, keyed by its path relative to the crate root.
+///
+/// Keys are `src/<name>.rs`, which is how the generated file set names them, so the map compares
+/// directly against regeneration. A non-recursive read: emission produces a flat `src/`, and
+/// silently descending would invent keys regeneration never emits.
+pub(crate) fn read_sources(
+    dir: &std::path::Path,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut sources = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .with_context(|| format!("{} has no usable file name", path.display()))?;
+        let body = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        sources.insert(format!("src/{name}"), body);
+    }
+    if sources.is_empty() {
+        anyhow::bail!(
+            "{} contains no .rs files; --source is the generated crate's src/ directory",
+            dir.display()
+        );
+    }
+    Ok(sources)
+}
+
 fn read_json(path: &PathBuf) -> Result<serde_json::Value> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;

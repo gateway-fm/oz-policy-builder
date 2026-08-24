@@ -17,7 +17,7 @@
 //! field by field is a violation there, and it would also let a wrong topic pass as long as the
 //! fields matched.
 
-use generated_sub_transfer_r0::{
+use generated_sub_transfer_r0::contract::{
     GeneratedPolicy, GeneratedPolicyClient, GeneratedPolicyEnforced, GeneratedPolicyInstalled,
     GeneratedPolicyUninstalled,
 };

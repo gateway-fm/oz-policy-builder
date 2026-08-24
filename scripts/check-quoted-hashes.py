@@ -27,10 +27,12 @@ itself unchecked proves that two files agree and nothing more:
     by naming the tests, because which crates a milestone commits is itself a milestone
     decision: any sentence that counted them, or that named a test only some trees have,
     is false wherever that set is different.
-  * the SHA-256 of each generated crate's `src/lib.rs`, computed here. Those files are
-    byte-for-byte what `ozpb generate` emits, so this is exactly the digest a reader
-    gets by running it — and it moves whenever the codegen-input hash in the header
-    moves, which is what makes it the value most likely to be left behind.
+  * the SHA-256 of each Rust file of each generated crate, computed here. Those files are
+    byte-for-byte what `ozpb generate` emits, so these are exactly the digests a reader
+    gets by running it — and they move whenever the emission does, which is what makes them
+    the values most likely to be left behind. Every `.rs` file, not the crate root alone:
+    since the split into a root and a `contract.rs`, the root is a header and a `pub mod`
+    declaration, and its digest no longer moves when the policy's behaviour does.
 Deliberately NOT authoritative: a committed `build-manifest.json`. No gate regenerates or
 validates one — re-derivation is operator-invoked where it exists at all — so a stale or
 hand-edited manifest would make an equally stale document pass, which is the failure this
@@ -178,20 +180,31 @@ def pinned_upstream_hashes() -> set[str]:
 
 
 def generated_crate_hashes(paths: list[str]) -> set[str]:
-    """Per generated policy crate: the codegen-input hash it declares, and the SHA-256 of
-    the file itself — the digest a reader gets from `ozpb generate`."""
+    """Per generated policy crate: the codegen-input hash its crate root declares, and the
+    SHA-256 of **every** Rust file of the crate — the digests a reader gets from
+    `ozpb generate`."""
     # Selected by codegen's own banner rather than by path, so the hand-written test crate
-    # alongside them is not mistaken for a generated one.
-    sources = [
+    # alongside them is not mistaken for a generated one. The banner is in the crate root.
+    roots = [
         p
         for p in paths
         if re.fullmatch(r"contracts/[^/]+/src/lib\.rs", p)
         and GENERATED_MARKER in text(p)[:GENERATED_MARKER_WINDOW]
     ]
-    if not sources:
+    if not roots:
         sys.exit(
             "no generated policy crate found under contracts/*/src/lib.rs; they are a required\n"
             "reference for this gate and finding none would make it vacuous."
+        )
+    # Every `.rs` file of each recognised crate, not the root alone. Emission produces a crate
+    # root and a contract module, and the root is now a header plus a `pub mod` declaration —
+    # so a gate that digested it alone would hold documents to a figure that no longer moves
+    # when the policy's behaviour does, which is the exact staleness this file exists to catch.
+    sources = []
+    for root in roots:
+        crate = root[: -len("src/lib.rs")]
+        sources.extend(
+            p for p in paths if p.startswith(f"{crate}src/") and p.endswith(".rs")
         )
     found = set()
     for path in sources:
@@ -203,6 +216,8 @@ def generated_crate_hashes(paths: list[str]) -> set[str]:
         # `//!` marker. A pattern that required the two on one line found no header at all — which
         # this gate reports as a broken reference rather than passing, which is why the wrap was a
         # one-line fix here instead of a silently vacuous check.
+        if path not in roots:
+            continue
         declared = re.search(
             r"Normalized codegen input hash:\s*(?://!\s*)?([0-9a-fA-F]{64})",
             raw.decode("utf-8"),
