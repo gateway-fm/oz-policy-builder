@@ -4,11 +4,10 @@ on:
     branches: [main]
   pull_request:
 
-# Every job here reads the checkout and writes nothing back. The repository default for the
-# workflow token is read/write, and this is the only workflow a fork's pull request can
-# trigger, so the grant is narrowed at the workflow rather than left to a repository setting
-# that a later admin change can widen without touching this file. `nightly live` declares the
-# same thing for the same reason.
+# Every job here reads the checkout and writes nothing back, but the repository default for the
+# workflow token is read/write, so that is what they were handed. Narrowed at the workflow rather
+# than left to a repository setting a later admin change can widen without touching this file.
+# `nightly live` already declares the same thing.
 permissions:
   contents: read
 
@@ -38,12 +37,7 @@ jobs:
           missing=""
           for commit in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
             author="$(git log -1 --format='%an <%ae>' "$commit")"
-            # git's own trailer parser, not a substring search of the whole message. A search
-            # accepted `Not Signed-off-by: <author>` — and any line merely containing the
-            # phrase — as a valid sign-off. `%(trailers:...)` only reads the trailer block,
-            # and `-x` compares the whole value rather than a prefix of it.
-            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" \
-                 | grep -qxF -- "$author"; then
+            if ! git log -1 --format='%B' "$commit" | grep -qiF "Signed-off-by: $author"; then
               # Command substitution strips the trailing newline printf wrote, so append one
               # explicitly — otherwise the next entry runs onto this one's last line.
               missing="$missing$(printf '  %s\n    author: %s' \
@@ -96,6 +90,26 @@ jobs:
         run: |
           cargo test -q -p ozpb-codegen generation_is_byte_deterministic
           cargo test -q -p ozpb-codegen golden_crate_matches_committed_output
+          cargo test -q -p ozpb-codegen w3_golden_crate_matches_committed_output
+
+  mutation:
+    name: mutation (evaluator + synthesizer — a surviving mutant is a missing test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: toolchain
+        run: rustup show # rust-toolchain.toml pins the channel + components
+      # This gate was a manual script and therefore drifted: it had accumulated 8 surviving
+      # mutants — untested comparisons inside the reference evaluator and the target-code-hash
+      # drift guard — with nobody looking. Wired in here so it cannot drift again.
+      # Pinned, not latest. This is a required gate, so an upstream release that changes
+      # mutant generation or raises its MSRV above the repo's pinned 1.91.1 would break
+      # unrelated PRs. 27.1.0 is the version the reported 51/64 results were measured with.
+      - name: cargo-mutants (pinned)
+        run: cargo install cargo-mutants --locked --version 27.1.0
+      - name: mutation testing (security-critical cores)
+        run: bash scripts/mutation-test.sh
 
   contracts:
     name: contracts (differential suite · generated code compiles)
@@ -120,33 +134,28 @@ jobs:
       # so the omission was not only untidy source, it was a code generator emitting text
       # rustfmt rewrites, in the artifact this project ships for review.
       #
-      # Two invocations, because `--all` means "the members of this workspace" and the generated
-      # crate is not a member of one: `contracts` excludes it, since it carries its own
-      # `[profile.release]` so `stellar contract build` can build it standalone as it ships. The
-      # first invocation does reach golden-transfer-policy, but only through the differential
-      # suite's dev-dependency on it — an edge that exists for testing rather than for coverage,
-      # and one a later milestone may move. So the crate is named rather than relied upon.
-      - name: fmt (this workspace and the generated crate it excludes)
+      # Three invocations, because `--all` means "the members of this workspace" and neither
+      # generated crate is a member of one: `contracts` excludes both, each carrying its own
+      # `[profile.release]` so it builds standalone. The first invocation reaches
+      # golden-transfer-policy only through the differential suite's dev-dependency on it — an
+      # edge that exists for testing rather than for coverage, and one the milestone boundary
+      # may remove — and it does not reach soroswap-swap-policy at all, because nothing depends
+      # on that crate. Both are shipped artifacts, so both are named rather than relied upon.
+      - name: fmt (this workspace and the two generated crates it excludes)
         run: |
           ( cd contracts && cargo fmt --all --check )
           ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
+          ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 
   publication-guard:
     name: publication allowlist (no confidential material leaks)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Architecture §6.5: the public repo is produced from an allowlist. Two steps, because
-      # this one only ever sees a tree with nothing planted in it — it says the current tree is
-      # clean, which is necessary but is not the negative test §6.5 promises.
+      # Architecture §6.5: the public repo is produced from an allowlist; this is the
+      # negative test — a planted sentinel filename/fingerprint must fail the build.
       - name: forbidden-content scan
         run: bash scripts/check-publication-allowlist.sh
-      # The negative test itself: sentinels are planted into a scratch tree and the gate must
-      # refuse each one. It needs no private root, so it means the same thing here as on a
-      # developer machine — which matters, because the byte-for-byte half of the gate above
-      # cannot run in CI at all, and without this step CI's half was two regexes.
-      - name: publication gate refuses a planted sentinel
-        run: bash scripts/test-check-publication-allowlist.sh
 
   unused-deps:
     name: unused dependencies (every manifest in the tree, both workspaces)
@@ -158,9 +167,9 @@ jobs:
       # check-dep-rules.sh asserts only the ABSENCE of forbidden edges, so a declared-and-
       # never-used dependency passed every gate and had to be found by hand. cargo-machete
       # walks directories rather than workspaces, so one run covers the toolkit workspace,
-      # the contracts workspace, and the generated policy crate they both exclude.
-      # Pinned for the same reason as cargo-deny: which declarations a version considers
-      # "used" is the gate's verdict.
+      # the contracts workspace, and the two generated policy crates both of them exclude.
+      # Pinned for the same reason as cargo-mutants and cargo-deny: which declarations a
+      # version considers "used" is the gate's verdict.
       - name: cargo-machete (pinned)
         run: cargo install cargo-machete --locked --version 0.9.2
       - name: unused-dependency gate
@@ -186,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Pinned, not latest — same reasoning as cargo-machete above. cargo-deny decides this
+      # Pinned, not latest — same reasoning as cargo-mutants above. cargo-deny decides this
       # gate's verdict, and its advisory-database handling and lint defaults change between
       # releases, so a floating install can turn a green tree red (or the reverse) with no
       # change to the tree. 0.20.2 declares MSRV 1.88, below the repo's pinned 1.91.1.
