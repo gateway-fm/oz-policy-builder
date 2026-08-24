@@ -6,40 +6,14 @@ their sources, our current state against each, a verdict, and an action. It is w
 decision is checked against, and what answers the question of whether we are reinventing
 something the ecosystem already supplies.
 
-Compiled 13 August 2026; last reconciled 18 August 2026 against the release-readiness hardening
-pass. Verified against `stellar-cli` 27.0.0, `stellar-xdr` 26.0.1/27.0.0, `soroban-sdk` 26.1.0,
-`stellar-accounts` 0.7.2, and the repository as of that pass. Sections 9–14 record the
-subsystems that pass hardened; the disallowed-type gate that was pending at first compilation
-has since landed (§4).
+Compiled 13 August 2026; last reconciled 24 August 2026 against the OpenZeppelin code-quality
+conformance pass, which added §15 and closed §6's open decision. Verified against `stellar-cli`
+27.0.0, `stellar-xdr` 26.0.1/27.0.0, `soroban-sdk` 26.1.0, `stellar-accounts` 0.7.2,
+`OpenZeppelin/stellar-contracts` at tag v0.7.2 and at `main` where §15 cites their tooling, and
+the repository as of that pass. Sections 9–14 record the subsystems that pass hardened; the
+disallowed-type gate that was pending at first compilation has since landed (§4).
 
-**Verdict legend:** ✅ conforms · 🗓 contracted for a later milestone · ⚠️ diverges · ❌ gap · ℹ️ open decision
-
-The distinction between the first two and the rest is the one worth reading carefully. 🗓 is
-not a softer ⚠️: it marks work this project has scoped, sequenced and committed to deliver in a
-later milestone, so the section states a boundary of *this* milestone rather than a departure
-from anything the ecosystem asks. Nothing in this document currently sits at ⚠️ or ❌; both stay
-in the legend because the categories exist and a later reading may need them.
-
-## Summary
-
-| § | Subject | Verdict | In one line |
-|---|---|---|---|
-| 1 | Serialization and hashing | ✅ | Canonical form is XDR throughout, with a versioned preimage an outside implementation can reproduce from `docs/CANONICAL-HASHING.md`. |
-| 2 | Artifact identity and verification | ℹ️ / 🗓 | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
-| 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
-| 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
-| 5 | Authorization model | ✅ / 🗓 | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
-| 6 | Errors and observability | ✅ / ℹ️ | Stable machine-readable error codes throughout; whether to emit an event on a successful `enforce` is undecided. |
-| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. We check the generator thoroughly; running them over what it generates is a decision, not a shortfall. |
-| 8 | Upgradeability and immutability | ✅ | No setters, no upgrade entry point. For an artifact whose value is "the reader sees exactly what executes", immutability is the requirement. |
-| 9 | Evidence provenance and RPC binding | ✅ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
-| 10 | Capability registry governance | ✅ / 🗓 | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
-| 11 | Evaluator and differential evidence | ✅ / 🗓 | An independent evaluator agrees with the real compiled contract on verdict and denial reason. It does not exercise a full smart account's `__check_auth` — later-milestone evidence. |
-| 12 | MCP surface and machine-readable failures | ✅ | Closed request schemas, generated JSON schemas, stable `E_*` codes, structured tool errors. |
-| 13 | Build containment | 🗓 | The local builder bounds environment, inputs, outputs, concurrency and time. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
-| 14 | Defaults and limits | — | Every default and bound, with the reasoning for each value. |
-
-Read the section for the reasoning; nothing above is a claim the section does not support.
+**Verdict legend:** ✅ conforms · ⚠️ diverges · ❌ gap · ℹ️ open decision
 
 Every claim here is meant to be checkable against the source it names — a SEP, a documentation
 page, a line of this repository, or a line of the platform's own implementation. Where something
@@ -100,8 +74,8 @@ recording the recorder accepts cannot fail only when it is hashed.
 
 **Verdict.** Conforms. The earlier "diverges" — three inconsistent mechanisms: JSON bytes in
 Rust declaration order, the hand-written signer encoding, and XDR only inside the contract —
-was resolved by unifying on XDR, taken together with the schema-breaking rename in §3 so the
-format broke once rather than twice.
+was resolved by action 1 of the table below, taken together with the schema-breaking rename in
+§3 so the format broke once rather than twice.
 
 **Honestly about the status of this requirement.** Soroban does **not** oblige off-chain
 artifacts to be XDR; a JSON artifact would not have been a violation. The move was a strong
@@ -121,7 +95,7 @@ a Soroban contract cannot parse JSON at all, which closes the road to on-chain v
 
 ---
 
-## 2. Artifact identity and its verification ℹ️ / 🗓 (verification SEPs are Draft)
+## 2. Artifact identity and its verification ❌
 
 **What the platform has and ships.** The wasm section `contractmetav0` with serialized
 `SCMetaEntry` — the standardized way for an artifact to describe itself, specified by
@@ -211,36 +185,20 @@ What this does **not** do is make the manifest verifiable by a third party — t
 SEP-55's signature or SEP-58's rebuild. It makes our own statement about the toolchain a checked
 one instead of an asserted one.
 
-**Verdict on the provenance half: a deliberate divergence, and an open question we did not
-invent.** Our artifacts are **readable** by standard tooling already — `stellar contract info
-meta` shows the SEP-46 keys the toolchain writes itself (`rsver`/`cliver`/`rssdkver`) and anyone
-can compute the wasm hash. What they do not carry is any trace of provenance: neither a reference
-to the spec the policy was derived from, nor the fields either verification SEP needs. So the
-link "artifact ↔ specification" can today be checked only with our `BuildManifest` and our CLI.
+**Verdict.** A gap, but more precisely: our artifacts are **readable** by standard tooling
+already (`stellar contract info meta` shows the SEP-46 keys the toolchain writes itself —
+`rsver`/`cliver`/`rssdkver` — and anyone can compute the wasm hash) — what they do not carry is
+any trace of provenance. Neither a reference to the spec the policy was derived from, nor the
+fields either verification SEP needs. Which is why the link "artifact ↔ specification" can today
+only be checked with our `BuildManifest` and our CLI.
 
-Nothing requires otherwise. No SEP obliges a contract to write meta of its own; both
-verification SEPs are Draft and no released `stellar-cli` implements either; neither the RFP this
-work answers nor the proposal that answered it asks for artifact verification. This section
-records a direction we intend to stay compatible with, not a rule we are failing. Adopting the
-vocabulary early would mean guessing at one specific unresolved point — SEP-58 keys on the
-SHA-256 of a *source archive*, and a contract generated on demand has no archive — and a guess
-the standard later contradicts is worse than the absence. The question is written up and raised
-where the SEP is being discussed; when it resolves, the answer is to adopt the standard's
-spelling rather than to keep our own.
-
-**Verdict on the reproducibility half: our own guarantee is narrower than it sounds, and this
-one is not waiting on anybody.** It is worth separating from the paragraph above, because that
-one is a standard in progress and this one is a limit of what we can currently promise. We pin
-rustc through `rust-toolchain.toml`, pin
+**Our reproducibility guarantee is weaker than the one SEP-58 assumes, and that is a gap rather
+than a different spelling of the same thing.** We pin rustc through `rust-toolchain.toml`, pin
 dependency versions, and build `--locked` (in `BUILD_ARGS`,
 `crates/build-runner/src/lib.rs:457-463`). SEP-58 pins the
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
-hash reproduces on a sufficiently similar host and is not guaranteed off it. Containerised builds
-need no finished SEP — the reason this is still open is cost and sequencing, not the standard, and
-a digest-pinned builder is recorded as later-milestone work. Until then, "byte-identical across
-two cold runs" means on comparable hosts, which is what CI measures and all this repository
-claims.
+hash reproduces on a sufficiently similar host and is not guaranteed off it.
 
 **A side consequence worth recording.** Because `cliver` and `rsver` land **inside** the wasm,
 they are part of its bytes and therefore of its `wasm_hash`. A change of CLI version thus
@@ -446,7 +404,7 @@ the `$` carried no meaning worth an encoding exception.
 
 ---
 
-## 5. Authorization model ✅ / 🗓 (external verifiers deferred)
+## 5. Authorization model ✅ / ⚠️ (external verifiers deferred)
 
 **Platform principle.** A smart account is a contract implementing the custom account interface;
 `__check_auth` validates the proofs presented. OpenZeppelin's `stellar-accounts` formalizes this
@@ -463,7 +421,7 @@ tuple, then stateful invariants. Named signer predicates are strict by default, 
 signer to a live account rule cannot silently widen the generated grant, and zero
 authenticated signers always deny.
 
-**External verifier signers are deliberately unsupported in this milestone (🗓).** An off-chain
+**External verifier signers are deliberately unsupported in this milestone (⚠️).** An off-chain
 spec can name a verifier address and a verifier wasm hash, but the runtime OpenZeppelin signer
 value carries only the verifier address and key — nothing at authorization time binds that
 address to the recognized code. Registry recognition of a caller-supplied hash does not prove
@@ -534,7 +492,7 @@ state, which is what the earlier "no on-chain trace" verdict was about.
 
 ---
 
-## 7. External security tooling ℹ️ (customary tools, not protocol requirements)
+## 7. External security tooling ⚠️
 
 **What the ecosystem has.**
 - **Scout** (CoinFabrik) — a static analyzer specifically for Soroban contracts, with a catalog
@@ -547,8 +505,10 @@ state, which is what the earlier "no on-chain trace" verdict was about.
   40 audits, deploying over $3 million. STRIDE appears there as the audit-readiness support SDF
   offers to participating projects, not as preparation those projects are required to bring.
 
-**What we have.** Whatever we test, all of it is about **our Rust code**. Not one
-Soroban-specific analyzer runs on the **generated contracts**.
+**What we have.** Differential testing (an independent reference evaluator against the real
+compiled contract), mutation testing of the core, property tests, reproducibility gates. That is
+strong scaffolding — but all of it is about **our Rust code**. Not one Soroban-specific analyzer
+runs on the **generated contracts**.
 
 **Verdict.** A qualification about the frame: Scout and the Veridise checklist are **not protocol
 requirements** and not "conformance" in the sense discussed in the other sections. They are
@@ -557,8 +517,8 @@ but that we check the generator thoroughly and do not check what it generates.
 
 **Action.**
 1. Run Scout over the reference generated policies and look at the result. **Before** making a
-   gate of it, three things are needed: pin the version (a tool's version changes the verdict,
-   and that is part of the point of a gate);
+   gate of it, three things are needed: pin the version (from `cargo-mutants` we already know
+   that a tool's version changes the verdict, and that this is part of the point of a gate);
    establish that the analyzer applies to our kind of input at all — generated source or wasm;
    and define the false-positive policy. A gate without those three will be either noise that
    people start routing around, or theatre.
@@ -578,11 +538,12 @@ obligation.
 **What we have.** The generated policy **deliberately** has neither an upgrade entry point nor
 setters — this is written in the artifact's header: "No setters, no upgrade entry point." The
 constraints are fixed as constants in the source, so a limit cannot be changed without changing
-the code, and changing the code changes the hash. Whether the *account* a policy is installed
-into is upgradeable is upstream's choice, and independent of the policy's immutability: the
-policy cannot be altered whichever way that choice goes. The on-chain install run that
-exercises the pairing is contracted in a later milestone, and is recorded with that milestone's
-evidence.
+the code, and changing the code changes the hash. The testnet harness's own copy of the
+OpenZeppelin account, used for the on-chain install run, was likewise built without the
+`Upgradeable` extension; the harness now deploys the pinned upstream example instead
+(the second-milestone testnet evidence, `docs/TESTNET-EVIDENCE-TRANCHE-2.md` §4), where
+upgradeability of the account is upstream's choice and
+independent of the policy's immutability.
 
 **Verdict.** Conforms, and the choice is deliberate: for an artifact whose value is "the user
 read exactly what executes", immutability is a requirement rather than an omission. The header
@@ -592,7 +553,7 @@ overstates a guarantee costs more in that header than the same name would anywhe
 
 ---
 
-## 9. Evidence provenance and RPC binding ✅ (RPC evidence, not ledger inclusion)
+## 9. Evidence provenance and RPC binding ✅ / ⚠️
 
 **Platform principle.** Soroban RPC is a query interface, not a trust anchor: `getTransaction`
 returns what the configured endpoint says, `getLedgerEntries` reads current state, and nothing
@@ -611,7 +572,7 @@ under depth and size limits.
 `rpc_reported` means exactly "returned by the configured RPC endpoint" — it is not an inclusion
 proof. More importantly, serialized JSON is caller-controlled: the toolkit downgrades every
 bundle crossing the synthesize JSON boundary to `self_supplied`, so changing a `trust` field
-cannot mint RPC or indexer assurance (🗓 — a future hosted service can preserve stronger
+cannot mint RPC or indexer assurance (⚠️ — a future hosted service can preserve stronger
 provenance only with an authenticated receipt or a server-side recording ID).
 
 `getLedgerEntries` observes contract executables at its reported latest ledger, which may be
@@ -621,7 +582,7 @@ execution time.
 
 ---
 
-## 10. Capability registry governance ✅ / 🗓 (production governance is hosted-service work)
+## 10. Capability registry governance ✅ / ⚠️
 
 **What we have.** Registry snapshots are content-addressed, threshold-signed, network-bound,
 versioned, chained by previous root, time-bounded, and checked against a persisted minimum
@@ -633,23 +594,21 @@ cannot remove a prior revocation or rewrite its reason or effective version, and
 survive registry restarts. Tests cover rollback, same-version equivocation with checkpoints,
 transparency-chain forks, invalid key encodings, and revocation removal/mutation.
 
-**Verdict.** Conforms as a mechanism; 🗓 as governance. The committed registry key is a
+**Verdict.** Conforms as a mechanism; ⚠️ as governance. The committed registry key is a
 deterministic development root — suitable for reproducible examples, not production governance,
 which needs independently controlled roots, durable checkpoints, rotation and revocation
 operations, monitoring, and an incident process. (Also recorded in PROGRESS.md as a residual.)
 
 ---
 
-## 11. Evaluator and differential evidence ✅ / 🗓
+## 11. Evaluator and differential evidence ✅ / ⚠️
 
 **What we have.** The reference evaluator interprets validated spec structures directly; it
 consumes no generated Rust and cannot depend on codegen — the missing edge is enforced in the
 cargo dependency graph by `scripts/check-dep-rules.sh`. Structural independence reduces common
 implementation coupling; it does not make either side correct by definition, which is why
-property tests, canonical fixtures, and the compiled-contract comparison all still run.
-Mutation testing is not among them: it was used during the hardening pass to find what those
-leave uncovered — two comments in `crates/evaluator/src/lib.rs` record what it caught — but its
-harness is not part of this tree, so it is history here rather than a gate a reader can re-run.
+property tests, mutation tests, canonical fixtures, and the compiled-contract comparison all
+still run.
 
 Since the hardening pass the full-spec evaluator is **honest about composition**: it returns
 `deny` when the generated conjunct conclusively denies, `permit` only when every relevant
@@ -659,7 +618,7 @@ The differential suite is correspondingly **scoped**: it invokes the generated p
 directly in a Soroban test environment and compares verdict plus denial reason against the
 explicitly scoped `evaluate_generated_rule` model.
 
-**Verdict.** Conforms for what it claims. 🗓 for what it does not: the suite does not exercise
+**Verdict.** Conforms for what it claims. ⚠️ for what it does not: the suite does not exercise
 a full OpenZeppelin smart account's `__check_auth`, reviewed-policy composition, wallet
 installation, or live account state — later-milestone evidence, not implied by the phrase
 "compiled contract".
@@ -687,7 +646,7 @@ annotations remain hints, not authorization controls.
 
 ---
 
-## 13. Build containment 🗓 (a local safeguard; hosted isolation is later-milestone work)
+## 13. Build containment ⚠️ (a local safeguard, not hosted isolation)
 
 **What we have.** The local builder uses fixed commands and arguments, an offline `--locked`
 Cargo build, bounded source/wasm/log sizes, a bounded timeout with bounded version probes,
@@ -728,12 +687,159 @@ The knobs and caps the release ships with, and what each one does and does not p
 
 ---
 
-## One thing we deliberately do not do
+## 15. Contract code conventions (OpenZeppelin's own checklist) ✅ / ⚠️
 
-Reject a policy at generation time because `valid_until` exceeds `max_ttl()`. That bound is
-sliding, measured from the current ledger, so a distant expiry is legitimate and is reached by
-successive extensions; refusing it would cut off the long-lived grant the tool exists to produce
-(§3, action 3).
+**Why this section exists at all.** Sections 1–14 measure us against the *platform*. This one
+measures the generated policy against the *library's own house rules*, which is a different
+question and, for this project, a sharper one. `stellar-contracts` documents them in
+`.claude/commands/code-quality.md`, and its `CONTRIBUTING.md:99` says PRs that violate them "may
+be rejected" — aimed explicitly at AI-assisted contributions, which ours are twice over, since a
+program writes the code. The artifact this project ships is a Soroban contract that a
+`stellar-contracts` maintainer is the natural reviewer of, so their conventions are the standard
+it is read against whether or not we ever open a PR there.
+
+The reference points throughout are the pinned audited release, `stellar-accounts` 0.7.2, and the
+two sibling policy examples at tag v0.7.2:
+`examples/multisig-smart-account/threshold-policy/src/contract.rs` and
+`.../spending-limit-policy/src/contract.rs`.
+
+### What we now satisfy
+
+| Convention | Where it lands in the emitted crate |
+|---|---|
+| No lint suppression; `-D warnings` clean | The emitter wrote `authenticated_signers.len() == 0` — `clippy::len_zero`, warn-by-default — in every policy it had ever generated, and their rules forbid an `#[allow]`, so the emitter changed. `soroban_sdk::Vec::is_empty` exists (`soroban-sdk-26.1.0/src/vec.rs:835`). The contracts job now lints both generated crates directly; clippy does not lint dependencies, so nothing before this covered them. |
+| `rustfmt.toml`, theirs | Emitted into the generated crate, option for option from their v0.7.2 file, and emission derives its layout from those settings rather than piping output through rustfmt — which would put the rustfmt version among the inputs to every shipped wasm hash. `cargo +nightly fmt --all -- --check`, the command their `CONTRIBUTING.md` step 4 prescribes, is now the same gate ours runs. |
+| Imports: `imports_granularity = "Crate"`, `group_imports` | One grouped `use` per crate (`render::use_statement`), which is what their config produces and what both sibling examples show (`threshold-policy/src/contract.rs:8-12`, `spending-limit-policy/src/contract.rs:18-22`). |
+| Module file layout: root + `contract.rs` | `src/lib.rs` is `#![no_std]` and a `pub mod contract;`; the contract is `src/contract.rs`. |
+| Canonical section delimiters | `// ################## NAME ##################`, eighteen hashes each side, in their `mod.rs`-then-`storage.rs` order: ERRORS, STORAGE KEYS, CONSTANTS, EVENTS, QUERY STATE, CHANGE STATE, LOW-LEVEL HELPERS. |
+| Storage keys named `<Module>StorageKey` | `PolicyStorageKey`, replacing the tutorial's `DataKey`; compare `SimpleThresholdStorageKey` (`policies/simple_threshold.rs:121`). |
+| Doc comment on every public item | The error enum and all eleven variants, the storage-key enum, the contract struct, the associated type, and all five entry points. |
+| `# Errors` on every public function that can panic, in their section order | `# Arguments` → `# Errors` → `# Events` → `# Notes`, and the list is **built from the rule's shape** rather than copied: a policy with no validity window does not document `RuleExpired`, one with no cap does not document `CallCountExceeded`. `each_entry_point_documents_exactly_the_refusals_its_body_can_raise` compares each list against the emitted `panic_with_error!` calls in both directions. |
+| Events, `#[contractevent]`, `#[topic]` first, `# Events` documented | `GeneratedPolicyInstalled` / `Enforced` / `Uninstalled`, `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement event also carrying the `Context` and the remaining call count — their shape (§6), with `spending_limit`'s `total_spent_in_period` as the analogue for ours. |
+| Getters in an inherent `#[contractimpl]` block | `is_installed` and, where a cap exists, `remaining_calls`; compare `threshold-policy/src/contract.rs:62-78` and `spending-limit-policy/src/contract.rs:67-87`. |
+| Extend TTL on read | The two getters extend the entries they successfully read. Before them the artifact had no read site, which is why it diverged from this rule; §3 covers the one thing ours does that theirs does not — withholding the extension once the cap is spent. |
+| `[package.metadata.stellar] cargo_inherit`, `doctest = false` | Both emitted into the manifest. |
+| Panic only through `panic_with_error!`; no `unwrap` in non-test code | Held from the start, and `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]` on the *generator* (`crates/codegen/src/lib.rs:13`) is what keeps it that way on our side of the line. |
+| Event assertions through the typed struct | `contracts/differential/tests/events.rs` compares each emitted entry with `Event::to_xdr`, the form their checklist prescribes; hand-decoding topics and data is a violation there, and would also let a wrong topic pass. |
+| Panic tests by numeric code | Already the convention in `contracts/differential/tests/`, e.g. `Error::from_contract_error(9)` for `RuleExpired`. |
+
+### What we deliberately diverge on
+
+Each of these is a decision, not an omission, and each is written here because it reads as an
+omission unless stated.
+
+**1. Error codes 1–11, not a block at 3230.** Their policies take ten-wide blocks in order —
+`simple_threshold` 3200–3203 (`policies/simple_threshold.rs:110-116`), `weighted_threshold`
+3210–3214 (`policies/weighted_threshold.rs:141-149`), `spending_limit` 3220–3227
+(`policies/spending_limit.rs:126-140`), with `SmartAccountError` itself running 3000–3016
+(`smart_account/mod.rs:540-571`, overflowing its own block). The scheme is nowhere documented in
+the crate, so the next free block is exactly 3230 — which is where *their* next policy goes.
+"Conforming" here would have meant claiming the slot their next module needs.
+
+There is no protocol-level reason to match either. A Soroban contract error is a bare `u32`
+(`InvokeError::Contract(u32)`); the SDK reserves no ranges; and since `MAX_POLICIES = 5`
+(`smart_account/mod.rs:524`) our policy and their `spending_limit` genuinely can sit on one
+context rule — where the account invokes policies through the plain client method
+(`PolicyClient::new(e, &policy).enforce(…)`, `smart_account/storage.rs:510`, and `install` at
+`:692`; only `uninstall` uses `try_uninstall`, `:870`), so a refusal surfaces as the bare number
+with no contract id attached to disambiguate it. **Distinct numbers are therefore better for
+attribution, not merely tolerable.** And ours are load-bearing in their own right: 1–11 are the
+published deny-reason contract, asserted by an independently written reference evaluator
+(`contracts/differential/tests/differential.rs`), so renumbering speculatively would break a
+checked property for no gain.
+
+**2. A dynamic `ttl_target`, not fixed `*_EXTEND_AMOUNT` / `*_TTL_THRESHOLD` constants.** Their
+pattern is a pair of constants per module (`policies/simple_threshold.rs:127-129`). Ours computes
+the target from the network's rolling `max_ttl()` intersected with the rule's own validity window,
+and withholds the extension once a call cap is spent. That buys a property constants cannot
+express: an extension provably never reaches past the window, and never happens at all for an
+installation that can no longer permit anything. Eight TTL tests pin it
+(`contracts/differential/tests/ttl.rs`), and §3 is the full argument.
+
+**3. Everything inlined in the trait impl, not delegated to a library module.** Their policies are
+a `mod.rs` + `storage.rs` pair with free functions, and the example contract delegates to them.
+A generated policy cannot: the claim this project rests on is that the wasm is a pure function of
+the spec, and a shared library module would put code in the artifact that no spec chose and that
+a spec change cannot move. The `# Errors` sections carry the documentation their `storage.rs`
+functions would have carried.
+
+**4. No setters and no upgrade entry point,** where all three sibling policies have setters
+(`simple_threshold::set_threshold`, `:235`). This is security posture: a limit that can be changed
+after review is a limit nobody reviewed, and immutability is what makes the wasm hash a statement
+about behaviour rather than about a starting state. It is also why there is no `*Changed` event —
+there is nothing to change. §8 covers it.
+
+**5. `crate-type = ["lib", "cdylib"]`,** where their examples declare `cdylib` alone. The extra
+`lib` is load-bearing: the in-process differential suite links the generated crate directly, which
+is how the reference evaluator and the real compiled policy are compared at all. Stated in the
+emitted manifest so a reader does not read it as an oversight.
+
+**6. No `#![allow(dead_code)]` in the crate root,** which their example roots carry. A suppression
+is a violation of their own lint rule; ours is not needed, because the emitter never emits an
+unused item and `unbalanced_constants` exists to prove it.
+
+**7. Its own workspace root, with inline `=` pins,** where their packages use
+`field.workspace = true` and `{ workspace = true }`. A generated crate ships standalone — there is
+no workspace to inherit from — and the exact pins are what make its wasm hash reproducible by
+someone who was not the generator. §2 covers the provenance chain this belongs to.
+
+### Two upstream defects found while doing this
+
+**Reportable: their checklist's wasm build cannot succeed for any crate in their own workspace.**
+`CONTRIBUTING.md:62` and `code-quality.md:150` both prescribe
+`cargo build --target wasm32v1-none --release`. The workspace root enables soroban-sdk's
+`experimental_spec_shaking_v2` (`Cargo.toml:55-57`), and that feature's build script exits 1 on a
+wasm target unless `SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2` is set — which
+`stellar contract build` sets and `cargo build` does not
+(`soroban-sdk-26.1.0/build.rs:26-46`). Reproduced here on a minimal crate that enables the
+feature and nothing else: the build fails in the build script with *"requires stellar-cli
+v25.2.0+"*, before compiling any of our code.
+
+Nothing in their CI would notice: `generic.yml`'s `Check build` step is commented out
+(`:80-82`, with a TODO about same-name functions across contracts — an unrelated reason), and the
+only workflow that does build for wasm uses `stellar contract build`
+(`publish-crates.yml:34`, `:79`). The command entered `CONTRIBUTING.md` through their issue #471,
+which asked for `stellar contract build` **and/or** the cargo form. Searches of their tracker for
+`experimental_spec_shaking`, `custom build command` and `build fails` return nothing, so this
+appears unreported. The fix is one word in two documents.
+
+**Not reportable, already fixed in flight:** `CONTRIBUTING.md:99` links
+`.claude/skills/code-quality.md` while the file is at `.claude/commands/code-quality.md` (there is
+no `.claude/skills/` directory in the tree at all). Their open PR #836 already changes that exact
+line, so it is recorded here only so a reader who follows the broken link knows it is known.
+
+**Verdict.** Conforms on every rule their checklist states for a contract of this kind, with seven
+divergences that are decisions rather than gaps — six of them forced by properties this project
+sells (a pure function of the spec, a reproducible hash, an immutable limit, a checked deny-reason
+contract) and one by their own lint rule contradicting their own example. The one thing this
+section cannot substitute for is a review by the maintainers whose conventions these are; §7's
+action 3 is the route to that for security, and a contribution upstream would be the route for
+style.
+
+---
+
+## Actions, by priority
+
+| # | Action | Section | Type |
+|---|---|---|---|
+| 1 | ~~Unify canonicalization on XDR~~ — **done.** `ScVal` built through `ScMap::sorted_from_entries` for ordering, explicit per-type rules, and a versioned preimage tagged with our own domains rather than the protocol's `HashIdPreimage`. Specified in `docs/CANONICAL-HASHING.md`, so an external implementation can reproduce a hash | 1 | breaking, done |
+| 2 | ~~Extend the counter's TTL on read/write, each extension ≤ the current `max_ttl()` and no further than `valid_until`~~ — **done.** `ttl_target` clamps to the rolling `max_ttl()` and saturates at the validity window; extension is threshold-conditional and withheld on denial and `uninstall` | 3 | operational, done |
+| 3 | Extend the TTL of the **contract instance and wasm code** separately — **done for the instance entry**, extended with the persistent entries; the shared wasm-code entry is deliberately left to the operator/installer (§3, action 2) | 3 | operational |
+| 4 | Emit `contractmeta!` with the artifact's provenance (`spec_hash` and the rest) into the SEP-46 section, and follow SEP-55's shape where `BuildManifest` asserts what SEP-55 attests. The restatement of `rsver`/`cliver`/`rssdkver` is no longer taken on trust — ~~reconcile against the wasm metadata and fail on divergence~~ **done** — but it is still a private shape | 2 | compatibility |
+| 5 | Run Scout and the Veridise checklist over the generated policies; a gate only after pinning the version, checking applicability, and defining a false-positive policy | 7 | security |
+| 6 | Apply to the Soroban Security Audit Bank | 7 | process |
+| 7 | ~~TTL tests in the soroban environment, advancing the ledger number~~ — **done**: `contracts/differential/tests/ttl.rs` (§3, action 4) | 3 | tests, done |
+| 8 | Settle where a generated contract's source archive is published, and by whom — SEP-58 requires `source_sha256` over its bytes and leaves `source_uri` optional | 2 | unresolved |
+| 9 | ~~Decide whether to publish an event on a **successful** `enforce`~~ — **done**, and the answer was yes: three events in the shape the library's own policies use, at a measured cost of 2,720 wasm bytes. Denials still come from the error code and RPC diagnostics, and cannot be published at all (§6) | 6 | done |
+| 10 | Decide whether to build inside a digest-pinned container image and record it as SEP-58 `bldimg`; pinning rustc and dependency versions pins neither the OS nor the container | 2 | compatibility |
+| 11 | ~~Rename the cap from "lifetime" to per-installation~~ — **done**, including the wire field, now `call_count_per_installation` in the committed example. Taken together with row 1 because both break the schema, and one break is cheaper than two. The registry snapshot no longer names it: a call cap is a `StateSpec`, and the snapshot's list is `Constraint`'s vocabulary | 3 | done |
+| 12 | Report upstream that `cargo build --target wasm32v1-none --release`, which their `CONTRIBUTING.md` and code-quality checklist both prescribe, cannot succeed for any crate in their workspace — the root enables soroban-sdk's `experimental_spec_shaking_v2`, whose build script requires `stellar contract build`. Reproduced; apparently unreported; no CI job of theirs would notice (§15) | 15 | upstream |
+| 13 | Offer the conventions work upstream, or at least ask a `stellar-contracts` maintainer to read a generated policy. §15 checks the artifact against their written rules; it cannot check it against their judgement | 15 | process |
+
+Not on the list, and deliberately so: rejecting a policy at generation time because
+`valid_until` exceeds `max_ttl()`. That bound is sliding, measured from the current ledger, so a
+distant expiry is legitimate and is reached by successive extensions; refusing it would cut off
+the long-lived grant the tool exists to produce (§3, action 3).
 
 ---
 
@@ -751,6 +857,7 @@ successive extensions; refusing it would cut off the long-lived grant the tool e
 - [stellar-experimental/contract-verifications](https://github.com/stellar-experimental/contract-verifications)
 - [Contract code validation — StellarExpert](https://stellar.expert/explorer/public/contract/validation)
 - [Contract Source Validation SEP — stellar/discussions#1573](https://github.com/orgs/stellar/discussions/1573)
+- OpenZeppelin's contract conventions (§15): [`.claude/commands/code-quality.md`](https://github.com/OpenZeppelin/stellar-contracts/blob/main/.claude/commands/code-quality.md) · [`CONTRIBUTING.md`](https://github.com/OpenZeppelin/stellar-contracts/blob/main/CONTRIBUTING.md) · [`rustfmt.toml`](https://github.com/OpenZeppelin/stellar-contracts/blob/v0.7.2/rustfmt.toml) · the two sibling policy examples under [`examples/multisig-smart-account`](https://github.com/OpenZeppelin/stellar-contracts/tree/v0.7.2/examples/multisig-smart-account)
 - [Contract Explorer — Stellar Docs](https://developers.stellar.org/docs/tools/lab/smart-contracts/contract-explorer)
 - [OpenZeppelin stellar-contracts / accounts](https://github.com/OpenZeppelin/stellar-contracts/tree/main/packages/accounts)
 - [smart-account-kit](https://github.com/kalepail/smart-account-kit) · [passkey-kit](https://github.com/kalepail/passkey-kit)
