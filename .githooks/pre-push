@@ -32,8 +32,11 @@ bash "$ROOT/scripts/check-publication-allowlist.sh"
 # So a push to the publication repository requires every commit to declare which it is: carried
 # across (`git cherry-pick -x` writes the provenance line) or deliberately public-only (say why).
 # Pushes anywhere else — the private repository, a fork, a mirror — are not this rule's business.
-target="$(basename "${REMOTE_URL%.git}")"
-if [ "$target" != "oz-policy-builder" ]; then
+#
+# Matched on host and owner/name together, not the basename alone: a fork or mirror ending in
+# `/oz-policy-builder.git` is exactly the case the comment above says is out of scope, and a
+# basename-only compare would pull it in.
+if ! [[ "$REMOTE_URL" =~ ^(git@|https://)github\.com[:/]gateway-fm/oz-policy-builder(\.git)?/?$ ]]; then
     exit 0
 fi
 
@@ -48,10 +51,15 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     fi
     for commit in $range; do
         body="$(git log -1 --format='%B' "$commit")"
-        case "$body" in
-            *"cherry picked from commit"*) continue ;;
-            *"Public-only:"*)              continue ;;
-        esac
+        # Anchored to the two real markers, not to the words appearing anywhere in prose:
+        # `git cherry-pick -x` always writes its trailer as its own line in this exact form,
+        # and a `Public-only:` line needs an actual reason after the colon, not just the tag.
+        if grep -qE '^\(cherry picked from commit [0-9a-f]+\)$' <<<"$body"; then
+            continue
+        fi
+        if grep -qE '^Public-only: +\S' <<<"$body"; then
+            continue
+        fi
         unmarked="$unmarked$(git log -1 --format='  %h %s' "$commit")
 "
     done
