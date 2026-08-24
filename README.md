@@ -78,7 +78,10 @@ OpenZeppelin's MIT-licensed `stellar-accounts`, and a contribution that arrives 
 can go there without anyone being asked to relicense it afterwards.
 
 The policy crates this toolkit generates carry the same dual licence, stated in the generated
-source, so deploying one puts no obligation on you.
+source. Neither licence is copyleft, so deploying or modifying one triggers no obligation to
+publish your own source; both do carry notice conditions when you redistribute the source or the
+built artifact, and the dependencies a generated crate links keep their own terms — `NOTICE`
+records which.
 
 Contributions are taken under the [Developer Certificate of Origin](https://developercertificate.org/)
 — one `Signed-off-by` line per commit, `git commit -s`. See [CONTRIBUTING.md](CONTRIBUTING.md).

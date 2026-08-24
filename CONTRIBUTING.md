@@ -40,10 +40,12 @@ bash scripts/verify-phase1.sh              # the full release gate; needs stella
 ```
 
 The offline mode names every release-only check it skipped, so a green run never overstates
-itself. Both workspaces are in scope — the toolkit at the root and `contracts/` — plus the
-generated crate that neither of them owns, and both `cargo fmt --check` and
-`cargo clippy -- -D warnings` must be clean across all three. CI runs the same checks as
-separate jobs, so whatever fails locally fails there under a name that says which gate it was.
+itself. Both workspaces are in scope — the toolkit at the root and `contracts/` — and
+`cargo fmt --check` and `cargo clippy -- -D warnings` must be clean in each. `cargo fmt --check`
+additionally covers the generated policy crates, which belong to neither workspace and so are
+reached by their own invocation; clippy does not yet, which is a gap rather than a decision. CI
+runs the same checks as separate jobs, so whatever fails locally fails there under a name that
+says which gate it was.
 
 Three things reject a patch mechanically, and all three are load-bearing rather than style:
 

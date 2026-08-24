@@ -329,9 +329,9 @@ credential arms, authorizer selection, trust levels, dual hashing) · PolicySpec
 (mandatory signer predicate, exact tuples, provenance) · acyclic artifact chain · initial
 capability registries · reference evaluator · synthesizer v1 (exact-by-default,
 fail-closed) · codegen (signer predicate + tuple scope, immutable config) + spending_limit
-composition · reproducible builds · MCP server v0 over stdio, exposing the five tools §10
-names (`record_transaction`, `record_simulation`, `synthesize_policy`, `evaluate_spec`,
-`generate_code`).
+composition · reproducible builds · MCP server v0 over stdio, exposing the six tools
+`MVP_TOOLS` holds (`record_transaction`, `record_simulation`, `import_recording`,
+`synthesize_policy`, `evaluate_spec`, `generate_code`).
 
 **Verifiable outcome (met):** a recorded testnet-shaped transfer becomes a compilable Rust
 policy, byte-identical across two cold runs, agreeing with the reference evaluator on a
