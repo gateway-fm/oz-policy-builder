@@ -182,6 +182,7 @@ pub fn generate(
     files.insert("Cargo.lock".to_string(), emit_lockfile(&crate_name, pins)?);
     files.insert("Cargo.toml".to_string(), emit_cargo_toml(&crate_name, pins));
     files.insert("rust-toolchain.toml".to_string(), emit_rust_toolchain(pins));
+    files.insert("rustfmt.toml".to_string(), emit_rustfmt_toml());
     files.insert("src/lib.rs".to_string(), emit_lib(&render_rule, &hash));
 
     let generated_bytes = files.values().try_fold(0usize, |total, body| {
@@ -251,6 +252,42 @@ targets = ["wasm32v1-none"]
     )
 }
 
+/// OpenZeppelin's own rustfmt configuration, shipped inside the generated crate.
+///
+/// The option set is copied verbatim from `OpenZeppelin/stellar-contracts` at v0.7.2
+/// (`rustfmt.toml`), in their order. The point is not tidiness: the generated crate is meant to
+/// be read and re-checked by the library's own maintainers, and without their config a reviewer
+/// running the command their `CONTRIBUTING.md` prescribes — `cargo +nightly fmt --all -- --check`
+/// — gets a diff on an artifact our gate calls clean. Shipping it makes the two gates one gate.
+///
+/// Emission derives its layout from these settings instead of piping output through rustfmt,
+/// which would put the rustfmt version among the inputs to every shipped wasm hash.
+///
+/// Upstream's file ends with a commented-out block proposing `wrap_comments` and
+/// `format_code_in_doc_comments`, both of which are already enabled above it. That contradiction
+/// is not copied; the options are.
+fn emit_rustfmt_toml() -> String {
+    r#"# GENERATED POLICY CRATE — DO NOT EDIT BY HAND (see src/lib.rs header).
+#
+# OpenZeppelin's own rustfmt configuration, so that `cargo fmt --check` on this crate is the same
+# gate the stellar-contracts library holds itself to. Copied from OpenZeppelin/stellar-contracts
+# v0.7.2 `rustfmt.toml`; most of these options are unstable, hence `unstable_features`, and a
+# stable rustfmt warns about those and applies the rest.
+format_macro_bodies = true
+format_macro_matchers = true
+format_strings = true
+imports_granularity = "Crate"
+reorder_impl_items = true
+group_imports = "StdExternalCrate"
+use_small_heuristics = "Max"
+use_field_init_shorthand = true
+wrap_comments = true
+format_code_in_doc_comments = true
+unstable_features = true
+"#
+    .to_string()
+}
+
 /// The TTL-extension statements shared by `enforce` and `install`.
 ///
 /// Both entry points need identical wording, and a threshold that drifted between them would be
@@ -266,11 +303,30 @@ targets = ["wasm32v1-none"]
 /// extension at exactly that moment is the opposite of what the artifact claims to do. The shared
 /// instance and code entries stay alive through whichever *other* installation is still active,
 /// and when none is, the contract is useless to everyone and is meant to expire.
-fn ttl_extension_block(has_state: bool) -> &'static str {
+///
+/// The chained `extend_ttl` calls are one line each: `chain_width` is `max_width` under
+/// `use_small_heuristics = "Max"`, so the three-segment chain no longer breaks across lines the
+/// way rustfmt's default 60 forced it to.
+fn ttl_extension_block(has_state: bool) -> String {
     if has_state {
-        "\n        // Not a permission check — every decision above is already made. This keeps the\n        // entries the policy depends on out of archival while it can still permit something.\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage()\n                    .persistent()\n                    .extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n"
+        format!(
+            "\n{}        if remaining > 0u32 {{\n            let ttl = ttl_target(e);\n            if ttl > 0 {{\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }}\n        }}\n",
+            render::wrap_comment(
+                "        // ",
+                "Not a permission check — every decision above is already made. This keeps the \
+                 entries the policy depends on out of archival while it can still permit \
+                 something."
+            )
+        )
     } else {
-        "\n        // Not a permission check — every decision above is already made. This keeps this\n        // installation, contract instance and code out of archival while it can permit.\n        let ttl = ttl_target(e);\n        if ttl > 0 {\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n            e.storage()\n                .persistent()\n                .extend_ttl(&installed_key, ttl / 2, ttl);\n        }\n"
+        format!(
+            "\n{}        let ttl = ttl_target(e);\n        if ttl > 0 {{\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n            e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n        }}\n",
+            render::wrap_comment(
+                "        // ",
+                "Not a permission check — every decision above is already made. This keeps this \
+                 installation, contract instance and code out of archival while it can permit."
+            )
+        )
     }
 }
 
@@ -280,11 +336,37 @@ fn ttl_extension_block(has_state: bool) -> &'static str {
 /// and rent arithmetic between the constants and the signer set puts prose about archival ahead of
 /// the first permission. Top-to-bottom now reads constants → signers → checks, with the storage
 /// bookkeeping after `uninstall`.
-fn emit_ttl_target(has_valid_until: bool) -> &'static str {
+fn emit_ttl_target(has_valid_until: bool) -> String {
+    let summary = render::wrap_comment(
+        "/// ",
+        "Ledgers this policy's own entries should be kept alive for.",
+    );
     if has_valid_until {
-        "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// Bounded twice. By the network's rolling `max_ttl()`, because a single extension can\n/// never reach further — a distant window is approached across successive calls rather\n/// than in one step. And by the rule's own window, because past VALID_UNTIL_LEDGER every\n/// entry point denies, so extending beyond it would pay rent for an artifact that can no\n/// longer permit anything.\n///\n/// `saturating_sub` is defense in depth after the explicit expiry checks: later changes\n/// cannot turn an already-expired rule into the largest possible extension.\nfn ttl_target(e: &Env) -> u32 {\n    let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());\n    let max = e.storage().max_ttl();\n    if remaining < max {\n        remaining\n    } else {\n        max\n    }\n}\n"
+        format!(
+            "\n{summary}///\n{}///\n{}fn ttl_target(e: &Env) -> u32 {{\n    let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());\n    let max = e.storage().max_ttl();\n    if remaining < max {{\n        remaining\n    }} else {{\n        max\n    }}\n}}\n",
+            render::wrap_comment(
+                "/// ",
+                "Bounded twice. By the network's rolling `max_ttl()`, because a single extension \
+                 can never reach further — a distant window is approached across successive calls \
+                 rather than in one step. And by the rule's own window, because past \
+                 VALID_UNTIL_LEDGER every entry point denies, so extending beyond it would pay \
+                 rent for an artifact that can no longer permit anything."
+            ),
+            render::wrap_comment(
+                "/// ",
+                "`saturating_sub` is defense in depth after the explicit expiry checks: later \
+                 changes cannot turn an already-expired rule into the largest possible extension."
+            ),
+        )
     } else {
-        "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// This rule carries no validity window, so the only bound is the network's rolling\n/// `max_ttl()`; a single extension can never reach further than that.\nfn ttl_target(e: &Env) -> u32 {\n    e.storage().max_ttl()\n}\n"
+        format!(
+            "\n{summary}///\n{}fn ttl_target(e: &Env) -> u32 {{\n    e.storage().max_ttl()\n}}\n",
+            render::wrap_comment(
+                "/// ",
+                "This rule carries no validity window, so the only bound is the network's rolling \
+                 `max_ttl()`; a single extension can never reach further than that."
+            ),
+        )
     }
 }
 
@@ -342,33 +424,51 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     let compiled_signers = rule.compiled_signers();
     let has_external = rule.has_external_signer();
 
-    let mut out = String::new();
-    out.push_str(&format!(
-        "// SPDX-License-Identifier: Apache-2.0 OR MIT\n\
-         //! GENERATED POLICY — template family `{template_family}`.\n\
-         //! Normalized codegen input hash: {hash}\n\
-         //!\n\
-         //! DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM\n\
-         //! SOURCE MODE (architecture §4.4) — spec conformance, differential testing,\n\
-         //! and generated-mode guarantees no longer apply to an edited copy.\n\
-         //!\n\
-         //! Check order is the generated-code contract (§4.4): account authorization and\n\
-         //! installation state first, then the signer predicate (the OZ account defers\n\
-         //! signer validation to policies), then strict\n\
-         //! signer-set, then target/function/tuple scoping, then stateful invariants\n\
-         //! (missing state denies; the call cap never resets within an installation —\n\
-         //! only `uninstall`, which the smart account alone can call, clears it).\n\
-         //! No setters, no upgrade entry point.\n\
-         //!\n\
-         //! Storage lifetime is maintained **only while this policy is used**: a permitted\n\
-         //! call, or `install`, extends the entries it depends on toward the rule's validity\n\
-         //! window where one is set and the network maximum otherwise — never past either.\n\
-         //! An installed but idle policy still drifts into archival, and so does one that\n\
-         //! only ever denies, since a denial reverts the extension along with everything\n\
-         //! else. First use after a long gap may therefore cost a restore. Once a call cap\n\
-         //! is spent the policy stops extending entirely: it can never permit again, so it\n\
-         //! stops paying rent.\n"
-    ));
+    let mut out = String::from("// SPDX-License-Identifier: Apache-2.0 OR MIT\n");
+    // The header, wrapped rather than written pre-broken.
+    //
+    // `wrap_comments = true` re-flows any comment paragraph containing a line wider than
+    // `comment_width`, so a hand-broken header is a fixed point only by luck — and two of these
+    // lines carry values whose width is not ours to choose. The recorded hash is 64 characters,
+    // which no label leaves room for, and a template-family identifier may be 64 (see
+    // `render::TemplateFamily`), so the first line's width is a property of the spec. Emitting
+    // through the same greedy fill rustfmt uses makes every paragraph here stable for any input,
+    // and leaves prose edits in this function free of layout arithmetic.
+    //
+    // Paragraph by paragraph, so the blank `//!` separators stay where they are; rustfmt joins
+    // lines only inside a paragraph it has to re-flow, and it never has to re-flow these.
+    for paragraph in [
+        format!("GENERATED POLICY — template family `{template_family}`."),
+        format!("Normalized codegen input hash: {hash}"),
+        String::new(),
+        "DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM SOURCE MODE \
+         (architecture §4.4) — spec conformance, differential testing, and generated-mode \
+         guarantees no longer apply to an edited copy."
+            .to_string(),
+        String::new(),
+        "Check order is the generated-code contract (§4.4): account authorization and \
+         installation state first, then the signer predicate (the OZ account defers signer \
+         validation to policies), then strict signer-set, then target/function/tuple scoping, \
+         then stateful invariants (missing state denies; the call cap never resets within an \
+         installation — only `uninstall`, which the smart account alone can call, clears it). No \
+         setters, no upgrade entry point."
+            .to_string(),
+        String::new(),
+        "Storage lifetime is maintained **only while this policy is used**: a permitted call, or \
+         `install`, extends the entries it depends on toward the rule's validity window where \
+         one is set and the network maximum otherwise — never past either. An installed but idle \
+         policy still drifts into archival, and so does one that only ever denies, since a \
+         denial reverts the extension along with everything else. First use after a long gap may \
+         therefore cost a restore. Once a call cap is spent the policy stops extending entirely: \
+         it can never permit again, so it stops paying rent."
+            .to_string(),
+    ] {
+        if paragraph.is_empty() {
+            out.push_str("//!\n");
+        } else {
+            out.push_str(&render::wrap_comment("//! ", &paragraph));
+        }
+    }
     out.push_str("#![no_std]\n\n");
 
     // Imports (conditional to keep the generated crate warning-free).
@@ -462,17 +562,21 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         );
         // Already in canonical signer order — see `RenderRule::from_rule`.
         //
-        // `Address::from_str` is written across four lines because rustfmt writes it that way:
-        // a strkey is always 56 characters, so the argument list is 61 and exceeds rustfmt's
-        // `fn_call_width` of 60 whatever the surrounding indentation. Emitting it on one line
-        // meant every generated policy failed `cargo fmt --check`.
+        // Both forms are rustfmt's, under the shipped config and measured against it — and they
+        // differ, which is the point of writing them out rather than picking one shape. A strkey
+        // is always 56 characters, so `Signer::Delegated(Address::from_str(e, "…")),` is 108
+        // columns and cannot fit `max_width` at this indentation however wide `fn_call_width`
+        // gets: rustfmt breaks the outer call and puts each argument on its own line. Inside
+        // `Signer::External(` the same call sits one level deeper but on a line of its own, where
+        // it comes to 93 columns and now fits — under the previous `fn_call_width = 60` it did
+        // not, which is why the argument list used to be split there too.
         for (index, signer) in compiled_signers.iter().enumerate() {
             match signer {
                 RenderSigner::Delegated(address) => out.push_str(&format!(
                     "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
                 )),
                 RenderSigner::External { verifier, .. } => out.push_str(&format!(
-                    "        Signer::External(\n            Address::from_str(\n                e,\n                \"{verifier}\"\n            ),\n            Bytes::from_slice(e, &{})\n        ),\n",
+                    "        Signer::External(\n            Address::from_str(e, \"{verifier}\"),\n            Bytes::from_slice(e, &{})\n        ),\n",
                     render::signer_key_name(index)
                 )),
             }
@@ -509,19 +613,24 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             ));
             match &arg.constraint {
                 RenderConstraint::EqSelf | RenderConstraint::EqAddress(_) => {
-                    // The literal form is broken across lines for the reason given at
-                    // `expected_signers`: a 56-character strkey puts `Address::from_str`'s
-                    // argument list past rustfmt's `fn_call_width`, so rustfmt splits it here
-                    // too — with a trailing comma, unlike inside the `vec!` above.
-                    let cmp = match &arg.constraint {
-                        RenderConstraint::EqSelf => "*smart_account != a".to_string(),
+                    // Two shapes, because the condition's width decides where the brace goes and
+                    // the address form lands exactly on the boundary. `Address::from_str` now
+                    // fits one line — `fn_call_width` is `max_width` under the shipped config —
+                    // and at this indentation, with a strkey's fixed 56 characters, that line is
+                    // 100 columns: precisely `max_width`, so there is no room for the ` {` and
+                    // rustfmt puts the brace on its own line. The `SELF` form is short and keeps
+                    // the brace where a reader expects it. Both were taken from rustfmt's output.
+                    let guard = match &arg.constraint {
+                        RenderConstraint::EqSelf => {
+                            "            if *smart_account != a {\n".to_string()
+                        }
                         RenderConstraint::EqAddress(address) => format!(
-                            "a != Address::from_str(\n                e,\n                \"{address}\",\n            )"
+                            "            if a != Address::from_str(e, \"{address}\")\n            {{\n"
                         ),
                         _ => unreachable!("guarded by the outer arm"),
                     };
                     out.push_str(&format!(
-                        "    match Address::try_from_val(e, &v{i}) {{\n        Ok(a) => {{\n            if {cmp} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                        "    match Address::try_from_val(e, &v{i}) {{\n        Ok(a) => {{\n{guard}                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
                     ));
                 }
                 RenderConstraint::EqI128(lit) => {
@@ -648,7 +757,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     } else {
         format!("        if !{known_expr} {{")
     };
-    // The same measure `overlong_code_lines` applies to every emitted line; scalar count,
+    // The same measure `overlong_lines` applies to every emitted line; scalar count,
     // byte length and display width all coincide here, since the operands are `fn_<n>_ok`.
     if if_line.chars().count() <= render::MAX_WIDTH {
         out.push_str(&if_line);
@@ -701,7 +810,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // `enforce` the key is guaranteed to exist by the `MissingState` check, so here it is a choice:
     // the two blocks stay textually identical, and a panic reverts the whole invocation anyway, so
     // there is nothing to gain by extending before the checks have passed.
-    out.push_str(ttl_extension_block(has_state));
+    out.push_str(&ttl_extension_block(has_state));
     out.push_str("    }\n\n");
 
     // install() / uninstall()
@@ -721,7 +830,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         out.push_str(
             "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
         );
-        out.push_str(ttl_extension_block(true));
+        out.push_str(&ttl_extension_block(true));
         out.push_str(
             "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
@@ -737,13 +846,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         out.push_str(
             "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
         );
-        out.push_str(ttl_extension_block(false));
+        out.push_str(&ttl_extension_block(false));
         out.push_str(
             "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     }
     out.push_str("}\n");
-    out.push_str(emit_ttl_target(rule.valid_until_ledger.is_some()));
+    out.push_str(&emit_ttl_target(rule.valid_until_ledger.is_some()));
 
     out
 }
@@ -1209,7 +1318,7 @@ mod tests {
                         "generated source does not parse as Rust: {e}\n--- source ---\n{source}"
                     ))
                 })?;
-                let wide = overlong_code_lines(source);
+                let wide = overlong_lines(source);
                 if !wide.is_empty() {
                     return Err(proptest::test_runner::TestCaseError::fail(format!(
                         "generated source has lines rustfmt would reflow: {wide:?}\
@@ -1364,27 +1473,44 @@ mod tests {
             );
         }
 
-        /// Lines of emitted code that rustfmt would have to reflow, as `(line, columns)`.
+        /// Lines rustfmt would have to reflow, as `(line, columns)`.
         ///
-        /// The width is read from `render::MAX_WIDTH`, the one emission derives its layout from.
-        /// A second copy of the number here would let the two drift, and the drift would show up
+        /// Both widths are read from `render`, the module emission derives its layout from. A
+        /// second copy of either number here would let the two drift, and the drift would show up
         /// as a passing test over source `cargo fmt --check` rejects.
         ///
-        /// Comments are excluded: rustfmt does not rewrap them (`wrap_comments` is off by
-        /// default), and the generated header quotes a template-family identifier that can
-        /// legitimately carry a `//!` line past the width.
-        fn overlong_code_lines(source: &str) -> Vec<(usize, usize)> {
-            use render::MAX_WIDTH;
+        /// Comments are **included** now, and measured differently from code, because the shipped
+        /// `rustfmt.toml` sets `wrap_comments = true`: a comment is re-flowed on `comment_width`
+        /// counted from its `//`, ignoring the indentation in front of it, while code is bounded
+        /// by `max_width` counted from the start of the line. Two rules, so the reported column
+        /// count is the one that rule uses — a comment reported at 74 columns is a comment 74
+        /// wide from its marker, whatever its indentation.
+        ///
+        /// This closes the hole that made the previous exclusion necessary: the header carries a
+        /// template-family identifier and a 64-character digest, neither of whose width is ours
+        /// to choose, and the answer is now that the emitter wraps them rather than that the test
+        /// looks away. Every over-wide comment in a paragraph pulls the whole paragraph into a
+        /// re-flow, so the condition is exact rather than approximate: nothing over the budget
+        /// means nothing to re-flow, and rustfmt never joins lines it does not have to.
+        pub(super) fn overlong_lines(source: &str) -> Vec<(usize, usize)> {
+            use render::{COMMENT_WIDTH, MAX_WIDTH};
             source
                 .lines()
                 .enumerate()
-                .filter(|(_, line)| !line.trim_start().starts_with("//"))
-                .map(|(index, line)| (index + 1, line.chars().count()))
-                .filter(|(_, columns)| *columns > MAX_WIDTH)
+                .map(|(index, line)| {
+                    let comment = line.trim_start();
+                    if comment.starts_with("//") {
+                        (index + 1, comment.chars().count(), COMMENT_WIDTH)
+                    } else {
+                        (index + 1, line.chars().count(), MAX_WIDTH)
+                    }
+                })
+                .filter(|(_, columns, budget)| columns > budget)
+                .map(|(line, columns, _)| (line, columns))
                 .collect()
         }
 
-        /// Emission keeps every line of code inside rustfmt's default width.
+        /// Emission keeps every line inside the widths the shipped `rustfmt.toml` enforces.
         ///
         /// That is what makes the generated crates `cargo fmt --check`-clean without running
         /// rustfmt over codegen's output, which would put the rustfmt version among the inputs
@@ -1445,7 +1571,7 @@ mod tests {
                 );
             }
 
-            let wide = overlong_code_lines(&source);
+            let wide = overlong_lines(&source);
             assert!(
                 wide.is_empty(),
                 "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
@@ -1624,7 +1750,7 @@ mod tests {
                 "this test does not exercise the signer bound: no {last_signer} in\n{source}"
             );
 
-            let wide = overlong_code_lines(&source);
+            let wide = overlong_lines(&source);
             assert!(
                 wide.is_empty(),
                 "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
@@ -1962,6 +2088,99 @@ mod tests {
         let manifest = &g.files["Cargo.toml"];
         assert!(manifest.contains("soroban-sdk = \"=26.1.0\""));
         assert!(manifest.contains("stellar-accounts = \"=0.7.2\""));
+    }
+
+    /// The generated crate ships OpenZeppelin's rustfmt configuration, option for option.
+    ///
+    /// The emitted text is laid out to satisfy that file, so a crate that carried the layout
+    /// without the config would be formatted to rules nobody could check it against, and a crate
+    /// that carried the config without the layout would fail the reviewer's own fmt command. The
+    /// option set is therefore asserted in full rather than sampled: dropping one line from it
+    /// silently changes which of the two the artifact is.
+    #[test]
+    fn the_generated_crate_ships_the_upstream_rustfmt_config() {
+        let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
+        let config = generated
+            .files
+            .get("rustfmt.toml")
+            .expect("the generated crate must carry a rustfmt.toml");
+        for option in [
+            "format_macro_bodies = true",
+            "format_macro_matchers = true",
+            "format_strings = true",
+            "imports_granularity = \"Crate\"",
+            "reorder_impl_items = true",
+            "group_imports = \"StdExternalCrate\"",
+            "use_small_heuristics = \"Max\"",
+            "use_field_init_shorthand = true",
+            "wrap_comments = true",
+            "format_code_in_doc_comments = true",
+            "unstable_features = true",
+        ] {
+            assert!(
+                config.lines().any(|line| line == option),
+                "rustfmt.toml is missing OpenZeppelin's `{option}`:\n{config}"
+            );
+        }
+        // Nothing but their options and comments: a setting of our own here would be a rule the
+        // library is not held to, which is the opposite of the reason for shipping the file.
+        let ours: Vec<&str> = config
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+            .filter(|line| !line.contains(" = "))
+            .collect();
+        assert!(
+            ours.is_empty(),
+            "unexpected lines in rustfmt.toml: {ours:?}"
+        );
+    }
+
+    /// A byte-array constant takes whichever of three layouts rustfmt would give it.
+    ///
+    /// `use_small_heuristics = "Max"` raises `array_width` to `max_width`, and that turns two
+    /// forms into three: the middle one — the literal alone on the next line at one indent —
+    /// exists only in a window between "fits on the `=` line" and "has to be chunked", and
+    /// nothing emitted before the config change ever reached it.
+    ///
+    /// The boundaries are a function of the constant's *name* as well as its length, since both
+    /// share the first line, so they are stated for the name this test renders and were read off
+    /// the pinned toolchain's rustfmt for exactly that name.
+    #[test]
+    fn a_byte_array_constant_takes_rustfmts_layout_for_its_length() {
+        let render_of = |len: usize| {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.encode(vec![0xabu8; len]);
+            render::ByteArray::from_base64(&bytes)
+                .expect("valid base64")
+                .render_arg_xdr_const(0, 0)
+        };
+        // 10 elements: the whole item still fits `max_width` (96 columns).
+        assert_eq!(
+            render_of(10),
+            "const CALL_0_ARG_0_XDR: [u8; 10] = [0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, \
+             0xab, 0xab];\n"
+        );
+        // 11: two over, so the literal moves to its own line — and the `=` loses its trailing
+        // space, which is the detail a hand-written template would get wrong.
+        assert_eq!(
+            render_of(11),
+            "const CALL_0_ARG_0_XDR: [u8; 11] =\n    [0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, \
+             0xab, 0xab, 0xab, 0xab];\n"
+        );
+        // 15: the last length that still fits on that line (95 columns).
+        assert!(render_of(15).starts_with("const CALL_0_ARG_0_XDR: [u8; 15] =\n    [0xab,"));
+        // 16: one over again, so the greedy fill takes over — sixteen to a line.
+        assert_eq!(
+            render_of(16),
+            "const CALL_0_ARG_0_XDR: [u8; 16] = [\n    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, \
+             0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,\n];\n"
+        );
+        // Every one of them a line rustfmt would leave alone.
+        for len in [10, 11, 15, 16, 32, 48] {
+            let rendered = render_of(len);
+            let wide = compilability::overlong_lines(&rendered);
+            assert!(wide.is_empty(), "{len} elements: {wide:?}\n{rendered}");
+        }
     }
 
     #[test]

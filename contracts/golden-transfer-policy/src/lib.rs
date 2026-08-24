@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! GENERATED POLICY — template family `policy-templates/scope@1`.
-//! Normalized codegen input hash: 662ad7a94de0d249461d9e8b2c6525a95ab64f4e46f5ca0abf78479cf6181260
+//! Normalized codegen input hash:
+//! 662ad7a94de0d249461d9e8b2c6525a95ab64f4e46f5ca0abf78479cf6181260
 //!
 //! DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM
 //! SOURCE MODE (architecture §4.4) — spec conformance, differential testing,
@@ -8,20 +9,20 @@
 //!
 //! Check order is the generated-code contract (§4.4): account authorization and
 //! installation state first, then the signer predicate (the OZ account defers
-//! signer validation to policies), then strict
-//! signer-set, then target/function/tuple scoping, then stateful invariants
-//! (missing state denies; the call cap never resets within an installation —
-//! only `uninstall`, which the smart account alone can call, clears it).
-//! No setters, no upgrade entry point.
+//! signer validation to policies), then strict signer-set, then
+//! target/function/tuple scoping, then stateful invariants (missing state
+//! denies; the call cap never resets within an installation — only `uninstall`,
+//! which the smart account alone can call, clears it). No setters, no upgrade
+//! entry point.
 //!
-//! Storage lifetime is maintained **only while this policy is used**: a permitted
-//! call, or `install`, extends the entries it depends on toward the rule's validity
-//! window where one is set and the network maximum otherwise — never past either.
-//! An installed but idle policy still drifts into archival, and so does one that
-//! only ever denies, since a denial reverts the extension along with everything
-//! else. First use after a long gap may therefore cost a restore. Once a call cap
-//! is spent the policy stops extending entirely: it can never permit again, so it
-//! stops paying rent.
+//! Storage lifetime is maintained **only while this policy is used**: a
+//! permitted call, or `install`, extends the entries it depends on toward the
+//! rule's validity window where one is set and the network maximum otherwise —
+//! never past either. An installed but idle policy still drifts into archival,
+//! and so does one that only ever denies, since a denial reverts the extension
+//! along with everything else. First use after a long gap may therefore cost a
+//! restore. Once a call cap is spent the policy stops extending entirely: it
+//! can never permit again, so it stops paying rent.
 #![no_std]
 
 use soroban_sdk::{
@@ -107,10 +108,8 @@ fn check_call_0(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {
     };
     match Address::try_from_val(e, &v1) {
         Ok(a) => {
-            if a != Address::from_str(
-                e,
-                "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC",
-            ) {
+            if a != Address::from_str(e, "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC")
+            {
                 return false;
             }
         }
@@ -208,14 +207,13 @@ impl Policy for GeneratedPolicy {
         let remaining = MAX_CALLS - (count + 1u32);
 
         // Not a permission check — every decision above is already made. This keeps the
-        // entries the policy depends on out of archival while it can still permit something.
+        // entries the policy depends on out of archival while it can still permit
+        // something.
         if remaining > 0u32 {
             let ttl = ttl_target(e);
             if ttl > 0 {
                 e.storage().instance().extend_ttl(ttl / 2, ttl);
-                e.storage()
-                    .persistent()
-                    .extend_ttl(&installed_key, ttl / 2, ttl);
+                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
@@ -236,14 +234,13 @@ impl Policy for GeneratedPolicy {
         let remaining = MAX_CALLS;
 
         // Not a permission check — every decision above is already made. This keeps the
-        // entries the policy depends on out of archival while it can still permit something.
+        // entries the policy depends on out of archival while it can still permit
+        // something.
         if remaining > 0u32 {
             let ttl = ttl_target(e);
             if ttl > 0 {
                 e.storage().instance().extend_ttl(ttl / 2, ttl);
-                e.storage()
-                    .persistent()
-                    .extend_ttl(&installed_key, ttl / 2, ttl);
+                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
@@ -263,14 +260,15 @@ impl Policy for GeneratedPolicy {
 
 /// Ledgers this policy's own entries should be kept alive for.
 ///
-/// Bounded twice. By the network's rolling `max_ttl()`, because a single extension can
-/// never reach further — a distant window is approached across successive calls rather
-/// than in one step. And by the rule's own window, because past VALID_UNTIL_LEDGER every
-/// entry point denies, so extending beyond it would pay rent for an artifact that can no
-/// longer permit anything.
+/// Bounded twice. By the network's rolling `max_ttl()`, because a single
+/// extension can never reach further — a distant window is approached across
+/// successive calls rather than in one step. And by the rule's own window,
+/// because past VALID_UNTIL_LEDGER every entry point denies, so extending
+/// beyond it would pay rent for an artifact that can no longer permit anything.
 ///
-/// `saturating_sub` is defense in depth after the explicit expiry checks: later changes
-/// cannot turn an already-expired rule into the largest possible extension.
+/// `saturating_sub` is defense in depth after the explicit expiry checks: later
+/// changes cannot turn an already-expired rule into the largest possible
+/// extension.
 fn ttl_target(e: &Env) -> u32 {
     let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());
     let max = e.storage().max_ttl();

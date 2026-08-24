@@ -197,8 +197,15 @@ def generated_crate_hashes(paths: list[str]) -> set[str]:
     for path in sources:
         raw = (REPO / path).read_bytes()
         found.add(hashlib.sha256(raw).hexdigest())
+        # `\s*(?://!\s*)?` because the digest is on the line *after* its label. A 64-hex token
+        # plus any label overshoots the comment width OpenZeppelin's `rustfmt.toml` enforces, so
+        # the emitter wraps the header and the value lands on a continuation line with its own
+        # `//!` marker. A pattern that required the two on one line found no header at all — which
+        # this gate reports as a broken reference rather than passing, which is why the wrap was a
+        # one-line fix here instead of a silently vacuous check.
         declared = re.search(
-            r"Normalized codegen input hash:\s*([0-9a-fA-F]{64})", raw.decode("utf-8")
+            r"Normalized codegen input hash:\s*(?://!\s*)?([0-9a-fA-F]{64})",
+            raw.decode("utf-8"),
         )
         if not declared:
             sys.exit(

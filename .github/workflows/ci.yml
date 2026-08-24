@@ -172,6 +172,34 @@ jobs:
           ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
           ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 
+      # The generated crates now ship OpenZeppelin's own `rustfmt.toml`, and most of its options
+      # are unstable: a stable rustfmt prints a warning for each and applies only `max_width`,
+      # `use_small_heuristics` and `use_field_init_shorthand`. So the step above checks a third of
+      # that file. This checks the rest — `imports_granularity`, `group_imports`, `wrap_comments`,
+      # `format_macro_bodies` — which is what makes our fmt gate and the library's own
+      # (`cargo +nightly fmt --all -- --check`, their CONTRIBUTING.md step 4) the same gate over
+      # the same config. Both are kept: stable is what developers here run, and a text that
+      # satisfies nightly-with-config must also satisfy stable-with-config.
+      #
+      # Pinned to a date, not `nightly`. rustfmt's output changes between nightlies, so a floating
+      # channel would turn a green tree red with no change to the tree — the reasoning that
+      # already pins cargo-mutants, cargo-deny and cargo-machete, and it applies harder here
+      # because this gate's verdict *is* a formatter version. Verified against this date's
+      # rustfmt (1.10.0-nightly c54751567b) and, as a cross-check that the emitted layout is not
+      # tuned to one build, against the following day's (fb6531d550): both leave the emitted
+      # source untouched.
+      #
+      # Scoped to the two generated crates on purpose. The rest of the repository has no
+      # rustfmt.toml and is written to rustfmt's defaults; running a nightly with unstable options
+      # over it would impose a second style nobody asked for.
+      - name: fmt (the generated crates, under the OpenZeppelin config they now ship)
+        env:
+          NIGHTLY: nightly-2026-08-23
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
+          ( cd contracts/golden-transfer-policy && cargo "+$NIGHTLY" fmt --all --check )
+          ( cd contracts/soroswap-swap-policy && cargo "+$NIGHTLY" fmt --all --check )
+
   publication-guard:
     name: publication allowlist (no confidential material leaks)
     runs-on: ubuntu-latest

@@ -1,0 +1,17 @@
+# GENERATED POLICY CRATE — DO NOT EDIT BY HAND (see src/lib.rs header).
+#
+# OpenZeppelin's own rustfmt configuration, so that `cargo fmt --check` on this crate is the same
+# gate the stellar-contracts library holds itself to. Copied from OpenZeppelin/stellar-contracts
+# v0.7.2 `rustfmt.toml`; most of these options are unstable, hence `unstable_features`, and a
+# stable rustfmt warns about those and applies the rest.
+format_macro_bodies = true
+format_macro_matchers = true
+format_strings = true
+imports_granularity = "Crate"
+reorder_impl_items = true
+group_imports = "StdExternalCrate"
+use_small_heuristics = "Max"
+use_field_init_shorthand = true
+wrap_comments = true
+format_code_in_doc_comments = true
+unstable_features = true
