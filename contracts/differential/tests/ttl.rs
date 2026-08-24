@@ -57,6 +57,14 @@ use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 /// reason a call was refused rather than merely that it was.
 const CALL_COUNT_EXCEEDED: u32 = 7;
 
+/// `PolicyError::MissingState`, likewise named so a refusal is asserted by its reason.
+const MISSING_STATE: u32 = 8;
+
+/// The per-installation call cap compiled into the golden policy. A constant rather than a local
+/// per test: two spellings of the same compiled-in number is how a test starts passing against a
+/// policy that no longer has that cap.
+const MAX_CALLS: u32 = 12;
+
 const VALID_UNTIL: u32 = 4_223_456;
 
 /// Small enough that the network limit, not the validity window, is the binding clamp — which is
@@ -377,11 +385,10 @@ fn spending_the_last_permitted_call_stops_buying_rent() {
     // the full target at exactly the moment the installation becomes permanently deny-only —
     // paying the largest possible rent for an artifact that can never permit again.
     let w = setup(Some(NARROW_MAX_TTL));
-    let max_calls = 12u32; // compiled into the golden policy
     w.advance_to(w.counter_ttl() / 2 + 1_000);
 
     // Spend every call but the last; each is still productive, so each may extend.
-    for _ in 0..max_calls - 1 {
+    for _ in 0..MAX_CALLS - 1 {
         w.enforce_once();
     }
 
@@ -483,4 +490,152 @@ fn installing_after_expiry_is_rejected_without_writing_state() {
             "failed installation wrote {key:?}"
         );
     }
+}
+
+/// The read-only surface, against the real compiled contract.
+///
+/// The codegen tests say the two getters are emitted and that their bodies extend what they read;
+/// this says what they answer. Both matter, and only this one would notice a getter that compiled,
+/// exported, extended TTL and returned the wrong number.
+#[test]
+fn the_getters_report_the_installation_and_the_calls_left() {
+    // Before install, in an env of its own: `setup` installs, and the absent answers are half of
+    // what these two functions are for.
+    let env = Env::default();
+    env.mock_all_auths();
+    let policy = env.register(GeneratedPolicy, ());
+    let client = GeneratedPolicyClient::new(&env, &policy);
+    let account = Address::from_str(&env, &fx::golden_account_strkey());
+    assert!(
+        !client.is_installed(&0u32, &account),
+        "an uninstalled policy must report itself uninstalled"
+    );
+    // The count is an error rather than a zero — the same fail-closed reading of missing state
+    // that `enforce` uses, and the reason `is_installed` exists to answer the boolean instead.
+    match client.try_remaining_calls(&0u32, &account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "an absent counter must be MissingState, not a zero"
+        ),
+        other => panic!("remaining_calls on an uninstalled policy must refuse: {other:?}"),
+    }
+
+    let w = setup(None);
+    assert!(
+        w.client.is_installed(&0u32, &w.account),
+        "an installed policy must report itself installed"
+    );
+    assert_eq!(
+        w.client.remaining_calls(&0u32, &w.account),
+        MAX_CALLS,
+        "a fresh installation has its whole cap left"
+    );
+
+    // Each permitted call is one off the count, so the getter tracks the counter rather than
+    // recomputing something adjacent to it.
+    w.enforce_once();
+    assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS - 1);
+    w.enforce_once();
+    assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS - 2);
+
+    // Spend the cap. The count bottoms out at zero rather than wrapping.
+    for _ in 2..MAX_CALLS {
+        w.enforce_once();
+    }
+    assert_eq!(
+        w.client.remaining_calls(&0u32, &w.account),
+        0,
+        "a spent installation has nothing left"
+    );
+    assert_eq!(
+        w.try_enforce_permitted(),
+        Err(soroban_sdk::Error::from_contract_error(CALL_COUNT_EXCEEDED)),
+        "the cap must really be spent for this to be a test about a spent cap"
+    );
+    assert!(
+        w.client.is_installed(&0u32, &w.account),
+        "a spent installation is still installed — only uninstall clears it"
+    );
+
+    // After uninstall, both go back to their absent answers.
+    w.client.uninstall(&w.rule(), &w.account);
+    assert!(!w.client.is_installed(&0u32, &w.account));
+    match w.client.try_remaining_calls(&0u32, &w.account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "uninstall removes the counter, so the count is missing again"
+        ),
+        other => panic!("remaining_calls after uninstall must refuse: {other:?}"),
+    }
+}
+
+/// A read extends what it read — and stops once the installation can never permit again.
+///
+/// The library's rule is "extend TTL on read, not on write", and this artifact had no read site to
+/// attach it to until the getters existed. The second half is ours: the crate header promises that
+/// a spent installation stops paying rent, and a getter that extended unconditionally would have
+/// made that false through a path nobody was looking at.
+#[test]
+fn a_read_extends_the_entries_it_touched_until_the_cap_is_spent() {
+    let w = setup(Some(NARROW_MAX_TTL));
+    // Let the entries decay, so an extension is observable rather than a no-op.
+    w.advance_to(50_000);
+    let before_installed = w.installed_ttl();
+    let before_counter = w.counter_ttl();
+    assert!(
+        before_installed < w.expected_target(),
+        "the marker must have decayed below the target for this to measure anything"
+    );
+
+    assert!(w.client.is_installed(&0u32, &w.account));
+    assert_eq!(
+        w.installed_ttl(),
+        w.expected_target(),
+        "a successful `is_installed` extends the marker it read"
+    );
+    assert_eq!(
+        w.counter_ttl(),
+        w.expected_target(),
+        "…and the counter it read to decide whether extending was still worth it"
+    );
+    assert!(
+        w.installed_ttl() > before_installed && w.counter_ttl() > before_counter,
+        "both entries must have moved, or the assertions above are comparing equals"
+    );
+
+    // Spend the cap, let the entries decay again, and read: no extension this time.
+    for _ in 0..MAX_CALLS {
+        w.enforce_once();
+    }
+    // Below *half* the target, not merely below it. The host extends only when the current TTL
+    // has fallen to the threshold the caller passes, and the artifact passes `ttl / 2`; at a
+    // shallower decay the host declines the extension on its own and the test would pass whether
+    // or not the policy asked for one. That is exactly what happened at 90_000 ledgers, where the
+    // marker still had 60_000 of a 100_000 target left: removing the spent-cap guard from the
+    // emitter changed nothing observable, and this test reported green on a policy that had just
+    // lost the property it exists to check.
+    w.advance_to(105_000);
+    let spent_installed = w.installed_ttl();
+    let spent_counter = w.counter_ttl();
+    assert!(
+        spent_installed <= w.expected_target() / 2,
+        "the marker must be at or below the extension threshold ({} of {}), or the host declines \
+         the extension for its own reasons and this proves nothing",
+        spent_installed,
+        w.expected_target()
+    );
+    assert!(w.client.is_installed(&0u32, &w.account));
+    assert_eq!(w.client.remaining_calls(&0u32, &w.account), 0);
+    assert_eq!(
+        w.installed_ttl(),
+        spent_installed,
+        "a spent installation must not buy rent on a read"
+    );
+    assert_eq!(
+        w.counter_ttl(),
+        spent_counter,
+        "…and neither must its counter"
+    );
 }

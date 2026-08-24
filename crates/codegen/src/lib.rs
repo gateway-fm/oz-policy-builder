@@ -730,8 +730,16 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // already argued for, now applied to every helper rather than to that one.
     let mut helpers = String::new();
 
-    out.push_str(&section("CHANGE STATE"));
-    // The contract.
+    // The contract struct, then the read-only surface, then the trait impl. Both sibling policy
+    // examples expose their getters from an inherent `#[contractimpl]` block beside the trait one
+    // (`threshold-policy/src/contract.rs:62-78`, `spending-limit-policy/src/contract.rs:67-87`),
+    // and `code-quality.md` reserves plain `#[contractimpl]` for exactly that block.
+    //
+    // Until now the artifact exported only the three trait methods, so there was no on-chain way
+    // to ask whether a policy was installed or how many calls an installation had left — a gap
+    // with a second consequence: the library's "extend TTL on read, not on write" rule had no
+    // read site to attach to, which is why this artifact diverged from it. It now has one.
+    out.push_str(&section("QUERY STATE"));
     out.push_str(&emit_doc(
         "",
         &[
@@ -746,6 +754,105 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         &[],
     ));
     out.push_str("#[contract]\npub struct GeneratedPolicy;\n\n");
+    out.push_str("#[contractimpl]\nimpl GeneratedPolicy {\n");
+
+    let mut is_installed_notes = vec![
+        "A successful read extends the lifetime of the entries it touched, which is the \
+         library's rule for entries it owns — so this is a state-changing call, cheap but not \
+         free, and any caller may make it. The only write it can perform is an extension, so \
+         paying for one on another account's behalf is the whole of what an unauthorized \
+         caller can do here."
+            .to_string(),
+    ];
+    if has_state {
+        is_installed_notes.push(
+            "The extension is withheld once the call cap is spent, and the counter is read for \
+             no other reason: an installation that can never permit again must stop paying rent, \
+             which is what the crate header promises and what a read that extended \
+             unconditionally would quietly break."
+                .to_string(),
+        );
+    }
+    out.push_str(&emit_doc(
+        "    ",
+        &[
+            "Whether this policy is installed for one context rule of one smart account."
+                .to_string(),
+            "`false` for an absent installation rather than a panic: this is a query, and a \
+             missing entry is an answer to it."
+                .to_string(),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`context_rule_id` - The context rule to ask about.".to_string(),
+                    "`smart_account` - The smart account to ask about.".to_string(),
+                ],
+            ),
+            ("# Notes", is_installed_notes),
+        ],
+    ));
+    if has_state {
+        out.push_str(
+            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let remaining = match e.storage().persistent().get::<_, u32>(&key) {\n            Some(used) => MAX_CALLS.saturating_sub(used),\n            None => 0u32,\n        };\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n        true\n    }\n",
+        );
+    } else {
+        out.push_str(
+            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n        let ttl = ttl_target(e);\n        if ttl > 0 {\n            e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n        }\n        true\n    }\n",
+        );
+    }
+    // `remaining_calls` exists only where a cap does. A rule with no cap has no counter to
+    // report, and the alternatives are both worse than an absent function: a sentinel like
+    // `u32::MAX` would be a magic value a caller has to know about, and returning zero would
+    // read as "exhausted" for a policy that is in fact unlimited. The exported function list is
+    // itself the answer to "does this policy cap calls".
+    if has_state {
+        out.push('\n');
+        out.push_str(&emit_doc(
+            "    ",
+            &[
+                "Calls this installation may still permit.".to_string(),
+                "Counts down from the compiled-in cap and never resets: only `uninstall`, which \
+                 the smart account alone can call, clears the count."
+                    .to_string(),
+            ],
+            &[
+                (
+                    "# Arguments",
+                    vec![
+                        "`e` - Access to the Soroban environment.".to_string(),
+                        "`context_rule_id` - The context rule to ask about.".to_string(),
+                        "`smart_account` - The smart account to ask about.".to_string(),
+                    ],
+                ),
+                (
+                    "# Errors",
+                    vec![
+                        "[`PolicyError::MissingState`] - When this (smart account, context rule) \
+                         carries no installation. A count is required setup data, so its absence \
+                         is an error rather than a zero."
+                            .to_string(),
+                    ],
+                ),
+                (
+                    "# Notes",
+                    vec![
+                        "Extends the counter's lifetime on a successful read, and withholds the \
+                         extension once the count is spent — see `is_installed`."
+                            .to_string(),
+                    ],
+                ),
+            ],
+        ));
+        out.push_str(
+            "    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let used: u32 = match e.storage().persistent().get(&key) {\n            Some(used) => used,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        let remaining = MAX_CALLS.saturating_sub(used);\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n        remaining\n    }\n",
+        );
+    }
+    out.push_str("}\n\n");
+
+    out.push_str(&section("CHANGE STATE"));
     out.push_str("#[contractimpl]\nimpl Policy for GeneratedPolicy {\n");
     out.push_str(&render::wrap_comment(
         "    /// ",
@@ -2289,6 +2396,102 @@ mod tests {
         );
     }
 
+    /// The artifact exposes its state for reading, and extends TTL where it reads.
+    ///
+    /// Both sibling policy examples expose getters from an inherent `#[contractimpl]` block beside
+    /// the trait one; ours exported the three trait methods and nothing else, so there was no
+    /// on-chain way to ask whether a policy was installed or how many calls an installation had
+    /// left. That gap had a second consequence: the library's "extend TTL on read, not on write"
+    /// rule had no read site to attach to, which is the whole reason this artifact diverged from
+    /// it.
+    ///
+    /// `remaining_calls` is emitted only where a cap exists. A rule with no cap has no counter to
+    /// report, and both alternatives are worse than an absent function — a `u32::MAX` sentinel is
+    /// a magic value a caller has to know about, and zero reads as "exhausted" for a policy that
+    /// is in fact unlimited. So the assertion is two-sided: present with a cap, absent without.
+    #[test]
+    fn the_artifact_exposes_its_state_for_reading() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            // The inherent block is the one their conventions reserve plain `#[contractimpl]`
+            // for, and it must be distinct from the trait impl rather than folded into it.
+            assert!(
+                source.contains("#[contractimpl]\nimpl GeneratedPolicy {\n"),
+                "{shape}: the getters must live in an inherent `#[contractimpl]` block:\n{source}"
+            );
+            assert!(
+                source.contains("#[contractimpl]\nimpl Policy for GeneratedPolicy {\n"),
+                "{shape}: the trait impl must stay its own block:\n{source}"
+            );
+            assert!(
+                source.contains("pub fn is_installed(e: &Env, context_rule_id: u32, "),
+                "{shape}: `is_installed` must be exported:\n{source}"
+            );
+            assert_eq!(
+                source.contains("pub fn remaining_calls("),
+                max_calls.is_some(),
+                "{shape}: `remaining_calls` is emitted iff the rule caps calls"
+            );
+
+            // Extend on read: the body of each getter extends what it successfully read. Checked
+            // per function body, because an `extend_ttl` anywhere in the file would satisfy a
+            // whole-source search — `enforce` and `install` both carry one.
+            let is_installed = body_of(&source, "is_installed");
+            assert!(
+                is_installed.contains("extend_ttl(&installed_key"),
+                "{shape}: `is_installed` must extend the entry it read:\n{is_installed}"
+            );
+            if max_calls.is_some() {
+                let remaining = body_of(&source, "remaining_calls");
+                assert!(
+                    remaining.contains("extend_ttl(&key"),
+                    "{shape}: `remaining_calls` must extend the counter it read:\n{remaining}"
+                );
+                // …and withhold the extension once the cap is spent, which is what keeps the
+                // header's "stops paying rent" claim true through a read as well as a write.
+                for (name, body) in [
+                    ("is_installed", &is_installed),
+                    ("remaining_calls", &remaining),
+                ] {
+                    let guard = body.find("if remaining > 0u32 {").unwrap_or_else(|| {
+                        panic!("{shape}: `{name}` extends unconditionally:\n{body}")
+                    });
+                    let extend = body
+                        .find("extend_ttl(")
+                        .expect("the body was just asserted to extend");
+                    assert!(
+                        guard < extend,
+                        "{shape}: `{name}` extends before checking it can still permit:\n{body}"
+                    );
+                }
+            }
+            // A missing count is an error rather than a zero, matching `enforce`.
+            if max_calls.is_some() {
+                assert!(
+                    body_of(&source, "remaining_calls")
+                        .contains("None => panic_with_error!(e, PolicyError::MissingState)"),
+                    "{shape}: an absent counter must deny rather than read as zero"
+                );
+            }
+        }
+    }
+
     /// The emitted file is divided by OpenZeppelin's canonical section delimiter, in their order.
     ///
     /// Their rule is unusually specific: eighteen hashes each side, and variations such as
@@ -2304,13 +2507,15 @@ mod tests {
     #[test]
     fn the_emitted_file_carries_the_canonical_section_delimiters_in_order() {
         let rule = "#".repeat(18);
-        // Only the sections a rule of this shape has; EVENTS and QUERY STATE are asserted where
-        // they are emitted, so this list stays a statement about ordering rather than a roster
-        // that has to be edited whenever a section is added.
+        // Only the sections a rule of this shape has; EVENTS is asserted where it is emitted, so
+        // this list stays a statement about ordering rather than a roster that has to be edited
+        // whenever a section is added. QUERY STATE is unconditional: every policy answers
+        // `is_installed`, whether or not it also counts calls.
         let expected = [
             "ERRORS",
             "STORAGE KEYS",
             "CONSTANTS",
+            "QUERY STATE",
             "CHANGE STATE",
             "LOW-LEVEL HELPERS",
         ];
@@ -2401,13 +2606,16 @@ mod tests {
             .validate()
             .expect("a stateless rule with no window is a valid spec");
 
-        for (label, spec) in [
-            ("golden transfer", golden_spec()),
+        // The roster is shape-dependent: `remaining_calls` exists only where a cap does, so a
+        // fixed list would either miss it or demand it from a policy that has no counter.
+        for (label, spec, capped) in [
+            ("golden transfer", golden_spec(), true),
             (
                 "W3 swap",
                 ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+                true,
             ),
-            ("stateless, no window", stateless),
+            ("stateless, no window", stateless, false),
         ] {
             let source = generate(&spec, 0, &Pins::default())
                 .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
@@ -2466,10 +2674,14 @@ mod tests {
             );
             // Non-vacuity: an empty walk would also report nothing undocumented.
             entry_points.sort();
+            let mut expected = vec!["enforce", "install", "is_installed", "uninstall"];
+            if capped {
+                expected.push("remaining_calls");
+            }
+            expected.sort();
             assert_eq!(
-                entry_points,
-                vec!["enforce", "install", "uninstall"],
-                "{label}: the walk did not reach the three entry points"
+                entry_points, expected,
+                "{label}: the walk did not reach the callable surface"
             );
 
             for entry in ["enforce", "install", "uninstall"] {
@@ -2499,7 +2711,11 @@ mod tests {
         let lines: Vec<&str> = source.lines().collect();
         let at = lines
             .iter()
-            .position(|line| line.trim_start().starts_with(&format!("fn {name}(")))
+            .position(|line| {
+                line.trim_start()
+                    .trim_start_matches("pub ")
+                    .starts_with(&format!("fn {name}("))
+            })
             .unwrap_or_else(|| panic!("no `fn {name}` in the emitted source"));
         let mut start = at;
         while start > 0 && lines[start - 1].trim_start().starts_with("///") {
@@ -2597,7 +2813,11 @@ mod tests {
         let lines: Vec<&str> = source.lines().collect();
         let at = lines
             .iter()
-            .position(|line| line.trim_start().starts_with(&format!("fn {name}(")))
+            .position(|line| {
+                line.trim_start()
+                    .trim_start_matches("pub ")
+                    .starts_with(&format!("fn {name}("))
+            })
             .unwrap_or_else(|| panic!("no `fn {name}` in the emitted source"));
         let mut depth = 0i32;
         let mut end = at;

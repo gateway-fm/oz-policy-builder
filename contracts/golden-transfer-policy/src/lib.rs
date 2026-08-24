@@ -101,7 +101,7 @@ const TARGET: &str = "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ";
 const VALID_UNTIL_LEDGER: u32 = 4223456;
 const MAX_CALLS: u32 = 12;
 
-// ################## CHANGE STATE ##################
+// ################## QUERY STATE ##################
 
 /// This rule, compiled to a policy contract.
 ///
@@ -113,6 +113,92 @@ const MAX_CALLS: u32 = 12;
 /// behaviour rather than about a starting state.
 #[contract]
 pub struct GeneratedPolicy;
+
+#[contractimpl]
+impl GeneratedPolicy {
+    /// Whether this policy is installed for one context rule of one smart
+    /// account.
+    ///
+    /// `false` for an absent installation rather than a panic: this is a query,
+    /// and a missing entry is an answer to it.
+    ///
+    /// # Arguments
+    ///
+    /// * `e` - Access to the Soroban environment.
+    /// * `context_rule_id` - The context rule to ask about.
+    /// * `smart_account` - The smart account to ask about.
+    ///
+    /// # Notes
+    ///
+    /// * A successful read extends the lifetime of the entries it touched,
+    ///   which is the library's rule for entries it owns — so this is a
+    ///   state-changing call, cheap but not free, and any caller may make it.
+    ///   The only write it can perform is an extension, so paying for one on
+    ///   another account's behalf is the whole of what an unauthorized caller
+    ///   can do here.
+    /// * The extension is withheld once the call cap is spent, and the counter
+    ///   is read for no other reason: an installation that can never permit
+    ///   again must stop paying rent, which is what the crate header promises
+    ///   and what a read that extended unconditionally would quietly break.
+    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {
+        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);
+        if !e.storage().persistent().has(&installed_key) {
+            return false;
+        }
+        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);
+        let remaining = match e.storage().persistent().get::<_, u32>(&key) {
+            Some(used) => MAX_CALLS.saturating_sub(used),
+            None => 0u32,
+        };
+        if remaining > 0u32 {
+            let ttl = ttl_target(e);
+            if ttl > 0 {
+                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
+                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
+            }
+        }
+        true
+    }
+
+    /// Calls this installation may still permit.
+    ///
+    /// Counts down from the compiled-in cap and never resets: only `uninstall`,
+    /// which the smart account alone can call, clears the count.
+    ///
+    /// # Arguments
+    ///
+    /// * `e` - Access to the Soroban environment.
+    /// * `context_rule_id` - The context rule to ask about.
+    /// * `smart_account` - The smart account to ask about.
+    ///
+    /// # Errors
+    ///
+    /// * [`PolicyError::MissingState`] - When this (smart account, context
+    ///   rule) carries no installation. A count is required setup data, so its
+    ///   absence is an error rather than a zero.
+    ///
+    /// # Notes
+    ///
+    /// * Extends the counter's lifetime on a successful read, and withholds the
+    ///   extension once the count is spent — see `is_installed`.
+    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {
+        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);
+        let used: u32 = match e.storage().persistent().get(&key) {
+            Some(used) => used,
+            None => panic_with_error!(e, PolicyError::MissingState),
+        };
+        let remaining = MAX_CALLS.saturating_sub(used);
+        if remaining > 0u32 {
+            let ttl = ttl_target(e);
+            if ttl > 0 {
+                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
+            }
+        }
+        remaining
+    }
+}
+
+// ################## CHANGE STATE ##################
 
 #[contractimpl]
 impl Policy for GeneratedPolicy {
