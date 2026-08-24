@@ -1,23 +1,26 @@
 # Progress
 
-The first phase, plus two hardening passes. `scripts/verify-phase1.sh` is the strict
-release gate (dependency/publication/build-input/quoted-hash invariants, fmt + clippy +
-tests over both workspaces and the generated crate, golden/determinism checks, wasm
-reproducibility, the `#[ignore]`d real-toolchain suite, cargo-deny, cargo-machete);
+Two phases delivered, plus two hardening passes. **345 tests** (319 host + 26 contract), all
+green; 16 crates + contracts workspace. `scripts/verify-phase1.sh` is the strict release gate
+(dependency/publication/build-input/quoted-hash invariants, fmt + clippy + tests over both
+workspaces and both generated crates, golden/determinism checks, wasm reproducibility, the
+`#[ignore]`d real-toolchain suite, cargo-deny, cargo-machete, cargo-mutants);
 `scripts/verify-phase1.sh --offline` is the explicitly reduced local mode, and its success
-message names the release-only gates it did not run. Two `#[ignore]`d tests need the real
-toolchain (`stellar-cli` + a warm contract cache), both in `ozpb-build-runner`: the golden
-end-to-end build, and the boundary-shape compile check. CI runs them in the `nightly live`
-workflow, and the release gate runs them too.
+message names the release-only gates it did not run. `scripts/verify-phase2.sh` gates the
+second milestone. Two `#[ignore]`d tests need the real toolchain (`stellar-cli` + a warm
+contract cache), both in `ozpb-build-runner`: the golden end-to-end build, and the
+boundary-shape compile check. CI runs them in the `nightly live` workflow.
+`scripts/mutation-test.sh` is wired into CI and passes: all mutants caught in both
+security-critical cores.
 
 ---
 
 # Release-readiness hardening (2026-08-18)
 
-An adversarial release review of the Tranche-1 surface: every claim the milestone makes was
-re-read the way an attacker or a release auditor would read it, and each finding became
-either a fail-closed check or an explicit non-claim. Nothing here widens what Phase 1
-promises; most of it narrows a promise to exactly what the code can keep.
+An adversarial release review of the Tranche-1 surface before publication: every claim the
+milestone makes was re-read the way an attacker or a release auditor would read it, and each
+finding became either a fail-closed check or an explicit non-claim. Nothing here widens what
+Phase 1 promises; most of it narrows a promise to exactly what the code can keep.
 
 **Trust boundaries, made structural rather than asserted.**
 
@@ -48,7 +51,7 @@ something never installed refuses (`NotInstalled`) and removes policy-owned stat
 order is now: account authorization and installation state first, then the signer predicate,
 then the rest. TTL extension covers the marker alongside the counter and instance entries, and
 `contracts/differential/tests/ttl.rs` + `differential.rs` grew the lifecycle, isolation and
-TTL-target cases. This moved the golden crate, so both derived identities moved with it:
+TTL-target cases. This moved the golden crates, so both derived identities moved with them:
 emitted `src/lib.rs` is now sha256 `8475f277…` and the clean-rebuild wasm `5b9374d8…`; the
 normalized codegen-input hash `662ad7a9…` did not move, because the inputs did not — only the
 emission.
@@ -67,10 +70,10 @@ representative evidence — and never on mixed transfer/non-transfer rules.
 
 **Evaluation stopped rounding up.** A rule that attaches a reviewed policy no longer yields a
 whole-spec `permit` from the reference evaluator: the verdict is `indeterminate` while the
-reviewed policy's state is unmodelled, and the differential model is explicitly scoped to the
-generated policy. On the registry side, accepted revocations persist across restarts and are
-append-only across successor snapshots — a signed successor cannot un-revoke, rewrite a
-reason, or move an effective version.
+reviewed policy's state is unmodelled, and the layer-2 differential model is explicitly scoped
+to the generated policy. On the registry side, accepted revocations persist across restarts
+and are append-only across successor snapshots — a signed successor cannot un-revoke, rewrite
+a reason, or move an effective version.
 
 **Wire and MCP errors are a contract.** Every declared error code serializes as
 `SCREAMING_SNAKE_CASE` and round-trips through an exhaustive `ErrorCode::ALL` table — closing
@@ -99,6 +102,71 @@ assurance boundary (account recognition is generation compatibility, not install
 reconciled section by section — §9–§14 now cover the subsystems this pass hardened, and every
 file:line reference in it was re-read against the tree.
 
+Verified on this pass: fmt, `clippy -D warnings` and tests for both workspaces (319 host +
+26 contract) and fmt for both generated crates; all gate scripts through
+`verify-phase1.sh` in release mode (including cargo-deny, cargo-machete and the mutation
+suite); the previously red `#[ignore]`d build-runner suite against the pinned stellar-cli
+27.0.0, both tests green; and the live-testnet demo end to end, including the new dynamic
+expiry and the step-8 refusal.
+
+---
+
+# The milestone boundary made a file boundary (2026-08-14)
+
+The four post-MVP operations sat inline among the MVP ones in `toolkit`, their DTOs among the
+MVP DTOs in `api-types`, their tool registrations among the MVP tools in `mcp-server`, and
+their subcommands among the MVP subcommands in `cli`. Producing a first-milestone tree
+therefore meant editing four shared files — the kind of edit that goes wrong quietly and
+cannot be repeated reliably at the next milestone. Each crate now has a `tranche2` module, so
+the extraction is a list of paths instead. No behaviour and no public surface changed; the
+one visible difference is that `ozpb --help` lists `dev-registry` before the post-MVP
+commands rather than among them, because a `#[command(flatten)]` group is contiguous.
+
+Two assumptions about where the boundary ran turned out to be wrong, which is why this was
+done rather than assumed. `cli` — a first-milestone crate — called four post-MVP operations
+directly, so removing them left it as the one thing in the workspace that did not compile.
+And the differential suite's dependency on the harness read as the whole suite depending on
+it; `differential.rs` and `ttl.rs` mention it nowhere, so the strongest evidence for
+code-generation quality stays where its claim is and only `generated_suite.rs` travels.
+
+`verify` moves with the post-MVP operations although it is not one of the four. Three of the
+fields it reports and its overall `matches` verdict come from the dry-run harness, so a
+`verify` split along the milestone line would be a different tool wearing the same name.
+
+**What leaves at the boundary.** Verified by deleting exactly this list: both workspaces then
+build and their whole suites pass.
+
+- `crates/api-types/src/tranche2.rs`, `crates/toolkit/src/tranche2.rs`,
+  `crates/mcp-server/src/tranche2.rs`, `crates/cli/src/tranche2.rs`
+- `crates/mcp-server/tests/mcp_stdio_tranche2.rs`
+- `crates/harness/`, `crates/call-surface-core/`
+- `contracts/differential/tests/generated_suite.rs`
+- `scripts/verify-phase2.sh`, `scripts/check-unmodeled-acknowledged.py`,
+  `scripts/layer1-unmodeled-acknowledged.txt` — all three are post-MVP: the first runs
+  `ozpb dry-run`, the second parses its output, the third is that gate's data. **No CI
+  workflow runs any of them**, so nothing would report their absence or their presence, and
+  they are the entries most likely to travel into a first-milestone tree by inertia.
+
+**What the extraction needs beyond deleting those paths.** Each is one or two lines, and the
+list is the whole of it:
+
+- the `mod` / `pub use` lines in the four parent modules, and in `cli` the flattened variant
+  and its dispatch arm;
+- in `mcp-server`, the router sum collapses back to the single MVP router, and
+  `POST_MVP_TOOLS` in `tests/common/mod.rs` empties — the tool-count assertion is written
+  against the sum of the two lists so that it stays exact either way;
+- `ozpb-harness` and `ozpb-call-surface-core` leave `crates/toolkit/Cargo.toml`, the root
+  `[workspace.dependencies]` and `workspace.members`; `ozpb-harness` leaves
+  `contracts/differential/Cargo.toml`;
+- both crate names leave `scripts/check-dep-rules.sh`. That step announces itself: a rule
+  naming an absent crate now stops the gate instead of passing silently.
+
+**Where the boundary is a convention rather than a mechanism**, stated so its cleanliness is
+not read as more than it is. Cargo rejects an optional dev-dependency, which is the only
+construction that could gate `ozpb-harness` behind the `required-features` of a single
+`[[test]]` target, so that edge is package-wide however few files use it. And nothing
+mechanical marks the three scripts above — only this list.
+
 ---
 
 # Hardening pass — build containment, rendering safety, evidence honesty (2026-08-10)
@@ -106,14 +174,8 @@ file:line reference in it was re-read against the tree.
 An audit of two properties RFP requirement #3 depends on: that a generated policy always
 compiles, and that it cannot claim one restriction while enforcing another. Both held — the
 compile gate is unskippable (`crates/toolkit/src/lib.rs` `?`-propagates a build failure before
-source is ever returned) and all eight value-interpolation sites were validator-gated.
-
-The audit ran over the whole toolkit, so some of what it found belongs to a component the
-first milestone does not contract: the dry-run harness and the reproduce-and-verify surface
-are second-milestone deliverables (§4.5, §10), and the findings that landed on them —
-evidence-breadth reporting and composed reviewed policies being read as covered — are
-recorded with that milestone rather than claimed here. The four defects it found in what this
-milestone delivers, all now closed:
+source is ever returned) and all eight value-interpolation sites were validator-gated. The
+audit surfaced five other defects, now closed:
 
 - [x] **1. The build timeout bounded nothing.** `run_bounded` killed only the `stellar` child,
       while `cargo` and its `rustc` workers survived, and the timeout path returned before
@@ -140,6 +202,17 @@ milestone delivers, all now closed:
       emitter takes a `RenderRule` and never sees a `RuleSpec`, and the conversion is
       exhaustive over `Constraint`. **Output is byte-identical** — the golden gates pass
       without `UPDATE_GOLDEN`, so no published artifact hash moved.
+- [x] **5. Coverage and composed-policy gaps could pass green.** `all_agree` is silent about
+      breadth, the harness computed a `coverage` map it never read, and `verify-phase2.sh`
+      grepped only `"all_agree": true` — so a regression that stopped emitting a whole
+      boundary class, or a newly composed reviewed policy, would still report success. Added
+      `expected_classes` (derived from the spec's own shape, not a fixed list) plus
+      `EvidenceReport::missing_classes()`, surfaced `coverage`/`missing_classes` on
+      `DryRunOutput` and `models_all_policies`/`unmodeled_reviewed_policies` on `VerifyOutput`
+      as its own dimension (deliberately *not* folded into `matches`), and gated both. The
+      composed-policy gate reads `scripts/layer1-unmodeled-acknowledged.txt` and fails on an
+      unacknowledged gap **and** on a stale entry, so it cannot become a blanket exemption.
+
 Also added: the RFP's "always compilable" claim is now a property test
 (`any_validated_spec_generates_parseable_rust` over every constraint variant, predicate kind,
 state shape and arity, parsed with `syn`), with the real-compiler counterpart
@@ -149,10 +222,8 @@ the longest legal symbol, and the `max_calls` boundaries. `MAX_SIGNERS_PER_RULE`
 / `MAX_POLICIES` from the contracts workspace (the host workspace cannot depend on that crate).
 
 **Independent security review of this pass — findings and what changed.** Two reviewers were
-run against the diff with instructions to attack each claim. Nine survived refutation. Three
-of them landed on the dry-run harness and the composed-policy gate — second-milestone
-deliverables, so they are recorded with that milestone. The rest are fixed here, each with a
-regression test:
+run against the diff with instructions to attack each claim. Nine survived refutation; all are
+now fixed, each with a regression test:
 
 - **The rendering-safety claim was false in one place (high).** `template_family` still reached
   the emitted header as a bare `&str`. It arrives on the *spec*, and `generate_code`/`verify`
@@ -181,6 +252,22 @@ regression test:
   cache, the reproduction would agree, i.e. `matches: true` on wasm that does not correspond to
   the reviewed source. Now per-uid, created `0700`, and refused if it is a symlink, not a
   directory, owned by another uid, or group/world-accessible.
+- **The coverage floor over-demanded, and could be masked (medium ×2).** It required
+  `TupleCrossProduct` whenever two tuples shared `(fn, arity)`, but the generator skips mixes
+  that reproduce an observed tuple — so two tuples differing in exactly one position emit
+  nothing and a *correct* spec failed the gate (the shape the synthesizer produces from the same
+  payment recorded at two amounts). And because both the floor and coverage were unioned across
+  rules, rule 0's cases could vouch for rule 1's gap. The floor is now per rule, and demands
+  cross-products only when two tuples differ in ≥2 positions.
+- **A class could be "covered" by permit-only cases (low).** With an expiry at `u32::MAX` the
+  only expiry-*denial* case is unreachable, so `TimeBoundary` was reported covered having never
+  shown a denial. Deliberately **reported, not gated** — it is a degenerate bound (a cap of
+  `i128::MAX` cannot be exceeded), so failing would reject correct specs; the new
+  `permit_only_classes` says the grant is effectively unbounded on that axis.
+- **The acknowledgement file could pre-silence an unchecked spec (medium).** Staleness was only
+  detectable for specs the gate loop covers, so an entry naming `soroswap` sat unnoticed and
+  would arrive pre-acknowledged the day that spec joined the loop. A `--known-specs` mode now
+  fails on any entry outside the checked set.
 - **`Strkey` proved "decodable", not "is an Address" (low).** Muxed (`M…`) and pre-auth (`T…`)
   strkeys decoded fine and would be emitted into `Address::from_str`, where the SDK panics at
   *runtime* — a policy that deploys and then denies everything, invisible to every offline gate.
@@ -189,18 +276,20 @@ regression test:
   into the BuildManifest (now first line, ≤256 bytes, hard failure otherwise); a hanging probe
   reported `EBuildTimeout`, telling an agent its spec was too big when the fault was the
   operator's (now `EBuildUnavailable`); operator paths leaked into wire error messages (§6.5);
-  `OZPB_BUILD_TIMEOUT_SECS`/`_JOBS` had no ceiling, so a typo failed *open*; and the four
+  `OZPB_BUILD_TIMEOUT_SECS`/`_JOBS` had no ceiling, so a typo failed *open*; the four
   default-config toolkit wrappers had zero callers and silently bypassed operator config
-  (removed).
+  (removed); and several pre-existing `cmd && echo ✔` lines in `verify-phase2.sh` did not abort
+  under `set -e` (a failing `cargo test -p ozpb-harness` printed nothing and the gate still
+  said PASSED).
 
 **Deliberately out of scope, scheduled rather than dropped:**
 
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
-   reconciliation and transitive closure). The largest remaining gap to RFP #7: the install
-   path a later milestone contracts cannot proceed without a `Safe` authority-surface verdict,
-   and that verdict is derived from an account snapshot no adapter here acquires. Excluded from
-   this pass because it is only verifiable against a live network, so most of it cannot be
-   test-driven offline. **This is the next pass.**
+   reconciliation and transitive closure). The largest remaining gap to RFP #7:
+   `prepare_install_intent` requires a `Safe` authority-surface verdict, and the pure core is
+   complete and tested but fed a caller-supplied snapshot. Excluded from this pass because it
+   is only verifiable against a live network, so most of it cannot be test-driven offline.
+   **This is the next pass.**
 2. **Containerized build + the missing BuildManifest provenance fields** (§4.4, §6.3 — container
    image digest, source commit + dirty-tree status, template-pack hash, canonicalization version,
    build target). The builder is still honestly labelled `local-unattested`. Adding manifest
@@ -220,10 +309,19 @@ regression test:
    single `SCREAMING_SNAKE_CASE` spelling, which was the deliberate breaking wire change this
    item said should be decided rather than drifted into; request DTOs are closed schemas that
    reject unknown fields, and `dtos_have_schemas` covers the MCP-exposed inputs and outputs.
-6. **Layer-2 deny-code agreement.** The hand-written `differential.rs` here agrees with the
-   reference evaluator on verdict *and* deny reason. The generated layer-2 suite, which asserts
-   only the permit/deny boolean, is part of the dry-run harness — a second-milestone
-   deliverable — so bringing it up to deny-code agreement belongs to that milestone.
+6. **Layer-2 deny-code agreement.** `generated_suite.rs` asserts only the permit/deny boolean,
+   while the hand-written `differential.rs` agrees on verdict *and* deny reason.
+7. ~~**`scripts/mutation-test.sh` does not currently pass.**~~ **Closed.** The run exposed
+   **8 surviving mutants** — 3 in `crates/evaluator` and 5 in `crates/synthesizer` — all
+   pre-existing (the survivor set was byte-identical between a clean-HEAD worktree and the
+   hardening pass). They mattered because of where they sat: two comparisons in the reference
+   evaluator that the differential suite treats as the independent second opinion, and the
+   target-code-hash drift guard. Each now has a test, and the script is wired into CI as its
+   own job so it cannot drift again. Two were subtler than they looked: `evaluate_rule` had no
+   coverage in its own crate (every test went through `evaluate`), and the predicate
+   comparisons share a deny reason with a later check, so the first attempt at those tests
+   passed while the mutants still survived — the tests had to be built so only the comparison
+   under test could decide the outcome.
 
 ---
 
@@ -238,11 +336,19 @@ not *proven*; all four are now closed and verified.
       alongside auth calls and token movements — not silently dropped. (`recorder-core`, +2 tests.)
 - [x] **Automated MCP protocol test** — `crates/mcp-server/tests/mcp_stdio.rs` spawns the
       *built* server binary and drives the real JSON-RPC handshake over stdio: `initialize`
-      + `tools/list` (every served tool carries an output schema, and the served set is
-      asserted against the list of names the milestone contracts), an `evaluate_spec`
-      `tools/call` returning a permit derived from the committed example spec (so it never
-      drifts from the fixture), and a malformed-input call yielding a machine-readable
-      error. Closes the "MCP wiring only manually exercised" gap. (+3 tests.)
+      + `tools/list` (all 11 tools carry output schemas, exact count asserted), a `dry_run` `tools/call` returning
+      structured all-agree evidence, an `evaluate_spec` permit derived from the committed
+      example spec (never drifts), and a malformed-input call yielding a machine-readable
+      error. Closes the "MCP wiring only manually exercised" gap. (+4 tests.)
+- [x] **Mutation testing** (architecture §8) — `scripts/mutation-test.sh` + `.cargo/mutants.toml`
+      run `cargo-mutants` on the two security-critical cores, and a survivor is treated as a
+      missing deny-test. Killed at the time by targeted tests (threshold boundary,
+      permission-bundle fan-out, tuple dedup, spending-limit param validation, widening
+      apply/reject reasons, scval encoding). Deterministic test-support fixtures are scoped out
+      with a documented rationale (their correctness is enforced by the downstream
+      golden/differential suites). Per-crate counts are deliberately not quoted here — they
+      move with the code and with the pinned `cargo-mutants` version; the header states the
+      current result, and it is now enforced by CI rather than by a manual run.
 - [x] **Developer docs** — `docs/DEVELOPERS.md`: CLI + MCP usage, the synthesizer's scoping
       decisions (exact-by-default, widening-only-via-explicit-decision, permission-bundle),
       and a step-by-step guide to extending the toolkit with a new template primitive.
@@ -251,7 +357,7 @@ not *proven*; all four are now closed and verified.
 
 # Independent implementation review — findings addressed
 
-An independent source-and-security review of the implementation, run on 2026-07-22, raised two
+A source/security review (`tmp/architecture-implementation-review-2026-07-22.md`) raised two
 critical and six high-severity findings. Status:
 
 - [x] **1. Duplicate-signer threshold bypass (critical).** Signers now canonicalize to a
@@ -262,14 +368,11 @@ critical and six high-severity findings. Status:
       validated as canonical decimal i128 before codegen (hostile tokens can't cross the
       `ValidatedSpec` typestate), and codegen emits `i128::MIN` as the named constant so a
       validated spec always compiles.
-- [x] **3. Recognition/verification as caller assertions.** The `recognized` boolean a caller
-      could simply set is gone: recognition is derived, by matching an observed code hash
-      against a signed registry snapshot, and an unmatched hash is an error rather than a
-      guess. A real `BuildManifest` (`crates/build-runner`) reproduces wasm via a sandboxed
-      `stellar contract build`, and build tests are hermetic via an injectable `Builder` (real
-      vs. `Stub`). The tools that consume a reproduction to answer "does this *deployed* policy
-      correspond to this source" are second-milestone deliverables, so that question is not
-      answered in this milestone.
+- [x] **3. Recognition/verification as caller assertions.** The `recognized` boolean is gone;
+      `check_against_policy`/`check_policy_call_surface` verify wasm hash + registry + storage
+      against a signed snapshot. A real `BuildManifest` (`crates/build-runner`) reproduces wasm
+      via a sandboxed `stellar contract build`; `verify.matches` requires byte-identical
+      reproduction. Build tests are hermetic via an injectable `Builder` (real vs. `Stub`).
 - [x] **4. Registry not in the synthesis path.** Synthesis resolves every capability
       (account/verifier/template/policy) through `ozpb-registry` fail-closed; target code
       hashes come from recorder evidence; reviewed **adapters** are wired in and produce
@@ -280,27 +383,24 @@ critical and six high-severity findings. Status:
       from a fixed string, so a production deployment must supply its own governance root; and
       reviewed-adapter resolution from the registry snapshot is the last mile (the synthesizer
       supports adapters; the toolkit passes none yet).
-- [~] **5. Dry-run false confidence.** The part of this finding that lands on synthesis is
-      closed: synthesis refuses spending-limit composition on mixed transfer/non-transfer rules,
-      so a spec cannot describe a cap that would not apply to every rule it covers. Everything
-      else in the finding concerns the dry-run harness and the evidence report it emits — a
-      second-milestone deliverable (§4.5) — and so is the residual (5d): exercising the **real**
-      reviewed spending-limit wasm in the layer-2 differential (cap/window/ordering/rollback)
-      needs that audited wasm pinned in the contracts workspace.
+- [x] **5. Dry-run false confidence.** The harness covers *every* rule; synthesis refuses
+      spending-limit composition on mixed transfer/non-transfer rules; and dry-run/verify now
+      **flag composed reviewed policies as outside layer-1 coverage** (`unmodeled_policies`) so
+      `all_agree` is never read as covering an unmodeled on-chain cap. *Residual (5d):*
+      exercising the **real** reviewed spending-limit wasm in the layer-2 differential
+      (cap/window/ordering/rollback) needs that audited wasm pinned in the contracts workspace.
 - [x] **6. Recorder provenance.** `getNetwork` verifies the passphrase; missing
       ledger/timestamp and malformed simulation auth fail closed; empty sim-auth never falls
       back to envelope auth; simulation `stateChanges` are preserved; `approve` events are
       decoded; XDR decoding uses bounded limits. (All with tests.)
-- [ ] **7. Call-surface / install path.** The authority-surface check and the install intent are
-      second-milestone deliverables (§4.8, §10), so nothing in this milestone answers whether an
-      account's installation surface is safe to touch. What this milestone does carry is the
-      *precondition*: `install_safe` on the account record, which synthesis treats as a
-      fail-closed input — a false verdict yields no spec at any level of permission, and
-      `scripts/demo-tranche1.sh` evidences that refusal against live testnet. A **live
-      acquisition adapter** (getLedgerEntries → `AccountState` with `NextId`/`Count`
-      reconciliation and transitive closure) is the missing piece that would let the verdict be
-      derived rather than supplied. `assemble_install_transaction` is deliberately wallet-owned
-      in every milestone (it needs live sequence/fees); method-level capability-algebra
+- [~] **7. Call-surface / install path.** `check_policy_call_surface` is exposed (11 MCP
+      tools) and `prepare_install_intent` requires a validated `Safe` verdict; the admin-rule
+      skip is guarded (a weak/empty Default-as-admin now fails closed); dominance is
+      conservatively fail-closed. *Residual:* a **live acquisition adapter** (getLedgerEntries
+      → `AccountState` with `NextId`/`Count` reconciliation and transitive closure) is not yet
+      built, so the end-to-end live→verdict path is not operational — the pure core is
+      complete and tested but is fed a caller-supplied snapshot. `assemble_install_transaction`
+      is deliberately wallet-owned (needs live sequence/fees); method-level capability-algebra
       dominance is future work.
 - [~] **8. HTTP server hardening.** `--http` is loopback-only and refuses to start without a
       ≥32-byte bearer token and an RPC allowlist; it applies bearer auth (constant-time),
@@ -313,12 +413,85 @@ Also fixed from the review's tests/code-quality section: untracked 919 build-out
 and gitignored them + the testnet secrets; the advisory gate now covers **both** workspaces
 (the contracts `paste` unmaintained advisory is ignored with justification).
 
-**Honest status:** findings 1, 2, 3 and 6 are fully resolved with tests; 4 and 8 are resolved
-except for the residuals above, which are live-integration / dependency-pinning work that cannot
-be completed or truthfully tested offline. Findings 5 and 7 land largely on components a later
-milestone contracts — the dry-run harness, the authority-surface check, the install path — and
-are marked accordingly rather than counted as closed here. The live call-surface scan and the
-real passkey wallet install/revoke flow are operational work for a later milestone.
+**Honest status:** findings 1, 2, 3, 5(a–c), 6 are fully resolved with tests; 4, 7, 8 are
+resolved except for the residuals above, which are live-integration / dependency-pinning work
+that cannot be completed or truthfully tested offline. Do not read this as "Phase 2 fully
+delivered end-to-end" — the live call-surface scan and the real passkey wallet install/revoke
+flow remain the operational Phase-2/3 work.
+
+---
+
+# Phase 2 — Testnet (prove & integrate)
+
+Target (architecture.md §10, Phase 2): four-layer harness with constraint-derived deny
+generation + differential testing · the two-surface `check_policy_call_surface` with
+`PolicyBindingSet` ordering · `dry_run` / `verify` / `check_against_policy` /
+`prepare_install_intent` / `import_recording` tools · Claude skill with clarification +
+confirm-before-deploy · all three walkthroughs · pollywallet integration · hosted testnet
+endpoint.
+
+## Delivered (offline, deterministic, tested)
+
+- [x] `harness` — constraint-derived deny-suite generator + labeled permit/deny evidence
+      report (layer 1); the suite is exposed so layer 2 drives identical mutations.
+- [x] `call-surface-core` — the **two-surface account authority check** (§4.8 / D4 / D6):
+      bounded_next_id enumeration, Count reconciliation failing closed on archival deficit,
+      transitive closure, conservative dominance, both the direct-policy and
+      account-management surfaces (the management-surface bypass), no override.
+- [x] Layer-2 differential: the harness-generated deny suite run through the **real
+      compiled contract** in a committed-state soroban env (W2), agreeing on verdict + code.
+- [x] Walkthroughs: W1 (Blend claim), W2 (SEP-41 subscription), W3 (bounded Soroswap) —
+      synthesized, validated, harness layer-1 all-agree; W3 compiles to wasm (the richest
+      shape: LeI128/GeI128 bounds, exact scval path, AnyValue deadline).
+- [x] `AnyValue` constraint (maximal widening) + code-hash-bound `adapters` (Soroswap
+      router arg roles: MaxInput/MinOutput/CallerChosen/ExactOnly).
+- [x] New tools wired through toolkit + MCP (now **11 tools**, all with output schemas) +
+      CLI: `dry_run`, `verify` (dimensions reported separately), `check_against_policy`
+      (recognition-scoped), `import_recording`, `prepare_install_intent` (pure intent only).
+- [x] Claude skill (`skills/policy-builder/SKILL.md`) + `.mcp.json` + plugin manifest:
+      clarification + confirm-before-deploy; the skill never decides bytes, signs, or
+      offers an "install anyway" path.
+- [x] `verify-phase2.sh` — all six offline gates pass.
+
+## Live testnet / runtime evidence (done — see docs/TESTNET-EVIDENCE.md)
+
+This sandbox *does* have network egress, Node 24, and the Stellar CLI, so several items
+first parked as "blocked" were actually done against **live Protocol-27 testnet**:
+
+- [x] **Recorder against live Gateway public RPC** — a real on-chain `transfer` recorded
+      via `rpc.testnet.stellar.gateway.fm`; decoded auth call + token movement match chain.
+- [x] **Generated policy deployed on testnet** — real contract instance
+      `CCFRJAPI5DUYR2FPOH5NCZGU3QYH3QFZMB7FMR67EJEJ32LA4YTD4G6L` (compiles → deploys).
+- [x] **MCP full `tools/call` round-trip (stdio)** — `dry_run` returns structured content.
+- [x] **MCP streamable-HTTP endpoint** (`--http`) — real `initialize` over HTTP with a
+      session id; the transport a hosted endpoint uses (only the public URL/TLS/auth is ops).
+- [x] **Full OZ smart-account `__check_auth` install + on-chain permit/deny** — deployed an
+      OZ smart account (External ed25519 admin) + verifier, generated a native-SAC policy
+      with the toolkit, installed it via `add_context_rule` authorized by a hand-built
+      `AuthPayload` (ed25519 over the rule-ID-bound `auth_digest` — the signing
+      smart-account-kit wraps), then on-chain: a permit (exact transfer SUCCEEDED, real XLM
+      moved) and denies (over-amount and wrong-recipient reverted). Reproducible harness in
+      `testnet-harness/`; addresses + tx hashes in `docs/TESTNET-EVIDENCE-TRANCHE-2.md`. This is the
+      Phase-2 verifiable outcome (minus the passkey UX + video).
+
+- [x] **pollywallet UI + headless passkey (Playwright)** — cloned the real repo (unit suite
+      53/54; 1 expired live fixture), booted its dev server locally, and drove its actual
+      "Create Smart Wallet" button headless with a CDP **virtual WebAuthn authenticator**:
+      pollywallet's own `@simplewebauthn/browser` passkey registration completed (resident
+      secp256r1 credential; screenshot in `docs/media/`). Also a self-contained headless
+      passkey create+sign proof with recorded video. Harness: `testnet-harness/browser/`.
+      The only gap to a full pollywallet install run is its server-side relayer (Channels)
+      config — a backend dep, not a browser/passkey limit; and pollywallet's AI-codegen +
+      Docker compile-sandbox deps are what this toolkit replaces.
+
+## Still requires a human / external party
+
+- [ ] **Hosted public endpoint** — the server runs (stdio + streamable HTTP); a public URL
+      + TLS + auth is ops/deployment.
+- [ ] **OpenZeppelin technical-reviewer sign-off** — external human review. (A narrated
+      demo video is a human artifact; the Playwright harness already records `.webm` runs.)
+- [ ] **Hosted public endpoint** — the server runs; a public URL + TLS + auth layers are ops.
+- [ ] **Demo video; OpenZeppelin reviewer sign-off** — external/human.
 
 ---
 
@@ -329,9 +502,7 @@ credential arms, authorizer selection, trust levels, dual hashing) · PolicySpec
 (mandatory signer predicate, exact tuples, provenance) · acyclic artifact chain · initial
 capability registries · reference evaluator · synthesizer v1 (exact-by-default,
 fail-closed) · codegen (signer predicate + tuple scope, immutable config) + spending_limit
-composition · reproducible builds · MCP server v0 over stdio, exposing the six tools
-`MVP_TOOLS` holds (`record_transaction`, `record_simulation`, `import_recording`,
-`synthesize_policy`, `evaluate_spec`, `generate_code`).
+composition · reproducible builds · MCP server v0 (6 tools, stdio).
 
 **Verifiable outcome (met):** a recorded testnet-shaped transfer becomes a compilable Rust
 policy, byte-identical across two cold runs, agreeing with the reference evaluator on a
@@ -341,29 +512,36 @@ denial.
 ## Status — COMPLETE
 
 - [x] Repo scaffold (workspace, toolchain pin, dep-rule check script)
-- [x] `domain` — hashes, newtypes, trust levels, canonical encoding (22 tests)
-- [x] `policy-spec` — schema, validation typestate, canonical spec hash (22 tests)
-- [x] `evaluator` — independent reference evaluator (27 tests)
-- [x] `synthesizer` — exact-by-default, fail-closed (39 tests)
-- [x] `recorder-core` + `source-bundle` — XDR fixtures, dual hashing (20 tests)
-- [x] `registry` — signed snapshots, rollback rejection, fail-closed queries (17 tests)
-- [x] `codegen` — deterministic template assembly, golden output (21 tests)
-- [x] `build-runner` — bounded local builds, `BuildManifest` attestation (22 tests, 2 of them
-      `#[ignore]`d because they need the real Stellar toolchain)
-- [x] `contracts/` — golden policy compiles, and the differential suite agrees with the
-      reference evaluator on verdict and deny code (17 cases) plus a storage-rent suite over
-      the generated policy's TTL behaviour (8 cases), both against the real compiled contract
-      in a committed-state soroban env
-- [x] `api-types` + `toolkit` + `source-rpc` + `mcp-server` (stdio; the five tools §10 names
-      for this phase, plus `import_recording`, so six served) + `cli`
-- [x] Phase 1 verification: `scripts/verify-phase1.sh` — the strict release gate passes end
-      to end (and `--offline` names what it skipped)
+- [x] `domain` — hashes, newtypes, trust levels, canonical encoding (13 tests)
+- [x] `policy-spec` — schema, validation typestate, canonical spec hash (16 tests)
+- [x] `evaluator` — independent reference evaluator (20 tests)
+- [x] `synthesizer` — exact-by-default, fail-closed (11 tests)
+- [x] `recorder-core` + `source-bundle` — XDR fixtures, dual hashing (13 tests)
+- [x] `registry` — signed snapshots, rollback rejection, fail-closed queries (7 tests)
+- [x] `codegen` — deterministic template assembly, golden output (7 tests)
+- [x] `contracts/` — golden policy compiles + 14-case differential suite (evaluator vs
+      real compiled contract in a committed-state soroban env)
+- [x] `api-types` + `toolkit` + `source-rpc` + `mcp-server` (6 tools, stdio) + `cli`
+- [x] Phase 1 verification: `scripts/verify-phase1.sh` — all 6 gates pass
 
-**Totals:** 298 tests (273 host + 25 in the contracts workspace) · 14 crates + contracts
-workspace. Counted by running the two suites `scripts/verify-phase1.sh` runs —
-`cargo test --workspace` and, in `contracts/`, `cargo test -p ozpb-differential` — which is
-also how to re-count them; the number here is what those commands reported on 2026-08-19 and
-moves whenever a test is added.
+**Totals:** 112 tests (98 host + 14 differential) · 13 crates + contracts workspace.
+
+## The pipeline (all deterministic, all fail-closed)
+
+```
+EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ PolicySpec
+   ↑ acquisition adapters            (auth tree, dual hashes)        (exact tuples,
+   (source-rpc / source-bundle,       evidence, trust levels)         signer predicate,
+    trust derived by path)                                            provenance)
+                                                                          │
+                                              reference evaluator ◄───────┤ (validate → ValidatedSpec)
+                                              (independent; CI-enforced    │
+                                               no codegen dep)             ▼
+                                                                      codegen → immutable
+                                                                      Soroban policy crate
+                                                                      (compiles; byte-identical
+                                                                       wasm; differential-verified)
+```
 
 ## Verifiable artifacts
 
@@ -380,12 +558,9 @@ moves whenever a test is added.
   with `No such file or directory` on a fresh checkout. The gate now cleans, asserts the
   artifact is gone before rebuilding, and compares.
 - **Differential agreement:** the reference evaluator and the real compiled policy agree
-  on verdict AND deny code across 17 adversarial cases.
-- **MCP:** `initialize` + `tools/list` over stdio expose `record_transaction`,
-  `record_simulation`, `import_recording`, `synthesize_policy`, `evaluate_spec` and
-  `generate_code` — each with an output schema generated from the shared `api-types` DTOs.
-  `mcp_stdio.rs` asserts the served set against that list of names, not against a bare
-  count, so a tool that appears or disappears is named by the failure.
+  on verdict AND deny code across 14 adversarial cases.
+- **MCP:** `initialize` + `tools/list` over stdio expose 6 tools, each with an output
+  schema generated from the shared `api-types` DTOs.
 - **Offline demo:** `docs/examples/` holds runnable pipeline inputs; the CLI runs
   record → synthesize → generate → evaluate with no network.
 
@@ -405,8 +580,6 @@ moves whenever a test is added.
 - **Registry:** the `registry::dev` snapshot now pins real upstream wasm hashes (OZ example
   contracts at `v0.7.2`, built with this repo's pinned rustc — provenance in
   `ozpb_domain::pinned_upstream`). Its signing root remains a development key.
-- **Not in Phase 1 (by design, per §10):** the dry-run harness and its evidence report, the
-  `verify` / `check_against_policy` / `prepare_install_intent` / `assemble_install_transaction`
-  tools, the agent skill, the three end-to-end walkthroughs, wallet integration, a hosted
-  endpoint, and the call-surface check — these are Phase 2/3, and this milestone is not reviewed
-  against them.
+- **Not in Phase 1 (by design, per §10):** dry-run harness layers 3–4, verify/check_against_policy/
+  prepare_install_intent/assemble_install_transaction tools, wallet integration, hosted
+  endpoint, the call-surface check — these are Phase 2/3.

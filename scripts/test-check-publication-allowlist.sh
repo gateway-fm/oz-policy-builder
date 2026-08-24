@@ -98,7 +98,10 @@ rm "$REPO/config-sample.txt"
 
 # 5. The fingerprint, with no file involved at all — the half that runs where there is no
 #    private root, so this is the case CI would otherwise be relying on alone.
-printf 'the award was $%d,%03d in total\n' 1 234 > "$REPO/pitch.md"
+# The figure is assembled at run time from parts that are not money-shaped on their own, so
+# this file carries no such literal itself. Writing one here would put exactly the shape the
+# gate exists to keep out into a tracked file — the mistake the gate's own header records.
+printf 'the award was $%s,%s in total\n' 12 345 > "$REPO/pitch.md"
 expect_refused "a money-shaped figure in the tree" "FORBIDDEN CONTENT fingerprint"
 rm "$REPO/pitch.md"
 

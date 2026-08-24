@@ -37,7 +37,12 @@ jobs:
           missing=""
           for commit in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
             author="$(git log -1 --format='%an <%ae>' "$commit")"
-            if ! git log -1 --format='%B' "$commit" | grep -qiF "Signed-off-by: $author"; then
+            # git's own trailer parser, not a substring search of the whole message. A search
+            # accepted `Not Signed-off-by: <author>` — and any line merely containing the
+            # phrase — as a valid sign-off. `%(trailers:...)` only reads the trailer block,
+            # and `-x` compares the whole value rather than a prefix of it.
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" \
+                 | grep -qxF -- "$author"; then
               # Command substitution strips the trailing newline printf wrote, so append one
               # explicitly — otherwise the next entry runs onto this one's last line.
               missing="$missing$(printf '  %s\n    author: %s' \
