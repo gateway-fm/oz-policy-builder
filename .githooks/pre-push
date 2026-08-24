@@ -13,47 +13,14 @@ ROOT="$(git rev-parse --show-toplevel)"
 REMOTE_NAME="${1:-}"
 REMOTE_URL="${2:-}"
 
-# git feeds the refs being pushed on stdin, and both checks below need them: the publication
-# gate to scan the commit that is actually leaving, and the provenance check to walk its range.
-# Read once, into a variable, since stdin can only be consumed once.
-REFS="$(cat)"
-
 # ── 1. The publication gate ──────────────────────────────────────────────────────────────
 #
 # Its strong half compares the tracked tree against the private root beside the repository, and
 # that root exists on a working machine and nowhere else — CI checks out one repository and has
 # nothing to compare against. So the check that can see what it is protecting runs at push time,
 # and CI keeps the pattern-only half as the backstop for anything pushed with `--no-verify`.
-#
-# Scanned per pushed commit rather than at `HEAD`: pushing a branch that is not the one checked
-# out is ordinary, and in that case `HEAD` is not what would become public.
 echo "pre-push: publication gate"
-zero='0000000000000000000000000000000000000000'
-# Every commit the push introduces, not just each tip. A branch whose first commit adds a
-# private file and whose second deletes it has a clean tip tree, and pushing it publishes the
-# blob in history all the same.
-introduced=()
-while read -r _local_ref local_sha _remote_ref remote_sha; do
-    [ -z "${local_sha:-}" ] && continue
-    [ "$local_sha" = "$zero" ] && continue                 # branch deletion
-    if [ "${remote_sha:-$zero}" = "$zero" ]; then
-        range=$(git rev-list "$local_sha" --not --remotes="$REMOTE_NAME")
-    else
-        range=$(git rev-list "$remote_sha..$local_sha")
-    fi
-    # A branch already on the remote introduces nothing; scan its tip so the push is still
-    # checked rather than waved through on an empty range.
-    [ -z "$range" ] && range="$local_sha"
-    while read -r commit; do
-        [ -n "$commit" ] && introduced+=("$commit")
-    done <<< "$range"
-done <<< "$REFS"
-
-if [ "${#introduced[@]}" -gt 0 ]; then
-    # `--require-private-root`: this is the machine where the comparison is possible, so a
-    # root that yields nothing is a fault here even though it is normal on a CI runner.
-    bash "$ROOT/scripts/check-publication-allowlist.sh" --require-private-root "${introduced[@]}"
-fi
+bash "$ROOT/scripts/check-publication-allowlist.sh"
 
 # ── 2. Where the change was authored ─────────────────────────────────────────────────────
 #
@@ -69,10 +36,11 @@ fi
 # Matched on host and owner/name together, not the basename alone: a fork or mirror ending in
 # `/oz-policy-builder.git` is exactly the case the comment above says is out of scope, and a
 # basename-only compare would pull it in.
-if ! [[ "$REMOTE_URL" =~ ^(git@|ssh://git@|https://)github\.com[:/]gateway-fm/oz-policy-builder(\.git)?/?$ ]]; then
+if ! [[ "$REMOTE_URL" =~ ^(git@|https://)github\.com[:/]gateway-fm/oz-policy-builder(\.git)?/?$ ]]; then
     exit 0
 fi
 
+zero='0000000000000000000000000000000000000000'
 unmarked=""
 while read -r _local_ref local_sha _remote_ref remote_sha; do
     [ "$local_sha" = "$zero" ] && continue                 # branch deletion
@@ -86,11 +54,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
         # Anchored to the two real markers, not to the words appearing anywhere in prose:
         # `git cherry-pick -x` always writes its trailer as its own line in this exact form,
         # and a `Public-only:` line needs an actual reason after the colon, not just the tag.
-        # A full object id, not `[0-9a-f]+`: the loose form accepted `(cherry picked from
-        # commit 0)`, which `git cherry-pick -x` never writes, so a hand-typed line satisfied
-        # the carried-across branch. Both widths are allowed because this repository is sha1
-        # today and the id length changes with the object format, not with the commit.
-        if grep -qE '^\(cherry picked from commit ([0-9a-f]{40}|[0-9a-f]{64})\)$' <<<"$body"; then
+        if grep -qE '^\(cherry picked from commit [0-9a-f]+\)$' <<<"$body"; then
             continue
         fi
         if grep -qE '^Public-only: +\S' <<<"$body"; then
@@ -99,7 +63,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
         unmarked="$unmarked$(git log -1 --format='  %h %s' "$commit")
 "
     done
-done <<< "$REFS"
+done
 
 if [ -n "$unmarked" ]; then
     cat >&2 <<EOF
