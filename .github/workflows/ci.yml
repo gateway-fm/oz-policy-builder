@@ -36,12 +36,13 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          for commit in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+          for commit in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
             author="$(git log -1 --format='%an <%ae>' "$commit")"
             if ! git log -1 --format='%B' "$commit" | grep -qiF "Signed-off-by: $author"; then
-              missing="$missing  $(git log -1 --format='%h %s' "$commit")
-    author: $author
-"
+              # Command substitution strips the trailing newline printf wrote, so append one
+              # explicitly — otherwise the next entry runs onto this one's last line.
+              missing="$missing$(printf '  %s\n    author: %s' \
+                "$(git log -1 --format='%h %s' "$commit")" "$author")"$'\n'
             fi
           done
           if [ -n "$missing" ]; then
