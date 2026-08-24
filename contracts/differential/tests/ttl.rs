@@ -43,7 +43,7 @@
 //! `install_extends_the_counter_entry_and_the_instance` proves a testnet/test-env behaviour, not a
 //! Mainnet one.
 
-use generated_sub_transfer_r0::{PolicyStorageKey, GeneratedPolicy, GeneratedPolicyClient};
+use generated_sub_transfer_r0::{GeneratedPolicy, GeneratedPolicyClient, PolicyStorageKey};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext};
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
