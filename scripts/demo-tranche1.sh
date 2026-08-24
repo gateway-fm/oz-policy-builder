@@ -276,13 +276,14 @@ cargo run -q -p ozpb-cli -- generate --spec "$WORK/04-spec.json" --rule 0 --out 
 # can be read without following any configuration, and the error enum names every way the
 # policy can refuse, so the deny paths are enumerable by reading too.
 echo "  the limits are visible in the source, not buried in configuration:"
-grep -E "^const (TARGET|VALID_UNTIL_LEDGER|MAX_CALLS)" "$WORK/05-policy/src/lib.rs" | sed 's/^/    /'
+grep -E "^const (TARGET|VALID_UNTIL_LEDGER|MAX_CALLS)" "$WORK/05-policy/src/contract.rs" | sed 's/^/    /'
 echo "  and every rejection path is named:"
-grep -oE "PolicyError::[A-Za-z]+" "$WORK/05-policy/src/lib.rs" | sort -u | tr '\n' ' ' | sed 's/^/    /'; echo
+grep -oE "PolicyError::[A-Za-z]+" "$WORK/05-policy/src/contract.rs" | sort -u | tr '\n' ' ' | sed 's/^/    /'; echo
 
 step_note "5. Generated crate"
-artifact "05-policy/" "a complete standalone Soroban crate: src/lib.rs, Cargo.toml, the pinned Cargo.lock and rust-toolchain.toml, the unoptimised .wasm, and build-manifest.json. Nothing here was hand-edited."
-artifact "05-policy/src/lib.rs" "the policy a reviewer reads: limits as consts at the top, PolicyError naming every way it can refuse."
+artifact "05-policy/" "a complete standalone Soroban crate: src/lib.rs and src/contract.rs, Cargo.toml, the pinned Cargo.lock, rust-toolchain.toml and rustfmt.toml, the unoptimised .wasm, and build-manifest.json. Nothing here was hand-edited."
+artifact "05-policy/src/lib.rs" "the crate root: what this artifact guarantees, the order its checks run in, and the hash of the codegen input it came from."
+artifact "05-policy/src/contract.rs" "the policy a reviewer reads: limits as consts near the top, PolicyError naming every way it can refuse."
 artifact "05-policy/build-manifest.json" "what went into the build — spec hash, registry snapshot root, source and wasm hashes, toolchain, exact build arguments."
 
 say "6. THE OUTCOME: the real toolchain accepts it"
@@ -353,7 +354,7 @@ echo "  account   https://stellar.expert/explorer/testnet/contract/$ACCOUNT"
   printf -- '\n- account on chain: https://stellar.expert/explorer/testnet/contract/%s\n' "$ACCOUNT"; } >> "$MANIFEST"
 
 # The run directory is the deliverable, so end by showing it rather than by naming one path
-# inside it. Depth 3 because the file a reviewer opens first is `05-policy/src/lib.rs`, and
+# inside it. Depth 3 because the files a reviewer opens first are `05-policy/src/*.rs`, and
 # `target` is pruned rather than depth-capped: a reader who builds a crate by hand afterwards
 # would otherwise get hundreds of lines of intermediates in this listing.
 echo "  artifacts $WORK"
