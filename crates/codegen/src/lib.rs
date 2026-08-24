@@ -289,6 +289,22 @@ fn emit_doc(indent: &str, paragraphs: &[String], sections: &[(&str, Vec<String>)
     out
 }
 
+/// A `// ################## NAME ##################` section delimiter.
+///
+/// Their canonical form is eighteen hashes on each side (`code-quality.md`, "Module file
+/// layout"), and it is canonical in the strong sense: the rule says variations like `// === NAME
+/// ===` are to be rewritten to it. Built here from a repeat count so the two sides cannot drift,
+/// and so the count is stated once rather than in every emitted heading.
+///
+/// The section *names* are theirs where their files have one — ERRORS, CONSTANTS, EVENTS, QUERY
+/// STATE, CHANGE STATE, LOW-LEVEL HELPERS. STORAGE KEYS is ours: their storage-key type sits at
+/// the top of a `storage.rs` of its own and so needs no heading, which a single-file contract has
+/// no analogue for.
+fn section(name: &str) -> String {
+    let rule = "#".repeat(18);
+    format!("// {rule} {name} {rule}\n\n")
+}
+
 /// OpenZeppelin's own rustfmt configuration, shipped inside the generated crate.
 ///
 /// The option set is copied verbatim from `OpenZeppelin/stellar-contracts` at v0.7.2
@@ -559,6 +575,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     ));
     out.push('\n');
 
+    out.push_str(&section("ERRORS"));
     // Error enum (stable numbering; mirrors the reference evaluator's deny reasons).
     //
     // Every variant is declared whatever the rule's shape, so a code means the same thing across
@@ -649,6 +666,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     out.push_str("}\n\n");
 
+    out.push_str(&section("STORAGE KEYS"));
     // `PolicyStorageKey`, not `DataKey`: their convention is `<Module>StorageKey`
     // (`code-quality.md`, "Naming"), and every storage-key enum in the library follows it —
     // `SimpleThresholdStorageKey` at `policies/simple_threshold.rs:121`, and the same shape in
@@ -675,6 +693,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     out.push_str("}\n\n");
 
+    out.push_str(&section("CONSTANTS"));
     // Compiled-in constants.
     out.push_str(&format!("const TARGET: &str = \"{}\";\n", rule.target));
     if let Some(ledger) = rule.valid_until_ledger {
@@ -704,114 +723,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     out.push('\n');
 
-    // Expected signer set (sorted canonical order — deterministic).
-    if !dynamic {
-        out.push_str(
-            "fn expected_signers(e: &Env) -> Vec<Signer> {\n    soroban_sdk::vec![\n        e,\n",
-        );
-        // Already in canonical signer order — see `RenderRule::from_rule`.
-        //
-        // Both forms are rustfmt's, under the shipped config and measured against it — and they
-        // differ, which is the point of writing them out rather than picking one shape. A strkey
-        // is always 56 characters, so `Signer::Delegated(Address::from_str(e, "…")),` is 108
-        // columns and cannot fit `max_width` at this indentation however wide `fn_call_width`
-        // gets: rustfmt breaks the outer call and puts each argument on its own line. Inside
-        // `Signer::External(` the same call sits one level deeper but on a line of its own, where
-        // it comes to 93 columns and now fits — under the previous `fn_call_width = 60` it did
-        // not, which is why the argument list used to be split there too.
-        for (index, signer) in compiled_signers.iter().enumerate() {
-            match signer {
-                RenderSigner::Delegated(address) => out.push_str(&format!(
-                    "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
-                )),
-                RenderSigner::External { verifier, .. } => out.push_str(&format!(
-                    "        Signer::External(\n            Address::from_str(e, \"{verifier}\"),\n            Bytes::from_slice(e, &{})\n        ),\n",
-                    render::signer_key_name(index)
-                )),
-            }
-        }
-        out.push_str("    ]\n}\n\n");
-    }
+    // The private helpers go last, under their own heading, which is where OpenZeppelin's
+    // `storage.rs` puts LOW-LEVEL HELPERS. They are emitted into a buffer here and appended after
+    // the entry points, so a reader opening a generated policy meets the three things it exposes
+    // before the arithmetic they are built from — which is the ordering the `ttl_target` note
+    // already argued for, now applied to every helper rather than to that one.
+    let mut helpers = String::new();
 
-    // Matched-count helper (iterates expected → duplicates never double-count).
-    out.push_str(
-        "fn matched_count(authenticated: &Vec<Signer>, expected: &Vec<Signer>) -> u32 {\n    let mut matched: u32 = 0;\n    for exp in expected.iter() {\n        for got in authenticated.iter() {\n            if got == exp {\n                matched += 1;\n                break;\n            }\n        }\n    }\n    matched\n}\n\n",
-    );
-
-    // One check function per allowed tuple.
-    for (ci, call) in rule.calls.iter().enumerate() {
-        out.push_str(&format!(
-            "fn check_call_{ci}(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {{\n"
-        ));
-        out.push_str(&format!(
-            "    if args.len() != {}u32 {{\n        return false;\n    }}\n",
-            call.args.len()
-        ));
-        // `call.args` is already in index order (see `RenderRule::from_rule`).
-        for arg in &call.args {
-            let i = arg.index;
-            // AnyValue (maximal widening): enforce arity only, never bind the value.
-            if matches!(arg.constraint, RenderConstraint::AnyValue) {
-                out.push_str(&format!(
-                    "    if args.get({i}u32).is_none() {{\n        return false;\n    }}\n"
-                ));
-                continue;
-            }
-            out.push_str(&format!(
-                "    let Some(v{i}) = args.get({i}u32) else {{\n        return false;\n    }};\n"
-            ));
-            match &arg.constraint {
-                RenderConstraint::EqSelf | RenderConstraint::EqAddress(_) => {
-                    // Two shapes, because the condition's width decides where the brace goes and
-                    // the address form lands exactly on the boundary. `Address::from_str` now
-                    // fits one line — `fn_call_width` is `max_width` under the shipped config —
-                    // and at this indentation, with a strkey's fixed 56 characters, that line is
-                    // 100 columns: precisely `max_width`, so there is no room for the ` {` and
-                    // rustfmt puts the brace on its own line. The `SELF` form is short and keeps
-                    // the brace where a reader expects it. Both were taken from rustfmt's output.
-                    let guard = match &arg.constraint {
-                        RenderConstraint::EqSelf => {
-                            "            if *smart_account != a {\n".to_string()
-                        }
-                        RenderConstraint::EqAddress(address) => format!(
-                            "            if a != Address::from_str(e, \"{address}\")\n            {{\n"
-                        ),
-                        _ => unreachable!("guarded by the outer arm"),
-                    };
-                    out.push_str(&format!(
-                        "    match Address::try_from_val(e, &v{i}) {{\n        Ok(a) => {{\n{guard}                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::EqI128(lit) => {
-                    out.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x != {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::LeI128(lit) => {
-                    out.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x > {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::GeI128(lit) => {
-                    out.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                // The bytes are a module constant (emitted above), so this line is short
-                // whatever the recorded `ScVal` encodes to.
-                RenderConstraint::EqScval(_) => {
-                    out.push_str(&format!(
-                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &{}) {{\n        return false;\n    }}\n",
-                        render::arg_xdr_name(ci, i)
-                    ));
-                }
-                // Handled before the match (arity-only); listed for exhaustiveness.
-                RenderConstraint::AnyValue => unreachable!("AnyValue handled before the match"),
-            }
-        }
-        out.push_str("    true\n}\n\n");
-    }
-
+    out.push_str(&section("CHANGE STATE"));
     // The contract.
     out.push_str(&emit_doc(
         "",
@@ -1194,8 +1113,119 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     }
-    out.push_str("}\n");
-    out.push_str(&emit_ttl_target(rule.valid_until_ledger.is_some()));
+    out.push_str("}\n\n");
+    // Expected signer set (sorted canonical order — deterministic).
+    if !dynamic {
+        helpers.push_str(
+            "fn expected_signers(e: &Env) -> Vec<Signer> {\n    soroban_sdk::vec![\n        e,\n",
+        );
+        // Already in canonical signer order — see `RenderRule::from_rule`.
+        //
+        // Both forms are rustfmt's, under the shipped config and measured against it — and they
+        // differ, which is the point of writing them out rather than picking one shape. A strkey
+        // is always 56 characters, so `Signer::Delegated(Address::from_str(e, "…")),` is 108
+        // columns and cannot fit `max_width` at this indentation however wide `fn_call_width`
+        // gets: rustfmt breaks the outer call and puts each argument on its own line. Inside
+        // `Signer::External(` the same call sits one level deeper but on a line of its own, where
+        // it comes to 93 columns and now fits — under the previous `fn_call_width = 60` it did
+        // not, which is why the argument list used to be split there too.
+        for (index, signer) in compiled_signers.iter().enumerate() {
+            match signer {
+                RenderSigner::Delegated(address) => helpers.push_str(&format!(
+                    "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
+                )),
+                RenderSigner::External { verifier, .. } => helpers.push_str(&format!(
+                    "        Signer::External(\n            Address::from_str(e, \"{verifier}\"),\n            Bytes::from_slice(e, &{})\n        ),\n",
+                    render::signer_key_name(index)
+                )),
+            }
+        }
+        helpers.push_str("    ]\n}\n\n");
+    }
+
+    // Matched-count helper (iterates expected → duplicates never double-count).
+    helpers.push_str(
+        "fn matched_count(authenticated: &Vec<Signer>, expected: &Vec<Signer>) -> u32 {\n    let mut matched: u32 = 0;\n    for exp in expected.iter() {\n        for got in authenticated.iter() {\n            if got == exp {\n                matched += 1;\n                break;\n            }\n        }\n    }\n    matched\n}\n\n",
+    );
+
+    // One check function per allowed tuple.
+    for (ci, call) in rule.calls.iter().enumerate() {
+        helpers.push_str(&format!(
+            "fn check_call_{ci}(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {{\n"
+        ));
+        helpers.push_str(&format!(
+            "    if args.len() != {}u32 {{\n        return false;\n    }}\n",
+            call.args.len()
+        ));
+        // `call.args` is already in index order (see `RenderRule::from_rule`).
+        for arg in &call.args {
+            let i = arg.index;
+            // AnyValue (maximal widening): enforce arity only, never bind the value.
+            if matches!(arg.constraint, RenderConstraint::AnyValue) {
+                helpers.push_str(&format!(
+                    "    if args.get({i}u32).is_none() {{\n        return false;\n    }}\n"
+                ));
+                continue;
+            }
+            helpers.push_str(&format!(
+                "    let Some(v{i}) = args.get({i}u32) else {{\n        return false;\n    }};\n"
+            ));
+            match &arg.constraint {
+                RenderConstraint::EqSelf | RenderConstraint::EqAddress(_) => {
+                    // Two shapes, because the condition's width decides where the brace goes and
+                    // the address form lands exactly on the boundary. `Address::from_str` now
+                    // fits one line — `fn_call_width` is `max_width` under the shipped config —
+                    // and at this indentation, with a strkey's fixed 56 characters, that line is
+                    // 100 columns: precisely `max_width`, so there is no room for the ` {` and
+                    // rustfmt puts the brace on its own line. The `SELF` form is short and keeps
+                    // the brace where a reader expects it. Both were taken from rustfmt's output.
+                    let guard = match &arg.constraint {
+                        RenderConstraint::EqSelf => {
+                            "            if *smart_account != a {\n".to_string()
+                        }
+                        RenderConstraint::EqAddress(address) => format!(
+                            "            if a != Address::from_str(e, \"{address}\")\n            {{\n"
+                        ),
+                        _ => unreachable!("guarded by the outer arm"),
+                    };
+                    helpers.push_str(&format!(
+                        "    match Address::try_from_val(e, &v{i}) {{\n        Ok(a) => {{\n{guard}                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                RenderConstraint::EqI128(lit) => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x != {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                RenderConstraint::LeI128(lit) => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x > {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                RenderConstraint::GeI128(lit) => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                // The bytes are a module constant (emitted above), so this line is short
+                // whatever the recorded `ScVal` encodes to.
+                RenderConstraint::EqScval(_) => {
+                    helpers.push_str(&format!(
+                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &{}) {{\n        return false;\n    }}\n",
+                        render::arg_xdr_name(ci, i)
+                    ));
+                }
+                // Handled before the match (arity-only); listed for exhaustiveness.
+                RenderConstraint::AnyValue => unreachable!("AnyValue handled before the match"),
+            }
+        }
+        helpers.push_str("    true\n}\n\n");
+    }
+
+    helpers.push_str(emit_ttl_target(rule.valid_until_ledger.is_some()).trim_start_matches('\n'));
+
+    out.push_str(&section("LOW-LEVEL HELPERS"));
+    out.push_str(&helpers);
 
     out
 }
@@ -2257,6 +2287,90 @@ mod tests {
             !lib.contains(&format!("{}i128", i128::MIN)),
             "the overflowing positive literal must never be emitted as a source token"
         );
+    }
+
+    /// The emitted file is divided by OpenZeppelin's canonical section delimiter, in their order.
+    ///
+    /// Their rule is unusually specific: eighteen hashes each side, and variations such as
+    /// `// === NAME ===` are to be rewritten to that form. So the form is asserted exactly — a
+    /// heading with seventeen hashes reads the same to a human and is a violation.
+    ///
+    /// The order matters more than the presence. `storage.rs` in the library runs keys → QUERY
+    /// STATE → CHANGE STATE → LOW-LEVEL HELPERS, and a generated policy is a single file playing
+    /// the part of both `mod.rs` and `storage.rs`, so the sequence below is the two of them
+    /// concatenated. That is also why the private helpers now sit after the entry points rather
+    /// than before them: a reader opening a policy meets what it exposes before the arithmetic it
+    /// is built from.
+    #[test]
+    fn the_emitted_file_carries_the_canonical_section_delimiters_in_order() {
+        let rule = "#".repeat(18);
+        // Only the sections a rule of this shape has; EVENTS and QUERY STATE are asserted where
+        // they are emitted, so this list stays a statement about ordering rather than a roster
+        // that has to be edited whenever a section is added.
+        let expected = [
+            "ERRORS",
+            "STORAGE KEYS",
+            "CONSTANTS",
+            "CHANGE STATE",
+            "LOW-LEVEL HELPERS",
+        ];
+        for (label, spec) in [
+            ("golden transfer", golden_spec()),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+        ] {
+            let source = generate(&spec, 0, &Pins::default())
+                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
+                .files["src/lib.rs"]
+                .clone();
+
+            // Every delimiter in the file, in the order it appears, read back from the text.
+            let found: Vec<String> = source
+                .lines()
+                .filter_map(|line| line.strip_prefix(&format!("// {rule} ")))
+                .filter_map(|rest| rest.strip_suffix(&format!(" {rule}")))
+                .map(str::to_string)
+                .collect();
+            assert_eq!(
+                found, expected,
+                "{label}: section delimiters are missing, mis-formed or out of order"
+            );
+
+            // No near-miss forms: anything that looks like a heading must be the canonical one.
+            let malformed: Vec<&str> = source
+                .lines()
+                .filter(|line| line.starts_with("// #") || line.starts_with("// ==="))
+                .filter(|line| {
+                    !line.starts_with(&format!("// {rule} "))
+                        || !line.ends_with(&format!(" {rule}"))
+                })
+                .collect();
+            assert!(
+                malformed.is_empty(),
+                "{label}: non-canonical section delimiters: {malformed:?}"
+            );
+
+            // The private helpers really are after the entry points, which is the ordering claim
+            // the section list above only implies.
+            let helpers = source
+                .find(&format!("// {rule} LOW-LEVEL HELPERS"))
+                .expect("the helper section must exist");
+            for helper in ["fn matched_count(", "fn ttl_target(", "fn check_call_0("] {
+                let at = source
+                    .find(helper)
+                    .unwrap_or_else(|| panic!("{label}: no {helper} in the emitted source"));
+                assert!(
+                    at > helpers,
+                    "{label}: {helper} is emitted before the LOW-LEVEL HELPERS heading"
+                );
+            }
+            assert!(
+                source.find("fn enforce(").expect("enforce is emitted") < helpers,
+                "{label}: the entry points must come before the helpers"
+            );
+        }
     }
 
     /// Every public item carries a doc comment, and every entry point an `# Errors` section.

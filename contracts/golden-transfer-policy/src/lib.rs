@@ -34,6 +34,8 @@ use stellar_accounts::{
     smart_account::{ContextRule, Signer},
 };
 
+// ################## ERRORS ##################
+
 /// Every reason this policy can refuse an authorization, an install or an
 /// uninstall.
 ///
@@ -76,6 +78,8 @@ pub enum PolicyError {
     NotInstalled = 11,
 }
 
+// ################## STORAGE KEYS ##################
+
 /// Keys for the state this policy owns.
 ///
 /// Every variant is segregated by (smart account, context rule id), which is
@@ -90,74 +94,14 @@ pub enum PolicyStorageKey {
     CallCount(Address, u32),
 }
 
+// ################## CONSTANTS ##################
+
 const TARGET: &str = "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ";
 /// Defense in depth: the account also enforces the rule's valid_until.
 const VALID_UNTIL_LEDGER: u32 = 4223456;
 const MAX_CALLS: u32 = 12;
 
-fn expected_signers(e: &Env) -> Vec<Signer> {
-    soroban_sdk::vec![
-        e,
-        Signer::Delegated(Address::from_str(
-            e,
-            "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
-        )),
-    ]
-}
-
-fn matched_count(authenticated: &Vec<Signer>, expected: &Vec<Signer>) -> u32 {
-    let mut matched: u32 = 0;
-    for exp in expected.iter() {
-        for got in authenticated.iter() {
-            if got == exp {
-                matched += 1;
-                break;
-            }
-        }
-    }
-    matched
-}
-
-fn check_call_0(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {
-    if args.len() != 3u32 {
-        return false;
-    }
-    let Some(v0) = args.get(0u32) else {
-        return false;
-    };
-    match Address::try_from_val(e, &v0) {
-        Ok(a) => {
-            if *smart_account != a {
-                return false;
-            }
-        }
-        Err(_) => return false,
-    }
-    let Some(v1) = args.get(1u32) else {
-        return false;
-    };
-    match Address::try_from_val(e, &v1) {
-        Ok(a) => {
-            if a != Address::from_str(e, "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC")
-            {
-                return false;
-            }
-        }
-        Err(_) => return false,
-    }
-    let Some(v2) = args.get(2u32) else {
-        return false;
-    };
-    match i128::try_from_val(e, &v2) {
-        Ok(x) => {
-            if x != 500000000i128 {
-                return false;
-            }
-        }
-        Err(_) => return false,
-    }
-    true
-}
+// ################## CHANGE STATE ##################
 
 /// This rule, compiled to a policy contract.
 ///
@@ -382,6 +326,72 @@ impl Policy for GeneratedPolicy {
         e.storage().persistent().remove(&key);
         e.storage().persistent().remove(&installed_key);
     }
+}
+
+// ################## LOW-LEVEL HELPERS ##################
+
+fn expected_signers(e: &Env) -> Vec<Signer> {
+    soroban_sdk::vec![
+        e,
+        Signer::Delegated(Address::from_str(
+            e,
+            "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
+        )),
+    ]
+}
+
+fn matched_count(authenticated: &Vec<Signer>, expected: &Vec<Signer>) -> u32 {
+    let mut matched: u32 = 0;
+    for exp in expected.iter() {
+        for got in authenticated.iter() {
+            if got == exp {
+                matched += 1;
+                break;
+            }
+        }
+    }
+    matched
+}
+
+fn check_call_0(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {
+    if args.len() != 3u32 {
+        return false;
+    }
+    let Some(v0) = args.get(0u32) else {
+        return false;
+    };
+    match Address::try_from_val(e, &v0) {
+        Ok(a) => {
+            if *smart_account != a {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+    let Some(v1) = args.get(1u32) else {
+        return false;
+    };
+    match Address::try_from_val(e, &v1) {
+        Ok(a) => {
+            if a != Address::from_str(e, "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC")
+            {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+    let Some(v2) = args.get(2u32) else {
+        return false;
+    };
+    match i128::try_from_val(e, &v2) {
+        Ok(x) => {
+            if x != 500000000i128 {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+    true
 }
 
 /// Ledgers this policy's own entries should be kept alive for.
