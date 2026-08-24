@@ -51,10 +51,11 @@ something never installed refuses (`NotInstalled`) and removes policy-owned stat
 order is now: account authorization and installation state first, then the signer predicate,
 then the rest. TTL extension covers the marker alongside the counter and instance entries, and
 `contracts/differential/tests/ttl.rs` + `differential.rs` grew the lifecycle, isolation and
-TTL-target cases. This moved the golden crates, so both derived identities moved with them:
-emitted `src/lib.rs` is now sha256 `8475f277…` and the clean-rebuild wasm `5b9374d8…`; the
-normalized codegen-input hash `662ad7a9…` did not move, because the inputs did not — only the
-emission.
+TTL-target cases. This moved the golden crates, so both derived identities moved with them —
+the current values are the ones under "Verifiable artifacts" below, which is the single place
+this document quotes them, precisely so that a later emission change cannot leave a figure
+behind in a sentence about an earlier one. The normalized codegen-input hash `662ad7a9…` did
+not move, because the inputs did not — only the emission.
 
 **Validation owns its bounds.** User-controlled strings, evidence references and exact `ScVal`
 values are size-capped per value and per rule; the caps sit deliberately below the 4 MiB
@@ -546,9 +547,9 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
 ## Verifiable artifacts
 
 - **Codegen determinism:** two cold runs of `ozpb generate` produce byte-identical
-  `src/lib.rs` (sha256 `8475f277…`); normalized codegen-input hash `662ad7a9…`.
+  `src/lib.rs` (sha256 `901ede29…`); normalized codegen-input hash `662ad7a9…`.
 - **Wasm reproducibility:** `stellar contract build` → byte-identical wasm across a full
-  `cargo clean` rebuild (sha256 `5b9374d8…`). The claim holds; the gate that asserted it did
+  `cargo clean` rebuild (sha256 `0461acc1…`). The claim holds; the gate that asserted it did
   not until 2026-08-13. It hashed `contracts/target/…`, which the rebuild never writes: the
   golden crate is excluded from the contracts workspace (it carries its own
   `[profile.release]`), so `stellar contract build` writes to *its* target dir. The old gate

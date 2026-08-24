@@ -152,7 +152,7 @@ impl Policy for GeneratedPolicy {
             panic_with_error!(e, PolicyError::RuleExpired);
         }
 
-        if authenticated_signers.len() == 0 {
+        if authenticated_signers.is_empty() {
             panic_with_error!(e, PolicyError::ZeroSigners);
         }
         let expected = expected_signers(e);

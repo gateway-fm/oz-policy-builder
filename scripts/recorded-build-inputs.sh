@@ -21,9 +21,9 @@
 # That pair predates the TTL codegen change and is kept as it was taken: it is a controlled
 # comparison, and replacing half of it with a later measurement would leave two values that
 # differ by the source as well as the CLI, demonstrating nothing. The golden policy's current
-# hash under CLI 27.0.0 is `5b9374d8…` (2026-08-18, after the installation-lifecycle emission
-# landed); it is not comparable with the 27.1.0 value above, because the source changed in
-# between.
+# hash under CLI 27.0.0 is `0461acc1…`, re-measured after the OpenZeppelin code-quality
+# conformance pass moved the emission; it is not comparable with the 27.1.0 value above,
+# because the source changed in between.
 #
 # So a recorded wasm hash is reproducible only with the recorded compiler AND the recorded CLI.
 # The provenance table on `ozpb_domain::pinned_upstream` is where those inputs are written down

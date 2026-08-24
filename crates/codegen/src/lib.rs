@@ -565,8 +565,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n\n",
         );
     }
+    // `is_empty()`, not `len() == 0`: `clippy::len_zero` is warn-by-default, the generated
+    // crate is linted with `-D warnings` by the contracts job, and OpenZeppelin's conventions
+    // forbid silencing a lint with `#[allow]` — so the zero-length spelling is a build failure
+    // in a shipped artifact rather than a matter of taste. `soroban_sdk::Vec::is_empty` exists
+    // (`soroban-sdk-26.1.0/src/vec.rs:835`), so no host call is added by preferring it.
     out.push_str(
-        "        if authenticated_signers.len() == 0 {\n            panic_with_error!(e, PolicyError::ZeroSigners);\n        }\n",
+        "        if authenticated_signers.is_empty() {\n            panic_with_error!(e, PolicyError::ZeroSigners);\n        }\n",
     );
     if dynamic {
         out.push_str(
@@ -1781,6 +1786,59 @@ mod tests {
             !lib.contains(&format!("{}i128", i128::MIN)),
             "the overflowing positive literal must never be emitted as a source token"
         );
+    }
+
+    /// Emission never writes a length comparison against zero.
+    ///
+    /// `clippy::len_zero` is warn-by-default and the generated crate ships with `-D warnings`
+    /// over it, so this is a build failure in the artifact this project hands to a reviewer —
+    /// and OpenZeppelin's own conventions forbid silencing it with `#[allow]`
+    /// (`.claude/commands/code-quality.md`, "Lint suppression"). Written as a scan for the
+    /// shape rather than an assertion about one statement, because every emitted `.len()` is a
+    /// candidate: the arity check, the strict-signer-set comparison and the predicate all
+    /// measure a `soroban_sdk::Vec`, and only `is_empty()` is accepted for the zero case.
+    ///
+    /// The corpus is the three specs whose emission differs most: the golden transfer rule, the
+    /// W3 swap rule (bounds, exact `ScVal`, `AnyValue`) and a dynamic predicate, which is the
+    /// one shape that compares against `context_rule.signers` instead of a compiled-in set.
+    #[test]
+    fn emission_never_compares_a_length_against_zero() {
+        let mut dynamic = golden_spec().spec().clone();
+        dynamic.rules[0].authorization.kind = PredicateKind::AnyOfCurrentRuleSigners;
+        dynamic.rules[0].authorization.strict_signer_set = false;
+        let dynamic = dynamic.validate().expect("a dynamic rule is a valid spec");
+
+        for (label, spec) in [
+            ("golden transfer", golden_spec()),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+            ("dynamic predicate", dynamic),
+        ] {
+            let source = generate(&spec, 0, &Pins::default())
+                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
+                .files["src/lib.rs"]
+                .clone();
+            // Non-vacuity: a pass means nothing unless the predicate check is really emitted.
+            assert!(
+                source.contains("PolicyError::ZeroSigners"),
+                "{label} does not emit the check this test is about:\n{source}"
+            );
+            let offenders: Vec<&str> = source
+                .lines()
+                .filter(|line| {
+                    line.contains(".len() == 0")
+                        || line.contains(".len() != 0")
+                        || line.contains(".len() > 0")
+                        || line.contains("0 == ") && line.contains(".len()")
+                })
+                .collect();
+            assert!(
+                offenders.is_empty(),
+                "{label} emits a zero-length comparison clippy::len_zero rejects: {offenders:?}"
+            );
+        }
     }
 
     #[test]
