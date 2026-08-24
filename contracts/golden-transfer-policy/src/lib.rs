@@ -83,7 +83,7 @@ pub enum PolicyError {
 /// installations observing each other.
 #[contracttype]
 #[derive(Clone, Debug)]
-pub enum DataKey {
+pub enum PolicyStorageKey {
     /// Installation marker, segregated by (smart account, context rule id).
     Installed(Address, u32),
     /// Call count for one installation. Never resets until `uninstall`.
@@ -231,7 +231,7 @@ impl Policy for GeneratedPolicy {
     ) {
         smart_account.require_auth();
 
-        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);
+        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);
         if !e.storage().persistent().has(&installed_key) {
             panic_with_error!(e, PolicyError::MissingState);
         }
@@ -281,7 +281,7 @@ impl Policy for GeneratedPolicy {
             panic_with_error!(e, PolicyError::NoTupleMatched);
         }
 
-        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);
+        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);
         let count: u32 = match e.storage().persistent().get(&key) {
             Some(c) => c,
             None => panic_with_error!(e, PolicyError::MissingState),
@@ -333,11 +333,11 @@ impl Policy for GeneratedPolicy {
         if e.ledger().sequence() > VALID_UNTIL_LEDGER {
             panic_with_error!(e, PolicyError::RuleExpired);
         }
-        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);
+        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);
         if e.storage().persistent().has(&installed_key) {
             panic_with_error!(e, PolicyError::AlreadyInstalled);
         }
-        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);
+        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);
         e.storage().persistent().set(&installed_key, &true);
         e.storage().persistent().set(&key, &0u32);
         let remaining = MAX_CALLS;
@@ -374,11 +374,11 @@ impl Policy for GeneratedPolicy {
     ///   rule) carries no installation.
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
-        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);
+        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);
         if !e.storage().persistent().has(&installed_key) {
             panic_with_error!(e, PolicyError::NotInstalled);
         }
-        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);
+        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);
         e.storage().persistent().remove(&key);
         e.storage().persistent().remove(&installed_key);
     }

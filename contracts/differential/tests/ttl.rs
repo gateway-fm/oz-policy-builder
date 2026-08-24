@@ -43,7 +43,7 @@
 //! `install_extends_the_counter_entry_and_the_instance` proves a testnet/test-env behaviour, not a
 //! Mainnet one.
 
-use generated_sub_transfer_r0::{DataKey, GeneratedPolicy, GeneratedPolicyClient};
+use generated_sub_transfer_r0::{PolicyStorageKey, GeneratedPolicy, GeneratedPolicyClient};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext};
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
@@ -142,12 +142,12 @@ impl World {
         );
     }
 
-    fn counter_key(&self) -> DataKey {
-        DataKey::CallCount(self.account.clone(), 0)
+    fn counter_key(&self) -> PolicyStorageKey {
+        PolicyStorageKey::CallCount(self.account.clone(), 0)
     }
 
-    fn installed_key(&self) -> DataKey {
-        DataKey::Installed(self.account.clone(), 0)
+    fn installed_key(&self) -> PolicyStorageKey {
+        PolicyStorageKey::Installed(self.account.clone(), 0)
     }
 
     fn counter_ttl(&self) -> u32 {
@@ -475,8 +475,8 @@ fn installing_after_expiry_is_rejected_without_writing_state() {
         other => panic!("expired installation must be refused: {other:?}"),
     }
     for key in [
-        DataKey::Installed(account.clone(), 0),
-        DataKey::CallCount(account, 0),
+        PolicyStorageKey::Installed(account.clone(), 0),
+        PolicyStorageKey::CallCount(account, 0),
     ] {
         assert!(
             !env.as_contract(&policy, || env.storage().persistent().has(&key)),

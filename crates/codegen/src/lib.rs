@@ -649,6 +649,11 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     out.push_str("}\n\n");
 
+    // `PolicyStorageKey`, not `DataKey`: their convention is `<Module>StorageKey`
+    // (`code-quality.md`, "Naming"), and every storage-key enum in the library follows it —
+    // `SimpleThresholdStorageKey` at `policies/simple_threshold.rs:121`, and the same shape in
+    // the weighted-threshold and spending-limit modules. `Policy` is the module name our error
+    // enum already uses, so the pair reads together.
     out.push_str(&emit_doc(
         "",
         &[
@@ -661,7 +666,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         &[],
     ));
     out.push_str(
-        "#[contracttype]\n#[derive(Clone, Debug)]\npub enum DataKey {\n    /// Installation marker, segregated by (smart account, context rule id).\n    Installed(Address, u32),\n",
+        "#[contracttype]\n#[derive(Clone, Debug)]\npub enum PolicyStorageKey {\n    /// Installation marker, segregated by (smart account, context rule id).\n    Installed(Address, u32),\n",
     );
     if has_state {
         out.push_str(
@@ -926,7 +931,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         "    fn enforce(\n        e: &Env,\n        context: Context,\n        authenticated_signers: Vec<Signer>,\n        context_rule: ContextRule,\n        smart_account: Address,\n    ) {\n        smart_account.require_auth();\n\n",
     );
     out.push_str(
-        "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n\n",
+        "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n\n",
     );
     if rule.valid_until_ledger.is_some() {
         out.push_str(
@@ -1055,7 +1060,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // State.
     if has_state {
         out.push_str(
-            "\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        let count: u32 = match e.storage().persistent().get(&key) {\n            Some(c) => c,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        if count >= MAX_CALLS {\n            panic_with_error!(e, PolicyError::CallCountExceeded);\n        }\n        e.storage().persistent().set(&key, &(count + 1u32));\n        let remaining = MAX_CALLS - (count + 1u32);\n",
+            "\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        let count: u32 = match e.storage().persistent().get(&key) {\n            Some(c) => c,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        if count >= MAX_CALLS {\n            panic_with_error!(e, PolicyError::CallCountExceeded);\n        }\n        e.storage().persistent().set(&key, &(count + 1u32));\n        let remaining = MAX_CALLS - (count + 1u32);\n",
         );
     }
     // Storage lifetime goes last. In `install` that ordering is required — the counter key does
@@ -1161,13 +1166,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             );
         }
         out.push_str(
-            "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
+            "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
         );
         out.push_str(&ttl_extension_block(true));
         out.push_str("    }\n\n");
         out.push_str(&uninstall_doc);
         out.push_str(
-            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     } else {
         out.push_str(&install_doc);
@@ -1180,13 +1185,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             );
         }
         out.push_str(
-            "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
+            "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
         );
         out.push_str(&ttl_extension_block(false));
         out.push_str("    }\n\n");
         out.push_str(&uninstall_doc);
         out.push_str(
-            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
         );
     }
     out.push_str("}\n");
@@ -2737,6 +2742,17 @@ mod tests {
         assert!(lib.contains(&golden_delegate_strkey()));
         // SELF resolves at runtime (no account literal in the tuple check).
         assert!(lib.contains("*smart_account != a"));
+        // The storage-key enum takes their `<Module>StorageKey` form, and the old name is gone
+        // rather than aliased: `#[contracttype]` puts this name in the contract spec, so two
+        // spellings would be two types on the wire.
+        assert!(
+            lib.contains("pub enum PolicyStorageKey {"),
+            "the storage-key enum must be named for its module:\n{lib}"
+        );
+        assert!(
+            !lib.contains("DataKey"),
+            "the previous storage-key name must not survive anywhere:\n{lib}"
+        );
         // Missing state denies; install-only init; no setters, no upgrade hook.
         assert!(lib.contains("PolicyError::MissingState"));
         assert!(lib.contains("AlreadyInstalled"));
