@@ -34,6 +34,64 @@ use std::fmt;
 pub const MAX_WIDTH: usize = 100;
 const ARRAY_WIDTH: usize = 60;
 
+/// One grouped `use` per crate, laid out the way rustfmt lays one out.
+///
+/// `imports_granularity = "Crate"` is what OpenZeppelin's `rustfmt.toml` sets and what both
+/// sibling policy examples show, so this is the shape the generated crate has to reach. The
+/// layout is derived rather than hand-written because *which* items a rule needs varies —
+/// `Bytes` appears only for an `ScVal` comparison or an external signer's key, `xdr::ToXdr`
+/// only for the former — so a fixed spelling would be wrong for most of the combinations.
+///
+/// Two rules, both measured against the pinned toolchain's rustfmt rather than assumed:
+///
+///   * ordering is by first path segment, snake_case before CamelCase — `auth::Context`,
+///     `contract`, …, `xdr::ToXdr`, then `Address`, `Bytes`, … — which is `reorder_imports`'
+///     own key, not ASCII order (ASCII would put every type ahead of every macro);
+///   * one line while `use <crate>::{…};` fits `MAX_WIDTH` **and** no item is itself a brace
+///     group, since a nested group forces the vertical layout at any width; otherwise a greedy
+///     fill into `MAX_WIDTH` columns, counting the trailing comma of the last item on the line.
+pub fn use_statement(crate_name: &str, items: &[&str]) -> String {
+    let mut items: Vec<&str> = items.to_vec();
+    items.sort_by_key(|item| {
+        let head = item.split("::").next().unwrap_or(item);
+        (
+            head.starts_with(|c: char| c.is_ascii_uppercase()),
+            item.to_string(),
+        )
+    });
+    let nested = items.iter().any(|item| item.contains('{'));
+    let one_line = format!("use {crate_name}::{{{}}};\n", items.join(", "));
+    if !nested && one_line.trim_end().chars().count() <= MAX_WIDTH {
+        return one_line;
+    }
+    let indent = "    ";
+    let mut out = format!("use {crate_name}::{{\n");
+    if nested {
+        // Vertical: rustfmt gives every item its own line once one of them is a brace group.
+        for item in &items {
+            out.push_str(&format!("{indent}{item},\n"));
+        }
+    } else {
+        let mut line = String::new();
+        for item in &items {
+            let candidate = if line.is_empty() {
+                format!("{indent}{item},")
+            } else {
+                format!("{line} {item},")
+            };
+            if !line.is_empty() && candidate.chars().count() > MAX_WIDTH {
+                out.push_str(&format!("{line}\n"));
+                line = format!("{indent}{item},");
+            } else {
+                line = candidate;
+            }
+        }
+        out.push_str(&format!("{line}\n"));
+    }
+    out.push_str("};\n");
+    out
+}
+
 /// The constant holding signer `index`'s external key.
 ///
 /// Names for emitted constants are built here, from positions, so that the identifier in the

@@ -24,11 +24,14 @@
 //! stops paying rent.
 #![no_std]
 
-use soroban_sdk::auth::Context;
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error};
-use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val, Vec};
-use stellar_accounts::policies::Policy;
-use stellar_accounts::smart_account::{ContextRule, Signer};
+use soroban_sdk::{
+    auth::Context, contract, contracterror, contractimpl, contracttype, panic_with_error, Address,
+    Env, Symbol, TryFromVal, Val, Vec,
+};
+use stellar_accounts::{
+    policies::Policy,
+    smart_account::{ContextRule, Signer},
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]

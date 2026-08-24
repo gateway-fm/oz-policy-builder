@@ -373,37 +373,43 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
 
     // Imports (conditional to keep the generated crate warning-free).
     //
-    // Several statements rather than one brace group naming every item: that group ran to 148
-    // characters, so rustfmt reflowed it, and the fill it picks depends on which items the rule
-    // needs — a formatting choice that would then vary from policy to policy. Split this way no
-    // statement exceeds 89 characters for any combination below, so nothing reflows. The order
-    // is `reorder_imports`': module paths (`Ident`) before brace groups (`List`), and inside a
-    // group snake_case before CamelCase — which is why types and macros are two groups rather
-    // than one sorted list.
-    out.push_str("use soroban_sdk::auth::Context;\n");
-    if has_scval {
-        out.push_str("use soroban_sdk::xdr::ToXdr;\n");
-    }
-    let mut sdk_macros: Vec<&str> = vec![
+    // One grouped `use` per crate. That is what `imports_granularity = "Crate"` produces — the
+    // setting in OpenZeppelin's own `rustfmt.toml` — and what both sibling policy examples show
+    // (`examples/multisig-smart-account/threshold-policy/src/contract.rs:8-12` and
+    // `spending-limit-policy/src/contract.rs:18-22` at v0.7.2).
+    //
+    // This was previously five separate statements, deliberately: under *default* rustfmt one
+    // brace group naming every item ran to 148 characters, so rustfmt reflowed it, and the fill
+    // it chose depended on which items the rule needed — a formatting choice that would then
+    // vary from policy to policy. `render::use_statement` removes the reason for the split by
+    // deriving that same fill, so the grouped form is stable for every combination instead of
+    // being avoided.
+    let mut sdk: Vec<&str> = vec![
+        "auth::Context",
         "contract",
         "contracterror",
         "contractimpl",
         "contracttype",
         "panic_with_error",
+        "Address",
+        "Env",
+        "Symbol",
+        "TryFromVal",
+        "Val",
+        "Vec",
     ];
-    sdk_macros.sort();
-    out.push_str(&format!(
-        "use soroban_sdk::{{{}}};\n",
-        sdk_macros.join(", ")
-    ));
-    let mut sdk_types: Vec<&str> = vec!["Address", "Env", "Symbol", "TryFromVal", "Val", "Vec"];
-    if has_scval || has_external {
-        sdk_types.push("Bytes");
+    if has_scval {
+        sdk.push("xdr::ToXdr");
     }
-    sdk_types.sort();
-    out.push_str(&format!("use soroban_sdk::{{{}}};\n", sdk_types.join(", ")));
-    out.push_str("use stellar_accounts::policies::Policy;\n");
-    out.push_str("use stellar_accounts::smart_account::{ContextRule, Signer};\n\n");
+    if has_scval || has_external {
+        sdk.push("Bytes");
+    }
+    out.push_str(&render::use_statement("soroban_sdk", &sdk));
+    out.push_str(&render::use_statement(
+        "stellar_accounts",
+        &["policies::Policy", "smart_account::{ContextRule, Signer}"],
+    ));
+    out.push('\n');
 
     // Error enum (stable numbering; mirrors the reference evaluator's deny reasons).
     out.push_str(
@@ -1785,6 +1791,99 @@ mod tests {
         assert!(
             !lib.contains(&format!("{}i128", i128::MIN)),
             "the overflowing positive literal must never be emitted as a source token"
+        );
+    }
+
+    /// The import block is one grouped `use` per crate, filled the way rustfmt fills one.
+    ///
+    /// `imports_granularity = "Crate"` is what OpenZeppelin's `rustfmt.toml` sets and what both
+    /// sibling policy examples show. The exact text is asserted, not just the statement count,
+    /// because the fill is derived from item widths: the interesting property is that the
+    /// derivation agrees with rustfmt for every item set a rule can produce, and only a
+    /// byte-for-byte comparison against text taken from rustfmt's own output says that.
+    ///
+    /// Both reachable sets are covered — the transfer rule (no `ScVal`, so no `Bytes` and no
+    /// `xdr::ToXdr`) and the W3 swap rule (both) — and `use_statement` is exercised directly for
+    /// the two shapes a validated spec cannot reach: `Bytes` without `xdr::ToXdr`, which needs an
+    /// external signer, and a group short enough to stay on one line.
+    #[test]
+    fn imports_are_one_grouped_use_per_crate() {
+        let expected_accounts = "use stellar_accounts::{\n    policies::Policy,\n    \
+                                smart_account::{ContextRule, Signer},\n};\n";
+        for (label, spec, expected_sdk) in [
+            (
+                "golden transfer",
+                golden_spec(),
+                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractimpl, \
+                 contracttype, panic_with_error, Address,\n    Env, Symbol, TryFromVal, Val, \
+                 Vec,\n};\n",
+            ),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractimpl, \
+                 contracttype, panic_with_error,\n    xdr::ToXdr, Address, Bytes, Env, Symbol, \
+                 TryFromVal, Val, Vec,\n};\n",
+            ),
+        ] {
+            let source = generate(&spec, 0, &Pins::default())
+                .unwrap_or_else(|error| panic!("{label} must generate: {error}"))
+                .files["src/lib.rs"]
+                .clone();
+            assert!(
+                source.contains(expected_sdk),
+                "{label}: soroban_sdk import block is not rustfmt's grouped form\n\
+                 expected:\n{expected_sdk}\ngot:\n{source}"
+            );
+            assert!(
+                source.contains(expected_accounts),
+                "{label}: stellar_accounts import block is not rustfmt's grouped form\n\
+                 expected:\n{expected_accounts}\ngot:\n{source}"
+            );
+            // Two crates, therefore two statements. A split block satisfies the substrings
+            // above only if it happens to contain them, so the count is what forbids the
+            // per-item spelling this replaced.
+            let statements = source.matches("\nuse ").count();
+            assert_eq!(
+                statements, 2,
+                "{label}: expected one `use` per crate, found {statements}:\n{source}"
+            );
+        }
+
+        // `Bytes` without `xdr::ToXdr` — the external-signer shape. Reachable through
+        // `use_statement` only: a validated spec cannot carry an external signer.
+        assert_eq!(
+            render::use_statement(
+                "soroban_sdk",
+                &[
+                    "auth::Context",
+                    "contract",
+                    "contracterror",
+                    "contractimpl",
+                    "contracttype",
+                    "panic_with_error",
+                    "Address",
+                    "Bytes",
+                    "Env",
+                    "Symbol",
+                    "TryFromVal",
+                    "Val",
+                    "Vec",
+                ],
+            ),
+            "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractimpl, \
+             contracttype, panic_with_error, Address,\n    Bytes, Env, Symbol, TryFromVal, Val, \
+             Vec,\n};\n"
+        );
+        // Short enough for one line, and nothing nested — the case the fill must not wrap.
+        assert_eq!(
+            render::use_statement("soroban_sdk", &["Env", "auth::Context"]),
+            "use soroban_sdk::{auth::Context, Env};\n"
+        );
+        // Nested, and short: a brace group forces the vertical layout at any width.
+        assert_eq!(
+            render::use_statement("stellar_accounts", &["smart_account::{Signer}", "a::B"]),
+            "use stellar_accounts::{\n    a::B,\n    smart_account::{Signer},\n};\n"
         );
     }
 
