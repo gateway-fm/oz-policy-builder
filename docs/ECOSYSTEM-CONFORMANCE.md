@@ -483,7 +483,7 @@ hash** rather than replaced.
 
 ---
 
-## 6. Errors and observability ✅ / ℹ️
+## 6. Errors and observability ✅
 
 **Platform principle.** Errors are declared with `#[contracterror]` and numeric codes; denial is
 `panic_with_error!`. Events (`events().publish`) are the standard way to make a contract's
@@ -499,19 +499,38 @@ identifiers, standardized as `SCREAMING_SNAKE_CASE` with an exhaustive round-tri
 
 **Verdict on errors — conforms.**
 
-**Open decision (ℹ️): observability.** The policy publishes no events, so no on-chain trace
-remains of what it permitted or denied.
+**Observability — resolved, and option (a) is what was taken.** This section previously recorded
+an open decision: the policy published no events, so no on-chain trace remained of what it
+permitted. It now emits three, following the shape of the library's own policies rather than one
+of our own — `GeneratedPolicyInstalled`, `GeneratedPolicyEnforced` and
+`GeneratedPolicyUninstalled`, each a `#[contractevent]` struct with `smart_account` as its single
+`#[topic]` and `context_rule_id` in the data, and the enforcement event additionally carrying the
+`Context` it permitted and, where the rule caps calls, the count remaining after the one just
+spent. Compare `spending_limit`'s `SpendingLimitEnforced` / `Installed` / `Uninstalled`
+(`stellar-accounts-0.7.2/src/policies/spending_limit.rs:46-53`, `:58-64`, `:79-83`, published at
+`:281`, `:404`, `:442`), whose running number is `total_spent_in_period`; ours is
+`remaining_calls`. The trait's own docstring asks for the install and uninstall events
+(`policies/mod.rs:106-111`, `:144-149`); all three library policies also emit from `enforce`,
+which is why ours does.
 
-The first idea — "publish an event at least on denial" — is **technically unrealizable**, and
-that is worth recording so it is not revisited: `panic_with_error!` reverts the invocation, so an
-event published before the panic is reverted with it and never becomes an ordinary on-chain
-event. Events are possible **only on a successful** `enforce`.
+**The cost, measured rather than estimated.** The golden policy's wasm went from 17,005 to 19,725
+bytes — 2,720 bytes, 16% — under the pinned rustc 1.91.1 and stellar-cli 27.0.0. That is the price
+of the event machinery, and it is the reason option (a) was worth deciding rather than assuming.
 
-So the actual choice is: (a) publish an event on permit — which costs a fee in the authorization
-path itself and enlarges the artifact; (b) take denial reasons from the result and from RPC
-diagnostics, where they are already available off-chain; (c) if a durable on-chain trace of
-denials is genuinely required, it has to be designed separately and deliberately rather than
-bolted onto `enforce`. Whether (a) is wanted is to be discussed, given that (b) already works.
+**What still cannot be observed, and why that is a property.** A **denial** leaves nothing behind,
+and this is technically unrealizable rather than unimplemented — worth keeping recorded so it is
+not revisited. `panic_with_error!` reverts the invocation, so an event published before the panic
+is reverted with it and never becomes an ordinary on-chain event. Events are possible **only on a
+successful** `enforce`. Denial reasons reach a caller through the error code and through RPC
+diagnostics, where they were always available; a durable on-chain trace of denials would have to
+be designed separately rather than bolted onto `enforce`.
+`contracts/differential/tests/events.rs` asserts the emptiness as a property — every refusal path
+exercised, each leaving the event log untouched — rather than leaving it as a remark here.
+
+**Reading state without an event.** The artifact also exports `is_installed` and, where a cap
+exists, `remaining_calls` (§3 covers what their TTL extension does). Between the events and those
+two, an indexer can reconstruct an installation's history and a caller can ask about its present
+state, which is what the earlier "no on-chain trace" verdict was about.
 
 ---
 

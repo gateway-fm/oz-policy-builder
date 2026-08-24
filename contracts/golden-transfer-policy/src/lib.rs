@@ -26,8 +26,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    auth::Context, contract, contracterror, contractimpl, contracttype, panic_with_error, Address,
-    Env, Symbol, TryFromVal, Val, Vec,
+    auth::Context, contract, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, Address, Env, Symbol, TryFromVal, Val, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
@@ -100,6 +100,51 @@ const TARGET: &str = "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ";
 /// Defense in depth: the account also enforces the rule's valid_until.
 const VALID_UNTIL_LEDGER: u32 = 4223456;
 const MAX_CALLS: u32 = 12;
+
+// ################## EVENTS ##################
+
+/// Emitted when this policy permits an authorization.
+///
+/// Derives `Clone` alone where the other two events also derive `Debug`, `Eq`
+/// and `PartialEq`, because `Context` implements none of those — which is the
+/// same reason `SimpleEnforced` and `SpendingLimitEnforced` derive `Clone`
+/// alone upstream.
+#[contractevent]
+#[derive(Clone)]
+pub struct GeneratedPolicyEnforced {
+    /// The smart account whose authorization was permitted.
+    #[topic]
+    pub smart_account: Address,
+    /// The authorization that was permitted.
+    pub context: Context,
+    /// The context rule this policy is attached to.
+    pub context_rule_id: u32,
+    /// Calls this installation may still permit after the one just spent. Zero
+    /// means the installation can never permit again.
+    pub remaining_calls: u32,
+}
+
+/// Emitted when this policy is installed for a context rule of a smart account.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedPolicyInstalled {
+    /// The smart account this policy is installed for.
+    #[topic]
+    pub smart_account: Address,
+    /// The context rule this policy is attached to.
+    pub context_rule_id: u32,
+}
+
+/// Emitted when this policy is removed from a context rule of a smart account.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedPolicyUninstalled {
+    /// The smart account this policy is installed for.
+    #[topic]
+    pub smart_account: Address,
+    /// The context rule this policy is attached to.
+    pub context_rule_id: u32,
+}
 
 // ################## QUERY STATE ##################
 
@@ -244,6 +289,12 @@ impl Policy for GeneratedPolicy {
     /// * [`PolicyError::CallCountExceeded`] - When this installation has
     ///   already used every call its cap allows.
     ///
+    /// # Events
+    ///
+    /// * topics - `["generated_policy_enforced", smart_account: Address]`
+    /// * data - `[context: Context, context_rule_id: u32, remaining_calls:
+    ///   u32]`
+    ///
     /// # Notes
     ///
     /// * Refusals are ordered: the code a caller sees is the first condition
@@ -295,8 +346,8 @@ impl Policy for GeneratedPolicy {
             }
         }
 
-        let c = match context {
-            Context::Contract(c) => c,
+        let c = match &context {
+            Context::Contract(c) => c.clone(),
             _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),
         };
         if c.contract != Address::from_str(e, TARGET) {
@@ -333,6 +384,14 @@ impl Policy for GeneratedPolicy {
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
+
+        GeneratedPolicyEnforced {
+            smart_account: smart_account.clone(),
+            context,
+            context_rule_id: context_rule.id,
+            remaining_calls: remaining,
+        }
+        .publish(e);
     }
 
     /// Installs this policy for one context rule of one smart account.
@@ -358,6 +417,11 @@ impl Policy for GeneratedPolicy {
     ///   rule) already carries an installation. Re-installing would be the one
     ///   way to reset the state a rule relies on, so it is refused rather than
     ///   made idempotent.
+    ///
+    /// # Events
+    ///
+    /// * topics - `["generated_policy_installed", smart_account: Address]`
+    /// * data - `[context_rule_id: u32]`
     fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
         if e.ledger().sequence() > VALID_UNTIL_LEDGER {
@@ -383,6 +447,12 @@ impl Policy for GeneratedPolicy {
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
+
+        GeneratedPolicyInstalled {
+            smart_account: smart_account.clone(),
+            context_rule_id: context_rule.id,
+        }
+        .publish(e);
     }
 
     /// Removes this policy's own state for one context rule of one smart
@@ -402,6 +472,11 @@ impl Policy for GeneratedPolicy {
     ///
     /// * [`PolicyError::NotInstalled`] - When this (smart account, context
     ///   rule) carries no installation.
+    ///
+    /// # Events
+    ///
+    /// * topics - `["generated_policy_uninstalled", smart_account: Address]`
+    /// * data - `[context_rule_id: u32]`
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
         let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);
@@ -411,6 +486,12 @@ impl Policy for GeneratedPolicy {
         let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);
         e.storage().persistent().remove(&key);
         e.storage().persistent().remove(&installed_key);
+
+        GeneratedPolicyUninstalled {
+            smart_account: smart_account.clone(),
+            context_rule_id: context_rule.id,
+        }
+        .publish(e);
     }
 }
 

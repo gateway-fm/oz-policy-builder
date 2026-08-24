@@ -252,6 +252,31 @@ targets = ["wasm32v1-none"]
     )
 }
 
+/// A `<Event> { … }.publish(e);` statement inside a trait method.
+///
+/// Their form exactly: the struct is constructed at the emission site and published, with no
+/// `emit_*` free function in between. `code-quality.md` asks for that wrapper in a library module
+/// whose events are published from a *different* file than they are declared in; here declaration
+/// and use are one file and one crate, and a wrapper would add a name without adding a seam.
+///
+/// The layout is rustfmt's for this shape and was measured against it: a struct literal that fits
+/// `struct_lit_width` — `max_width` under the shipped config — stays on the `.publish` chain's own
+/// line, and one that does not takes a field per line with `.publish(e)` on the closing brace's
+/// line. Both occur here, which is why the width is computed rather than assumed.
+fn emit_publish(event: &str, fields: &[&str]) -> String {
+    let indent = "        ";
+    let one_line = format!("{indent}{event} {{ {} }}.publish(e);", fields.join(", "));
+    if one_line.chars().count() <= render::MAX_WIDTH {
+        return format!("\n{one_line}\n");
+    }
+    let mut out = format!("\n{indent}{event} {{\n");
+    for field in fields {
+        out.push_str(&format!("{indent}    {field},\n"));
+    }
+    out.push_str(&format!("{indent}}}\n{indent}.publish(e);\n"));
+    out
+}
+
 /// A doc comment in OpenZeppelin's prescribed shape.
 ///
 /// `paragraphs` becomes the summary and any prose after it, then each non-empty section is
@@ -552,6 +577,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
         "auth::Context",
         "contract",
         "contracterror",
+        "contractevent",
         "contractimpl",
         "contracttype",
         "panic_with_error",
@@ -739,6 +765,66 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // to ask whether a policy was installed or how many calls an installation had left — a gap
     // with a second consequence: the library's "extend TTL on read, not on write" rule had no
     // read site to attach to, which is why this artifact diverged from it. It now has one.
+    // Events. The trait's own documentation asks for them —
+    // `stellar-accounts-0.7.2/src/policies/mod.rs:106-111` for `install` and `:144-149` for
+    // `uninstall` — and all three library policies emit on all three entry points, so `enforce`
+    // is included by their practice rather than by the docstring alone. Their shape, followed
+    // rather than re-invented: one `#[contractevent]` struct per verb named `<Policy><Verb>`,
+    // `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement
+    // event additionally carrying the context and the policy's own running number.
+    //
+    // Ours is the remaining call count, which is the closest analogue to `spending_limit`'s
+    // `total_spent_in_period` (`policies/spending_limit.rs:46-53`) — and it exists only where a
+    // cap does, for the same reason `remaining_calls` does.
+    //
+    // A denial cannot be observed this way and that is not a gap to be worked around:
+    // `panic_with_error!` reverts the invocation, so an event published before it is reverted
+    // with it. Events are possible on a permit only.
+    out.push_str(&section("EVENTS"));
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "Emitted when this policy permits an authorization.".to_string(),
+            "Derives `Clone` alone where the other two events also derive `Debug`, `Eq` and \
+             `PartialEq`, because `Context` implements none of those — which is the same reason \
+             `SimpleEnforced` and `SpendingLimitEnforced` derive `Clone` alone upstream."
+                .to_string(),
+        ],
+        &[],
+    ));
+    out.push_str("#[contractevent]\n#[derive(Clone)]\npub struct GeneratedPolicyEnforced {\n");
+    out.push_str("    /// The smart account whose authorization was permitted.\n");
+    out.push_str("    #[topic]\n    pub smart_account: Address,\n");
+    out.push_str("    /// The authorization that was permitted.\n");
+    out.push_str("    pub context: Context,\n");
+    out.push_str("    /// The context rule this policy is attached to.\n");
+    out.push_str("    pub context_rule_id: u32,\n");
+    if has_state {
+        out.push_str(&render::wrap_comment(
+            "    /// ",
+            "Calls this installation may still permit after the one just spent. Zero means the \
+             installation can never permit again.",
+        ));
+        out.push_str("    pub remaining_calls: u32,\n");
+    }
+    out.push_str("}\n\n");
+
+    for (verb, summary) in [
+        (
+            "Installed",
+            "Emitted when this policy is installed for a context rule of a smart account.",
+        ),
+        (
+            "Uninstalled",
+            "Emitted when this policy is removed from a context rule of a smart account.",
+        ),
+    ] {
+        out.push_str(&emit_doc("", &[summary.to_string()], &[]));
+        out.push_str(&format!(
+            "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicy{verb} {{\n    /// The smart account this policy is installed for.\n    #[topic]\n    pub smart_account: Address,\n    /// The context rule this policy is attached to.\n    pub context_rule_id: u32,\n}}\n\n"
+        ));
+    }
+
     out.push_str(&section("QUERY STATE"));
     out.push_str(&emit_doc(
         "",
@@ -950,6 +1036,21 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
                 ],
             ),
             ("# Errors", enforce_errors),
+            (
+                "# Events",
+                vec![
+                    "topics - `[\"generated_policy_enforced\", smart_account: Address]`"
+                        .to_string(),
+                    format!(
+                        "data - `[context: Context, context_rule_id: u32{}]`",
+                        if has_state {
+                            ", remaining_calls: u32"
+                        } else {
+                            ""
+                        }
+                    ),
+                ],
+            ),
             ("# Notes", enforce_notes),
         ],
     ));
@@ -1001,7 +1102,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
 
     // Context scoping.
     out.push_str(
-        "        let c = match context {\n            Context::Contract(c) => c,\n            _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),\n        };\n        if c.contract != Address::from_str(e, TARGET) {\n            panic_with_error!(e, PolicyError::TargetMismatch);\n        }\n",
+        "        let c = match &context {\n            Context::Contract(c) => c.clone(),\n            _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),\n        };\n        if c.contract != Address::from_str(e, TARGET) {\n            panic_with_error!(e, PolicyError::TargetMismatch);\n        }\n",
     );
     let fn_names: Vec<&str> = {
         let mut names: Vec<&str> = rule.calls.iter().map(|c| c.fn_name.as_str()).collect();
@@ -1095,6 +1196,26 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // the two blocks stay textually identical, and a panic reverts the whole invocation anyway, so
     // there is nothing to gain by extending before the checks have passed.
     out.push_str(&ttl_extension_block(has_state));
+    // The event goes after the storage bookkeeping, so the function reads checks → state → rent
+    // → announcement. Anywhere in the permitting path would be equivalent: a panic later in the
+    // invocation reverts the publish along with the counter increment.
+    out.push_str(&emit_publish(
+        "GeneratedPolicyEnforced",
+        &if has_state {
+            vec![
+                "smart_account: smart_account.clone()",
+                "context",
+                "context_rule_id: context_rule.id",
+                "remaining_calls: remaining",
+            ]
+        } else {
+            vec![
+                "smart_account: smart_account.clone()",
+                "context",
+                "context_rule_id: context_rule.id",
+            ]
+        },
+    ));
     out.push_str("    }\n\n");
 
     // install() / uninstall()
@@ -1143,6 +1264,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
                 ],
             ),
             ("# Errors", install_errors),
+            (
+                "# Events",
+                vec![
+                    "topics - `[\"generated_policy_installed\", smart_account: Address]`"
+                        .to_string(),
+                    "data - `[context_rule_id: u32]`".to_string(),
+                ],
+            ),
         ],
     );
     let uninstall_doc = emit_doc(
@@ -1179,6 +1308,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
                         .to_string(),
                 ],
             ),
+            (
+                "# Events",
+                vec![
+                    "topics - `[\"generated_policy_uninstalled\", smart_account: Address]`"
+                        .to_string(),
+                    "data - `[context_rule_id: u32]`".to_string(),
+                ],
+            ),
         ],
     );
     if has_state {
@@ -1195,11 +1332,26 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
         );
         out.push_str(&ttl_extension_block(true));
+        out.push_str(&emit_publish(
+            "GeneratedPolicyInstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
         out.push_str("    }\n\n");
         out.push_str(&uninstall_doc);
         out.push_str(
-            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n",
         );
+        out.push_str(&emit_publish(
+            "GeneratedPolicyUninstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
+        out.push_str("    }\n");
     } else {
         out.push_str(&install_doc);
         out.push_str(
@@ -1214,11 +1366,26 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
             "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
         );
         out.push_str(&ttl_extension_block(false));
+        out.push_str(&emit_publish(
+            "GeneratedPolicyInstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
         out.push_str("    }\n\n");
         out.push_str(&uninstall_doc);
         out.push_str(
-            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n",
         );
+        out.push_str(&emit_publish(
+            "GeneratedPolicyUninstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
+        out.push_str("    }\n");
     }
     out.push_str("}\n\n");
     // Expected signer set (sorted canonical order — deterministic).
@@ -2396,6 +2563,114 @@ mod tests {
         );
     }
 
+    /// The three lifecycle events are declared, published, and documented where they are emitted.
+    ///
+    /// Behaviour is the differential suite's job (`contracts/differential/tests/events.rs`);
+    /// this is the shape, over every rule form, including the two the goldens do not cover.
+    ///
+    /// The `# Events` doc sections quote a topic symbol the `#[contractevent]` macro derives from
+    /// the struct name, so nothing here can hold them to the artifact — the differential suite
+    /// reads the published topics back and compares. What *is* checkable offline is that a
+    /// function which publishes documents doing so, which is the direction that goes stale first.
+    #[test]
+    fn every_entry_point_declares_publishes_and_documents_its_event() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            for (verb, entry) in [
+                ("Enforced", "enforce"),
+                ("Installed", "install"),
+                ("Uninstalled", "uninstall"),
+            ] {
+                let event = format!("GeneratedPolicy{verb}");
+                assert!(
+                    source.contains(&format!("#[contractevent]\n#[derive(Clone"))
+                        && source.contains(&format!("pub struct {event} {{\n")),
+                    "{shape}: {event} must be a `#[contractevent]` struct:\n{source}"
+                );
+                // The single topic is the smart account, as it is in all three library policies.
+                let declaration = &source[source
+                    .find(&format!("pub struct {event} {{"))
+                    .expect("just asserted")..];
+                let declaration = &declaration[..declaration.find("\n}\n").expect("a struct ends")];
+                assert!(
+                    declaration.contains("    #[topic]\n    pub smart_account: Address,"),
+                    "{shape}: {event}'s only topic must be the smart account:\n{declaration}"
+                );
+                assert_eq!(
+                    declaration.matches("#[topic]").count(),
+                    1,
+                    "{shape}: {event} must carry exactly one topic:\n{declaration}"
+                );
+                assert!(
+                    declaration.contains("pub context_rule_id: u32,"),
+                    "{shape}: {event} must carry the context rule id:\n{declaration}"
+                );
+
+                // Published from the body of the entry point it belongs to, not merely declared.
+                let body = body_of(&source, entry);
+                assert!(
+                    body.contains(&format!("{event} {{")) && body.contains(".publish(e);"),
+                    "{shape}: `{entry}` must publish {event}:\n{body}"
+                );
+                // …and documented there, in the form their conventions fix.
+                let doc = docs_of(&source, entry);
+                assert!(
+                    doc.contains("# Events")
+                        && doc.contains("* topics - ")
+                        && doc.contains("* data - "),
+                    "{shape}: `{entry}` must document the event it publishes:\n{doc}"
+                );
+            }
+
+            // The running number rides on the enforcement event only where a cap exists — the
+            // same condition that decides whether `remaining_calls` is exported at all.
+            let enforced = &source[source
+                .find("pub struct GeneratedPolicyEnforced {")
+                .expect("the enforcement event is declared")..];
+            let enforced = &enforced[..enforced.find("\n}\n").expect("a struct ends")];
+            assert_eq!(
+                enforced.contains("pub remaining_calls: u32,"),
+                max_calls.is_some(),
+                "{shape}: the enforcement event carries a count iff the rule caps calls"
+            );
+            // Searched against the doc with its wrapping undone: `wrap_comments` may split any
+            // phrase across two lines, and a substring search over the raw text would then be
+            // asking about the line breaks rather than about the content.
+            let enforce_doc = docs_of(&source, "enforce")
+                .replace("///", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(
+                enforce_doc.contains("remaining_calls: u32"),
+                max_calls.is_some(),
+                "{shape}: and the doc says so iff the field is there:\n{enforce_doc}"
+            );
+            // The context always rides on it: an event naming only the account and the rule
+            // would not say what was permitted, which is the one thing a reader wants from it.
+            assert!(
+                enforced.contains("pub context: Context,"),
+                "{shape}: the enforcement event must carry what it permitted:\n{enforced}"
+            );
+        }
+    }
+
     /// The artifact exposes its state for reading, and extends TTL where it reads.
     ///
     /// Both sibling policy examples expose getters from an inherent `#[contractimpl]` block beside
@@ -2507,14 +2782,14 @@ mod tests {
     #[test]
     fn the_emitted_file_carries_the_canonical_section_delimiters_in_order() {
         let rule = "#".repeat(18);
-        // Only the sections a rule of this shape has; EVENTS is asserted where it is emitted, so
-        // this list stays a statement about ordering rather than a roster that has to be edited
-        // whenever a section is added. QUERY STATE is unconditional: every policy answers
-        // `is_installed`, whether or not it also counts calls.
+        // Every section a generated policy has. Both EVENTS and QUERY STATE are unconditional:
+        // every policy announces its three lifecycle steps and answers `is_installed`, whether or
+        // not it also counts calls.
         let expected = [
             "ERRORS",
             "STORAGE KEYS",
             "CONSTANTS",
+            "EVENTS",
             "QUERY STATE",
             "CHANGE STATE",
             "LOW-LEVEL HELPERS",
@@ -2939,16 +3214,15 @@ mod tests {
             (
                 "golden transfer",
                 golden_spec(),
-                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractimpl, \
-                 contracttype, panic_with_error, Address,\n    Env, Symbol, TryFromVal, Val, \
-                 Vec,\n};\n",
+                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractevent, contractimpl, \
+                 contracttype,\n    panic_with_error, Address, Env, Symbol, TryFromVal, Val, Vec,\n};\n",
             ),
             (
                 "W3 swap",
                 ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
-                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractimpl, \
-                 contracttype, panic_with_error,\n    xdr::ToXdr, Address, Bytes, Env, Symbol, \
-                 TryFromVal, Val, Vec,\n};\n",
+                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractevent, \
+                 contractimpl, contracttype,\n    panic_with_error, xdr::ToXdr, Address, Bytes, \
+                 Env, Symbol, TryFromVal, Val, Vec,\n};\n",
             ),
         ] {
             let source = generate(&spec, 0, &Pins::default())

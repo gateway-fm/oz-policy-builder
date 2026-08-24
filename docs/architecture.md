@@ -550,15 +550,27 @@ impl Policy for GeneratedPolicy {
         // 3. stateful checks (call count, window), storage keyed by
         //    (smart_account, context_rule.id) under the invariants below
         // any violation: panic_with_error!(e, PolicyError::...)
+        // 4. announce the permit: GeneratedPolicyEnforced { .. }.publish(e). A denial cannot be
+        //    announced — panic_with_error! reverts the publish along with everything else.
     }
     fn install(e: &Env, info: InstallInfo, context_rule: ContextRule, smart_account: Address) { ... }
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) { ... } // best-effort
+}
+
+// Read-only surface, in an inherent impl beside the trait one.
+#[contractimpl]
+impl GeneratedPolicy {
+    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool { ... }
+    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 { ... }
 }
 ```
 
 - Implements the OZ `Policy` trait exactly as published in `stellar-accounts`
   (`install` / `enforce` / `uninstall`; rejection by panic with registered
-  `#[contracterror]` codes). Note: the RFP background text mentions a `can_enforce` hook;
+  `#[contracterror]` codes). Each entry point publishes a `#[contractevent]` on success and
+  the artifact exports getters for its own state, both following the shape of the library's
+  policies — see `docs/ECOSYSTEM-CONFORMANCE.md` §6 for what that does and does not make
+  observable. Note: the RFP background text mentions a `can_enforce` hook;
   current audited releases do not have it — we pin to the audited release and track trait
   evolution (§9).
 - **Dependencies:** `#![no_std]`, `soroban-sdk` **and** the matching `stellar-accounts`
