@@ -4144,9 +4144,16 @@ mod tests {
         // Both directions. The loop below compares every generated file against its committed
         // copy, which says nothing about a committed file the emitter does not produce — and
         // `verify` stopped being one-directional in the same change that split the crate, since
-        // it now regenerates a map of files and compares it against the map it was given. A
-        // stray `src/old.rs` left behind by a rename would compile into the artifact, change the
-        // wasm hash, and pass this gate.
+        // it now regenerates a map of files and compares it against the map it was given.
+        //
+        // What a stray file does *not* do is reach the wasm: rustc compiles what `lib.rs` and
+        // `contract.rs` declare, both of which are compared byte for byte, so an undeclared
+        // `src/old.rs` is dead. An earlier version of this comment claimed it "would compile
+        // into the artifact", which was the same kind of overclaim the rest of this change is
+        // about. The real reason is smaller and still sufficient: this directory is a reviewed
+        // artifact, a reader opening it takes every file in it as part of the policy, and
+        // `UPDATE_GOLDEN=1` writes files without ever removing one — so a rename leaves its
+        // previous output behind and nothing else in the tree notices.
         let mut committed_files: Vec<String> = Vec::new();
         for entry in walk(&root) {
             let rel = entry
