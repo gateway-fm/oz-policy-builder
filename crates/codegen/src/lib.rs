@@ -264,7 +264,15 @@ targets = ["wasm32v1-none"]
 /// The layout is rustfmt's for this shape and was measured against it: a struct literal that fits
 /// `struct_lit_width` — `max_width` under the shipped config — stays on the `.publish` chain's own
 /// line, and one that does not takes a field per line with `.publish(e)` on the closing brace's
-/// line. Both occur here, which is why the width is computed rather than assumed.
+/// line.
+///
+/// Only the second form occurs for the events this emitter currently produces: the narrowest of
+/// the three is 119 columns on one line, against a budget of 100. The one-line branch is kept
+/// anyway, and `both_publish_layouts_are_the_ones_rustfmt_would_choose` exercises it directly,
+/// because emission derives its layout instead of piping output through rustfmt — so an emitter
+/// that always broke the literal would silently ship a file `cargo fmt --check` rewrites, the
+/// moment an event narrow enough to fit exists. Which is a live possibility: a rule with no call
+/// cap already drops a field from the enforcement event.
 fn emit_publish(event: &str, fields: &[&str]) -> String {
     let indent = "        ";
     let one_line = format!("{indent}{event} {{ {} }}.publish(e);", fields.join(", "));
@@ -3466,6 +3474,72 @@ mod tests {
             }
         }
         lines[at..=end].join("\n")
+    }
+
+    /// `emit_publish` chooses the layout rustfmt would, on both sides of the boundary.
+    ///
+    /// The multi-line form is the only one the three current events reach, so without this the
+    /// one-line branch would be unreachable code carrying a claim about rustfmt that nothing
+    /// checked. The boundary is what matters rather than either form on its own: it has to be
+    /// `struct_lit_width`, which `use_small_heuristics = "Max"` raises to `max_width`, because
+    /// rustfmt joins a literal that fits and this emitter never runs rustfmt to find out.
+    ///
+    /// Asserted at exactly the budget and one column past it, with a synthetic field wide enough
+    /// to land on each, rather than by rendering a real event — the real events are all far past
+    /// the boundary, which is the reason this test exists.
+    #[test]
+    fn both_publish_layouts_are_the_ones_rustfmt_would_choose() {
+        // `        E { <field> }.publish(e);` — everything but the field is fixed.
+        let fixed = "        E { ".len() + " }.publish(e);".len();
+        let field_of = |total: usize| format!("f: {}", "x".repeat(total - fixed - "f: ".len()));
+
+        let fits = emit_publish("E", &[&field_of(render::MAX_WIDTH)]);
+        assert_eq!(
+            fits.lines().filter(|l| !l.is_empty()).count(),
+            1,
+            "a literal that fits `struct_lit_width` stays on one line, because rustfmt would \
+             join it:\n{fits}"
+        );
+        assert_eq!(
+            fits.trim_matches('\n').chars().count(),
+            render::MAX_WIDTH,
+            "the boundary case must be exactly the budget, or it is testing some other width"
+        );
+
+        let overflows = emit_publish("E", &[&field_of(render::MAX_WIDTH + 1)]);
+        assert!(
+            overflows.contains("E {\n") && overflows.contains("\n        .publish(e);\n"),
+            "one column past the budget takes a field per line with `.publish(e)` on the closing \
+             brace's line:\n{overflows}"
+        );
+
+        // And the events actually emitted are all on the far side of it — the fact that makes the
+        // branch above unreachable through `generate`, stated as a measurement rather than left
+        // for a reader to assume either way.
+        for (event, fields) in [
+            (
+                "GeneratedPolicyEnforced",
+                &[
+                    "smart_account: smart_account.clone()",
+                    "context",
+                    "context_rule_id: context_rule.id",
+                    "remaining_calls: remaining",
+                ][..],
+            ),
+            (
+                "GeneratedPolicyInstalled",
+                &[
+                    "smart_account: smart_account.clone()",
+                    "context_rule_id: context_rule.id",
+                ][..],
+            ),
+        ] {
+            let rendered = emit_publish(event, fields);
+            assert!(
+                rendered.contains(&format!("{event} {{\n")),
+                "{event} is wider than the budget and must take the multi-line form"
+            );
+        }
     }
 
     /// `wrap_comments` bounds a doc comment and an ordinary comment from different columns.
