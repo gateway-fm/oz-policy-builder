@@ -1821,14 +1821,14 @@ mod tests {
         assert_eq!(artifact.manifest_hash, artifact.manifest.hash().unwrap());
     }
 
-    /// The boundary shapes, as spec inputs. Shared by the two tests below so the case list
-    /// exists once: `i128::MIN` / `i128::MAX` literals, a zero-argument tuple, an
+    /// The real-compile half of codegen's "always compilable" property. Codegen itself
+    /// cannot dev-depend on this crate (build-runner depends on codegen, so the types would
+    /// be duplicated), so the boundary shapes that a parse check cannot fully vouch for are
+    /// compiled here: `i128::MIN` / `i128::MAX` literals, a zero-argument tuple, an
     /// unconstrained argument, and the longest legal Soroban symbol.
-    fn boundary_cases() -> Vec<(
-        &'static str,
-        Vec<ozpb_policy_spec::AllowedCall>,
-        Vec<ozpb_policy_spec::StateSpec>,
-    )> {
+    #[test]
+    #[ignore = "requires the pinned Rust target, stellar-cli, and cached contract dependencies"]
+    fn boundary_specs_compile_to_wasm() {
         use ozpb_policy_spec::{AllowedCall, ArgConstraint, Constraint, StateSpec};
 
         fn call(fn_name: &str, constraints: Vec<Constraint>) -> AllowedCall {
@@ -1839,16 +1839,20 @@ mod tests {
                     .enumerate()
                     .map(|(index, constraint)| ArgConstraint {
                         index: index as u32,
-                        // Widening constraints may not claim ObservedExact provenance. And
-                        // `AnyValue` — which two of these cases use — is the maximal widening,
-                        // so validation demands it be acknowledged as high blast radius; a
-                        // lower label is a contradiction the artifact must not carry. `High`
-                        // is honest for every widening here, and a bounded widening accepts
-                        // any declared radius, so one label serves all four cases.
+                        // Widening constraints may not claim ObservedExact provenance, and an
+                        // unconstrained argument may not claim anything below `High`: leaving an
+                        // argument free is the widest widening there is, so the schema requires
+                        // the acknowledgement to say so. `Medium` for every widening left the two
+                        // `AnyValue` cases below failing validation before they reached rustc,
+                        // which is the one thing this test exists to do.
                         provenance: if constraint.is_widening() {
                             ozpb_domain::Provenance::UserWidened {
                                 intent: "boundary compile test".to_string(),
-                                blast_radius: ozpb_domain::BlastRadius::High,
+                                blast_radius: if matches!(constraint, Constraint::AnyValue) {
+                                    ozpb_domain::BlastRadius::High
+                                } else {
+                                    ozpb_domain::BlastRadius::Medium
+                                },
                             }
                         } else {
                             ozpb_domain::Provenance::ObservedExact
@@ -1897,63 +1901,25 @@ mod tests {
             ),
         ];
 
-        cases
-    }
-
-    /// One boundary case, validated. Everything up to codegen is pure, which is the half that
-    /// can run anywhere.
-    fn boundary_spec(
-        label: &str,
-        calls: Vec<ozpb_policy_spec::AllowedCall>,
-        state: Vec<ozpb_policy_spec::StateSpec>,
-    ) -> ozpb_policy_spec::ValidatedSpec {
-        let mut spec = ozpb_synthesizer::fixtures::golden_spec().spec().clone();
-        let rule = &mut spec.rules[0];
-        // These cases exercise generated-source compilation, not the semantics of the golden
-        // fixture's reviewed spending-limit composition. Keeping that policy while replacing
-        // the transfer tuple would make validation correctly reject the fixture before any
-        // boundary shape reached rustc.
-        rule.policies
-            .retain(|policy| matches!(policy, ozpb_policy_spec::PolicyRef::Generated { .. }));
-        rule.allowed_calls = calls;
-        rule.state = state;
-        spec.validate()
-            .unwrap_or_else(|e| panic!("{label} did not validate: {e:?}"))
-    }
-
-    /// Every boundary shape validates and reaches generated source. No toolchain, so this runs
-    /// wherever the suite runs — which is the point: the case list's own conformance to the
-    /// spec schema is not evidence that has to wait for a scheduled job.
-    ///
-    /// It exists because it was missing. When validation began demanding a high-blast-radius
-    /// acknowledgement for `AnyValue`, the sibling fixtures in `codegen` were updated with the
-    /// rule and this crate's were not — and nothing said so, because the only test reading them
-    /// is `#[ignore]`d and runs nightly. The pull request merged green; the red arrived the next
-    /// morning in a job whose header lists three plausible external causes for a failure.
-    #[test]
-    fn boundary_specs_validate_and_generate() {
-        let pins = Pins::default();
-        for (label, calls, state) in boundary_cases() {
-            let spec = boundary_spec(label, calls, state);
-            ozpb_codegen::generate(&spec, 0, &pins)
-                .unwrap_or_else(|e| panic!("{label} did not generate: {e}"));
-        }
-    }
-
-    /// The real-compile half of codegen's "always compilable" property. Codegen itself cannot
-    /// dev-depend on this crate (build-runner depends on codegen, so the types would be
-    /// duplicated), so the boundary shapes a parse check cannot fully vouch for are compiled
-    /// here — with the real toolchain, which is why this half is `#[ignore]`d.
-    #[test]
-    #[ignore = "requires the pinned Rust target, stellar-cli, and cached contract dependencies"]
-    fn boundary_specs_compile_to_wasm() {
         let pins = Pins::default();
         let config = BuildConfig {
             target_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/target")),
             ..BuildConfig::default()
         };
-        for (label, calls, state) in boundary_cases() {
-            let spec = boundary_spec(label, calls, state);
+        for (label, calls, state) in cases {
+            let mut spec = ozpb_synthesizer::fixtures::golden_spec().spec().clone();
+            let rule = &mut spec.rules[0];
+            // These cases exercise generated-source compilation, not the semantics of the
+            // golden fixture's reviewed spending-limit composition. Keeping that policy while
+            // replacing the transfer tuple would make validation correctly reject the fixture
+            // before any boundary shape reached rustc.
+            rule.policies
+                .retain(|policy| matches!(policy, ozpb_policy_spec::PolicyRef::Generated { .. }));
+            rule.allowed_calls = calls;
+            rule.state = state;
+            let spec = spec
+                .validate()
+                .unwrap_or_else(|e| panic!("{label} did not validate: {e:?}"));
             let generated = ozpb_codegen::generate(&spec, 0, &pins)
                 .unwrap_or_else(|e| panic!("{label} did not generate: {e}"));
             let request = BuildRequest {
