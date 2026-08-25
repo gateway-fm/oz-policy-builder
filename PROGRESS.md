@@ -554,7 +554,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
 ## Verifiable artifacts
 
 - **Codegen determinism:** two cold runs of `ozpb generate` produce byte-identical sources.
-  The contract module is sha256 `4db7fe0d…` and the crate root `5c878485…`; the
+  The contract module is sha256 `41f3347c…` and the crate root `5c878485…`; the
   normalized codegen-input hash the root declares is `662ad7a9…`. Both files are named because
   the crate root is a header and a `pub mod` declaration — its digest does not move when the
   policy's behaviour does, so quoting it alone would be quoting the stable half.

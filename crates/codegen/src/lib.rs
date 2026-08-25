@@ -1233,7 +1233,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
 
     // Context scoping.
     out.push_str(
-        "        let c = match &context {\n            Context::Contract(c) => c.clone(),\n            _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),\n        };\n        if c.contract != Address::from_str(e, TARGET) {\n            panic_with_error!(e, PolicyError::TargetMismatch);\n        }\n",
+        // Borrowed, not cloned. `context` is moved into the enforcement event at the end of the
+        // function, so the binding has to be a reference whose last use precedes that move — it
+        // is, since every check that reads `c` happens before the counter is touched. The clone
+        // this replaces was not expensive (a `soroban_sdk::Vec` is a handle into a host object,
+        // so copying one copies a handle) but it was unnecessary, and an unexplained `.clone()`
+        // in a generated artifact is a question a reviewer has to spend a comment on.
+        "        let c = match &context {\n            Context::Contract(c) => c,\n            _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),\n        };\n        if c.contract != Address::from_str(e, TARGET) {\n            panic_with_error!(e, PolicyError::TargetMismatch);\n        }\n",
     );
     let fn_names: Vec<&str> = {
         let mut names: Vec<&str> = rule.calls.iter().map(|c| c.fn_name.as_str()).collect();

@@ -321,7 +321,7 @@ impl Policy for GeneratedPolicy {
         }
 
         let c = match &context {
-            Context::Contract(c) => c.clone(),
+            Context::Contract(c) => c,
             _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),
         };
         if c.contract != Address::from_str(e, TARGET) {
