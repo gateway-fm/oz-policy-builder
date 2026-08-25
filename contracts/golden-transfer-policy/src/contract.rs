@@ -271,8 +271,9 @@ impl Policy for GeneratedPolicy {
     /// # Errors
     ///
     /// * [`PolicyError::MissingState`] - When no installation marker exists for
-    ///   this smart account and context rule. Missing state denies rather than
-    ///   reading as zero.
+    ///   this smart account and context rule, or when the marker exists and the
+    ///   call counter this policy owns does not. Missing state denies rather
+    ///   than reading as zero.
     /// * [`PolicyError::RuleExpired`] - When the ledger sequence is past the
     ///   rule's validity window.
     /// * [`PolicyError::ZeroSigners`] - When no signer authenticated this
@@ -280,9 +281,12 @@ impl Policy for GeneratedPolicy {
     /// * [`PolicyError::PredicateUnsatisfied`] - When the authenticated signers
     ///   do not satisfy the rule's signer predicate.
     /// * [`PolicyError::SignerSetDiverged`] - When the context rule's live
-    ///   signer set is no longer the one compiled in.
+    ///   signer set is a different size from the one compiled in, or when a
+    ///   compiled-in signer is absent from it. Either way the grant a reader
+    ///   approved is not the grant being exercised.
     /// * [`PolicyError::FunctionNotAllowed`] - When the authorization is not a
-    ///   contract invocation, or invokes a function outside the allowed calls.
+    ///   contract invocation at all, or when it invokes a function outside the
+    ///   allowed calls.
     /// * [`PolicyError::TargetMismatch`] - When the invoked contract is not the
     ///   one this policy is scoped to.
     /// * [`PolicyError::NoTupleMatched`] - When the arguments satisfy no

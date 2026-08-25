@@ -1046,11 +1046,19 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // emitted, so a check and its documentation cannot get out of step: adding a refusal to the
     // body without listing it here, or listing one the body cannot raise, would take a second
     // edit in the same expression rather than in a distant string.
-    let mut enforce_errors = vec![
+    let mut enforce_errors = vec![if has_state {
+        // Two raise sites, so two conditions. The second is an invariant violation rather than an
+        // ordinary refusal — `install` writes the marker and the counter together — and it denies
+        // for the same reason the first does.
+        "[`PolicyError::MissingState`] - When no installation marker exists for this smart \
+         account and context rule, or when the marker exists and the call counter this policy \
+         owns does not. Missing state denies rather than reading as zero."
+            .to_string()
+    } else {
         "[`PolicyError::MissingState`] - When no installation marker exists for this smart \
          account and context rule. Missing state denies rather than reading as zero."
-            .to_string(),
-    ];
+            .to_string()
+    }];
     if rule.valid_until_ledger.is_some() {
         enforce_errors.push(
             "[`PolicyError::RuleExpired`] - When the ledger sequence is past the rule's \
@@ -1069,14 +1077,15 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     );
     if rule.strict_signer_set && !dynamic {
         enforce_errors.push(
-            "[`PolicyError::SignerSetDiverged`] - When the context rule's live signer set is no \
-             longer the one compiled in."
+            "[`PolicyError::SignerSetDiverged`] - When the context rule's live signer set is a \
+             different size from the one compiled in, or when a compiled-in signer is absent \
+             from it. Either way the grant a reader approved is not the grant being exercised."
                 .to_string(),
         );
     }
     enforce_errors.push(
         "[`PolicyError::FunctionNotAllowed`] - When the authorization is not a contract \
-         invocation, or invokes a function outside the allowed calls."
+         invocation at all, or when it invokes a function outside the allowed calls."
             .to_string(),
     );
     enforce_errors.push(
@@ -3262,16 +3271,65 @@ mod tests {
         lines[start..at].join("\n")
     }
 
-    /// An `# Errors` list names every refusal the emitted body can raise, and no others.
+    /// The `# Errors` bullets of one entry point, as (variant, prose) pairs.
+    ///
+    /// The prose matters as much as the variant. A list that names the right eleven codes while
+    /// describing one of two conditions that raise a code is the failure this parses for, and it
+    /// is invisible to any check that reads only the identifiers.
+    fn error_bullets(doc: &str) -> Vec<(String, String)> {
+        let mut bullets: Vec<(String, String)> = Vec::new();
+        let mut inside = false;
+        for line in doc.lines() {
+            let text = line.trim_start().trim_start_matches("///").trim();
+            if text.starts_with("# ") {
+                inside = text == "# Errors";
+                continue;
+            }
+            if !inside || text.is_empty() {
+                continue;
+            }
+            if let Some(rest) = text.strip_prefix("* ") {
+                let variant = rest
+                    .split("[`PolicyError::")
+                    .nth(1)
+                    .and_then(|r| r.split('`').next())
+                    .unwrap_or_else(|| panic!("an `# Errors` bullet that names no variant: {rest}"))
+                    .to_string();
+                bullets.push((variant, rest.to_string()));
+            } else if let Some(last) = bullets.last_mut() {
+                // A wrapped continuation line. Joined with a space so a condition broken across
+                // two lines is still one occurrence of the word that introduces it.
+                last.1.push(' ');
+                last.1.push_str(text);
+            }
+        }
+        bullets
+    }
+
+    /// An `# Errors` list names every refusal the emitted body can raise, no others, **and as
+    /// many conditions as the body has raise sites for it**.
     ///
     /// This is the property that makes the section worth having in a generated artifact. The enum
     /// declares all eleven codes whatever the rule's shape, so copying that list into every
     /// entry point's docs would be easy and would be wrong: a rule with no validity window can
     /// never raise `RuleExpired`, and one with no call cap can never raise `CallCountExceeded`.
     ///
-    /// Checked in both directions against the body itself — every `panic_with_error!` reachable
-    /// from the function is listed, and every listed error appears in one — so the test reads the
-    /// code rather than a second copy of the author's intent.
+    /// Checked in three directions against the body itself: every `panic_with_error!` reachable
+    /// from the function is listed, every listed error appears in one, and a code raised from *n*
+    /// distinct sites is described by *n* conditions rather than one. That last direction is
+    /// the one a variant-name comparison cannot see, and it is not hypothetical — `enforce`
+    /// raises `MissingState` for a missing marker *and* for a missing counter, `SignerSetDiverged`
+    /// from a size check *and* a membership loop, and `FunctionNotAllowed` from a non-contract
+    /// context *and* a disallowed function name. Each was documented as one condition, so a
+    /// reader of the docs knew about half of the code.
+    ///
+    /// A condition is counted by the word that introduces it — every bullet reads
+    /// "`When` …, or `when` …" — which makes the count a property of the prose a reader
+    /// actually sees rather than of a table kept beside it.
+    ///
+    /// All five entry points, not the three on the `Policy` trait. `is_installed` is here for the
+    /// opposite reason to the others: it must document no refusal, because it can raise none, and
+    /// a getter that started panicking without a doc would otherwise pass unnoticed.
     #[test]
     fn each_entry_point_documents_exactly_the_refusals_its_body_can_raise() {
         let calls = golden_spec().spec().rules[0].allowed_calls.clone();
@@ -3292,14 +3350,16 @@ mod tests {
             let source = emitted_for(&spec);
             let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
 
-            for entry in ["enforce", "install", "uninstall"] {
+            // `remaining_calls` is emitted only where a cap exists; the other four always are.
+            let mut entries = vec!["enforce", "install", "uninstall", "is_installed"];
+            if max_calls.is_some() {
+                entries.push("remaining_calls");
+            }
+
+            for entry in entries {
                 let doc = docs_of(&source, entry);
-                let listed: Vec<String> = doc
-                    .lines()
-                    .filter_map(|line| line.split("[`PolicyError::").nth(1))
-                    .filter_map(|rest| rest.split('`').next())
-                    .map(str::to_string)
-                    .collect();
+                let bullets = error_bullets(&doc);
+                let listed: Vec<String> = bullets.iter().map(|(v, _)| v.clone()).collect();
                 let raised: Vec<String> = body_of(&source, entry)
                     .split("panic_with_error!(e, PolicyError::")
                     .skip(1)
@@ -3321,10 +3381,44 @@ mod tests {
                          {raised:?}"
                     );
                 }
-                assert!(
-                    !raised.is_empty(),
-                    "{shape}: no refusal found in `{entry}`, so this proves nothing"
-                );
+
+                // One condition per raise site. The bullets for a variant are taken together, so
+                // the emitter may either split a twice-raised code into two bullets or name both
+                // conditions in one — what it may not do is describe fewer conditions than the
+                // body has ways of reaching the code.
+                for variant in &listed {
+                    let sites = raised.iter().filter(|r| *r == variant).count();
+                    let described: usize = bullets
+                        .iter()
+                        .filter(|(v, _)| v == variant)
+                        .map(|(_, prose)| prose.to_lowercase().matches("when ").count())
+                        .sum();
+                    assert_eq!(
+                        described,
+                        sites,
+                        "{shape}: `{entry}` raises {variant} from {sites} site(s) and its \
+                         `# Errors` prose describes {described} condition(s); a code reachable \
+                         two ways documented once tells a reader about one of them:\n{:?}",
+                        bullets
+                            .iter()
+                            .filter(|(v, _)| v == variant)
+                            .map(|(_, prose)| prose)
+                            .collect::<Vec<_>>()
+                    );
+                }
+
+                if entry == "is_installed" {
+                    assert!(
+                        raised.is_empty() && listed.is_empty(),
+                        "{shape}: `is_installed` answers a query and must refuse nothing: \
+                         raises {raised:?}, documents {listed:?}"
+                    );
+                } else {
+                    assert!(
+                        !raised.is_empty(),
+                        "{shape}: no refusal found in `{entry}`, so this proves nothing"
+                    );
+                }
             }
 
             // The shape-dependent pair, stated directly: these are the two errors a copied list
