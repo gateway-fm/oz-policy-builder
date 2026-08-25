@@ -3757,7 +3757,9 @@ mod tests {
             .files
             .get("rustfmt.toml")
             .expect("the generated crate must carry a rustfmt.toml");
-        for option in [
+        // Their file, option for option — the same list read in both directions below, so
+        // neither a dropped option nor an added one can pass.
+        let theirs = [
             "format_macro_bodies = true",
             "format_macro_matchers = true",
             "format_strings = true",
@@ -3769,22 +3771,28 @@ mod tests {
             "wrap_comments = true",
             "format_code_in_doc_comments = true",
             "unstable_features = true",
-        ] {
+        ];
+        for option in theirs {
             assert!(
                 config.lines().any(|line| line == option),
                 "rustfmt.toml is missing OpenZeppelin's `{option}`:\n{config}"
             );
         }
-        // Nothing but their options and comments: a setting of our own here would be a rule the
-        // library is not held to, which is the opposite of the reason for shipping the file.
+        // And nothing else. A setting of our own here would be a rule the library is not held to,
+        // which is the opposite of the reason for shipping the file — so every line that is not a
+        // comment has to be one of theirs, verbatim. Filtering out "lines that look like
+        // settings" instead, which is what this did, left the only thing it was looking for
+        // unreachable: `our_own_option = true` is a setting, so the filter dropped it and the
+        // assertion below then held over an empty list.
         let ours: Vec<&str> = config
             .lines()
-            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-            .filter(|line| !line.contains(" = "))
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter(|line| !theirs.contains(line))
             .collect();
         assert!(
             ours.is_empty(),
-            "unexpected lines in rustfmt.toml: {ours:?}"
+            "rustfmt.toml carries settings that are not OpenZeppelin's: {ours:?}"
         );
     }
 
