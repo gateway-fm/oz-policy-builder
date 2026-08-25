@@ -862,13 +862,19 @@ fn validate_generated(generated: &GeneratedCrate) -> Result<(), BuildError> {
             generated.files.len()
         )));
     }
-    if !generated.files.contains_key("Cargo.toml")
-        || !generated.files.contains_key("Cargo.lock")
-        || !generated.files.contains_key("src/lib.rs")
-    {
-        return Err(BuildError::Input(
-            "generated crate must contain Cargo.toml, Cargo.lock, and src/lib.rs".to_string(),
-        ));
+    // `src/contract.rs` is required alongside the crate root, not optional. The root is a header
+    // and a `pub mod contract;` declaration, so a crate that carries only the root passes every
+    // check here and then fails in the compiler with an unresolved module — validation reporting
+    // clean on an input it cannot build. The list is spelled out rather than derived because this
+    // is the boundary where a caller-supplied crate is checked, and the point of the boundary is
+    // to name what it requires.
+    for required in ["Cargo.toml", "Cargo.lock", "src/lib.rs", "src/contract.rs"] {
+        if !generated.files.contains_key(required) {
+            return Err(BuildError::Input(format!(
+                "generated crate must contain Cargo.toml, Cargo.lock, src/lib.rs and \
+                 src/contract.rs; {required} is missing"
+            )));
+        }
     }
     let total = generated
         .files
@@ -1276,16 +1282,64 @@ mod tests {
     use ozpb_domain::sha256;
     use std::collections::BTreeMap;
 
+    /// A generated crate with the file set the emitter actually produces.
+    ///
+    /// `src/contract.rs` carries the varying part, because that is where the emitter puts it: the
+    /// crate root is a header and a `pub mod contract;`. A helper that varied only the root would
+    /// be exercising the one file whose content does not depend on the rule.
     fn generated(source: &str) -> GeneratedCrate {
         GeneratedCrate {
             crate_name: "generated-test-r0".to_string(),
             files: BTreeMap::from([
                 ("Cargo.lock".to_string(), "lock-v1".to_string()),
                 ("Cargo.toml".to_string(), "manifest-v1".to_string()),
-                ("src/lib.rs".to_string(), source.to_string()),
+                (
+                    "src/lib.rs".to_string(),
+                    "#![no_std]\n\npub mod contract;\n".to_string(),
+                ),
+                ("src/contract.rs".to_string(), source.to_string()),
             ]),
             normalized_input_hash: sha256(b"normalized"),
         }
+    }
+
+    /// A crate root with no contract module behind it is refused at the boundary, not by rustc.
+    ///
+    /// The crate root has been a header and a `pub mod contract;` since the split, so a crate
+    /// carrying only `src/lib.rs` cannot compile — and every check in `validate_generated` passed
+    /// it, leaving the failure to the compiler with a message about an unresolved module. Input
+    /// validation that reports clean on an input it cannot build is worse than no validation,
+    /// because a caller reads the compiler error as a defect in their spec.
+    #[test]
+    fn a_generated_crate_without_its_contract_module_is_refused() {
+        let mut incomplete = generated("the contract");
+        incomplete.files.remove("src/contract.rs");
+        let pins = Pins::default();
+        let request = BuildRequest {
+            generated: &incomplete,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        match build_stub(&request) {
+            Err(BuildError::Input(message)) => assert!(
+                message.contains("src/contract.rs is missing"),
+                "the refusal must name the missing file, so a caller knows which one: {message}"
+            ),
+            other => panic!("a crate with no contract module must be refused: {other:?}"),
+        }
+        // Non-vacuity: the same crate with the module present builds through the stub.
+        let complete = generated("the contract");
+        let ok = BuildRequest {
+            generated: &complete,
+            ..request
+        };
+        assert!(
+            build_stub(&ok).is_ok(),
+            "the complete crate must pass, or the refusal above is not about the missing module"
+        );
     }
 
     #[test]
@@ -1730,6 +1784,14 @@ mod tests {
                 (
                     "src/lib.rs".to_string(),
                     include_str!("../../../contracts/golden-transfer-policy/src/lib.rs")
+                        .to_string(),
+                ),
+                // The contract module. The crate root is a header and a `pub mod contract;`, so
+                // without this the build cannot resolve the module and the test fails in the
+                // compiler rather than on anything it means to assert.
+                (
+                    "src/contract.rs".to_string(),
+                    include_str!("../../../contracts/golden-transfer-policy/src/contract.rs")
                         .to_string(),
                 ),
                 (

@@ -3985,6 +3985,30 @@ mod tests {
         );
     }
 
+    /// Every file under `root`, recursively, ignoring build output.
+    ///
+    /// `target/` is skipped because it is not part of the crate and is not in `.gitignore`'s gift
+    /// to keep out of a working tree that has been built in. Nothing else is skipped: the point
+    /// of this walk is that a file the emitter does not know about is visible to it.
+    fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return found;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                found.extend(walk(&path));
+            } else {
+                found.push(path);
+            }
+        }
+        found
+    }
+
     /// The committed golden crate under contracts/ must exactly match regeneration.
     /// Run with UPDATE_GOLDEN=1 to (re)write it after intentional template changes.
     #[test]
@@ -4012,6 +4036,32 @@ mod tests {
         // what `ozpb generate` and the nightly wasm job run. And the W3 golden below compares the
         // *other* generated crate's committed lockfile against this one, which is what detects the
         // two drifting apart.
+        // Both directions. The loop below compares every generated file against its committed
+        // copy, which says nothing about a committed file the emitter does not produce — and
+        // `verify` stopped being one-directional in the same change that split the crate, since
+        // it now regenerates a map of files and compares it against the map it was given. A
+        // stray `src/old.rs` left behind by a rename would compile into the artifact, change the
+        // wasm hash, and pass this gate.
+        let mut committed_files: Vec<String> = Vec::new();
+        for entry in walk(&root) {
+            let rel = entry
+                .strip_prefix(&root)
+                .expect("a path under the golden crate root")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            committed_files.push(rel);
+        }
+        committed_files.sort();
+        let mut generated_files: Vec<String> = g.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed golden crate and codegen's output are not the same set of files; a \
+             file present here and absent from the emitter is compiled into the artifact by a \
+             build that reads the directory, and no comparison of the emitter's own output can \
+             see it"
+        );
+
         for (rel, content) in &g.files {
             let committed = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|_| {
                 panic!("missing committed golden file {rel}; run with UPDATE_GOLDEN=1")
@@ -4116,6 +4166,28 @@ mod tests {
         //
         // Unlike the W1 golden, this comparison can genuinely fail, and it is the only in-repo
         // check that detects the two committed lockfiles diverging.
+        //
+        // Both directions, for the reason spelled out on the transfer golden: a committed file the
+        // emitter does not produce is invisible to a comparison driven by the emitter's output,
+        // and it is compiled into the artifact all the same.
+        let mut committed_files: Vec<String> = walk(&root)
+            .iter()
+            .map(|entry| {
+                entry
+                    .strip_prefix(&root)
+                    .expect("a path under the W3 crate root")
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            })
+            .collect();
+        committed_files.sort();
+        let mut generated_files: Vec<String> = g.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed W3 crate and codegen's output are not the same set of files"
+        );
+
         for (rel, content) in &g.files {
             let committed = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|_| {
                 panic!("missing committed W3 golden {rel}; run with UPDATE_GOLDEN=1")
