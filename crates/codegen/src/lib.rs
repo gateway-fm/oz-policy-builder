@@ -53,7 +53,7 @@ impl Default for Pins {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneratedCrate {
     pub crate_name: String,
-    /// Relative path → file contents ("Cargo.toml", "src/lib.rs").
+    /// Relative path → file contents ("Cargo.toml", "src/lib.rs", "src/contract.rs", …).
     pub files: BTreeMap<String, String>,
     /// Pre-build identity: hash of the normalized codegen input (§4.10). The exact wasm
     /// hash exists only post-build, in the BuildManifest — never here.
@@ -529,7 +529,11 @@ lto = true
     )
 }
 
-/// Emit `src/lib.rs`.
+/// Emit the crate root and the contract module, in that order.
+///
+/// Two files since the split, and the split is why this returns a pair rather than writing them:
+/// the root is a header and a `pub mod contract;`, the module is the rule. A caller that took
+/// only the first would have the half that does not vary with the spec.
 ///
 /// Takes a [`RenderRule`], never a `RuleSpec`: every value here has already been through its
 /// validating constructor, so no raw spec string is in scope to interpolate (§4.4 rendering

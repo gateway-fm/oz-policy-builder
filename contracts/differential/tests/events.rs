@@ -34,6 +34,8 @@ const MAX_CALLS: u32 = 12;
 
 /// `PolicyError` codes, named so a refusal is asserted by its reason rather than by its failing.
 const PREDICATE_UNSATISFIED: u32 = 2;
+const CALL_COUNT_EXCEEDED: u32 = 7;
+const MISSING_STATE: u32 = 8;
 const ALREADY_INSTALLED: u32 = 10;
 const NOT_INSTALLED: u32 = 11;
 
@@ -115,6 +117,28 @@ impl World {
     }
 
     /// A call the policy must refuse: the authenticated signer is not the expected one.
+    /// A call with the **permitted** signer, returning the error instead of panicking.
+    ///
+    /// Needed wherever the refusal under test is not the signer check: a helper that supplies the
+    /// wrong signer refuses on the predicate whatever the counter or the marker says, so it would
+    /// report an empty event log for the wrong reason.
+    fn try_enforce_permitted(&self) -> Result<(), soroban_sdk::Error> {
+        let mut signers = SVec::new(&self.env);
+        signers.push_back(Signer::Delegated(Address::from_str(
+            &self.env,
+            &fx::golden_delegate_strkey(),
+        )));
+        self.client
+            .try_enforce(
+                &self.permitted_context(),
+                &signers,
+                &self.rule(),
+                &self.account,
+            )
+            .map(|_| ())
+            .map_err(|e| e.expect("a policy error, not a host error"))
+    }
+
     fn enforce_denied(&self) -> Result<(), soroban_sdk::Error> {
         let mut signers = SVec::new(&self.env);
         signers.push_back(Signer::Delegated(Address::from_str(
@@ -257,8 +281,19 @@ fn the_enforced_event_counts_down_to_zero() {
 
 /// A refusal leaves nothing behind, and that is a property rather than an omission.
 ///
-/// "Publish on denial too" is the first thing a reader asks for, so this is the answer: every
-/// refusal path is exercised and each one must leave the event log where it found it.
+/// "Publish on denial too" is the first thing a reader asks for, so this is the answer: a refusal
+/// leaves the event log where it found it.
+///
+/// Five refusals, not the twelve `panic_with_error!` sites the artifact has, and the reason is
+/// worth stating rather than leaving as an apparent gap. The mechanism is uniform and is the
+/// host's, not ours: `panic_with_error!` reverts the invocation, so an event published before it
+/// is reverted with it. What varies between sites is therefore not whether the log is cleared but
+/// how much work preceded the panic — so the five are chosen along that axis. One per entry
+/// point, each a different code, plus the two `enforce` refusals at the extremes of its check
+/// order: `MissingState`, which is the first thing it tests, and `CallCountExceeded`, which is
+/// the last check before the counter is written and the event published. The full deny-reason
+/// coverage — every code, against an independently written reference evaluator — is
+/// `differential.rs`; this file is about the event log.
 #[test]
 fn a_refusal_publishes_nothing() {
     let w = setup();
@@ -305,6 +340,88 @@ fn a_refusal_publishes_nothing() {
         w.emitted().is_empty(),
         "a refused uninstall must publish nothing: {:?}",
         w.emitted()
+    );
+
+    // The far end of `enforce`'s check order: the counter is read, compared against the cap and
+    // found spent, so this is the refusal with the most work behind it — and the one immediately
+    // before the write-and-publish pair. A revert that stopped short of the event would show up
+    // here or nowhere.
+    for _ in 0..MAX_CALLS {
+        w.enforce_once();
+    }
+    assert_eq!(
+        w.emitted().len(),
+        1,
+        "the last permitted call must still publish, or the cap was reached early"
+    );
+    match w.try_enforce_permitted() {
+        Err(error) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(CALL_COUNT_EXCEEDED),
+            "the call past the cap must be refused for the cap"
+        ),
+        Ok(()) => panic!("a call past the cap must be refused"),
+    }
+    assert!(
+        w.emitted().is_empty(),
+        "a call refused for the spent cap must publish nothing: {:?}",
+        w.emitted()
+    );
+
+    // The near end: no installation at all, which `enforce` tests before anything else. A fresh
+    // world, because the one above is installed.
+    let fresh = setup();
+    match fresh.try_enforce_permitted() {
+        Err(error) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "an enforce with no installation must be refused for the missing state"
+        ),
+        Ok(()) => panic!("an enforce with no installation must be refused"),
+    }
+    assert!(
+        fresh.emitted().is_empty(),
+        "an enforce refused for missing state must publish nothing: {:?}",
+        fresh.emitted()
+    );
+}
+
+/// What one event costs on the wire, measured rather than described.
+///
+/// §6 of the conformance record answered "why publish at all" with the artifact's growth in
+/// bytes, which is the wrong quantity: the objection it answers is about what every permitted
+/// call pays, and a wasm is paid for once. The fee-relevant number is the serialized size of the
+/// event that lands in the transaction's metadata, so that is what this records.
+///
+/// Recorded as an exact assertion, not a bound. These are three fixed structs — the sizes move
+/// only if a field is added, removed or retyped, and then the number here has to move with it,
+/// which is the point. The enforcement event is the one that recurs, and the one that carries the
+/// permitted `Context`; the other two happen once per installation.
+#[test]
+fn an_event_costs_what_the_conformance_record_says_it_costs() {
+    use soroban_sdk::xdr::WriteXdr as _;
+
+    let w = setup();
+    let size_of = |event: &ContractEvent| {
+        event
+            .to_xdr(soroban_sdk::xdr::Limits::none())
+            .expect("an emitted event must serialize")
+            .len()
+    };
+
+    w.client.install(&0u32, &w.rule(), &w.account);
+    let installed = size_of(&w.last());
+    w.enforce_once();
+    let enforced = size_of(&w.last());
+    w.client.uninstall(&w.rule(), &w.account);
+    let uninstalled = size_of(&w.last());
+
+    assert_eq!(
+        (installed, enforced, uninstalled),
+        (172, 476, 172),
+        "the serialized size of an event is what a permitted call pays for observability; if this \
+         moved, an event's shape changed and §6 of docs/ECOSYSTEM-CONFORMANCE.md is now quoting \
+         the wrong number"
     );
 }
 

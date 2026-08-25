@@ -11,7 +11,7 @@
 //! every Stellar SDK ships a codec generated from one schema, so implementations agree by
 //! construction rather than by agreement. The architecture asks for "a specified canonical
 //! encoding" and already prescribes canonical XDR for the authorization fingerprint
-//! (`docs/architecture.md:247`); this brings the remaining preimages to the same footing.
+//! (`docs/architecture.md:259-262`); this brings the remaining preimages to the same footing.
 //!
 //! # The preimage
 //!

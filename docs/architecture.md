@@ -154,7 +154,7 @@ deterministic tools.
 
 ## 4. Component architecture
 
-### 4.1 Recording layer (`crates/recorder`)
+### 4.1 Recording layer (`crates/recorder-core`)
 
 **Purpose:** turn a transaction — executed, simulated, or imported — into a precise,
 replay-invariant **RecordingBundle** with an acquisition-derived evidence label.

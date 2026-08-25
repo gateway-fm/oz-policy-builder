@@ -56,7 +56,7 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// wrong ledger for an old transaction (`docs/architecture.md:210-213`). "The endpoint was on
 /// protocol 27 when this evidence was acquired" is a different and true statement, which that
 /// argument does not reach — and the risk table still promises protocol and XDR versions per
-/// bundle (`docs/architecture.md:1394`), so that promise is outstanding rather than withdrawn
+/// bundle (`docs/architecture.md:1448`), so that promise is outstanding rather than withdrawn
 /// by this gate.
 const MAX_SUPPORTED_PROTOCOL: u32 = 27;
 
@@ -717,7 +717,7 @@ fn parse_contract_executables(
         // that it is dated at recording time and carries its own ledger: §4.1 lists these as
         // "target-contract executable hashes observed at recording time"
         // (`docs/architecture.md:208`), and the spec field they feed is `evidence_only` with an
-        // `observed_ledger` and a drift response (`docs/architecture.md:331-332`).
+        // `observed_ledger` and a drift response (`docs/architecture.md:332-333`).
         observations.insert(
             address.clone(),
             ExecutableObservation {
