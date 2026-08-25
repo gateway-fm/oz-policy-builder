@@ -514,6 +514,10 @@ denial.
 
 ## Status — COMPLETE
 
+Every count in this section is **as at the end of Phase 1** and has not been updated since; the
+current totals are at the top of this file. A per-crate figure here below today's is a record of
+what that crate had when the phase closed, not a claim about the tree.
+
 - [x] Repo scaffold (workspace, toolchain pin, dep-rule check script)
 - [x] `domain` — hashes, newtypes, trust levels, canonical encoding (13 tests)
 - [x] `policy-spec` — schema, validation typestate, canonical spec hash (16 tests)
@@ -527,7 +531,8 @@ denial.
 - [x] `api-types` + `toolkit` + `source-rpc` + `mcp-server` (6 tools, stdio) + `cli`
 - [x] Phase 1 verification: `scripts/verify-phase1.sh` — all 6 gates pass
 
-**Totals:** 112 tests (98 host + 14 differential) · 13 crates + contracts workspace.
+**Totals at the close of Phase 1:** 112 tests (98 host + 14 differential) · 13 crates +
+contracts workspace.
 
 ## The pipeline (all deterministic, all fail-closed)
 

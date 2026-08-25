@@ -743,11 +743,15 @@ The knobs and caps the release ships with, and what each one does and does not p
 **Why this section exists at all.** Sections 1–14 measure us against the *platform*. This one
 measures the generated policy against the *library's own house rules*, which is a different
 question and, for this project, a sharper one. `stellar-contracts` documents them in
-`.claude/commands/code-quality.md`, and its `CONTRIBUTING.md:99` says PRs that violate them "may
+`.claude/commands/code-quality.md`, and their `CONTRIBUTING.md:99` says PRs that violate them "may
 be rejected" — aimed explicitly at AI-assisted contributions, which ours are twice over, since a
 program writes the code. The artifact this project ships is a Soroban contract that a
 `stellar-contracts` maintainer is the natural reviewer of, so their conventions are the standard
 it is read against whether or not we ever open a PR there.
+
+Every path in this section that is not prefixed `crates/`, `contracts/`, `docs/` or `scripts/` is
+a path in **their** repository, not ours — worth stating once, since the same document cites both
+and our own `CONTRIBUTING.md` is 77 lines long.
 
 The reference points throughout are the pinned audited release, `stellar-accounts` 0.7.2, and the
 two sibling policy examples at tag v0.7.2:
@@ -875,9 +879,10 @@ those two enums appear in that order in all three policy modules.
 ### Two upstream defects found while doing this
 
 **Reportable: their checklist's wasm build cannot succeed for any crate in their own workspace.**
-`CONTRIBUTING.md:62` and `code-quality.md:150` both prescribe
+Their `CONTRIBUTING.md:62` and `code-quality.md:150` both prescribe
 `cargo build --target wasm32v1-none --release`. The workspace root enables soroban-sdk's
-`experimental_spec_shaking_v2` (`Cargo.toml:55-57`), and that feature's build script exits 1 on a
+`experimental_spec_shaking_v2` (their workspace-root `Cargo.toml:55-57`), and that feature's
+build script exits 1 on a
 wasm target unless `SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2` is set — which
 `stellar contract build` sets and `cargo build` does not
 (`soroban-sdk-26.1.0/build.rs:26-46`). Reproduced here on a minimal crate that enables the
@@ -892,7 +897,7 @@ which asked for `stellar contract build` **and/or** the cargo form. Searches of 
 `experimental_spec_shaking`, `custom build command` and `build fails` return nothing, so this
 appears unreported. The fix is one word in two documents.
 
-**Not reportable, already fixed in flight:** `CONTRIBUTING.md:99` links
+**Not reportable, already fixed in flight:** their `CONTRIBUTING.md:99` links
 `.claude/skills/code-quality.md` while the file is at `.claude/commands/code-quality.md` (there is
 no `.claude/skills/` directory in the tree at all). Their open PR #836 already changes that exact
 line, so it is recorded here only so a reader who follows the broken link knows it is known.
