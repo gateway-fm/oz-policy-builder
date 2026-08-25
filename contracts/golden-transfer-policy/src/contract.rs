@@ -502,7 +502,7 @@ impl Policy for GeneratedPolicy {
     }
 }
 
-// ################## LOW-LEVEL HELPERS ##################
+// ################## HELPER FUNCTIONS ##################
 
 fn expected_signers(e: &Env) -> Vec<Signer> {
     soroban_sdk::vec![

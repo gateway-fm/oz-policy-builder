@@ -331,10 +331,21 @@ fn emit_doc(indent: &str, paragraphs: &[String], sections: &[(&str, Vec<String>)
 /// ===` are to be rewritten to it. Built here from a repeat count so the two sides cannot drift,
 /// and so the count is stated once rather than in every emitted heading.
 ///
-/// The section *names* are theirs where their files have one — ERRORS, CONSTANTS, EVENTS, QUERY
-/// STATE, CHANGE STATE, LOW-LEVEL HELPERS. STORAGE KEYS is ours: their storage-key type sits at
-/// the top of a `storage.rs` of its own and so needs no heading, which a single-file contract has
-/// no analogue for.
+/// The section *names* are theirs, verbatim — ERRORS and EVENTS from `smart_account/mod.rs`
+/// (`:532`, `:574`), CONSTANTS / QUERY STATE / CHANGE STATE from every policy module, and HELPER
+/// FUNCTIONS from `policies/spending_limit.rs:445`, which is the closest analogue to this file
+/// since it is the one policy with private helpers of its own. (`smart_account/storage.rs:1210`
+/// spells the same section `HELPERS`; both are theirs, and the policy's spelling is the one to
+/// follow here.) `LOW-LEVEL HELPERS` was emitted for some time and is in neither file.
+///
+/// STORAGE KEYS is ours, and the reason is not that their key types live elsewhere — two of the
+/// four sit in the same file as the policy that uses them. It is that upstream puts a storage-key
+/// enum in the *undelimited preamble* above the first heading, as the last item before CONSTANTS
+/// (`simple_threshold.rs:119-123`, `weighted_threshold.rs:152-159`, `spending_limit.rs:143-148`,
+/// and `storage.rs:25` above QUERY STATE) — so it is under no heading at all. A generated file
+/// cannot follow that: it opens with a delimiter and never has an undelimited region, because
+/// emitting one would mean a reader could not tell a section boundary from the top of the file.
+/// So the enum gets a heading, and the heading is a name of our own.
 fn section(name: &str) -> String {
     let rule = "#".repeat(18);
     format!("// {rule} {name} {rule}\n\n")
@@ -483,10 +494,14 @@ publish = false
 [package.metadata.stellar]
 cargo_inherit = true
 
-# `crate-type` keeps `lib` alongside `cdylib`, which their example policies do not: the
-# in-process differential suite links this crate directly, so `lib` is load-bearing here in a way
-# it is not for them. `doctest = false` is theirs, and applies for the same reason — a contract
-# crate has no doctests to run.
+# `crate-type` keeps `lib` alongside `cdylib`. Only `cdylib` is needed to compile a policy for the
+# chain; `lib` is what lets a generated crate be linked into a test process and compared against a
+# reference evaluator without going through the wasm host. That is not a claim that something
+# already links *this* crate — for most generated policies nothing does — it is why the target is
+# emitted at all. `stellar-accounts` itself declares the same pair (its own `Cargo.toml`), so this
+# is the library's shape rather than a departure from it; their example policies are the ones that
+# ship `cdylib` alone. `doctest = false` is theirs too, for the reason a contract crate always has
+# — no doctests to run.
 [lib]
 crate-type = ["lib", "cdylib"]
 doctest = false
@@ -826,8 +841,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     }
     out.push('\n');
 
-    // The private helpers go last, under their own heading, which is where OpenZeppelin's
-    // `storage.rs` puts LOW-LEVEL HELPERS. They are emitted into a buffer here and appended after
+    // The private helpers go last, under their own heading, which is where OpenZeppelin puts
+    // theirs — HELPER FUNCTIONS at `policies/spending_limit.rs:445`, the last section of the one
+    // policy module that has private helpers. They are emitted into a buffer here and appended after
     // the entry points, so a reader opening a generated policy meets the three things it exposes
     // before the arithmetic they are built from — which is the ordering the `ttl_target` note
     // already argued for, now applied to every helper rather than to that one.
@@ -1608,7 +1624,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
 
     helpers.push_str(emit_ttl_target(rule.valid_until_ledger.is_some()).trim_start_matches('\n'));
 
-    out.push_str(&section("LOW-LEVEL HELPERS"));
+    out.push_str(&section("HELPER FUNCTIONS"));
     out.push_str(&helpers);
 
     (crate_root, out)
@@ -2941,12 +2957,19 @@ mod tests {
     /// `// === NAME ===` are to be rewritten to that form. So the form is asserted exactly — a
     /// heading with seventeen hashes reads the same to a human and is a violation.
     ///
-    /// The order matters more than the presence. `storage.rs` in the library runs keys → QUERY
-    /// STATE → CHANGE STATE → LOW-LEVEL HELPERS, and a generated policy is a single file playing
-    /// the part of both `mod.rs` and `storage.rs`, so the sequence below is the two of them
-    /// concatenated. That is also why the private helpers now sit after the entry points rather
-    /// than before them: a reader opening a policy meets what it exposes before the arithmetic it
-    /// is built from.
+    /// The order matters more than the presence, and it is ours rather than a concatenation of
+    /// theirs — a claim this docstring used to make and that does not survive reading their files.
+    /// `smart_account/mod.rs` runs CONSTANTS → ERRORS → EVENTS; `storage.rs` runs QUERY STATE →
+    /// CHANGE STATE → SIGNER MANAGEMENT → POLICY MANAGEMENT → HELPERS; each policy module runs
+    /// CONSTANTS → QUERY STATE → CHANGE STATE, with its error enum, event structs and storage-key
+    /// enum in an undelimited preamble above the first heading. No upstream file has the sequence
+    /// below, because no upstream file declares all of these things in one place.
+    ///
+    /// What the sequence follows instead is declarations before the code that reads them, and
+    /// exports before the arithmetic they are built from: types (ERRORS → STORAGE KEYS →
+    /// CONSTANTS → EVENTS), then the entry points (QUERY STATE → CHANGE STATE), then the private
+    /// helpers. The errors-then-storage-keys pair is the one ordering taken directly from
+    /// upstream, where the two enums appear in that order in all three policy modules.
     /// Every entry point that extends TTL extends the same entries, to the same bound.
     ///
     /// This is the property the dynamic `ttl_target` exists to provide, and the one an
@@ -3057,7 +3080,7 @@ mod tests {
             "EVENTS",
             "QUERY STATE",
             "CHANGE STATE",
-            "LOW-LEVEL HELPERS",
+            "HELPER FUNCTIONS",
         ];
         for (label, spec) in [
             ("golden transfer", golden_spec()),
@@ -3100,7 +3123,7 @@ mod tests {
             // The private helpers really are after the entry points, which is the ordering claim
             // the section list above only implies.
             let helpers = source
-                .find(&format!("// {rule} LOW-LEVEL HELPERS"))
+                .find(&format!("// {rule} HELPER FUNCTIONS"))
                 .expect("the helper section must exist");
             for helper in ["fn matched_count(", "fn ttl_target(", "fn check_call_0("] {
                 let at = source
@@ -3108,7 +3131,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{label}: no {helper} in the emitted source"));
                 assert!(
                     at > helpers,
-                    "{label}: {helper} is emitted before the LOW-LEVEL HELPERS heading"
+                    "{label}: {helper} is emitted before the HELPER FUNCTIONS heading"
                 );
             }
             assert!(
