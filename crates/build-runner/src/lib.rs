@@ -862,17 +862,38 @@ fn validate_generated(generated: &GeneratedCrate) -> Result<(), BuildError> {
             generated.files.len()
         )));
     }
+    // The files a submitted crate must carry, spelled out rather than derived: this is the
+    // boundary where a caller-supplied crate is checked, and the point of a boundary is to name
+    // what it requires.
+    //
     // `src/contract.rs` is required alongside the crate root, not optional. The root is a header
     // and a `pub mod contract;` declaration, so a crate that carries only the root passes every
-    // check here and then fails in the compiler with an unresolved module — validation reporting
-    // clean on an input it cannot build. The list is spelled out rather than derived because this
-    // is the boundary where a caller-supplied crate is checked, and the point of the boundary is
-    // to name what it requires.
-    for required in ["Cargo.toml", "Cargo.lock", "src/lib.rs", "src/contract.rs"] {
+    // other check here and then fails in the compiler with an unresolved module — validation
+    // reporting clean on an input it cannot build.
+    //
+    // `rust-toolchain.toml` is required for a different and sharper reason: it is what decides
+    // the compiler. `clear_inherited_toolchain_selection` removes every inherited compiler
+    // selector precisely so that "the pin travelling with the source decides", and with no pin in
+    // the source there is nothing left to decide — rustup falls back to whatever channel happens
+    // to be the default on the machine. The build would succeed and the manifest would attest
+    // that this source produced this wasm, while the same source on another machine produced a
+    // different one. That is the defect the clearing exists to prevent, reached by leaving a file
+    // out instead of by setting an environment variable.
+    //
+    // `rustfmt.toml` is deliberately absent from this list. It is shipped for a reviewer running
+    // the library's own fmt gate and reaches no compiler, so a crate without it builds to the
+    // same bytes.
+    for required in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "src/lib.rs",
+        "src/contract.rs",
+    ] {
         if !generated.files.contains_key(required) {
             return Err(BuildError::Input(format!(
-                "generated crate must contain Cargo.toml, Cargo.lock, src/lib.rs and \
-                 src/contract.rs; {required} is missing"
+                "generated crate must contain Cargo.toml, Cargo.lock, rust-toolchain.toml, \
+                 src/lib.rs and src/contract.rs; {required} is missing"
             )));
         }
     }
@@ -1298,48 +1319,108 @@ mod tests {
                     "#![no_std]\n\npub mod contract;\n".to_string(),
                 ),
                 ("src/contract.rs".to_string(), source.to_string()),
+                (
+                    "rust-toolchain.toml".to_string(),
+                    "[toolchain]\nchannel = \"1.91.1\"\n".to_string(),
+                ),
             ]),
             normalized_input_hash: sha256(b"normalized"),
         }
     }
 
-    /// A crate root with no contract module behind it is refused at the boundary, not by rustc.
+    /// A crate missing any file the build needs is refused at the boundary, not by rustc.
     ///
-    /// The crate root has been a header and a `pub mod contract;` since the split, so a crate
-    /// carrying only `src/lib.rs` cannot compile — and every check in `validate_generated` passed
-    /// it, leaving the failure to the compiler with a message about an unresolved module. Input
-    /// validation that reports clean on an input it cannot build is worse than no validation,
-    /// because a caller reads the compiler error as a defect in their spec.
+    /// Two of these were found by leaving them out and watching what happened next, and the two
+    /// failure modes are different in kind.
+    ///
+    /// Without `src/contract.rs` the build fails in the compiler with an unresolved module — the
+    /// crate root has been a header and a `pub mod contract;` since the split. Validation that
+    /// reports clean on an input it cannot build is worse than no validation, because a caller
+    /// reads the compiler error as a defect in their spec.
+    ///
+    /// Without `rust-toolchain.toml` the build **succeeds**, which is why this one matters more.
+    /// `clear_inherited_toolchain_selection` strips every inherited compiler selector so that the
+    /// pin travelling with the source decides the compiler; with no pin, rustup falls back to the
+    /// machine's default channel and the manifest attests a wasm that another machine will not
+    /// reproduce. A silent divergence in the artifact the whole pipeline exists to make
+    /// verifiable.
+    ///
+    /// Each is asserted with the others present, so the refusal names one file rather than
+    /// whichever the loop reaches first, and the complete crate is built at the end so the
+    /// refusals are known to be about the file removed.
     #[test]
-    fn a_generated_crate_without_its_contract_module_is_refused() {
-        let mut incomplete = generated("the contract");
-        incomplete.files.remove("src/contract.rs");
+    fn a_generated_crate_missing_a_required_file_is_refused() {
         let pins = Pins::default();
+        for required in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "src/lib.rs",
+            "src/contract.rs",
+        ] {
+            let mut incomplete = generated("the contract");
+            incomplete.files.remove(required);
+            let request = BuildRequest {
+                generated: &incomplete,
+                spec_hash: sha256(b"spec"),
+                registry_snapshot: sha256(b"registry"),
+                rule_index: 0,
+                template_family: "policy-templates/scope@1",
+                pins: &pins,
+            };
+            match build_stub(&request) {
+                Err(BuildError::Input(message)) => assert!(
+                    message.contains(&format!("{required} is missing")),
+                    "the refusal must name the missing file, so a caller knows which one: \
+                     {message}"
+                ),
+                other => panic!("a crate with no {required} must be refused: {other:?}"),
+            }
+        }
+
+        // Non-vacuity: the complete crate builds through the stub, so each refusal above is about
+        // the file that was removed and not about the fixture.
+        let complete = generated("the contract");
         let request = BuildRequest {
-            generated: &incomplete,
+            generated: &complete,
             spec_hash: sha256(b"spec"),
             registry_snapshot: sha256(b"registry"),
             rule_index: 0,
             template_family: "policy-templates/scope@1",
             pins: &pins,
         };
-        match build_stub(&request) {
-            Err(BuildError::Input(message)) => assert!(
-                message.contains("src/contract.rs is missing"),
-                "the refusal must name the missing file, so a caller knows which one: {message}"
-            ),
-            other => panic!("a crate with no contract module must be refused: {other:?}"),
-        }
-        // Non-vacuity: the same crate with the module present builds through the stub.
-        let complete = generated("the contract");
-        let ok = BuildRequest {
-            generated: &complete,
-            ..request
-        };
         assert!(
-            build_stub(&ok).is_ok(),
-            "the complete crate must pass, or the refusal above is not about the missing module"
+            build_stub(&request).is_ok(),
+            "the complete crate must pass, or the refusals above prove nothing"
         );
+    }
+
+    /// Every file `validate_generated` requires is one the emitter actually produces.
+    ///
+    /// A required file the emitter never emits would refuse every crate the tool itself generates
+    /// — a boundary that rejects its own output. Read from `generate` rather than restated, so the
+    /// two lists cannot be brought into disagreement by editing one of them.
+    #[test]
+    fn every_required_file_is_one_the_emitter_emits() {
+        let generated = ozpb_codegen::generate(
+            &ozpb_synthesizer::fixtures::golden_spec(),
+            0,
+            &ozpb_codegen::Pins::default(),
+        )
+        .expect("the golden spec generates");
+        for required in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "src/lib.rs",
+            "src/contract.rs",
+        ] {
+            assert!(
+                generated.files.contains_key(required),
+                "validate_generated requires {required}, which the emitter does not emit; the \
+                 boundary would refuse the tool's own output"
+            );
+        }
     }
 
     #[test]
