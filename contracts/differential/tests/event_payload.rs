@@ -251,9 +251,14 @@ fn size_of(event: &ContractEvent) -> u32 {
 ///
 /// Non-vacuity for both tests below. If the route, the bounds or the account did not match, every
 /// size would be refused on `NoTupleMatched`, both implementations would agree on the refusal, and
-/// nothing would ever be published — a green sweep over an empty event log. So the two arguments
-/// with an exact shape are compared against the spec's own constraints, and the smallest size in
-/// the sweep is run end to end and asserted to publish.
+/// nothing would ever be published — a green sweep over an empty event log.
+///
+/// Two ways round, because each catches what the other misses. The four constrained positions the
+/// sweep supplies a value for — the two `i128` bounds, the exact route, and the `AnyValue` that has
+/// to *be* unconstrained for anything here to grow — are compared against the rule's own
+/// constraints, which names the argument that drifted if the fixture ever changes. Then the
+/// smallest size is run end to end and asserted to publish, which covers the fifth position (`to`,
+/// `SELF`) and anything else the artifact checks that the spec comparison would not reach.
 #[test]
 fn the_swept_call_is_the_one_the_rule_admits() {
     let w = world();
