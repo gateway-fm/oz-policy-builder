@@ -20,11 +20,19 @@
 //!
 //! The Soroswap policy is the artifact under test because it is the committed crate with an
 //! unconstrained argument: its `deadline` is a user-widened `AnyValue`
-//! (`crates/synthesizer/src/walkthroughs.rs:166`). Only such a position can carry an argument
-//! large enough to reach the limit — every other constraint the committed policies use, an exact
-//! address, an exact `ScVal`, an `i128` bound, bounds its argument's size as a side effect of
-//! bounding its value. This file therefore travels with that crate at the milestone boundary,
-//! as `generated_suite.rs` travels with the harness.
+//! (`crates/synthesizer/src/walkthroughs.rs:166`). Every other constraint the two committed
+//! policies use — an exact address, an exact `ScVal`, an `i128` bound — pins its argument's size
+//! along with its value, so an `AnyValue` is the only position in *these* artifacts a caller can
+//! grow. This file therefore travels with that crate at the milestone boundary, as
+//! `generated_suite.rs` travels with the harness.
+//!
+//! `AnyValue` is not the only shape that reaches the limit, though it is the only one testable
+//! from a committed crate, and the other is worse. `MAX_SCVAL_XDR_BYTES` is 64 KiB
+//! (`crates/policy-spec/src/lib.rs:44`), so a spec may pin an exact `ScVal` of that size; a
+//! policy built from one would carry a ~64 KiB argument on its *only* admissible call, and an
+//! event embedding it would abort every permit rather than the caller-chosen ones. That is
+//! reasoning from the validator's ceiling and not a measurement — no such crate is committed —
+//! but it is why the fix bounds the event instead of the arguments.
 //!
 //! Written as a sweep over sizes rather than around one admissible value, because the absence of
 //! exactly this assertion is what let the defect in. A single value proves the contract survives

@@ -921,6 +921,14 @@ all three events derive `Clone, Debug, Eq, PartialEq`: `Context` implements none
 which is why all three of their `*Enforced` structs derive `Clone` alone and why ours did
 until the field left.
 
+One shape is worse than the caller-chosen one, and it is worth stating because it is not what
+the reproduction used. `MAX_SCVAL_XDR_BYTES` is 64 KiB (`crates/policy-spec/src/lib.rs:44`), so a
+validated spec may pin an *exact* `ScVal` of that size. A policy built from one would carry a
+~64 KiB argument on its only admissible call, and an event embedding it would abort every permit
+rather than the ones a caller chose to grow. No such crate is committed, so that is reasoning from
+the validator's own ceiling rather than a measurement — but it is the reason the fix belongs on the
+event and not on the arguments.
+
 **Why not bound the arguments instead**, which is the other way to close it. An event-safe ceiling
 on accepted argument sizes would have to be enforced identically by the spec, the generated
 contract and the reference evaluator; it would add a twelfth reason to a published eleven-code deny
