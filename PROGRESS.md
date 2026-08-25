@@ -1,6 +1,6 @@
 # Progress
 
-Two phases delivered, plus two hardening passes. **451 tests** (416 host + 35 contract), all
+Two phases delivered, plus two hardening passes. **454 tests** (420 host + 34 contract), all
 green; 16 crates + contracts workspace. Counted as `git grep -c '#[test]'` over `crates/` and
 `contracts/`, which is the rule the earlier figures used; two of the host tests are `#[ignore]`d
 and need the pinned stellar-cli, so 449 run unconditionally. `scripts/verify-phase1.sh` is the strict release gate
@@ -105,8 +105,8 @@ assurance boundary (account recognition is generation compatibility, not install
 reconciled section by section — §9–§14 now cover the subsystems this pass hardened, and every
 file:line reference in it was re-read against the tree.
 
-Verified on this pass: fmt, `clippy -D warnings` and tests for both workspaces (416 host +
-35 contract) and fmt for both generated crates; all gate scripts through
+Verified on this pass: fmt, `clippy -D warnings` and tests for both workspaces (420 host +
+34 contract) and fmt for both generated crates; all gate scripts through
 `verify-phase1.sh` in release mode (including cargo-deny, cargo-machete and the mutation
 suite); the previously red `#[ignore]`d build-runner suite against the pinned stellar-cli
 27.0.0, both tests green; and the live-testnet demo end to end, including the new dynamic
