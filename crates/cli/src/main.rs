@@ -176,6 +176,26 @@ enum Command {
 pub(crate) fn read_sources(
     dir: &std::path::Path,
 ) -> Result<std::collections::BTreeMap<String, String>> {
+    // `--source` used to name the single emitted file and now names the directory, so the old
+    // spelling is what a script or a shell history will supply. Left to `read_dir` it produces
+    // "Not a directory (os error 20)", which says nothing about the flag that changed. Checked
+    // here so the error names the migration instead.
+    if !dir.is_dir() {
+        if dir.extension().and_then(|e| e.to_str()) == Some("rs") {
+            anyhow::bail!(
+                "--source now names the generated crate's src/ directory, not a file; pass {} \
+                 instead of {}",
+                dir.parent()
+                    .unwrap_or(std::path::Path::new("<crate>/src"))
+                    .display(),
+                dir.display()
+            );
+        }
+        anyhow::bail!(
+            "{} is not a directory; --source is the generated crate's src/ directory",
+            dir.display()
+        );
+    }
     let mut sources = std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
@@ -633,6 +653,25 @@ mod tests {
         assert!(
             error.to_string().contains("contains a subdirectory"),
             "the refusal must say what it found: {error}"
+        );
+
+        // The old spelling of the flag. `--source` named a file until this crate was split, so a
+        // script carrying the previous form is the likeliest way to reach this, and an OS-level
+        // "Not a directory" would say nothing about which flag changed.
+        let stale = read_sources(&dir.join("lib.rs"))
+            .expect_err("a path to a file must be refused, not read");
+        assert!(
+            stale
+                .to_string()
+                .contains("--source now names the generated crate's src/ directory"),
+            "the refusal must name the migration: {stale}"
+        );
+
+        let missing = read_sources(&dir.join("nope"))
+            .expect_err("a path to nothing must be refused before read_dir");
+        assert!(
+            missing.to_string().contains("is not a directory"),
+            "a non-directory that is not a Rust file gets the plainer message: {missing}"
         );
 
         std::fs::remove_dir_all(&dir).expect("cleaning up");
