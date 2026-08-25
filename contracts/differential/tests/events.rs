@@ -25,7 +25,9 @@ use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext};
 use soroban_sdk::testutils::Events as _;
 use soroban_sdk::xdr::{ContractEvent, ContractEventBody, ScVal};
-use soroban_sdk::{vec as svec, Address, Env, Event as _, IntoVal, Symbol, Val, Vec as SVec};
+use soroban_sdk::{
+    vec as svec, Address, BytesN, Env, Event as _, IntoVal, Symbol, Val, Vec as SVec,
+};
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
 const VALID_UNTIL: u32 = 4_223_456;
@@ -100,6 +102,22 @@ impl World {
             fn_name: Symbol::new(&self.env, "transfer"),
             args,
         })
+    }
+
+    /// The digest the enforcement event must carry for a permitted context.
+    ///
+    /// SHA-256 over the context's XDR, taken with the host workspace's `sha2`
+    /// (`ozpb_domain::sha256`) rather than with the soroban host's `Crypto::sha256` that the
+    /// contract calls. The contract's own function would make every assertion below a
+    /// restatement of the thing under test; two implementations of the same claim is what makes
+    /// it an assertion. The serialization is still the host's, because that is what the digest
+    /// is *of* — `ToXdr` is spelled out rather than imported so that it cannot shadow
+    /// `Event::to_xdr`, which this file also uses.
+    fn expected_context_hash(&self, context: &Context) -> BytesN<32> {
+        let xdr: Vec<u8> = soroban_sdk::xdr::ToXdr::to_xdr(context.clone(), &self.env)
+            .iter()
+            .collect();
+        BytesN::from_array(&self.env, &ozpb_domain::sha256(&xdr).0)
     }
 
     fn enforce_once(&self) {
@@ -221,14 +239,14 @@ fn install_permit_and_uninstall_each_leave_a_trace() {
         w.last(),
         GeneratedPolicyEnforced {
             smart_account: w.account.clone(),
-            context: w.permitted_context(),
+            context_hash: w.expected_context_hash(&w.permitted_context()),
             context_rule_id: 0,
             // The count *after* the call just spent, which is what makes this a running number
             // rather than a restatement of the compiled-in cap.
             remaining_calls: MAX_CALLS - 1,
         }
         .to_xdr(&w.env, &w.policy),
-        "the enforced event must carry the permitted context and the calls left after it"
+        "the enforced event must name the permitted context and the calls left after it"
     );
 
     w.client.uninstall(&w.rule(), &w.account);
@@ -268,7 +286,7 @@ fn the_enforced_event_counts_down_to_zero() {
             w.last(),
             GeneratedPolicyEnforced {
                 smart_account: w.account.clone(),
-                context: w.permitted_context(),
+                context_hash: w.expected_context_hash(&w.permitted_context()),
                 context_rule_id: 0,
                 remaining_calls: MAX_CALLS - spent,
             }
@@ -395,8 +413,14 @@ fn a_refusal_publishes_nothing() {
 ///
 /// Recorded as an exact assertion, not a bound. These are three fixed structs — the sizes move
 /// only if a field is added, removed or retyped, and then the number here has to move with it,
-/// which is the point. The enforcement event is the one that recurs, and the one that carries the
-/// permitted `Context`; the other two happen once per installation.
+/// which is the point. The enforcement event is the one that recurs; the other two happen once
+/// per installation.
+///
+/// One number is enough for the enforcement event because all four of its fields are
+/// fixed-width: it names the authorization by a 32-byte digest rather than embedding it, so the
+/// size does not depend on what the call was. `event_payload.rs` is where that independence is
+/// asserted over a range of argument sizes; here it is only assumed, and the two files fail
+/// together if it stops holding.
 #[test]
 fn an_event_costs_what_the_conformance_record_says_it_costs() {
     use soroban_sdk::xdr::WriteXdr as _;
@@ -418,7 +442,7 @@ fn an_event_costs_what_the_conformance_record_says_it_costs() {
 
     assert_eq!(
         (installed, enforced, uninstalled),
-        (172, 476, 172),
+        (172, 264, 172),
         "the serialized size of an event is what a permitted call pays for observability; if this \
          moved, an event's shape changed and §6 of docs/ECOSYSTEM-CONFORMANCE.md is now quoting \
          the wrong number"

@@ -705,9 +705,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
         "Val",
         "Vec",
     ];
-    if has_scval {
-        sdk.push("xdr::ToXdr");
-    }
+    // `xdr::ToXdr` and `BytesN` are unconditional: every policy digests the context it permitted
+    // into its enforcement event (see the EVENTS section), so the serializer and the digest's type
+    // are needed whatever the rule's shape. `Bytes` stays conditional — `sha256` takes one but the
+    // source never names the type, so only an exact-`ScVal` comparison or an external signer's key
+    // writes `Bytes` into the file.
+    sdk.push("xdr::ToXdr");
+    sdk.push("BytesN");
     if has_scval || has_external {
         sdk.push("Bytes");
     }
@@ -892,11 +896,29 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // is included by their practice rather than by the docstring alone. Their shape, followed
     // rather than re-invented: one `#[contractevent]` struct per verb named `<Policy><Verb>`,
     // `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement
-    // event additionally carrying the context and the policy's own running number.
+    // event additionally carrying what was permitted and the policy's own running number.
     //
     // Ours is the remaining call count, which is the closest analogue to `spending_limit`'s
     // `total_spent_in_period` (`policies/spending_limit.rs:46-53`) — and it exists only where a
     // cap does, for the same reason `remaining_calls` does.
+    //
+    // Where the shape is NOT followed, and why. All three of their `*Enforced` events embed the
+    // whole `Context` — `policies/spending_limit.rs:49`, `simple_threshold.rs:62`,
+    // `weighted_threshold.rs:78` — and that field is unbounded: a `Context::Contract` carries
+    // every invocation argument, and a rule that leaves an argument unconstrained puts no ceiling
+    // on any of them. Mainnet meters `contract_events_size_bytes` at 16,384
+    // (`InvocationResourceLimits::mainnet()`, `soroban-sdk-26.1.0/src/testutils/cost_estimate.rs:147`),
+    // and the host checks it after the call returns
+    // (`soroban-env-host-26.1.3/src/host/invocation_metering.rs:435-439`), so an oversized event
+    // aborts the very invocation the policy has just permitted — with `Error(Budget,
+    // ExceededLimit)` rather than a policy code, while the reference evaluator reports permit. So
+    // this event carries a SHA-256 of the context instead of the context, which is publishable at
+    // every argument size a spec admits. `docs/ECOSYSTEM-CONFORMANCE.md` §15 divergence 9 has the
+    // reproduction and the argument; `contracts/differential/tests/event_payload.rs` holds it.
+    //
+    // The digest also lets all three events derive the same set. `Context` implements none of
+    // `Debug`, `Eq` or `PartialEq`, which is why all three of their `*Enforced` structs derive
+    // `Clone` alone upstream and why this one did until the field left.
     //
     // A denial cannot be observed this way and that is not a gap to be worked around:
     // `panic_with_error!` reverts the invocation, so an event published before it is reverted
@@ -906,18 +928,28 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
         "",
         &[
             "Emitted when this policy permits an authorization.".to_string(),
-            "Derives `Clone` alone where the other two events also derive `Debug`, `Eq` and \
-             `PartialEq`, because `Context` implements none of those — which is the same reason \
-             `SimpleEnforced` and `SpendingLimitEnforced` derive `Clone` alone upstream."
+            "Names the authorization by a digest rather than embedding it, so one permitted call \
+             publishes the same number of bytes whatever its arguments were. An event carrying \
+             the arguments themselves has no size bound wherever a rule leaves one \
+             unconstrained, and an event past the network's per-transaction event limit fails \
+             the invocation this policy has already permitted."
                 .to_string(),
         ],
         &[],
     ));
-    out.push_str("#[contractevent]\n#[derive(Clone)]\npub struct GeneratedPolicyEnforced {\n");
+    out.push_str(
+        "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicyEnforced {\n",
+    );
     out.push_str("    /// The smart account whose authorization was permitted.\n");
     out.push_str("    #[topic]\n    pub smart_account: Address,\n");
-    out.push_str("    /// The authorization that was permitted.\n");
-    out.push_str("    pub context: Context,\n");
+    out.push_str(&render::wrap_comment(
+        "    /// ",
+        "SHA-256 of the XDR serialization of the permitted `Context`. A reader holding the \
+         authorization — from the transaction's own auth entries, or from a simulation of it — \
+         recomputes this digest and matches it to this event; a reader who does not hold it \
+         learns nothing about the arguments from the event alone.",
+    ));
+    out.push_str("    pub context_hash: BytesN<32>,\n");
     out.push_str("    /// The context rule this policy is attached to.\n");
     out.push_str("    pub context_rule_id: u32,\n");
     if has_state {
@@ -1137,6 +1169,11 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
         "Refusals are ordered: the code a caller sees is the first condition that failed, in the \
          order the crate header documents, not an arbitrary one of several."
             .to_string(),
+        "The event names the permitted authorization by a SHA-256 of its `Context` rather than by \
+         the `Context` itself, so its size is the same for every call this policy admits. \
+         Embedding the authorization would make a permitted call fail on the network's event-size \
+         limit for a large enough argument."
+            .to_string(),
     ];
     if has_state {
         enforce_notes.push(
@@ -1173,7 +1210,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                     "topics - `[\"generated_policy_enforced\", smart_account: Address]`"
                         .to_string(),
                     format!(
-                        "data - `[context: Context, context_rule_id: u32{}]`",
+                        "data - `[context_hash: BytesN<32>, context_rule_id: u32{}]`",
                         if has_state {
                             ", remaining_calls: u32"
                         } else {
@@ -1336,19 +1373,28 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // The event goes after the storage bookkeeping, so the function reads checks → state → rent
     // → announcement. Anywhere in the permitting path would be equivalent: a panic later in the
     // invocation reverts the publish along with the counter increment.
+    //
+    // The digest is taken here, on the permitting path only, and it consumes `context`: `c`
+    // borrowed it for the target, function and tuple checks above and is dead by now, so the move
+    // needs no clone. Serializing costs instructions and memory in proportion to the context,
+    // which is what a bounded event costs; the alternative spends the same bytes on the metered
+    // event stream instead, where the ceiling is 16,384 rather than 40 MiB.
+    out.push_str(
+        "\n        let context_hash = e.crypto().sha256(&context.to_xdr(e)).to_bytes();\n",
+    );
     out.push_str(&emit_publish(
         "GeneratedPolicyEnforced",
         &if has_state {
             vec![
                 "smart_account: smart_account.clone()",
-                "context",
+                "context_hash",
                 "context_rule_id: context_rule.id",
                 "remaining_calls: remaining",
             ]
         } else {
             vec![
                 "smart_account: smart_account.clone()",
-                "context",
+                "context_hash",
                 "context_rule_id: context_rule.id",
             ]
         },
@@ -2643,8 +2689,14 @@ mod tests {
             for absent in [
                 "SIGNER_",
                 "expected_signers",
-                // The only use of `Bytes` in this shape would have been the key.
-                "Bytes",
+                // The only use of `Bytes` in this shape would have been the key. Probed as the
+                // import item and as the type's one use form, not as the bare word: every policy
+                // imports `BytesN` for its enforcement-event digest, and a substring search for
+                // "Bytes" has matched that since — reporting a violation on every shape, this one
+                // included, which is how it was noticed rather than left as a search that had
+                // stopped asking anything.
+                " Bytes,",
+                "Bytes::",
             ] {
                 assert!(
                     !source.contains(absent),
@@ -2786,14 +2838,13 @@ mod tests {
                 ("Uninstalled", "uninstall"),
             ] {
                 let event = format!("GeneratedPolicy{verb}");
+                // One derive set for all three. The enforcement event derived `Clone` alone
+                // while it embedded a `Context`, which implements none of the other three;
+                // since it carries a digest instead, nothing on it is underivable.
                 assert!(
                     source.contains(&format!(
-                        "#[contractevent]\n#[derive(Clone{}\npub struct {event} {{\n",
-                        if verb == "Enforced" {
-                            ")]"
-                        } else {
-                            ", Debug, Eq, PartialEq)]"
-                        }
+                        "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct \
+                         {event} {{\n"
                     )),
                     "{shape}: {event} must be a `#[contractevent]` struct with the derives its \
                      fields allow:\n{source}"
@@ -2857,11 +2908,31 @@ mod tests {
                 max_calls.is_some(),
                 "{shape}: and the doc says so iff the field is there:\n{enforce_doc}"
             );
-            // The context always rides on it: an event naming only the account and the rule
-            // would not say what was permitted, which is the one thing a reader wants from it.
+            // What was permitted always rides on it — an event naming only the account and the
+            // rule would not say what it approved, which is the one thing a reader wants from it
+            // — but as a digest, never as the authorization itself. Both directions, because the
+            // absence is the load-bearing half: `pub context: Context` is what all three library
+            // policies write, it is one word away, and it compiles. What it costs is an
+            // unbounded event on a permitted call (divergence 9 of
+            // `docs/ECOSYSTEM-CONFORMANCE.md` §15), which no assertion about the emitted text
+            // would notice — `contracts/differential/tests/event_payload.rs` is where that is
+            // caught on the compiled artifact.
             assert!(
-                enforced.contains("pub context: Context,"),
-                "{shape}: the enforcement event must carry what it permitted:\n{enforced}"
+                enforced.contains("pub context_hash: BytesN<32>,"),
+                "{shape}: the enforcement event must name what it permitted:\n{enforced}"
+            );
+            assert!(
+                !enforced.contains("pub context: Context,"),
+                "{shape}: the enforcement event must not embed the authorization it \
+                 permitted:\n{enforced}"
+            );
+            let enforce_data = enforce_doc
+                .split("* data - ")
+                .nth(1)
+                .expect("the enforce doc lists the event's data fields");
+            assert!(
+                enforce_data.starts_with("`[context_hash: BytesN<32>,"),
+                "{shape}: and the doc says which of the two it is:\n{enforce_doc}"
             );
         }
     }
@@ -3744,10 +3815,11 @@ mod tests {
     /// derivation agrees with rustfmt for every item set a rule can produce, and only a
     /// byte-for-byte comparison against text taken from rustfmt's own output says that.
     ///
-    /// Both reachable sets are covered — the transfer rule (no `ScVal`, so no `Bytes` and no
-    /// `xdr::ToXdr`) and the W3 swap rule (both) — and `use_statement` is exercised directly for
-    /// the two shapes a validated spec cannot reach: `Bytes` without `xdr::ToXdr`, which needs an
-    /// external signer, and a group short enough to stay on one line.
+    /// Both reachable sets are covered — the transfer rule, which needs no `Bytes`, and the W3
+    /// swap rule, whose exact-`ScVal` comparison does — and `use_statement` is exercised directly
+    /// for the two shapes no rule can reach: `Bytes` without `xdr::ToXdr`, which no policy has
+    /// produced since every one of them digests its context, and a group short enough to stay on
+    /// one line.
     #[test]
     fn imports_are_one_grouped_use_per_crate() {
         let expected_accounts = "use stellar_accounts::{\n    policies::Policy,\n    \
@@ -3757,14 +3829,15 @@ mod tests {
                 "golden transfer",
                 golden_spec(),
                 "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractevent, contractimpl, \
-                 contracttype,\n    panic_with_error, Address, Env, Symbol, TryFromVal, Val, Vec,\n};\n",
+                 contracttype,\n    panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol, \
+                 TryFromVal, Val, Vec,\n};\n",
             ),
             (
                 "W3 swap",
                 ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
                 "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractevent, \
                  contractimpl, contracttype,\n    panic_with_error, xdr::ToXdr, Address, Bytes, \
-                 Env, Symbol, TryFromVal, Val, Vec,\n};\n",
+                 BytesN, Env, Symbol, TryFromVal, Val, Vec,\n};\n",
             ),
         ] {
             let source = emitted_rust(

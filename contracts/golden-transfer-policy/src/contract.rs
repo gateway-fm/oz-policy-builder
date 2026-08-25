@@ -3,7 +3,7 @@
 
 use soroban_sdk::{
     auth::Context, contract, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, Address, Env, Symbol, TryFromVal, Val, Vec,
+    panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol, TryFromVal, Val, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
@@ -81,18 +81,24 @@ const MAX_CALLS: u32 = 12;
 
 /// Emitted when this policy permits an authorization.
 ///
-/// Derives `Clone` alone where the other two events also derive `Debug`, `Eq`
-/// and `PartialEq`, because `Context` implements none of those — which is the
-/// same reason `SimpleEnforced` and `SpendingLimitEnforced` derive `Clone`
-/// alone upstream.
+/// Names the authorization by a digest rather than embedding it, so one
+/// permitted call publishes the same number of bytes whatever its arguments
+/// were. An event carrying the arguments themselves has no size bound wherever
+/// a rule leaves one unconstrained, and an event past the network's
+/// per-transaction event limit fails the invocation this policy has already
+/// permitted.
 #[contractevent]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedPolicyEnforced {
     /// The smart account whose authorization was permitted.
     #[topic]
     pub smart_account: Address,
-    /// The authorization that was permitted.
-    pub context: Context,
+    /// SHA-256 of the XDR serialization of the permitted `Context`. A reader
+    /// holding the authorization — from the transaction's own auth entries, or
+    /// from a simulation of it — recomputes this digest and matches it to this
+    /// event; a reader who does not hold it learns nothing about the arguments
+    /// from the event alone.
+    pub context_hash: BytesN<32>,
     /// The context rule this policy is attached to.
     pub context_rule_id: u32,
     /// Calls this installation may still permit after the one just spent. Zero
@@ -266,14 +272,19 @@ impl Policy for GeneratedPolicy {
     /// # Events
     ///
     /// * topics - `["generated_policy_enforced", smart_account: Address]`
-    /// * data - `[context: Context, context_rule_id: u32, remaining_calls:
-    ///   u32]`
+    /// * data - `[context_hash: BytesN<32>, context_rule_id: u32,
+    ///   remaining_calls: u32]`
     ///
     /// # Notes
     ///
     /// * Refusals are ordered: the code a caller sees is the first condition
     ///   that failed, in the order the crate header documents, not an arbitrary
     ///   one of several.
+    /// * The event names the permitted authorization by a SHA-256 of its
+    ///   `Context` rather than by the `Context` itself, so its size is the same
+    ///   for every call this policy admits. Embedding the authorization would
+    ///   make a permitted call fail on the network's event-size limit for a
+    ///   large enough argument.
     /// * The call counter is advanced only on the permitting path, and a panic
     ///   anywhere later in the invocation reverts that increment along with
     ///   everything else.
@@ -360,9 +371,11 @@ impl Policy for GeneratedPolicy {
             }
         }
 
+        let context_hash = e.crypto().sha256(&context.to_xdr(e)).to_bytes();
+
         GeneratedPolicyEnforced {
             smart_account: smart_account.clone(),
-            context,
+            context_hash,
             context_rule_id: context_rule.id,
             remaining_calls: remaining,
         }

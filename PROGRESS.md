@@ -1,9 +1,9 @@
 # Progress
 
-Two phases delivered, plus two hardening passes. **454 tests** (420 host + 34 contract), all
+Two phases delivered, plus two hardening passes. **457 tests** (420 host + 37 contract), all
 green; 16 crates + contracts workspace. Counted as `git grep -c '#[test]'` over `crates/` and
 `contracts/`, which is the rule the earlier figures used; two of the host tests are `#[ignore]`d
-and need the pinned stellar-cli, so 449 run unconditionally. `scripts/verify-phase1.sh` is the strict release gate
+and need the pinned stellar-cli, so 455 run unconditionally. `scripts/verify-phase1.sh` is the strict release gate
 (dependency/publication/build-input/quoted-hash invariants, fmt + clippy + tests over both
 workspaces and both generated crates, golden/determinism checks, wasm reproducibility, the
 `#[ignore]`d real-toolchain suite, cargo-deny, cargo-machete, cargo-mutants);
@@ -106,7 +106,7 @@ reconciled section by section — §9–§14 now cover the subsystems this pass 
 file:line reference in it was re-read against the tree.
 
 Verified on this pass: fmt, `clippy -D warnings` and tests for both workspaces (420 host +
-34 contract) and fmt for both generated crates; all gate scripts through
+37 contract) and fmt for both generated crates; all gate scripts through
 `verify-phase1.sh` in release mode (including cargo-deny, cargo-machete and the mutation
 suite); the previously red `#[ignore]`d build-runner suite against the pinned stellar-cli
 27.0.0, both tests green; and the live-testnet demo end to end, including the new dynamic
@@ -554,7 +554,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
 ## Verifiable artifacts
 
 - **Codegen determinism:** two cold runs of `ozpb generate` produce byte-identical sources.
-  The contract module is sha256 `41f3347c…` and the crate root `5c878485…`; the
+  The contract module is sha256 `63decc1a…` and the crate root `5c878485…`; the
   normalized codegen-input hash the root declares is `662ad7a9…`. Both files are named because
   the crate root is a header and a `pub mod` declaration — its digest does not move when the
   policy's behaviour does, so quoting it alone would be quoting the stable half.
@@ -563,7 +563,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
   source mismatch. A comparison of the crate root alone would call a crate with a hand-edited
   contract module reproduced.
 - **Wasm reproducibility:** `stellar contract build` → byte-identical wasm across a full
-  `cargo clean` rebuild (sha256 `265dbfce…`; the Soroswap policy is `6363511d…` under the same
+  `cargo clean` rebuild (sha256 `b3a29bc9…`; the Soroswap policy is `43db0d22…` under the same
   toolchain, measured in the same sweep). The claim holds; the gate that asserted it did
   not until 2026-08-13. It hashed `contracts/target/…`, which the rebuild never writes: the
   golden crate is excluded from the contracts workspace (it carries its own

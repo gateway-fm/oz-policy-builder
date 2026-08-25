@@ -502,9 +502,12 @@ an open decision: the policy published no events, so no on-chain trace remained 
 permitted. It now emits three, following the shape of the library's own policies rather than one
 of our own — `GeneratedPolicyInstalled`, `GeneratedPolicyEnforced` and
 `GeneratedPolicyUninstalled`, each a `#[contractevent]` struct with `smart_account` as its single
-`#[topic]` and `context_rule_id` in the data, and the enforcement event additionally carrying the
-`Context` it permitted and, where the rule caps calls, the count remaining after the one just
-spent. Compare `spending_limit`'s `SpendingLimitEnforced` / `Installed` / `Uninstalled`
+`#[topic]` and `context_rule_id` in the data, and the enforcement event additionally carrying a
+SHA-256 of the `Context` it permitted and, where the rule caps calls, the count remaining after
+the one just spent. A digest and not the `Context` itself: that is the one place this shape
+departs from theirs, §15 divergence 9 is the argument, and the departure is what keeps a permitted
+call publishable at any argument size.
+Compare `spending_limit`'s `SpendingLimitEnforced` / `Installed` / `Uninstalled`
 (`stellar-accounts-0.7.2/src/policies/spending_limit.rs:46-53`, `:58-64`, `:79-83`, published at
 `:281`, `:404`, `:442`), whose running number is `total_spent_in_period`; ours is
 `remaining_calls`. The trait's own docstring asks for the install and uninstall events
@@ -517,19 +520,22 @@ about.** Two different numbers, and this section used to give only the first.
 *Once, at deployment.* The golden policy's wasm went from 17,005 to 19,725 bytes — 2,720 bytes,
 16% — under the pinned rustc 1.91.1 and stellar-cli 27.0.0, measured when the events were added.
 That figure is not re-derivable from the tree today: no wasm is committed, and the artifact has
-changed since (the crate split, then the getter work), so treat it as the price of the event
-machinery at the commit that introduced it rather than as a current measurement. The golden
-policy's wasm is **19,524 bytes** as of this commit, and the Soroswap policy's is 19,701.
+changed since (the crate split, the getter work, then the context digest of divergence 9), so
+treat it as the price of the event machinery at the commit that introduced it rather than as a
+current measurement. The golden policy's wasm is **19,860 bytes** as of this commit, and the
+Soroswap policy's is 20,031.
 
 *Every permitted call, forever.* This is what the objection was about, and a wasm is paid for
 once. The fee-relevant quantity is the serialized size of the event that lands in the
-transaction's metadata: **476 bytes** for `GeneratedPolicyEnforced`, and 172 each for
+transaction's metadata: **264 bytes** for `GeneratedPolicyEnforced`, and 172 each for
 `GeneratedPolicyInstalled` and `GeneratedPolicyUninstalled`, which happen once per installation.
-The enforcement event is the large one because it carries the permitted `Context` — the
-authorization it approved, which is the whole reason to publish it. Asserted exactly rather than
-bounded, in `an_event_costs_what_the_conformance_record_says_it_costs`
+The enforcement event is the larger of the two shapes because it names the authorization it
+approved — a 32-byte digest of the `Context`, which is what makes 264 a number at all rather than
+a figure that moves with whatever the call was. Asserted exactly rather than bounded, in
+`an_event_costs_what_the_conformance_record_says_it_costs`
 (`contracts/differential/tests/events.rs`), so a field added to an event has to move the number
-here too.
+here too; that it does not move with the *arguments* is
+`contracts/differential/tests/event_payload.rs`.
 
 **What still cannot be observed, and why that is a property.** A **denial** leaves nothing behind,
 and this is technically unrealizable rather than unimplemented — worth keeping recorded so it is
@@ -781,7 +787,7 @@ two sibling policy examples at tag v0.7.2:
 | Storage keys named `<Module>StorageKey` | `PolicyStorageKey`, replacing the tutorial's `DataKey`; compare `SimpleThresholdStorageKey` (`policies/simple_threshold.rs:121`). |
 | Doc comment on every public item | The error enum and all eleven variants, the storage-key enum, the contract struct, the associated type, and all five entry points. |
 | `# Errors` on every public function that can panic, in their section order | `# Arguments` → `# Errors` → `# Events` → `# Notes`, and the list is **built from the rule's shape** rather than copied: a policy with no validity window does not document `RuleExpired`, one with no cap does not document `CallCountExceeded`. `each_entry_point_documents_exactly_the_refusals_its_body_can_raise` compares each list against the emitted `panic_with_error!` calls in both directions. |
-| Events, `#[contractevent]`, `#[topic]` first, `# Events` documented | `GeneratedPolicyInstalled` / `Enforced` / `Uninstalled`, `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement event also carrying the `Context` and the remaining call count — their shape (§6), with `spending_limit`'s `total_spent_in_period` as the analogue for ours. |
+| Events, `#[contractevent]`, `#[topic]` first, `# Events` documented | `GeneratedPolicyInstalled` / `Enforced` / `Uninstalled`, `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement event also carrying what it permitted and the remaining call count — their shape (§6), with `spending_limit`'s `total_spent_in_period` as the analogue for ours. What it permitted is a digest rather than the `Context`, which is divergence 9. |
 | Getters in an inherent `#[contractimpl]` block | `is_installed` and, where a cap exists, `remaining_calls`; compare `threshold-policy/src/contract.rs:62-78` and `spending-limit-policy/src/contract.rs:67-87`. |
 | TTL on read: the caller-managed-state exception, not the extend-on-read rule | `:344` states the rule for **library-managed** entries; `:376-381` states the exception, and this artifact is the exception. A generated policy's entries are created by the smart account's `install` and destroyed by its `uninstall`, exactly as pausable's instance state is managed by the contract using it — so, like `paused()`, neither getter calls `extend_ttl`, and both carry the explanatory `// NOTE:` the pattern asks for, citing the clause. §3 has the argument. The one thing here that *is* a divergence is withholding the write-path extension once a call cap is spent (divergence 2). |
 | `[package.metadata.stellar] cargo_inherit`, `doctest = false` | Both emitted into the manifest. |
@@ -870,7 +876,92 @@ uses instead is declarations before the code that reads them and exports before 
 they are built from; only the errors-then-storage-keys pair is taken directly from upstream, where
 those two enums appear in that order in all three policy modules.
 
-### Two upstream defects found while doing this
+**9. The enforcement event names the `Context` by a hash instead of embedding it.** *New in this
+review, and the only entry on this list that fixes a defect rather than declining a convention —
+one we had inherited by mirroring their shape faithfully.*
+
+All three of their policies embed the whole authorization in their enforce event:
+`pub context: Context` at `policies/spending_limit.rs:49`, `simple_threshold.rs:62` and
+`weighted_threshold.rs:78`. §6 above mirrored that deliberately. The shape carries a defect, and
+it is ours as much as theirs for the commit that copied it.
+
+A `Context::Contract` holds every invocation argument
+(`ContractContext { contract, fn_name, args }`, `soroban-sdk-26.1.0/src/auth.rs:44-48`), so the
+event's size is the *caller's* to choose wherever a rule leaves an argument unconstrained. Ours
+do: `AnyValue` is the maximal widening, and a policy scoped to
+`swap_exact_tokens_for_tokens` needs it for the caller-chosen `deadline`
+(`crates/synthesizer/src/walkthroughs.rs:166`). Nothing bounded that payload against
+`contract_events_size_bytes`, which mainnet meters at 16,384
+(`soroban-sdk-26.1.0/src/testutils/cost_estimate.rs:147`, installed on every test environment at
+`src/env.rs:719`).
+
+**Reproduced** on the committed Soroswap policy at those default limits, with every argument at
+the boundary the rule allows and a 20,000-byte value in the `AnyValue` position. Every policy
+check passed and `enforce` reached its `publish`; the host then failed the invocation:
+
+```text
+contract events size bytes: 20508 > 16384
+HostError: Error(Budget, ExceededLimit)
+```
+
+The host sums the emitted event bytes and compares them against the limit *after* the top-level
+call has returned (`soroban-env-host-26.1.3/src/host/invocation_metering.rs:435-439`), then panics
+(`:503-527`). So this is not a refusal a caller can read and act on: it is a budget error with no
+`PolicyError` code, on a call the policy said yes to. **And the reference evaluator still reports
+permit.** A disagreement between the evaluator and the artifact is the single failure mode every
+gate in this repository exists to prevent, which is why this outranks any question of event shape.
+
+**What the artifact does instead.** `GeneratedPolicyEnforced` carries
+`context_hash: BytesN<32>` — `e.crypto().sha256(&context.to_xdr(e))` — in the field position their
+`context` occupies. The event is then 264 bytes for every call the policy admits (§6), and a reader
+who *holds* the authorization, from the transaction's own auth entries or from a simulation of it,
+recomputes the digest and matches it to the event. What is given up is reading the arguments out of
+the event alone; what is bought is that a permitted call is always publishable. The digest also lets
+all three events derive `Clone, Debug, Eq, PartialEq`: `Context` implements none of the last three,
+which is why all three of their `*Enforced` structs derive `Clone` alone and why ours did
+until the field left.
+
+**Why not bound the arguments instead**, which is the other way to close it. An event-safe ceiling
+on accepted argument sizes would have to be enforced identically by the spec, the generated
+contract and the reference evaluator; it would add a twelfth reason to a published eleven-code deny
+contract; it would change permit/deny for calls that are admissible today; and it would move every
+spec hash, including the ones sealed into `docs/TESTNET-EVIDENCE.md`. Hashing changes what an event
+*says* and nothing about what a policy *decides*, which is the smaller change by every measure that
+matters here.
+
+**What holds it.** `contracts/differential/tests/event_payload.rs`: an admissible Soroswap call
+swept over six `deadline` sizes from 0 to 65,536 bytes, asserting at each that the compiled
+contract and the reference evaluator agree, that exactly one event is published, and that its
+serialized size is identical at every size and below the limit. A sweep rather than one value,
+because a single admissible argument is exactly what the suite had before and what let this
+through. Three of the six sizes are under the limit and were publishable before the fix, so they
+are the control that tells a red run from a broken one. Proved red by putting
+`pub context: Context` back into the committed Soroswap crate: the two invariant tests then fail
+with `contract events size bytes: 16508 > 16384` at the 16,000-byte size, and the non-vacuity test
+still passes.
+
+### Three upstream defects found while doing this
+
+**Reportable, and the one worth reporting first: their own enforce events are unbounded.** This is
+divergence 9 above, read as a finding about `stellar-accounts` rather than as a decision about our
+emitter. `SpendingLimitEnforced`, `SimpleEnforced` and `WeightedEnforced` each embed a `Context`
+(`policies/spending_limit.rs:49`, `simple_threshold.rs:62`, `weighted_threshold.rs:78`), and a
+policy has no say in how large the authorization it is asked to approve is — the account passes it
+whatever the caller signed. So any of their three policies, installed on a context rule for a
+function with a large argument, publishes an event that can exceed
+`contract_events_size_bytes` and fail a transaction it had approved. Their two threshold policies
+additionally carry `authenticated_signers: Vec<Signer>`, which is bounded by `MAX_SIGNERS = 15`
+(`smart_account/mod.rs:526`); the `Context` field is the unbounded one in all three.
+
+Two things make it less severe for them than for us and neither removes it: their policies are
+composed by an account whose other policies may bound the call, and they publish no
+independently-implemented model that a divergence would contradict. What remains is a transaction
+that fails on a resource limit rather than on a decision, at a size no reviewer of the policy would
+think to check. The reproduction above is on a generated policy because that is the crate this
+repository builds and tests; the field, the limit and the ordering are theirs unchanged, and the
+fix — a digest, or any bounded projection of the context — is available to them at the same
+cost.
+
 
 **Reportable: their checklist's wasm build cannot succeed for any crate in their own workspace.**
 Their `CONTRIBUTING.md:62` and `code-quality.md:150` both prescribe
@@ -896,11 +987,13 @@ appears unreported. The fix is one word in two documents.
 no `.claude/skills/` directory in the tree at all). Their open PR #836 already changes that exact
 line, so it is recorded here only so a reader who follows the broken link knows it is known.
 
-**Verdict.** Conforms on every rule their checklist states for a contract of this kind, with eight
+**Verdict.** Conforms on every rule their checklist states for a contract of this kind, with nine
 divergences that are decisions rather than gaps — six forced by properties this project sells (a
 pure function of the spec, a reproducible hash, an immutable limit, a checked deny-reason
-contract), one by their own lint rule contradicting their own example, and one by a generated file
-having no undelimited preamble to put a storage-key enum in.
+contract), one by their own lint rule contradicting their own example, one by a generated file
+having no undelimited preamble to put a storage-key enum in, and one — the newest, number 9 —
+because the convention we mirrored turns a permitted call into a resource-limit failure at a large
+enough argument.
 
 One entry moved off this list while the section was being checked, and the direction is worth
 recording. Extending TTL on a read was written up first as conformance, then as a divergence when
@@ -927,11 +1020,12 @@ style.
 | 6 | Apply to the Soroban Security Audit Bank | 7 | process |
 | 7 | ~~TTL tests in the soroban environment, advancing the ledger number~~ — **done**: `contracts/differential/tests/ttl.rs` (§3, action 4) | 3 | tests, done |
 | 8 | Settle where a generated contract's source archive is published, and by whom — SEP-58 requires `source_sha256` over its bytes and leaves `source_uri` optional | 2 | unresolved |
-| 9 | ~~Decide whether to publish an event on a **successful** `enforce`~~ — **done**, and the answer was yes: three events in the shape the library's own policies use, at a measured cost of 2,720 wasm bytes once and 476 bytes of event metadata per permitted call. Denials still come from the error code and RPC diagnostics, and cannot be published at all (§6) | 6 | done |
+| 9 | ~~Decide whether to publish an event on a **successful** `enforce`~~ — **done**, and the answer was yes: three events in the shape the library's own policies use, at a measured cost of 2,720 wasm bytes once and 264 bytes of event metadata per permitted call. Denials still come from the error code and RPC diagnostics, and cannot be published at all (§6) | 6 | done |
 | 10 | Decide whether to build inside a digest-pinned container image and record it as SEP-58 `bldimg`; pinning rustc and dependency versions pins neither the OS nor the container | 2 | compatibility |
 | 11 | ~~Rename the cap from "lifetime" to per-installation~~ — **done**, including the wire field, now `call_count_per_installation` in the committed example. Taken together with row 1 because both break the schema, and one break is cheaper than two. The registry snapshot no longer names it: a call cap is a `StateSpec`, and the snapshot's list is `Constraint`'s vocabulary | 3 | done |
 | 12 | Report upstream that `cargo build --target wasm32v1-none --release`, which their `CONTRIBUTING.md` and code-quality checklist both prescribe, cannot succeed for any crate in their workspace — the root enables soroban-sdk's `experimental_spec_shaking_v2`, whose build script requires `stellar contract build`. Reproduced; apparently unreported; no CI job of theirs would notice (§15) | 15 | upstream |
 | 13 | Offer the conventions work upstream, or at least ask a `stellar-contracts` maintainer to read a generated policy. §15 checks the artifact against their written rules; it cannot check it against their judgement | 15 | process |
+| 14 | Report upstream that all three of their policies embed the full `Context` in their enforce event, which is unbounded: a permitted authorization with a large argument publishes an event over `contract_events_size_bytes` and fails the transaction it approved, as a budget error rather than a policy decision. Reproduced on a policy built to their shape (§15, divergence 9); our own artifact now publishes a digest instead | 15 | upstream |
 
 Not on the list, and deliberately so: rejecting a policy at generation time because
 `valid_until` exceeds `max_ttl()`. That bound is sliding, measured from the current ledger, so a

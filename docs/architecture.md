@@ -569,8 +569,9 @@ impl GeneratedPolicy {
   (`install` / `enforce` / `uninstall`; rejection by panic with registered
   `#[contracterror]` codes). Each entry point publishes a `#[contractevent]` on success and
   the artifact exports getters for its own state, both following the shape of the library's
-  policies — see `docs/ECOSYSTEM-CONFORMANCE.md` §6 for what that does and does not make
-  observable. Note: the RFP background text mentions a `can_enforce` hook;
+  policies — with one field of one event departing from it, because theirs is unbounded. See
+  `docs/ECOSYSTEM-CONFORMANCE.md` §6 for what publishing does and does not make observable, and
+  §15 divergence 9 for the departure. Note: the RFP background text mentions a `can_enforce` hook;
   current audited releases do not have it — we pin to the audited release and track trait
   evolution (§9).
 - **Dependencies:** `#![no_std]`, `soroban-sdk` **and** the matching `stellar-accounts`

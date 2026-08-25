@@ -19,3 +19,20 @@ ozpb-synthesizer = { path = "../../crates/synthesizer" }
 ozpb-codegen = { path = "../../crates/codegen" }
 stellar-strkey = "0.0.18"
 
+# Needed by `tests/event_payload.rs` alone, and it leaves with that file at the milestone
+# boundary. That file needs *this* policy and no other: the enforcement-event payload it bounds is
+# only unbounded where a rule leaves an argument unconstrained, and the Soroswap rule's
+# caller-chosen `deadline` is the one `AnyValue` position either committed crate has. The same
+# manifest-level caveat as the harness edge below applies — Cargo has no way to gate a
+# dev-dependency on one `[[test]]` target — so the edge is package-wide however few files use it.
+generated-soroswap-swap-r0 = { path = "../soroswap-swap-policy" }
+
+# Needed by `tests/generated_suite.rs` alone — no other test file in this crate mentions it — and
+# so it leaves with that file at the milestone boundary.
+#
+# This is as close as the manifest gets: Cargo rejects an optional dev-dependency
+# ("dev-dependencies are not allowed to be optional"), which is the only construction that
+# could gate it behind the `required-features` of a single `[[test]]` target. The edge from
+# this crate to the harness is therefore package-wide however few files use it, and the
+# boundary here is a convention rather than something the manifest enforces.
+ozpb-harness = { path = "../../crates/harness" }
