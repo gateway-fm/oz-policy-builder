@@ -496,9 +496,9 @@ fn installing_after_expiry_is_rejected_without_writing_state() {
 
 /// The read-only surface, against the real compiled contract.
 ///
-/// The codegen tests say the two getters are emitted and that their bodies extend what they read;
-/// this says what they answer. Both matter, and only this one would notice a getter that compiled,
-/// exported, extended TTL and returned the wrong number.
+/// The codegen tests say the two getters are emitted and that neither body extends a TTL; this
+/// says what they answer. Both matter, and only this one would notice a getter that compiled,
+/// exported, bought no rent and returned the wrong number.
 #[test]
 fn the_getters_report_the_installation_and_the_calls_left() {
     // Before install, in an env of its own: `setup` installs, and the absent answers are half of
