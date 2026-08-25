@@ -568,6 +568,22 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // unauthenticated read (only a validity window does). A single fixed wording would be false
     // for one shape or the other, in the one artifact whose prose has to be readable as an
     // assertion about its own behaviour.
+    // The check order, with the cap clause only where a cap exists. A rule with no
+    // `max_calls` has no counter, so describing how its count behaves is prose about a check the
+    // artifact does not carry — the same defect as documenting a refusal it cannot raise.
+    let stateful = if has_state {
+        "then stateful invariants (missing state denies; the call cap never resets within an \
+         installation — only `uninstall`, which the smart account alone can call, clears it)"
+    } else {
+        "then stateful invariants (missing state denies; this rule caps nothing, so the only \
+         state is the installation marker)"
+    };
+    let check_order = format!(
+        "Check order is the generated-code contract (§4.4): account authorization and \
+         installation state first, then the signer predicate (the OZ account defers signer \
+         validation to policies), then strict signer-set, then target/function/tuple scoping, \
+         {stateful}. No setters, no upgrade entry point."
+    );
     let readers = if has_state {
         "a successful read through `is_installed` or `remaining_calls`"
     } else {
@@ -614,13 +630,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
          guarantees no longer apply to an edited copy."
             .to_string(),
         String::new(),
-        "Check order is the generated-code contract (§4.4): account authorization and \
-         installation state first, then the signer predicate (the OZ account defers signer \
-         validation to policies), then strict signer-set, then target/function/tuple scoping, \
-         then stateful invariants (missing state denies; the call cap never resets within an \
-         installation — only `uninstall`, which the smart account alone can call, clears it). No \
-         setters, no upgrade entry point."
-            .to_string(),
+        check_order,
         String::new(),
         storage_lifetime,
         String::new(),
@@ -2891,6 +2901,22 @@ mod tests {
             .expect("every shape of the golden rule validates");
             let source = emitted_for(&spec);
             let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            // The crate header describes the check order, and a rule with no cap has no count
+            // whose behaviour there is anything to describe. Prose in the header is read as an
+            // assertion about the file under it, so it is held to the shape like the `# Errors`
+            // lists are.
+            assert_eq!(
+                source.contains("the call cap never resets within an installation"),
+                max_calls.is_some(),
+                "{shape}: the header describes the call cap iff the rule has one"
+            );
+            assert_eq!(
+                source.contains("`remaining_calls`"),
+                max_calls.is_some(),
+                "{shape}: the header names `remaining_calls` as an extending entry point iff it \
+                 is emitted"
+            );
 
             // The inherent block is the one their conventions reserve plain `#[contractimpl]`
             // for, and it must be distinct from the trait impl rather than folded into it.
