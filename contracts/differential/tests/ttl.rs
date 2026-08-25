@@ -620,7 +620,10 @@ fn a_read_buys_no_rent() {
             "{label}: `is_installed` must move no TTL"
         );
 
-        assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS - spent);
+        assert_eq!(
+            w.client.remaining_calls(&0u32, &w.account),
+            MAX_CALLS - spent
+        );
         assert_eq!(
             (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
             before,
@@ -683,4 +686,3 @@ fn remaining_calls_refuses_an_installation_whose_marker_is_gone() {
         other => panic!("reading a counter whose marker is gone must be refused: {other:?}"),
     }
 }
-
