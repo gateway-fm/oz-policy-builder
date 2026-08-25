@@ -151,46 +151,24 @@ impl GeneratedPolicy {
     ///
     /// # Notes
     ///
-    /// * A successful read extends the lifetime of the entries this policy
-    ///   depends on — the same entries, through the same `ttl_target`
-    ///   computation, as a permitted call. Extending on read is the library's
-    ///   rule for entries a contract owns, so this is a state-changing call,
-    ///   cheap but not free, and any caller may make it. The only write it can
-    ///   perform is an extension, so paying for one on another account's behalf
-    ///   is the whole of what an unauthorized caller can do here.
-    /// * The extension is withheld once the call cap is spent, and the counter
-    ///   is read for no other reason: an installation that can never permit
-    ///   again must stop paying rent, which is what the crate header promises
-    ///   and what a read that extended unconditionally would quietly break.
-    /// * The target is `ttl_target(e)`, so an unauthenticated read can no more
-    ///   carry these entries past VALID_UNTIL_LEDGER than a permitted call can:
-    ///   past that ledger every entry point denies, and the extension stops
-    ///   there.
+    /// * Extends no entry's lifetime. This is a pure read: the entries it looks
+    ///   at belong to the smart account's install/uninstall lifecycle, and
+    ///   `install` and a permitted `enforce` are what keep them alive. A query
+    ///   is not the account exercising its grant — any caller may make one — so
+    ///   it buys no rent and costs nothing beyond the read itself. The
+    ///   library's exception for caller-managed state
+    ///   (`code-quality.md:376-381`) is the rule this follows; the
+    ///   extend-on-read rule at `:344` is for library-managed entries.
     pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {
-        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);
-        if !e.storage().persistent().has(&installed_key) {
-            return false;
-        }
-        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);
-        let remaining = match e.storage().persistent().get::<_, u32>(&key) {
-            Some(used) => MAX_CALLS.saturating_sub(used),
-            None => 0u32,
-        };
-
-        // The `remaining` gate is not a permission check — nothing here decides
-        // anything. It is the rent rule: an installation that can never permit again
-        // stops paying. Otherwise this keeps the entries the policy depends on, and the
-        // contract instance, out of archival.
-        if remaining > 0u32 {
-            let ttl = ttl_target(e);
-            if ttl > 0 {
-                e.storage().instance().extend_ttl(ttl / 2, ttl);
-                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
-                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
-            }
-        }
-
-        true
+        // NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the
+        // smart account, which creates it through `install` and removes it through
+        // `uninstall`, and both of those extend. A query is not the account exercising
+        // its grant — any caller may make one — so it must not buy rent for state it
+        // does not own. The library's exception for caller-managed state
+        // (`code-quality.md:376-381`, whose canonical case is `paused()`) is this case,
+        // not the extend-on-read rule at `:344`.
+        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);
+        e.storage().persistent().has(&installed_key)
     }
 
     /// Calls this installation may still permit.
@@ -213,9 +191,15 @@ impl GeneratedPolicy {
     ///
     /// # Notes
     ///
-    /// * Extends the same entries `is_installed` does, through the same
-    ///   computation, and withholds the extension once the count is spent.
+    /// * Extends no entry's lifetime, for the reason `is_installed` gives.
     pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {
+        // NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the
+        // smart account, which creates it through `install` and removes it through
+        // `uninstall`, and both of those extend. A query is not the account exercising
+        // its grant — any caller may make one — so it must not buy rent for state it
+        // does not own. The library's exception for caller-managed state
+        // (`code-quality.md:376-381`, whose canonical case is `paused()`) is this case,
+        // not the extend-on-read rule at `:344`.
         let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);
         if !e.storage().persistent().has(&installed_key) {
             panic_with_error!(e, PolicyError::MissingState);
@@ -225,22 +209,7 @@ impl GeneratedPolicy {
             Some(used) => used,
             None => panic_with_error!(e, PolicyError::MissingState),
         };
-        let remaining = MAX_CALLS.saturating_sub(used);
-
-        // The `remaining` gate is not a permission check — nothing here decides
-        // anything. It is the rent rule: an installation that can never permit again
-        // stops paying. Otherwise this keeps the entries the policy depends on, and the
-        // contract instance, out of archival.
-        if remaining > 0u32 {
-            let ttl = ttl_target(e);
-            if ttl > 0 {
-                e.storage().instance().extend_ttl(ttl / 2, ttl);
-                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
-                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
-            }
-        }
-
-        remaining
+        MAX_CALLS.saturating_sub(used)
     }
 }
 

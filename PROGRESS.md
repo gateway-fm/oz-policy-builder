@@ -554,7 +554,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
 ## Verifiable artifacts
 
 - **Codegen determinism:** two cold runs of `ozpb generate` produce byte-identical sources.
-  The contract module is sha256 `01e1315d…` and the crate root `d81581b7…`; the
+  The contract module is sha256 `4db7fe0d…` and the crate root `5c878485…`; the
   normalized codegen-input hash the root declares is `662ad7a9…`. Both files are named because
   the crate root is a header and a `pub mod` declaration — its digest does not move when the
   policy's behaviour does, so quoting it alone would be quoting the stable half.
@@ -563,7 +563,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
   source mismatch. A comparison of the crate root alone would call a crate with a hand-edited
   contract module reproduced.
 - **Wasm reproducibility:** `stellar contract build` → byte-identical wasm across a full
-  `cargo clean` rebuild (sha256 `684bfc42…`; the Soroswap policy is `8ee43d88…` under the same
+  `cargo clean` rebuild (sha256 `265dbfce…`; the Soroswap policy is `6363511d…` under the same
   toolchain, measured in the same sweep). The claim holds; the gate that asserted it did
   not until 2026-08-13. It hashed `contracts/target/…`, which the rebuild never writes: the
   golden crate is excluded from the contracts workspace (it carries its own

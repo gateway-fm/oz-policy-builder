@@ -387,13 +387,35 @@ unstable_features = true
     .to_string()
 }
 
-/// The TTL-extension statements shared by every entry point that extends.
+/// The `// NOTE:` comment the library's caller-managed-state exception asks for.
 ///
-/// All four use it — `enforce`, `install`, `is_installed` and `remaining_calls` — so "a read
-/// inherits the same bound as a write" is true by construction rather than by four copies
-/// agreeing. A threshold or an entry set that drifted between them would be a cost bug rather
-/// than a compile error, so the text is written once. Every site sits at the same indent, one
-/// `impl` block deep, which is what lets the block be shared verbatim.
+/// `code-quality.md:344` states the rule — "**Library-managed** entries extend TTL on read, not
+/// on write" — and `:376-381` states the exception this artifact falls under: a utility whose
+/// instance state is managed by the calling contract does *not* extend on read, `paused()` is the
+/// canonical example, and such a reader is expected to carry an explanatory `// NOTE:`.
+///
+/// Emitted into both getters rather than once, from one string so the two cannot drift. Their
+/// pattern puts the note where someone editing the reader will see it, and the edit it is there
+/// to stop is a well-meaning one: a reader that touches storage and does not extend looks like an
+/// oversight, and adding the call back is a one-line change that no compiler objects to.
+fn caller_managed_ttl_note() -> String {
+    render::wrap_comment(
+        "        // ",
+        "NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the smart \
+         account, which creates it through `install` and removes it through `uninstall`, and both \
+         of those extend. A query is not the account exercising its grant — any caller may make \
+         one — so it must not buy rent for state it does not own. The library's exception for \
+         caller-managed state (`code-quality.md:376-381`, whose canonical case is `paused()`) is \
+         this case, not the extend-on-read rule at `:344`.",
+    )
+}
+
+/// The TTL-extension statements shared by `enforce` and `install`.
+///
+/// Those two and no others: a read extends nothing, for the reason
+/// [`caller_managed_ttl_note`] states. Both write paths need identical wording, and a threshold
+/// or an entry set that drifted between them would be a cost bug rather than a compile error, so
+/// the text is written once.
 ///
 /// The host extends when `current_ttl <= threshold` (`soroban-env-host`, `Storage::extend_ttl`).
 /// The SDK's own doc comment says "below", which is off by one; the wording here follows the host.
@@ -584,11 +606,6 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
          validation to policies), then strict signer-set, then target/function/tuple scoping, \
          {stateful}. No setters, no upgrade entry point."
     );
-    let readers = if has_state {
-        "a successful read through `is_installed` or `remaining_calls`"
-    } else {
-        "a successful read through `is_installed`"
-    };
     let cap_clause = if has_state {
         " Once a call cap is spent the policy stops extending entirely: it can never permit \
          again, so it stops paying rent."
@@ -596,29 +613,20 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
         ""
     };
     let storage_lifetime = format!(
-        "Storage lifetime is maintained **only while this policy is used**: a permitted call, \
-         `install`, and {readers} each extend the entries the policy depends on toward the \
-         rule's validity window where one is set and the network maximum otherwise — never past \
-         either. Every one of them goes through the same `ttl_target` computation, so no entry \
-         point can buy rent that another could not. A policy nothing calls at all still drifts \
-         into archival, and so does one that only ever denies, since a denial reverts the \
-         extension along with everything else. First use after a long gap may therefore cost a \
-         restore.{cap_clause}"
+        "Storage lifetime is maintained **only while this policy is used**: a permitted call, or \
+         `install`, extends the entries it depends on toward the rule's validity window where \
+         one is set and the network maximum otherwise — never past either. An installed but idle \
+         policy still drifts into archival, and so does one that only ever denies, since a \
+         denial reverts the extension along with everything else. First use after a long gap may \
+         therefore cost a restore.{cap_clause}"
     );
-    let rent_bound = if rule.valid_until_ledger.is_some() {
-        "The reads are unauthenticated, and bounded by the same thing the writes are: \
-         `ttl_target` clamps every extension to VALID_UNTIL_LEDGER, past which every entry point \
-         denies. A third party can pay to keep this policy out of archival, and only for as long \
-         as it can still permit something."
-            .to_string()
-    } else {
-        "The reads are unauthenticated, and this rule sets no validity window, so the network's \
-         rolling `max_ttl()` is the only bound on them: a third party can hold these entries out \
-         of archival for as long as they keep paying for the extension. They gain nothing else by \
-         it — a read decides no authorization — but this is the one case where what this \
-         contract's entries cost to keep alive is not bounded by the rule itself."
-            .to_string()
-    };
+    let rent_bound = "Those two entry points are the only ones that extend anything. A query \
+                      through the getters is a pure read: it buys no rent, because these entries \
+                      belong to the smart account's install/uninstall lifecycle rather than to \
+                      this contract, and a caller who is not the account has no business paying \
+                      to keep them alive. So the set of callers who can make this policy cost \
+                      anything is exactly the set who can use it."
+        .to_string();
     // Paragraph by paragraph, so the blank `//!` separators stay where they are; rustfmt joins
     // lines only inside a paragraph it has to re-flow, and it never has to re-flow these.
     for paragraph in [
@@ -869,9 +877,12 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // and `code-quality.md` reserves plain `#[contractimpl]` for exactly that block.
     //
     // Until now the artifact exported only the three trait methods, so there was no on-chain way
-    // to ask whether a policy was installed or how many calls an installation had left — a gap
-    // with a second consequence: the library's "extend TTL on read, not on write" rule had no
-    // read site to attach to, which is why this artifact diverged from it. It now has one.
+    // to ask whether a policy was installed or how many calls an installation had left.
+    //
+    // Neither getter extends TTL, which is `code-quality.md:376-381` and not a departure from
+    // `:344`: the rule there is for **library-managed** entries, and these are managed by the
+    // caller — the smart account creates them with `install` and removes them with `uninstall`.
+    // See `caller_managed_ttl_note`, whose text is emitted into both bodies.
     // Events. The trait's own documentation asks for them —
     // `stellar-accounts-0.7.2/src/policies/mod.rs:106-111` for `install` and `:144-149` for
     // `uninstall` — and all three library policies emit on all three entry points, so `enforce`
@@ -949,40 +960,19 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     out.push_str("#[contract]\npub struct GeneratedPolicy;\n\n");
     out.push_str("#[contractimpl]\nimpl GeneratedPolicy {\n");
 
-    let mut is_installed_notes = vec![
-        "A successful read extends the lifetime of the entries this policy depends on — the same \
-         entries, through the same `ttl_target` computation, as a permitted call. Extending on \
-         read is the library's rule for entries a contract owns, so this is a state-changing \
-         call, cheap but not free, and any caller may make it. The only write it can perform is \
-         an extension, so paying for one on another account's behalf is the whole of what an \
-         unauthorized caller can do here."
+    // One note, and the same one for every rule shape: what this function does not do. The
+    // reason belongs in the docs as well as in the body comment, because a reader deciding
+    // whether to call it needs to know it is free of side effects, and a reader editing it needs
+    // to know the omission is deliberate.
+    let is_installed_notes = vec![
+        "Extends no entry's lifetime. This is a pure read: the entries it looks at belong to the \
+         smart account's install/uninstall lifecycle, and `install` and a permitted `enforce` are \
+         what keep them alive. A query is not the account exercising its grant — any caller may \
+         make one — so it buys no rent and costs nothing beyond the read itself. The library's \
+         exception for caller-managed state (`code-quality.md:376-381`) is the rule this follows; \
+         the extend-on-read rule at `:344` is for library-managed entries."
             .to_string(),
     ];
-    if has_state {
-        is_installed_notes.push(
-            "The extension is withheld once the call cap is spent, and the counter is read for \
-             no other reason: an installation that can never permit again must stop paying rent, \
-             which is what the crate header promises and what a read that extended \
-             unconditionally would quietly break."
-                .to_string(),
-        );
-    }
-    // The bound a read inherits, stated where a reader of the read will look for it. With a
-    // window there is a real ceiling and it is the same one the write paths have; without one
-    // there is nothing to inherit, and saying so is the honest half of this design.
-    is_installed_notes.push(if rule.valid_until_ledger.is_some() {
-        "The target is `ttl_target(e)`, so an unauthenticated read can no more carry these \
-         entries past VALID_UNTIL_LEDGER than a permitted call can: past that ledger every entry \
-         point denies, and the extension stops there."
-            .to_string()
-    } else {
-        "This rule carries no validity window, so `ttl_target(e)` is the network's rolling \
-         `max_ttl()` and there is no further ceiling for a read to inherit. Any caller may \
-         therefore hold these entries out of archival for as long as they keep paying for the \
-         extension. That buys them nothing else — a read grants no authorization — but it is the \
-         one case where this contract's rent is not bounded by the rule itself."
-            .to_string()
-    });
     out.push_str(&emit_doc(
         "    ",
         &[
@@ -1004,19 +994,16 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
             ("# Notes", is_installed_notes),
         ],
     ));
-    if has_state {
-        out.push_str(
-            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let remaining = match e.storage().persistent().get::<_, u32>(&key) {\n            Some(used) => MAX_CALLS.saturating_sub(used),\n            None => 0u32,\n        };\n",
-        );
-        out.push_str(&ttl_extension_block(true));
-        out.push_str("\n        true\n    }\n");
-    } else {
-        out.push_str(
-            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n",
-        );
-        out.push_str(&ttl_extension_block(false));
-        out.push_str("\n        true\n    }\n");
-    }
+    // One body for every rule shape. It used to branch on `has_state`, because the counter had to
+    // be read to decide whether extending was still worth it; with no extension there is nothing
+    // for a cap to gate, and the question this function answers never depended on the count.
+    out.push_str(
+        "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n",
+    );
+    out.push_str(&caller_managed_ttl_note());
+    out.push_str(
+        "        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);\n        e.storage().persistent().has(&installed_key)\n    }\n",
+    );
     // `remaining_calls` exists only where a cap does. A rule with no cap has no counter to
     // report, and the alternatives are both worse than an absent function: a sentinel like
     // `u32::MAX` would be a magic value a caller has to know about, and returning zero would
@@ -1054,18 +1041,19 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                 (
                     "# Notes",
                     vec![
-                        "Extends the same entries `is_installed` does, through the same \
-                         computation, and withholds the extension once the count is spent."
+                        "Extends no entry's lifetime, for the reason `is_installed` gives."
                             .to_string(),
                     ],
                 ),
             ],
         ));
         out.push_str(
-            "    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let used: u32 = match e.storage().persistent().get(&key) {\n            Some(used) => used,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        let remaining = MAX_CALLS.saturating_sub(used);\n",
+            "    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {\n",
         );
-        out.push_str(&ttl_extension_block(true));
-        out.push_str("\n        remaining\n    }\n");
+        out.push_str(&caller_managed_ttl_note());
+        out.push_str(
+            "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let used: u32 = match e.storage().persistent().get(&key) {\n            Some(used) => used,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        MAX_CALLS.saturating_sub(used)\n    }\n",
+        );
     }
     out.push_str("}\n\n");
 
@@ -2869,14 +2857,17 @@ mod tests {
         }
     }
 
-    /// The artifact exposes its state for reading, and extends TTL where it reads.
+    /// The artifact exposes its state for reading, and the reads are free of side effects.
     ///
     /// Both sibling policy examples expose getters from an inherent `#[contractimpl]` block beside
     /// the trait one; ours exported the three trait methods and nothing else, so there was no
     /// on-chain way to ask whether a policy was installed or how many calls an installation had
-    /// left. That gap had a second consequence: the library's "extend TTL on read, not on write"
-    /// rule had no read site to attach to, which is the whole reason this artifact diverged from
-    /// it.
+    /// left.
+    ///
+    /// The TTL half is asserted here only as an absence, to keep this test from passing on a
+    /// surface that quietly started buying rent;
+    /// `only_the_write_paths_extend_and_the_getters_say_why_they_do_not` carries the argument for
+    /// why a read must not extend.
     ///
     /// `remaining_calls` is emitted only where a cap exists. A rule with no cap has no counter to
     /// report, and both alternatives are worse than an absent function — a `u32::MAX` sentinel is
@@ -2911,12 +2902,6 @@ mod tests {
                 max_calls.is_some(),
                 "{shape}: the header describes the call cap iff the rule has one"
             );
-            assert_eq!(
-                source.contains("`remaining_calls`"),
-                max_calls.is_some(),
-                "{shape}: the header names `remaining_calls` as an extending entry point iff it \
-                 is emitted"
-            );
 
             // The inherent block is the one their conventions reserve plain `#[contractimpl]`
             // for, and it must be distinct from the trait impl rather than folded into it.
@@ -2938,37 +2923,30 @@ mod tests {
                 "{shape}: `remaining_calls` is emitted iff the rule caps calls"
             );
 
-            // Extend on read: the body of each getter extends what it successfully read. Checked
-            // per function body, because an `extend_ttl` anywhere in the file would satisfy a
-            // whole-source search — `enforce` and `install` both carry one.
+            // What the getters answer, and — checked per function body, because an `extend_ttl`
+            // anywhere in the file would satisfy a whole-source search — that neither of them
+            // touches a TTL. `only_the_write_paths_extend_and_the_getters_say_why_they_do_not`
+            // carries the argument; this keeps the exported-surface test from passing on a
+            // surface that quietly started buying rent.
             let is_installed = body_of(&source, "is_installed");
             assert!(
-                is_installed.contains("extend_ttl(&installed_key"),
-                "{shape}: `is_installed` must extend the entry it read:\n{is_installed}"
+                is_installed.contains("e.storage().persistent().has(&installed_key)"),
+                "{shape}: `is_installed` must answer from the marker's presence:\n{is_installed}"
+            );
+            assert!(
+                !is_installed.contains("extend_ttl"),
+                "{shape}: `is_installed` is a pure read:\n{is_installed}"
             );
             if max_calls.is_some() {
                 let remaining = body_of(&source, "remaining_calls");
                 assert!(
-                    remaining.contains("extend_ttl(&key"),
-                    "{shape}: `remaining_calls` must extend the counter it read:\n{remaining}"
+                    remaining.contains("MAX_CALLS.saturating_sub(used)"),
+                    "{shape}: `remaining_calls` must count down from the cap:\n{remaining}"
                 );
-                // …and withhold the extension once the cap is spent, which is what keeps the
-                // header's "stops paying rent" claim true through a read as well as a write.
-                for (name, body) in [
-                    ("is_installed", &is_installed),
-                    ("remaining_calls", &remaining),
-                ] {
-                    let guard = body.find("if remaining > 0u32 {").unwrap_or_else(|| {
-                        panic!("{shape}: `{name}` extends unconditionally:\n{body}")
-                    });
-                    let extend = body
-                        .find("extend_ttl(")
-                        .expect("the body was just asserted to extend");
-                    assert!(
-                        guard < extend,
-                        "{shape}: `{name}` extends before checking it can still permit:\n{body}"
-                    );
-                }
+                assert!(
+                    !remaining.contains("extend_ttl"),
+                    "{shape}: `remaining_calls` is a pure read:\n{remaining}"
+                );
             }
             // A missing count is an error rather than a zero, matching `enforce`.
             if max_calls.is_some() {
@@ -3000,28 +2978,30 @@ mod tests {
     /// CONSTANTS → EVENTS), then the entry points (QUERY STATE → CHANGE STATE), then the private
     /// helpers. The errors-then-storage-keys pair is the one ordering taken directly from
     /// upstream, where the two enums appear in that order in all three policy modules.
-    /// Every entry point that extends TTL extends the same entries, to the same bound.
+    /// The two write paths extend the same entries to the same bound, and nothing else extends.
     ///
-    /// This is the property the dynamic `ttl_target` exists to provide, and the one an
-    /// extend-on-read convention can quietly take away. The argument the artifact makes to a
-    /// reviewer is that it provably never buys rent past the rule's validity window or after the
-    /// call cap is spent — and `is_installed` is callable by anyone, so a read that computed its
-    /// own target, or extended a different set of entries, would break that claim through the one
-    /// path with no authorization on it.
+    /// Both halves matter and the second is the one a later edit will break. A reader that touches
+    /// storage and does not extend looks like an oversight — the library's own rule is
+    /// "extend TTL on read" (`code-quality.md:344`) and it takes one line to comply — so this
+    /// asserts the **absence**, and asserts that the `// NOTE:` explaining it is there to be read
+    /// by whoever tries. The exception the getters follow is `:376-381`: a utility whose state is
+    /// managed by the calling contract does not extend on read, `paused()` being the canonical
+    /// case. A generated policy is that case. Its entries are created by the smart account's
+    /// `install` and destroyed by its `uninstall`, so the account's own calls are what keep them
+    /// alive, and a query by an arbitrary caller has no business buying rent for them.
     ///
-    /// Asserted as an identity between the four bodies rather than against a written-down list,
-    /// because a list is a second copy of the intent and would be updated in the same edit that
-    /// broke the code. The emitter has one extension block and every site uses it; this is what
-    /// says so.
+    /// The first half is asserted as an identity between the two write bodies rather than against
+    /// a written-down list, because a list is a second copy of the intent and would be updated in
+    /// the same edit that broke the code. The emitter has one extension block and both write
+    /// paths use it; this is what says so.
     ///
-    /// The asymmetry this replaces was real and was shipped: `is_installed` extended the marker
-    /// and the counter, `remaining_calls` extended the counter alone, and neither extended the
-    /// instance entry that `enforce` and `install` did. An installation read only through
-    /// `remaining_calls` therefore kept its counter alive while its marker decayed — and a marker
-    /// that archives while its counter does not is an installation `enforce` refuses as
-    /// `MissingState` with the count intact.
+    /// This replaces a version that asserted the opposite — that all four entry points extend the
+    /// same entries — written from the extend-on-read rule without its exception. The design it
+    /// checked was coherent and bounded, and it was still the wrong one: it made an
+    /// unauthenticated `is_installed` a way for a third party to pay this policy's rent, which is
+    /// a thing the account cannot stop and had no reason to want.
     #[test]
-    fn every_extending_entry_point_extends_the_same_entries_through_the_same_bound() {
+    fn only_the_write_paths_extend_and_the_getters_say_why_they_do_not() {
         let calls = golden_spec().spec().rules[0].allowed_calls.clone();
         for (valid_until, max_calls) in [
             (Some(4_223_456u32), Some(12u32)),
@@ -3040,11 +3020,6 @@ mod tests {
             let source = emitted_for(&spec);
             let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
 
-            let mut extenders = vec!["enforce", "install", "is_installed"];
-            if max_calls.is_some() {
-                extenders.push("remaining_calls");
-            }
-
             let expected = extended_entries(&body_of(&source, "enforce"));
             assert!(
                 expected.contains(&"instance".to_string())
@@ -3052,14 +3027,14 @@ mod tests {
                 "{shape}: `enforce` must extend the instance and the marker, or this test has \
                  nothing to compare against: {expected:?}"
             );
-            for entry in extenders {
+            for entry in ["enforce", "install"] {
                 let body = body_of(&source, entry);
                 assert_eq!(
                     extended_entries(&body),
                     expected,
-                    "{shape}: `{entry}` extends a different entry set from `enforce`; a read that \
-                     extends less than a write leaves one of this policy's entries to archive \
-                     while the others are kept alive"
+                    "{shape}: `{entry}` extends a different entry set from `enforce`, which \
+                     leaves one of this policy's entries to archive while the others are kept \
+                     alive"
                 );
                 assert!(
                     body.contains("let ttl = ttl_target(e);"),
@@ -3068,12 +3043,46 @@ mod tests {
                 );
             }
 
-            // The one entry point that must not extend, kept in the same test so the identity
-            // above cannot be satisfied by extending everywhere.
-            assert!(
-                !body_of(&source, "uninstall").contains("extend_ttl"),
-                "{shape}: `uninstall` must buy no rent for entries it is removing"
-            );
+            // Nothing else extends. `uninstall` is here for its own reason — buying rent for
+            // entries it is removing — and the getters for theirs.
+            let mut silent = vec!["uninstall", "is_installed"];
+            if max_calls.is_some() {
+                silent.push("remaining_calls");
+            }
+            for entry in silent {
+                let body = body_of(&source, entry);
+                assert!(
+                    extended_entries(&body).is_empty(),
+                    "{shape}: `{entry}` must extend nothing, and extends {:?}. For a getter that \
+                     is the caller-managed-state exception (`code-quality.md:376-381`): these \
+                     entries live and die with the smart account's install/uninstall, so a query \
+                     must not pay their rent. Adding `extend_ttl` back also hands an \
+                     unauthenticated caller a way to keep an installation out of archival",
+                    extended_entries(&body)
+                );
+            }
+
+            // And the absence is explained where someone editing it will look, which is what the
+            // exception asks for. Asserted on the two getters only: `uninstall` states its own
+            // reason in its doc comment, and it is a different reason.
+            let mut readers = vec!["is_installed"];
+            if max_calls.is_some() {
+                readers.push("remaining_calls");
+            }
+            for entry in readers {
+                let body = body_of(&source, entry);
+                assert!(
+                    body.contains("NOTE: deliberately does not extend TTL"),
+                    "{shape}: `{entry}` must carry the `// NOTE:` the caller-managed-state \
+                     exception asks for, or the omission reads as an oversight and the next \
+                     editor fixes it:\n{body}"
+                );
+                assert!(
+                    body.contains("code-quality.md:376-381"),
+                    "{shape}: the note in `{entry}` must cite the clause it follows, so a reader \
+                     can check it rather than take our word:\n{body}"
+                );
+            }
         }
     }
 

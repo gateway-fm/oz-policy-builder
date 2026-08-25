@@ -573,42 +573,81 @@ fn the_getters_report_the_installation_and_the_calls_left() {
     }
 }
 
-/// A read extends exactly what a permitted call extends — marker, counter and instance.
+/// A read buys no rent, on the real compiled contract and at every point in an installation's life.
 ///
-/// The entry-set identity is asserted in the emitter too, between the four function bodies, but
-/// that reads the text it just produced. This reads the ledger: it calls one getter, on the real
-/// compiled contract, and looks at all three TTLs.
+/// The emitter-scan test says neither getter contains `extend_ttl`. This says what that means on
+/// the ledger: the three TTLs a permitted call moves are all unmoved by a query, whether the
+/// installation is fresh, part-spent or exhausted.
 ///
-/// `remaining_calls` is the one that matters here. It used to extend the counter alone, so an
-/// installation polled only through it kept its count alive while its marker decayed — and a
-/// marker that archives out from under a live counter is an installation `enforce` then refuses as
-/// `MissingState`, with every permitted call still on the clock. Nothing in the tree looked at
-/// that combination.
+/// Measured at a decay below **half** the target, not merely below it. The host extends only when
+/// the current TTL has fallen to the threshold the caller passes, and the write paths pass
+/// `ttl / 2`; at a shallower decay the host declines the extension on its own and this test would
+/// pass whether or not the policy asked for one. That is not hypothetical — it is what happened at
+/// 90,000 ledgers in an earlier version of this file, where the marker still had 60,000 of a
+/// 100,000 target left: the emitter's guard could be removed with nothing observable changing.
+///
+/// Non-vacuity comes from the same world: after the reads, one permitted `enforce` moves all three
+/// TTLs to the target. Without that, an assertion that nothing moved would hold just as well
+/// against a contract that had lost the ability to extend at all.
 #[test]
-fn each_getter_extends_the_same_entries_a_permitted_call_does() {
-    for getter in ["is_installed", "remaining_calls"] {
+fn a_read_buys_no_rent() {
+    // A fresh world per case. Sharing one would let an earlier case's extension reset the decay
+    // the next case depends on — which it did: after a non-vacuity `enforce` the marker was five
+    // ledgers old, and the threshold assertion below caught it.
+    for (label, spent) in [
+        ("a fresh installation", 0u32),
+        ("a part-spent one", 5),
+        ("an exhausted one", MAX_CALLS),
+    ] {
         let w = setup(Some(NARROW_MAX_TTL));
-        // Let all three decay, so an extension is observable rather than a no-op.
-        w.advance_to(50_000);
+        for _ in 0..spent {
+            w.enforce_once();
+        }
+        w.advance_to(NARROW_MAX_TTL * 3 / 5);
         let before = (w.installed_ttl(), w.counter_ttl(), w.instance_ttl());
-        let target = w.expected_target();
         assert!(
-            before.0 < target && before.1 < target && before.2 < target,
-            "all three entries must have decayed below the target for this to measure \
-             anything: {before:?} against {target}"
+            before.0 > 0 && before.0 <= w.expected_target() / 2,
+            "{label}: the marker must be live and at or below the extension threshold ({} of \
+             {}), or the host declines an extension for its own reasons and this proves nothing",
+            before.0,
+            w.expected_target()
         );
 
-        match getter {
-            "is_installed" => assert!(w.client.is_installed(&0u32, &w.account)),
-            _ => assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS),
-        }
-
+        assert!(w.client.is_installed(&0u32, &w.account));
         assert_eq!(
             (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
-            (target, target, target),
-            "`{getter}` must extend the marker, the counter and the instance — the same three a \
-             permitted call extends — not a subset of them"
+            before,
+            "{label}: `is_installed` must move no TTL"
         );
+
+        assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS - spent);
+        assert_eq!(
+            (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
+            before,
+            "{label}: `remaining_calls` must move no TTL"
+        );
+
+        // Non-vacuity, in the same world and at the same decay: the write path does move them —
+        // except on the exhausted installation, which is the one case where the policy has
+        // deliberately stopped paying rent and there is no permitted call left to make.
+        if spent < MAX_CALLS {
+            w.enforce_once();
+            let target = w.expected_target();
+            assert_eq!(
+                (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
+                (target, target, target),
+                "{label}: a permitted call must extend all three, or the reads above were \
+                 compared against a contract that cannot extend anything"
+            );
+        } else {
+            assert_eq!(
+                w.try_enforce_permitted()
+                    .expect_err("the cap is spent, so there is no permitted call left"),
+                soroban_sdk::Error::from_contract_error(CALL_COUNT_EXCEEDED),
+                "{label}: the non-vacuity check must fail for the cap and not for some other \
+                 reason"
+            );
+        }
     }
 }
 
@@ -645,71 +684,3 @@ fn remaining_calls_refuses_an_installation_whose_marker_is_gone() {
     }
 }
 
-/// A read extends what it read — and stops once the installation can never permit again.
-///
-/// The library's rule is "extend TTL on read, not on write", and this artifact had no read site to
-/// attach it to until the getters existed. The second half is ours: the crate header promises that
-/// a spent installation stops paying rent, and a getter that extended unconditionally would have
-/// made that false through a path nobody was looking at.
-#[test]
-fn a_read_extends_the_entries_it_touched_until_the_cap_is_spent() {
-    let w = setup(Some(NARROW_MAX_TTL));
-    // Let the entries decay, so an extension is observable rather than a no-op.
-    w.advance_to(50_000);
-    let before_installed = w.installed_ttl();
-    let before_counter = w.counter_ttl();
-    assert!(
-        before_installed < w.expected_target(),
-        "the marker must have decayed below the target for this to measure anything"
-    );
-
-    assert!(w.client.is_installed(&0u32, &w.account));
-    assert_eq!(
-        w.installed_ttl(),
-        w.expected_target(),
-        "a successful `is_installed` extends the marker it read"
-    );
-    assert_eq!(
-        w.counter_ttl(),
-        w.expected_target(),
-        "…and the counter it read to decide whether extending was still worth it"
-    );
-    assert!(
-        w.installed_ttl() > before_installed && w.counter_ttl() > before_counter,
-        "both entries must have moved, or the assertions above are comparing equals"
-    );
-
-    // Spend the cap, let the entries decay again, and read: no extension this time.
-    for _ in 0..MAX_CALLS {
-        w.enforce_once();
-    }
-    // Below *half* the target, not merely below it. The host extends only when the current TTL
-    // has fallen to the threshold the caller passes, and the artifact passes `ttl / 2`; at a
-    // shallower decay the host declines the extension on its own and the test would pass whether
-    // or not the policy asked for one. That is exactly what happened at 90_000 ledgers, where the
-    // marker still had 60_000 of a 100_000 target left: removing the spent-cap guard from the
-    // emitter changed nothing observable, and this test reported green on a policy that had just
-    // lost the property it exists to check.
-    w.advance_to(105_000);
-    let spent_installed = w.installed_ttl();
-    let spent_counter = w.counter_ttl();
-    assert!(
-        spent_installed <= w.expected_target() / 2,
-        "the marker must be at or below the extension threshold ({} of {}), or the host declines \
-         the extension for its own reasons and this proves nothing",
-        spent_installed,
-        w.expected_target()
-    );
-    assert!(w.client.is_installed(&0u32, &w.account));
-    assert_eq!(w.client.remaining_calls(&0u32, &w.account), 0);
-    assert_eq!(
-        w.installed_ttl(),
-        spent_installed,
-        "a spent installation must not buy rent on a read"
-    );
-    assert_eq!(
-        w.counter_ttl(),
-        spent_counter,
-        "…and neither must its counter"
-    );
-}

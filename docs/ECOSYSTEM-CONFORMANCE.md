@@ -263,9 +263,8 @@ following for predictable cost and behaviour, and it is not a requirement we are
 **What we have.** The generated policy keeps its per-installation state in `persistent()` —
 since the hardening pass that is an installation marker for **every** policy, scoped by
 (smart account, context-rule id), plus the call counter where the rule has one — and it
-**extends TTL deliberately and boundedly**. Four entry points extend: a successful `enforce`, a
-successful `install`, and a successful read through either getter — `is_installed` and, where the
-rule caps calls, `remaining_calls`. All four extend the same entries (the instance entry and the
+**extends TTL deliberately and boundedly**. Exactly two entry points extend: a successful
+`enforce` and a successful `install`. Both extend the same entries (the instance entry and the
 policy's own persistent entries) to the same target, `ttl_target(e)`: the network's rolling
 `e.storage().max_ttl()` (the SDK exposes the maximum on `Storage`, not on `Ledger`), clamped so
 the target never outlives `VALID_UNTIL_LEDGER` — past expiry every entry point denies, so
@@ -274,26 +273,32 @@ call extends nothing, `uninstall` extends nothing, and the extension is threshol
 rather than unconditional, so routine authorizations do not each buy rent. The policy does not
 separately extend the **wasm code** entry (see action 2 below).
 
-That the four agree is structural rather than asserted: the emitter has one extension block and
-every site uses it, and
-`every_extending_entry_point_extends_the_same_entries_through_the_same_bound` compares the four
-emitted bodies against each other rather than against a written-down list. It matters because
-the getters are **unauthenticated** — anyone may call `is_installed` — so a read that computed
-its own target would break the bound through the one path with no authorization on it. Both
-getters previously extended a *subset*: `remaining_calls` extended the counter alone, so an
-installation polled only through it kept its count alive while its marker decayed toward
-archival, and `enforce` then refuses that installation as `MissingState` with every permitted
-call still on the clock.
+That the two agree is structural rather than asserted: the emitter has one extension block and
+both write paths use it, and `only_the_write_paths_extend_and_the_getters_say_why_they_do_not`
+compares the two emitted bodies against each other rather than against a written-down list.
 
-**Where the bound does not exist, and it is the reads that expose it.** `ttl_target` is bounded
-twice only when the rule has a validity window. A rule with no `valid_until` has nothing to
-intersect `max_ttl()` with, so its target is simply the rolling maximum — and because a read is
-unauthenticated and cheap, a third party can hold that policy's entries out of archival
-indefinitely by paying for the extension each time. Three things bound the consequence rather
-than the behaviour: the extension is the only write a read can perform, so nothing is granted by
-it; the caller pays; and the call cap, where the rule has one, stops the extension for good once
-it is spent. The generated crate's header states this for the shape it applies to instead of
-implying a ceiling that shape does not have.
+**The getters extend nothing, and that is the library's rule for this kind of module rather than
+a departure from it.** `code-quality.md:344` says library-managed entries extend TTL on read, not
+on write; `:376-381` carries the exception, and the exception is this case: "Utility modules with
+caller-managed instance state do NOT extend TTL on read. The pausable module is the canonical
+example: its `paused()` reader explicitly does not call `extend_ttl` because the contract using
+pausable already manages its instance TTL." A generated policy's entries are created by the smart
+account's `install` and destroyed by its `uninstall`; the account's own calls are what keep them
+alive. A query is not the account exercising its grant — any caller may make one — so it must not
+buy rent for state it does not own. Both getters therefore carry the explanatory `// NOTE:` that
+pattern asks for, citing the clause so a reader can check it.
+
+**Which means the bound holds for every rule shape, including the one with no window.**
+`ttl_target` is bounded twice only when the rule has a validity window; with no `valid_until` its
+target is simply the rolling `max_ttl()`. That is not a hole, because the only callers who can
+make this policy extend anything are the account itself, through `install`, and a *permitted*
+authorization — and a rule with no window still caps calls or does not, and still refuses
+everything it is not scoped to. There is no unauthenticated path to a write of any kind. An
+earlier version of this section had one: the getters extended, so a third party could hold a
+window-less policy's entries out of archival indefinitely by paying for it. Removing the
+extension removed that, and removed the asymmetry behind it — the two getters had extended
+different entry sets, so an installation polled only through `remaining_calls` kept its count
+alive while its marker decayed.
 
 **Security verdict — conforms, along two different paths.** The architecture requires
 (`docs/architecture.md:598-600`): "a call cap never resets **within an installation** due to
@@ -362,11 +367,11 @@ read the entry while it was there, so this removed a declaration and no control.
 the policy extended nothing, leaving rent, restoration fees, and the moment of archival
 unpredictable for the user. Extension is now emitted, bounded twice (the rolling `max_ttl()`
 and the rule's own validity window), conditional on a threshold, and withheld on denial and on
-`uninstall`. Two things about it are ours rather than the library's, and §15 lists both as
-deliberate divergences: the extension is **withheld once a call cap is spent**, which no
-upstream policy does, and it happens on the **write** paths as well as the read ones, where
-every upstream extension is on a read. The first is the reason the dynamic target exists; the
-second is discussed under §15's divergence 8. It remains what the platform says it may be — a predictability measure, never a
+`uninstall`. One thing about it is ours rather than the library's, and §15 lists it as a
+deliberate divergence: the extension is **withheld once a call cap is spent**, which no upstream
+policy does, and which is the reason the dynamic target exists. That the extension happens on the
+write paths and not on reads is not a divergence — it is `code-quality.md:376-381`, the exception
+for caller-managed state, applied to a module whose state the smart account creates and destroys. It remains what the platform says it may be — a predictability measure, never a
 safety mechanism: the security verdict above rests on restore semantics and fail-closed reads,
 not on who paid for an extension.
 
@@ -379,7 +384,7 @@ not on who paid for an extension.
    archived naturally after it expires.
 2. Extend the TTL of the **contract instance and of the wasm code** — their own entries with
    their own deadlines. **Done for the instance entry**, extended alongside the persistent
-   entries in `install`, in a permitting `enforce`, and in each getter. The **wasm code** entry is deliberately left
+   entries in `install` and in a permitting `enforce`. The **wasm code** entry is deliberately left
    to the operator/installer: anyone may extend it, an archived entry is restored rather than
    lost, and the code entry is shared with every other deployment of the same wasm, so its rent
    is not obviously this policy's to pay. Two emitted comments claimed the code entry was kept
@@ -392,13 +397,13 @@ not on who paid for an extension.
    the long-lived scenario the tool exists for. (Still holds; `ttl_target` is exactly that
    successive-extension mechanism.)
 4. ~~Cover this with tests in the soroban test environment, advancing the ledger number.~~
-   **Done.** `contracts/differential/tests/ttl.rs` advances the test ledger across twelve tests:
+   **Done.** `contracts/differential/tests/ttl.rs` advances the test ledger across eleven tests:
    install and enforce extending the counter and instance entries, the no-op above the
    threshold, a denied call extending nothing, `uninstall` extending nothing, the target never
    outliving the validity window, the last permitted call not buying rent,
    install-after-expiry refusing without writing state, what the two getters report, that a read
-   extends until the cap is spent, that each getter extends the same three entries a permitted
-   call does, and that `remaining_calls` refuses an installation whose marker is gone.
+   buys no rent at any point in an installation's life, and that `remaining_calls` refuses an
+   installation whose marker is gone.
 
 ---
 
@@ -507,9 +512,9 @@ about.** Two different numbers, and this section used to give only the first.
 *Once, at deployment.* The golden policy's wasm went from 17,005 to 19,725 bytes — 2,720 bytes,
 16% — under the pinned rustc 1.91.1 and stellar-cli 27.0.0, measured when the events were added.
 That figure is not re-derivable from the tree today: no wasm is committed, and the artifact has
-changed twice since (the crate split, then the read-path TTL work), so treat it as the price of
-the event machinery at the commit that introduced it rather than as a current measurement. The
-golden policy's wasm is **19,895 bytes** as of this commit, and the Soroswap policy's is 20,072.
+changed since (the crate split, then the getter work), so treat it as the price of the event
+machinery at the commit that introduced it rather than as a current measurement. The golden
+policy's wasm is **19,524 bytes** as of this commit, and the Soroswap policy's is 19,701.
 
 *Every permitted call, forever.* This is what the objection was about, and a wasm is paid for
 once. The fee-relevant quantity is the serialized size of the event that lands in the
@@ -537,7 +542,8 @@ chosen along that axis. Every deny reason is covered against the reference evalu
 `differential.rs`; that file is about the decision, this one about the log.
 
 **Reading state without an event.** The artifact also exports `is_installed` and, where a cap
-exists, `remaining_calls` (§3 covers what their TTL extension does). Between the events and those
+exists, `remaining_calls` — pure reads that extend no TTL, for the reason §3 gives. Between the
+events and those
 two, an indexer can reconstruct an installation's history and a caller can ask about its present
 state, which is what the earlier "no on-chain trace" verdict was about.
 
@@ -766,13 +772,13 @@ two sibling policy examples at tag v0.7.2:
 | `rustfmt.toml`, theirs | Emitted into the generated crate, option for option from their v0.7.2 file, and emission derives its layout from those settings rather than piping output through rustfmt — which would put the rustfmt version among the inputs to every shipped wasm hash. `cargo +nightly fmt --all -- --check`, the command their `CONTRIBUTING.md` step 4 prescribes, is now the same gate ours runs. |
 | Imports: `imports_granularity = "Crate"`, `group_imports` | One grouped `use` per crate (`render::use_statement`), which is what their config produces and what both sibling examples show (`threshold-policy/src/contract.rs:8-12`, `spending-limit-policy/src/contract.rs:18-22`). |
 | Module file layout: root + `contract.rs` | `src/lib.rs` is `#![no_std]` and a `pub mod contract;`; the contract is `src/contract.rs`. |
-| Canonical section delimiters | `// ################## NAME ##################`, eighteen hashes each side. The **names** are theirs verbatim — ERRORS and EVENTS from `smart_account/mod.rs:532`, `:574`; CONSTANTS, QUERY STATE and CHANGE STATE from every policy module; HELPER FUNCTIONS from `policies/spending_limit.rs:445`. The **order** is ours, and divergence 9 says why: no upstream file declares all of these in one place, so there is no order of theirs to copy. `STORAGE KEYS` is a name of our own (divergence 9). |
+| Canonical section delimiters | `// ################## NAME ##################`, eighteen hashes each side. The **names** are theirs verbatim — ERRORS and EVENTS from `smart_account/mod.rs:532`, `:574`; CONSTANTS, QUERY STATE and CHANGE STATE from every policy module; HELPER FUNCTIONS from `policies/spending_limit.rs:445`. The **order** is ours, and divergence 8 says why: no upstream file declares all of these in one place, so there is no order of theirs to copy. `STORAGE KEYS` is a name of our own (divergence 8). |
 | Storage keys named `<Module>StorageKey` | `PolicyStorageKey`, replacing the tutorial's `DataKey`; compare `SimpleThresholdStorageKey` (`policies/simple_threshold.rs:121`). |
 | Doc comment on every public item | The error enum and all eleven variants, the storage-key enum, the contract struct, the associated type, and all five entry points. |
 | `# Errors` on every public function that can panic, in their section order | `# Arguments` → `# Errors` → `# Events` → `# Notes`, and the list is **built from the rule's shape** rather than copied: a policy with no validity window does not document `RuleExpired`, one with no cap does not document `CallCountExceeded`. `each_entry_point_documents_exactly_the_refusals_its_body_can_raise` compares each list against the emitted `panic_with_error!` calls in both directions. |
 | Events, `#[contractevent]`, `#[topic]` first, `# Events` documented | `GeneratedPolicyInstalled` / `Enforced` / `Uninstalled`, `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement event also carrying the `Context` and the remaining call count — their shape (§6), with `spending_limit`'s `total_spent_in_period` as the analogue for ours. |
 | Getters in an inherent `#[contractimpl]` block | `is_installed` and, where a cap exists, `remaining_calls`; compare `threshold-policy/src/contract.rs:62-78` and `spending-limit-policy/src/contract.rs:67-87`. |
-| Extend TTL on read | Both getters extend, and they extend the same entries and to the same target as the write paths rather than a subset — §3 covers the mechanism. Before the getters existed the artifact had no read site at all, which is why it diverged from this rule. Two things ours does that theirs does not are divergences rather than conformance: withholding the extension once a call cap is spent (divergence 2), and extending on the **write** paths too, where all four upstream extensions are on reads (divergence 8). |
+| TTL on read: the caller-managed-state exception, not the extend-on-read rule | `:344` states the rule for **library-managed** entries; `:376-381` states the exception, and this artifact is the exception. A generated policy's entries are created by the smart account's `install` and destroyed by its `uninstall`, exactly as pausable's instance state is managed by the contract using it — so, like `paused()`, neither getter calls `extend_ttl`, and both carry the explanatory `// NOTE:` the pattern asks for, citing the clause. §3 has the argument. The one thing here that *is* a divergence is withholding the write-path extension once a call cap is spent (divergence 2). |
 | `[package.metadata.stellar] cargo_inherit`, `doctest = false` | Both emitted into the manifest. |
 | Panic only through `panic_with_error!`; no `unwrap` in non-test code | Held from the start, and `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]` on the *generator* (`crates/codegen/src/lib.rs:13`) is what keeps it that way on our side of the line. |
 | Event assertions through the typed struct | `contracts/differential/tests/events.rs` compares each emitted entry with `Event::to_xdr`, the form their checklist prescribes; hand-decoding topics and data is a violation there, and would also let a wrong topic pass. |
@@ -809,10 +815,10 @@ pattern is a pair of constants per module (`policies/simple_threshold.rs:127-129
 the target from the network's rolling `max_ttl()` intersected with the rule's own validity window,
 and withholds the extension once a call cap is spent. That buys a property constants cannot
 express: an extension provably never reaches past the window, and never happens at all for an
-installation that can no longer permit anything. Twelve TTL tests pin it
-(`contracts/differential/tests/ttl.rs`), and §3 is the full argument — including the one shape
-where the property does not hold, a rule with no validity window, which has no ceiling for the
-intersection to find.
+installation that can no longer permit anything. Eleven TTL tests pin it
+(`contracts/differential/tests/ttl.rs`), and §3 is the full argument — including why a rule with
+no validity window, which has no ceiling for the intersection to find, still has no
+unauthenticated path to an extension.
 
 **3. Everything inlined in the trait impl, not delegated to a library module.** Each of their
 policies is one module in `src/policies/` exposing free functions — `simple_threshold.rs`,
@@ -846,24 +852,7 @@ unused item and `unbalanced_constants` exists to prove it.
 no workspace to inherit from — and the exact pins are what make its wasm hash reproducible by
 someone who was not the generator. §2 covers the provenance chain this belongs to.
 
-**8. Extending TTL on the write paths as well as the read ones.** Every TTL extension in the
-library is on a read, inside a `QUERY STATE` section: `simple_threshold.rs:151` in
-`get_threshold`, `weighted_threshold.rs:186` and `:219`, `spending_limit.rs:185` in
-`get_spending_limit_data` — all four through `.inspect(…)`, so only on a successful read. **No
-upstream policy extends in a `CHANGE STATE` function.** Ours extends in both getters *and* in
-`enforce` and `install`.
-
-This is the divergence that cuts against us rather than for us, so it is worth being exact about.
-The platform's *Persisting data* page asks an autonomous contract to extend "the TTL of any shared
-state touched by an invocation", which a permitting `enforce` plainly is; the library's narrower
-"extend on read" is a convention of theirs, not a platform rule, and their policies have a getter
-on every piece of state they own, so a read is always available to carry the extension. Ours would
-be reachable only by a caller who chose to ask — an installed policy that is enforced daily and
-never queried would extend nothing, and the predictable-rent property §3 claims would depend on
-someone polling it. Extending on both is what makes that property hold without a caller's
-cooperation.
-
-**9. `STORAGE KEYS` as a section name, and a section order of our own.** The delimiter *names* are
+**8. `STORAGE KEYS` as a section name, and a section order of our own.** The delimiter *names* are
 theirs; the sequence is not, and neither is that heading. No upstream file declares errors,
 storage keys, constants, events, both entry-point groups and private helpers together:
 `smart_account/mod.rs` runs CONSTANTS → ERRORS → EVENTS, `storage.rs` runs QUERY STATE → CHANGE
@@ -902,13 +891,19 @@ appears unreported. The fix is one word in two documents.
 no `.claude/skills/` directory in the tree at all). Their open PR #836 already changes that exact
 line, so it is recorded here only so a reader who follows the broken link knows it is known.
 
-**Verdict.** Conforms on every rule their checklist states for a contract of this kind, with nine
+**Verdict.** Conforms on every rule their checklist states for a contract of this kind, with eight
 divergences that are decisions rather than gaps — six forced by properties this project sells (a
 pure function of the spec, a reproducible hash, an immutable limit, a checked deny-reason
-contract), one by their own lint rule contradicting their own example, one by a generated file
-having no undelimited preamble to put a storage-key enum in, and one — extending on write as well
-as on read — chosen against their convention because the property it buys cannot otherwise hold
-without a caller volunteering to poll the contract. The one thing this
+contract), one by their own lint rule contradicting their own example, and one by a generated file
+having no undelimited preamble to put a storage-key enum in.
+
+One entry moved off this list while the section was being checked, and the direction is worth
+recording. Extending TTL on a read was written up first as conformance, then as a divergence when
+it turned out no upstream policy extends on a write, and is now conformance again — with the
+getters extending *nothing* — because the rule at `:344` has an exception at `:376-381` that names
+this exact shape. Reading half a clause produced a design that was coherent, bounded, tested, and
+wrong: it made an unauthenticated `is_installed` a way for a third party to pay an installation's
+rent, which the account can neither prevent nor want. The one thing this
 section cannot substitute for is a review by the maintainers whose conventions these are; §7's
 action 3 is the route to that for security, and a contribution upstream would be the route for
 style.
