@@ -16,13 +16,21 @@
 //! entry point.
 //!
 //! Storage lifetime is maintained **only while this policy is used**: a
-//! permitted call, or `install`, extends the entries it depends on toward the
+//! permitted call, `install`, and a successful read through `is_installed` or
+//! `remaining_calls` each extend the entries the policy depends on toward the
 //! rule's validity window where one is set and the network maximum otherwise —
-//! never past either. An installed but idle policy still drifts into archival,
-//! and so does one that only ever denies, since a denial reverts the extension
-//! along with everything else. First use after a long gap may therefore cost a
-//! restore. Once a call cap is spent the policy stops extending entirely: it
-//! can never permit again, so it stops paying rent.
+//! never past either. Every one of them goes through the same `ttl_target`
+//! computation, so no entry point can buy rent that another could not. A policy
+//! nothing calls at all still drifts into archival, and so does one that only
+//! ever denies, since a denial reverts the extension along with everything
+//! else. First use after a long gap may therefore cost a restore. Once a call
+//! cap is spent the policy stops extending entirely: it can never permit again,
+//! so it stops paying rent.
+//!
+//! The reads are unauthenticated, and bounded by the same thing the writes are:
+//! `ttl_target` clamps every extension to VALID_UNTIL_LEDGER, past which every
+//! entry point denies. A third party can pay to keep this policy out of
+//! archival, and only for as long as it can still permit something.
 #![no_std]
 
 pub mod contract;

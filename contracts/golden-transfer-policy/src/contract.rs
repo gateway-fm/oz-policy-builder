@@ -151,16 +151,21 @@ impl GeneratedPolicy {
     ///
     /// # Notes
     ///
-    /// * A successful read extends the lifetime of the entries it touched,
-    ///   which is the library's rule for entries it owns — so this is a
-    ///   state-changing call, cheap but not free, and any caller may make it.
-    ///   The only write it can perform is an extension, so paying for one on
-    ///   another account's behalf is the whole of what an unauthorized caller
-    ///   can do here.
+    /// * A successful read extends the lifetime of the entries this policy
+    ///   depends on — the same entries, through the same `ttl_target`
+    ///   computation, as a permitted call. Extending on read is the library's
+    ///   rule for entries a contract owns, so this is a state-changing call,
+    ///   cheap but not free, and any caller may make it. The only write it can
+    ///   perform is an extension, so paying for one on another account's behalf
+    ///   is the whole of what an unauthorized caller can do here.
     /// * The extension is withheld once the call cap is spent, and the counter
     ///   is read for no other reason: an installation that can never permit
     ///   again must stop paying rent, which is what the crate header promises
     ///   and what a read that extended unconditionally would quietly break.
+    /// * The target is `ttl_target(e)`, so an unauthenticated read can no more
+    ///   carry these entries past VALID_UNTIL_LEDGER than a permitted call can:
+    ///   past that ledger every entry point denies, and the extension stops
+    ///   there.
     pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {
         let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);
         if !e.storage().persistent().has(&installed_key) {
@@ -171,13 +176,20 @@ impl GeneratedPolicy {
             Some(used) => MAX_CALLS.saturating_sub(used),
             None => 0u32,
         };
+
+        // The `remaining` gate is not a permission check — nothing here decides
+        // anything. It is the rent rule: an installation that can never permit again
+        // stops paying. Otherwise this keeps the entries the policy depends on, and the
+        // contract instance, out of archival.
         if remaining > 0u32 {
             let ttl = ttl_target(e);
             if ttl > 0 {
+                e.storage().instance().extend_ttl(ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
+
         true
     }
 
@@ -194,27 +206,40 @@ impl GeneratedPolicy {
     ///
     /// # Errors
     ///
-    /// * [`PolicyError::MissingState`] - When this (smart account, context
-    ///   rule) carries no installation. A count is required setup data, so its
-    ///   absence is an error rather than a zero.
+    /// * [`PolicyError::MissingState`] - When no installation marker exists for
+    ///   this smart account and context rule, or when the marker exists and the
+    ///   call counter does not. A count is required setup data, so its absence
+    ///   is an error rather than a zero.
     ///
     /// # Notes
     ///
-    /// * Extends the counter's lifetime on a successful read, and withholds the
-    ///   extension once the count is spent — see `is_installed`.
+    /// * Extends the same entries `is_installed` does, through the same
+    ///   computation, and withholds the extension once the count is spent.
     pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {
+        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);
+        if !e.storage().persistent().has(&installed_key) {
+            panic_with_error!(e, PolicyError::MissingState);
+        }
         let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);
         let used: u32 = match e.storage().persistent().get(&key) {
             Some(used) => used,
             None => panic_with_error!(e, PolicyError::MissingState),
         };
         let remaining = MAX_CALLS.saturating_sub(used);
+
+        // The `remaining` gate is not a permission check — nothing here decides
+        // anything. It is the rent rule: an installation that can never permit again
+        // stops paying. Otherwise this keeps the entries the policy depends on, and the
+        // contract instance, out of archival.
         if remaining > 0u32 {
             let ttl = ttl_target(e);
             if ttl > 0 {
+                e.storage().instance().extend_ttl(ttl / 2, ttl);
+                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);
                 e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);
             }
         }
+
         remaining
     }
 }
@@ -349,9 +374,10 @@ impl Policy for GeneratedPolicy {
         e.storage().persistent().set(&key, &(count + 1u32));
         let remaining = MAX_CALLS - (count + 1u32);
 
-        // Not a permission check — every decision above is already made. This keeps the
-        // entries the policy depends on out of archival while it can still permit
-        // something.
+        // The `remaining` gate is not a permission check — nothing here decides
+        // anything. It is the rent rule: an installation that can never permit again
+        // stops paying. Otherwise this keeps the entries the policy depends on, and the
+        // contract instance, out of archival.
         if remaining > 0u32 {
             let ttl = ttl_target(e);
             if ttl > 0 {
@@ -412,9 +438,10 @@ impl Policy for GeneratedPolicy {
         e.storage().persistent().set(&key, &0u32);
         let remaining = MAX_CALLS;
 
-        // Not a permission check — every decision above is already made. This keeps the
-        // entries the policy depends on out of archival while it can still permit
-        // something.
+        // The `remaining` gate is not a permission check — nothing here decides
+        // anything. It is the rent rule: an installation that can never permit again
+        // stops paying. Otherwise this keeps the entries the policy depends on, and the
+        // contract instance, out of archival.
         if remaining > 0u32 {
             let ttl = ttl_target(e);
             if ttl > 0 {

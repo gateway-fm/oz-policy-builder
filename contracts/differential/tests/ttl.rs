@@ -573,6 +573,78 @@ fn the_getters_report_the_installation_and_the_calls_left() {
     }
 }
 
+/// A read extends exactly what a permitted call extends — marker, counter and instance.
+///
+/// The entry-set identity is asserted in the emitter too, between the four function bodies, but
+/// that reads the text it just produced. This reads the ledger: it calls one getter, on the real
+/// compiled contract, and looks at all three TTLs.
+///
+/// `remaining_calls` is the one that matters here. It used to extend the counter alone, so an
+/// installation polled only through it kept its count alive while its marker decayed — and a
+/// marker that archives out from under a live counter is an installation `enforce` then refuses as
+/// `MissingState`, with every permitted call still on the clock. Nothing in the tree looked at
+/// that combination.
+#[test]
+fn each_getter_extends_the_same_entries_a_permitted_call_does() {
+    for getter in ["is_installed", "remaining_calls"] {
+        let w = setup(Some(NARROW_MAX_TTL));
+        // Let all three decay, so an extension is observable rather than a no-op.
+        w.advance_to(50_000);
+        let before = (w.installed_ttl(), w.counter_ttl(), w.instance_ttl());
+        let target = w.expected_target();
+        assert!(
+            before.0 < target && before.1 < target && before.2 < target,
+            "all three entries must have decayed below the target for this to measure \
+             anything: {before:?} against {target}"
+        );
+
+        match getter {
+            "is_installed" => assert!(w.client.is_installed(&0u32, &w.account)),
+            _ => assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS),
+        }
+
+        assert_eq!(
+            (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
+            (target, target, target),
+            "`{getter}` must extend the marker, the counter and the instance — the same three a \
+             permitted call extends — not a subset of them"
+        );
+    }
+}
+
+/// `remaining_calls` refuses an installation whose marker is gone, and says so by its code.
+///
+/// The function documents `MissingState` for an absent installation; before this it documented
+/// that and then read the counter without ever looking at the marker, so the refusal it promised
+/// could not happen. The state below cannot arise through the contract's own entry points —
+/// `install` writes both entries and `uninstall` removes both — which is the reason to write the
+/// marker away by hand rather than the reason not to check for it: the check is what makes the
+/// documented refusal real, and what lets the function extend the marker's lifetime without
+/// having assumed it exists.
+#[test]
+fn remaining_calls_refuses_an_installation_whose_marker_is_gone() {
+    let w = setup(None);
+    assert_eq!(
+        w.client.remaining_calls(&0u32, &w.account),
+        MAX_CALLS,
+        "the installation must answer before its marker is removed, or this proves nothing"
+    );
+
+    let installed_key = w.installed_key();
+    w.env.as_contract(&w.policy, || {
+        w.env.storage().persistent().remove(&installed_key);
+    });
+
+    match w.client.try_remaining_calls(&0u32, &w.account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "a counter without its marker must refuse as MissingState"
+        ),
+        other => panic!("reading a counter whose marker is gone must be refused: {other:?}"),
+    }
+}
+
 /// A read extends what it read — and stops once the installation can never permit again.
 ///
 /// The library's rule is "extend TTL on read, not on write", and this artifact had no read site to

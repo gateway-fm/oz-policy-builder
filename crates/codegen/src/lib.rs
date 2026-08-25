@@ -368,10 +368,13 @@ unstable_features = true
     .to_string()
 }
 
-/// The TTL-extension statements shared by `enforce` and `install`.
+/// The TTL-extension statements shared by every entry point that extends.
 ///
-/// Both entry points need identical wording, and a threshold that drifted between them would be
-/// a cost bug rather than a compile error, so the text is written once.
+/// All four use it — `enforce`, `install`, `is_installed` and `remaining_calls` — so "a read
+/// inherits the same bound as a write" is true by construction rather than by four copies
+/// agreeing. A threshold or an entry set that drifted between them would be a cost bug rather
+/// than a compile error, so the text is written once. Every site sits at the same indent, one
+/// `impl` block deep, which is what lets the block be shared verbatim.
 ///
 /// The host extends when `current_ttl <= threshold` (`soroban-env-host`, `Storage::extend_ttl`).
 /// The SDK's own doc comment says "below", which is off by one; the wording here follows the host.
@@ -381,8 +384,10 @@ unstable_features = true
 /// When the rule caps its call count, `remaining` gates the whole block: an installation that has
 /// just spent its last permitted call can never permit again, and buying the largest possible
 /// extension at exactly that moment is the opposite of what the artifact claims to do. The shared
-/// instance and code entries stay alive through whichever *other* installation is still active,
-/// and when none is, the contract is useless to everyone and is meant to expire.
+/// instance entry stays alive through whichever *other* installation is still active, and when
+/// none is, the contract is useless to everyone and is meant to expire. The **code** entry is not
+/// extended here at all — it is shared with every other deployment of the same wasm, so its rent
+/// is not this policy's to pay (§3 of the conformance record states that as a decision).
 ///
 /// The chained `extend_ttl` calls are one line each: `chain_width` is `max_width` under
 /// `use_small_heuristics = "Max"`, so the three-segment chain no longer breaks across lines the
@@ -393,9 +398,10 @@ fn ttl_extension_block(has_state: bool) -> String {
             "\n{}        if remaining > 0u32 {{\n            let ttl = ttl_target(e);\n            if ttl > 0 {{\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }}\n        }}\n",
             render::wrap_comment(
                 "        // ",
-                "Not a permission check — every decision above is already made. This keeps the \
-                 entries the policy depends on out of archival while it can still permit \
-                 something."
+                "The `remaining` gate is not a permission check — nothing here decides \
+                 anything. It is the rent rule: an installation that can never permit again \
+                 stops paying. Otherwise this keeps the entries the policy depends on, and the \
+                 contract instance, out of archival."
             )
         )
     } else {
@@ -403,8 +409,11 @@ fn ttl_extension_block(has_state: bool) -> String {
             "\n{}        let ttl = ttl_target(e);\n        if ttl > 0 {{\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n            e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n        }}\n",
             render::wrap_comment(
                 "        // ",
-                "Not a permission check — every decision above is already made. This keeps this \
-                 installation, contract instance and code out of archival while it can permit."
+                "Not a permission check — nothing here decides anything. This keeps this \
+                 installation and the contract instance out of archival. The wasm code entry is \
+                 deliberately not extended: it is shared with every other deployment of the same \
+                 code. With no call cap there is no condition under which the extension is \
+                 withheld."
             )
         )
     }
@@ -526,6 +535,47 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // through the same greedy fill rustfmt uses makes every paragraph here stable for any input,
     // and leaves prose edits in this function free of layout arithmetic.
     //
+    // The two rent paragraphs are built from the rule's shape rather than written once for every
+    // shape, because both of their load-bearing claims are shape-dependent: which entry points
+    // extend (`remaining_calls` exists only where a cap does) and whether anything bounds an
+    // unauthenticated read (only a validity window does). A single fixed wording would be false
+    // for one shape or the other, in the one artifact whose prose has to be readable as an
+    // assertion about its own behaviour.
+    let readers = if has_state {
+        "a successful read through `is_installed` or `remaining_calls`"
+    } else {
+        "a successful read through `is_installed`"
+    };
+    let cap_clause = if has_state {
+        " Once a call cap is spent the policy stops extending entirely: it can never permit \
+         again, so it stops paying rent."
+    } else {
+        ""
+    };
+    let storage_lifetime = format!(
+        "Storage lifetime is maintained **only while this policy is used**: a permitted call, \
+         `install`, and {readers} each extend the entries the policy depends on toward the \
+         rule's validity window where one is set and the network maximum otherwise — never past \
+         either. Every one of them goes through the same `ttl_target` computation, so no entry \
+         point can buy rent that another could not. A policy nothing calls at all still drifts \
+         into archival, and so does one that only ever denies, since a denial reverts the \
+         extension along with everything else. First use after a long gap may therefore cost a \
+         restore.{cap_clause}"
+    );
+    let rent_bound = if rule.valid_until_ledger.is_some() {
+        "The reads are unauthenticated, and bounded by the same thing the writes are: \
+         `ttl_target` clamps every extension to VALID_UNTIL_LEDGER, past which every entry point \
+         denies. A third party can pay to keep this policy out of archival, and only for as long \
+         as it can still permit something."
+            .to_string()
+    } else {
+        "The reads are unauthenticated, and this rule sets no validity window, so the network's \
+         rolling `max_ttl()` is the only bound on them: a third party can hold these entries out \
+         of archival for as long as they keep paying for the extension. They gain nothing else by \
+         it — a read decides no authorization — but this is the one case where what this \
+         contract's entries cost to keep alive is not bounded by the rule itself."
+            .to_string()
+    };
     // Paragraph by paragraph, so the blank `//!` separators stay where they are; rustfmt joins
     // lines only inside a paragraph it has to re-flow, and it never has to re-flow these.
     for paragraph in [
@@ -545,14 +595,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
          setters, no upgrade entry point."
             .to_string(),
         String::new(),
-        "Storage lifetime is maintained **only while this policy is used**: a permitted call, or \
-         `install`, extends the entries it depends on toward the rule's validity window where \
-         one is set and the network maximum otherwise — never past either. An installed but idle \
-         policy still drifts into archival, and so does one that only ever denies, since a \
-         denial reverts the extension along with everything else. First use after a long gap may \
-         therefore cost a restore. Once a call cap is spent the policy stops extending entirely: \
-         it can never permit again, so it stops paying rent."
-            .to_string(),
+        storage_lifetime,
+        String::new(),
+        rent_bound,
     ] {
         if paragraph.is_empty() {
             out.push_str("//!\n");
@@ -867,11 +912,12 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     out.push_str("#[contractimpl]\nimpl GeneratedPolicy {\n");
 
     let mut is_installed_notes = vec![
-        "A successful read extends the lifetime of the entries it touched, which is the \
-         library's rule for entries it owns — so this is a state-changing call, cheap but not \
-         free, and any caller may make it. The only write it can perform is an extension, so \
-         paying for one on another account's behalf is the whole of what an unauthorized \
-         caller can do here."
+        "A successful read extends the lifetime of the entries this policy depends on — the same \
+         entries, through the same `ttl_target` computation, as a permitted call. Extending on \
+         read is the library's rule for entries a contract owns, so this is a state-changing \
+         call, cheap but not free, and any caller may make it. The only write it can perform is \
+         an extension, so paying for one on another account's behalf is the whole of what an \
+         unauthorized caller can do here."
             .to_string(),
     ];
     if has_state {
@@ -883,6 +929,22 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                 .to_string(),
         );
     }
+    // The bound a read inherits, stated where a reader of the read will look for it. With a
+    // window there is a real ceiling and it is the same one the write paths have; without one
+    // there is nothing to inherit, and saying so is the honest half of this design.
+    is_installed_notes.push(if rule.valid_until_ledger.is_some() {
+        "The target is `ttl_target(e)`, so an unauthenticated read can no more carry these \
+         entries past VALID_UNTIL_LEDGER than a permitted call can: past that ledger every entry \
+         point denies, and the extension stops there."
+            .to_string()
+    } else {
+        "This rule carries no validity window, so `ttl_target(e)` is the network's rolling \
+         `max_ttl()` and there is no further ceiling for a read to inherit. Any caller may \
+         therefore hold these entries out of archival for as long as they keep paying for the \
+         extension. That buys them nothing else — a read grants no authorization — but it is the \
+         one case where this contract's rent is not bounded by the rule itself."
+            .to_string()
+    });
     out.push_str(&emit_doc(
         "    ",
         &[
@@ -906,12 +968,16 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     ));
     if has_state {
         out.push_str(
-            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let remaining = match e.storage().persistent().get::<_, u32>(&key) {\n            Some(used) => MAX_CALLS.saturating_sub(used),\n            None => 0u32,\n        };\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n        true\n    }\n",
+            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let remaining = match e.storage().persistent().get::<_, u32>(&key) {\n            Some(used) => MAX_CALLS.saturating_sub(used),\n            None => 0u32,\n        };\n",
         );
+        out.push_str(&ttl_extension_block(true));
+        out.push_str("\n        true\n    }\n");
     } else {
         out.push_str(
-            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n        let ttl = ttl_target(e);\n        if ttl > 0 {\n            e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n        }\n        true\n    }\n",
+            "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            return false;\n        }\n",
         );
+        out.push_str(&ttl_extension_block(false));
+        out.push_str("\n        true\n    }\n");
     }
     // `remaining_calls` exists only where a cap does. A rule with no cap has no counter to
     // report, and the alternatives are both worse than an absent function: a sentinel like
@@ -940,8 +1006,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                 (
                     "# Errors",
                     vec![
-                        "[`PolicyError::MissingState`] - When this (smart account, context rule) \
-                         carries no installation. A count is required setup data, so its absence \
+                        "[`PolicyError::MissingState`] - When no installation marker exists for \
+                         this smart account and context rule, or when the marker exists and the \
+                         call counter does not. A count is required setup data, so its absence \
                          is an error rather than a zero."
                             .to_string(),
                     ],
@@ -949,16 +1016,18 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                 (
                     "# Notes",
                     vec![
-                        "Extends the counter's lifetime on a successful read, and withholds the \
-                         extension once the count is spent — see `is_installed`."
+                        "Extends the same entries `is_installed` does, through the same \
+                         computation, and withholds the extension once the count is spent."
                             .to_string(),
                     ],
                 ),
             ],
         ));
         out.push_str(
-            "    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let used: u32 = match e.storage().persistent().get(&key) {\n            Some(used) => used,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        let remaining = MAX_CALLS.saturating_sub(used);\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n        remaining\n    }\n",
+            "    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let used: u32 = match e.storage().persistent().get(&key) {\n            Some(used) => used,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        let remaining = MAX_CALLS.saturating_sub(used);\n",
         );
+        out.push_str(&ttl_extension_block(true));
+        out.push_str("\n        remaining\n    }\n");
     }
     out.push_str("}\n\n");
 
@@ -2861,6 +2930,103 @@ mod tests {
     /// concatenated. That is also why the private helpers now sit after the entry points rather
     /// than before them: a reader opening a policy meets what it exposes before the arithmetic it
     /// is built from.
+    /// Every entry point that extends TTL extends the same entries, to the same bound.
+    ///
+    /// This is the property the dynamic `ttl_target` exists to provide, and the one an
+    /// extend-on-read convention can quietly take away. The argument the artifact makes to a
+    /// reviewer is that it provably never buys rent past the rule's validity window or after the
+    /// call cap is spent — and `is_installed` is callable by anyone, so a read that computed its
+    /// own target, or extended a different set of entries, would break that claim through the one
+    /// path with no authorization on it.
+    ///
+    /// Asserted as an identity between the four bodies rather than against a written-down list,
+    /// because a list is a second copy of the intent and would be updated in the same edit that
+    /// broke the code. The emitter has one extension block and every site uses it; this is what
+    /// says so.
+    ///
+    /// The asymmetry this replaces was real and was shipped: `is_installed` extended the marker
+    /// and the counter, `remaining_calls` extended the counter alone, and neither extended the
+    /// instance entry that `enforce` and `install` did. An installation read only through
+    /// `remaining_calls` therefore kept its counter alive while its marker decayed — and a marker
+    /// that archives while its counter does not is an installation `enforce` refuses as
+    /// `MissingState` with the count intact.
+    #[test]
+    fn every_extending_entry_point_extends_the_same_entries_through_the_same_bound() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = emitted_for(&spec);
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            let mut extenders = vec!["enforce", "install", "is_installed"];
+            if max_calls.is_some() {
+                extenders.push("remaining_calls");
+            }
+
+            let expected = extended_entries(&body_of(&source, "enforce"));
+            assert!(
+                expected.contains(&"instance".to_string())
+                    && expected.contains(&"installed_key".to_string()),
+                "{shape}: `enforce` must extend the instance and the marker, or this test has \
+                 nothing to compare against: {expected:?}"
+            );
+            for entry in extenders {
+                let body = body_of(&source, entry);
+                assert_eq!(
+                    extended_entries(&body),
+                    expected,
+                    "{shape}: `{entry}` extends a different entry set from `enforce`; a read that \
+                     extends less than a write leaves one of this policy's entries to archive \
+                     while the others are kept alive"
+                );
+                assert!(
+                    body.contains("let ttl = ttl_target(e);"),
+                    "{shape}: `{entry}` must take its target from `ttl_target`, which is the only \
+                     thing that bounds an extension by the rule's own window:\n{body}"
+                );
+            }
+
+            // The one entry point that must not extend, kept in the same test so the identity
+            // above cannot be satisfied by extending everywhere.
+            assert!(
+                !body_of(&source, "uninstall").contains("extend_ttl"),
+                "{shape}: `uninstall` must buy no rent for entries it is removing"
+            );
+        }
+    }
+
+    /// The entries one function body extends, named by what they are rather than by the call text.
+    fn extended_entries(body: &str) -> Vec<String> {
+        body.lines()
+            .filter(|line| line.contains(".extend_ttl("))
+            .map(|line| {
+                let line = line.trim();
+                if line.contains("instance()") {
+                    "instance".to_string()
+                } else if let Some(rest) = line.split(".extend_ttl(&").nth(1) {
+                    rest.split(',')
+                        .next()
+                        .expect("an extend_ttl argument")
+                        .to_string()
+                } else {
+                    panic!("an extension of nothing recognizable: {line}")
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn the_emitted_file_carries_the_canonical_section_delimiters_in_order() {
         let rule = "#".repeat(18);
