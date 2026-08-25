@@ -479,8 +479,11 @@ fn emit_ttl_target(has_valid_until: bool) -> String {
                 "Bounded twice. By the network's rolling `max_ttl()`, because a single extension \
                  can never reach further — a distant window is approached across successive calls \
                  rather than in one step. And by the rule's own window, because past \
-                 VALID_UNTIL_LEDGER every entry point denies, so extending beyond it would pay \
-                 rent for an artifact that can no longer permit anything."
+                 VALID_UNTIL_LEDGER the two entry points that extend — `enforce` and `install` — \
+                 both deny, so the policy can never permit anything again and extending beyond it \
+                 would buy rent for an artifact with no remaining use. `uninstall` and the \
+                 getters do keep working past expiry, deliberately: an account must always be \
+                 able to detach, and asking about a dead installation is a fair question."
             ),
             render::wrap_comment(
                 "/// ",
@@ -2978,6 +2981,46 @@ mod tests {
     /// CONSTANTS → EVENTS), then the entry points (QUERY STATE → CHANGE STATE), then the private
     /// helpers. The errors-then-storage-keys pair is the one ordering taken directly from
     /// upstream, where the two enums appear in that order in all three policy modules.
+    /// Exactly two entry points check the validity window: the two that extend.
+    ///
+    /// `ttl_target`'s doc comment justifies its upper bound with what happens past
+    /// VALID_UNTIL_LEDGER, so which functions refuse there is load-bearing prose and not a
+    /// remark. It said "every entry point denies" and three of the five do not — `uninstall`
+    /// deliberately works past expiry, because an account must always be able to detach, and the
+    /// getters answer questions about a dead installation because that is still a fair question.
+    ///
+    /// Asserted both ways round. An expiry check appearing in a getter would be a behaviour
+    /// change nobody asked for; one disappearing from `enforce` would let an expired rule permit.
+    #[test]
+    fn the_validity_window_is_checked_by_the_two_entry_points_that_extend() {
+        let spec = compilability::spec_with(
+            golden_spec().spec().rules[0].allowed_calls.clone(),
+            (PredicateKind::AnyOf, true),
+            Some(4_223_456),
+            Some(12),
+            false,
+        )
+        .expect("the golden rule with a window validates");
+        let source = emitted_for(&spec);
+
+        for (entry, checks) in [
+            ("enforce", true),
+            ("install", true),
+            ("uninstall", false),
+            ("is_installed", false),
+            ("remaining_calls", false),
+        ] {
+            assert_eq!(
+                body_of(&source, entry).contains("> VALID_UNTIL_LEDGER"),
+                checks,
+                "`{entry}` must {} the validity window; `ttl_target`'s doc comment describes \
+                 which entry points refuse past it, and that description is only true if this \
+                 split is",
+                if checks { "check" } else { "not check" }
+            );
+        }
+    }
+
     /// The two write paths extend the same entries to the same bound, and nothing else extends.
     ///
     /// Both halves matter and the second is the one a later edit will break. A reader that touches

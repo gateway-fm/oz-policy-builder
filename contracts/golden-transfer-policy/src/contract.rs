@@ -542,8 +542,12 @@ fn check_call_0(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {
 /// Bounded twice. By the network's rolling `max_ttl()`, because a single
 /// extension can never reach further — a distant window is approached across
 /// successive calls rather than in one step. And by the rule's own window,
-/// because past VALID_UNTIL_LEDGER every entry point denies, so extending
-/// beyond it would pay rent for an artifact that can no longer permit anything.
+/// because past VALID_UNTIL_LEDGER the two entry points that extend — `enforce`
+/// and `install` — both deny, so the policy can never permit anything again and
+/// extending beyond it would buy rent for an artifact with no remaining use.
+/// `uninstall` and the getters do keep working past expiry, deliberately: an
+/// account must always be able to detach, and asking about a dead installation
+/// is a fair question.
 ///
 /// `saturating_sub` is defense in depth after the explicit expiry checks: later
 /// changes cannot turn an already-expired rule into the largest possible

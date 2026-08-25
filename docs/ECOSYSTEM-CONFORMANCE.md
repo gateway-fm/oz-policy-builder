@@ -267,8 +267,13 @@ since the hardening pass that is an installation marker for **every** policy, sc
 `enforce` and a successful `install`. Both extend the same entries (the instance entry and the
 policy's own persistent entries) to the same target, `ttl_target(e)`: the network's rolling
 `e.storage().max_ttl()` (the SDK exposes the maximum on `Storage`, not on `Ledger`), clamped so
-the target never outlives `VALID_UNTIL_LEDGER` — past expiry every entry point denies, so
-extending further would pay rent for an artifact that can no longer permit anything. A denied
+the target never outlives `VALID_UNTIL_LEDGER` — past expiry both of the entry points that
+extend deny, so the policy can never permit anything again and extending further would buy rent
+for an artifact with no remaining use. (`uninstall` and the two getters keep working past expiry
+on purpose: an account must always be able to detach, and a query about a dead installation is
+still a fair question. Two of the five entry points check the window, and
+`the_validity_window_is_checked_by_the_two_entry_points_that_extend` is what holds that sentence
+to the code.) A denied
 call extends nothing, `uninstall` extends nothing, and the extension is threshold-conditional
 rather than unconditional, so routine authorizations do not each buy rent. The policy does not
 separately extend the **wasm code** entry (see action 2 below).
