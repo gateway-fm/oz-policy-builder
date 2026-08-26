@@ -1777,11 +1777,16 @@ mod tests {
                     .enumerate()
                     .map(|(index, constraint)| ArgConstraint {
                         index: index as u32,
-                        // Widening constraints may not claim ObservedExact provenance.
+                        // Widening constraints may not claim ObservedExact provenance. And
+                        // `AnyValue` — which two of these cases use — is the maximal widening,
+                        // so validation demands it be acknowledged as high blast radius; a
+                        // lower label is a contradiction the artifact must not carry. `High`
+                        // is honest for every widening here, and a bounded widening accepts
+                        // any declared radius, so one label serves all four cases.
                         provenance: if constraint.is_widening() {
                             ozpb_domain::Provenance::UserWidened {
                                 intent: "boundary compile test".to_string(),
-                                blast_radius: ozpb_domain::BlastRadius::Medium,
+                                blast_radius: ozpb_domain::BlastRadius::High,
                             }
                         } else {
                             ozpb_domain::Provenance::ObservedExact
