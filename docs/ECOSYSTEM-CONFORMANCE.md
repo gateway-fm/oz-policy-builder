@@ -12,12 +12,15 @@ pass. Verified against `stellar-cli` 27.0.0, `stellar-xdr` 26.0.1/27.0.0, `sorob
 subsystems that pass hardened; the disallowed-type gate that was pending at first compilation
 has since landed (§4).
 
-**Verdict legend:** ✅ conforms · 🗓 contracted for a later milestone · ⚠️ diverges · ❌ gap · ℹ️ open decision
+**Verdict legend:** ✅ conforms · 🗓 later-milestone scope · ⚠️ diverges · ❌ gap · ℹ️ open decision ·
+— reference, not an assessment
 
 The distinction between the first two and the rest is the one worth reading carefully. 🗓 is
-not a softer ⚠️: it marks work this project has scoped, sequenced and committed to deliver in a
+not a softer ⚠️: it marks work this project has scoped and sequenced for a
 later milestone, so the section states a boundary of *this* milestone rather than a departure
-from anything the ecosystem asks. Nothing in this document currently sits at ⚠️ or ❌; both stay
+from anything the ecosystem asks. It is a statement about our own sequencing and not a delivery
+commitment — where something *is* a named tranche deliverable the section says so in its own
+words. Nothing in this document currently sits at ⚠️ or ❌; both stay
 in the legend because the categories exist and a later reading may need them.
 
 ## Summary
@@ -25,7 +28,7 @@ in the legend because the categories exist and a later reading may need them.
 | § | Subject | Verdict | In one line |
 |---|---|---|---|
 | 1 | Serialization and hashing | ✅ | Canonical form is XDR throughout, with a versioned preimage an outside implementation can reproduce from `docs/CANONICAL-HASHING.md`. |
-| 2 | Artifact identity and verification | ℹ️ / 🗓 | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
+| 2 | Artifact identity and verification | ℹ️ | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
 | 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
 | 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
 | 5 | Authorization model | ✅ / 🗓 | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
@@ -678,7 +681,9 @@ sanitized allowlisted child environment that excludes service and cloud credenti
 variables, plus a combined CPU budget so HTTP request concurrency multiplied by Cargo jobs
 cannot exceed the detected budget.
 
-**Verdict.** Diverges from what hosting would need, and says so. These controls provide no
+**Verdict.** A boundary of this milestone, stated rather than glossed: these controls are a
+local safeguard, not the isolation a hosted multi-tenant build service would need. They provide
+no
 cgroup memory/CPU/disk/PID quotas, namespaces, seccomp, per-job filesystem isolation, egress
 isolation, or cancellation on client disconnect. Tranche 1 therefore does not describe loopback
 HTTP or the local compiler as a safe multi-tenant hosted service; before hosting, this needs a
