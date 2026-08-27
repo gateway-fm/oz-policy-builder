@@ -12,25 +12,31 @@ pass. Verified against `stellar-cli` 27.0.0, `stellar-xdr` 26.0.1/27.0.0, `sorob
 subsystems that pass hardened; the disallowed-type gate that was pending at first compilation
 has since landed (§4).
 
-**Verdict legend:** ✅ conforms · ⚠️ diverges · ❌ gap · ℹ️ open decision
+**Verdict legend:** ✅ conforms · 🗓 contracted for a later milestone · ⚠️ diverges · ❌ gap · ℹ️ open decision
+
+The distinction between the first two and the rest is the one worth reading carefully. 🗓 is
+not a softer ⚠️: it marks work this project has scoped, sequenced and committed to deliver in a
+later milestone, so the section states a boundary of *this* milestone rather than a departure
+from anything the ecosystem asks. Nothing in this document currently sits at ⚠️ or ❌; both stay
+in the legend because the categories exist and a later reading may need them.
 
 ## Summary
 
 | § | Subject | Verdict | In one line |
 |---|---|---|---|
 | 1 | Serialization and hashing | ✅ | Canonical form is XDR throughout, with a versioned preimage an outside implementation can reproduce from `docs/CANONICAL-HASHING.md`. |
-| 2 | Artifact identity and verification | ⚠️ / ℹ️ | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
+| 2 | Artifact identity and verification | ℹ️ / 🗓 | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
 | 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
 | 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
-| 5 | Authorization model | ✅ / ⚠️ | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
+| 5 | Authorization model | ✅ / 🗓 | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
 | 6 | Errors and observability | ✅ / ℹ️ | Stable machine-readable error codes throughout; whether to emit an event on a successful `enforce` is undecided. |
 | 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. We check the generator thoroughly; running them over what it generates is a decision, not a shortfall. |
 | 8 | Upgradeability and immutability | ✅ | No setters, no upgrade entry point. For an artifact whose value is "the reader sees exactly what executes", immutability is the requirement. |
-| 9 | Evidence provenance and RPC binding | ✅ / ⚠️ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
-| 10 | Capability registry governance | ✅ / ⚠️ | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
-| 11 | Evaluator and differential evidence | ✅ / ⚠️ | An independent evaluator agrees with the real compiled contract on verdict and denial reason. It does not exercise a full smart account's `__check_auth` — later-milestone evidence. |
+| 9 | Evidence provenance and RPC binding | ✅ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
+| 10 | Capability registry governance | ✅ / 🗓 | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
+| 11 | Evaluator and differential evidence | ✅ / 🗓 | An independent evaluator agrees with the real compiled contract on verdict and denial reason. It does not exercise a full smart account's `__check_auth` — later-milestone evidence. |
 | 12 | MCP surface and machine-readable failures | ✅ | Closed request schemas, generated JSON schemas, stable `E_*` codes, structured tool errors. |
-| 13 | Build containment | ⚠️ | The local builder bounds environment, inputs, outputs, concurrency and time. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
+| 13 | Build containment | 🗓 | The local builder bounds environment, inputs, outputs, concurrency and time. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
 | 14 | Defaults and limits | — | Every default and bound, with the reasoning for each value. |
 
 Read the section for the reasoning; nothing above is a claim the section does not support.
@@ -115,7 +121,7 @@ a Soroban contract cannot parse JSON at all, which closes the road to on-chain v
 
 ---
 
-## 2. Artifact identity and its verification ⚠️ / ℹ️ (verification SEPs are Draft)
+## 2. Artifact identity and its verification ℹ️ / 🗓 (verification SEPs are Draft)
 
 **What the platform has and ships.** The wasm section `contractmetav0` with serialized
 `SCMetaEntry` — the standardized way for an artifact to describe itself, specified by
@@ -440,7 +446,7 @@ the `$` carried no meaning worth an encoding exception.
 
 ---
 
-## 5. Authorization model ✅ / ⚠️ (external verifiers deferred)
+## 5. Authorization model ✅ / 🗓 (external verifiers deferred)
 
 **Platform principle.** A smart account is a contract implementing the custom account interface;
 `__check_auth` validates the proofs presented. OpenZeppelin's `stellar-accounts` formalizes this
@@ -457,7 +463,7 @@ tuple, then stateful invariants. Named signer predicates are strict by default, 
 signer to a live account rule cannot silently widen the generated grant, and zero
 authenticated signers always deny.
 
-**External verifier signers are deliberately unsupported in this milestone (⚠️).** An off-chain
+**External verifier signers are deliberately unsupported in this milestone (🗓).** An off-chain
 spec can name a verifier address and a verifier wasm hash, but the runtime OpenZeppelin signer
 value carries only the verifier address and key — nothing at authorization time binds that
 address to the recognized code. Registry recognition of a caller-supplied hash does not prove
@@ -567,7 +573,7 @@ overstates a guarantee costs more in that header than the same name would anywhe
 
 ---
 
-## 9. Evidence provenance and RPC binding ✅ / ⚠️
+## 9. Evidence provenance and RPC binding ✅ (RPC evidence, not ledger inclusion)
 
 **Platform principle.** Soroban RPC is a query interface, not a trust anchor: `getTransaction`
 returns what the configured endpoint says, `getLedgerEntries` reads current state, and nothing
@@ -586,7 +592,7 @@ under depth and size limits.
 `rpc_reported` means exactly "returned by the configured RPC endpoint" — it is not an inclusion
 proof. More importantly, serialized JSON is caller-controlled: the toolkit downgrades every
 bundle crossing the synthesize JSON boundary to `self_supplied`, so changing a `trust` field
-cannot mint RPC or indexer assurance (⚠️ — a future hosted service can preserve stronger
+cannot mint RPC or indexer assurance (🗓 — a future hosted service can preserve stronger
 provenance only with an authenticated receipt or a server-side recording ID).
 
 `getLedgerEntries` observes contract executables at its reported latest ledger, which may be
@@ -596,7 +602,7 @@ execution time.
 
 ---
 
-## 10. Capability registry governance ✅ / ⚠️
+## 10. Capability registry governance ✅ / 🗓 (production governance is hosted-service work)
 
 **What we have.** Registry snapshots are content-addressed, threshold-signed, network-bound,
 versioned, chained by previous root, time-bounded, and checked against a persisted minimum
@@ -608,14 +614,14 @@ cannot remove a prior revocation or rewrite its reason or effective version, and
 survive registry restarts. Tests cover rollback, same-version equivocation with checkpoints,
 transparency-chain forks, invalid key encodings, and revocation removal/mutation.
 
-**Verdict.** Conforms as a mechanism; ⚠️ as governance. The committed registry key is a
+**Verdict.** Conforms as a mechanism; 🗓 as governance. The committed registry key is a
 deterministic development root — suitable for reproducible examples, not production governance,
 which needs independently controlled roots, durable checkpoints, rotation and revocation
 operations, monitoring, and an incident process. (Also recorded in PROGRESS.md as a residual.)
 
 ---
 
-## 11. Evaluator and differential evidence ✅ / ⚠️
+## 11. Evaluator and differential evidence ✅ / 🗓
 
 **What we have.** The reference evaluator interprets validated spec structures directly; it
 consumes no generated Rust and cannot depend on codegen — the missing edge is enforced in the
@@ -634,7 +640,7 @@ The differential suite is correspondingly **scoped**: it invokes the generated p
 directly in a Soroban test environment and compares verdict plus denial reason against the
 explicitly scoped `evaluate_generated_rule` model.
 
-**Verdict.** Conforms for what it claims. ⚠️ for what it does not: the suite does not exercise
+**Verdict.** Conforms for what it claims. 🗓 for what it does not: the suite does not exercise
 a full OpenZeppelin smart account's `__check_auth`, reviewed-policy composition, wallet
 installation, or live account state — later-milestone evidence, not implied by the phrase
 "compiled contract".
@@ -662,7 +668,7 @@ annotations remain hints, not authorization controls.
 
 ---
 
-## 13. Build containment ⚠️ (a local safeguard, not hosted isolation)
+## 13. Build containment 🗓 (a local safeguard; hosted isolation is later-milestone work)
 
 **What we have.** The local builder uses fixed commands and arguments, an offline `--locked`
 Cargo build, bounded source/wasm/log sizes, a bounded timeout with bounded version probes,
