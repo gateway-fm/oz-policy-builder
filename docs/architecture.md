@@ -18,7 +18,7 @@ security interval), `E_INCOMPLETE_ACCOUNT_STATE` with structured causes, extant-
 
 ## 1. Problem statement
 
-OpenZeppelin's Stellar smart accounts (`stellar-accounts`) give Stellar real programmable
+OpenZeppelin's Stellar smart accounts (`stellar-accounts`) give Stellar accounts real programmable
 authorization: **context rules** scope *which contract may be called*, **signers** say *who
 may authorize*, and **policies** — external Stellar contracts implementing the OZ `Policy`
 trait — enforce *what exactly is allowed* (amounts, thresholds, windows). The primitives are
