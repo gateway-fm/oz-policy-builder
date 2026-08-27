@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn rpc_allowlist_blocks_ssrf_vectors() {
         let policy = RpcEndpointPolicy::from_csv(
-            "https://rpc.testnet.stellar.gateway.fm, https://soroban.example/rpc",
+            "https://rpc.testnet.stellar.gateway.fm, https://stellar.example/rpc",
         )
         .unwrap();
         // Exact allowlisted HTTPS endpoints are authorized.
@@ -574,7 +574,7 @@ mod tests {
         // Credentials are refused even against an allowlisted host — the allowlist is not a
         // substitute for stripping them.
         assert!(policy
-            .authorize("https://user:pass@soroban.example/rpc")
+            .authorize("https://user:pass@stellar.example/rpc")
             .is_err());
         assert!(policy
             .authorize("https://rpc.testnet.stellar.gateway.fm#frag")
