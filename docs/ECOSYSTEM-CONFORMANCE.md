@@ -170,7 +170,7 @@ rebuilding. SEP-58 states that the two are complementary and can coexist on the 
 Maturity has to be stated exactly, because it is easy to overstate in either direction. Both
 SEPs are Draft, and **no released `stellar-cli` implements SEP-58 support**. The command
 `stellar contract build` carries no subcommands at any tag from v20.0.0 through the current
-release v27.1.0 (2026-07-31), so `stellar contract build verify` does not exist — that spelling comes
+release v28.0.0 (2026-08-26), so `stellar contract build verify` does not exist — that spelling comes
 from `stellar/stellar-cli` PR #2525, which was closed without merging, and must not be written
 down as if it were shipped. Two PRs are open and unmerged: #2585 adds a `--verifiable` flag to
 `stellar contract build`, and #2586 adds `stellar contract verify` as a **sibling** of `build`
@@ -240,8 +240,16 @@ dependency versions, and build `--locked` (in `BUILD_ARGS`,
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
 hash reproduces on a sufficiently similar host and is not guaranteed off it. Containerised builds
-need no finished SEP — the reason this is still open is cost and sequencing, not the standard, and
-a digest-pinned builder is recorded as later-milestone work. Until then, "byte-identical across
+need no finished SEP, and as of `stellar-cli` **28.0.0** (released 26 August 2026) they need no
+tooling work either: `stellar contract build` can now run inside a container, pinning the
+toolchain by image tag or digest
+([stellar-cli #2678](https://github.com/stellar/stellar-cli/pull/2678)). That closes the build
+primitive and nothing else — the verification workflow SEP-58 assumes, `--verifiable` and
+`stellar contract verify`, is still unreleased
+([#2585](https://github.com/stellar/stellar-cli/pull/2585) and
+[#2586](https://github.com/stellar/stellar-cli/pull/2586) are open). So what remains here is
+ours: adopting the container build and pinning a digest, which is sequencing and cost rather
+than a missing standard or a missing tool. Until then, "byte-identical across
 two cold runs" means on comparable hosts, which is what CI measures and all this repository
 claims.
 
