@@ -95,7 +95,7 @@ a Stellar contract cannot parse JSON at all, which closes the road to on-chain v
 
 ---
 
-## 2. Artifact identity and its verification ❌
+## 2. Artifact identity and its verification ⚠️ / ℹ️ (verification SEPs are Draft)
 
 **What the platform has and ships.** The wasm section `contractmetav0` with serialized
 `SCMetaEntry` — the standardized way for an artifact to describe itself, specified by
@@ -185,20 +185,36 @@ What this does **not** do is make the manifest verifiable by a third party — t
 SEP-55's signature or SEP-58's rebuild. It makes our own statement about the toolchain a checked
 one instead of an asserted one.
 
-**Verdict.** A gap, but more precisely: our artifacts are **readable** by standard tooling
-already (`stellar contract info meta` shows the SEP-46 keys the toolchain writes itself —
-`rsver`/`cliver`/`rssdkver` — and anyone can compute the wasm hash) — what they do not carry is
-any trace of provenance. Neither a reference to the spec the policy was derived from, nor the
-fields either verification SEP needs. Which is why the link "artifact ↔ specification" can today
-only be checked with our `BuildManifest` and our CLI.
+**Verdict on the provenance half: a deliberate divergence, and an open question we did not
+invent.** Our artifacts are **readable** by standard tooling already — `stellar contract info
+meta` shows the SEP-46 keys the toolchain writes itself (`rsver`/`cliver`/`rssdkver`) and anyone
+can compute the wasm hash. What they do not carry is any trace of provenance: neither a reference
+to the spec the policy was derived from, nor the fields either verification SEP needs. So the
+link "artifact ↔ specification" can today be checked only with our `BuildManifest` and our CLI.
 
-**Our reproducibility guarantee is weaker than the one SEP-58 assumes, and that is a gap rather
-than a different spelling of the same thing.** We pin rustc through `rust-toolchain.toml`, pin
+Nothing requires otherwise. No SEP obliges a contract to write meta of its own; both
+verification SEPs are Draft and no released `stellar-cli` implements either; neither the RFP this
+work answers nor the proposal that answered it asks for artifact verification. This section
+records a direction we intend to stay compatible with, not a rule we are failing. Adopting the
+vocabulary early would mean guessing at one specific unresolved point — SEP-58 keys on the
+SHA-256 of a *source archive*, and a contract generated on demand has no archive — and a guess
+the standard later contradicts is worse than the absence. The question is written up and raised
+where the SEP is being discussed; when it resolves, the answer is to adopt the standard's
+spelling rather than to keep our own.
+
+**Verdict on the reproducibility half: our own guarantee is narrower than it sounds, and this
+one is not waiting on anybody.** It is worth separating from the paragraph above, because that
+one is a standard in progress and this one is a limit of what we can currently promise. We pin
+rustc through `rust-toolchain.toml`, pin
 dependency versions, and build `--locked` (in `BUILD_ARGS`,
 `crates/build-runner/src/lib.rs:463-469`). SEP-58 pins the
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
-hash reproduces on a sufficiently similar host and is not guaranteed off it.
+hash reproduces on a sufficiently similar host and is not guaranteed off it. Containerised builds
+need no finished SEP — the reason this is still open is cost and sequencing, not the standard, and
+a digest-pinned builder is recorded as later-milestone work. Until then, "byte-identical across
+two cold runs" means on comparable hosts, which is what CI measures and all this repository
+claims.
 
 **A side consequence worth recording.** Because `cliver` and `rsver` land **inside** the wasm,
 they are part of its bytes and therefore of its `wasm_hash`. A change of CLI version thus
