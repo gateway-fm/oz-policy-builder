@@ -238,11 +238,11 @@ impl PolicyBuilderServer {
         Ok(Json(out))
     }
 
-    /// Generate and reproducibly build the immutable Soroban policy artifact. Resource
+    /// Generate and reproducibly build the immutable Stellar smart-contract policy artifact. Resource
     /// consuming, deterministic, and non-deploying — code-first, deploy-second (§6.2).
     #[tool(
         name = "generate_code",
-        description = "Generate and build the deterministic, immutable Soroban policy \
+        description = "Generate and build the deterministic, immutable Stellar smart-contract policy \
                        artifact for a PolicySpec rule: locked Rust source, Wasm, and a \
                        binding BuildManifest. Resource-consuming; never deploys or signs."
     )]

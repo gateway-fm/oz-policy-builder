@@ -1,6 +1,6 @@
 # OZ Accounts Policy Builder
 
-Record a transaction, generate a minimum-permission Soroban policy.
+Record a transaction, generate a minimum-permission Stellar smart-contract policy.
 
 A **record-and-generate** toolkit for OpenZeppelin Stellar smart accounts: point at a
 transaction you already performed (on-chain by hash, or locally simulated) and the toolkit

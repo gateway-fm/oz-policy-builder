@@ -1,6 +1,6 @@
 # OpenZeppelin Accounts Policy Builder — Technical Architecture & Delivery Plan
 
-**Project:** Record a Transaction, Generate a Minimum-Permission Soroban Policy
+**Project:** Record a Transaction, Generate a Minimum-Permission Stellar Smart-Contract Policy
 **RFP:** SCF Build Award, RFP Track — "OZ accounts policy builder"
 **Status:** Architecture v0.8 · July 2026
 (v0.1 → v0.7 across five review rounds plus the TDD/engineering additions — history in §13;
@@ -18,11 +18,11 @@ security interval), `E_INCOMPLETE_ACCOUNT_STATE` with structured causes, extant-
 
 ## 1. Problem statement
 
-OpenZeppelin's Stellar smart accounts (`stellar-accounts`) give Soroban real programmable
+OpenZeppelin's Stellar smart accounts (`stellar-accounts`) give Stellar real programmable
 authorization: **context rules** scope *which contract may be called*, **signers** say *who
-may authorize*, and **policies** — external Soroban contracts implementing the OZ `Policy`
+may authorize*, and **policies** — external Stellar contracts implementing the OZ `Policy`
 trait — enforce *what exactly is allowed* (amounts, thresholds, windows). The primitives are
-audited and live, but authoring a custom policy today means hand-writing a Soroban contract,
+audited and live, but authoring a custom policy today means hand-writing a Stellar smart contract,
 which is too high a bar for most developers and impossible for end users. The result: the
 delegation infrastructure exists but goes unused.
 
@@ -55,7 +55,7 @@ and delivered then:
 |---|---|---|
 | 1 | Transaction recording/observation layer (on-chain by hash on mainnet/testnet, or locally simulated), extracting contracts, functions, args, state changes, token movements | §4.1 Recorder — **Tranche 1** |
 | 2 | Context rule + policy synthesizer, biased toward minimal permissions | §4.2–4.3 PolicySpec + Synthesizer — **Tranche 1** |
-| 3 | Generated Rust policy code, compilable Soroban contracts, OZ primitives first, correct `Policy` trait + storage segregation | §4.4 Code generation, §5 Generated-code contract — **Tranche 1** |
+| 3 | Generated Rust policy code, compilable Stellar contracts, OZ primitives first, correct `Policy` trait + storage segregation | §4.4 Code generation, §5 Generated-code contract — **Tranche 1** |
 | 4 | MCP server: recording, synthesis, verification; structured I/O, deterministic, machine-readable errors | §4.6 MCP server — **Tranche 1** for recording and synthesis; verification with the milestone that delivers it |
 | 5 | Agent skill with conversational entry point and clarification questions | §4.7 Agent skill — **Tranche 2** |
 | 6 | Simulation/dry-run harness: original must permit, adjacent mutations must deny | §4.5 Dry-run harness — **Tranche 2** |
@@ -141,7 +141,7 @@ contract execution) — communicating over a narrow job protocol; in local/stdio
 one process inside the user's own trust domain. A Claude skill drives the MCP tools
 conversationally. The wallet (pollywallet, extended) renders the generated code and the
 dry-run evidence report and lets the user authorize the on-chain install with their passkey.
-Generated policies are ordinary Soroban contracts implementing the OpenZeppelin `Policy`
+Generated policies are ordinary Stellar contracts implementing the OpenZeppelin `Policy`
 trait; installation uses the smart account's own `add_context_rule` / `add_policy` entry
 points.
 
@@ -1157,7 +1157,7 @@ the same handler); hosted auth, rate limits, and quotas are tower layers around 
 service, never code inside tools. Tools hold no per-session state by design, so the bundled
 `LocalSessionManager` suffices and horizontal scaling needs no sticky sessions.
 
-**Soroban/contract specifics.** Templates are ordinary `#![no_std]` contract crates pinned
+**Contract specifics.** Templates are ordinary `#![no_std]` contract crates pinned
 to the workspace `soroban-sdk` + `stellar-accounts` versions; storage keys are
 `#[contracttype]` enums; error codes are `#[contracterror]` with globally unique numbers
 registered per template pack; harness layer 2 runs `soroban-sdk` testutils envs with

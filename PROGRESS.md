@@ -546,7 +546,7 @@ EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ Polic
                                               (independent; CI-enforced    │
                                                no codegen dep)             ▼
                                                                       codegen → immutable
-                                                                      Soroban policy crate
+                                                                      Stellar smart-contract policy crate
                                                                       (compiles; byte-identical
                                                                        wasm; differential-verified)
 ```

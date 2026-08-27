@@ -1,7 +1,7 @@
-# Stellar / Soroban ecosystem conformance
+# Stellar ecosystem conformance
 
 **Why this exists.** The project was written first as a correct system and second as a system
-built the way Soroban is built. This document records the platform's principles with links to
+built the way Stellar smart contracts are built. This document records the platform's principles with links to
 their sources, our current state against each, a verdict, and an action. It is what a design
 decision is checked against, and what answers the question of whether we are reinventing
 something the ecosystem already supplies.
@@ -77,7 +77,7 @@ Rust declaration order, the hand-written signer encoding, and XDR only inside th
 was resolved by action 1 of the table below, taken together with the schema-breaking rename in
 §3 so the format broke once rather than twice.
 
-**Honestly about the status of this requirement.** Soroban does **not** oblige off-chain
+**Honestly about the status of this requirement.** Stellar does **not** oblige off-chain
 artifacts to be XDR; a JSON artifact would not have been a violation. The move was a strong
 decision taken for interoperability and to keep the road to on-chain verification open, not a
 conformance item we were breaching. The earlier "diverges" verdict referred to the internal
@@ -91,7 +91,7 @@ is not the ecosystem's format, implementations of JCS diverge from one another i
 place that matters — `serde_jcs` carries a known open deviation in number encoding, and was
 dormant from 2020 until it shipped 0.2.0 in March 2026; it is neither yanked nor deprecated, and
 the "abandoned" characterisation circulating in a competing crate's README is not accurate — and
-a Soroban contract cannot parse JSON at all, which closes the road to on-chain verification.
+a Stellar contract cannot parse JSON at all, which closes the road to on-chain verification.
 
 ---
 
@@ -563,7 +563,7 @@ state, which is what the earlier "no on-chain trace" verdict was about.
 ## 7. External security tooling ⚠️
 
 **What the ecosystem has.**
-- **Scout** (CoinFabrik) — a static analyzer specifically for Soroban contracts, with a catalog
+- **Scout** (CoinFabrik) — a static analyzer specifically for Stellar contracts, with a catalog
   of known vulnerability classes. The analyzer is `CoinFabrik/scout-soroban`, installed as the
   cargo subcommand `cargo-scout-audit`; `CoinFabrik/scout-soroban-examples` is the companion
   repository of reviewed examples, not the tool. (`CoinFabrik/scout` is the ink! analyzer and

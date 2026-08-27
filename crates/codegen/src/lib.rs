@@ -1,5 +1,5 @@
 //! Deterministic code generation (architecture §4.4): `ValidatedSpec` → an immutable,
-//! per-grant specialized Soroban policy crate.
+//! per-grant specialized Stellar smart-contract policy crate.
 //!
 //! Templates, not free-form generation: every emitted statement comes from the fixed
 //! snippet set in this file; recorded values are embedded as validated literals, never
