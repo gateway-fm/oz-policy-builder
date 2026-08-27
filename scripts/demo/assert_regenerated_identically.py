@@ -34,12 +34,21 @@ import sys
 
 
 def source_hashes(crate: pathlib.Path) -> dict[str, str]:
-    """Every Rust source file of `crate`, keyed by name, digested."""
-    files = sorted((crate / "src").glob("*.rs"))
+    """Every Rust source file of `crate`, keyed by path relative to `src/`, digested.
+
+    `rglob`, not `glob`, and keyed by relative path rather than by basename. The docstring
+    said "every" while a non-recursive glob keyed by name would have skipped a nested
+    module and collided two files sharing a basename — either of which lets this assertion
+    report determinism over sources that differ. Nothing emitted today nests, which is
+    exactly why the gap would have gone unnoticed until something did.
+    """
+    src = crate / "src"
+    files = sorted(src.rglob("*.rs"))
     if not files:
         sys.exit(f"{crate}/src holds no .rs files; there is nothing to compare")
     return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files
+        path.relative_to(src).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in files
     }
 
 
