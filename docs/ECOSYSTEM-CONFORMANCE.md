@@ -124,7 +124,7 @@ a Soroban contract cannot parse JSON at all, which closes the road to on-chain v
 
 ---
 
-## 2. Artifact identity and its verification ℹ️ / 🗓 (verification SEPs are Draft)
+## 2. Artifact identity and its verification ℹ️ (verification SEPs are Draft)
 
 **What the platform has and ships.** The wasm section `contractmetav0` with serialized
 `SCMetaEntry` — the standardized way for an artifact to describe itself, specified by
@@ -606,7 +606,7 @@ under depth and size limits.
 `rpc_reported` means exactly "returned by the configured RPC endpoint" — it is not an inclusion
 proof. More importantly, serialized JSON is caller-controlled: the toolkit downgrades every
 bundle crossing the synthesize JSON boundary to `self_supplied`, so changing a `trust` field
-cannot mint RPC or indexer assurance (🗓 — a future hosted service can preserve stronger
+cannot mint RPC or indexer assurance (a future hosted service could preserve stronger
 provenance only with an authenticated receipt or a server-side recording ID).
 
 `getLedgerEntries` observes contract executables at its reported latest ledger, which may be
