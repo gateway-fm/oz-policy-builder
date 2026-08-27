@@ -141,7 +141,7 @@ impl PolicyBuilderServer {
     /// fingerprint. NETWORK READ. Retention is short — outside it, use import.
     #[tool(
         name = "record_transaction",
-        description = "Record an executed Stellar transaction (by hash, via Soroban RPC) \
+        description = "Record an executed Stellar transaction (by hash, via Stellar RPC) \
                        into a RecordingBundle: the authorization tree, token movements, \
                        and dual hashes. Network read."
     )]

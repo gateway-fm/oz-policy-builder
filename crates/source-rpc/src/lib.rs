@@ -1,4 +1,4 @@
-//! Soroban RPC acquisition adapter (architecture §4.1, §4.11).
+//! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
 //! the pure recorder. Executed transactions and record-mode simulations both come back
@@ -99,7 +99,7 @@ pub trait RpcTransport {
     fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RpcError>;
 }
 
-/// HTTP transport over a single Soroban RPC endpoint.
+/// HTTP transport over a single Stellar RPC endpoint.
 pub struct HttpTransport {
     url: String,
     agent: ureq::Agent,

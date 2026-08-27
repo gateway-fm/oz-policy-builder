@@ -76,7 +76,7 @@ crates/
   domain            pure shared vocabulary: hashes, newtypes, trust levels, provenance
   recorder-core     pure: EvidenceSnapshot -> RecordingBundle
   source-bundle     acquisition adapter for imported evidence bundles (pure)
-  source-rpc        blocking HTTP acquisition adapter over Soroban RPC
+  source-rpc        blocking HTTP acquisition adapter over Stellar RPC
   policy-spec       PolicySpec v1: schema, validation (typestate), canonical hashing
   synthesizer       pure: RecordingBundle(s) + user decisions -> PolicySpec
   evaluator         independent reference evaluator (never depends on codegen)

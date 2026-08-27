@@ -58,7 +58,7 @@ when a reviewed policy would make a whole-composition verdict unsafe.
 ```bash
 cargo build -p ozpb-cli          # produces target/debug/ozpb
 
-# 1. record a transaction (by hash, via any Soroban RPC) → RecordingBundle JSON
+# 1. record a transaction (by hash, via any Stellar RPC) → RecordingBundle JSON
 ozpb record --tx-hash <hash> --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015" > rec.json
 # …or offline from a raw evidence bundle:

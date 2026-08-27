@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Soroban RPC acquisition adapter: getTransaction / simulateTransaction -> EvidenceSnapshot"
+description = "Stellar RPC acquisition adapter: getTransaction / simulateTransaction -> EvidenceSnapshot"
 
 [dependencies]
 ozpb-recorder-core = { workspace = true }

@@ -623,7 +623,7 @@ overstates a guarantee costs more in that header than the same name would anywhe
 
 ## 9. Evidence provenance and RPC binding ✅ / ⚠️
 
-**Platform principle.** Soroban RPC is a query interface, not a trust anchor: `getTransaction`
+**Platform principle.** Stellar RPC is a query interface, not a trust anchor: `getTransaction`
 returns what the configured endpoint says, `getLedgerEntries` reads current state, and nothing
 in the protocol makes a JSON response self-authenticating. Whatever trust a recording carries
 has to be assigned by the party that fetched it, and downgraded the moment it leaves their

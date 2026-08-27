@@ -161,7 +161,7 @@ replay-invariant **RecordingBundle** with an acquisition-derived evidence label.
 
 **Inputs (three paths, same output type):**
 
-- *Executed:* Soroban RPC `getTransaction(hash)` → decode `envelopeXdr` →
+- *Executed:* Stellar RPC `getTransaction(hash)` → decode `envelopeXdr` →
   `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the authorization tree the
   network actually verified), plus `resultXdr` — whose decoded outcome must agree with the
   reported status before the response becomes evidence — and `resultMetaXdr` for effects. **Retention caveat
@@ -275,7 +275,7 @@ so a permission bundle hashes deterministically; the PolicySpec maps each rule/t
 exact justifying invocation(s) (§4.2).
 
 **Stack:** `stellar-xdr` 27.x (`curr`, `base64`, `serde`), blocking `ureq`, and
-`stellar-strkey`. Works against any Soroban RPC endpoint approved by the local operator
+`stellar-strkey`. Works against any Stellar RPC endpoint approved by the local operator
 (Gateway's public mainnet/testnet RPC is the reference, never a requirement).
 
 ### 4.2 PolicySpec and the artifact chain
@@ -1080,7 +1080,7 @@ crates/
   domain            # shared vocabulary: hashes, network IDs, trust levels, provenance,
                     # canonical encoding; no I/O, no async, no framework deps
   recorder-core     # pure: EvidenceSnapshot → RecordingBundle (no I/O, no async traits)
-  source-rpc        # blocking HTTP acquisition adapter over Soroban RPC; produces
+  source-rpc        # blocking HTTP acquisition adapter over Stellar RPC; produces
                     # immutable, ledger-stamped EvidenceSnapshots
   source-bundle     # acquisition adapter for imported evidence bundles (pure)
   policy-spec       # PolicySpec schema, canonical serialization, validation (typestate)
@@ -1605,7 +1605,7 @@ as the toolkit's stewards.
 | MCP | official Rust SDK `rmcp` 2.x — stdio + streamable HTTP, typed schemas (`schemars`), structured outputs, elicitation |
 | Agent skill | Claude plugin (SKILL.md + bundled `.mcp.json`); portable skill text for other frameworks |
 | Wallet | pollywallet (TanStack/React) + `smart-account-kit`; OZ Relayer Channels for submission (direct RPC fallback) |
-| RPC | any Soroban RPC (config; hosted service allowlists endpoints); Gateway public mainnet/testnet endpoints as defaults |
+| RPC | any Stellar RPC (config; hosted service allowlists endpoints); Gateway public mainnet/testnet endpoints as defaults |
 | CI | determinism jobs, differential evaluator-vs-wasm jobs, registry fail-closed/rollback tests, adversarial direct-call suite, testnet E2E, version-matrix builds, publication-allowlist negative tests; reproducible wasm via digest-pinned containerized toolchain |
 
 ---
