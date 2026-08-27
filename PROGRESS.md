@@ -365,23 +365,6 @@ workspace. Counted by running the two suites `scripts/verify-phase1.sh` runs —
 also how to re-count them; the number here is what those commands reported on 2026-08-19 and
 moves whenever a test is added.
 
-## The pipeline (all deterministic, all fail-closed)
-
-```
-EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ PolicySpec
-   ↑ acquisition adapters            (auth tree, dual hashes)        (exact tuples,
-   (source-rpc / source-bundle,       evidence, trust levels)         signer predicate,
-    trust derived by path)                                            provenance)
-                                                                          │
-                                              reference evaluator ◄───────┤ (validate → ValidatedSpec)
-                                              (independent; CI-enforced    │
-                                               no codegen dep)             ▼
-                                                                      codegen → immutable
-                                                                      Soroban policy crate
-                                                                      (compiles; byte-identical
-                                                                       wasm; differential-verified)
-```
-
 ## Verifiable artifacts
 
 - **Codegen determinism:** two cold runs of `ozpb generate` produce byte-identical
