@@ -14,6 +14,27 @@ has since landed (§4).
 
 **Verdict legend:** ✅ conforms · ⚠️ diverges · ❌ gap · ℹ️ open decision
 
+## Summary
+
+| § | Subject | Verdict | In one line |
+|---|---|---|---|
+| 1 | Serialization and hashing | ✅ | Canonical form is XDR throughout, with a versioned preimage an outside implementation can reproduce from `docs/CANONICAL-HASHING.md`. |
+| 2 | Artifact identity and verification | ⚠️ / ℹ️ | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
+| 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
+| 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
+| 5 | Authorization model | ✅ / ⚠️ | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
+| 6 | Errors and observability | ✅ / ℹ️ | Stable machine-readable error codes throughout; whether to emit an event on a successful `enforce` is undecided. |
+| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. We check the generator thoroughly; running them over what it generates is a decision, not a shortfall. |
+| 8 | Upgradeability and immutability | ✅ | No setters, no upgrade entry point. For an artifact whose value is "the reader sees exactly what executes", immutability is the requirement. |
+| 9 | Evidence provenance and RPC binding | ✅ / ⚠️ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
+| 10 | Capability registry governance | ✅ / ⚠️ | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
+| 11 | Evaluator and differential evidence | ✅ / ⚠️ | An independent evaluator agrees with the real compiled contract on verdict and denial reason. It does not exercise a full smart account's `__check_auth` — later-milestone evidence. |
+| 12 | MCP surface and machine-readable failures | ✅ | Closed request schemas, generated JSON schemas, stable `E_*` codes, structured tool errors. |
+| 13 | Build containment | ⚠️ | The local builder bounds environment, inputs, outputs, concurrency and time. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
+| 14 | Defaults and limits | — | Every default and bound, with the reasoning for each value. |
+
+Read the section for the reasoning; nothing above is a claim the section does not support.
+
 Every claim here is meant to be checkable against the source it names — a SEP, a documentation
 page, a line of this repository, or a line of the platform's own implementation. Where something
 is unresolved, the section says what would resolve it.
@@ -73,8 +94,8 @@ recording the recorder accepts cannot fail only when it is hashed.
 
 **Verdict.** Conforms. The earlier "diverges" — three inconsistent mechanisms: JSON bytes in
 Rust declaration order, the hand-written signer encoding, and XDR only inside the contract —
-was resolved by action 1 of the table below, taken together with the schema-breaking rename in
-§3 so the format broke once rather than twice.
+was resolved by unifying on XDR, taken together with the schema-breaking rename in §3 so the
+format broke once rather than twice.
 
 **Honestly about the status of this requirement.** Soroban does **not** oblige off-chain
 artifacts to be XDR; a JSON artifact would not have been a violation. The move was a strong
@@ -488,7 +509,7 @@ bolted onto `enforce`. Whether (a) is wanted is to be discussed, given that (b) 
 
 ---
 
-## 7. External security tooling ⚠️
+## 7. External security tooling ℹ️ (customary tools, not protocol requirements)
 
 **What the ecosystem has.**
 - **Scout** (CoinFabrik) — a static analyzer specifically for Soroban contracts, with a catalog
@@ -682,26 +703,12 @@ The knobs and caps the release ships with, and what each one does and does not p
 
 ---
 
-## Actions, by priority
+## One thing we deliberately do not do
 
-| # | Action | Section | Type |
-|---|---|---|---|
-| 1 | ~~Unify canonicalization on XDR~~ — **done.** `ScVal` built through `ScMap::sorted_from_entries` for ordering, explicit per-type rules, and a versioned preimage tagged with our own domains rather than the protocol's `HashIdPreimage`. Specified in `docs/CANONICAL-HASHING.md`, so an external implementation can reproduce a hash | 1 | breaking, done |
-| 2 | ~~Extend the counter's TTL on read/write, each extension ≤ the current `max_ttl()` and no further than `valid_until`~~ — **done.** `ttl_target` clamps to the rolling `max_ttl()` and saturates at the validity window; extension is threshold-conditional and withheld on denial and `uninstall` | 3 | operational, done |
-| 3 | Extend the TTL of the **contract instance and wasm code** separately — **done for the instance entry**, extended with the persistent entries; the shared wasm-code entry is deliberately left to the operator/installer (§3, action 2) | 3 | operational |
-| 4 | Emit `contractmeta!` with the artifact's provenance (`spec_hash` and the rest) into the SEP-46 section, and follow SEP-55's shape where `BuildManifest` asserts what SEP-55 attests. The restatement of `rsver`/`cliver`/`rssdkver` is no longer taken on trust — ~~reconcile against the wasm metadata and fail on divergence~~ **done** — but it is still a private shape | 2 | compatibility |
-| 5 | Run Scout and the Veridise checklist over the generated policies; a gate only after pinning the version, checking applicability, and defining a false-positive policy | 7 | security |
-| 6 | Apply to the Soroban Security Audit Bank | 7 | process |
-| 7 | ~~TTL tests in the soroban environment, advancing the ledger number~~ — **done**: `contracts/differential/tests/ttl.rs` (§3, action 4) | 3 | tests, done |
-| 8 | Settle where a generated contract's source archive is published, and by whom — SEP-58 requires `source_sha256` over its bytes and leaves `source_uri` optional | 2 | unresolved |
-| 9 | Decide whether to publish an event on a **successful** `enforce`; denials come from RPC diagnostics | 6 | unresolved |
-| 10 | Decide whether to build inside a digest-pinned container image and record it as SEP-58 `bldimg`; pinning rustc and dependency versions pins neither the OS nor the container | 2 | compatibility |
-| 11 | ~~Rename the cap from "lifetime" to per-installation~~ — **done**, including the wire field, now `call_count_per_installation` in the committed example. Taken together with row 1 because both break the schema, and one break is cheaper than two. The registry snapshot no longer names it: a call cap is a `StateSpec`, and the snapshot's list is `Constraint`'s vocabulary | 3 | done |
-
-Not on the list, and deliberately so: rejecting a policy at generation time because
-`valid_until` exceeds `max_ttl()`. That bound is sliding, measured from the current ledger, so a
-distant expiry is legitimate and is reached by successive extensions; refusing it would cut off
-the long-lived grant the tool exists to produce (§3, action 3).
+Reject a policy at generation time because `valid_until` exceeds `max_ttl()`. That bound is
+sliding, measured from the current ledger, so a distant expiry is legitimate and is reached by
+successive extensions; refusing it would cut off the long-lived grant the tool exists to produce
+(§3, action 3).
 
 ---
 
