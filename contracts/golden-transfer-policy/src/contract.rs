@@ -167,12 +167,13 @@ impl GeneratedPolicy {
     ///   extend-on-read rule at `:344` is for library-managed entries.
     pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {
         // NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the
-        // smart account, which creates it through `install` and removes it through
-        // `uninstall`, and both of those extend. A query is not the account exercising
-        // its grant — any caller may make one — so it must not buy rent for state it
-        // does not own. The library's exception for caller-managed state
-        // (`code-quality.md:376-381`, whose canonical case is `paused()`) is this case,
-        // not the extend-on-read rule at `:344`.
+        // smart account, which creates it through `install` — the path that extends —
+        // and removes it through `uninstall`, which extends nothing, because buying
+        // rent on the way out would pay for state about to be gone. A query is not the
+        // account exercising its grant — any caller may make one — so it must not buy
+        // rent for state it does not own. The library's exception for caller-managed
+        // state (`code-quality.md:376-381`, whose canonical case is `paused()`) is this
+        // case, not the extend-on-read rule at `:344`.
         let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);
         e.storage().persistent().has(&installed_key)
     }
@@ -200,12 +201,13 @@ impl GeneratedPolicy {
     /// * Extends no entry's lifetime, for the reason `is_installed` gives.
     pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {
         // NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the
-        // smart account, which creates it through `install` and removes it through
-        // `uninstall`, and both of those extend. A query is not the account exercising
-        // its grant — any caller may make one — so it must not buy rent for state it
-        // does not own. The library's exception for caller-managed state
-        // (`code-quality.md:376-381`, whose canonical case is `paused()`) is this case,
-        // not the extend-on-read rule at `:344`.
+        // smart account, which creates it through `install` — the path that extends —
+        // and removes it through `uninstall`, which extends nothing, because buying
+        // rent on the way out would pay for state about to be gone. A query is not the
+        // account exercising its grant — any caller may make one — so it must not buy
+        // rent for state it does not own. The library's exception for caller-managed
+        // state (`code-quality.md:376-381`, whose canonical case is `paused()`) is this
+        // case, not the extend-on-read rule at `:344`.
         let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);
         if !e.storage().persistent().has(&installed_key) {
             panic_with_error!(e, PolicyError::MissingState);

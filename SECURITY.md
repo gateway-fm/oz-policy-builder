@@ -37,7 +37,8 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   a multi-tenant sandbox and is not offered as one.
 - Nothing in this toolkit signs, submits, or deploys, and it holds no keys.
 - No independent third-party audit has been performed. The evidence that has actually been
-  run is listed in `docs/SCOPE.md` and `docs/TESTNET-EVIDENCE.md`; test counts are not treated
+  run is in `docs/TESTNET-EVIDENCE.md`, and `docs/SCOPE.md` says what deliberately has not been
+  run; test counts are not treated
   as assurance.
 
 A report that one of the above is true is a report we already agree with. A report that one of

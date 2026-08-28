@@ -30,6 +30,8 @@ Section numbers refer to `docs/architecture.md`.
 
 4. **Encoded-literal rendering** — template-pack v2, and one deliberate artifact-hash break.
 
-5. **Layer-2 deny-code agreement.** `contracts/differential/tests/generated_suite.rs` asserts
-   the permit/deny boolean only, while the hand-written `differential.rs` agrees with the
-   compiled contract on the verdict *and* the deny reason.
+5. **Layer-2 deny-code agreement.** A generated deny-code suite
+   (`contracts/differential/tests/generated_suite.rs`) is a later-milestone deliverable and is not
+   in this tree; when it arrives it asserts the permit/deny boolean only. What this tree has is the
+   hand-written `differential.rs`, which agrees with the compiled contract on the verdict *and* the
+   deny reason — a stronger comparison over fewer cases.

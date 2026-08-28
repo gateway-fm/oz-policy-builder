@@ -63,6 +63,12 @@ cargo fmt --all --check
 ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
 cargo clippy --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --all-targets -- -D warnings )
+# The generated crate, which neither invocation above reaches: `contracts` excludes it, and clippy
+# does not lint dependencies, so it entered that run compiled and never linted. CI gained this
+# invocation and the release gate did not, which left the stronger of the two able to pass while
+# the shipped artifact failed `-D warnings`. Named rather than relied upon, for the same reason
+# the fmt invocations below name it.
+( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --workspace

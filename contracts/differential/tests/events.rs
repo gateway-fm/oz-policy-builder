@@ -134,7 +134,6 @@ impl World {
         );
     }
 
-    /// A call the policy must refuse: the authenticated signer is not the expected one.
     /// A call with the **permitted** signer, returning the error instead of panicking.
     ///
     /// Needed wherever the refusal under test is not the signer check: a helper that supplies the

@@ -72,6 +72,12 @@ ozpb synthesize --bundle rec.json --selected-authorizer <C…> \
   --decisions decisions.json --template-family policy-templates/scope@1 > syn.json
 
 # 3. [Tranche 2] prove it: permit/deny evidence report over the constraint-derived deny suite
+# `synthesize` prints an envelope — the spec, its canonical hash and the per-constraint rationale —
+# while every stage below takes a bare PolicySpec. Handing over the envelope is a parse error rather
+# than something quietly ignored, because every schema type here is `deny_unknown_fields`, so lift
+# the spec out first:
+python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)' < syn.json > spec.json
+
 ozpb dry-run --spec spec.json
 
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
@@ -277,5 +283,4 @@ what it enforces — an address or claimed kind is never sufficient.
 - Every generated crate builds standalone (`[profile.release]` with `overflow-checks`) and
   passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
-- `scripts/mutation-test.sh`: mutants of the evaluator/synthesizer must be caught by tests.
 - `scripts/check-publication-allowlist.sh`: no confidential material in the public tree.

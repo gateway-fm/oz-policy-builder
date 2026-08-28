@@ -402,9 +402,10 @@ fn caller_managed_ttl_note() -> String {
     render::wrap_comment(
         "        // ",
         "NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the smart \
-         account, which creates it through `install` and removes it through `uninstall`, and both \
-         of those extend. A query is not the account exercising its grant — any caller may make \
-         one — so it must not buy rent for state it does not own. The library's exception for \
+         account, which creates it through `install` — the path that extends — and removes it \
+         through `uninstall`, which extends nothing, because buying rent on the way out would pay \
+         for state about to be gone. A query is not the account exercising its grant — any caller \
+         may make one — so it must not buy rent for state it does not own. The library's exception for \
          caller-managed state (`code-quality.md:376-381`, whose canonical case is `paused()`) is \
          this case, not the extend-on-read rule at `:344`.",
     )

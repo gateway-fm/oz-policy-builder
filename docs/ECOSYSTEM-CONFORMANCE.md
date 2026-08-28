@@ -175,9 +175,10 @@ SEPs are Draft, and **no released `stellar-cli` implements SEP-58 support**. The
 `stellar contract build` carries no subcommands at any tag from v20.0.0 through the current
 release v28.0.0 (2026-08-26), so `stellar contract build verify` does not exist — that spelling comes
 from `stellar/stellar-cli` PR #2525, which was closed without merging, and must not be written
-down as if it were shipped. Two PRs are open and unmerged: #2585 adds a `--verifiable` flag to
-`stellar contract build`, and #2586 adds `stellar contract verify` as a **sibling** of `build`
-rather than a subcommand of it. Implementations are in flight as well — the public repository
+down as if it were shipped. Neither of the two PRs that would add the workflow has landed, and
+they did not fail the same way: #2585, adding a `--verifiable` flag to `stellar contract build`,
+is open; #2586, adding `stellar contract verify` as a **sibling** of `build` rather than a
+subcommand of it, was closed unmerged on 2026-08-27. Implementations are in flight as well — the public repository
 `stellar-experimental/contract-verifications` **calls itself an experiment** — while explorers
 already surface a status of their own: Stellar Lab shows a "Build Verified" badge, citing
 SEP-55, and StellarExpert's page is headed "Contract Code Validation", carrying a `Source code:`
@@ -249,8 +250,8 @@ toolchain by image tag or digest
 ([stellar-cli #2678](https://github.com/stellar/stellar-cli/pull/2678)). That closes the build
 primitive and nothing else — the verification workflow SEP-58 assumes, `--verifiable` and
 `stellar contract verify`, is still unreleased
-([#2585](https://github.com/stellar/stellar-cli/pull/2585) and
-[#2586](https://github.com/stellar/stellar-cli/pull/2586) are open). So what remains here is
+([#2585](https://github.com/stellar/stellar-cli/pull/2585) is open;
+[#2586](https://github.com/stellar/stellar-cli/pull/2586) was closed unmerged on 2026-08-27). So what remains here is
 ours: adopting the container build and pinning a digest, which is sequencing and cost rather
 than a missing standard or a missing tool. Until then, "byte-identical across
 two cold runs" means on comparable hosts, which is what CI measures and all this repository
@@ -599,8 +600,9 @@ approved — a 32-byte digest of the `Context`, which is what makes 264 a number
 a figure that moves with whatever the call was. Asserted exactly rather than bounded, in
 `an_event_costs_what_the_conformance_record_says_it_costs`
 (`contracts/differential/tests/events.rs`), so a field added to an event has to move the number
-here too; that it does not move with the *arguments* is
-`contracts/differential/tests/event_payload.rs`.
+here too. That it does not move with the *arguments* is asserted by a sweep over an unconstrained
+argument, which needs the second generated policy crate and is therefore later-milestone evidence
+rather than a gate in this tree.
 
 **What still cannot be observed, and why that is a property.** A **denial** leaves nothing behind,
 and this is technically unrealizable rather than unimplemented — worth keeping recorded so it is
@@ -1004,7 +1006,9 @@ spec hash, including the ones sealed into `docs/TESTNET-EVIDENCE.md`. Hashing ch
 *says* and nothing about what a policy *decides*, which is the smaller change by every measure that
 matters here.
 
-**What holds it.** `contracts/differential/tests/event_payload.rs`: an admissible Soroswap call
+**What holds it, in the tree that has it.** The sweep below runs against the second generated
+policy crate, which a later milestone contracts; this tree carries the fixed-context assertion in
+`events.rs` and not the sweep. `contracts/differential/tests/event_payload.rs`: an admissible Soroswap call
 swept over six `deadline` sizes from 0 to 65,536 bytes, asserting at each that the compiled
 contract and the reference evaluator agree, that exactly one event is published, and that its
 serialized size is identical at every size and below the limit. A sweep rather than one value,
@@ -1100,7 +1104,7 @@ successive extensions; refusing it would cut off the long-lived grant the tool e
 - [SEP-46 — Contract Meta (Active)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0046.md)
 - [SEP-55 — Contract Build Verification (Draft)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0055.md)
 - [SEP-58 — Contract Build Reproducibility for Verification (Draft, 0.6.0)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0058.md)
-- SEP-58 support in `stellar-cli`, open and unmerged: [#2585 `--verifiable`](https://github.com/stellar/stellar-cli/pull/2585) · [#2586 `stellar contract verify`](https://github.com/stellar/stellar-cli/pull/2586); the unshipped `build verify` spelling comes from [#2525, closed](https://github.com/stellar/stellar-cli/pull/2525)
+- SEP-58 support in `stellar-cli`, neither landed: [#2585 `--verifiable`, open](https://github.com/stellar/stellar-cli/pull/2585) · [#2586 `stellar contract verify`, closed unmerged on 2026-08-27](https://github.com/stellar/stellar-cli/pull/2586); the unshipped `build verify` spelling comes from [#2525, closed](https://github.com/stellar/stellar-cli/pull/2525)
 - [stellar-experimental/contract-verifications](https://github.com/stellar-experimental/contract-verifications)
 - [Contract code validation — StellarExpert](https://stellar.expert/explorer/public/contract/validation)
 - [Contract Source Validation SEP — stellar/discussions#1573](https://github.com/orgs/stellar/discussions/1573)

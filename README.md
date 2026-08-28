@@ -79,15 +79,17 @@ crates/
   synthesizer       pure: RecordingBundle(s) + user decisions -> PolicySpec
   evaluator         independent reference evaluator (never depends on codegen)
   codegen           pure: ValidatedSpec -> Rust policy crate source
+  build-runner      bounded local builds + BuildManifest attestation of the wasm
   registry          signed capability registries (policy / account / verifier)
   api-types         MCP DTOs + stable machine-readable error codes
+  toolkit           the operations both shells call, and the only place they live
   mcp-server        rmcp stdio shell over the library (no domain logic)
   cli               human-oriented shell over the same library
 contracts/          separate cargo workspace: golden generated policy + soroban tests
 scripts/            dependency-rule check, determinism check
 ```
 
-The security-critical cores have unit, property, differential, mutation, and real-toolchain
+The security-critical cores have unit, property, differential, and real-toolchain
 gates. See `scripts/verify-phase1.sh` for the local/release distinction and
 `docs/TESTNET-EVIDENCE.md` for the evidence that has actually been run; test counts alone are
 not treated as assurance.
