@@ -17,6 +17,32 @@ needed to record and synthesize. Paths explicitly marked **Tranche 2** describe 
 ongoing later-milestone work; they are not part of the Tranche 1 delivery and are not a
 claim that those milestones are complete.
 
+## The pipeline
+
+Every stage is deterministic and fail-closed, and each hands the next a canonical artifact rather
+than a call.
+
+```
+EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ PolicySpec
+   ↑ acquisition adapters            (auth tree, dual hashes)        (exact tuples,
+   (source-rpc / source-bundle,       evidence, trust levels)         signer predicate,
+    trust derived by path)                                            provenance)
+                                                                          │
+                                              reference evaluator ◄───────┤ (validate → ValidatedSpec)
+                                              (independent; CI-enforced    │
+                                               no codegen dep)             ▼
+                                                                      codegen → immutable
+                                                                      Soroban policy crate
+                                                                      (compiles; byte-identical
+                                                                       wasm; differential-verified)
+```
+
+Read left to right: what the network actually returned becomes evidence, evidence becomes a
+minimum-permission specification, and the specification becomes Rust you can read before anything
+is deployed. The evaluator hangs off the middle rather than the end on purpose — it answers "what
+would this spec permit?" from the spec alone, sharing no code with the generator whose output it
+is used to check.
+
 ## Design invariants (enforced, not aspirational)
 
 - **Determinism:** same canonical PolicySpec + identical pinned build inputs ⇒
