@@ -1,0 +1,13 @@
+# Who has to have read a change before it merges.
+#
+# Two names on every path, deliberately. This repository generates the authorization logic that
+# decides what a smart account permits, so "a second person looked at it" is worth more here than
+# the convenience of merging your own work. Branch protection is configured to match: one approving
+# review, it must come from a code owner, and the last pusher's own approval does not count — so a
+# change by one of us is merged by the other.
+#
+# A single global rule rather than per-directory ownership: the security-critical parts are not a
+# subdirectory. A change to the synthesizer, to codegen's templates, to the registry, or to any of
+# the gates can widen what a generated policy permits, and so can a sentence in the README that
+# describes a guarantee the code does not keep.
+*  @IvanBelyakoff @mandrigin
