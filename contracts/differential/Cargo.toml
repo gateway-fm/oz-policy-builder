@@ -34,4 +34,3 @@ stellar-strkey = "0.0.18"
 # could gate it behind the `required-features` of a single `[[test]]` target. The edge from
 # this crate to the harness is therefore package-wide however few files use it, and the
 # boundary here is a convention rather than something the manifest enforces.
-ozpb-harness = { path = "../../crates/harness" }
