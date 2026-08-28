@@ -25,7 +25,6 @@ stellar-strkey = "0.0.18"
 # caller-chosen `deadline` is the one `AnyValue` position either committed crate has. The same
 # manifest-level caveat as the harness edge below applies — Cargo has no way to gate a
 # dev-dependency on one `[[test]]` target — so the edge is package-wide however few files use it.
-generated-soroswap-swap-r0 = { path = "../soroswap-swap-policy" }
 
 # Needed by `tests/generated_suite.rs` alone — no other test file in this crate mentions it — and
 # so it leaves with that file at the milestone boundary.
