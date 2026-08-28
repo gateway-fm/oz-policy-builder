@@ -10,40 +10,12 @@ human-readable Rust implementing the OpenZeppelin `Policy` trait, produced by a
 deterministic, auditable pipeline. **Code-first, deploy-second:** nothing is ever deployed
 automatically.
 
-The full technical architecture (v0.8) lives in `docs/architecture.md`, and this repository is
-where all of it is built. What is implemented so far is Phase 1: the core pipeline — recorder →
-PolicySpec → synthesizer → codegen — plus the independent reference evaluator, capability
-registries, and an MCP server (stdio) exposing `record_transaction`, `record_simulation`,
-`import_recording`, `synthesize_policy`, `evaluate_spec`, and `generate_code`.
-
-Later phases are described in the architecture and marked there. They are not shipped, not
-verified, and not claimed complete — but they belong here, and this is where they will land.
-
-## The pipeline
-
-Every stage is deterministic and fail-closed, and each hands the next a canonical artifact rather
-than a call.
-
-```
-EvidenceSnapshot ─(recorder-core)→ RecordingBundle ─(synthesizer)→ PolicySpec
-   ↑ acquisition adapters            (auth tree, dual hashes)        (exact tuples,
-   (source-rpc / source-bundle,       evidence, trust levels)         signer predicate,
-    trust derived by path)                                            provenance)
-                                                                          │
-                                              reference evaluator ◄───────┤ (validate → ValidatedSpec)
-                                              (independent; CI-enforced    │
-                                               no codegen dep)             ▼
-                                                                      codegen → immutable
-                                                                      Soroban policy crate
-                                                                      (compiles; byte-identical
-                                                                       wasm; differential-verified)
-```
-
-Read left to right: what the network actually returned becomes evidence, evidence becomes a
-minimum-permission specification, and the specification becomes Rust you can read before anything
-is deployed. The evaluator hangs off the middle rather than the end on purpose — it answers "what
-would this spec permit?" from the spec alone, sharing no code with the generator whose output it
-is used to check.
+The full technical architecture (v0.8) lives in `docs/architecture.md`. The Tranche 1
+release surface is the core pipeline — recorder → PolicySpec → synthesizer → codegen —
+plus the independent reference evaluator, capability registries, and the MCP operations
+needed to record and synthesize. Paths explicitly marked **Tranche 2** describe or contain
+ongoing later-milestone work; they are not part of the Tranche 1 delivery and are not a
+claim that those milestones are complete.
 
 ## Design invariants (enforced, not aspirational)
 
@@ -81,19 +53,18 @@ crates/
   synthesizer       pure: RecordingBundle(s) + user decisions -> PolicySpec
   evaluator         independent reference evaluator (never depends on codegen)
   codegen           pure: ValidatedSpec -> Rust policy crate source
-  build-runner      bounded local builds + BuildManifest attestation of the wasm
   registry          signed capability registries (policy / account / verifier)
   api-types         MCP DTOs + stable machine-readable error codes
-  toolkit           the operations both shells call, and the only place they live
   mcp-server        rmcp stdio shell over the library (no domain logic)
   cli               human-oriented shell over the same library
 contracts/          separate cargo workspace: golden generated policy + soroban tests
 scripts/            dependency-rule check, determinism check
 ```
 
-The security-critical cores have unit, property, differential, and real-toolchain
-gates. See `scripts/verify-phase1.sh` for the local/release distinction and `PROGRESS.md` for
-the evidence that has actually been run; test counts alone are not treated as assurance.
+The security-critical cores have unit, property, differential, mutation, and real-toolchain
+gates. See `scripts/verify-phase1.sh` for the local/release distinction and
+`docs/TESTNET-EVIDENCE.md` for the evidence that has actually been run; test counts alone are
+not treated as assurance.
 
 ## License
 

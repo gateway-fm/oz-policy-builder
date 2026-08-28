@@ -256,6 +256,15 @@ than a missing standard or a missing tool. Until then, "byte-identical across
 two cold runs" means on comparable hosts, which is what CI measures and all this repository
 claims.
 
+**What that measurement currently says.** `stellar contract build` produces a byte-identical
+wasm across a full `cargo clean` rebuild: sha256 `b3a29bc9…` for the golden policy, and
+`43db0d22…` for the Soroswap policy under the same toolchain, measured in the same sweep. The
+gate asserting it hashed `contracts/target/…` until 2026-08-13, a path the rebuild never
+writes — the golden crate carries its own `[profile.release]` and so is excluded from the
+contracts workspace, and `stellar contract build` writes to *its* target directory. That gate
+compared one untouched file with itself and passed unconditionally. The claim was true
+throughout; the check was not.
+
 **A side consequence worth recording.** Because `cliver` and `rsver` land **inside** the wasm,
 they are part of its bytes and therefore of its `wasm_hash`. A change of CLI version thus
 changes the artifact hash mechanically, even with identical generator output. This confirms the
@@ -721,7 +730,7 @@ transparency-chain forks, invalid key encodings, and revocation removal/mutation
 **Verdict.** Conforms as a mechanism; 🗓 as governance. The committed registry key is a
 deterministic development root — suitable for reproducible examples, not production governance,
 which needs independently controlled roots, durable checkpoints, rotation and revocation
-operations, monitoring, and an incident process. (Also recorded in PROGRESS.md as a residual.)
+operations, monitoring, and an incident process.
 
 ---
 

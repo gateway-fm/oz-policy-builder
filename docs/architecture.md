@@ -1278,8 +1278,7 @@ reviewed.
 > is exempt) and `build_args`. Absent: source commit and
 > dirty-tree status, template-pack hash, build-container image digest, canonicalization version,
 > and build target. Adding a field rehashes every manifest, so those land together with the
-> containerized builder at a release gate — tracked in PROGRESS.md under "Deliberately out of
-> scope, scheduled rather than dropped". Two further entries below are *referenced* rather than
+> containerized builder at a release gate — recorded in `docs/SCOPE.md`. Two further entries below are *referenced* rather than
 > recorded, and stay that way by design: the RecordingBundle hashes and the reviewed
 > policy/account/verifier code hashes are reached through `spec_hash` and `registry_snapshot`
 > instead of being copied into the manifest, which is what keeps the artifact chain acyclic.
