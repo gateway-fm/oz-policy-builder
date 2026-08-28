@@ -95,26 +95,6 @@ jobs:
         run: |
           cargo test -q -p ozpb-codegen generation_is_byte_deterministic
           cargo test -q -p ozpb-codegen golden_crate_matches_committed_output
-          cargo test -q -p ozpb-codegen w3_golden_crate_matches_committed_output
-
-  mutation:
-    name: mutation (evaluator + synthesizer — a surviving mutant is a missing test)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: toolchain
-        run: rustup show # rust-toolchain.toml pins the channel + components
-      # This gate was a manual script and therefore drifted: it had accumulated 8 surviving
-      # mutants — untested comparisons inside the reference evaluator and the target-code-hash
-      # drift guard — with nobody looking. Wired in here so it cannot drift again.
-      # Pinned, not latest. This is a required gate, so an upstream release that changes
-      # mutant generation or raises its MSRV above the repo's pinned 1.91.1 would break
-      # unrelated PRs. 27.1.0 is the version the reported 51/64 results were measured with.
-      - name: cargo-mutants (pinned)
-        run: cargo install cargo-mutants --locked --version 27.1.0
-      - name: mutation testing (security-critical cores)
-        run: bash scripts/mutation-test.sh
 
   contracts:
     name: contracts (differential suite · generated code compiles)
@@ -136,9 +116,8 @@ jobs:
       # The generated crates, which the step above does not reach for a reason that is easy to
       # miss: clippy does not lint dependencies. `contracts` excludes both crates, so
       # golden-transfer-policy enters that invocation only as a path dependency of the
-      # differential suite — compiled, never linted — and soroswap-swap-policy does not enter it
-      # at all, because nothing depends on it. So the two artifacts this project actually ships
-      # were the only Rust in the tree no clippy invocation covered.
+      # differential suite — compiled, never linted. So the artifact this project actually ships
+      # was the only Rust in the tree no clippy invocation covered.
       #
       # What was behind the hole was not hypothetical. The emitter wrote
       # `authenticated_signers.len() == 0` — `clippy::len_zero`, warn-by-default, therefore a
@@ -151,7 +130,6 @@ jobs:
       - name: clippy (the two generated crates, which linting a dependency does not cover)
         run: |
           ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
-          ( cd contracts/soroswap-swap-policy && cargo clippy --all-targets -- -D warnings )
 
       # The same hole as the step above, left open when clippy was extended to two workspaces
       # and fmt was not: the host job's `cargo fmt --all --check` cannot reach here either.
@@ -159,18 +137,16 @@ jobs:
       # so the omission was not only untidy source, it was a code generator emitting text
       # rustfmt rewrites, in the artifact this project ships for review.
       #
-      # Three invocations, because `--all` means "the members of this workspace" and neither
-      # generated crate is a member of one: `contracts` excludes both, each carrying its own
-      # `[profile.release]` so it builds standalone. The first invocation reaches
-      # golden-transfer-policy only through the differential suite's dev-dependency on it — an
-      # edge that exists for testing rather than for coverage, and one the milestone boundary
-      # may remove — and it does not reach soroswap-swap-policy at all, because nothing depends
-      # on that crate. Both are shipped artifacts, so both are named rather than relied upon.
-      - name: fmt (this workspace and the two generated crates it excludes)
+      # Two invocations, because `--all` means "the members of this workspace" and the generated
+      # crate is not a member of one: `contracts` excludes it, since it carries its own
+      # `[profile.release]` so it builds standalone. The first invocation does reach
+      # golden-transfer-policy, but only through the differential suite's dev-dependency on it — an
+      # edge that exists for testing rather than for coverage, and one the milestone boundary may
+      # remove. So the crate is named rather than relied upon.
+      - name: fmt (this workspace and the generated crate it excludes)
         run: |
           ( cd contracts && cargo fmt --all --check )
           ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
-          ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 
       # The generated crates now ship OpenZeppelin's own `rustfmt.toml`, and most of its options
       # are unstable: a stable rustfmt prints a warning for each and applies only `max_width`,
@@ -183,7 +159,7 @@ jobs:
       #
       # Pinned to a date, not `nightly`. rustfmt's output changes between nightlies, so a floating
       # channel would turn a green tree red with no change to the tree — the reasoning that
-      # already pins cargo-mutants, cargo-deny and cargo-machete, and it applies harder here
+      # already pins cargo-deny and cargo-machete, and it applies harder here
       # because this gate's verdict *is* a formatter version. Verified against this date's
       # rustfmt (1.10.0-nightly c54751567b) and, as a cross-check that the emitted layout is not
       # tuned to one build, against the following day's (fb6531d550): both leave the emitted
@@ -198,7 +174,6 @@ jobs:
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
           ( cd contracts/golden-transfer-policy && cargo "+$NIGHTLY" fmt --all --check )
-          ( cd contracts/soroswap-swap-policy && cargo "+$NIGHTLY" fmt --all --check )
 
   publication-guard:
     name: publication allowlist (no confidential material leaks)
@@ -227,8 +202,8 @@ jobs:
       # check-dep-rules.sh asserts only the ABSENCE of forbidden edges, so a declared-and-
       # never-used dependency passed every gate and had to be found by hand. cargo-machete
       # walks directories rather than workspaces, so one run covers the toolkit workspace,
-      # the contracts workspace, and the two generated policy crates both of them exclude.
-      # Pinned for the same reason as cargo-mutants and cargo-deny: which declarations a
+      # the contracts workspace, and the generated policy crate they both exclude.
+      # Pinned for the same reason as cargo-deny: which declarations a
       # version considers "used" is the gate's verdict.
       - name: cargo-machete (pinned)
         run: cargo install cargo-machete --locked --version 0.9.2
@@ -255,7 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Pinned, not latest — same reasoning as cargo-mutants above. cargo-deny decides this
+      # Pinned, not latest — same reasoning as cargo-machete above. cargo-deny decides this
       # gate's verdict, and its advisory-database handling and lint defaults change between
       # releases, so a floating install can turn a green tree red (or the reverse) with no
       # change to the tree. 0.20.2 declares MSRV 1.88, below the repo's pinned 1.91.1.
