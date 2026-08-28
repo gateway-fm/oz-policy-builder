@@ -13,7 +13,39 @@ conformance pass, which added §15 and closed §6's open decision. Verified agai
 the repository as of that pass. Sections 9–14 record the subsystems that pass hardened; the
 disallowed-type gate that was pending at first compilation has since landed (§4).
 
-**Verdict legend:** ✅ conforms · ⚠️ diverges · ❌ gap · ℹ️ open decision
+**Verdict legend:** ✅ conforms · 🗓 later-milestone scope · ⚠️ diverges · ❌ gap · ℹ️ open decision ·
+— reference, not an assessment
+
+The distinction between the first two and the rest is the one worth reading carefully. 🗓 is
+not a softer ⚠️: it marks work this project has scoped and sequenced for a
+later milestone, so the section states a boundary of *this* milestone rather than a departure
+from anything the ecosystem asks. It is a statement about our own sequencing and not a delivery
+commitment — where something *is* a named tranche deliverable the section says so in its own
+words. ⚠️ appears once, on §15, where nine departures from OpenZeppelin's house rules are
+deliberate and each is argued in place; ❌ appears nowhere, and stays in the legend because the
+category exists and a later reading may need it.
+
+## Summary
+
+| § | Subject | Verdict | In one line |
+|---|---|---|---|
+| 1 | Serialization and hashing | ✅ | Canonical form is XDR throughout, with a versioned preimage an outside implementation can reproduce from `docs/CANONICAL-HASHING.md`. |
+| 2 | Artifact identity and verification | ℹ️ | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
+| 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
+| 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
+| 5 | Authorization model | ✅ / 🗓 | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
+| 6 | Errors and observability | ✅ / ℹ️ | Stable machine-readable error codes throughout; whether to emit an event on a successful `enforce` is undecided. |
+| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. We check the generator thoroughly; running them over what it generates is a decision, not a shortfall. |
+| 8 | Upgradeability and immutability | ✅ | No setters, no upgrade entry point. For an artifact whose value is "the reader sees exactly what executes", immutability is the requirement. |
+| 9 | Evidence provenance and RPC binding | ✅ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
+| 10 | Capability registry governance | ✅ / 🗓 | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
+| 11 | Evaluator and differential evidence | ✅ / 🗓 | An independent evaluator agrees with the real compiled contract on verdict and denial reason. It does not exercise a full smart account's `__check_auth` — later-milestone evidence. |
+| 12 | MCP surface and machine-readable failures | ✅ | Closed request schemas, generated JSON schemas, stable `E_*` codes, structured tool errors. |
+| 13 | Build containment | 🗓 | The local builder bounds environment, inputs, outputs, concurrency and time. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
+| 14 | Defaults and limits | — | Every default and bound, with the reasoning for each value. |
+| 15 | Contract code conventions | ✅ / ⚠️ | Measured against OpenZeppelin's own house rules rather than the platform: the emitted crate now satisfies their layout, formatting, imports, docs, storage-key and event conventions. Nine departures are deliberate and argued, and three upstream defects were found while doing it. |
+
+Read the section for the reasoning; nothing above is a claim the section does not support.
 
 Every claim here is meant to be checkable against the source it names — a SEP, a documentation
 page, a line of this repository, or a line of the platform's own implementation. Where something
@@ -74,8 +106,8 @@ recording the recorder accepts cannot fail only when it is hashed.
 
 **Verdict.** Conforms. The earlier "diverges" — three inconsistent mechanisms: JSON bytes in
 Rust declaration order, the hand-written signer encoding, and XDR only inside the contract —
-was resolved by action 1 of the table below, taken together with the schema-breaking rename in
-§3 so the format broke once rather than twice.
+was resolved by unifying on XDR, taken together with the schema-breaking rename in §3 so the
+format broke once rather than twice.
 
 **Honestly about the status of this requirement.** The platform does **not** oblige
 off-chain artifacts to be XDR; a JSON artifact would not have been a violation. The move was a strong
@@ -95,7 +127,7 @@ a Stellar contract cannot parse JSON at all, which closes the road to on-chain v
 
 ---
 
-## 2. Artifact identity and its verification ❌
+## 2. Artifact identity and its verification ℹ️ (verification SEPs are Draft)
 
 **What the platform has and ships.** The wasm section `contractmetav0` with serialized
 `SCMetaEntry` — the standardized way for an artifact to describe itself, specified by
@@ -141,7 +173,7 @@ rebuilding. SEP-58 states that the two are complementary and can coexist on the 
 Maturity has to be stated exactly, because it is easy to overstate in either direction. Both
 SEPs are Draft, and **no released `stellar-cli` implements SEP-58 support**. The command
 `stellar contract build` carries no subcommands at any tag from v20.0.0 through the current
-release v27.1.0 (2026-07-31), so `stellar contract build verify` does not exist — that spelling comes
+release v28.0.0 (2026-08-26), so `stellar contract build verify` does not exist — that spelling comes
 from `stellar/stellar-cli` PR #2525, which was closed without merging, and must not be written
 down as if it were shipped. Two PRs are open and unmerged: #2585 adds a `--verifiable` flag to
 `stellar contract build`, and #2586 adds `stellar contract verify` as a **sibling** of `build`
@@ -185,20 +217,44 @@ What this does **not** do is make the manifest verifiable by a third party — t
 SEP-55's signature or SEP-58's rebuild. It makes our own statement about the toolchain a checked
 one instead of an asserted one.
 
-**Verdict.** A gap, but more precisely: our artifacts are **readable** by standard tooling
-already (`stellar contract info meta` shows the SEP-46 keys the toolchain writes itself —
-`rsver`/`cliver`/`rssdkver` — and anyone can compute the wasm hash) — what they do not carry is
-any trace of provenance. Neither a reference to the spec the policy was derived from, nor the
-fields either verification SEP needs. Which is why the link "artifact ↔ specification" can today
-only be checked with our `BuildManifest` and our CLI.
+**Verdict on the provenance half: a deliberate divergence, and an open question we did not
+invent.** Our artifacts are **readable** by standard tooling already — `stellar contract info
+meta` shows the SEP-46 keys the toolchain writes itself (`rsver`/`cliver`/`rssdkver`) and anyone
+can compute the wasm hash. What they do not carry is any trace of provenance: neither a reference
+to the spec the policy was derived from, nor the fields either verification SEP needs. So the
+link "artifact ↔ specification" can today be checked only with our `BuildManifest` and our CLI.
 
-**Our reproducibility guarantee is weaker than the one SEP-58 assumes, and that is a gap rather
-than a different spelling of the same thing.** We pin rustc through `rust-toolchain.toml`, pin
+Nothing requires otherwise. No SEP obliges a contract to write meta of its own; both
+verification SEPs are Draft and no released `stellar-cli` implements either; neither the RFP this
+work answers nor the proposal that answered it asks for artifact verification. This section
+records a direction we intend to stay compatible with, not a rule we are failing. Adopting the
+vocabulary early would mean guessing at one specific unresolved point — SEP-58 keys on the
+SHA-256 of a *source archive*, and a contract generated on demand has no archive — and a guess
+the standard later contradicts is worse than the absence. The question is written up and raised
+where the SEP is being discussed; when it resolves, the answer is to adopt the standard's
+spelling rather than to keep our own.
+
+**Verdict on the reproducibility half: our own guarantee is narrower than it sounds, and this
+one is not waiting on anybody.** It is worth separating from the paragraph above, because that
+one is a standard in progress and this one is a limit of what we can currently promise. We pin
+rustc through `rust-toolchain.toml`, pin
 dependency versions, and build `--locked` (in `BUILD_ARGS`,
 `crates/build-runner/src/lib.rs:463-469`). SEP-58 pins the
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
-hash reproduces on a sufficiently similar host and is not guaranteed off it.
+hash reproduces on a sufficiently similar host and is not guaranteed off it. Containerised builds
+need no finished SEP, and as of `stellar-cli` **28.0.0** (released 26 August 2026) they need no
+tooling work either: `stellar contract build` can now run inside a container, pinning the
+toolchain by image tag or digest
+([stellar-cli #2678](https://github.com/stellar/stellar-cli/pull/2678)). That closes the build
+primitive and nothing else — the verification workflow SEP-58 assumes, `--verifiable` and
+`stellar contract verify`, is still unreleased
+([#2585](https://github.com/stellar/stellar-cli/pull/2585) and
+[#2586](https://github.com/stellar/stellar-cli/pull/2586) are open). So what remains here is
+ours: adopting the container build and pinning a digest, which is sequencing and cost rather
+than a missing standard or a missing tool. Until then, "byte-identical across
+two cold runs" means on comparable hosts, which is what CI measures and all this repository
+claims.
 
 **A side consequence worth recording.** Because `cliver` and `rsver` land **inside** the wasm,
 they are part of its bytes and therefore of its `wasm_hash`. A change of CLI version thus
@@ -444,7 +500,7 @@ the `$` carried no meaning worth an encoding exception.
 
 ---
 
-## 5. Authorization model ✅ / ⚠️ (external verifiers deferred)
+## 5. Authorization model ✅ / 🗓 (external verifiers deferred)
 
 **Platform principle.** A smart account is a contract implementing the custom account interface;
 `__check_auth` validates the proofs presented. OpenZeppelin's `stellar-accounts` formalizes this
@@ -461,7 +517,7 @@ tuple, then stateful invariants. Named signer predicates are strict by default, 
 signer to a live account rule cannot silently widen the generated grant, and zero
 authenticated signers always deny.
 
-**External verifier signers are deliberately unsupported in this milestone (⚠️).** An off-chain
+**External verifier signers are deliberately unsupported in this milestone (🗓).** An off-chain
 spec can name a verifier address and a verifier wasm hash, but the runtime OpenZeppelin signer
 value carries only the verifier address and key — nothing at authorization time binds that
 address to the recognized code. Registry recognition of a caller-supplied hash does not prove
@@ -560,7 +616,7 @@ state, which is what the earlier "no on-chain trace" verdict was about.
 
 ---
 
-## 7. External security tooling ⚠️
+## 7. External security tooling ℹ️ (customary tools, not protocol requirements)
 
 **What the ecosystem has.**
 - **Scout** (CoinFabrik) — a static analyzer specifically for Stellar contracts, with a catalog
@@ -621,7 +677,7 @@ overstates a guarantee costs more in that header than the same name would anywhe
 
 ---
 
-## 9. Evidence provenance and RPC binding ✅ / ⚠️
+## 9. Evidence provenance and RPC binding ✅ (RPC evidence, not ledger inclusion)
 
 **Platform principle.** Stellar RPC is a query interface, not a trust anchor: `getTransaction`
 returns what the configured endpoint says, `getLedgerEntries` reads current state, and nothing
@@ -640,7 +696,7 @@ under depth and size limits.
 `rpc_reported` means exactly "returned by the configured RPC endpoint" — it is not an inclusion
 proof. More importantly, serialized JSON is caller-controlled: the toolkit downgrades every
 bundle crossing the synthesize JSON boundary to `self_supplied`, so changing a `trust` field
-cannot mint RPC or indexer assurance (⚠️ — a future hosted service can preserve stronger
+cannot mint RPC or indexer assurance (a future hosted service could preserve stronger
 provenance only with an authenticated receipt or a server-side recording ID).
 
 `getLedgerEntries` observes contract executables at its reported latest ledger, which may be
@@ -650,7 +706,7 @@ execution time.
 
 ---
 
-## 10. Capability registry governance ✅ / ⚠️
+## 10. Capability registry governance ✅ / 🗓 (production governance is hosted-service work)
 
 **What we have.** Registry snapshots are content-addressed, threshold-signed, network-bound,
 versioned, chained by previous root, time-bounded, and checked against a persisted minimum
@@ -662,14 +718,14 @@ cannot remove a prior revocation or rewrite its reason or effective version, and
 survive registry restarts. Tests cover rollback, same-version equivocation with checkpoints,
 transparency-chain forks, invalid key encodings, and revocation removal/mutation.
 
-**Verdict.** Conforms as a mechanism; ⚠️ as governance. The committed registry key is a
+**Verdict.** Conforms as a mechanism; 🗓 as governance. The committed registry key is a
 deterministic development root — suitable for reproducible examples, not production governance,
 which needs independently controlled roots, durable checkpoints, rotation and revocation
 operations, monitoring, and an incident process. (Also recorded in PROGRESS.md as a residual.)
 
 ---
 
-## 11. Evaluator and differential evidence ✅ / ⚠️
+## 11. Evaluator and differential evidence ✅ / 🗓
 
 **What we have.** The reference evaluator interprets validated spec structures directly; it
 consumes no generated Rust and cannot depend on codegen — the missing edge is enforced in the
@@ -686,7 +742,7 @@ The differential suite is correspondingly **scoped**: it invokes the generated p
 directly in a Soroban test environment and compares verdict plus denial reason against the
 explicitly scoped `evaluate_generated_rule` model.
 
-**Verdict.** Conforms for what it claims. ⚠️ for what it does not: the suite does not exercise
+**Verdict.** Conforms for what it claims. 🗓 for what it does not: the suite does not exercise
 a full OpenZeppelin smart account's `__check_auth`, reviewed-policy composition, wallet
 installation, or live account state — later-milestone evidence, not implied by the phrase
 "compiled contract".
@@ -714,7 +770,7 @@ annotations remain hints, not authorization controls.
 
 ---
 
-## 13. Build containment ⚠️ (a local safeguard, not hosted isolation)
+## 13. Build containment 🗓 (a local safeguard; hosted isolation is later-milestone work)
 
 **What we have.** The local builder uses fixed commands and arguments, an offline `--locked`
 Cargo build, bounded source/wasm/log sizes, a bounded timeout with bounded version probes,
@@ -723,7 +779,9 @@ sanitized allowlisted child environment that excludes service and cloud credenti
 variables, plus a combined CPU budget so HTTP request concurrency multiplied by Cargo jobs
 cannot exceed the detected budget.
 
-**Verdict.** Diverges from what hosting would need, and says so. These controls provide no
+**Verdict.** A boundary of this milestone, stated rather than glossed: these controls are a
+local safeguard, not the isolation a hosted multi-tenant build service would need. They provide
+no
 cgroup memory/CPU/disk/PID quotas, namespaces, seccomp, per-job filesystem isolation, egress
 isolation, or cancellation on client disconnect. Tranche 1 therefore does not describe loopback
 HTTP or the local compiler as a safe multi-tenant hosted service; before hosting, this needs a
@@ -1014,31 +1072,12 @@ section cannot substitute for is a review by the maintainers whose conventions t
 action 3 is the route to that for security, and a contribution upstream would be the route for
 style.
 
----
+## One thing we deliberately do not do
 
-## Actions, by priority
-
-| # | Action | Section | Type |
-|---|---|---|---|
-| 1 | ~~Unify canonicalization on XDR~~ — **done.** `ScVal` built through `ScMap::sorted_from_entries` for ordering, explicit per-type rules, and a versioned preimage tagged with our own domains rather than the protocol's `HashIdPreimage`. Specified in `docs/CANONICAL-HASHING.md`, so an external implementation can reproduce a hash | 1 | breaking, done |
-| 2 | ~~Extend the counter's TTL on read/write, each extension ≤ the current `max_ttl()` and no further than `valid_until`~~ — **done.** `ttl_target` clamps to the rolling `max_ttl()` and saturates at the validity window; extension is threshold-conditional and withheld on denial and `uninstall` | 3 | operational, done |
-| 3 | Extend the TTL of the **contract instance and wasm code** separately — **done for the instance entry**, extended with the persistent entries; the shared wasm-code entry is deliberately left to the operator/installer (§3, action 2) | 3 | operational |
-| 4 | Emit `contractmeta!` with the artifact's provenance (`spec_hash` and the rest) into the SEP-46 section, and follow SEP-55's shape where `BuildManifest` asserts what SEP-55 attests. The restatement of `rsver`/`cliver`/`rssdkver` is no longer taken on trust — ~~reconcile against the wasm metadata and fail on divergence~~ **done** — but it is still a private shape | 2 | compatibility |
-| 5 | Run Scout and the Veridise checklist over the generated policies; a gate only after pinning the version, checking applicability, and defining a false-positive policy | 7 | security |
-| 6 | Apply to the Soroban Security Audit Bank | 7 | process |
-| 7 | ~~TTL tests in the soroban environment, advancing the ledger number~~ — **done**: `contracts/differential/tests/ttl.rs` (§3, action 4) | 3 | tests, done |
-| 8 | Settle where a generated contract's source archive is published, and by whom — SEP-58 requires `source_sha256` over its bytes and leaves `source_uri` optional | 2 | unresolved |
-| 9 | ~~Decide whether to publish an event on a **successful** `enforce`~~ — **done**, and the answer was yes: three events in the shape the library's own policies use, at a measured cost of 2,720 wasm bytes once and 264 bytes of event metadata per permitted call. Denials still come from the error code and RPC diagnostics, and cannot be published at all (§6) | 6 | done |
-| 10 | Decide whether to build inside a digest-pinned container image and record it as SEP-58 `bldimg`; pinning rustc and dependency versions pins neither the OS nor the container | 2 | compatibility |
-| 11 | ~~Rename the cap from "lifetime" to per-installation~~ — **done**, including the wire field, now `call_count_per_installation` in the committed example. Taken together with row 1 because both break the schema, and one break is cheaper than two. The registry snapshot no longer names it: a call cap is a `StateSpec`, and the snapshot's list is `Constraint`'s vocabulary | 3 | done |
-| 12 | Report upstream that `cargo build --target wasm32v1-none --release`, which their `CONTRIBUTING.md` and code-quality checklist both prescribe, cannot succeed for any crate in their workspace — the root enables soroban-sdk's `experimental_spec_shaking_v2`, whose build script requires `stellar contract build`. Reproduced; apparently unreported; no CI job of theirs would notice (§15) | 15 | upstream |
-| 13 | Offer the conventions work upstream, or at least ask a `stellar-contracts` maintainer to read a generated policy. §15 checks the artifact against their written rules; it cannot check it against their judgement | 15 | process |
-| 14 | Report upstream that all three of their policies embed the full `Context` in their enforce event, which is unbounded: a permitted authorization with a large argument publishes an event over `contract_events_size_bytes` and fails the transaction it approved, as a budget error rather than a policy decision. Reproduced on a policy built to their shape (§15, divergence 9); our own artifact now publishes a digest instead | 15 | upstream |
-
-Not on the list, and deliberately so: rejecting a policy at generation time because
-`valid_until` exceeds `max_ttl()`. That bound is sliding, measured from the current ledger, so a
-distant expiry is legitimate and is reached by successive extensions; refusing it would cut off
-the long-lived grant the tool exists to produce (§3, action 3).
+Reject a policy at generation time because `valid_until` exceeds `max_ttl()`. That bound is
+sliding, measured from the current ledger, so a distant expiry is legitimate and is reached by
+successive extensions; refusing it would cut off the long-lived grant the tool exists to produce
+(§3, action 3).
 
 ---
 
