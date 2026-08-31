@@ -101,7 +101,7 @@ pub struct GeneratedPolicyEnforced {
     /// equal contexts give equal digests, and a guessed low-entropy argument
     /// can be confirmed by recomputing it.
     pub context_hash: BytesN<32>,
-    /// The context rule this policy is attached to.
+    /// The context rule this event is about.
     pub context_rule_id: u32,
     /// Calls this installation may still permit after the one just spent. Zero
     /// means the installation can never permit again.
@@ -115,7 +115,7 @@ pub struct GeneratedPolicyInstalled {
     /// The smart account whose context rule this event is about.
     #[topic]
     pub smart_account: Address,
-    /// The context rule this policy is attached to.
+    /// The context rule this event is about.
     pub context_rule_id: u32,
 }
 
@@ -126,7 +126,7 @@ pub struct GeneratedPolicyUninstalled {
     /// The smart account whose context rule this event is about.
     #[topic]
     pub smart_account: Address,
-    /// The context rule this policy is attached to.
+    /// The context rule this event is about.
     pub context_rule_id: u32,
 }
 

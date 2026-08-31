@@ -955,7 +955,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
          argument can be confirmed by recomputing it.",
     ));
     out.push_str("    pub context_hash: BytesN<32>,\n");
-    out.push_str("    /// The context rule this policy is attached to.\n");
+    out.push_str("    /// The context rule this event is about.\n");
     out.push_str("    pub context_rule_id: u32,\n");
     if has_state {
         out.push_str(&render::wrap_comment(
@@ -979,7 +979,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     ] {
         out.push_str(&emit_doc("", &[summary.to_string()], &[]));
         out.push_str(&format!(
-            "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicy{verb} {{\n    /// The smart account whose context rule this event is about.\n    #[topic]\n    pub smart_account: Address,\n    /// The context rule this policy is attached to.\n    pub context_rule_id: u32,\n}}\n\n"
+            "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicy{verb} {{\n    /// The smart account whose context rule this event is about.\n    #[topic]\n    pub smart_account: Address,\n    /// The context rule this event is about.\n    pub context_rule_id: u32,\n}}\n\n"
         ));
     }
 
