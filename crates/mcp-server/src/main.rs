@@ -141,7 +141,7 @@ impl PolicyBuilderServer {
     /// fingerprint. NETWORK READ. Retention is short — outside it, use import.
     #[tool(
         name = "record_transaction",
-        description = "Record an executed Stellar transaction (by hash, via Soroban RPC) \
+        description = "Record an executed Stellar transaction (by hash, via Stellar RPC) \
                        into a RecordingBundle: the authorization tree, token movements, \
                        and dual hashes. Network read."
     )]
@@ -238,11 +238,11 @@ impl PolicyBuilderServer {
         Ok(Json(out))
     }
 
-    /// Generate and reproducibly build the immutable Soroban policy artifact. Resource
+    /// Generate and reproducibly build the immutable Stellar smart-contract policy artifact. Resource
     /// consuming, deterministic, and non-deploying — code-first, deploy-second (§6.2).
     #[tool(
         name = "generate_code",
-        description = "Generate and build the deterministic, immutable Soroban policy \
+        description = "Generate and build the deterministic, immutable Stellar smart-contract policy \
                        artifact for a PolicySpec rule: locked Rust source, Wasm, and a \
                        binding BuildManifest. Resource-consuming; never deploys or signs."
     )]
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn rpc_allowlist_blocks_ssrf_vectors() {
         let policy = RpcEndpointPolicy::from_csv(
-            "https://rpc.testnet.stellar.gateway.fm, https://soroban.example/rpc",
+            "https://rpc.testnet.stellar.gateway.fm, https://stellar.example/rpc",
         )
         .unwrap();
         // Exact allowlisted HTTPS endpoints are authorized.
@@ -574,7 +574,7 @@ mod tests {
         // Credentials are refused even against an allowlisted host — the allowlist is not a
         // substitute for stripping them.
         assert!(policy
-            .authorize("https://user:pass@soroban.example/rpc")
+            .authorize("https://user:pass@stellar.example/rpc")
             .is_err());
         assert!(policy
             .authorize("https://rpc.testnet.stellar.gateway.fm#frag")

@@ -43,7 +43,9 @@
 //! `install_extends_the_counter_entry_and_the_instance` proves a testnet/test-env behaviour, not a
 //! Mainnet one.
 
-use generated_sub_transfer_r0::{DataKey, GeneratedPolicy, GeneratedPolicyClient};
+use generated_sub_transfer_r0::contract::{
+    GeneratedPolicy, GeneratedPolicyClient, PolicyStorageKey,
+};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext};
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
@@ -56,6 +58,14 @@ use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 /// `PolicyError::CallCountExceeded` in the generated artifact. Named here so a test asserts the
 /// reason a call was refused rather than merely that it was.
 const CALL_COUNT_EXCEEDED: u32 = 7;
+
+/// `PolicyError::MissingState`, likewise named so a refusal is asserted by its reason.
+const MISSING_STATE: u32 = 8;
+
+/// The per-installation call cap compiled into the golden policy. A constant rather than a local
+/// per test: two spellings of the same compiled-in number is how a test starts passing against a
+/// policy that no longer has that cap.
+const MAX_CALLS: u32 = 12;
 
 const VALID_UNTIL: u32 = 4_223_456;
 
@@ -142,12 +152,12 @@ impl World {
         );
     }
 
-    fn counter_key(&self) -> DataKey {
-        DataKey::CallCount(self.account.clone(), 0)
+    fn counter_key(&self) -> PolicyStorageKey {
+        PolicyStorageKey::CallCount(self.account.clone(), 0)
     }
 
-    fn installed_key(&self) -> DataKey {
-        DataKey::Installed(self.account.clone(), 0)
+    fn installed_key(&self) -> PolicyStorageKey {
+        PolicyStorageKey::Installed(self.account.clone(), 0)
     }
 
     fn counter_ttl(&self) -> u32 {
@@ -377,11 +387,10 @@ fn spending_the_last_permitted_call_stops_buying_rent() {
     // the full target at exactly the moment the installation becomes permanently deny-only —
     // paying the largest possible rent for an artifact that can never permit again.
     let w = setup(Some(NARROW_MAX_TTL));
-    let max_calls = 12u32; // compiled into the golden policy
     w.advance_to(w.counter_ttl() / 2 + 1_000);
 
     // Spend every call but the last; each is still productive, so each may extend.
-    for _ in 0..max_calls - 1 {
+    for _ in 0..MAX_CALLS - 1 {
         w.enforce_once();
     }
 
@@ -475,12 +484,205 @@ fn installing_after_expiry_is_rejected_without_writing_state() {
         other => panic!("expired installation must be refused: {other:?}"),
     }
     for key in [
-        DataKey::Installed(account.clone(), 0),
-        DataKey::CallCount(account, 0),
+        PolicyStorageKey::Installed(account.clone(), 0),
+        PolicyStorageKey::CallCount(account, 0),
     ] {
         assert!(
             !env.as_contract(&policy, || env.storage().persistent().has(&key)),
             "failed installation wrote {key:?}"
         );
+    }
+}
+
+/// The read-only surface, against the real compiled contract.
+///
+/// The codegen tests say the two getters are emitted and that neither body extends a TTL; this
+/// says what they answer. Both matter, and only this one would notice a getter that compiled,
+/// exported, bought no rent and returned the wrong number.
+#[test]
+fn the_getters_report_the_installation_and_the_calls_left() {
+    // Before install, in an env of its own: `setup` installs, and the absent answers are half of
+    // what these two functions are for.
+    let env = Env::default();
+    env.mock_all_auths();
+    let policy = env.register(GeneratedPolicy, ());
+    let client = GeneratedPolicyClient::new(&env, &policy);
+    let account = Address::from_str(&env, &fx::golden_account_strkey());
+    assert!(
+        !client.is_installed(&0u32, &account),
+        "an uninstalled policy must report itself uninstalled"
+    );
+    // The count is an error rather than a zero — the same fail-closed reading of missing state
+    // that `enforce` uses, and the reason `is_installed` exists to answer the boolean instead.
+    match client.try_remaining_calls(&0u32, &account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "an absent counter must be MissingState, not a zero"
+        ),
+        other => panic!("remaining_calls on an uninstalled policy must refuse: {other:?}"),
+    }
+
+    let w = setup(None);
+    assert!(
+        w.client.is_installed(&0u32, &w.account),
+        "an installed policy must report itself installed"
+    );
+    assert_eq!(
+        w.client.remaining_calls(&0u32, &w.account),
+        MAX_CALLS,
+        "a fresh installation has its whole cap left"
+    );
+
+    // Each permitted call is one off the count, so the getter tracks the counter rather than
+    // recomputing something adjacent to it.
+    w.enforce_once();
+    assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS - 1);
+    w.enforce_once();
+    assert_eq!(w.client.remaining_calls(&0u32, &w.account), MAX_CALLS - 2);
+
+    // Spend the cap. The count bottoms out at zero rather than wrapping.
+    for _ in 2..MAX_CALLS {
+        w.enforce_once();
+    }
+    assert_eq!(
+        w.client.remaining_calls(&0u32, &w.account),
+        0,
+        "a spent installation has nothing left"
+    );
+    assert_eq!(
+        w.try_enforce_permitted(),
+        Err(soroban_sdk::Error::from_contract_error(CALL_COUNT_EXCEEDED)),
+        "the cap must really be spent for this to be a test about a spent cap"
+    );
+    assert!(
+        w.client.is_installed(&0u32, &w.account),
+        "a spent installation is still installed — only uninstall clears it"
+    );
+
+    // After uninstall, both go back to their absent answers.
+    w.client.uninstall(&w.rule(), &w.account);
+    assert!(!w.client.is_installed(&0u32, &w.account));
+    match w.client.try_remaining_calls(&0u32, &w.account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "uninstall removes the counter, so the count is missing again"
+        ),
+        other => panic!("remaining_calls after uninstall must refuse: {other:?}"),
+    }
+}
+
+/// A read buys no rent, on the real compiled contract and at every point in an installation's life.
+///
+/// The emitter-scan test says neither getter contains `extend_ttl`. This says what that means on
+/// the ledger: the three TTLs a permitted call moves are all unmoved by a query, whether the
+/// installation is fresh, part-spent or exhausted.
+///
+/// Measured at a decay below **half** the target, not merely below it. The host extends only when
+/// the current TTL has fallen to the threshold the caller passes, and the write paths pass
+/// `ttl / 2`; at a shallower decay the host declines the extension on its own and this test would
+/// pass whether or not the policy asked for one. That is not hypothetical — it is what happened at
+/// 90,000 ledgers in an earlier version of this file, where the marker still had 60,000 of a
+/// 100,000 target left: the emitter's guard could be removed with nothing observable changing.
+///
+/// Non-vacuity comes from the same world: after the reads, one permitted `enforce` moves all three
+/// TTLs to the target. Without that, an assertion that nothing moved would hold just as well
+/// against a contract that had lost the ability to extend at all.
+#[test]
+fn a_read_buys_no_rent() {
+    // A fresh world per case. Sharing one would let an earlier case's extension reset the decay
+    // the next case depends on — which it did: after a non-vacuity `enforce` the marker was five
+    // ledgers old, and the threshold assertion below caught it.
+    for (label, spent) in [
+        ("a fresh installation", 0u32),
+        ("a part-spent one", 5),
+        ("an exhausted one", MAX_CALLS),
+    ] {
+        let w = setup(Some(NARROW_MAX_TTL));
+        for _ in 0..spent {
+            w.enforce_once();
+        }
+        w.advance_to(NARROW_MAX_TTL * 3 / 5);
+        let before = (w.installed_ttl(), w.counter_ttl(), w.instance_ttl());
+        assert!(
+            before.0 > 0 && before.0 <= w.expected_target() / 2,
+            "{label}: the marker must be live and at or below the extension threshold ({} of \
+             {}), or the host declines an extension for its own reasons and this proves nothing",
+            before.0,
+            w.expected_target()
+        );
+
+        assert!(w.client.is_installed(&0u32, &w.account));
+        assert_eq!(
+            (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
+            before,
+            "{label}: `is_installed` must move no TTL"
+        );
+
+        assert_eq!(
+            w.client.remaining_calls(&0u32, &w.account),
+            MAX_CALLS - spent
+        );
+        assert_eq!(
+            (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
+            before,
+            "{label}: `remaining_calls` must move no TTL"
+        );
+
+        // Non-vacuity, in the same world and at the same decay: the write path does move them —
+        // except on the exhausted installation, which is the one case where the policy has
+        // deliberately stopped paying rent and there is no permitted call left to make.
+        if spent < MAX_CALLS {
+            w.enforce_once();
+            let target = w.expected_target();
+            assert_eq!(
+                (w.installed_ttl(), w.counter_ttl(), w.instance_ttl()),
+                (target, target, target),
+                "{label}: a permitted call must extend all three, or the reads above were \
+                 compared against a contract that cannot extend anything"
+            );
+        } else {
+            assert_eq!(
+                w.try_enforce_permitted()
+                    .expect_err("the cap is spent, so there is no permitted call left"),
+                soroban_sdk::Error::from_contract_error(CALL_COUNT_EXCEEDED),
+                "{label}: the non-vacuity check must fail for the cap and not for some other \
+                 reason"
+            );
+        }
+    }
+}
+
+/// `remaining_calls` refuses an installation whose marker is gone, and says so by its code.
+///
+/// The function documents `MissingState` for an absent installation; before this it documented
+/// that and then read the counter without ever looking at the marker, so the refusal it promised
+/// could not happen. The state below cannot arise through the contract's own entry points —
+/// `install` writes both entries and `uninstall` removes both — which is the reason to write the
+/// marker away by hand rather than the reason not to check for it: the check is what makes the
+/// documented refusal real, and what lets the function extend the marker's lifetime without
+/// having assumed it exists.
+#[test]
+fn remaining_calls_refuses_an_installation_whose_marker_is_gone() {
+    let w = setup(None);
+    assert_eq!(
+        w.client.remaining_calls(&0u32, &w.account),
+        MAX_CALLS,
+        "the installation must answer before its marker is removed, or this proves nothing"
+    );
+
+    let installed_key = w.installed_key();
+    w.env.as_contract(&w.policy, || {
+        w.env.storage().persistent().remove(&installed_key);
+    });
+
+    match w.client.try_remaining_calls(&0u32, &w.account) {
+        Err(Ok(error)) => assert_eq!(
+            error,
+            soroban_sdk::Error::from_contract_error(MISSING_STATE),
+            "a counter without its marker must refuse as MissingState"
+        ),
+        other => panic!("reading a counter whose marker is gone must be refused: {other:?}"),
     }
 }

@@ -1,5 +1,5 @@
 //! Deterministic code generation (architecture §4.4): `ValidatedSpec` → an immutable,
-//! per-grant specialized Soroban policy crate.
+//! per-grant specialized Stellar smart-contract policy crate.
 //!
 //! Templates, not free-form generation: every emitted statement comes from the fixed
 //! snippet set in this file; recorded values are embedded as validated literals, never
@@ -53,7 +53,7 @@ impl Default for Pins {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneratedCrate {
     pub crate_name: String,
-    /// Relative path → file contents ("Cargo.toml", "src/lib.rs").
+    /// Relative path → file contents ("Cargo.toml", "src/lib.rs", "src/contract.rs", …).
     pub files: BTreeMap<String, String>,
     /// Pre-build identity: hash of the normalized codegen input (§4.10). The exact wasm
     /// hash exists only post-build, in the BuildManifest — never here.
@@ -182,7 +182,10 @@ pub fn generate(
     files.insert("Cargo.lock".to_string(), emit_lockfile(&crate_name, pins)?);
     files.insert("Cargo.toml".to_string(), emit_cargo_toml(&crate_name, pins));
     files.insert("rust-toolchain.toml".to_string(), emit_rust_toolchain(pins));
-    files.insert("src/lib.rs".to_string(), emit_lib(&render_rule, &hash));
+    files.insert("rustfmt.toml".to_string(), emit_rustfmt_toml());
+    let (crate_root, contract) = emit_lib(&render_rule, &hash);
+    files.insert("src/lib.rs".to_string(), crate_root);
+    files.insert("src/contract.rs".to_string(), contract);
 
     let generated_bytes = files.values().try_fold(0usize, |total, body| {
         total
@@ -251,10 +254,169 @@ targets = ["wasm32v1-none"]
     )
 }
 
+/// A `<Event> { … }.publish(e);` statement inside a trait method.
+///
+/// Their form exactly: the struct is constructed at the emission site and published, with no
+/// `emit_*` free function in between. `code-quality.md` asks for that wrapper in a library module
+/// whose events are published from a *different* file than they are declared in; here declaration
+/// and use are one file and one crate, and a wrapper would add a name without adding a seam.
+///
+/// The layout is rustfmt's for this shape and was measured against it: a struct literal that fits
+/// `struct_lit_width` — `max_width` under the shipped config — stays on the `.publish` chain's own
+/// line, and one that does not takes a field per line with `.publish(e)` on the closing brace's
+/// line.
+///
+/// Only the second form occurs for the events this emitter currently produces: the narrowest of
+/// the three is 119 columns on one line, against a budget of 100. The one-line branch is kept
+/// anyway, and `both_publish_layouts_are_the_ones_rustfmt_would_choose` exercises it directly,
+/// because emission derives its layout instead of piping output through rustfmt — so an emitter
+/// that always broke the literal would silently ship a file `cargo fmt --check` rewrites, the
+/// moment an event narrow enough to fit exists. Which is a live possibility: a rule with no call
+/// cap already drops a field from the enforcement event.
+fn emit_publish(event: &str, fields: &[&str]) -> String {
+    let indent = "        ";
+    let one_line = format!("{indent}{event} {{ {} }}.publish(e);", fields.join(", "));
+    if one_line.chars().count() <= render::MAX_WIDTH {
+        return format!("\n{one_line}\n");
+    }
+    let mut out = format!("\n{indent}{event} {{\n");
+    for field in fields {
+        out.push_str(&format!("{indent}    {field},\n"));
+    }
+    out.push_str(&format!("{indent}}}\n{indent}.publish(e);\n"));
+    out
+}
+
+/// A doc comment in OpenZeppelin's prescribed shape.
+///
+/// `paragraphs` becomes the summary and any prose after it, then each non-empty section is
+/// emitted as a `# Heading` and a `*`-bullet list. Callers pass the sections in the order their
+/// conventions fix — `# Arguments` → `# Errors` → `# Events` → `# Notes` → `# Security Warning`,
+/// skipping what does not apply but never reordering — and an empty list drops its heading, which
+/// is what makes "skip what does not apply" a property of the data rather than of every call site.
+///
+/// Built rather than written out because an `# Errors` list is a function of the rule. A policy
+/// with no validity window can never raise `RuleExpired` and one with no call cap can never raise
+/// `CallCountExceeded`; a doc listing them regardless would be prose overclaiming its code, in the
+/// one artifact whose whole value is that its prose can be trusted against its behaviour.
+fn emit_doc(indent: &str, paragraphs: &[String], sections: &[(&str, Vec<String>)]) -> String {
+    let blank = format!("{indent}///\n");
+    let mut out = String::new();
+    for paragraph in paragraphs {
+        if !out.is_empty() {
+            out.push_str(&blank);
+        }
+        out.push_str(&render::wrap_comment(&format!("{indent}/// "), paragraph));
+    }
+    for (heading, bullets) in sections {
+        if bullets.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(&blank);
+        }
+        out.push_str(&format!("{indent}/// {heading}\n"));
+        out.push_str(&blank);
+        for bullet in bullets {
+            out.push_str(&render::wrap_comment_bullet(indent, bullet));
+        }
+    }
+    out
+}
+
+/// A `// ################## NAME ##################` section delimiter.
+///
+/// Their canonical form is eighteen hashes on each side (`code-quality.md`, "Module file
+/// layout"), and it is canonical in the strong sense: the rule says variations like `// === NAME
+/// ===` are to be rewritten to it. Built here from a repeat count so the two sides cannot drift,
+/// and so the count is stated once rather than in every emitted heading.
+///
+/// The section *names* are theirs, verbatim — ERRORS and EVENTS from `smart_account/mod.rs`
+/// (`:532`, `:574`), CONSTANTS / QUERY STATE / CHANGE STATE from every policy module, and HELPER
+/// FUNCTIONS from `policies/spending_limit.rs:445`, which is the closest analogue to this file
+/// since it is the one policy with private helpers of its own. (`smart_account/storage.rs:1210`
+/// spells the same section `HELPERS`; both are theirs, and the policy's spelling is the one to
+/// follow here.) `LOW-LEVEL HELPERS` was emitted for some time and is in neither file.
+///
+/// STORAGE KEYS is ours, and the reason is not that their key types live elsewhere — two of the
+/// four sit in the same file as the policy that uses them. It is that upstream puts a storage-key
+/// enum in the *undelimited preamble* above the first heading, as the last item before CONSTANTS
+/// (`simple_threshold.rs:119-123`, `weighted_threshold.rs:152-159`, `spending_limit.rs:143-148`,
+/// and `storage.rs:25` above QUERY STATE) — so it is under no heading at all. A generated file
+/// cannot follow that: it opens with a delimiter and never has an undelimited region, because
+/// emitting one would mean a reader could not tell a section boundary from the top of the file.
+/// So the enum gets a heading, and the heading is a name of our own.
+fn section(name: &str) -> String {
+    let rule = "#".repeat(18);
+    format!("// {rule} {name} {rule}\n\n")
+}
+
+/// OpenZeppelin's own rustfmt configuration, shipped inside the generated crate.
+///
+/// The option set is copied verbatim from `OpenZeppelin/stellar-contracts` at v0.7.2
+/// (`rustfmt.toml`), in their order. The point is not tidiness: the generated crate is meant to
+/// be read and re-checked by the library's own maintainers, and without their config a reviewer
+/// running the command their `CONTRIBUTING.md` prescribes — `cargo +nightly fmt --all -- --check`
+/// — gets a diff on an artifact our gate calls clean. Shipping it makes the two gates one gate.
+///
+/// Emission derives its layout from these settings instead of piping output through rustfmt,
+/// which would put the rustfmt version among the inputs to every shipped wasm hash.
+///
+/// Upstream's file ends with a commented-out block proposing `wrap_comments` and
+/// `format_code_in_doc_comments`, both of which are already enabled above it. That contradiction
+/// is not copied; the options are.
+fn emit_rustfmt_toml() -> String {
+    r#"# GENERATED POLICY CRATE — DO NOT EDIT BY HAND (see src/lib.rs header).
+#
+# OpenZeppelin's own rustfmt configuration, so that `cargo fmt --check` on this crate is the same
+# gate the stellar-contracts library holds itself to. Copied from OpenZeppelin/stellar-contracts
+# v0.7.2 `rustfmt.toml`; most of these options are unstable, hence `unstable_features`, and a
+# stable rustfmt warns about those and applies the rest.
+format_macro_bodies = true
+format_macro_matchers = true
+format_strings = true
+imports_granularity = "Crate"
+reorder_impl_items = true
+group_imports = "StdExternalCrate"
+use_small_heuristics = "Max"
+use_field_init_shorthand = true
+wrap_comments = true
+format_code_in_doc_comments = true
+unstable_features = true
+"#
+    .to_string()
+}
+
+/// The `// NOTE:` comment the library's caller-managed-state exception asks for.
+///
+/// `code-quality.md:344` states the rule — "**Library-managed** entries extend TTL on read, not
+/// on write" — and `:376-381` states the exception this artifact falls under: a utility whose
+/// instance state is managed by the calling contract does *not* extend on read, `paused()` is the
+/// canonical example, and such a reader is expected to carry an explanatory `// NOTE:`.
+///
+/// Emitted into both getters rather than once, from one string so the two cannot drift. Their
+/// pattern puts the note where someone editing the reader will see it, and the edit it is there
+/// to stop is a well-meaning one: a reader that touches storage and does not extend looks like an
+/// oversight, and adding the call back is a one-line change that no compiler objects to.
+fn caller_managed_ttl_note() -> String {
+    render::wrap_comment(
+        "        // ",
+        "NOTE: deliberately does not extend TTL. This entry's lifetime belongs to the smart \
+         account, which creates it through `install` — the path that extends — and removes it \
+         through `uninstall`, which extends nothing, because buying rent on the way out would pay \
+         for state about to be gone. A query is not the account exercising its grant — any caller \
+         may make one — so it must not buy rent for state it does not own. The library's exception for \
+         caller-managed state (`code-quality.md:376-381`, whose canonical case is `paused()`) is \
+         this case, not the extend-on-read rule at `:344`.",
+    )
+}
+
 /// The TTL-extension statements shared by `enforce` and `install`.
 ///
-/// Both entry points need identical wording, and a threshold that drifted between them would be
-/// a cost bug rather than a compile error, so the text is written once.
+/// Those two and no others: a read extends nothing, for the reason
+/// [`caller_managed_ttl_note`] states. Both write paths need identical wording, and a threshold
+/// or an entry set that drifted between them would be a cost bug rather than a compile error, so
+/// the text is written once.
 ///
 /// The host extends when `current_ttl <= threshold` (`soroban-env-host`, `Storage::extend_ttl`).
 /// The SDK's own doc comment says "below", which is off by one; the wording here follows the host.
@@ -264,13 +426,38 @@ targets = ["wasm32v1-none"]
 /// When the rule caps its call count, `remaining` gates the whole block: an installation that has
 /// just spent its last permitted call can never permit again, and buying the largest possible
 /// extension at exactly that moment is the opposite of what the artifact claims to do. The shared
-/// instance and code entries stay alive through whichever *other* installation is still active,
-/// and when none is, the contract is useless to everyone and is meant to expire.
-fn ttl_extension_block(has_state: bool) -> &'static str {
+/// instance entry stays alive through whichever *other* installation is still active, and when
+/// none is, the contract is useless to everyone and is meant to expire. The **code** entry is not
+/// extended here at all — it is shared with every other deployment of the same wasm, so its rent
+/// is not this policy's to pay (§3 of the conformance record states that as a decision).
+///
+/// The chained `extend_ttl` calls are one line each: `chain_width` is `max_width` under
+/// `use_small_heuristics = "Max"`, so the three-segment chain no longer breaks across lines the
+/// way rustfmt's default 60 forced it to.
+fn ttl_extension_block(has_state: bool) -> String {
     if has_state {
-        "\n        // Not a permission check — every decision above is already made. This keeps the\n        // entries the policy depends on out of archival while it can still permit something.\n        if remaining > 0u32 {\n            let ttl = ttl_target(e);\n            if ttl > 0 {\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage()\n                    .persistent()\n                    .extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }\n        }\n"
+        format!(
+            "\n{}        if remaining > 0u32 {{\n            let ttl = ttl_target(e);\n            if ttl > 0 {{\n                e.storage().instance().extend_ttl(ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n                e.storage().persistent().extend_ttl(&key, ttl / 2, ttl);\n            }}\n        }}\n",
+            render::wrap_comment(
+                "        // ",
+                "The `remaining` gate is not a permission check — nothing here decides \
+                 anything. It is the rent rule: an installation that can never permit again \
+                 stops paying. Otherwise this keeps the entries the policy depends on, and the \
+                 contract instance, out of archival."
+            )
+        )
     } else {
-        "\n        // Not a permission check — every decision above is already made. This keeps this\n        // installation, contract instance and code out of archival while it can permit.\n        let ttl = ttl_target(e);\n        if ttl > 0 {\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n            e.storage()\n                .persistent()\n                .extend_ttl(&installed_key, ttl / 2, ttl);\n        }\n"
+        format!(
+            "\n{}        let ttl = ttl_target(e);\n        if ttl > 0 {{\n            e.storage().instance().extend_ttl(ttl / 2, ttl);\n            e.storage().persistent().extend_ttl(&installed_key, ttl / 2, ttl);\n        }}\n",
+            render::wrap_comment(
+                "        // ",
+                "Not a permission check — nothing here decides anything. This keeps this \
+                 installation and the contract instance out of archival. The wasm code entry is \
+                 deliberately not extended: it is shared with every other deployment of the same \
+                 code. With no call cap there is no condition under which the extension is \
+                 withheld."
+            )
+        )
     }
 }
 
@@ -280,11 +467,40 @@ fn ttl_extension_block(has_state: bool) -> &'static str {
 /// and rent arithmetic between the constants and the signer set puts prose about archival ahead of
 /// the first permission. Top-to-bottom now reads constants → signers → checks, with the storage
 /// bookkeeping after `uninstall`.
-fn emit_ttl_target(has_valid_until: bool) -> &'static str {
+fn emit_ttl_target(has_valid_until: bool) -> String {
+    let summary = render::wrap_comment(
+        "/// ",
+        "Ledgers this policy's own entries should be kept alive for.",
+    );
     if has_valid_until {
-        "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// Bounded twice. By the network's rolling `max_ttl()`, because a single extension can\n/// never reach further — a distant window is approached across successive calls rather\n/// than in one step. And by the rule's own window, because past VALID_UNTIL_LEDGER every\n/// entry point denies, so extending beyond it would pay rent for an artifact that can no\n/// longer permit anything.\n///\n/// `saturating_sub` is defense in depth after the explicit expiry checks: later changes\n/// cannot turn an already-expired rule into the largest possible extension.\nfn ttl_target(e: &Env) -> u32 {\n    let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());\n    let max = e.storage().max_ttl();\n    if remaining < max {\n        remaining\n    } else {\n        max\n    }\n}\n"
+        format!(
+            "\n{summary}///\n{}///\n{}fn ttl_target(e: &Env) -> u32 {{\n    let remaining = VALID_UNTIL_LEDGER.saturating_sub(e.ledger().sequence());\n    let max = e.storage().max_ttl();\n    if remaining < max {{\n        remaining\n    }} else {{\n        max\n    }}\n}}\n",
+            render::wrap_comment(
+                "/// ",
+                "Bounded twice. By the network's rolling `max_ttl()`, because a single extension \
+                 can never reach further — a distant window is approached across successive calls \
+                 rather than in one step. And by the rule's own window, because past \
+                 VALID_UNTIL_LEDGER the two entry points that extend — `enforce` and `install` — \
+                 both deny, so the policy can never permit anything again and extending beyond it \
+                 would buy rent for an artifact with no remaining use. `uninstall` and the \
+                 getters do keep working past expiry, deliberately: an account must always be \
+                 able to detach, and asking about a dead installation is a fair question."
+            ),
+            render::wrap_comment(
+                "/// ",
+                "`saturating_sub` is defense in depth after the explicit expiry checks: later \
+                 changes cannot turn an already-expired rule into the largest possible extension."
+            ),
+        )
     } else {
-        "\n/// Ledgers this policy's own entries should be kept alive for.\n///\n/// This rule carries no validity window, so the only bound is the network's rolling\n/// `max_ttl()`; a single extension can never reach further than that.\nfn ttl_target(e: &Env) -> u32 {\n    e.storage().max_ttl()\n}\n"
+        format!(
+            "\n{summary}///\n{}fn ttl_target(e: &Env) -> u32 {{\n    e.storage().max_ttl()\n}}\n",
+            render::wrap_comment(
+                "/// ",
+                "This rule carries no validity window, so the only bound is the network's rolling \
+                 `max_ttl()`; a single extension can never reach further than that."
+            ),
+        )
     }
 }
 
@@ -298,8 +514,23 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 publish = false
 
+# Every package in OpenZeppelin's workspace declares this, so a generated crate dropped into it
+# is shaped like the rest. Cargo ignores `package.metadata`, and the key is inert in a standalone
+# crate, which is what makes carrying it free.
+[package.metadata.stellar]
+cargo_inherit = true
+
+# `crate-type` keeps `lib` alongside `cdylib`. Only `cdylib` is needed to compile a policy for the
+# chain; `lib` is what lets a generated crate be linked into a test process and compared against a
+# reference evaluator without going through the wasm host. That is not a claim that something
+# already links *this* crate — for most generated policies nothing does — it is why the target is
+# emitted at all. `stellar-accounts` itself declares the same pair (its own `Cargo.toml`), so this
+# is the library's shape rather than a departure from it; their example policies are the ones that
+# ship `cdylib` alone. `doctest = false` is theirs too, for the reason a contract crate always has
+# — no doctests to run.
 [lib]
 crate-type = ["lib", "cdylib"]
+doctest = false
 
 [dependencies]
 soroban-sdk = "={sdk}"
@@ -324,12 +555,16 @@ lto = true
     )
 }
 
-/// Emit `src/lib.rs`.
+/// Emit the crate root and the contract module, in that order.
+///
+/// Two files since the split, and the split is why this returns a pair rather than writing them:
+/// the root is a header and a `pub mod contract;`, the module is the rule. A caller that took
+/// only the first would have the half that does not vary with the spec.
 ///
 /// Takes a [`RenderRule`], never a `RuleSpec`: every value here has already been through its
 /// validating constructor, so no raw spec string is in scope to interpolate (§4.4 rendering
 /// safety). Emission is infallible for a well-formed `RenderRule`.
-fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
+fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     let template_family = &rule.template_family;
     let has_state = rule.has_state();
     let has_scval = rule.has_scval();
@@ -342,76 +577,262 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     let compiled_signers = rule.compiled_signers();
     let has_external = rule.has_external_signer();
 
+    let mut out = String::from("// SPDX-License-Identifier: Apache-2.0 OR MIT\n");
+    // The header, wrapped rather than written pre-broken.
+    //
+    // `wrap_comments = true` re-flows any comment paragraph containing a line wider than
+    // `comment_width`, so a hand-broken header is a fixed point only by luck — and two of these
+    // lines carry values whose width is not ours to choose. The recorded hash is 64 characters,
+    // which no label leaves room for, and a template-family identifier may be 64 (see
+    // `render::TemplateFamily`), so the first line's width is a property of the spec. Emitting
+    // through the same greedy fill rustfmt uses makes every paragraph here stable for any input,
+    // and leaves prose edits in this function free of layout arithmetic.
+    //
+    // The two rent paragraphs are built from the rule's shape rather than written once for every
+    // shape, because both of their load-bearing claims are shape-dependent: which entry points
+    // extend (`remaining_calls` exists only where a cap does) and whether anything bounds an
+    // unauthenticated read (only a validity window does). A single fixed wording would be false
+    // for one shape or the other, in the one artifact whose prose has to be readable as an
+    // assertion about its own behaviour.
+    // The check order, with the cap clause only where a cap exists. A rule with no
+    // `max_calls` has no counter, so describing how its count behaves is prose about a check the
+    // artifact does not carry — the same defect as documenting a refusal it cannot raise.
+    let stateful = if has_state {
+        "then stateful invariants (missing state denies; the call cap never resets within an \
+         installation — only `uninstall`, which the smart account alone can call, clears it)"
+    } else {
+        "then stateful invariants (missing state denies; this rule caps nothing, so the only \
+         state is the installation marker)"
+    };
+    let check_order = format!(
+        "Check order is the generated-code contract (§4.4): account authorization and \
+         installation state first, then the signer predicate (the OZ account defers signer \
+         validation to policies), then strict signer-set, then target/function/tuple scoping, \
+         {stateful}. No setters, no upgrade entry point."
+    );
+    let cap_clause = if has_state {
+        " Once a call cap is spent the policy stops extending entirely: it can never permit \
+         again, so it stops paying rent."
+    } else {
+        ""
+    };
+    let storage_lifetime = format!(
+        "Storage lifetime is maintained **only while this policy is used**: a permitted call, or \
+         `install`, extends the entries it depends on toward the rule's validity window where \
+         one is set and the network maximum otherwise — never past either. An installed but idle \
+         policy still drifts into archival, and so does one that only ever denies, since a \
+         denial reverts the extension along with everything else. First use after a long gap may \
+         therefore cost a restore.{cap_clause}"
+    );
+    let rent_bound = "Those two entry points are the only ones that extend anything. A query \
+                      through the getters is a pure read: it buys no rent, because these entries \
+                      belong to the smart account's install/uninstall lifecycle rather than to \
+                      this contract, and a caller who is not the account has no business paying \
+                      to keep them alive. So the set of callers who can make this policy cost \
+                      anything is exactly the set who can use it."
+        .to_string();
+    // Paragraph by paragraph, so the blank `//!` separators stay where they are; rustfmt joins
+    // lines only inside a paragraph it has to re-flow, and it never has to re-flow these.
+    for paragraph in [
+        format!("GENERATED POLICY — template family `{template_family}`."),
+        format!("Normalized codegen input hash: {hash}"),
+        String::new(),
+        "DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM SOURCE MODE \
+         (architecture §4.4) — spec conformance, differential testing, and generated-mode \
+         guarantees no longer apply to an edited copy."
+            .to_string(),
+        String::new(),
+        check_order,
+        String::new(),
+        storage_lifetime,
+        String::new(),
+        rent_bound,
+    ] {
+        if paragraph.is_empty() {
+            out.push_str("//!\n");
+        } else {
+            out.push_str(&render::wrap_comment("//! ", &paragraph));
+        }
+    }
+    // The crate root ends here, and the contract goes in a module of its own. That is the shape
+    // OpenZeppelin's example policies have — `#![no_std]` and a `mod contract;`, with the contract
+    // in `src/contract.rs` — and the layout rule their checklist states for an example crate.
+    //
+    // `pub mod`, not `mod`. Theirs are `cdylib`-only, so nothing needs to name the types from
+    // outside; ours also builds as a `lib` for the in-process differential suite, which imports
+    // `PolicyStorageKey` and the contract type. `pub mod` keeps them reachable and keeps the crate
+    // root to declarations alone, which is the other half of their rule.
+    //
+    // Their example roots also carry `#![allow(dead_code)]`. Ours must not: a suppression is a
+    // violation of their own lint rule, and this emitter goes to some length to emit no dead code
+    // — `unbalanced_constants` exists to prove a constant is never emitted without its use site —
+    // so the attribute would hide the very thing that test checks for.
+    out.push_str("#![no_std]\n\npub mod contract;\n");
+    let crate_root = out;
+
     let mut out = String::new();
-    out.push_str(&format!(
-        "// SPDX-License-Identifier: Apache-2.0 OR MIT\n\
-         //! GENERATED POLICY — template family `{template_family}`.\n\
-         //! Normalized codegen input hash: {hash}\n\
-         //!\n\
-         //! DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM\n\
-         //! SOURCE MODE (architecture §4.4) — spec conformance, differential testing,\n\
-         //! and generated-mode guarantees no longer apply to an edited copy.\n\
-         //!\n\
-         //! Check order is the generated-code contract (§4.4): account authorization and\n\
-         //! installation state first, then the signer predicate (the OZ account defers\n\
-         //! signer validation to policies), then strict\n\
-         //! signer-set, then target/function/tuple scoping, then stateful invariants\n\
-         //! (missing state denies; the call cap never resets within an installation —\n\
-         //! only `uninstall`, which the smart account alone can call, clears it).\n\
-         //! No setters, no upgrade entry point.\n\
-         //!\n\
-         //! Storage lifetime is maintained **only while this policy is used**: a permitted\n\
-         //! call, or `install`, extends the entries it depends on toward the rule's validity\n\
-         //! window where one is set and the network maximum otherwise — never past either.\n\
-         //! An installed but idle policy still drifts into archival, and so does one that\n\
-         //! only ever denies, since a denial reverts the extension along with everything\n\
-         //! else. First use after a long gap may therefore cost a restore. Once a call cap\n\
-         //! is spent the policy stops extending entirely: it can never permit again, so it\n\
-         //! stops paying rent.\n"
+    out.push_str(&render::wrap_comment(
+        "//! ",
+        "The compiled rule. Its guarantees, its check order and the hash of the codegen input it \
+         came from are stated in the crate root.",
     ));
-    out.push_str("#![no_std]\n\n");
+    out.push('\n');
 
     // Imports (conditional to keep the generated crate warning-free).
     //
-    // Several statements rather than one brace group naming every item: that group ran to 148
-    // characters, so rustfmt reflowed it, and the fill it picks depends on which items the rule
-    // needs — a formatting choice that would then vary from policy to policy. Split this way no
-    // statement exceeds 89 characters for any combination below, so nothing reflows. The order
-    // is `reorder_imports`': module paths (`Ident`) before brace groups (`List`), and inside a
-    // group snake_case before CamelCase — which is why types and macros are two groups rather
-    // than one sorted list.
-    out.push_str("use soroban_sdk::auth::Context;\n");
-    if has_scval {
-        out.push_str("use soroban_sdk::xdr::ToXdr;\n");
-    }
-    let mut sdk_macros: Vec<&str> = vec![
+    // One grouped `use` per crate. That is what `imports_granularity = "Crate"` produces — the
+    // setting in OpenZeppelin's own `rustfmt.toml` — and what both sibling policy examples show
+    // (`examples/multisig-smart-account/threshold-policy/src/contract.rs:8-12` and
+    // `spending-limit-policy/src/contract.rs:18-22` at v0.7.2).
+    //
+    // This was previously five separate statements, deliberately: under *default* rustfmt one
+    // brace group naming every item ran to 148 characters, so rustfmt reflowed it, and the fill
+    // it chose depended on which items the rule needed — a formatting choice that would then
+    // vary from policy to policy. `render::use_statement` removes the reason for the split by
+    // deriving that same fill, so the grouped form is stable for every combination instead of
+    // being avoided.
+    let mut sdk: Vec<&str> = vec![
+        "auth::Context",
         "contract",
         "contracterror",
+        "contractevent",
         "contractimpl",
         "contracttype",
         "panic_with_error",
+        "Address",
+        "Env",
+        "Symbol",
+        "TryFromVal",
+        "Val",
+        "Vec",
     ];
-    sdk_macros.sort();
-    out.push_str(&format!(
-        "use soroban_sdk::{{{}}};\n",
-        sdk_macros.join(", ")
-    ));
-    let mut sdk_types: Vec<&str> = vec!["Address", "Env", "Symbol", "TryFromVal", "Val", "Vec"];
+    // `xdr::ToXdr` and `BytesN` are unconditional: every policy digests the context it permitted
+    // into its enforcement event (see the EVENTS section), so the serializer and the digest's type
+    // are needed whatever the rule's shape. `Bytes` stays conditional — `sha256` takes one but the
+    // source never names the type, so only an exact-`ScVal` comparison or an external signer's key
+    // writes `Bytes` into the file.
+    sdk.push("xdr::ToXdr");
+    sdk.push("BytesN");
     if has_scval || has_external {
-        sdk_types.push("Bytes");
+        sdk.push("Bytes");
     }
-    sdk_types.sort();
-    out.push_str(&format!("use soroban_sdk::{{{}}};\n", sdk_types.join(", ")));
-    out.push_str("use stellar_accounts::policies::Policy;\n");
-    out.push_str("use stellar_accounts::smart_account::{ContextRule, Signer};\n\n");
+    out.push_str(&render::use_statement("soroban_sdk", &sdk));
+    out.push_str(&render::use_statement(
+        "stellar_accounts",
+        &["policies::Policy", "smart_account::{ContextRule, Signer}"],
+    ));
+    out.push('\n');
 
+    out.push_str(&section("ERRORS"));
     // Error enum (stable numbering; mirrors the reference evaluator's deny reasons).
+    //
+    // Every variant is declared whatever the rule's shape, so a code means the same thing across
+    // artifacts — which is also why the per-entry-point `# Errors` lists below are built from the
+    // shape instead of copying this list: the enum is the vocabulary, not the set of reachable
+    // refusals for a given policy.
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "Every reason this policy can refuse an authorization, an install or an uninstall."
+                .to_string(),
+            "The numbering is the published deny-reason contract rather than a position in a \
+             range: a code identifies one refusal, an independently written reference evaluator \
+             asserts the same mapping, and every variant is declared in every generated policy \
+             whatever its rule's shape — so a reader can read a code the same way across \
+             artifacts."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str(
-        "#[contracterror]\n#[derive(Copy, Clone, Debug, PartialEq)]\n#[repr(u32)]\npub enum PolicyError {\n    ZeroSigners = 1,\n    PredicateUnsatisfied = 2,\n    SignerSetDiverged = 3,\n    TargetMismatch = 4,\n    FunctionNotAllowed = 5,\n    NoTupleMatched = 6,\n    CallCountExceeded = 7,\n    MissingState = 8,\n    RuleExpired = 9,\n    AlreadyInstalled = 10,\n    NotInstalled = 11,\n}\n\n",
+        "#[contracterror]\n#[derive(Copy, Clone, Debug, PartialEq)]\n#[repr(u32)]\npub enum PolicyError {\n",
     );
+    for (variant, code, doc) in [
+        (
+            "ZeroSigners",
+            1,
+            "No signer authenticated this authorization. The account defers signer validation \
+             to its policies, so an empty set has to be refused here.",
+        ),
+        (
+            "PredicateUnsatisfied",
+            2,
+            "The authenticated signers do not satisfy the rule's signer predicate.",
+        ),
+        (
+            "SignerSetDiverged",
+            3,
+            "The context rule's live signer set is no longer the one compiled in, so the grant \
+             a reader approved is not the grant being exercised.",
+        ),
+        (
+            "TargetMismatch",
+            4,
+            "The invoked contract is not the one this policy is scoped to.",
+        ),
+        (
+            "FunctionNotAllowed",
+            5,
+            "The invoked function is not one of the allowed calls, or the authorization is not \
+             a contract invocation at all.",
+        ),
+        (
+            "NoTupleMatched",
+            6,
+            "The arguments satisfy no allowed call tuple: arity, a constraint, or both.",
+        ),
+        (
+            "CallCountExceeded",
+            7,
+            "This installation has used every call its cap allows. The count never resets \
+             within an installation.",
+        ),
+        (
+            "MissingState",
+            8,
+            "State this policy owns for the (smart account, context rule) is absent. Missing \
+             state denies rather than reading as zero.",
+        ),
+        (
+            "RuleExpired",
+            9,
+            "The ledger is past the rule's validity window.",
+        ),
+        (
+            "AlreadyInstalled",
+            10,
+            "The policy is already installed for this (smart account, context rule).",
+        ),
+        (
+            "NotInstalled",
+            11,
+            "The policy is not installed for this (smart account, context rule).",
+        ),
+    ] {
+        out.push_str(&render::wrap_comment("    /// ", doc));
+        out.push_str(&format!("    {variant} = {code},\n"));
+    }
+    out.push_str("}\n\n");
 
+    out.push_str(&section("STORAGE KEYS"));
+    // `PolicyStorageKey`, not `DataKey`: their convention is `<Module>StorageKey`
+    // (`code-quality.md`, "Naming"), and every storage-key enum in the library follows it —
+    // `SimpleThresholdStorageKey` at `policies/simple_threshold.rs:121`, and the same shape in
+    // the weighted-threshold and spending-limit modules. `Policy` is the module name our error
+    // enum already uses, so the pair reads together.
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "Keys for the state this policy owns.".to_string(),
+            "Every variant is segregated by (smart account, context rule id), which is what lets \
+             one deployment serve any number of accounts without their installations observing \
+             each other."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str(
-        "#[contracttype]\n#[derive(Clone, Debug)]\npub enum DataKey {\n    /// Installation marker, segregated by (smart account, context rule id).\n    Installed(Address, u32),\n",
+        "#[contracttype]\n#[derive(Clone, Debug)]\npub enum PolicyStorageKey {\n    /// Installation marker, segregated by (smart account, context rule id).\n    Installed(Address, u32),\n",
     );
     if has_state {
         out.push_str(
@@ -420,6 +841,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     out.push_str("}\n\n");
 
+    out.push_str(&section("CONSTANTS"));
     // Compiled-in constants.
     out.push_str(&format!("const TARGET: &str = \"{}\";\n", rule.target));
     if let Some(ledger) = rule.valid_until_ledger {
@@ -449,124 +871,376 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     }
     out.push('\n');
 
-    // Expected signer set (sorted canonical order — deterministic).
-    if !dynamic {
-        out.push_str(
-            "fn expected_signers(e: &Env) -> Vec<Signer> {\n    soroban_sdk::vec![\n        e,\n",
-        );
-        // Already in canonical signer order — see `RenderRule::from_rule`.
-        //
-        // `Address::from_str` is written across four lines because rustfmt writes it that way:
-        // a strkey is always 56 characters, so the argument list is 61 and exceeds rustfmt's
-        // `fn_call_width` of 60 whatever the surrounding indentation. Emitting it on one line
-        // meant every generated policy failed `cargo fmt --check`.
-        for (index, signer) in compiled_signers.iter().enumerate() {
-            match signer {
-                RenderSigner::Delegated(address) => out.push_str(&format!(
-                    "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
-                )),
-                RenderSigner::External { verifier, .. } => out.push_str(&format!(
-                    "        Signer::External(\n            Address::from_str(\n                e,\n                \"{verifier}\"\n            ),\n            Bytes::from_slice(e, &{})\n        ),\n",
-                    render::signer_key_name(index)
-                )),
-            }
-        }
-        out.push_str("    ]\n}\n\n");
-    }
+    // The private helpers go last, under their own heading, which is where OpenZeppelin puts
+    // theirs — HELPER FUNCTIONS at `policies/spending_limit.rs:445`, the last section of the one
+    // policy module that has private helpers. They are emitted into a buffer here and appended after
+    // the entry points, so a reader opening a generated policy meets the three things it exposes
+    // before the arithmetic they are built from — which is the ordering the `ttl_target` note
+    // already argued for, now applied to every helper rather than to that one.
+    let mut helpers = String::new();
 
-    // Matched-count helper (iterates expected → duplicates never double-count).
+    // The contract struct, then the read-only surface, then the trait impl. Both sibling policy
+    // examples expose their getters from an inherent `#[contractimpl]` block beside the trait one
+    // (`threshold-policy/src/contract.rs:62-78`, `spending-limit-policy/src/contract.rs:67-87`),
+    // and `code-quality.md` reserves plain `#[contractimpl]` for exactly that block.
+    //
+    // Until now the artifact exported only the three trait methods, so there was no on-chain way
+    // to ask whether a policy was installed or how many calls an installation had left.
+    //
+    // Neither getter extends TTL, which is `code-quality.md:376-381` and not a departure from
+    // `:344`: the rule there is for **library-managed** entries, and these are managed by the
+    // caller — the smart account creates them with `install` and removes them with `uninstall`.
+    // See `caller_managed_ttl_note`, whose text is emitted into both bodies.
+    // Events. The trait's own documentation asks for them —
+    // `stellar-accounts-0.7.2/src/policies/mod.rs:106-111` for `install` and `:144-149` for
+    // `uninstall` — and all three library policies emit on all three entry points, so `enforce`
+    // is included by their practice rather than by the docstring alone. Their shape, followed
+    // rather than re-invented: one `#[contractevent]` struct per verb named `<Policy><Verb>`,
+    // `smart_account` as the single topic, `context_rule_id` in the data, and the enforcement
+    // event additionally carrying what was permitted and the policy's own running number.
+    //
+    // Ours is the remaining call count, which is the closest analogue to `spending_limit`'s
+    // `total_spent_in_period` (`policies/spending_limit.rs:46-53`) — and it exists only where a
+    // cap does, for the same reason `remaining_calls` does.
+    //
+    // Where the shape is NOT followed, and why. All three of their `*Enforced` events embed the
+    // whole `Context` — `policies/spending_limit.rs:49`, `simple_threshold.rs:62`,
+    // `weighted_threshold.rs:78` — and that field is unbounded: a `Context::Contract` carries
+    // every invocation argument, and a rule that leaves an argument unconstrained puts no ceiling
+    // on any of them. Mainnet meters `contract_events_size_bytes` at 16,384
+    // (`InvocationResourceLimits::mainnet()`, `soroban-sdk-26.1.0/src/testutils/cost_estimate.rs:147`),
+    // and the host checks it after the call returns
+    // (`soroban-env-host-26.1.3/src/host/invocation_metering.rs:435-439`), so an oversized event
+    // aborts the very invocation the policy has just permitted — with `Error(Budget,
+    // ExceededLimit)` rather than a policy code, while the reference evaluator reports permit. So
+    // this event carries a SHA-256 of the context instead of the context, which is publishable at
+    // every argument size a spec admits. `docs/ECOSYSTEM-CONFORMANCE.md` §15 divergence 9 has the
+    // reproduction and the argument; `contracts/differential/tests/event_payload.rs` holds it.
+    //
+    // The digest also lets all three events derive the same set. `Context` implements none of
+    // `Debug`, `Eq` or `PartialEq`, which is why all three of their `*Enforced` structs derive
+    // `Clone` alone upstream and why this one did until the field left.
+    //
+    // A denial cannot be observed this way and that is not a gap to be worked around:
+    // `panic_with_error!` reverts the invocation, so an event published before it is reverted
+    // with it. Events are possible on a permit only.
+    out.push_str(&section("EVENTS"));
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "Emitted when this policy permits an authorization.".to_string(),
+            "Names the authorization by a digest rather than embedding it, so one permitted call \
+             publishes the same number of bytes whatever its arguments were. An event carrying \
+             the arguments themselves has no size bound wherever a rule leaves one \
+             unconstrained, and an event past the network's per-transaction event limit fails \
+             the invocation this policy has already permitted."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str(
-        "fn matched_count(authenticated: &Vec<Signer>, expected: &Vec<Signer>) -> u32 {\n    let mut matched: u32 = 0;\n    for exp in expected.iter() {\n        for got in authenticated.iter() {\n            if got == exp {\n                matched += 1;\n                break;\n            }\n        }\n    }\n    matched\n}\n\n",
+        "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicyEnforced {\n",
     );
+    out.push_str("    /// The smart account whose authorization was permitted.\n");
+    out.push_str("    #[topic]\n    pub smart_account: Address,\n");
+    out.push_str(&render::wrap_comment(
+        "    /// ",
+        "SHA-256 of the XDR serialization of the permitted `Context`. A reader holding the \
+         authorization — from the transaction's own auth entries, or from a simulation of it — \
+         recomputes this digest and matches it to this event; a reader who does not hold it \
+         learns nothing about the arguments from the event alone.",
+    ));
+    out.push_str("    pub context_hash: BytesN<32>,\n");
+    out.push_str("    /// The context rule this policy is attached to.\n");
+    out.push_str("    pub context_rule_id: u32,\n");
+    if has_state {
+        out.push_str(&render::wrap_comment(
+            "    /// ",
+            "Calls this installation may still permit after the one just spent. Zero means the \
+             installation can never permit again.",
+        ));
+        out.push_str("    pub remaining_calls: u32,\n");
+    }
+    out.push_str("}\n\n");
 
-    // One check function per allowed tuple.
-    for (ci, call) in rule.calls.iter().enumerate() {
+    for (verb, summary) in [
+        (
+            "Installed",
+            "Emitted when this policy is installed for a context rule of a smart account.",
+        ),
+        (
+            "Uninstalled",
+            "Emitted when this policy is removed from a context rule of a smart account.",
+        ),
+    ] {
+        out.push_str(&emit_doc("", &[summary.to_string()], &[]));
         out.push_str(&format!(
-            "fn check_call_{ci}(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {{\n"
+            "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicy{verb} {{\n    /// The smart account this policy is installed for.\n    #[topic]\n    pub smart_account: Address,\n    /// The context rule this policy is attached to.\n    pub context_rule_id: u32,\n}}\n\n"
         ));
-        out.push_str(&format!(
-            "    if args.len() != {}u32 {{\n        return false;\n    }}\n",
-            call.args.len()
-        ));
-        // `call.args` is already in index order (see `RenderRule::from_rule`).
-        for arg in &call.args {
-            let i = arg.index;
-            // AnyValue (maximal widening): enforce arity only, never bind the value.
-            if matches!(arg.constraint, RenderConstraint::AnyValue) {
-                out.push_str(&format!(
-                    "    if args.get({i}u32).is_none() {{\n        return false;\n    }}\n"
-                ));
-                continue;
-            }
-            out.push_str(&format!(
-                "    let Some(v{i}) = args.get({i}u32) else {{\n        return false;\n    }};\n"
-            ));
-            match &arg.constraint {
-                RenderConstraint::EqSelf | RenderConstraint::EqAddress(_) => {
-                    // The literal form is broken across lines for the reason given at
-                    // `expected_signers`: a 56-character strkey puts `Address::from_str`'s
-                    // argument list past rustfmt's `fn_call_width`, so rustfmt splits it here
-                    // too — with a trailing comma, unlike inside the `vec!` above.
-                    let cmp = match &arg.constraint {
-                        RenderConstraint::EqSelf => "*smart_account != a".to_string(),
-                        RenderConstraint::EqAddress(address) => format!(
-                            "a != Address::from_str(\n                e,\n                \"{address}\",\n            )"
-                        ),
-                        _ => unreachable!("guarded by the outer arm"),
-                    };
-                    out.push_str(&format!(
-                        "    match Address::try_from_val(e, &v{i}) {{\n        Ok(a) => {{\n            if {cmp} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::EqI128(lit) => {
-                    out.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x != {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::LeI128(lit) => {
-                    out.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x > {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::GeI128(lit) => {
-                    out.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                // The bytes are a module constant (emitted above), so this line is short
-                // whatever the recorded `ScVal` encodes to.
-                RenderConstraint::EqScval(_) => {
-                    out.push_str(&format!(
-                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &{}) {{\n        return false;\n    }}\n",
-                        render::arg_xdr_name(ci, i)
-                    ));
-                }
-                // Handled before the match (arity-only); listed for exhaustiveness.
-                RenderConstraint::AnyValue => unreachable!("AnyValue handled before the match"),
-            }
-        }
-        out.push_str("    true\n}\n\n");
     }
 
-    // The contract.
+    out.push_str(&section("QUERY STATE"));
+    out.push_str(&emit_doc(
+        "",
+        &[
+            "This rule, compiled to a policy contract.".to_string(),
+            "One deployment serves any number of smart accounts: everything the rule fixes is a \
+             constant in this file, and everything that varies per installation is keyed by \
+             (smart account, context rule id). There are no setters and no upgrade entry point, \
+             so reconfiguration is remove-and-reinstall — which is what makes the wasm hash a \
+             statement about behaviour rather than about a starting state."
+                .to_string(),
+        ],
+        &[],
+    ));
     out.push_str("#[contract]\npub struct GeneratedPolicy;\n\n");
+    out.push_str("#[contractimpl]\nimpl GeneratedPolicy {\n");
+
+    // One note, and the same one for every rule shape: what this function does not do. The
+    // reason belongs in the docs as well as in the body comment, because a reader deciding
+    // whether to call it needs to know it is free of side effects, and a reader editing it needs
+    // to know the omission is deliberate.
+    let is_installed_notes = vec![
+        "Extends no entry's lifetime. This is a pure read: the entries it looks at belong to the \
+         smart account's install/uninstall lifecycle, and `install` and a permitted `enforce` are \
+         what keep them alive. A query is not the account exercising its grant — any caller may \
+         make one — so it buys no rent and costs nothing beyond the read itself. The library's \
+         exception for caller-managed state (`code-quality.md:376-381`) is the rule this follows; \
+         the extend-on-read rule at `:344` is for library-managed entries."
+            .to_string(),
+    ];
+    out.push_str(&emit_doc(
+        "    ",
+        &[
+            "Whether this policy is installed for one context rule of one smart account."
+                .to_string(),
+            "`false` for an absent installation rather than a panic: this is a query, and a \
+             missing entry is an answer to it."
+                .to_string(),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`context_rule_id` - The context rule to ask about.".to_string(),
+                    "`smart_account` - The smart account to ask about.".to_string(),
+                ],
+            ),
+            ("# Notes", is_installed_notes),
+        ],
+    ));
+    // One body for every rule shape. It used to branch on `has_state`, because the counter had to
+    // be read to decide whether extending was still worth it; with no extension there is nothing
+    // for a cap to gate, and the question this function answers never depended on the count.
+    out.push_str(
+        "    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool {\n",
+    );
+    out.push_str(&caller_managed_ttl_note());
+    out.push_str(
+        "        let installed_key = PolicyStorageKey::Installed(smart_account, context_rule_id);\n        e.storage().persistent().has(&installed_key)\n    }\n",
+    );
+    // `remaining_calls` exists only where a cap does. A rule with no cap has no counter to
+    // report, and the alternatives are both worse than an absent function: a sentinel like
+    // `u32::MAX` would be a magic value a caller has to know about, and returning zero would
+    // read as "exhausted" for a policy that is in fact unlimited. The exported function list is
+    // itself the answer to "does this policy cap calls".
+    if has_state {
+        out.push('\n');
+        out.push_str(&emit_doc(
+            "    ",
+            &[
+                "Calls this installation may still permit.".to_string(),
+                "Counts down from the compiled-in cap and never resets: only `uninstall`, which \
+                 the smart account alone can call, clears the count."
+                    .to_string(),
+            ],
+            &[
+                (
+                    "# Arguments",
+                    vec![
+                        "`e` - Access to the Soroban environment.".to_string(),
+                        "`context_rule_id` - The context rule to ask about.".to_string(),
+                        "`smart_account` - The smart account to ask about.".to_string(),
+                    ],
+                ),
+                (
+                    "# Errors",
+                    vec![
+                        "[`PolicyError::MissingState`] - When no installation marker exists for \
+                         this smart account and context rule, or when the marker exists and the \
+                         call counter does not. A count is required setup data, so its absence \
+                         is an error rather than a zero."
+                            .to_string(),
+                    ],
+                ),
+                (
+                    "# Notes",
+                    vec![
+                        "Extends no entry's lifetime, for the reason `is_installed` gives."
+                            .to_string(),
+                    ],
+                ),
+            ],
+        ));
+        out.push_str(
+            "    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 {\n",
+        );
+        out.push_str(&caller_managed_ttl_note());
+        out.push_str(
+            "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule_id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account, context_rule_id);\n        let used: u32 = match e.storage().persistent().get(&key) {\n            Some(used) => used,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        MAX_CALLS.saturating_sub(used)\n    }\n",
+        );
+    }
+    out.push_str("}\n\n");
+
+    out.push_str(&section("CHANGE STATE"));
     out.push_str("#[contractimpl]\nimpl Policy for GeneratedPolicy {\n");
+    out.push_str(&render::wrap_comment(
+        "    /// ",
+        "Installation parameters. A generated policy has none — every limit is compiled in — so \
+         this is a placeholder the smart account's `install` call has to pass something for.",
+    ));
     out.push_str("    type AccountParams = u32;\n\n");
 
     // enforce()
+    //
+    // The `# Errors` list is assembled from the same conditions that decide which checks are
+    // emitted, so a check and its documentation cannot get out of step: adding a refusal to the
+    // body without listing it here, or listing one the body cannot raise, would take a second
+    // edit in the same expression rather than in a distant string.
+    let mut enforce_errors = vec![if has_state {
+        // Two raise sites, so two conditions. The second is an invariant violation rather than an
+        // ordinary refusal — `install` writes the marker and the counter together — and it denies
+        // for the same reason the first does.
+        "[`PolicyError::MissingState`] - When no installation marker exists for this smart \
+         account and context rule, or when the marker exists and the call counter this policy \
+         owns does not. Missing state denies rather than reading as zero."
+            .to_string()
+    } else {
+        "[`PolicyError::MissingState`] - When no installation marker exists for this smart \
+         account and context rule. Missing state denies rather than reading as zero."
+            .to_string()
+    }];
+    if rule.valid_until_ledger.is_some() {
+        enforce_errors.push(
+            "[`PolicyError::RuleExpired`] - When the ledger sequence is past the rule's \
+             validity window."
+                .to_string(),
+        );
+    }
+    enforce_errors.push(
+        "[`PolicyError::ZeroSigners`] - When no signer authenticated this authorization."
+            .to_string(),
+    );
+    enforce_errors.push(
+        "[`PolicyError::PredicateUnsatisfied`] - When the authenticated signers do not satisfy \
+         the rule's signer predicate."
+            .to_string(),
+    );
+    if rule.strict_signer_set && !dynamic {
+        enforce_errors.push(
+            "[`PolicyError::SignerSetDiverged`] - When the context rule's live signer set is a \
+             different size from the one compiled in, or when a compiled-in signer is absent \
+             from it. Either way the grant a reader approved is not the grant being exercised."
+                .to_string(),
+        );
+    }
+    enforce_errors.push(
+        "[`PolicyError::FunctionNotAllowed`] - When the authorization is not a contract \
+         invocation at all, or when it invokes a function outside the allowed calls."
+            .to_string(),
+    );
+    enforce_errors.push(
+        "[`PolicyError::TargetMismatch`] - When the invoked contract is not the one this policy \
+         is scoped to."
+            .to_string(),
+    );
+    enforce_errors.push(
+        "[`PolicyError::NoTupleMatched`] - When the arguments satisfy no allowed call tuple."
+            .to_string(),
+    );
+    if has_state {
+        enforce_errors.push(
+            "[`PolicyError::CallCountExceeded`] - When this installation has already used every \
+             call its cap allows."
+                .to_string(),
+        );
+    }
+    let mut enforce_notes = vec![
+        "Refusals are ordered: the code a caller sees is the first condition that failed, in the \
+         order the crate header documents, not an arbitrary one of several."
+            .to_string(),
+        "The event names the permitted authorization by a SHA-256 of its `Context` rather than by \
+         the `Context` itself, so its size is the same for every call this policy admits. \
+         Embedding the authorization would make a permitted call fail on the network's event-size \
+         limit for a large enough argument."
+            .to_string(),
+    ];
+    if has_state {
+        enforce_notes.push(
+            "The call counter is advanced only on the permitting path, and a panic anywhere later \
+             in the invocation reverts that increment along with everything else."
+                .to_string(),
+        );
+    }
+    out.push_str(&emit_doc(
+        "    ",
+        &[
+            "Enforces this policy for one authorization attempt.".to_string(),
+            "Returning is the permit; every refusal is a panic carrying the code that names it."
+                .to_string(),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`context` - The authorization context being enforced.".to_string(),
+                    "`authenticated_signers` - The signers the smart account has already \
+                     verified. The account defers signer validation to its policies, so this \
+                     list is checked here rather than trusted."
+                        .to_string(),
+                    "`context_rule` - The context rule this policy is attached to.".to_string(),
+                    "`smart_account` - The smart account being authorized.".to_string(),
+                ],
+            ),
+            ("# Errors", enforce_errors),
+            (
+                "# Events",
+                vec![
+                    "topics - `[\"generated_policy_enforced\", smart_account: Address]`"
+                        .to_string(),
+                    format!(
+                        "data - `[context_hash: BytesN<32>, context_rule_id: u32{}]`",
+                        if has_state {
+                            ", remaining_calls: u32"
+                        } else {
+                            ""
+                        }
+                    ),
+                ],
+            ),
+            ("# Notes", enforce_notes),
+        ],
+    ));
     out.push_str(
         "    fn enforce(\n        e: &Env,\n        context: Context,\n        authenticated_signers: Vec<Signer>,\n        context_rule: ContextRule,\n        smart_account: Address,\n    ) {\n        smart_account.require_auth();\n\n",
     );
     out.push_str(
-        "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n\n",
+        "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::MissingState);\n        }\n\n",
     );
     if rule.valid_until_ledger.is_some() {
         out.push_str(
             "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n\n",
         );
     }
+    // `is_empty()`, not `len() == 0`: `clippy::len_zero` is warn-by-default, the generated
+    // crate is linted with `-D warnings` by the contracts job, and OpenZeppelin's conventions
+    // forbid silencing a lint with `#[allow]` — so the zero-length spelling is a build failure
+    // in a shipped artifact rather than a matter of taste. `soroban_sdk::Vec::is_empty` exists
+    // (`soroban-sdk-26.1.0/src/vec.rs:835`), so no host call is added by preferring it.
     out.push_str(
-        "        if authenticated_signers.len() == 0 {\n            panic_with_error!(e, PolicyError::ZeroSigners);\n        }\n",
+        "        if authenticated_signers.is_empty() {\n            panic_with_error!(e, PolicyError::ZeroSigners);\n        }\n",
     );
     if dynamic {
         out.push_str(
@@ -597,7 +1271,13 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
 
     // Context scoping.
     out.push_str(
-        "        let c = match context {\n            Context::Contract(c) => c,\n            _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),\n        };\n        if c.contract != Address::from_str(e, TARGET) {\n            panic_with_error!(e, PolicyError::TargetMismatch);\n        }\n",
+        // Borrowed, not cloned. `context` is moved into the enforcement event at the end of the
+        // function, so the binding has to be a reference whose last use precedes that move — it
+        // is, since every check that reads `c` happens before the counter is touched. The clone
+        // this replaces was not expensive (a `soroban_sdk::Vec` is a handle into a host object,
+        // so copying one copies a handle) but it was unnecessary, and an unexplained `.clone()`
+        // in a generated artifact is a question a reviewer has to spend a comment on.
+        "        let c = match &context {\n            Context::Contract(c) => c,\n            _ => panic_with_error!(e, PolicyError::FunctionNotAllowed),\n        };\n        if c.contract != Address::from_str(e, TARGET) {\n            panic_with_error!(e, PolicyError::TargetMismatch);\n        }\n",
     );
     let fn_names: Vec<&str> = {
         let mut names: Vec<&str> = rule.calls.iter().map(|c| c.fn_name.as_str()).collect();
@@ -637,7 +1317,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     } else {
         format!("        if !{known_expr} {{")
     };
-    // The same measure `overlong_code_lines` applies to every emitted line; scalar count,
+    // The same measure `overlong_lines` applies to every emitted line; scalar count,
     // byte length and display width all coincide here, since the operands are `fn_<n>_ok`.
     if if_line.chars().count() <= render::MAX_WIDTH {
         out.push_str(&if_line);
@@ -682,7 +1362,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // State.
     if has_state {
         out.push_str(
-            "\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        let count: u32 = match e.storage().persistent().get(&key) {\n            Some(c) => c,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        if count >= MAX_CALLS {\n            panic_with_error!(e, PolicyError::CallCountExceeded);\n        }\n        e.storage().persistent().set(&key, &(count + 1u32));\n        let remaining = MAX_CALLS - (count + 1u32);\n",
+            "\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        let count: u32 = match e.storage().persistent().get(&key) {\n            Some(c) => c,\n            None => panic_with_error!(e, PolicyError::MissingState),\n        };\n        if count >= MAX_CALLS {\n            panic_with_error!(e, PolicyError::CallCountExceeded);\n        }\n        e.storage().persistent().set(&key, &(count + 1u32));\n        let remaining = MAX_CALLS - (count + 1u32);\n",
         );
     }
     // Storage lifetime goes last. In `install` that ordering is required — the counter key does
@@ -690,7 +1370,36 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // `enforce` the key is guaranteed to exist by the `MissingState` check, so here it is a choice:
     // the two blocks stay textually identical, and a panic reverts the whole invocation anyway, so
     // there is nothing to gain by extending before the checks have passed.
-    out.push_str(ttl_extension_block(has_state));
+    out.push_str(&ttl_extension_block(has_state));
+    // The event goes after the storage bookkeeping, so the function reads checks → state → rent
+    // → announcement. Anywhere in the permitting path would be equivalent: a panic later in the
+    // invocation reverts the publish along with the counter increment.
+    //
+    // The digest is taken here, on the permitting path only, and it consumes `context`: `c`
+    // borrowed it for the target, function and tuple checks above and is dead by now, so the move
+    // needs no clone. Serializing costs instructions and memory in proportion to the context,
+    // which is what a bounded event costs; the alternative spends the same bytes on the metered
+    // event stream instead, where the ceiling is 16,384 rather than 40 MiB.
+    out.push_str(
+        "\n        let context_hash = e.crypto().sha256(&context.to_xdr(e)).to_bytes();\n",
+    );
+    out.push_str(&emit_publish(
+        "GeneratedPolicyEnforced",
+        &if has_state {
+            vec![
+                "smart_account: smart_account.clone()",
+                "context_hash",
+                "context_rule_id: context_rule.id",
+                "remaining_calls: remaining",
+            ]
+        } else {
+            vec![
+                "smart_account: smart_account.clone()",
+                "context_hash",
+                "context_rule_id: context_rule.id",
+            ]
+        },
+    ));
     out.push_str("    }\n\n");
 
     // install() / uninstall()
@@ -698,48 +1407,339 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> String {
     // `install` extends; `uninstall` deliberately does not. Extending on the way out would buy
     // rent for an entry being removed and for a contract the account is detaching from — and if
     // the code were archived, the call could not be executing in the first place.
-    if has_state {
-        out.push_str(
-            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
-        );
-        if rule.valid_until_ledger.is_some() {
-            out.push_str(
-                "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n",
-            );
-        }
-        out.push_str(
-            "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
-        );
-        out.push_str(ttl_extension_block(true));
-        out.push_str(
-            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = DataKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n    }\n",
-        );
-    } else {
-        out.push_str(
-            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
-        );
-        if rule.valid_until_ledger.is_some() {
-            out.push_str(
-                "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n",
-            );
-        }
-        out.push_str(
-            "        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
-        );
-        out.push_str(ttl_extension_block(false));
-        out.push_str(
-            "    }\n\n    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = DataKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n    }\n",
+    let mut install_errors = Vec::new();
+    if rule.valid_until_ledger.is_some() {
+        install_errors.push(
+            "[`PolicyError::RuleExpired`] - When the ledger sequence is already past the rule's \
+             validity window, so the installation could never permit anything."
+                .to_string(),
         );
     }
-    out.push_str("}\n");
-    out.push_str(emit_ttl_target(rule.valid_until_ledger.is_some()));
+    install_errors.push(
+        "[`PolicyError::AlreadyInstalled`] - When this (smart account, context rule) already \
+         carries an installation. Re-installing would be the one way to reset the state a rule \
+         relies on, so it is refused rather than made idempotent."
+            .to_string(),
+    );
+    let install_doc = emit_doc(
+        "    ",
+        &[
+            "Installs this policy for one context rule of one smart account.".to_string(),
+            format!(
+                "Writes the installation marker{} and extends the lifetime of the entries this \
+                 policy depends on. `_install_params` is accepted and ignored: every limit is \
+                 compiled in, so there is nothing an installation could configure.",
+                if has_state {
+                    " and the call counter"
+                } else {
+                    ""
+                }
+            ),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`_install_params` - Unused; see above.".to_string(),
+                    "`context_rule` - The context rule this policy is being attached to."
+                        .to_string(),
+                    "`smart_account` - The smart account installing this policy.".to_string(),
+                ],
+            ),
+            ("# Errors", install_errors),
+            (
+                "# Events",
+                vec![
+                    "topics - `[\"generated_policy_installed\", smart_account: Address]`"
+                        .to_string(),
+                    "data - `[context_rule_id: u32]`".to_string(),
+                ],
+            ),
+        ],
+    );
+    let uninstall_doc = emit_doc(
+        "    ",
+        &[
+            format!(
+                "Removes this policy's own state for one context rule of one smart account{}.",
+                if has_state {
+                    " — the installation marker and the call count"
+                } else {
+                    ""
+                }
+            ),
+            "Extends nothing on the way out: buying rent for entries being removed, on behalf of \
+             an account detaching from this contract, is the one place where the extension would \
+             be spent for nobody."
+                .to_string(),
+        ],
+        &[
+            (
+                "# Arguments",
+                vec![
+                    "`e` - Access to the Soroban environment.".to_string(),
+                    "`context_rule` - The context rule this policy is being removed from."
+                        .to_string(),
+                    "`smart_account` - The smart account uninstalling this policy.".to_string(),
+                ],
+            ),
+            (
+                "# Errors",
+                vec![
+                    "[`PolicyError::NotInstalled`] - When this (smart account, context rule) \
+                     carries no installation."
+                        .to_string(),
+                ],
+            ),
+            (
+                "# Events",
+                vec![
+                    "topics - `[\"generated_policy_uninstalled\", smart_account: Address]`"
+                        .to_string(),
+                    "data - `[context_rule_id: u32]`".to_string(),
+                ],
+            ),
+        ],
+    );
+    if has_state {
+        out.push_str(&install_doc);
+        out.push_str(
+            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
+        );
+        if rule.valid_until_ledger.is_some() {
+            out.push_str(
+                "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n",
+            );
+        }
+        out.push_str(
+            "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().set(&installed_key, &true);\n        e.storage().persistent().set(&key, &0u32);\n        let remaining = MAX_CALLS;\n",
+        );
+        out.push_str(&ttl_extension_block(true));
+        out.push_str(&emit_publish(
+            "GeneratedPolicyInstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
+        out.push_str("    }\n\n");
+        out.push_str(&uninstall_doc);
+        out.push_str(
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        let key = PolicyStorageKey::CallCount(smart_account.clone(), context_rule.id);\n        e.storage().persistent().remove(&key);\n        e.storage().persistent().remove(&installed_key);\n",
+        );
+        out.push_str(&emit_publish(
+            "GeneratedPolicyUninstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
+        out.push_str("    }\n");
+    } else {
+        out.push_str(&install_doc);
+        out.push_str(
+            "    fn install(e: &Env, _install_params: u32, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n",
+        );
+        if rule.valid_until_ledger.is_some() {
+            out.push_str(
+                "        if e.ledger().sequence() > VALID_UNTIL_LEDGER {\n            panic_with_error!(e, PolicyError::RuleExpired);\n        }\n",
+            );
+        }
+        out.push_str(
+            "        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::AlreadyInstalled);\n        }\n        e.storage().persistent().set(&installed_key, &true);\n",
+        );
+        out.push_str(&ttl_extension_block(false));
+        out.push_str(&emit_publish(
+            "GeneratedPolicyInstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
+        out.push_str("    }\n\n");
+        out.push_str(&uninstall_doc);
+        out.push_str(
+            "    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {\n        smart_account.require_auth();\n        let installed_key = PolicyStorageKey::Installed(smart_account.clone(), context_rule.id);\n        if !e.storage().persistent().has(&installed_key) {\n            panic_with_error!(e, PolicyError::NotInstalled);\n        }\n        e.storage().persistent().remove(&installed_key);\n",
+        );
+        out.push_str(&emit_publish(
+            "GeneratedPolicyUninstalled",
+            &[
+                "smart_account: smart_account.clone()",
+                "context_rule_id: context_rule.id",
+            ],
+        ));
+        out.push_str("    }\n");
+    }
+    out.push_str("}\n\n");
+    // Expected signer set (sorted canonical order — deterministic).
+    if !dynamic {
+        helpers.push_str(
+            "fn expected_signers(e: &Env) -> Vec<Signer> {\n    soroban_sdk::vec![\n        e,\n",
+        );
+        // Already in canonical signer order — see `RenderRule::from_rule`.
+        //
+        // Both forms are rustfmt's, under the shipped config and measured against it — and they
+        // differ, which is the point of writing them out rather than picking one shape. A strkey
+        // is always 56 characters, so `Signer::Delegated(Address::from_str(e, "…")),` is 108
+        // columns and cannot fit `max_width` at this indentation however wide `fn_call_width`
+        // gets: rustfmt breaks the outer call and puts each argument on its own line. Inside
+        // `Signer::External(` the same call sits one level deeper but on a line of its own, where
+        // it comes to 93 columns and now fits — under the previous `fn_call_width = 60` it did
+        // not, which is why the argument list used to be split there too.
+        for (index, signer) in compiled_signers.iter().enumerate() {
+            match signer {
+                RenderSigner::Delegated(address) => helpers.push_str(&format!(
+                    "        Signer::Delegated(Address::from_str(\n            e,\n            \"{address}\"\n        )),\n"
+                )),
+                RenderSigner::External { verifier, .. } => helpers.push_str(&format!(
+                    "        Signer::External(\n            Address::from_str(e, \"{verifier}\"),\n            Bytes::from_slice(e, &{})\n        ),\n",
+                    render::signer_key_name(index)
+                )),
+            }
+        }
+        helpers.push_str("    ]\n}\n\n");
+    }
 
-    out
+    // Matched-count helper (iterates expected → duplicates never double-count).
+    helpers.push_str(
+        "fn matched_count(authenticated: &Vec<Signer>, expected: &Vec<Signer>) -> u32 {\n    let mut matched: u32 = 0;\n    for exp in expected.iter() {\n        for got in authenticated.iter() {\n            if got == exp {\n                matched += 1;\n                break;\n            }\n        }\n    }\n    matched\n}\n\n",
+    );
+
+    // One check function per allowed tuple.
+    for (ci, call) in rule.calls.iter().enumerate() {
+        helpers.push_str(&format!(
+            "fn check_call_{ci}(e: &Env, args: &Vec<Val>, smart_account: &Address) -> bool {{\n"
+        ));
+        helpers.push_str(&format!(
+            "    if args.len() != {}u32 {{\n        return false;\n    }}\n",
+            call.args.len()
+        ));
+        // `call.args` is already in index order (see `RenderRule::from_rule`).
+        for arg in &call.args {
+            let i = arg.index;
+            // AnyValue (maximal widening): enforce arity only, never bind the value.
+            if matches!(arg.constraint, RenderConstraint::AnyValue) {
+                helpers.push_str(&format!(
+                    "    if args.get({i}u32).is_none() {{\n        return false;\n    }}\n"
+                ));
+                continue;
+            }
+            helpers.push_str(&format!(
+                "    let Some(v{i}) = args.get({i}u32) else {{\n        return false;\n    }};\n"
+            ));
+            match &arg.constraint {
+                RenderConstraint::EqSelf | RenderConstraint::EqAddress(_) => {
+                    // Two shapes, because the condition's width decides where the brace goes and
+                    // the address form lands exactly on the boundary. `Address::from_str` now
+                    // fits one line — `fn_call_width` is `max_width` under the shipped config —
+                    // and at this indentation, with a strkey's fixed 56 characters, that line is
+                    // 100 columns: precisely `max_width`, so there is no room for the ` {` and
+                    // rustfmt puts the brace on its own line. The `SELF` form is short and keeps
+                    // the brace where a reader expects it. Both were taken from rustfmt's output.
+                    let guard = match &arg.constraint {
+                        RenderConstraint::EqSelf => {
+                            "            if *smart_account != a {\n".to_string()
+                        }
+                        RenderConstraint::EqAddress(address) => format!(
+                            "            if a != Address::from_str(e, \"{address}\")\n            {{\n"
+                        ),
+                        _ => unreachable!("guarded by the outer arm"),
+                    };
+                    helpers.push_str(&format!(
+                        "    match Address::try_from_val(e, &v{i}) {{\n        Ok(a) => {{\n{guard}                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                RenderConstraint::EqI128(lit) => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x != {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                RenderConstraint::LeI128(lit) => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x > {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                RenderConstraint::GeI128(lit) => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
+                // The bytes are a module constant (emitted above), so this line is short
+                // whatever the recorded `ScVal` encodes to.
+                RenderConstraint::EqScval(_) => {
+                    helpers.push_str(&format!(
+                        "    if v{i}.to_xdr(e) != Bytes::from_slice(e, &{}) {{\n        return false;\n    }}\n",
+                        render::arg_xdr_name(ci, i)
+                    ));
+                }
+                // Handled before the match (arity-only); listed for exhaustiveness.
+                RenderConstraint::AnyValue => unreachable!("AnyValue handled before the match"),
+            }
+        }
+        helpers.push_str("    true\n}\n\n");
+    }
+
+    helpers.push_str(emit_ttl_target(rule.valid_until_ledger.is_some()).trim_start_matches('\n'));
+
+    out.push_str(&section("HELPER FUNCTIONS"));
+    out.push_str(&helpers);
+
+    (crate_root, out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every emitted Rust file, joined for searching.
+    ///
+    /// Emission produces two source files — a crate root carrying the header and the module
+    /// declaration, and `src/contract.rs` carrying the contract — so a test that read
+    /// `files["src/lib.rs"]` would be asking about the header alone. Joined rather than picked
+    /// apart because almost every assertion here is about *what was emitted* and not about which
+    /// file it landed in; the few that care name the file directly, and anything that parses the
+    /// source has to do so per file, since two sets of inner attributes cannot share one file.
+    fn emitted_rust(generated: &GeneratedCrate) -> String {
+        rust_files(generated)
+            .into_iter()
+            .map(|(_, body)| body)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The emitted Rust files in path order, as `(path, contents)`.
+    fn rust_files(generated: &GeneratedCrate) -> Vec<(String, String)> {
+        let files: Vec<(String, String)> = generated
+            .files
+            .iter()
+            .filter(|(path, _)| path.ends_with(".rs"))
+            .map(|(path, body)| (path.clone(), body.clone()))
+            .collect();
+        assert_eq!(
+            files
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/contract.rs", "src/lib.rs"],
+            "the emitted source file set changed; these helpers decide what every test reads"
+        );
+        files
+    }
+
+    /// Emission for `spec`, joined for searching. The shape most tests want.
+    fn emitted_for(spec: &ValidatedSpec) -> String {
+        emitted_rust(&generate(spec, 0, &Pins::default()).expect("the spec must generate"))
+    }
+
+    /// Every emitted file must parse as Rust — checked per file, because each carries its own
+    /// inner attributes and two sets of them cannot share one parse.
+    fn each_file_parses(generated: &GeneratedCrate) {
+        for (path, body) in rust_files(generated) {
+            syn::parse_file(&body)
+                .unwrap_or_else(|error| panic!("generated {path} must parse: {error}\n{body}"));
+        }
+    }
     use ozpb_synthesizer::fixtures::{golden_delegate_strkey, golden_spec};
 
     // --- rendering safety (§4.4: untrusted values never reach source fragments) -----------
@@ -881,7 +1881,7 @@ mod tests {
                 ozpb_synthesizer::walkthroughs::blend_claim_spec(),
             ),
         ] {
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
             let mut rest = source.as_str();
             let mut literals = 0usize;
             while let Some(open) = rest.find('"') {
@@ -1038,7 +2038,7 @@ mod tests {
         }
 
         /// Build a spec by replacing only the wasm-relevant fields of the fixture rule.
-        fn spec_with(
+        pub(super) fn spec_with(
             calls: Vec<AllowedCall>,
             predicate: (PredicateKind, bool),
             valid_until: Option<u32>,
@@ -1092,10 +2092,10 @@ mod tests {
                     false,
                 )
                 .unwrap_or_else(|| panic!("spec must validate for {label}"));
-                let source = generate(&spec, 0, &Pins::default())
-                    .unwrap_or_else(|e| panic!("codegen refused {label}: {e}"))
-                    .files["src/lib.rs"]
-                    .clone();
+                let source = emitted_rust(
+                    &generate(&spec, 0, &Pins::default())
+                        .unwrap_or_else(|e| panic!("codegen refused {label}: {e}")),
+                );
 
                 // The window clamp is emitted only when there is a window to clamp to.
                 assert_eq!(
@@ -1155,7 +2155,7 @@ mod tests {
             let calls = golden_spec().spec().rules[0].allowed_calls.clone();
             let spec = spec_with(calls, (PredicateKind::AnyOf, true), None, None, false)
                 .expect("stateless no-expiry rule validates");
-            let source = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+            let source = emitted_for(&spec);
 
             assert!(source.contains("Installed(Address, u32)"));
             assert!(!source.contains("CallCount(Address, u32)"));
@@ -1192,19 +2192,23 @@ mod tests {
                     .map_err(|e| proptest::test_runner::TestCaseError::fail(
                         format!("codegen refused a ValidatedSpec: {e}")
                     ))?;
-                let source = &generated.files["src/lib.rs"];
-                syn::parse_file(source).map_err(|e| {
-                    proptest::test_runner::TestCaseError::fail(format!(
-                        "generated source does not parse as Rust: {e}\n--- source ---\n{source}"
-                    ))
-                })?;
-                let wide = overlong_code_lines(source);
-                if !wide.is_empty() {
-                    return Err(proptest::test_runner::TestCaseError::fail(format!(
-                        "generated source has lines rustfmt would reflow: {wide:?}\
-                         \n--- source ---\n{source}"
-                    )));
+                // Per file: two sets of inner attributes cannot share one parse, so the crate
+                // root and the contract module are checked separately rather than joined.
+                for (path, source) in rust_files(&generated) {
+                    syn::parse_file(&source).map_err(|e| {
+                        proptest::test_runner::TestCaseError::fail(format!(
+                            "generated {path} does not parse as Rust: {e}\n--- source ---\n{source}"
+                        ))
+                    })?;
+                    let wide = overlong_lines(&source);
+                    if !wide.is_empty() {
+                        return Err(proptest::test_runner::TestCaseError::fail(format!(
+                            "generated {path} has lines rustfmt would reflow: {wide:?}\
+                             \n--- source ---\n{source}"
+                        )));
+                    }
                 }
+                let source = &emitted_rust(&generated);
                 let unbalanced = unbalanced_constants(source);
                 if !unbalanced.is_empty() {
                     return Err(proptest::test_runner::TestCaseError::fail(format!(
@@ -1353,27 +2357,40 @@ mod tests {
             );
         }
 
-        /// Lines of emitted code that rustfmt would have to reflow, as `(line, columns)`.
+        /// Lines rustfmt would have to reflow, as `(line, columns)`.
         ///
-        /// The width is read from `render::MAX_WIDTH`, the one emission derives its layout from.
-        /// A second copy of the number here would let the two drift, and the drift would show up
+        /// Both widths are read from `render`, the module emission derives its layout from. A
+        /// second copy of either number here would let the two drift, and the drift would show up
         /// as a passing test over source `cargo fmt --check` rejects.
         ///
-        /// Comments are excluded: rustfmt does not rewrap them (`wrap_comments` is off by
-        /// default), and the generated header quotes a template-family identifier that can
-        /// legitimately carry a `//!` line past the width.
-        fn overlong_code_lines(source: &str) -> Vec<(usize, usize)> {
-            use render::MAX_WIDTH;
+        /// Comments are **included** now, because the shipped `rustfmt.toml` sets
+        /// `wrap_comments = true`. Their budget is not `max_width`, and it is not one number
+        /// either: [`render::comment_is_overlong`] holds both rules, and this reads it rather than
+        /// restating them, so the emitter and the test cannot disagree about where a comment ends.
+        /// The reported column count is always the whole line, whichever budget rejected it.
+        ///
+        /// This closes the hole that made the previous exclusion necessary: the header carries a
+        /// template-family identifier and a 64-character digest, neither of whose width is ours
+        /// to choose, and the answer is now that the emitter wraps them rather than that the test
+        /// looks away. Every over-wide comment in a paragraph pulls the whole paragraph into a
+        /// re-flow, so the condition is exact rather than approximate: nothing over the budget
+        /// means nothing to re-flow, and rustfmt never joins lines it does not have to.
+        pub(super) fn overlong_lines(source: &str) -> Vec<(usize, usize)> {
             source
                 .lines()
                 .enumerate()
-                .filter(|(_, line)| !line.trim_start().starts_with("//"))
+                .filter(|(_, line)| {
+                    if line.trim_start().starts_with("//") {
+                        render::comment_is_overlong(line)
+                    } else {
+                        line.chars().count() > render::MAX_WIDTH
+                    }
+                })
                 .map(|(index, line)| (index + 1, line.chars().count()))
-                .filter(|(_, columns)| *columns > MAX_WIDTH)
                 .collect()
         }
 
-        /// Emission keeps every line of code inside rustfmt's default width.
+        /// Emission keeps every line inside the widths the shipped `rustfmt.toml` enforces.
         ///
         /// That is what makes the generated crates `cargo fmt --check`-clean without running
         /// rustfmt over codegen's output, which would put the rustfmt version among the inputs
@@ -1421,10 +2438,10 @@ mod tests {
                 },
             ];
             let spec = spec.validate().expect("the awkward spec must validate");
-            let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept the awkward spec")
-                .files["src/lib.rs"]
-                .clone();
+            let source = emitted_rust(
+                &generate(&spec, 0, &Pins::default())
+                    .expect("codegen must accept the awkward spec"),
+            );
 
             // Non-vacuity: a pass means nothing unless the awkward shapes are really emitted.
             for expected in ["const CALL_0_ARG_0_XDR: [u8; 48] = [", "let fn_1_ok = "] {
@@ -1434,7 +2451,7 @@ mod tests {
                 );
             }
 
-            let wide = overlong_code_lines(&source);
+            let wide = overlong_lines(&source);
             assert!(
                 wide.is_empty(),
                 "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
@@ -1577,10 +2594,9 @@ mod tests {
             let spec = spec
                 .validate()
                 .expect("the spec-size boundary is a valid spec");
-            let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept the boundary spec")
-                .files["src/lib.rs"]
-                .clone();
+            let generated = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept the boundary spec");
+            let source = emitted_rust(&generated);
 
             // Non-vacuity: every bound must actually be reached in the emitted source.
             for expected in [
@@ -1613,7 +2629,7 @@ mod tests {
                 "this test does not exercise the signer bound: no {last_signer} in\n{source}"
             );
 
-            let wide = overlong_code_lines(&source);
+            let wide = overlong_lines(&source);
             assert!(
                 wide.is_empty(),
                 "emitted lines rustfmt would reflow (line, columns): {wide:?}\n{source}"
@@ -1634,7 +2650,7 @@ mod tests {
                 );
             }
 
-            syn::parse_file(&source).expect("the boundary emission must parse");
+            each_file_parses(&generated);
             let unbalanced = unbalanced_constants(&source);
             assert!(
                 unbalanced.is_empty(),
@@ -1667,17 +2683,21 @@ mod tests {
                 "the rule must carry the signers under test"
             );
 
-            let source = generate(&spec, 0, &Pins::default())
-                .expect("codegen must accept a dynamic rule carrying named signers")
-                .files["src/lib.rs"]
-                .clone();
-
-            syn::parse_file(&source).expect("generated source must parse");
+            let generated = generate(&spec, 0, &Pins::default())
+                .expect("codegen must accept a dynamic rule carrying named signers");
+            each_file_parses(&generated);
+            let source = emitted_rust(&generated);
             for absent in [
                 "SIGNER_",
                 "expected_signers",
-                // The only use of `Bytes` in this shape would have been the key.
-                "Bytes",
+                // The only use of `Bytes` in this shape would have been the key. Probed as the
+                // import item and as the type's one use form, not as the bare word: every policy
+                // imports `BytesN` for its enforcement-event digest, and a substring search for
+                // "Bytes" has matched that since — reporting a violation on every shape, this one
+                // included, which is how it was noticed rather than left as a search that had
+                // stopped asking anything.
+                " Bytes,",
+                "Bytes::",
             ] {
                 assert!(
                     !source.contains(absent),
@@ -1708,7 +2728,7 @@ mod tests {
         let a = generate(&spec, 0, &Pins::default()).unwrap();
         let b = generate(&spec, 0, &Pins::default()).unwrap();
         assert_eq!(a, b);
-        assert_eq!(a.files["src/lib.rs"], b.files["src/lib.rs"]);
+        assert_eq!(emitted_rust(&a), emitted_rust(&b));
     }
 
     #[test]
@@ -1726,7 +2746,8 @@ mod tests {
         let b = generate(&renamed, 0, &Pins::default()).unwrap();
         assert_eq!(a.normalized_input_hash, b.normalized_input_hash);
         assert_eq!(
-            a.files["src/lib.rs"], b.files["src/lib.rs"],
+            emitted_rust(&a),
+            emitted_rust(&b),
             "lib.rs must be identical for identical constraint content"
         );
         assert_ne!(
@@ -1752,7 +2773,7 @@ mod tests {
         let a = generate(&base, 0, &Pins::default()).unwrap();
         let b = generate(&widened, 0, &Pins::default()).unwrap();
         assert_ne!(a.normalized_input_hash, b.normalized_input_hash);
-        assert!(b.files["src/lib.rs"].contains("if x > 1000000000i128"));
+        assert!(emitted_rust(&b).contains("if x > 1000000000i128"));
     }
 
     #[test]
@@ -1772,7 +2793,7 @@ mod tests {
         let spec = spec
             .validate()
             .expect("i128::MIN is a canonical, valid i128 constraint");
-        let lib = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
+        let lib = emitted_for(&spec);
         assert!(
             lib.contains("if x != i128::MIN"),
             "i128::MIN must be emitted as the named constant, got:\n{lib}"
@@ -1783,17 +2804,1179 @@ mod tests {
         );
     }
 
+    /// The three lifecycle events are declared, published, and documented where they are emitted.
+    ///
+    /// Behaviour is the differential suite's job (`contracts/differential/tests/events.rs`);
+    /// this is the shape, over every rule form, including the two the goldens do not cover.
+    ///
+    /// The `# Events` doc sections quote a topic symbol the `#[contractevent]` macro derives from
+    /// the struct name, so nothing here can hold them to the artifact — the differential suite
+    /// reads the published topics back and compares. What *is* checkable offline is that a
+    /// function which publishes documents doing so, which is the direction that goes stale first.
+    #[test]
+    fn every_entry_point_declares_publishes_and_documents_its_event() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = emitted_for(&spec);
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            for (verb, entry) in [
+                ("Enforced", "enforce"),
+                ("Installed", "install"),
+                ("Uninstalled", "uninstall"),
+            ] {
+                let event = format!("GeneratedPolicy{verb}");
+                // One derive set for all three. The enforcement event derived `Clone` alone
+                // while it embedded a `Context`, which implements none of the other three;
+                // since it carries a digest instead, nothing on it is underivable.
+                assert!(
+                    source.contains(&format!(
+                        "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct \
+                         {event} {{\n"
+                    )),
+                    "{shape}: {event} must be a `#[contractevent]` struct with the derives its \
+                     fields allow:\n{source}"
+                );
+                // The single topic is the smart account, as it is in all three library policies.
+                let declaration = &source[source
+                    .find(&format!("pub struct {event} {{"))
+                    .expect("just asserted")..];
+                let declaration = &declaration[..declaration.find("\n}\n").expect("a struct ends")];
+                assert!(
+                    declaration.contains("    #[topic]\n    pub smart_account: Address,"),
+                    "{shape}: {event}'s only topic must be the smart account:\n{declaration}"
+                );
+                assert_eq!(
+                    declaration.matches("#[topic]").count(),
+                    1,
+                    "{shape}: {event} must carry exactly one topic:\n{declaration}"
+                );
+                assert!(
+                    declaration.contains("pub context_rule_id: u32,"),
+                    "{shape}: {event} must carry the context rule id:\n{declaration}"
+                );
+
+                // Published from the body of the entry point it belongs to, not merely declared.
+                let body = body_of(&source, entry);
+                assert!(
+                    body.contains(&format!("{event} {{")) && body.contains(".publish(e);"),
+                    "{shape}: `{entry}` must publish {event}:\n{body}"
+                );
+                // …and documented there, in the form their conventions fix.
+                let doc = docs_of(&source, entry);
+                assert!(
+                    doc.contains("# Events")
+                        && doc.contains("* topics - ")
+                        && doc.contains("* data - "),
+                    "{shape}: `{entry}` must document the event it publishes:\n{doc}"
+                );
+            }
+
+            // The running number rides on the enforcement event only where a cap exists — the
+            // same condition that decides whether `remaining_calls` is exported at all.
+            let enforced = &source[source
+                .find("pub struct GeneratedPolicyEnforced {")
+                .expect("the enforcement event is declared")..];
+            let enforced = &enforced[..enforced.find("\n}\n").expect("a struct ends")];
+            assert_eq!(
+                enforced.contains("pub remaining_calls: u32,"),
+                max_calls.is_some(),
+                "{shape}: the enforcement event carries a count iff the rule caps calls"
+            );
+            // Searched against the doc with its wrapping undone: `wrap_comments` may split any
+            // phrase across two lines, and a substring search over the raw text would then be
+            // asking about the line breaks rather than about the content.
+            let enforce_doc = docs_of(&source, "enforce")
+                .replace("///", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(
+                enforce_doc.contains("remaining_calls: u32"),
+                max_calls.is_some(),
+                "{shape}: and the doc says so iff the field is there:\n{enforce_doc}"
+            );
+            // What was permitted always rides on it — an event naming only the account and the
+            // rule would not say what it approved, which is the one thing a reader wants from it
+            // — but as a digest, never as the authorization itself. Both directions, because the
+            // absence is the load-bearing half: `pub context: Context` is what all three library
+            // policies write, it is one word away, and it compiles. What it costs is an
+            // unbounded event on a permitted call (divergence 9 of
+            // `docs/ECOSYSTEM-CONFORMANCE.md` §15), which no assertion about the emitted text
+            // would notice — `contracts/differential/tests/event_payload.rs` is where that is
+            // caught on the compiled artifact.
+            assert!(
+                enforced.contains("pub context_hash: BytesN<32>,"),
+                "{shape}: the enforcement event must name what it permitted:\n{enforced}"
+            );
+            assert!(
+                !enforced.contains("pub context: Context,"),
+                "{shape}: the enforcement event must not embed the authorization it \
+                 permitted:\n{enforced}"
+            );
+            let enforce_data = enforce_doc
+                .split("* data - ")
+                .nth(1)
+                .expect("the enforce doc lists the event's data fields");
+            assert!(
+                enforce_data.starts_with("`[context_hash: BytesN<32>,"),
+                "{shape}: and the doc says which of the two it is:\n{enforce_doc}"
+            );
+        }
+    }
+
+    /// The artifact exposes its state for reading, and the reads are free of side effects.
+    ///
+    /// Both sibling policy examples expose getters from an inherent `#[contractimpl]` block beside
+    /// the trait one; ours exported the three trait methods and nothing else, so there was no
+    /// on-chain way to ask whether a policy was installed or how many calls an installation had
+    /// left.
+    ///
+    /// The TTL half is asserted here only as an absence, to keep this test from passing on a
+    /// surface that quietly started buying rent;
+    /// `only_the_write_paths_extend_and_the_getters_say_why_they_do_not` carries the argument for
+    /// why a read must not extend.
+    ///
+    /// `remaining_calls` is emitted only where a cap exists. A rule with no cap has no counter to
+    /// report, and both alternatives are worse than an absent function — a `u32::MAX` sentinel is
+    /// a magic value a caller has to know about, and zero reads as "exhausted" for a policy that
+    /// is in fact unlimited. So the assertion is two-sided: present with a cap, absent without.
+    #[test]
+    fn the_artifact_exposes_its_state_for_reading() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = emitted_for(&spec);
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            // The crate header describes the check order, and a rule with no cap has no count
+            // whose behaviour there is anything to describe. Prose in the header is read as an
+            // assertion about the file under it, so it is held to the shape like the `# Errors`
+            // lists are.
+            assert_eq!(
+                source.contains("the call cap never resets within an installation"),
+                max_calls.is_some(),
+                "{shape}: the header describes the call cap iff the rule has one"
+            );
+
+            // The inherent block is the one their conventions reserve plain `#[contractimpl]`
+            // for, and it must be distinct from the trait impl rather than folded into it.
+            assert!(
+                source.contains("#[contractimpl]\nimpl GeneratedPolicy {\n"),
+                "{shape}: the getters must live in an inherent `#[contractimpl]` block:\n{source}"
+            );
+            assert!(
+                source.contains("#[contractimpl]\nimpl Policy for GeneratedPolicy {\n"),
+                "{shape}: the trait impl must stay its own block:\n{source}"
+            );
+            assert!(
+                source.contains("pub fn is_installed(e: &Env, context_rule_id: u32, "),
+                "{shape}: `is_installed` must be exported:\n{source}"
+            );
+            assert_eq!(
+                source.contains("pub fn remaining_calls("),
+                max_calls.is_some(),
+                "{shape}: `remaining_calls` is emitted iff the rule caps calls"
+            );
+
+            // What the getters answer, and — checked per function body, because an `extend_ttl`
+            // anywhere in the file would satisfy a whole-source search — that neither of them
+            // touches a TTL. `only_the_write_paths_extend_and_the_getters_say_why_they_do_not`
+            // carries the argument; this keeps the exported-surface test from passing on a
+            // surface that quietly started buying rent.
+            let is_installed = body_of(&source, "is_installed");
+            assert!(
+                is_installed.contains("e.storage().persistent().has(&installed_key)"),
+                "{shape}: `is_installed` must answer from the marker's presence:\n{is_installed}"
+            );
+            assert!(
+                !is_installed.contains("extend_ttl"),
+                "{shape}: `is_installed` is a pure read:\n{is_installed}"
+            );
+            if max_calls.is_some() {
+                let remaining = body_of(&source, "remaining_calls");
+                assert!(
+                    remaining.contains("MAX_CALLS.saturating_sub(used)"),
+                    "{shape}: `remaining_calls` must count down from the cap:\n{remaining}"
+                );
+                assert!(
+                    !remaining.contains("extend_ttl"),
+                    "{shape}: `remaining_calls` is a pure read:\n{remaining}"
+                );
+            }
+            // A missing count is an error rather than a zero, matching `enforce`.
+            if max_calls.is_some() {
+                assert!(
+                    body_of(&source, "remaining_calls")
+                        .contains("None => panic_with_error!(e, PolicyError::MissingState)"),
+                    "{shape}: an absent counter must deny rather than read as zero"
+                );
+            }
+        }
+    }
+
+    /// The emitted file is divided by OpenZeppelin's canonical section delimiter, in their order.
+    ///
+    /// Their rule is unusually specific: eighteen hashes each side, and variations such as
+    /// `// === NAME ===` are to be rewritten to that form. So the form is asserted exactly — a
+    /// heading with seventeen hashes reads the same to a human and is a violation.
+    ///
+    /// The order matters more than the presence, and it is ours rather than a concatenation of
+    /// theirs — a claim this docstring used to make and that does not survive reading their files.
+    /// `smart_account/mod.rs` runs CONSTANTS → ERRORS → EVENTS; `storage.rs` runs QUERY STATE →
+    /// CHANGE STATE → SIGNER MANAGEMENT → POLICY MANAGEMENT → HELPERS; each policy module runs
+    /// CONSTANTS → QUERY STATE → CHANGE STATE, with its error enum, event structs and storage-key
+    /// enum in an undelimited preamble above the first heading. No upstream file has the sequence
+    /// below, because no upstream file declares all of these things in one place.
+    ///
+    /// What the sequence follows instead is declarations before the code that reads them, and
+    /// exports before the arithmetic they are built from: types (ERRORS → STORAGE KEYS →
+    /// CONSTANTS → EVENTS), then the entry points (QUERY STATE → CHANGE STATE), then the private
+    /// helpers. The errors-then-storage-keys pair is the one ordering taken directly from
+    /// upstream, where the two enums appear in that order in all three policy modules.
+    /// Exactly two entry points check the validity window: the two that extend.
+    ///
+    /// `ttl_target`'s doc comment justifies its upper bound with what happens past
+    /// VALID_UNTIL_LEDGER, so which functions refuse there is load-bearing prose and not a
+    /// remark. It said "every entry point denies" and three of the five do not — `uninstall`
+    /// deliberately works past expiry, because an account must always be able to detach, and the
+    /// getters answer questions about a dead installation because that is still a fair question.
+    ///
+    /// Asserted both ways round. An expiry check appearing in a getter would be a behaviour
+    /// change nobody asked for; one disappearing from `enforce` would let an expired rule permit.
+    #[test]
+    fn the_validity_window_is_checked_by_the_two_entry_points_that_extend() {
+        let spec = compilability::spec_with(
+            golden_spec().spec().rules[0].allowed_calls.clone(),
+            (PredicateKind::AnyOf, true),
+            Some(4_223_456),
+            Some(12),
+            false,
+        )
+        .expect("the golden rule with a window validates");
+        let source = emitted_for(&spec);
+
+        for (entry, checks) in [
+            ("enforce", true),
+            ("install", true),
+            ("uninstall", false),
+            ("is_installed", false),
+            ("remaining_calls", false),
+        ] {
+            assert_eq!(
+                body_of(&source, entry).contains("> VALID_UNTIL_LEDGER"),
+                checks,
+                "`{entry}` must {} the validity window; `ttl_target`'s doc comment describes \
+                 which entry points refuse past it, and that description is only true if this \
+                 split is",
+                if checks { "check" } else { "not check" }
+            );
+        }
+    }
+
+    /// The two write paths extend the same entries to the same bound, and nothing else extends.
+    ///
+    /// Both halves matter and the second is the one a later edit will break. A reader that touches
+    /// storage and does not extend looks like an oversight — the library's own rule is
+    /// "extend TTL on read" (`code-quality.md:344`) and it takes one line to comply — so this
+    /// asserts the **absence**, and asserts that the `// NOTE:` explaining it is there to be read
+    /// by whoever tries. The exception the getters follow is `:376-381`: a utility whose state is
+    /// managed by the calling contract does not extend on read, `paused()` being the canonical
+    /// case. A generated policy is that case. Its entries are created by the smart account's
+    /// `install` and destroyed by its `uninstall`, so the account's own calls are what keep them
+    /// alive, and a query by an arbitrary caller has no business buying rent for them.
+    ///
+    /// The first half is asserted as an identity between the two write bodies rather than against
+    /// a written-down list, because a list is a second copy of the intent and would be updated in
+    /// the same edit that broke the code. The emitter has one extension block and both write
+    /// paths use it; this is what says so.
+    ///
+    /// This replaces a version that asserted the opposite — that all four entry points extend the
+    /// same entries — written from the extend-on-read rule without its exception. The design it
+    /// checked was coherent and bounded, and it was still the wrong one: it made an
+    /// unauthenticated `is_installed` a way for a third party to pay this policy's rent, which is
+    /// a thing the account cannot stop and had no reason to want.
+    #[test]
+    fn only_the_write_paths_extend_and_the_getters_say_why_they_do_not() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = emitted_for(&spec);
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            let expected = extended_entries(&body_of(&source, "enforce"));
+            assert!(
+                expected.contains(&"instance".to_string())
+                    && expected.contains(&"installed_key".to_string()),
+                "{shape}: `enforce` must extend the instance and the marker, or this test has \
+                 nothing to compare against: {expected:?}"
+            );
+            for entry in ["enforce", "install"] {
+                let body = body_of(&source, entry);
+                assert_eq!(
+                    extended_entries(&body),
+                    expected,
+                    "{shape}: `{entry}` extends a different entry set from `enforce`, which \
+                     leaves one of this policy's entries to archive while the others are kept \
+                     alive"
+                );
+                assert!(
+                    body.contains("let ttl = ttl_target(e);"),
+                    "{shape}: `{entry}` must take its target from `ttl_target`, which is the only \
+                     thing that bounds an extension by the rule's own window:\n{body}"
+                );
+            }
+
+            // Nothing else extends. `uninstall` is here for its own reason — buying rent for
+            // entries it is removing — and the getters for theirs.
+            let mut silent = vec!["uninstall", "is_installed"];
+            if max_calls.is_some() {
+                silent.push("remaining_calls");
+            }
+            for entry in silent {
+                let body = body_of(&source, entry);
+                assert!(
+                    extended_entries(&body).is_empty(),
+                    "{shape}: `{entry}` must extend nothing, and extends {:?}. For a getter that \
+                     is the caller-managed-state exception (`code-quality.md:376-381`): these \
+                     entries live and die with the smart account's install/uninstall, so a query \
+                     must not pay their rent. Adding `extend_ttl` back also hands an \
+                     unauthenticated caller a way to keep an installation out of archival",
+                    extended_entries(&body)
+                );
+            }
+
+            // And the absence is explained where someone editing it will look, which is what the
+            // exception asks for. Asserted on the two getters only: `uninstall` states its own
+            // reason in its doc comment, and it is a different reason.
+            let mut readers = vec!["is_installed"];
+            if max_calls.is_some() {
+                readers.push("remaining_calls");
+            }
+            for entry in readers {
+                let body = body_of(&source, entry);
+                assert!(
+                    body.contains("NOTE: deliberately does not extend TTL"),
+                    "{shape}: `{entry}` must carry the `// NOTE:` the caller-managed-state \
+                     exception asks for, or the omission reads as an oversight and the next \
+                     editor fixes it:\n{body}"
+                );
+                assert!(
+                    body.contains("code-quality.md:376-381"),
+                    "{shape}: the note in `{entry}` must cite the clause it follows, so a reader \
+                     can check it rather than take our word:\n{body}"
+                );
+            }
+        }
+    }
+
+    /// The entries one function body extends, named by what they are rather than by the call text.
+    fn extended_entries(body: &str) -> Vec<String> {
+        body.lines()
+            .filter(|line| line.contains(".extend_ttl("))
+            .map(|line| {
+                let line = line.trim();
+                if line.contains("instance()") {
+                    "instance".to_string()
+                } else if let Some(rest) = line.split(".extend_ttl(&").nth(1) {
+                    rest.split(',')
+                        .next()
+                        .expect("an extend_ttl argument")
+                        .to_string()
+                } else {
+                    panic!("an extension of nothing recognizable: {line}")
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_emitted_file_carries_the_canonical_section_delimiters_in_order() {
+        let rule = "#".repeat(18);
+        // Every section a generated policy has. Both EVENTS and QUERY STATE are unconditional:
+        // every policy announces its three lifecycle steps and answers `is_installed`, whether or
+        // not it also counts calls.
+        let expected = [
+            "ERRORS",
+            "STORAGE KEYS",
+            "CONSTANTS",
+            "EVENTS",
+            "QUERY STATE",
+            "CHANGE STATE",
+            "HELPER FUNCTIONS",
+        ];
+        for (label, spec) in [
+            ("golden transfer", golden_spec()),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+        ] {
+            let source = emitted_rust(
+                &generate(&spec, 0, &Pins::default())
+                    .unwrap_or_else(|error| panic!("{label} must generate: {error}")),
+            );
+
+            // Every delimiter in the file, in the order it appears, read back from the text.
+            let found: Vec<String> = source
+                .lines()
+                .filter_map(|line| line.strip_prefix(&format!("// {rule} ")))
+                .filter_map(|rest| rest.strip_suffix(&format!(" {rule}")))
+                .map(str::to_string)
+                .collect();
+            assert_eq!(
+                found, expected,
+                "{label}: section delimiters are missing, mis-formed or out of order"
+            );
+
+            // No near-miss forms: anything that looks like a heading must be the canonical one.
+            let malformed: Vec<&str> = source
+                .lines()
+                .filter(|line| line.starts_with("// #") || line.starts_with("// ==="))
+                .filter(|line| {
+                    !line.starts_with(&format!("// {rule} "))
+                        || !line.ends_with(&format!(" {rule}"))
+                })
+                .collect();
+            assert!(
+                malformed.is_empty(),
+                "{label}: non-canonical section delimiters: {malformed:?}"
+            );
+
+            // The private helpers really are after the entry points, which is the ordering claim
+            // the section list above only implies.
+            let helpers = source
+                .find(&format!("// {rule} HELPER FUNCTIONS"))
+                .expect("the helper section must exist");
+            for helper in ["fn matched_count(", "fn ttl_target(", "fn check_call_0("] {
+                let at = source
+                    .find(helper)
+                    .unwrap_or_else(|| panic!("{label}: no {helper} in the emitted source"));
+                assert!(
+                    at > helpers,
+                    "{label}: {helper} is emitted before the HELPER FUNCTIONS heading"
+                );
+            }
+            assert!(
+                source.find("fn enforce(").expect("enforce is emitted") < helpers,
+                "{label}: the entry points must come before the helpers"
+            );
+        }
+    }
+
+    /// Every public item carries a doc comment, and every entry point an `# Errors` section.
+    ///
+    /// OpenZeppelin's conventions ask for a one-line summary on every public item and an
+    /// `# Errors` section on every public function that can panic; ours panic several ways each.
+    /// The asymmetry this removes is worth naming: the private `ttl_target` helper carried three
+    /// paragraphs while `enforce`, `install` and `uninstall` — the whole callable surface of the
+    /// artifact — carried none.
+    ///
+    /// Checked through `syn` rather than by searching for `///`, because the property is about
+    /// items and not about text: a substring search cannot tell a doc comment attached to the
+    /// enum from one attached to its first variant, and the variants are half of what was
+    /// missing. `syn` is already a dev-dependency here for the parse check.
+    #[test]
+    fn every_public_item_of_the_generated_crate_is_documented() {
+        fn documented(attrs: &[syn::Attribute]) -> bool {
+            attrs.iter().any(|attr| attr.path().is_ident("doc"))
+        }
+        fn public(vis: &syn::Visibility) -> bool {
+            matches!(vis, syn::Visibility::Public(_))
+        }
+
+        let mut stateless = golden_spec().spec().clone();
+        stateless.rules[0].state.clear();
+        stateless.rules[0].valid_until = None;
+        let stateless = stateless
+            .validate()
+            .expect("a stateless rule with no window is a valid spec");
+
+        // The roster is shape-dependent: `remaining_calls` exists only where a cap does, so a
+        // fixed list would either miss it or demand it from a policy that has no counter.
+        for (label, spec, capped) in [
+            ("golden transfer", golden_spec(), true),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+                true,
+            ),
+            ("stateless, no window", stateless, false),
+        ] {
+            let generated = generate(&spec, 0, &Pins::default())
+                .unwrap_or_else(|error| panic!("{label} must generate: {error}"));
+            each_file_parses(&generated);
+
+            // Items from every emitted file. `pub mod contract;` is deliberately not among the
+            // items checked below: a module's documentation is the `//!` block inside its own
+            // file, which is asserted separately, and rustdoc renders it in the same place a
+            // `///` on the declaration would have gone.
+            let mut items: Vec<syn::Item> = Vec::new();
+            for (path, body) in rust_files(&generated) {
+                let parsed = syn::parse_file(&body).expect("just asserted to parse");
+                if path == "src/contract.rs" {
+                    assert!(
+                        body.starts_with("//! "),
+                        "{label}: the contract module must open with its own `//!` doc:\n{body}"
+                    );
+                }
+                items.extend(parsed.items);
+            }
+            let source = emitted_rust(&generated);
+
+            let mut undocumented: Vec<String> = Vec::new();
+            let mut entry_points: Vec<String> = Vec::new();
+            for item in &items {
+                match item {
+                    syn::Item::Enum(item) if public(&item.vis) => {
+                        if !documented(&item.attrs) {
+                            undocumented.push(format!("enum {}", item.ident));
+                        }
+                        for variant in &item.variants {
+                            if !documented(&variant.attrs) {
+                                undocumented
+                                    .push(format!("variant {}::{}", item.ident, variant.ident));
+                            }
+                        }
+                    }
+                    syn::Item::Struct(item) if public(&item.vis) => {
+                        if !documented(&item.attrs) {
+                            undocumented.push(format!("struct {}", item.ident));
+                        }
+                    }
+                    // Trait-impl members carry no `pub` of their own — they are as public as the
+                    // trait — so visibility cannot be the filter here. This is the artifact's
+                    // callable surface, which is exactly why it is checked.
+                    syn::Item::Impl(item) => {
+                        for member in &item.items {
+                            let (kind, ident, attrs) = match member {
+                                syn::ImplItem::Fn(member) => {
+                                    ("fn", member.sig.ident.to_string(), member.attrs.clone())
+                                }
+                                syn::ImplItem::Type(member) => {
+                                    ("type", member.ident.to_string(), member.attrs.clone())
+                                }
+                                _ => continue,
+                            };
+                            if !documented(&attrs) {
+                                undocumented.push(format!("{kind} {ident}"));
+                            }
+                            if kind == "fn" {
+                                entry_points.push(ident);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                undocumented.is_empty(),
+                "{label}: public items without a doc comment: {undocumented:?}"
+            );
+            // Non-vacuity: an empty walk would also report nothing undocumented.
+            entry_points.sort();
+            let mut expected = vec!["enforce", "install", "is_installed", "uninstall"];
+            if capped {
+                expected.push("remaining_calls");
+            }
+            expected.sort();
+            assert_eq!(
+                entry_points, expected,
+                "{label}: the walk did not reach the callable surface"
+            );
+
+            for entry in ["enforce", "install", "uninstall"] {
+                let doc = docs_of(&source, entry);
+                assert!(
+                    doc.contains("# Errors"),
+                    "{label}: `{entry}` has no `# Errors` section:\n{doc}"
+                );
+                assert!(
+                    doc.contains("# Arguments"),
+                    "{label}: `{entry}` has no `# Arguments` section:\n{doc}"
+                );
+                // Their section order is fixed: Arguments before Errors, never reordered.
+                assert!(
+                    doc.find("# Arguments") < doc.find("# Errors"),
+                    "{label}: `{entry}` lists its sections out of order:\n{doc}"
+                );
+            }
+        }
+    }
+
+    /// The doc comment immediately above `fn <name>`, as one string.
+    ///
+    /// Read off the emitted text rather than through `syn`, because what is under test is what a
+    /// reader sees — the rendered section headings and bullets, not a token stream.
+    fn docs_of(source: &str, name: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| {
+                line.trim_start()
+                    .trim_start_matches("pub ")
+                    .starts_with(&format!("fn {name}("))
+            })
+            .unwrap_or_else(|| panic!("no `fn {name}` in the emitted source"));
+        let mut start = at;
+        while start > 0 && lines[start - 1].trim_start().starts_with("///") {
+            start -= 1;
+        }
+        lines[start..at].join("\n")
+    }
+
+    /// The `# Errors` bullets of one entry point, as (variant, prose) pairs.
+    ///
+    /// The prose matters as much as the variant. A list that names the right eleven codes while
+    /// describing one of two conditions that raise a code is the failure this parses for, and it
+    /// is invisible to any check that reads only the identifiers.
+    fn error_bullets(doc: &str) -> Vec<(String, String)> {
+        let mut bullets: Vec<(String, String)> = Vec::new();
+        let mut inside = false;
+        for line in doc.lines() {
+            let text = line.trim_start().trim_start_matches("///").trim();
+            if text.starts_with("# ") {
+                inside = text == "# Errors";
+                continue;
+            }
+            if !inside || text.is_empty() {
+                continue;
+            }
+            if let Some(rest) = text.strip_prefix("* ") {
+                let variant = rest
+                    .split("[`PolicyError::")
+                    .nth(1)
+                    .and_then(|r| r.split('`').next())
+                    .unwrap_or_else(|| panic!("an `# Errors` bullet that names no variant: {rest}"))
+                    .to_string();
+                bullets.push((variant, rest.to_string()));
+            } else if let Some(last) = bullets.last_mut() {
+                // A wrapped continuation line. Joined with a space so a condition broken across
+                // two lines is still one occurrence of the word that introduces it.
+                last.1.push(' ');
+                last.1.push_str(text);
+            }
+        }
+        bullets
+    }
+
+    /// An `# Errors` list names every refusal the emitted body can raise, no others, **and as
+    /// many conditions as the body has raise sites for it**.
+    ///
+    /// This is the property that makes the section worth having in a generated artifact. The enum
+    /// declares all eleven codes whatever the rule's shape, so copying that list into every
+    /// entry point's docs would be easy and would be wrong: a rule with no validity window can
+    /// never raise `RuleExpired`, and one with no call cap can never raise `CallCountExceeded`.
+    ///
+    /// Checked in three directions against the body itself: every `panic_with_error!` reachable
+    /// from the function is listed, every listed error appears in one, and a code raised from *n*
+    /// distinct sites is described by *n* conditions rather than one. That last direction is
+    /// the one a variant-name comparison cannot see, and it is not hypothetical — `enforce`
+    /// raises `MissingState` for a missing marker *and* for a missing counter, `SignerSetDiverged`
+    /// from a size check *and* a membership loop, and `FunctionNotAllowed` from a non-contract
+    /// context *and* a disallowed function name. Each was documented as one condition, so a
+    /// reader of the docs knew about half of the code.
+    ///
+    /// A condition is counted by the word that introduces it — every bullet reads
+    /// "`When` …, or `when` …" — which makes the count a property of the prose a reader
+    /// actually sees rather than of a table kept beside it.
+    ///
+    /// All five entry points, not the three on the `Policy` trait. `is_installed` is here for the
+    /// opposite reason to the others: it must document no refusal, because it can raise none, and
+    /// a getter that started panicking without a doc would otherwise pass unnoticed.
+    #[test]
+    fn each_entry_point_documents_exactly_the_refusals_its_body_can_raise() {
+        let calls = golden_spec().spec().rules[0].allowed_calls.clone();
+        for (valid_until, max_calls) in [
+            (Some(4_223_456u32), Some(12u32)),
+            (None, Some(12u32)),
+            (Some(4_223_456u32), None),
+            (None, None),
+        ] {
+            let spec = compilability::spec_with(
+                calls.clone(),
+                (PredicateKind::AnyOf, true),
+                valid_until,
+                max_calls,
+                false,
+            )
+            .expect("every shape of the golden rule validates");
+            let source = emitted_for(&spec);
+            let shape = format!("valid_until={valid_until:?} max_calls={max_calls:?}");
+
+            // `remaining_calls` is emitted only where a cap exists; the other four always are.
+            let mut entries = vec!["enforce", "install", "uninstall", "is_installed"];
+            if max_calls.is_some() {
+                entries.push("remaining_calls");
+            }
+
+            for entry in entries {
+                let doc = docs_of(&source, entry);
+                let bullets = error_bullets(&doc);
+                let listed: Vec<String> = bullets.iter().map(|(v, _)| v.clone()).collect();
+                let raised: Vec<String> = body_of(&source, entry)
+                    .split("panic_with_error!(e, PolicyError::")
+                    .skip(1)
+                    .filter_map(|rest| rest.split(')').next())
+                    .map(str::to_string)
+                    .collect();
+
+                for error in &raised {
+                    assert!(
+                        listed.contains(error),
+                        "{shape}: `{entry}` can raise {error} and does not document it: \
+                         {listed:?}"
+                    );
+                }
+                for error in &listed {
+                    assert!(
+                        raised.contains(error),
+                        "{shape}: `{entry}` documents {error}, which its body cannot raise: \
+                         {raised:?}"
+                    );
+                }
+
+                // One condition per raise site. The bullets for a variant are taken together, so
+                // the emitter may either split a twice-raised code into two bullets or name both
+                // conditions in one — what it may not do is describe fewer conditions than the
+                // body has ways of reaching the code.
+                for variant in &listed {
+                    let sites = raised.iter().filter(|r| *r == variant).count();
+                    let described: usize = bullets
+                        .iter()
+                        .filter(|(v, _)| v == variant)
+                        .map(|(_, prose)| prose.to_lowercase().matches("when ").count())
+                        .sum();
+                    assert_eq!(
+                        described,
+                        sites,
+                        "{shape}: `{entry}` raises {variant} from {sites} site(s) and its \
+                         `# Errors` prose describes {described} condition(s); a code reachable \
+                         two ways documented once tells a reader about one of them:\n{:?}",
+                        bullets
+                            .iter()
+                            .filter(|(v, _)| v == variant)
+                            .map(|(_, prose)| prose)
+                            .collect::<Vec<_>>()
+                    );
+                }
+
+                if entry == "is_installed" {
+                    assert!(
+                        raised.is_empty() && listed.is_empty(),
+                        "{shape}: `is_installed` answers a query and must refuse nothing: \
+                         raises {raised:?}, documents {listed:?}"
+                    );
+                } else {
+                    assert!(
+                        !raised.is_empty(),
+                        "{shape}: no refusal found in `{entry}`, so this proves nothing"
+                    );
+                }
+            }
+
+            // The shape-dependent pair, stated directly: these are the two errors a copied list
+            // would carry into a policy that cannot raise them.
+            let enforce_doc = docs_of(&source, "enforce");
+            assert_eq!(
+                enforce_doc.contains("PolicyError::RuleExpired"),
+                valid_until.is_some(),
+                "{shape}: `RuleExpired` is documented iff the rule has a window"
+            );
+            assert_eq!(
+                enforce_doc.contains("PolicyError::CallCountExceeded"),
+                max_calls.is_some(),
+                "{shape}: `CallCountExceeded` is documented iff the rule caps calls"
+            );
+        }
+    }
+
+    /// The body of `fn <name>`, from its signature to the line that closes it.
+    ///
+    /// Brace counting rather than `syn`, because the doc list above is compared against the
+    /// emitted `panic_with_error!` calls and both should be read from the same text.
+    fn body_of(source: &str, name: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| {
+                line.trim_start()
+                    .trim_start_matches("pub ")
+                    .starts_with(&format!("fn {name}("))
+            })
+            .unwrap_or_else(|| panic!("no `fn {name}` in the emitted source"));
+        let mut depth = 0i32;
+        let mut end = at;
+        let mut opened = false;
+        for (offset, line) in lines[at..].iter().enumerate() {
+            depth += line.matches('{').count() as i32;
+            depth -= line.matches('}').count() as i32;
+            if line.contains('{') {
+                opened = true;
+            }
+            if opened && depth <= 0 {
+                end = at + offset;
+                break;
+            }
+        }
+        lines[at..=end].join("\n")
+    }
+
+    /// `emit_publish` chooses the layout rustfmt would, on both sides of the boundary.
+    ///
+    /// The multi-line form is the only one the three current events reach, so without this the
+    /// one-line branch would be unreachable code carrying a claim about rustfmt that nothing
+    /// checked. The boundary is what matters rather than either form on its own: it has to be
+    /// `struct_lit_width`, which `use_small_heuristics = "Max"` raises to `max_width`, because
+    /// rustfmt joins a literal that fits and this emitter never runs rustfmt to find out.
+    ///
+    /// Asserted at exactly the budget and one column past it, with a synthetic field wide enough
+    /// to land on each, rather than by rendering a real event — the real events are all far past
+    /// the boundary, which is the reason this test exists.
+    #[test]
+    fn both_publish_layouts_are_the_ones_rustfmt_would_choose() {
+        // `        E { <field> }.publish(e);` — everything but the field is fixed.
+        let fixed = "        E { ".len() + " }.publish(e);".len();
+        let field_of = |total: usize| format!("f: {}", "x".repeat(total - fixed - "f: ".len()));
+
+        let fits = emit_publish("E", &[&field_of(render::MAX_WIDTH)]);
+        assert_eq!(
+            fits.lines().filter(|l| !l.is_empty()).count(),
+            1,
+            "a literal that fits `struct_lit_width` stays on one line, because rustfmt would \
+             join it:\n{fits}"
+        );
+        assert_eq!(
+            fits.trim_matches('\n').chars().count(),
+            render::MAX_WIDTH,
+            "the boundary case must be exactly the budget, or it is testing some other width"
+        );
+
+        let overflows = emit_publish("E", &[&field_of(render::MAX_WIDTH + 1)]);
+        assert!(
+            overflows.contains("E {\n") && overflows.contains("\n        .publish(e);\n"),
+            "one column past the budget takes a field per line with `.publish(e)` on the closing \
+             brace's line:\n{overflows}"
+        );
+
+        // And the events actually emitted are all on the far side of it — the fact that makes the
+        // branch above unreachable through `generate`, stated as a measurement rather than left
+        // for a reader to assume either way.
+        for (event, fields) in [
+            (
+                "GeneratedPolicyEnforced",
+                &[
+                    "smart_account: smart_account.clone()",
+                    "context",
+                    "context_rule_id: context_rule.id",
+                    "remaining_calls: remaining",
+                ][..],
+            ),
+            (
+                "GeneratedPolicyInstalled",
+                &[
+                    "smart_account: smart_account.clone()",
+                    "context_rule_id: context_rule.id",
+                ][..],
+            ),
+        ] {
+            let rendered = emit_publish(event, fields);
+            assert!(
+                rendered.contains(&format!("{event} {{\n")),
+                "{event} is wider than the budget and must take the multi-line form"
+            );
+        }
+    }
+
+    /// `wrap_comments` bounds a doc comment and an ordinary comment from different columns.
+    ///
+    /// This is the one rule in the emitted layout that no amount of reading the option's
+    /// description would produce, and getting it backwards is invisible in exactly the wrong
+    /// direction: emission would look right, this file's own width test would pass, and
+    /// `cargo fmt --check` on the shipped artifact would rewrite it.
+    ///
+    /// Measured against the pinned toolchain's rustfmt with single-character words, so each
+    /// boundary below is the exact last accepted width rather than wherever some sentence
+    /// happened to break:
+    ///
+    ///   * `///` and `//!` are bounded by `comment_width` from **column zero** — 80 columns at
+    ///     indent 0, and still 80 at indent 4 or 8, so the indentation is spent out of the same
+    ///     budget as the text;
+    ///   * `//` is bounded by `comment_width` from **its own marker** — 84 columns at indent 4,
+    ///     88 at indent 8 — so the indentation costs it nothing.
+    ///
+    /// The pair at indent 8 is the whole point: 88 columns is a fixed point for `//` and eight
+    /// columns too wide for `///`.
+    ///
+    /// The boundary is asserted through [`render::comment_is_overlong`] at width B and B+1 rather
+    /// than by reading the widest line the wrapper produces. That reading is parity-dependent —
+    /// with one-character words a `///` line at indent 0 can only land on odd widths, so it stops
+    /// at 79 under a budget of 80 — and a test that expected 79 would be pinning the test's own
+    /// word list instead of rustfmt's rule.
+    #[test]
+    fn a_doc_comment_and_a_plain_comment_are_bounded_from_different_columns() {
+        for (indent, marker, budget) in [
+            ("", "///", 80usize),
+            ("", "//!", 80),
+            ("    ", "///", 80),
+            ("        ", "///", 80),
+            ("    ", "//", 84),
+            ("        ", "//", 88),
+        ] {
+            let prefix = format!("{indent}{marker} ");
+            let at = |width: usize| format!("{prefix}{}", "a".repeat(width - prefix.len()));
+            assert!(
+                !render::comment_is_overlong(&at(budget)),
+                "{marker} at indent {}: {budget} columns must be a fixed point",
+                indent.len()
+            );
+            assert!(
+                render::comment_is_overlong(&at(budget + 1)),
+                "{marker} at indent {}: {} columns must not be",
+                indent.len(),
+                budget + 1
+            );
+
+            // The wrapper's output is a fixed point *and* greedily filled: every line fits, and
+            // no line could have taken the next line's first word. Together those are exactly
+            // what rustfmt leaves alone, so this is the property rather than a proxy for it.
+            let wrapped = render::wrap_comment(&prefix, &"a ".repeat(120));
+            let lines: Vec<&str> = wrapped.lines().collect();
+            assert!(
+                lines.len() > 1,
+                "{marker} at indent {} did not wrap at all",
+                indent.len()
+            );
+            for (index, line) in lines.iter().enumerate() {
+                assert!(
+                    !render::comment_is_overlong(line),
+                    "wrapped line {} is over budget: {line:?}",
+                    index + 1
+                );
+                if let Some(next) = lines.get(index + 1) {
+                    let first_word = next
+                        .trim_start()
+                        .trim_start_matches('/')
+                        .split_whitespace()
+                        .next()
+                        .expect("a wrapped line carries at least one word");
+                    assert!(
+                        render::comment_is_overlong(&format!("{line} {first_word}")),
+                        "line {} left room for {first_word:?}, so the fill is not greedy: \
+                         {line:?}",
+                        index + 1
+                    );
+                }
+            }
+        }
+    }
+
+    /// The import block is one grouped `use` per crate, filled the way rustfmt fills one.
+    ///
+    /// `imports_granularity = "Crate"` is what OpenZeppelin's `rustfmt.toml` sets and what both
+    /// sibling policy examples show. The exact text is asserted, not just the statement count,
+    /// because the fill is derived from item widths: the interesting property is that the
+    /// derivation agrees with rustfmt for every item set a rule can produce, and only a
+    /// byte-for-byte comparison against text taken from rustfmt's own output says that.
+    ///
+    /// Both reachable sets are covered — the transfer rule, which needs no `Bytes`, and the W3
+    /// swap rule, whose exact-`ScVal` comparison does — and `use_statement` is exercised directly
+    /// for the two shapes no rule can reach: `Bytes` without `xdr::ToXdr`, which no policy has
+    /// produced since every one of them digests its context, and a group short enough to stay on
+    /// one line.
+    #[test]
+    fn imports_are_one_grouped_use_per_crate() {
+        let expected_accounts = "use stellar_accounts::{\n    policies::Policy,\n    \
+                                smart_account::{ContextRule, Signer},\n};\n";
+        for (label, spec, expected_sdk) in [
+            (
+                "golden transfer",
+                golden_spec(),
+                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractevent, contractimpl, \
+                 contracttype,\n    panic_with_error, xdr::ToXdr, Address, BytesN, Env, Symbol, \
+                 TryFromVal, Val, Vec,\n};\n",
+            ),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+                "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractevent, \
+                 contractimpl, contracttype,\n    panic_with_error, xdr::ToXdr, Address, Bytes, \
+                 BytesN, Env, Symbol, TryFromVal, Val, Vec,\n};\n",
+            ),
+        ] {
+            let source = emitted_rust(
+                    &generate(&spec, 0, &Pins::default())
+                        .unwrap_or_else(|error| panic!("{label} must generate: {error}")),
+                );
+            assert!(
+                source.contains(expected_sdk),
+                "{label}: soroban_sdk import block is not rustfmt's grouped form\n\
+                 expected:\n{expected_sdk}\ngot:\n{source}"
+            );
+            assert!(
+                source.contains(expected_accounts),
+                "{label}: stellar_accounts import block is not rustfmt's grouped form\n\
+                 expected:\n{expected_accounts}\ngot:\n{source}"
+            );
+            // Two crates, therefore two statements. A split block satisfies the substrings
+            // above only if it happens to contain them, so the count is what forbids the
+            // per-item spelling this replaced.
+            let statements = source.matches("\nuse ").count();
+            assert_eq!(
+                statements, 2,
+                "{label}: expected one `use` per crate, found {statements}:\n{source}"
+            );
+        }
+
+        // `Bytes` without `xdr::ToXdr` — the external-signer shape. Reachable through
+        // `use_statement` only: a validated spec cannot carry an external signer.
+        assert_eq!(
+            render::use_statement(
+                "soroban_sdk",
+                &[
+                    "auth::Context",
+                    "contract",
+                    "contracterror",
+                    "contractimpl",
+                    "contracttype",
+                    "panic_with_error",
+                    "Address",
+                    "Bytes",
+                    "Env",
+                    "Symbol",
+                    "TryFromVal",
+                    "Val",
+                    "Vec",
+                ],
+            ),
+            "use soroban_sdk::{\n    auth::Context, contract, contracterror, contractimpl, \
+             contracttype, panic_with_error, Address,\n    Bytes, Env, Symbol, TryFromVal, Val, \
+             Vec,\n};\n"
+        );
+        // Short enough for one line, and nothing nested — the case the fill must not wrap.
+        assert_eq!(
+            render::use_statement("soroban_sdk", &["Env", "auth::Context"]),
+            "use soroban_sdk::{auth::Context, Env};\n"
+        );
+        // Nested, and short: a brace group forces the vertical layout at any width.
+        assert_eq!(
+            render::use_statement("stellar_accounts", &["smart_account::{Signer}", "a::B"]),
+            "use stellar_accounts::{\n    a::B,\n    smart_account::{Signer},\n};\n"
+        );
+    }
+
+    /// Emission never writes a length comparison against zero.
+    ///
+    /// `clippy::len_zero` is warn-by-default and the generated crate ships with `-D warnings`
+    /// over it, so this is a build failure in the artifact this project hands to a reviewer —
+    /// and OpenZeppelin's own conventions forbid silencing it with `#[allow]`
+    /// (`.claude/commands/code-quality.md`, "Lint suppression"). Written as a scan for the
+    /// shape rather than an assertion about one statement, because every emitted `.len()` is a
+    /// candidate: the arity check, the strict-signer-set comparison and the predicate all
+    /// measure a `soroban_sdk::Vec`, and only `is_empty()` is accepted for the zero case.
+    ///
+    /// The corpus is the three specs whose emission differs most: the golden transfer rule, the
+    /// W3 swap rule (bounds, exact `ScVal`, `AnyValue`) and a dynamic predicate, which is the
+    /// one shape that compares against `context_rule.signers` instead of a compiled-in set.
+    #[test]
+    fn emission_never_compares_a_length_against_zero() {
+        let mut dynamic = golden_spec().spec().clone();
+        dynamic.rules[0].authorization.kind = PredicateKind::AnyOfCurrentRuleSigners;
+        dynamic.rules[0].authorization.strict_signer_set = false;
+        let dynamic = dynamic.validate().expect("a dynamic rule is a valid spec");
+
+        for (label, spec) in [
+            ("golden transfer", golden_spec()),
+            (
+                "W3 swap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+            ("dynamic predicate", dynamic),
+        ] {
+            let source = emitted_rust(
+                &generate(&spec, 0, &Pins::default())
+                    .unwrap_or_else(|error| panic!("{label} must generate: {error}")),
+            );
+            // Non-vacuity: a pass means nothing unless the predicate check is really emitted.
+            assert!(
+                source.contains("PolicyError::ZeroSigners"),
+                "{label} does not emit the check this test is about:\n{source}"
+            );
+            let offenders: Vec<&str> = source
+                .lines()
+                .filter(|line| {
+                    line.contains(".len() == 0")
+                        || line.contains(".len() != 0")
+                        || line.contains(".len() > 0")
+                        || line.contains("0 == ") && line.contains(".len()")
+                })
+                .collect();
+            assert!(
+                offenders.is_empty(),
+                "{label} emits a zero-length comparison clippy::len_zero rejects: {offenders:?}"
+            );
+        }
+    }
+
     #[test]
     fn emitted_code_contains_the_generated_code_contract() {
         let spec = golden_spec();
         let g = generate(&spec, 0, &Pins::default()).unwrap();
-        let lib = &g.files["src/lib.rs"];
+        let lib = &emitted_rust(&g);
         // Signer predicate first, with strict set.
         assert!(lib.contains("PolicyError::ZeroSigners"));
         assert!(lib.contains("SignerSetDiverged"));
         assert!(lib.contains(&golden_delegate_strkey()));
         // SELF resolves at runtime (no account literal in the tuple check).
         assert!(lib.contains("*smart_account != a"));
+        // The storage-key enum takes their `<Module>StorageKey` form, and the old name is gone
+        // rather than aliased: `#[contracttype]` puts this name in the contract spec, so two
+        // spellings would be two types on the wire.
+        assert!(
+            lib.contains("pub enum PolicyStorageKey {"),
+            "the storage-key enum must be named for its module:\n{lib}"
+        );
+        assert!(
+            !lib.contains("DataKey"),
+            "the previous storage-key name must not survive anywhere:\n{lib}"
+        );
         // Missing state denies; install-only init; no setters, no upgrade hook.
         assert!(lib.contains("PolicyError::MissingState"));
         assert!(lib.contains("AlreadyInstalled"));
@@ -1805,6 +3988,119 @@ mod tests {
         let manifest = &g.files["Cargo.toml"];
         assert!(manifest.contains("soroban-sdk = \"=26.1.0\""));
         assert!(manifest.contains("stellar-accounts = \"=0.7.2\""));
+        // The two declarations OpenZeppelin's packages all carry. `doctest = false` sits under
+        // `[lib]`, so the assertion pins the block it belongs to rather than the bare line —
+        // `doctest` is a valid key in `[dev-dependencies]`-adjacent tables too, and a stray one
+        // elsewhere in the file would satisfy a substring search while changing nothing.
+        assert!(
+            manifest.contains("[package.metadata.stellar]\ncargo_inherit = true\n"),
+            "the manifest must declare `[package.metadata.stellar] cargo_inherit`:\n{manifest}"
+        );
+        assert!(
+            manifest.contains("[lib]\ncrate-type = [\"lib\", \"cdylib\"]\ndoctest = false\n"),
+            "`[lib]` must keep the load-bearing `lib` and declare `doctest = false`:\n{manifest}"
+        );
+    }
+
+    /// The generated crate ships OpenZeppelin's rustfmt configuration, option for option.
+    ///
+    /// The emitted text is laid out to satisfy that file, so a crate that carried the layout
+    /// without the config would be formatted to rules nobody could check it against, and a crate
+    /// that carried the config without the layout would fail the reviewer's own fmt command. The
+    /// option set is therefore asserted in full rather than sampled: dropping one line from it
+    /// silently changes which of the two the artifact is.
+    #[test]
+    fn the_generated_crate_ships_the_upstream_rustfmt_config() {
+        let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
+        let config = generated
+            .files
+            .get("rustfmt.toml")
+            .expect("the generated crate must carry a rustfmt.toml");
+        // Their file, option for option — the same list read in both directions below, so
+        // neither a dropped option nor an added one can pass.
+        let theirs = [
+            "format_macro_bodies = true",
+            "format_macro_matchers = true",
+            "format_strings = true",
+            "imports_granularity = \"Crate\"",
+            "reorder_impl_items = true",
+            "group_imports = \"StdExternalCrate\"",
+            "use_small_heuristics = \"Max\"",
+            "use_field_init_shorthand = true",
+            "wrap_comments = true",
+            "format_code_in_doc_comments = true",
+            "unstable_features = true",
+        ];
+        for option in theirs {
+            assert!(
+                config.lines().any(|line| line == option),
+                "rustfmt.toml is missing OpenZeppelin's `{option}`:\n{config}"
+            );
+        }
+        // And nothing else. A setting of our own here would be a rule the library is not held to,
+        // which is the opposite of the reason for shipping the file — so every line that is not a
+        // comment has to be one of theirs, verbatim. Filtering out "lines that look like
+        // settings" instead, which is what this did, left the only thing it was looking for
+        // unreachable: `our_own_option = true` is a setting, so the filter dropped it and the
+        // assertion below then held over an empty list.
+        let ours: Vec<&str> = config
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter(|line| !theirs.contains(line))
+            .collect();
+        assert!(
+            ours.is_empty(),
+            "rustfmt.toml carries settings that are not OpenZeppelin's: {ours:?}"
+        );
+    }
+
+    /// A byte-array constant takes whichever of three layouts rustfmt would give it.
+    ///
+    /// `use_small_heuristics = "Max"` raises `array_width` to `max_width`, and that turns two
+    /// forms into three: the middle one — the literal alone on the next line at one indent —
+    /// exists only in a window between "fits on the `=` line" and "has to be chunked", and
+    /// nothing emitted before the config change ever reached it.
+    ///
+    /// The boundaries are a function of the constant's *name* as well as its length, since both
+    /// share the first line, so they are stated for the name this test renders and were read off
+    /// the pinned toolchain's rustfmt for exactly that name.
+    #[test]
+    fn a_byte_array_constant_takes_rustfmts_layout_for_its_length() {
+        let render_of = |len: usize| {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.encode(vec![0xabu8; len]);
+            render::ByteArray::from_base64(&bytes)
+                .expect("valid base64")
+                .render_arg_xdr_const(0, 0)
+        };
+        // 10 elements: the whole item still fits `max_width` (96 columns).
+        assert_eq!(
+            render_of(10),
+            "const CALL_0_ARG_0_XDR: [u8; 10] = [0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, \
+             0xab, 0xab];\n"
+        );
+        // 11: two over, so the literal moves to its own line — and the `=` loses its trailing
+        // space, which is the detail a hand-written template would get wrong.
+        assert_eq!(
+            render_of(11),
+            "const CALL_0_ARG_0_XDR: [u8; 11] =\n    [0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, \
+             0xab, 0xab, 0xab, 0xab];\n"
+        );
+        // 15: the last length that still fits on that line (95 columns).
+        assert!(render_of(15).starts_with("const CALL_0_ARG_0_XDR: [u8; 15] =\n    [0xab,"));
+        // 16: one over again, so the greedy fill takes over — sixteen to a line.
+        assert_eq!(
+            render_of(16),
+            "const CALL_0_ARG_0_XDR: [u8; 16] = [\n    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, \
+             0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,\n];\n"
+        );
+        // Every one of them a line rustfmt would leave alone.
+        for len in [10, 11, 15, 16, 32, 48] {
+            let rendered = render_of(len);
+            let wide = compilability::overlong_lines(&rendered);
+            assert!(wide.is_empty(), "{len} elements: {wide:?}\n{rendered}");
+        }
     }
 
     #[test]
@@ -1874,6 +4170,30 @@ mod tests {
         );
     }
 
+    /// Every file under `root`, recursively, ignoring build output.
+    ///
+    /// `target/` is skipped because it is not part of the crate and is not in `.gitignore`'s gift
+    /// to keep out of a working tree that has been built in. Nothing else is skipped: the point
+    /// of this walk is that a file the emitter does not know about is visible to it.
+    fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return found;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                found.extend(walk(&path));
+            } else {
+                found.push(path);
+            }
+        }
+        found
+    }
+
     /// The committed golden crate under contracts/ must exactly match regeneration.
     /// Run with UPDATE_GOLDEN=1 to (re)write it after intentional template changes.
     #[test]
@@ -1896,10 +4216,44 @@ mod tests {
         // removing it would be a special case that later hides a real change, but the drift it
         // looks for is structurally impossible here.
         //
-        // Lockfile drift is caught elsewhere instead: a lockfile that is not a complete
+        // Lockfile drift is caught in two other places instead. A lockfile that is not a complete
         // resolution of the emitted manifest fails the `--locked` build in `BUILD_ARGS`, which is
-        // what `ozpb generate` and the nightly wasm job run. With one committed generated crate in
-        // the tree there is no second committed lockfile for this one to drift from.
+        // what `ozpb generate` and the nightly wasm job run. And the W3 golden below compares the
+        // *other* generated crate's committed lockfile against this one, which is what detects the
+        // two drifting apart.
+        // Both directions. The loop below compares every generated file against its committed
+        // copy, which says nothing about a committed file the emitter does not produce — and
+        // `verify` stopped being one-directional in the same change that split the crate, since
+        // it now regenerates a map of files and compares it against the map it was given.
+        //
+        // What a stray file does *not* do is reach the wasm: rustc compiles what `lib.rs` and
+        // `contract.rs` declare, both of which are compared byte for byte, so an undeclared
+        // `src/old.rs` is dead. An earlier version of this comment claimed it "would compile
+        // into the artifact", which was the same kind of overclaim the rest of this change is
+        // about. The real reason is smaller and still sufficient: this directory is a reviewed
+        // artifact, a reader opening it takes every file in it as part of the policy, and
+        // `UPDATE_GOLDEN=1` writes files without ever removing one — so a rename leaves its
+        // previous output behind and nothing else in the tree notices.
+        let mut committed_files: Vec<String> = Vec::new();
+        for entry in walk(&root) {
+            let rel = entry
+                .strip_prefix(&root)
+                .expect("a path under the golden crate root")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            committed_files.push(rel);
+        }
+        committed_files.sort();
+        let mut generated_files: Vec<String> = g.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed golden crate and codegen's output are not the same set of files; a \
+             file present here and absent from the emitter is compiled into the artifact by a \
+             build that reads the directory, and no comparison of the emitter's own output can \
+             see it"
+        );
+
         for (rel, content) in &g.files {
             let committed = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|_| {
                 panic!("missing committed golden file {rel}; run with UPDATE_GOLDEN=1")
@@ -1931,60 +4285,5 @@ mod tests {
         assert!(lockfile.contains("version = \"26.1.0\""));
         assert!(lockfile.contains("name = \"stellar-accounts\""));
         assert!(lockfile.contains("version = \"0.7.2\""));
-    }
-
-    /// The comparators no committed crate exercises, held to the text they emit.
-    ///
-    /// This milestone commits one generated crate, the transfer golden, and its only argument
-    /// comparator is an exact `EqI128` (`if x != 500000000i128`), so
-    /// `LeI128`, `GeI128`, `EqScval` and `AnyValue` reach no committed artifact here. The
-    /// property test (`any_validated_spec_generates_parseable_rust`) reaches them but checks
-    /// shape alone: parses as Rust, stays inside rustfmt's width, balances its constants. An
-    /// inverted comparison, a cap and floor swapped between arguments, or an `AnyValue` arm that
-    /// bound the value it was widened away from satisfies all of that and still permits the
-    /// wrong call.
-    ///
-    /// `soroswap_swap_spec` is the fixture that reaches all four at once, and it needs only the
-    /// spec and the emitter. Which is why each assertion is bound to the argument its
-    /// constraint belongs to: every arm shadows its value as `x`, so `if x > 1000000000i128`
-    /// alone would not say *which* argument is capped.
-    #[test]
-    fn w3_emission_shapes_are_held_to_the_checks_they_claim() {
-        let spec = ozpb_synthesizer::walkthroughs::soroswap_swap_spec();
-        let lib = generate(&spec, 0, &Pins::default()).unwrap().files["src/lib.rs"].clone();
-        // arg 0 — amount_in, capped: an upper bound denies above it.
-        assert!(
-            lib.contains(
-                "let Some(v0) = args.get(0u32) else {\n        return false;\n    };\n    \
-                 match i128::try_from_val(e, &v0) {\n        Ok(x) => {\n            \
-                 if x > 1000000000i128 {"
-            ),
-            "amount_in cap must be the bound on arg 0"
-        );
-        // arg 1 — amount_out_min, floored: a lower bound denies below it.
-        assert!(
-            lib.contains(
-                "let Some(v1) = args.get(1u32) else {\n        return false;\n    };\n    \
-                 match i128::try_from_val(e, &v1) {\n        Ok(x) => {\n            \
-                 if x < 950000000i128 {"
-            ),
-            "amount_out_min floor must be the bound on arg 1"
-        );
-        // arg 2 — the exact route, compared against the bytes hoisted for this (call, arg).
-        assert!(
-            lib.contains("if v2.to_xdr(e) != Bytes::from_slice(e, &CALL_0_ARG_2_XDR)"),
-            "exact path must compare arg 2 against its own hoisted constant"
-        );
-        // arg 4 — the caller-chosen deadline: arity only...
-        assert!(
-            lib.contains("if args.get(4u32).is_none()"),
-            "any-deadline arity-only check"
-        );
-        // ...and never bound, which is the whole point of the widening. Bindings are named
-        // `v{index}`, so the absence of this one is what says the AnyValue arm ran.
-        assert!(
-            !lib.contains("let Some(v4)"),
-            "AnyValue must not bind the argument it leaves unconstrained"
-        );
     }
 }

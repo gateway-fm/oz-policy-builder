@@ -20,19 +20,163 @@ use ozpb_policy_spec::{
 };
 use std::fmt;
 
-/// Two of rustfmt's default widths, which the emitted layout has to agree with.
+/// The two widths the emitted layout has to agree with, under the `rustfmt.toml` the generated
+/// crate now ships — OpenZeppelin's own, so that `cargo fmt --check` here and there is one gate.
 ///
-/// The generated crate is a shipped artifact and `cargo fmt --check` covers it, so emission has
-/// to produce text rustfmt would leave alone. Everywhere else that is achieved by keeping each
-/// emitted line short enough that there is nothing to reflow; a byte array is the exception,
-/// because its length comes from the recorded value and has no bound. So its layout is derived
-/// from the same two numbers rustfmt uses: `array_width` decides whether the literal stays on
-/// one line, `max_width` decides how many elements a wrapped line holds.
+/// The generated crate is a shipped artifact and a fmt gate covers it, so emission has to produce
+/// text rustfmt would leave alone. Deriving the layout instead of shelling out to rustfmt keeps
+/// codegen a pure function of the spec: running the formatter over the output would make the
+/// rustfmt version an input to every shipped wasm hash.
 ///
-/// Deriving the layout keeps codegen a pure function of the spec — running rustfmt over the
-/// output instead would make the rustfmt version an input to every shipped wasm hash.
+/// `MAX_WIDTH` is `max_width`, unchanged by the config. What the config *does* change is
+/// `use_small_heuristics = "Max"`, which raises every sub-width — `fn_call_width` 60 → 100,
+/// `array_width` 60 → 100, `chain_width` 60 → 100 — to `max_width`. So there is no second
+/// number for calls and arrays any more: a call or an array literal stays on one line whenever
+/// the whole line fits, and `ARRAY_WIDTH` went with the setting that gave it a separate value.
+///
+/// `COMMENT_WIDTH` is `comment_width`, which `wrap_comments = true` makes load-bearing. What it
+/// is measured *from* differs between doc comments and ordinary ones — see [`comment_budget`],
+/// which is where that was pinned down against the pinned toolchain's rustfmt. A comment inside
+/// its budget is a fixed point; exceed it anywhere in a paragraph and rustfmt re-flows the whole
+/// paragraph.
 pub const MAX_WIDTH: usize = 100;
-const ARRAY_WIDTH: usize = 60;
+pub const COMMENT_WIDTH: usize = 80;
+
+/// Greedily wrap one comment paragraph the way `wrap_comments = true` wraps one.
+///
+/// `prefix` is the comment marker *with* its trailing space and any indentation (`"//! "`,
+/// `"/// "`, `"        // "`); `text` is a single paragraph with no newlines. Lines are filled
+/// so that each one, measured from the marker, fits `COMMENT_WIDTH` — a word longer than the
+/// budget still gets its own line, since rustfmt does not break inside a word either. A 64-hex
+/// digest is exactly that case, which is why the header's hash lands on a line of its own.
+pub fn wrap_comment(prefix: &str, text: &str) -> String {
+    wrap_comment_item(prefix, prefix, text)
+}
+
+/// The greatest **total** line width rustfmt leaves alone for a comment starting with `line`.
+///
+/// Two rules, not one, and the difference is not something the option's name would suggest:
+///
+///   * a doc comment (`///`, `//!`) is bounded by `comment_width` measured from column zero, so
+///     its indentation is spent out of the same budget as its text;
+///   * an ordinary `//` comment is bounded by `comment_width` measured from its own marker, so
+///     the indentation costs it nothing.
+///
+/// The asymmetry is real and load-bearing: at indent 8 a `//` comment may run to 88 columns while
+/// a `///` comment on the same line may not pass 80. Both numbers were measured against the
+/// pinned toolchain's rustfmt across indents 0, 4 and 8 with single-character words, so the
+/// boundary is exact rather than inferred from where some sentence happened to break. Getting the
+/// doc-comment rule backwards is the specific mistake this function exists to prevent — it
+/// produces a generated crate that our own width test passes and `cargo fmt --check` rewrites.
+fn comment_budget(line: &str) -> usize {
+    let marker = line.trim_start();
+    let indent = line.len() - marker.len();
+    if marker.starts_with("///") || marker.starts_with("//!") {
+        COMMENT_WIDTH
+    } else {
+        COMMENT_WIDTH + indent
+    }
+}
+
+/// True when `line` is a comment rustfmt would have to re-flow.
+///
+/// The one place the two budgets above are applied to finished text; emission and the width test
+/// both read it, so a rule cannot hold in one and not the other.
+pub fn comment_is_overlong(line: &str) -> bool {
+    line.chars().count() > comment_budget(line)
+}
+
+/// One `* …` bullet of an `# Errors`/`# Arguments` list, wrapped as rustfmt wraps one.
+///
+/// A bullet is its own paragraph — rustfmt never runs two items together — and its
+/// continuation lines are indented two columns past the marker, which is why the two prefixes
+/// are separate arguments. Measured on the pinned toolchain's rustfmt, at both module level and
+/// inside an `impl`.
+pub fn wrap_comment_bullet(indent: &str, text: &str) -> String {
+    wrap_comment_item(&format!("{indent}/// * "), &format!("{indent}///   "), text)
+}
+
+fn wrap_comment_item(first: &str, continuation: &str, text: &str) -> String {
+    let mut out = String::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            format!("{first}{word}")
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && comment_is_overlong(&candidate) {
+            out.push_str(&line);
+            out.push('\n');
+            line = format!("{continuation}{word}");
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// One grouped `use` per crate, laid out the way rustfmt lays one out.
+///
+/// `imports_granularity = "Crate"` is what OpenZeppelin's `rustfmt.toml` sets and what both
+/// sibling policy examples show, so this is the shape the generated crate has to reach. The
+/// layout is derived rather than hand-written because *which* items a rule needs varies —
+/// `Bytes` appears only for an `ScVal` comparison or an external signer's key, `xdr::ToXdr`
+/// only for the former — so a fixed spelling would be wrong for most of the combinations.
+///
+/// Two rules, both measured against the pinned toolchain's rustfmt rather than assumed:
+///
+///   * ordering is by first path segment, snake_case before CamelCase — `auth::Context`,
+///     `contract`, …, `xdr::ToXdr`, then `Address`, `Bytes`, … — which is `reorder_imports`'
+///     own key, not ASCII order (ASCII would put every type ahead of every macro);
+///   * one line while `use <crate>::{…};` fits `MAX_WIDTH` **and** no item is itself a brace
+///     group, since a nested group forces the vertical layout at any width; otherwise a greedy
+///     fill into `MAX_WIDTH` columns, counting the trailing comma of the last item on the line.
+pub fn use_statement(crate_name: &str, items: &[&str]) -> String {
+    let mut items: Vec<&str> = items.to_vec();
+    items.sort_by_key(|item| {
+        let head = item.split("::").next().unwrap_or(item);
+        (
+            head.starts_with(|c: char| c.is_ascii_uppercase()),
+            item.to_string(),
+        )
+    });
+    let nested = items.iter().any(|item| item.contains('{'));
+    let one_line = format!("use {crate_name}::{{{}}};\n", items.join(", "));
+    if !nested && one_line.trim_end().chars().count() <= MAX_WIDTH {
+        return one_line;
+    }
+    let indent = "    ";
+    let mut out = format!("use {crate_name}::{{\n");
+    if nested {
+        // Vertical: rustfmt gives every item its own line once one of them is a brace group.
+        for item in &items {
+            out.push_str(&format!("{indent}{item},\n"));
+        }
+    } else {
+        let mut line = String::new();
+        for item in &items {
+            let candidate = if line.is_empty() {
+                format!("{indent}{item},")
+            } else {
+                format!("{line} {item},")
+            };
+            if !line.is_empty() && candidate.chars().count() > MAX_WIDTH {
+                out.push_str(&format!("{line}\n"));
+                line = format!("{indent}{item},");
+            } else {
+                line = candidate;
+            }
+        }
+        out.push_str(&format!("{line}\n"));
+    }
+    out.push_str("};\n");
+    out
+}
 
 /// The constant holding signer `index`'s external key.
 ///
@@ -196,9 +340,17 @@ impl ByteArray {
     ///
     /// Hoisted to a constant rather than written at the point of use because the use sites sit
     /// several levels deep, where rustfmt breaks a long array across five nested lines. At
-    /// module level the indentation is fixed, so the layout is one line while the literal fits
-    /// `array_width` and a greedy fill into `max_width` lines otherwise — which is what rustfmt
-    /// does to an array of short elements, so it reformats neither form.
+    /// module level the indentation is fixed, so the layout is derivable — and under
+    /// `use_small_heuristics = "Max"` it has three forms, not two, which is the part a reader
+    /// would not guess and which the previous `array_width = 60` never reached:
+    ///
+    ///   1. the whole item on one line, while it fits `MAX_WIDTH`;
+    ///   2. otherwise the literal alone on the next line at one indent, while *that* fits — the
+    ///      form a 13-to-15-byte array takes, and the one nothing emitted before this;
+    ///   3. otherwise a greedy fill, sixteen elements to a line.
+    ///
+    /// All three were read off the pinned toolchain's rustfmt on a probe covering 8 to 48
+    /// elements, which is where the boundaries (12 → 13 and 15 → 16 elements) come from.
     ///
     /// Private, and reached only through the two wrappers above: `name` lands unescaped in an
     /// identifier position, so the only way to reach it is with a name this module built from
@@ -209,13 +361,18 @@ impl ByteArray {
         let items: Vec<String> = self.0.iter().map(|byte| format!("0x{byte:02x}")).collect();
         let head = format!("const {name}: [u8; {}] = ", self.0.len());
         let flat = format!("[{}]", items.join(", "));
+        let indent = "    ";
         let one_line = format!("{head}{flat};");
-        if flat.len() <= ARRAY_WIDTH && one_line.len() <= MAX_WIDTH {
+        if one_line.len() <= MAX_WIDTH {
             return format!("{one_line}\n");
+        }
+        // rustfmt drops the trailing space from the `=` line when the value moves down.
+        let wrapped = format!("{indent}{flat};");
+        if wrapped.len() <= MAX_WIDTH {
+            return format!("{}\n{wrapped}\n", head.trim_end());
         }
         // `0xNN, ` occupies six columns; the last element on a line drops the trailing space,
         // and the last line of all carries a trailing comma.
-        let indent = "    ";
         let per_line = (MAX_WIDTH + 2 - indent.len()) / 6;
         let mut out = format!("{head}[\n");
         for row in items.chunks(per_line) {

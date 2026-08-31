@@ -6,7 +6,7 @@
 //! The evaluator crate never depends on codegen (CI-enforced), so agreement here is
 //! evidence, not tautology.
 
-use generated_sub_transfer_r0::{GeneratedPolicy, GeneratedPolicyClient};
+use generated_sub_transfer_r0::contract::{GeneratedPolicy, GeneratedPolicyClient};
 use ozpb_policy_spec::{SignerSpec, ValidatedSpec};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext};

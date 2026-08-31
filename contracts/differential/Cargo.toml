@@ -19,3 +19,9 @@ ozpb-synthesizer = { path = "../../crates/synthesizer" }
 ozpb-codegen = { path = "../../crates/codegen" }
 stellar-strkey = "0.0.18"
 
+# Two dev-dependencies stood here and left with the test files that needed them: the second
+# generated policy crate, which only `tests/event_payload.rs` used, and the harness, which only
+# `tests/generated_suite.rs` used. Both tests belong to a later milestone, so neither edge exists
+# in this tree. Recorded because their absence is a boundary and not an oversight: Cargo rejects
+# an optional dev-dependency, so an edge used by one `[[test]]` target is package-wide, and
+# keeping it would have made this crate depend on code the milestone does not contain.

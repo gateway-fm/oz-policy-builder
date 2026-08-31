@@ -1,6 +1,6 @@
 # OpenZeppelin Accounts Policy Builder — Technical Architecture & Delivery Plan
 
-**Project:** Record a Transaction, Generate a Minimum-Permission Soroban Policy
+**Project:** Record a Transaction, Generate a Minimum-Permission Stellar Smart-Contract Policy
 **RFP:** SCF Build Award, RFP Track — "OZ accounts policy builder"
 **Status:** Architecture v0.8 · July 2026
 (v0.1 → v0.7 across five review rounds plus the TDD/engineering additions — history in §13;
@@ -18,11 +18,11 @@ security interval), `E_INCOMPLETE_ACCOUNT_STATE` with structured causes, extant-
 
 ## 1. Problem statement
 
-OpenZeppelin's Stellar smart accounts (`stellar-accounts`) give Soroban real programmable
+OpenZeppelin's Stellar smart accounts (`stellar-accounts`) give Stellar accounts real programmable
 authorization: **context rules** scope *which contract may be called*, **signers** say *who
-may authorize*, and **policies** — external Soroban contracts implementing the OZ `Policy`
+may authorize*, and **policies** — external Stellar contracts implementing the OZ `Policy`
 trait — enforce *what exactly is allowed* (amounts, thresholds, windows). The primitives are
-audited and live, but authoring a custom policy today means hand-writing a Soroban contract,
+audited and live, but authoring a custom policy today means hand-writing a Stellar smart contract,
 which is too high a bar for most developers and impossible for end users. The result: the
 delegation infrastructure exists but goes unused.
 
@@ -55,7 +55,7 @@ and delivered then:
 |---|---|---|
 | 1 | Transaction recording/observation layer (on-chain by hash on mainnet/testnet, or locally simulated), extracting contracts, functions, args, state changes, token movements | §4.1 Recorder — **Tranche 1** |
 | 2 | Context rule + policy synthesizer, biased toward minimal permissions | §4.2–4.3 PolicySpec + Synthesizer — **Tranche 1** |
-| 3 | Generated Rust policy code, compilable Soroban contracts, OZ primitives first, correct `Policy` trait + storage segregation | §4.4 Code generation, §5 Generated-code contract — **Tranche 1** |
+| 3 | Generated Rust policy code, compilable Stellar contracts, OZ primitives first, correct `Policy` trait + storage segregation | §4.4 Code generation, §5 Generated-code contract — **Tranche 1** |
 | 4 | MCP server: recording, synthesis, verification; structured I/O, deterministic, machine-readable errors | §4.6 MCP server — **Tranche 1** for recording and synthesis; verification with the milestone that delivers it |
 | 5 | Agent skill with conversational entry point and clarification questions | §4.7 Agent skill — **Tranche 2** |
 | 6 | Simulation/dry-run harness: original must permit, adjacent mutations must deny | §4.5 Dry-run harness — **Tranche 2** |
@@ -141,7 +141,7 @@ contract execution) — communicating over a narrow job protocol; in local/stdio
 one process inside the user's own trust domain. A Claude skill drives the MCP tools
 conversationally. The wallet (pollywallet, extended) renders the generated code and the
 dry-run evidence report and lets the user authorize the on-chain install with their passkey.
-Generated policies are ordinary Soroban contracts implementing the OpenZeppelin `Policy`
+Generated policies are ordinary Stellar contracts implementing the OpenZeppelin `Policy`
 trait; installation uses the smart account's own `add_context_rule` / `add_policy` entry
 points.
 
@@ -154,14 +154,14 @@ deterministic tools.
 
 ## 4. Component architecture
 
-### 4.1 Recording layer (`crates/recorder`)
+### 4.1 Recording layer (`crates/recorder-core`)
 
 **Purpose:** turn a transaction — executed, simulated, or imported — into a precise,
 replay-invariant **RecordingBundle** with an acquisition-derived evidence label.
 
 **Inputs (three paths, same output type):**
 
-- *Executed:* Soroban RPC `getTransaction(hash)` → decode `envelopeXdr` →
+- *Executed:* Stellar RPC `getTransaction(hash)` → decode `envelopeXdr` →
   `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the authorization tree the
   network actually verified), plus `resultXdr` — whose decoded outcome must agree with the
   reported status before the response becomes evidence — and `resultMetaXdr` for effects. **Retention caveat
@@ -275,7 +275,7 @@ so a permission bundle hashes deterministically; the PolicySpec maps each rule/t
 exact justifying invocation(s) (§4.2).
 
 **Stack:** `stellar-xdr` 27.x (`curr`, `base64`, `serde`), blocking `ureq`, and
-`stellar-strkey`. Works against any Soroban RPC endpoint approved by the local operator
+`stellar-strkey`. Works against any Stellar RPC endpoint approved by the local operator
 (Gateway's public mainnet/testnet RPC is the reference, never a requirement).
 
 ### 4.2 PolicySpec and the artifact chain
@@ -550,15 +550,28 @@ impl Policy for GeneratedPolicy {
         // 3. stateful checks (call count, window), storage keyed by
         //    (smart_account, context_rule.id) under the invariants below
         // any violation: panic_with_error!(e, PolicyError::...)
+        // 4. announce the permit: GeneratedPolicyEnforced { .. }.publish(e). A denial cannot be
+        //    announced — panic_with_error! reverts the publish along with everything else.
     }
     fn install(e: &Env, info: InstallInfo, context_rule: ContextRule, smart_account: Address) { ... }
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) { ... } // best-effort
+}
+
+// Read-only surface, in an inherent impl beside the trait one.
+#[contractimpl]
+impl GeneratedPolicy {
+    pub fn is_installed(e: &Env, context_rule_id: u32, smart_account: Address) -> bool { ... }
+    pub fn remaining_calls(e: &Env, context_rule_id: u32, smart_account: Address) -> u32 { ... }
 }
 ```
 
 - Implements the OZ `Policy` trait exactly as published in `stellar-accounts`
   (`install` / `enforce` / `uninstall`; rejection by panic with registered
-  `#[contracterror]` codes). Note: the RFP background text mentions a `can_enforce` hook;
+  `#[contracterror]` codes). Each entry point publishes a `#[contractevent]` on success and
+  the artifact exports getters for its own state, both following the shape of the library's
+  policies — with one field of one event departing from it, because theirs is unbounded. See
+  `docs/ECOSYSTEM-CONFORMANCE.md` §6 for what publishing does and does not make observable, and
+  §15 divergence 9 for the departure. Note: the RFP background text mentions a `can_enforce` hook;
   current audited releases do not have it — we pin to the audited release and track trait
   evolution (§9).
 - **Dependencies:** `#![no_std]`, `soroban-sdk` **and** the matching `stellar-accounts`
@@ -1067,7 +1080,7 @@ crates/
   domain            # shared vocabulary: hashes, network IDs, trust levels, provenance,
                     # canonical encoding; no I/O, no async, no framework deps
   recorder-core     # pure: EvidenceSnapshot → RecordingBundle (no I/O, no async traits)
-  source-rpc        # blocking HTTP acquisition adapter over Soroban RPC; produces
+  source-rpc        # blocking HTTP acquisition adapter over Stellar RPC; produces
                     # immutable, ledger-stamped EvidenceSnapshots
   source-bundle     # acquisition adapter for imported evidence bundles (pure)
   policy-spec       # PolicySpec schema, canonical serialization, validation (typestate)
@@ -1144,7 +1157,7 @@ the same handler); hosted auth, rate limits, and quotas are tower layers around 
 service, never code inside tools. Tools hold no per-session state by design, so the bundled
 `LocalSessionManager` suffices and horizontal scaling needs no sticky sessions.
 
-**Soroban/contract specifics.** Templates are ordinary `#![no_std]` contract crates pinned
+**Contract specifics.** Templates are ordinary `#![no_std]` contract crates pinned
 to the workspace `soroban-sdk` + `stellar-accounts` versions; storage keys are
 `#[contracttype]` enums; error codes are `#[contracterror]` with globally unique numbers
 registered per template pack; harness layer 2 runs `soroban-sdk` testutils envs with
@@ -1265,8 +1278,7 @@ reviewed.
 > is exempt) and `build_args`. Absent: source commit and
 > dirty-tree status, template-pack hash, build-container image digest, canonicalization version,
 > and build target. Adding a field rehashes every manifest, so those land together with the
-> containerized builder at a release gate — tracked in PROGRESS.md under "Deliberately out of
-> scope, scheduled rather than dropped". Two further entries below are *referenced* rather than
+> containerized builder at a release gate — recorded in `docs/SCOPE.md`. Two further entries below are *referenced* rather than
 > recorded, and stay that way by design: the RecordingBundle hashes and the reviewed
 > policy/account/verifier code hashes are reached through `spec_hash` and `registry_snapshot`
 > instead of being copied into the manifest, which is what keeps the artifact chain acyclic.
@@ -1592,7 +1604,7 @@ as the toolkit's stewards.
 | MCP | official Rust SDK `rmcp` 2.x — stdio + streamable HTTP, typed schemas (`schemars`), structured outputs, elicitation |
 | Agent skill | Claude plugin (SKILL.md + bundled `.mcp.json`); portable skill text for other frameworks |
 | Wallet | pollywallet (TanStack/React) + `smart-account-kit`; OZ Relayer Channels for submission (direct RPC fallback) |
-| RPC | any Soroban RPC (config; hosted service allowlists endpoints); Gateway public mainnet/testnet endpoints as defaults |
+| RPC | any Stellar RPC (config; hosted service allowlists endpoints); Gateway public mainnet/testnet endpoints as defaults |
 | CI | determinism jobs, differential evaluator-vs-wasm jobs, registry fail-closed/rollback tests, adversarial direct-call suite, testnet E2E, version-matrix builds, publication-allowlist negative tests; reproducible wasm via digest-pinned containerized toolchain |
 
 ---

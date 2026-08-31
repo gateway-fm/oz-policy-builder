@@ -3,12 +3,15 @@
 How to use the toolkit, how the synthesizer decides scope, and how to extend it with a new
 policy primitive. (Design rationale lives in `architecture.md`; this is the working guide.)
 
-> **Scope markers.** The toolkit is delivered in milestones and this guide names all of them.
+> **Scope markers.** The toolkit is delivered in milestones and this guide covers all of it.
 > Anything a later milestone contracts is marked **Tranche 2**, in the same terms as the
-> per-component banners in `architecture.md`; anything unmarked is Tranche 1 and is shipped
-> here. A marker means "not part of what a Tranche 1 delivery is reviewed against, and not
-> claimed as working": marked operations are named so the shape of the whole flow is visible,
-> and are described rather than demonstrated.
+> per-component banners in `architecture.md`; anything unmarked is Tranche 1. A marker says
+> which milestone contracts the thing, never whether code for it exists in the checkout you
+> are reading: scope is a fact of the plan and holds for any tree, whereas what a given tree
+> contains differs between a development trunk and a milestone delivery, so a status claim
+> here would be false in one of them. Read a marker as "not part of what a Tranche 1 delivery
+> is reviewed against" — and read it before running the command, rather than discovering it
+> when the command is not there.
 
 ## 0. One-time setup for a new clone
 
@@ -39,72 +42,63 @@ that genuinely cannot live here, such as a document naming a file the other tree
 ## 1. Using the toolkit
 
 Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
-(`ozpb-mcp-server`). Both expose the same operations. The pipeline the first milestone
-contracts is:
+(`ozpb-mcp-server`). Both expose the same operations; the pipeline is:
 
 ```
-record → synthesize → generate
+record → synthesize → dry_run (prove) → generate → verify → prepare_install_intent
 ```
 
-with `evaluate` available at any point to ask the independent reference evaluator what a spec
-does with a given invocation. The later stages of the full flow — `dry_run` (prove), `verify`
-(reproduce), the authority-surface check, and `prepare_install_intent` — are **Tranche 2**:
-the dry-run harness, the call-surface check and the install intent are second-milestone
-deliverables, described in `architecture.md` §4.5–4.8. No command for them appears below,
-deliberately: an example that looks runnable and is not misleads worse than a sentence saying
-the stage is not part of this milestone.
-`evaluate_spec` stays available throughout as an optional pure check of the generated
-scope, and it returns `indeterminate` when an attached reviewed policy would make a
-whole-composition verdict unsafe to state.
+`dry_run`, `verify`, and `prepare_install_intent` are **Tranche 2** — they depend on the
+later dry-run/installation layers. The first-milestone path is `record → synthesize → generate`;
+`evaluate_spec` is an optional pure check of the generated scope and returns `indeterminate`
+when a reviewed policy would make a whole-composition verdict unsafe.
 
 ### CLI
 
 ```bash
 cargo build -p ozpb-cli          # produces target/debug/ozpb
 
-# 0. the development registry trust files the pipeline reads (derived from `registry::dev`,
-#    so they cannot drift from the code the way committed copies would)
-ozpb dev-registry --out docs/examples
-
-# 1. record an executed transaction (by hash, via any Soroban RPC) → RecordingBundle JSON
+# 1. record a transaction (by hash, via any Stellar RPC) → RecordingBundle JSON
 ozpb record --tx-hash <hash> --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015" > rec.json
-# …or record what an *unsigned* envelope would need authorized — `simulateTransaction` in
-# record mode, so no signature and no custody of anything:
-ozpb simulate --envelope-xdr <base64-envelope> \
-  --rpc-url https://rpc.testnet.stellar.gateway.fm \
-  --network "Test SDF Network ; September 2015" > rec.json
 # …or offline from a raw evidence bundle:
-ozpb import --bundle docs/examples/import-bundle.json > rec.json
+ozpb import --bundle bundle.json > rec.json
 
 # 2. synthesize a minimum-permission PolicySpec (needs your decisions: who/how-long/…)
 export OZPB_REGISTRY_MIN_VERSION=<persisted-anti-rollback-floor>
 ozpb synthesize --bundle rec.json --selected-authorizer <C…> \
-  --account account.json --signed-registry docs/examples/registry.signed.json \
-  --registry-roots docs/examples/registry-roots.json \
-  --decisions docs/examples/decisions.json \
-  --template-family policy-templates/scope@1 > synthesis.json
+  --account account.json --signed-registry registry.signed.json \
+  --registry-roots registry-roots.json \
+  --decisions decisions.json --template-family policy-templates/scope@1 > syn.json
 
-# `synthesize` prints an envelope — the spec, its canonical hash, and the per-constraint
-# rationale — while the stages below take a bare PolicySpec. Handing over the envelope is a
-# parse error rather than something quietly ignored, because every schema type here is
-# `deny_unknown_fields`, so lift the spec out:
-python3 scripts/demo/extract_spec.py synthesis.json spec.json
+# 3. [Tranche 2] prove it: permit/deny evidence report over the constraint-derived deny suite
+# `synthesize` prints an envelope — the spec, its canonical hash and the per-constraint rationale —
+# while every stage below takes a bare PolicySpec. Handing over the envelope is a parse error rather
+# than something quietly ignored, because every schema type here is `deny_unknown_fields`, so lift
+# the spec out first:
+python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)' < syn.json > spec.json
 
-# 3. ask the reference evaluator what the spec does with an invocation (pure, no network)
-ozpb evaluate --spec spec.json --context docs/examples/eval-context.json \
-  --invocation docs/examples/invocation-permit.json
+ozpb dry-run --spec spec.json
 
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
 ozpb generate --spec spec.json --rule 0 --out ./generated
+
+# 5. [Tranche 2] reproduce source + Wasm + manifest (live preflight remains separate)
+ozpb verify --spec spec.json --rule 0 --source ./generated/src \
+  --wasm ./generated/generated_sub_transfer_r0.wasm \
+  --manifest ./generated/build-manifest.json
+
+# 6. [Tranche 2] the pure install intent (assemble/sign/submit are wallet-owned). Requires
+#    the exact installed bindings and a Safe authority-surface verdict — see
+#    check-call-surface, also Tranche 2.
+ozpb prepare-install --spec spec.json --rule 0 \
+  --binding-set bindings.json --call-surface-verdict verdict.json
 ```
 
 ### Build configuration (operator-side)
 
-`generate` compiles the policy, and takes the flags below (each with an env fallback the MCP
-server reads too). The Tranche-2 operations that also compile — `verify` and the
-call-surface check — are specified to take the same four, so this is the configuration surface
-for compilation generally, not for one subcommand:
+`generate`, `verify` and `check-call-surface` (the latter two are Tranche 2) compile the policy, and all three
+accept the same flags (each with an env fallback the MCP server reads too):
 
 | Flag | Env | Default |
 |---|---|---|
@@ -137,11 +131,10 @@ It may also contain a durable `checkpoint` (`version`, `log_index`, `root`) to r
 same-version equivocation after restart. The MCP server receives the same JSON through
 `OZPB_REGISTRY_ROOTS_JSON`, paired with `OZPB_REGISTRY_MIN_VERSION`.
 
-`docs/examples/` holds runnable inputs for the commands above, and
-`crates/toolkit/tests/examples_are_current.rs` fails if any of them drifts from what the code
-produces — so an example that no longer works is a red test, not a puzzled reader.
-`bash scripts/verify-phase1.sh` is the strict first-milestone release gate;
-`bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
+`docs/examples/` holds runnable inputs, some of which feed a later walkthrough rather than
+the Tranche-1 demo. `bash scripts/verify-phase1.sh` is the strict first-milestone release
+gate; `bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
+`verify-phase2.sh` belongs to Tranche 2.
 
 ### Demonstrating the Tranche-1 outcome
 
@@ -201,7 +194,8 @@ like bugs and are not, and, in an appendix, the raw JSON-RPC for when you want t
 
 ```bash
 cargo build -r -p ozpb-mcp-server
-# stdio (Claude Code, default) — see .mcp.json; the agent skill it pairs with is Tranche 2
+# stdio (Claude Code, default) — see .mcp.json; the agent skill it pairs with,
+# skills/policy-builder/SKILL.md, is Tranche 2
 target/release/ozpb-mcp-server
 # streamable HTTP (self-hostable endpoint)
 target/release/ozpb-mcp-server --http 127.0.0.1:8080   # → /v1/mcp
@@ -212,13 +206,13 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
 - **Tranche 1** — `record_transaction`, `record_simulation`, `import_recording`,
   `synthesize_policy`, `evaluate_spec`, `generate_code`.
 - **Tranche 2** — `dry_run`, `verify`, `check_against_policy`,
-  `check_policy_call_surface`, `prepare_install_intent`. The dry-run harness, the
-  reproduce-and-verify surface, the authority-surface check and the install intent are
-  second-milestone deliverables, so a Tranche 1 delivery is not reviewed against these.
+  `check_policy_call_surface`, `prepare_install_intent`. The
+  dry-run harness, the authority-surface check and the install intent are second-milestone
+  deliverables, so a Tranche 1 delivery is not reviewed against these three.
 
-`crates/mcp-server/tests/mcp_stdio.rs` asserts the served set against the Tranche-1 names
-above, so the list is checked rather than merely written down. Errors carry stable
-machine-readable codes (`E_*`). The server never deploys, signs, or holds keys.
+They are listed by milestone rather than counted, because any single total is wrong for one of
+the two trees. Errors carry stable machine-readable codes (`E_*`). The server never deploys,
+signs, or holds keys.
 
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
 (≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set; it applies bearer auth, a request-size bound,
@@ -269,14 +263,13 @@ the tests guide you (TDD: add the failing test first):
 3. **`crates/codegen`** — emit the check in `emit_lib`'s per-arg match, embedding values as
    validated literals (never interpolated into identifiers); add pre-emission validation in
    `generate`. Regenerate goldens with `UPDATE_GOLDEN=1 cargo test -p ozpb-codegen golden`.
-4. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
+4. **`crates/harness`** (Tranche 2) — add mutation cases for it in `build_suite` so the deny
+   suite covers the new boundary; add its `concrete_for` arm.
+5. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
    a `Widening`/adapter). Never let it in heuristically.
-5. **`contracts/`** — the Tranche 1 differential suite drives the generated policy contract
-   directly in the Soroban environment and asserts that the reference evaluator and the
-   compiled policy agree on verdict *and* deny code. Add the permit case and the adjacent
-   denial for the new constraint there; agreement is what makes step 2's semantics binding
-   rather than merely written down. Full `stellar-accounts::__check_auth` integration
-   belongs to Tranche 2.
+6. **`contracts/`** — the Tranche 1 differential suite drives the generated policy contract
+   directly in the Soroban environment. Add explicit evaluator/contract cases for the new
+   constraint. Full `stellar-accounts::__check_auth` integration belongs to Tranche 2.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove
@@ -284,8 +277,9 @@ what it enforces — an address or claimed kind is never sufficient.
 
 ### Invariants CI enforces (don't break these)
 
-- `scripts/check-dep-rules.sh`: the evaluator never depends on codegen (differential
-  independence); cores stay transport/async-free.
+- `scripts/check-dep-rules.sh`: the evaluator/harness never depend on codegen (differential
+  independence); cores stay transport/async-free. The harness half of that rule governs a
+  Tranche-2 crate.
 - Every generated crate builds standalone (`[profile.release]` with `overflow-checks`) and
   passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
