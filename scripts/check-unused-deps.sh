@@ -7,7 +7,7 @@
 #
 # Coverage: cargo-machete walks directories rather than workspaces, so one run from the repo
 # root analyses EVERY manifest in the tree — the toolkit workspace, the `contracts/` workspace,
-# and the two generated policy crates that both workspaces exclude. Those are included on
+# and the generated policy crates that both workspaces exclude. Those are included on
 # purpose: a shipped policy
 # crate should not carry a dependency it never uses, and the fix for one there is in codegen.
 #

@@ -114,7 +114,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # The generated crates, which the step above does not reach for a reason that is easy to
-      # miss: clippy does not lint dependencies. `contracts` excludes both crates, so
+      # miss: clippy does not lint dependencies. `contracts` excludes them, so
       # golden-transfer-policy enters that invocation only as a path dependency of the
       # differential suite — compiled, never linted. So the artifact this project actually ships
       # was the only Rust in the tree no clippy invocation covered.
