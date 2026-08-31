@@ -2402,7 +2402,11 @@ mod tests {
                 owner,
                 tag,
             }) => {
-                assert!(!contract.is_empty(), "the refusal names the contract");
+                assert_eq!(
+                    contract,
+                    format!("{}", stellar_strkey::Contract(fx::ACCOUNT_CID)),
+                    "the refusal names the contract whose entry it refused"
+                );
                 assert_eq!(
                     owner,
                     format!("{}", stellar_strkey::Contract(fx::TOKEN_CID)),
