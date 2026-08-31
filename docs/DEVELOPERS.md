@@ -74,8 +74,8 @@ ozpb synthesize --bundle rec.json --selected-authorizer <C…> \
 # 3. [Tranche 2] prove it: permit/deny evidence report over the constraint-derived deny suite
 # `synthesize` prints an envelope — the spec, its canonical hash and the per-constraint rationale —
 # while every stage below takes a bare PolicySpec. Handing over the envelope is a parse error rather
-# than something quietly ignored, because every schema type here is `deny_unknown_fields`, so lift
-# the spec out first:
+# than something quietly ignored, because `PolicySpec` is `deny_unknown_fields` — the envelope
+# types around it, `SynthesizeOutput` and `RecordOutput`, are not — so lift the spec out first:
 python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)' < syn.json > spec.json
 
 ozpb dry-run --spec spec.json
