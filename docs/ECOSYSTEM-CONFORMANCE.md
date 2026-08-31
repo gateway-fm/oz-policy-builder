@@ -258,8 +258,8 @@ two cold runs" means on comparable hosts, which is what CI measures and all this
 claims.
 
 **What that measurement currently says.** `stellar contract build` produces a byte-identical
-wasm across a full `cargo clean` rebuild: sha256 `b3a29bc9…` for the golden policy, and
-`43db0d22…` for the Soroswap policy under the same toolchain, measured in the same sweep. The
+wasm across a full `cargo clean` rebuild: sha256 `9cf2a72a…` for the golden policy, and
+`ded75163…` for the Soroswap policy under the same toolchain, measured in the same sweep. The
 gate asserting it hashed `contracts/target/…` until 2026-08-13, a path the rebuild never
 writes — the golden crate carries its own `[profile.release]` and so is excluded from the
 contracts workspace, and `stellar contract build` writes to *its* target directory. That gate
@@ -588,8 +588,15 @@ about.** Two different numbers, and this section used to give only the first.
 That figure is not re-derivable from the tree today: no wasm is committed, and the artifact has
 changed since (the crate split, the getter work, then the context digest of divergence 9), so
 treat it as the price of the event machinery at the commit that introduced it rather than as a
-current measurement. The golden policy's wasm is **19,860 bytes** as of this commit, and the
-Soroswap policy's is 20,031.
+current measurement. The golden policy's wasm is **20,028 bytes** as of this commit, and the
+Soroswap policy's is 20,199.
+
+Both numbers moved by 168 bytes when nothing but doc comments changed, which is worth stating
+because it is easy to get wrong: `#[contractevent]` and `#[contracttype]` put the doc string of
+the type and of every field into the contract spec section of the wasm
+(`soroban-sdk-macros`, `derive_struct.rs`, `doc: docs_from_attrs(…)`), and the spec section is
+part of the artifact that is hashed. So a documentation-only change to a generated event does
+move the wasm hash, and any claim that it does not is wrong on its face.
 
 *Every permitted call, forever.* This is what the objection was about, and a wasm is paid for
 once. The fee-relevant quantity is the serialized size of the event that lands in the
