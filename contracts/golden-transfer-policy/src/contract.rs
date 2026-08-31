@@ -96,8 +96,10 @@ pub struct GeneratedPolicyEnforced {
     /// SHA-256 of the XDR serialization of the permitted `Context`. A reader
     /// holding the authorization — from the transaction's own auth entries, or
     /// from a simulation of it — recomputes this digest and matches it to this
-    /// event; a reader who does not hold it learns nothing about the arguments
-    /// from the event alone.
+    /// event. The event alone carries neither the arguments nor their encoded
+    /// size. It is not a confidentiality mechanism: the digest is unsalted, so
+    /// equal contexts give equal digests, and a guessed low-entropy argument
+    /// can be confirmed by recomputing it.
     pub context_hash: BytesN<32>,
     /// The context rule this policy is attached to.
     pub context_rule_id: u32,
@@ -110,7 +112,7 @@ pub struct GeneratedPolicyEnforced {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedPolicyInstalled {
-    /// The smart account this policy is installed for.
+    /// The smart account whose context rule this event is about.
     #[topic]
     pub smart_account: Address,
     /// The context rule this policy is attached to.
@@ -121,7 +123,7 @@ pub struct GeneratedPolicyInstalled {
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedPolicyUninstalled {
-    /// The smart account this policy is installed for.
+    /// The smart account whose context rule this event is about.
     #[topic]
     pub smart_account: Address,
     /// The context rule this policy is attached to.

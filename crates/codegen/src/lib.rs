@@ -915,7 +915,9 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // ExceededLimit)` rather than a policy code, while the reference evaluator reports permit. So
     // this event carries a SHA-256 of the context instead of the context, which is publishable at
     // every argument size a spec admits. `docs/ECOSYSTEM-CONFORMANCE.md` §15 divergence 9 has the
-    // reproduction and the argument; `contracts/differential/tests/event_payload.rs` holds it.
+    // reproduction and the argument. The sweep over argument sizes that holds it,
+    // `contracts/differential/tests/event_payload.rs`, exercises a Soroswap call and is
+    // later-milestone evidence.
     //
     // The digest also lets all three events derive the same set. `Context` implements none of
     // `Debug`, `Eq` or `PartialEq`, which is why all three of their `*Enforced` structs derive
@@ -947,8 +949,10 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
         "    /// ",
         "SHA-256 of the XDR serialization of the permitted `Context`. A reader holding the \
          authorization — from the transaction's own auth entries, or from a simulation of it — \
-         recomputes this digest and matches it to this event; a reader who does not hold it \
-         learns nothing about the arguments from the event alone.",
+         recomputes this digest and matches it to this event. The event alone carries neither \
+         the arguments nor their encoded size. It is not a confidentiality mechanism: the \
+         digest is unsalted, so equal contexts give equal digests, and a guessed low-entropy \
+         argument can be confirmed by recomputing it.",
     ));
     out.push_str("    pub context_hash: BytesN<32>,\n");
     out.push_str("    /// The context rule this policy is attached to.\n");
@@ -975,7 +979,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     ] {
         out.push_str(&emit_doc("", &[summary.to_string()], &[]));
         out.push_str(&format!(
-            "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicy{verb} {{\n    /// The smart account this policy is installed for.\n    #[topic]\n    pub smart_account: Address,\n    /// The context rule this policy is attached to.\n    pub context_rule_id: u32,\n}}\n\n"
+            "#[contractevent]\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct GeneratedPolicy{verb} {{\n    /// The smart account whose context rule this event is about.\n    #[topic]\n    pub smart_account: Address,\n    /// The context rule this policy is attached to.\n    pub context_rule_id: u32,\n}}\n\n"
         ));
     }
 
@@ -2916,8 +2920,9 @@ mod tests {
             // policies write, it is one word away, and it compiles. What it costs is an
             // unbounded event on a permitted call (divergence 9 of
             // `docs/ECOSYSTEM-CONFORMANCE.md` §15), which no assertion about the emitted text
-            // would notice — `contracts/differential/tests/event_payload.rs` is where that is
-            // caught on the compiled artifact.
+            // would notice. Catching it on the compiled artifact is
+            // `contracts/differential/tests/event_payload.rs`, which sweeps a Soroswap call and
+            // is therefore later-milestone evidence.
             assert!(
                 enforced.contains("pub context_hash: BytesN<32>,"),
                 "{shape}: the enforcement event must name what it permitted:\n{enforced}"

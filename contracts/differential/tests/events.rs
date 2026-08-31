@@ -417,9 +417,10 @@ fn a_refusal_publishes_nothing() {
 ///
 /// One number is enough for the enforcement event because all four of its fields are
 /// fixed-width: it names the authorization by a 32-byte digest rather than embedding it, so the
-/// size does not depend on what the call was. `event_payload.rs` is where that independence is
-/// asserted over a range of argument sizes; here it is only assumed, and the two files fail
-/// together if it stops holding.
+/// size does not depend on what the call was. Here that is assumed rather than swept: the sweep
+/// over a range of argument sizes is `event_payload.rs`, which exercises a Soroswap call and is
+/// therefore later-milestone evidence. Where both are present they fail together; where only
+/// this one is, the assumption is stated and not proven.
 #[test]
 fn an_event_costs_what_the_conformance_record_says_it_costs() {
     use soroban_sdk::xdr::WriteXdr as _;
