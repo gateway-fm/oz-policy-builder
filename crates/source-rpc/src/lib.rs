@@ -54,7 +54,8 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// settled here and is not settled by §4.1: that section rules out a per-transaction
 /// **historical** protocol anchor, because the endpoint's current protocol would describe the
 /// wrong ledger for an old transaction (`docs/architecture.md:210-213`). "The endpoint was on
-/// protocol 27 when this evidence was acquired" is a different and true statement, which that
+/// the protocol it reported when this evidence was acquired" is a different and true statement,
+/// which that
 /// argument does not reach — and the risk table still promises protocol and XDR versions per
 /// bundle (`docs/architecture.md:1394`), so that promise is outstanding rather than withdrawn
 /// by this gate.
@@ -98,7 +99,11 @@ pub enum RpcError {
         "E_RPC: contract {contract} has an external-reference executable (owner {owner}, tag \
          '{tag}'); this build records only a wasm hash or the Stellar asset"
     )]
-    ExternalRefExecutable { contract: String, owner: String, tag: String },
+    ExternalRefExecutable {
+        contract: String,
+        owner: String,
+        tag: String,
+    },
     #[error("E_RPC: recording evidence error: {0}")]
     Evidence(String),
 }
@@ -719,7 +724,7 @@ fn parse_contract_executables(
             ContractExecutable::StellarAsset => ObservedExecutable::StellarAsset,
             ContractExecutable::ExternalRef(ref r) => {
                 return Err(RpcError::ExternalRefExecutable {
-                    contract: address.to_string(),
+                    contract: address.clone(),
                     owner: r.executable_owner.to_string(),
                     tag: r.tag.to_string(),
                 });
@@ -2388,15 +2393,21 @@ mod tests {
         let (result, requested) = entry(ContractExecutable::ExternalRef(
             stellar_xdr::ContractExecutableExternalRef {
                 executable_owner: fx::token_sc(),
-                tag: stellar_xdr::ScString(
-                    "v1".try_into().expect("a short tag"),
-                ),
+                tag: stellar_xdr::ScString("v1".try_into().expect("a short tag")),
             },
         ));
         match parse_contract_executables(&result, &requested) {
-            Err(RpcError::ExternalRefExecutable { contract, owner, tag }) => {
+            Err(RpcError::ExternalRefExecutable {
+                contract,
+                owner,
+                tag,
+            }) => {
                 assert!(!contract.is_empty(), "the refusal names the contract");
-                assert!(!owner.is_empty(), "the refusal names the executable owner");
+                assert_eq!(
+                    owner,
+                    format!("{}", stellar_strkey::Contract(fx::TOKEN_CID)),
+                    "the owner is the strkey of the address it saw"
+                );
                 assert_eq!(tag, "v1", "the refusal carries the tag it saw");
             }
             other => panic!("expected ExternalRefExecutable, got {other:?}"),
