@@ -58,7 +58,7 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// argument does not reach — and the risk table still promises protocol and XDR versions per
 /// bundle (`docs/architecture.md:1394`), so that promise is outstanding rather than withdrawn
 /// by this gate.
-const MAX_SUPPORTED_PROTOCOL: u32 = 27;
+const MAX_SUPPORTED_PROTOCOL: u32 = 28;
 
 /// The limits every parse in this adapter runs under. Public so conformance tests decode
 /// captured responses under exactly the production configuration instead of restating the
@@ -89,6 +89,16 @@ pub enum RpcError {
          decodes at most {supported}"
     )]
     UnsupportedProtocol { reported: u32, supported: u32 },
+    /// Protocol 28 lets a contract's executable be a *reference* to another address's tagged
+    /// executable rather than a wasm hash. There is no code hash in it to observe, and the
+    /// owner can retag it later, so an observation of one could not mean what every other
+    /// observation here means: "this is the code that was in place when the evidence was
+    /// taken". Refused by name rather than recorded as something weaker.
+    #[error(
+        "E_RPC: contract {contract} has an external-reference executable (owner {owner}, tag \
+         '{tag}'); this build records only a wasm hash or the Stellar asset"
+    )]
+    ExternalRefExecutable { contract: String, owner: String, tag: String },
     #[error("E_RPC: recording evidence error: {0}")]
     Evidence(String),
 }
@@ -707,6 +717,13 @@ fn parse_contract_executables(
                 code_hash: ozpb_domain::Hash32(hash.0),
             },
             ContractExecutable::StellarAsset => ObservedExecutable::StellarAsset,
+            ContractExecutable::ExternalRef(ref r) => {
+                return Err(RpcError::ExternalRefExecutable {
+                    contract: address.to_string(),
+                    owner: r.executable_owner.to_string(),
+                    tag: r.tag.to_string(),
+                });
+            }
         };
         // Deliberately *not* also required: that `observed_ledger` is at or after the
         // transaction/simulation ledger. It usually is, since this call is made after that
@@ -2313,6 +2330,76 @@ mod tests {
                 }
                 other => Err(RpcError::Rpc(format!("unexpected method {other}"))),
             }
+        }
+    }
+
+    /// Protocol 28 added `ContractExecutable::ExternalRef`: an executable named by another
+    /// address plus a tag, rather than by a code hash. Every other observation this adapter
+    /// records means "this is the code that was in place when the evidence was taken", and an
+    /// external reference cannot mean that — there is no hash in it, and its owner can retag it
+    /// afterwards. So it is refused by name.
+    ///
+    /// The control is the line above the assertion: the same entry with a `Wasm` executable
+    /// parses, so the refusal is about the variant and not about the fixture being malformed.
+    #[test]
+    fn an_external_reference_executable_is_refused_rather_than_recorded() {
+        let entry = |executable: ContractExecutable| {
+            let contract = fx::account_sc();
+            let key = LedgerKey::ContractData(LedgerKeyContractData {
+                contract: contract.clone(),
+                key: ScVal::LedgerKeyContractInstance,
+                durability: ContractDataDurability::Persistent,
+            })
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+            let xdr = LedgerEntryData::ContractData(ContractDataEntry {
+                ext: ExtensionPoint::V0,
+                contract,
+                key: ScVal::LedgerKeyContractInstance,
+                durability: ContractDataDurability::Persistent,
+                val: ScVal::ContractInstance(ScContractInstance {
+                    executable,
+                    storage: None,
+                }),
+            })
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+            let result = json!({
+                "latestLedger": 4200099,
+                "entries": [{ "key": key, "xdr": xdr, "lastModifiedLedgerSeq": 4200099 }],
+            });
+            let mut requested = BTreeMap::new();
+            requested.insert(
+                key,
+                (
+                    format!("{}", stellar_strkey::Contract(fx::ACCOUNT_CID)),
+                    fx::account_sc(),
+                ),
+            );
+            (result, requested)
+        };
+
+        // Control: a wasm executable on the same fixture is recorded.
+        let (result, requested) = entry(ContractExecutable::Wasm(Hash([7u8; 32])));
+        let observed = parse_contract_executables(&result, &requested)
+            .expect("a wasm executable parses on this fixture");
+        assert_eq!(observed.len(), 1, "the control entry must be recorded");
+
+        let (result, requested) = entry(ContractExecutable::ExternalRef(
+            stellar_xdr::ContractExecutableExternalRef {
+                executable_owner: fx::token_sc(),
+                tag: stellar_xdr::ScString(
+                    "v1".try_into().expect("a short tag"),
+                ),
+            },
+        ));
+        match parse_contract_executables(&result, &requested) {
+            Err(RpcError::ExternalRefExecutable { contract, owner, tag }) => {
+                assert!(!contract.is_empty(), "the refusal names the contract");
+                assert!(!owner.is_empty(), "the refusal names the executable owner");
+                assert_eq!(tag, "v1", "the refusal carries the tag it saw");
+            }
+            other => panic!("expected ExternalRefExecutable, got {other:?}"),
         }
     }
 
