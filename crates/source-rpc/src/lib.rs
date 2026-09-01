@@ -1,4 +1,4 @@
-//! Soroban RPC acquisition adapter (architecture §4.1, §4.11).
+//! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
 //! the pure recorder. Executed transactions and record-mode simulations both come back
@@ -57,7 +57,7 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// the protocol it reported when this evidence was acquired" is a different and true statement,
 /// which that
 /// argument does not reach — and the risk table still promises protocol and XDR versions per
-/// bundle (`docs/architecture.md:1394`), so that promise is outstanding rather than withdrawn
+/// bundle (`docs/architecture.md:1448`), so that promise is outstanding rather than withdrawn
 /// by this gate.
 const MAX_SUPPORTED_PROTOCOL: u32 = 28;
 
@@ -114,7 +114,7 @@ pub trait RpcTransport {
     fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RpcError>;
 }
 
-/// HTTP transport over a single Soroban RPC endpoint.
+/// HTTP transport over a single Stellar RPC endpoint.
 pub struct HttpTransport {
     url: String,
     agent: ureq::Agent,
@@ -739,7 +739,7 @@ fn parse_contract_executables(
         // that it is dated at recording time and carries its own ledger: §4.1 lists these as
         // "target-contract executable hashes observed at recording time"
         // (`docs/architecture.md:208`), and the spec field they feed is `evidence_only` with an
-        // `observed_ledger` and a drift response (`docs/architecture.md:331-332`).
+        // `observed_ledger` and a drift response (`docs/architecture.md:332-333`).
         observations.insert(
             address.clone(),
             ExecutableObservation {

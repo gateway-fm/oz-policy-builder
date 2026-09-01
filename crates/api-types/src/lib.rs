@@ -259,7 +259,7 @@ pub struct GenerateCodeInput {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct GenerateCodeOutput {
     pub crate_name: String,
-    /// Relative path → file contents (Cargo.toml, src/lib.rs).
+    /// Relative path → file contents (Cargo.toml, src/lib.rs, src/contract.rs, …).
     pub files: std::collections::BTreeMap<String, String>,
     /// Pre-build normalized codegen input hash (hex). NOT the wasm hash (§4.10).
     pub normalized_input_hash: String,

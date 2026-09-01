@@ -63,6 +63,12 @@ cargo fmt --all --check
 ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
 cargo clippy --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --all-targets -- -D warnings )
+# The generated crate, which neither invocation above reaches: `contracts` excludes it, and clippy
+# does not lint dependencies, so it entered that run compiled and never linted. CI gained this
+# invocation and the release gate did not, which left the stronger of the two able to pass while
+# the shipped artifact failed `-D warnings`. Named rather than relied upon, for the same reason
+# the fmt invocations below name it.
+( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --workspace
@@ -101,10 +107,25 @@ if [ "$MODE" = release ]; then
     rm -rf target/det-a target/det-b
     cargo run -q -p ozpb-cli -- generate --spec docs/examples/subscription-spec.json --rule 0 --out target/det-a
     cargo run -q -p ozpb-cli -- generate --spec docs/examples/subscription-spec.json --rule 0 --out target/det-b
-    A=$(shasum -a 256 target/det-a/src/lib.rs | cut -d' ' -f1)
-    B=$(shasum -a 256 target/det-b/src/lib.rs | cut -d' ' -f1)
+    # Every emitted source file, digested together. The crate root is a header and a `pub mod`
+    # declaration, so hashing it alone would compare the half that does not vary with the rule —
+    # a determinism check that passes because it is looking at the wrong file.
+    #
+    # `cd` into each `src/` first, so the names `shasum` prints are relative. Digesting its output
+    # from here instead folds the output directory's own name into the result, and the two digests
+    # then differ for identical content: a check that fails unconditionally, which is the other
+    # way to be looking at the wrong thing. Measured both ways before settling on this one.
+    digest_sources() {
+        local count
+        count=$(find "$1" -name '*.rs' | wc -l | tr -d ' ')
+        [ "$count" -gt 0 ] || { echo "  no generated sources in $1 to compare" >&2; return 1; }
+        ( cd "$1" && find . -name '*.rs' | sort | xargs shasum -a 256 ) \
+            | shasum -a 256 | cut -d' ' -f1
+    }
+    A=$(digest_sources target/det-a/src)
+    B=$(digest_sources target/det-b/src)
     [ "$A" = "$B" ] || { echo "  CLI CODEGEN NON-DETERMINISTIC"; exit 1; }
-    echo "  CLI end-to-end byte-identical: $A"
+    echo "  CLI end-to-end byte-identical across all emitted sources: $A"
 else
     echo "  OFFLINE: end-to-end CLI compile check not run"
 fi

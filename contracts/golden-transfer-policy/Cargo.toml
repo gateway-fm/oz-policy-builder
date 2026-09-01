@@ -6,8 +6,23 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 publish = false
 
+# Every package in OpenZeppelin's workspace declares this, so a generated crate dropped into it
+# is shaped like the rest. Cargo ignores `package.metadata`, and the key is inert in a standalone
+# crate, which is what makes carrying it free.
+[package.metadata.stellar]
+cargo_inherit = true
+
+# `crate-type` keeps `lib` alongside `cdylib`. Only `cdylib` is needed to compile a policy for the
+# chain; `lib` is what lets a generated crate be linked into a test process and compared against a
+# reference evaluator without going through the wasm host. That is not a claim that something
+# already links *this* crate — for most generated policies nothing does — it is why the target is
+# emitted at all. `stellar-accounts` itself declares the same pair (its own `Cargo.toml`), so this
+# is the library's shape rather than a departure from it; their example policies are the ones that
+# ship `cdylib` alone. `doctest = false` is theirs too, for the reason a contract crate always has
+# — no doctests to run.
 [lib]
 crate-type = ["lib", "cdylib"]
+doctest = false
 
 [dependencies]
 soroban-sdk = "=26.1.0"

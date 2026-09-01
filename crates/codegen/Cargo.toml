@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Deterministic template assembly: ValidatedSpec -> immutable Soroban policy crate source"
+description = "Deterministic template assembly: ValidatedSpec -> immutable Stellar smart-contract policy crate source"
 
 [dependencies]
 ozpb-domain = { workspace = true }
