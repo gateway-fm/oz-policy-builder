@@ -114,7 +114,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # The generated crates, which the step above does not reach for a reason that is easy to
-      # miss: clippy does not lint dependencies. `contracts` excludes both crates, so
+      # miss: clippy does not lint dependencies. `contracts` excludes them, so
       # golden-transfer-policy enters that invocation only as a path dependency of the
       # differential suite — compiled, never linted. So the artifact this project actually ships
       # was the only Rust in the tree no clippy invocation covered.
@@ -127,7 +127,7 @@ jobs:
       # `--all-targets` rather than a bare invocation: it compiles the test target too, which is
       # what makes this also the standing check that a generated crate's committed lockfile is a
       # resolution `soroban-sdk`'s `testutils` can build. It was not, until this branch.
-      - name: clippy (the two generated crates, which linting a dependency does not cover)
+      - name: clippy (each generated crate, which linting a dependency does not cover)
         run: |
           ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
 
@@ -165,7 +165,7 @@ jobs:
       # tuned to one build, against the following day's (fb6531d550): both leave the emitted
       # source untouched.
       #
-      # Scoped to the two generated crates on purpose. The rest of the repository has no
+      # Scoped to the generated crates on purpose. The rest of the repository has no
       # rustfmt.toml and is written to rustfmt's defaults; running a nightly with unstable options
       # over it would impose a second style nobody asked for.
       - name: fmt (the generated crates, under the OpenZeppelin config they now ship)

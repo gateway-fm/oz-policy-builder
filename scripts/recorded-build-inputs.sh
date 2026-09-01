@@ -21,9 +21,9 @@
 # That pair predates the TTL codegen change and is kept as it was taken: it is a controlled
 # comparison, and replacing half of it with a later measurement would leave two values that
 # differ by the source as well as the CLI, demonstrating nothing. The golden policy's current
-# hash under CLI 27.0.0 is `b3a29bc9…`, re-measured after the enforcement event was changed to
-# carry a digest of the context rather than the context; it is not comparable with the 27.1.0
-# value above, because the source changed in between.
+# hash under CLI 27.0.0 is `9cf2a72a…`, re-measured after the event field documentation was
+# corrected — the spec section carries those doc strings, so the artifact moves with them; it is
+# not comparable with the 27.1.0 value above, because the source changed in between.
 #
 # So a recorded wasm hash is reproducible only with the recorded compiler AND the recorded CLI.
 # The provenance table on `ozpb_domain::pinned_upstream` is where those inputs are written down

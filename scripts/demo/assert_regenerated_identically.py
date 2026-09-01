@@ -18,7 +18,8 @@ The two comparisons answer different questions, which is why both are made:
     identical source: the compiler, the SDK version and the lockfile all land inside those
     bytes, which is also why the manifest records the toolchain identity next to the hash.
 
-What this does *not* show: both crates come from one spec in one run on one machine, so the
+What this does *not* show: the crates it compares come from one spec in one run on one
+machine, so the
 scope is nondeterminism inside codegen and the build. Reproducibility across a clean rebuild is
 a different claim, checked by the nightly wasm job.
 
