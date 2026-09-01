@@ -12,10 +12,10 @@ operations through an MCP server v0.
 ## Known-good public evidence
 
 The manually dispatched [`nightly live` run #33529227155][passing-run] passed on 2026-09-01
-at public `main` revision [`064b76cc`][verified-revision]. It independently exercised:
+at public `main` revision [`064b76cc`][verified-revision]. It exercised:
 
 - the recorded Rust and Stellar CLI build-input pins;
-- a real Stellar-contract build and two clean, byte-identical Wasm builds;
+- a real Stellar-contract build and a byte-identical full clean rebuild;
 - the real-toolchain boundary tests; and
 - the complete Tranche 1 flow against live Stellar testnet, then its fail-closed check.
 
@@ -28,18 +28,25 @@ Clone the public repository and use the revision being reviewed. To reproduce th
 run exactly, check out `064b76cc2a172e798a49e057735f6d692cb4e1b7`.
 
 The repository pins Rust 1.91.1 (including `wasm32v1-none`) in `rust-toolchain.toml`. The full
-release gate additionally requires Python 3 and these exact tools:
+release gate additionally requires Python 3, network access for the RustSec advisory database,
+and these tools. Use the pinned versions below to reproduce CI's verdict:
 
 - `stellar-cli` 27.0.0 — the workflow records its revision and release-asset checksum;
 - `cargo-deny` 0.20.2; and
 - `cargo-machete` 0.9.2.
 
-The installation and checksum procedure used by CI is in
-`.github/workflows/nightly-live.yml`. Before running the gate, the repository can check that
-the configured Rust and Stellar CLI pins agree with its recorded build provenance:
+The checksum-verified Linux installation of `stellar-cli` used by CI is in
+`.github/workflows/nightly-live.yml`. Install the two Cargo tools with:
 
 ```bash
-bash scripts/check-build-input-pins.sh
+cargo install cargo-deny --locked --version 0.20.2
+cargo install cargo-machete --locked --version 0.9.2
+```
+
+The release gate checks that the configured Rust and Stellar CLI pins agree with its recorded
+build provenance before it starts the expensive checks:
+
+```bash
 bash scripts/verify-phase1.sh
 ```
 
@@ -105,9 +112,10 @@ For the slowest independent trust-anchor check, run:
 bash scripts/verify-pinned-upstream.sh
 ```
 
-It clones the pinned OpenZeppelin tag, rebuilds the Phase 1 upstream contracts with the
-recorded compiler, and compares their Wasm hashes. It is intentionally separate from the
-release gate because it performs a cold build of another repository.
+It clones the pinned OpenZeppelin tag, rebuilds all three pinned upstream contracts with the
+recorded compiler, and compares their Wasm hashes. Two are Phase 1 trust anchors; the retained
+ed25519-verifier pin is for later work. The script is intentionally separate from the release
+gate because it performs a cold build of another repository.
 
 ## 4. Acceptance boundary
 
