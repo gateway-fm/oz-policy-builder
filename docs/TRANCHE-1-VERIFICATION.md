@@ -43,8 +43,19 @@ cargo install cargo-deny --locked --version 0.20.2
 cargo install cargo-machete --locked --version 0.9.2
 ```
 
-The release gate checks that the configured Rust and Stellar CLI pins agree with its recorded
-build provenance before it starts the expensive checks:
+Confirm the installed versions separately:
+
+```bash
+stellar --version
+cargo deny --version
+cargo machete --version
+```
+
+`stellar` must report version 27.0.0 and revision
+`5a7c5fe76530bf4248477ac812fc757146b98cc4`; the Cargo tools must report the versions above.
+The release gate checks that the repository's configured Rust and Stellar CLI pins agree with
+its recorded build provenance, but it does not reject every installed Cargo-tool version
+mismatch. Then run:
 
 ```bash
 bash scripts/verify-phase1.sh
@@ -77,7 +88,7 @@ A successful run exits zero and prints the retained artifact directory. Its fina
 assertions are the milestone in executable form:
 
 1. the pinned `stellar contract build` accepts the generated crate without hand edits;
-2. the same `PolicySpec` produces byte-identical source and the same recorded Wasm hash; and
+2. the same `PolicySpec` produces matching Rust source files and the same recorded Wasm hash; and
 3. changing only the observed account code hash to an unknown value is refused with
    `E_INCOMPATIBLE_ACCOUNT` rather than producing a policy.
 
@@ -90,7 +101,7 @@ most useful files for independent inspection are:
 | `04-spec.json` | The exact-by-default constraints and their provenance. |
 | `05-policy/src/contract.rs` | The readable generated policy, including signer checks, limits, and named refusal paths. |
 | `05-policy/build-manifest.json` | The spec, source, registry, Wasm, toolchain, and build-argument identities bound together by the build. |
-| `07-policy-again/` | A second generation of the same spec; the script requires it to match `05-policy/`. |
+| `07-policy-again/` | A second generation of the same spec; the script compares every Rust source file and the recorded Wasm hash with `05-policy/`. |
 | `08-account-tampered.json` and `08-refusal.txt` | The one-field negative case and the required fail-closed result. |
 
 The directory is the review artifact: it can be archived and handed to someone who did not
@@ -107,7 +118,7 @@ inspect the passing workflow run or execute the script again for fresh evidence.
 | Recording layer | Live demo steps 1–3 | `crates/recorder-core`, `crates/source-rpc`, and `docs/TESTNET-EVIDENCE.md` §1 |
 | Synthesizer v1 | Live demo step 4 and its tampered-input refusal | `crates/synthesizer` and the release-gate test suite |
 | OZ `spending_limit` plus minimal custom `Policy` | Read the registry-resolved spec and generated `contract.rs` | `contracts/golden-transfer-policy` and `scripts/verify-pinned-upstream.sh` |
-| MCP server v0 (`record` / `synthesize`) | Release-gate MCP tests | `docs/MCP-WALKTHROUGH.md` and `docs/TESTNET-EVIDENCE.md` §3 |
+| MCP server v0 (exposes `record` / `synthesize`) | The release-gate stdio test asserts the contracted tool list and output schemas | The toolkit end-to-end recording/synthesis test, `docs/MCP-WALKTHROUGH.md`, and `docs/TESTNET-EVIDENCE.md` §3 |
 | Compilable Rust policy | Live demo steps 5–7 | The passing `nightly live` run and release-gate Wasm checks |
 
 For the slowest independent trust-anchor check, run:
@@ -138,9 +149,9 @@ freshness check for an external network that can change after evidence is record
 - [ ] `scripts/verify-phase1.sh` finishes with the full release-gate success message.
 - [ ] `scripts/demo-tranche1.sh` exits zero against live testnet.
 - [ ] The generated policy compiles unmodified and its manifest identities reconcile.
-- [ ] Regeneration is byte-identical.
+- [ ] Every generated Rust source file and the recorded Wasm hash match on regeneration.
 - [ ] The tampered account-code input is refused, not synthesized.
-- [ ] The MCP recording and synthesis surface matches the contracted v0 scope.
+- [ ] The MCP `tools/list` response exposes the contracted recording and synthesis operations with their schemas.
 - [ ] Later-tranche exclusions are not counted as missing Tranche 1 work.
 
 [passing-run]: https://github.com/gateway-fm/oz-policy-builder/actions/runs/33529227155
