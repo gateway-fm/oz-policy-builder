@@ -17,6 +17,10 @@ needed to record and synthesize. Paths explicitly marked **Tranche 2** describe 
 ongoing later-milestone work; they are not part of the Tranche 1 delivery and are not a
 claim that those milestones are complete.
 
+Stellar/SCF reviewers can reproduce the milestone from the
+[Tranche 1 verification guide](docs/TRANCHE-1-VERIFICATION.md), which maps every contracted
+item to an executable check and the artifact it produces.
+
 ## The pipeline
 
 Every stage is deterministic and fail-closed, and each hands the next a canonical artifact rather
