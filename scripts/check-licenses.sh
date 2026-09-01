@@ -29,15 +29,25 @@ echo "== toolkit workspace: licenses · bans · sources =="
 cargo deny check licenses bans sources
 
 echo "== contracts workspace (on-chain deliverables): licenses · bans · sources =="
-# One shared config over a smaller tree → some allowed licenses are 'not encountered'
-# (harmless warnings), but any rejected license or disallowed source still fails.
-cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check licenses bans sources
+# One shared config over two very different dependency graphs, so each run reports entries the
+# OTHER one needs as "not encountered". Silenced per side rather than globally, because the day an
+# entry is unused by BOTH trees that warning is the only thing that says so — and it is still
+# emitted by the side that owns the entry.
+#
+# Here: every allowed licence and the `webpki-roots` exception belong to the toolkit tree, so this
+# run has nothing to say about them. A rejected licence or a disallowed source still fails.
+cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check licenses bans sources \
+    -A license-not-encountered -A license-exception-not-encountered
 
 echo "== security advisories (RustSec; both workspaces; fail closed) =="
 # Runs over BOTH workspaces — the contracts tree has its own dependency graph (e.g. the
 # Soroban SDK stack). A missing/unreachable database is not evidence that the dependency
 # tree is safe, so cargo-deny's non-zero verdict is propagated unchanged.
-cargo deny check advisories
+# The one `ignore` entry belongs to the contracts tree (an unmaintained build-time macro crate in
+# the Soroban SDK stack), so it is this run that cannot match it — the same shared-config artefact
+# as above, silenced on the side that does not own it. The contracts run below keeps the warning,
+# which is where a genuinely stale ignore would surface.
+cargo deny check advisories -A advisory-not-detected
 cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check advisories
 
 echo "LICENSE & SUPPLY-CHAIN GATE PASSED"
