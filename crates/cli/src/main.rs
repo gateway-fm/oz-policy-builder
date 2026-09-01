@@ -3,7 +3,11 @@
 //!
 //! Everything reads/writes JSON on stdio so the steps compose in a pipeline:
 //!   ozpb record --tx-hash … --rpc-url … --network … > rec.json
-//!   ozpb synthesize --bundle rec.json --decisions d.json --account a.json … > spec.json
+//!   ozpb synthesize --bundle rec.json --decisions d.json --account a.json … > syn.json
+//!   # `synthesize` prints an envelope; the stages below take a bare `PolicySpec`, and
+//!   # `PolicySpec` is `deny_unknown_fields`, so handing over the envelope is a parse error:
+//!   python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)' \\
+//!     < syn.json > spec.json
 //!   ozpb generate --spec spec.json --rule 0 --out ./generated
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
