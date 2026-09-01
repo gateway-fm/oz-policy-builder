@@ -98,6 +98,10 @@ watch the command run.
 
 ## 3. Check each contracted deliverable
 
+In the table below, a "Live demo step" is a numbered stage executed automatically by
+`scripts/demo-tranche1.sh`; it does not require a synchronous presentation. A reviewer may
+inspect the passing workflow run or execute the script again for fresh evidence.
+
 | Contracted item | Primary check | Supporting evidence |
 | --- | --- | --- |
 | Recording layer | Live demo steps 1–3 | `crates/recorder-core`, `crates/source-rpc`, and `docs/TESTNET-EVIDENCE.md` §1 |
