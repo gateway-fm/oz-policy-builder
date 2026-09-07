@@ -131,11 +131,17 @@ fn derive_account_record(
         .get(selected_authorizer)
         .copied()
         .ok_or_else(|| {
+            // `E_INCOMPATIBLE_ACCOUNT`, not `E_AUTHORIZER_NOT_FOUND`: the caller named an
+            // account and it is present, so the authorizer was found. What cannot be
+            // established is what code it runs — the same thing `registry.resolve_account`
+            // reports when the explicit path hands over a code hash no entry recognises. One
+            // question, one code, whichever way the record arrived.
             ToolError::new(
-                EC::EAuthorizerNotFound,
+                EC::EIncompatibleAccount,
                 format!(
-                    "the recordings observed no Wasm code hash for {selected_authorizer}, so an \
-                 account record for it cannot be derived: pass `account` explicitly"
+                    "the recordings observed no Wasm code hash for {selected_authorizer}, so \
+                 what it runs is unknown and no registry entry can recognise it: pass \
+                 `account` explicitly if you have the observation"
                 ),
             )
         })?;
@@ -1279,6 +1285,19 @@ mod tests {
                 "the error has to name the candidates so the caller can choose: {}",
                 err.message
             );
+        }
+
+        /// A named account whose code the recordings never observed is an incompatibility, not
+        /// a missing authorizer — the distinction `SynthesizeInput::account` documents, and the
+        /// code the explicit path already returns for the same question.
+        #[test]
+        fn a_named_account_with_no_observed_code_is_incompatible() {
+            let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+            let mut bundle: RecordingBundle = serde_json::from_value(rec.bundle).unwrap();
+            let named = bundle.authorizations[0].authorizer.clone();
+            bundle.contract_executables.clear();
+            let err = derive_account_record(&[bundle], &named).unwrap_err();
+            assert_eq!(err.code, EC::EIncompatibleAccount);
         }
 
         /// A recording whose only authorizer is a classic account has no account to synthesize

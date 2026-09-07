@@ -31,8 +31,24 @@ pub const POST_MVP_TOOLS: &[&str] = &[];
 /// close stdin (which ends the transport and exits the server), and return the parsed
 /// responses keyed by id.
 pub fn run_session(requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    run_session_with_env(requests, &[])
+}
+
+/// The same session, with operator configuration in the environment.
+///
+/// Separate from [`run_session`] rather than a default argument to it, because the difference is
+/// the point: several tools are refused until the deployment is configured, and a suite that
+/// always configured them could not tell a working tool from a disabled one.
+pub fn run_session_with_env(
+    requests: &[serde_json::Value],
+    env: &[(&str, String)],
+) -> Vec<serde_json::Value> {
     let bin = env!("CARGO_BIN_EXE_ozpb-mcp-server");
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

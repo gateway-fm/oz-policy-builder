@@ -31,7 +31,7 @@ makes a request unable to bring its own. See `docs/DEVELOPERS.md`.
 **You never start the server yourself, and there is no daemon to connect to.** A stdio MCP
 server is launched *by the client*, as a child process, once per session, and it exits when
 the session ends. That is the design: one process inside your own trust domain, no port, no
-listener, nothing left running. If you are looking for something to `curl`, see §4 — and
+listener, nothing left running. If you are looking for something to `curl`, see §5 — and
 that is the hosted shape, not the local one.
 
 So the demo is a conversation. Ask for what you want:
@@ -75,7 +75,7 @@ Because they are what a reviewer will ask:
   served set is what this milestone ships, and a list written here would go stale the moment
   it changes.
 - **Give it something impossible** — a spec that is not a spec, a transaction hash that never
-  existed. The refusals are the interesting half, and §3 says what shape they take.
+  existed. The refusals are the interesting half, and §4 says what shape they take.
 
 ## 2. What each tool needs
 
@@ -229,7 +229,7 @@ EOF
 ./target/release/ozpb-mcp-server < /tmp/mcp-session.jsonl 2>/dev/null
 ```
 
-That returns the `indeterminate` verdict from §3. Swap `invocation-permit.json` for
+That returns the `indeterminate` verdict from §4. Swap `invocation-permit.json` for
 `invocation-deny.json` to get the definite one, and send a spec that is not one to see the
 error shape — handshake included, since a bare `tools/call` is refused:
 

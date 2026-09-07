@@ -131,6 +131,14 @@ It may also contain a durable `checkpoint` (`version`, `log_index`, `root`) to r
 same-version equivocation after restart. The MCP server receives the same JSON through
 `OZPB_REGISTRY_ROOTS_JSON`, paired with `OZPB_REGISTRY_MIN_VERSION`.
 
+`OZPB_REGISTRY_SNAPSHOT_JSON` carries the signed snapshot to use when a request omits one. It
+sits beside the roots rather than among them because it is data, not trust: a snapshot is
+verified against those roots whether it arrives configured or in the request, so what this
+variable decides is *which* snapshot is the default — never whether it is checked. A request
+may still supply a newer one, and never its own root. Set all three together for a deployment
+whose callers should not have to carry a signed document around;
+`scripts/mcp-server-dev.sh` does exactly that with the committed development pair.
+
 `docs/examples/` holds runnable inputs, some of which feed a later walkthrough rather than
 the Tranche-1 demo. `bash scripts/verify-phase1.sh` is the strict first-milestone release
 gate; `bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
