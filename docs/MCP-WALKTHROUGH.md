@@ -16,9 +16,17 @@ Nothing here holds a key or deploys anything.
 cargo build -r -p ozpb-mcp-server
 ```
 
-That is the whole setup. `.mcp.json` in the repository root already points at
-`target/release/ozpb-mcp-server`, so a Claude Code session started in this directory has the
-tools available.
+That is the whole setup. `.mcp.json` in the repository root points at
+`scripts/mcp-server-dev.sh`, which runs that binary with registry trust configured — without it
+`synthesize_policy` refuses to run at all. So a Claude Code session started in this directory has
+the tools available.
+
+**The trust that wrapper installs is the committed development pair, and it is not a production
+configuration.** `docs/examples/registry-roots.json` is a key this repository publishes, so
+anything it admits is signed by a key anyone can sign with. That is the right trade for a local
+session and for the demo, and the wrong one for a deployment: a hosted server sets
+`OZPB_REGISTRY_ROOTS_JSON` and `OZPB_REGISTRY_MIN_VERSION` to roots it controls, which is what
+makes a request unable to bring its own. See `docs/DEVELOPERS.md`.
 
 **You never start the server yourself, and there is no daemon to connect to.** A stdio MCP
 server is launched *by the client*, as a child process, once per session, and it exits when
