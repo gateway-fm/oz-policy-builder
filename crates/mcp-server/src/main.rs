@@ -338,9 +338,19 @@ fn configured_registry_trust() -> anyhow::Result<Option<ozpb_toolkit::RegistryTr
             let minimum = minimum
                 .parse::<u64>()
                 .map_err(|error| anyhow::anyhow!("invalid OZPB_REGISTRY_MIN_VERSION: {error}"))?;
-            ozpb_toolkit::registry_trust_from_roots_json(&roots, minimum)
-                .map(Some)
-                .map_err(anyhow::Error::from)
+            let mut trust = ozpb_toolkit::registry_trust_from_roots_json(&roots, minimum)
+                .map_err(anyhow::Error::from)?;
+            // The snapshot a request may omit. Configured separately from the roots because it
+            // is data rather than trust: it is verified against those roots either way, so what
+            // this decides is which snapshot is the default, never whether it is checked.
+            trust.configured_snapshot = match std::env::var("OZPB_REGISTRY_SNAPSHOT_JSON") {
+                Ok(raw) => Some(serde_json::from_str(&raw).map_err(|error| {
+                    anyhow::anyhow!("invalid OZPB_REGISTRY_SNAPSHOT_JSON: {error}")
+                })?),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(error) => return Err(anyhow::Error::new(error)),
+            };
+            Ok(Some(trust))
         }
         (Err(error), _) if !matches!(error, std::env::VarError::NotPresent) => {
             Err(anyhow::Error::new(error))

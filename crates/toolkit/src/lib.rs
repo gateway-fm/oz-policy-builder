@@ -17,9 +17,12 @@ use ozpb_codegen::{generate, Pins};
 use ozpb_domain::Hash32;
 use ozpb_evaluator::{evaluate, EvalContext, Invocation, Verdict};
 use ozpb_policy_spec::{PolicyRef, PolicySpec};
-use ozpb_recorder_core::{record, EvidenceSnapshot, RecordOptions, RecordingBundle};
+use ozpb_recorder_core::{
+    record, EvidenceSnapshot, ObservedExecutable, RecordOptions, RecordingBundle,
+};
 use ozpb_registry::{Registry, RegistryCheckpoint, RegistryError, RootPolicy, SignedSnapshot};
 use ozpb_synthesizer::{synthesize, SynthesisInput, UserDecisions};
+use std::collections::BTreeMap;
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
@@ -51,6 +54,96 @@ pub struct RegistryTrust {
     /// local callers pin it alongside the root key and signed snapshot.
     pub minimum_version: u64,
     pub checkpoint: Option<RegistryCheckpoint>,
+    /// The signed snapshot to use when a request omits one. Verified against `root_policy`
+    /// exactly like a request-supplied snapshot: configuring it decides *which* snapshot is the
+    /// default, never whether it is checked.
+    pub configured_snapshot: Option<serde_json::Value>,
+}
+
+/// The authorizing addresses in these recordings that run observed Wasm, each with the code
+/// hash observed for it.
+///
+/// Both halves of the pair have to come from the recordings for a derived account record to be
+/// worth anything. An authorizer with no observed executable is not a candidate: the toolkit
+/// would have to fetch its code to say what it runs, and synthesis is pure. A built-in Stellar
+/// Asset contract is not a candidate either — it has no Wasm hash, so no registry entry can
+/// recognise it as an account implementation.
+fn smart_account_candidates(bundles: &[RecordingBundle]) -> BTreeMap<String, Hash32> {
+    let mut candidates = BTreeMap::new();
+    for bundle in bundles {
+        for authorization in &bundle.authorizations {
+            let Some(observation) = bundle.contract_executables.get(&authorization.authorizer)
+            else {
+                continue;
+            };
+            if let ObservedExecutable::Wasm { code_hash } = observation.executable {
+                candidates.insert(authorization.authorizer.clone(), code_hash);
+            }
+        }
+    }
+    candidates
+}
+
+/// Which account these recordings are about, when the caller did not say.
+///
+/// Only answered when the recordings leave nothing to choose. Two candidate accounts is a
+/// decision about whose authority is being constrained, and picking one — the first, the
+/// lexicographically smallest, the one in the newest bundle — would be the toolkit making that
+/// decision quietly. So the error names them and stops.
+fn derive_selected_authorizer(bundles: &[RecordingBundle]) -> Result<String, ToolError> {
+    let candidates = smart_account_candidates(bundles);
+    let mut addresses = candidates.keys();
+    match (addresses.next(), addresses.next()) {
+        (Some(only), None) => Ok(only.clone()),
+        (None, _) => Err(ToolError::new(
+            EC::EAuthorizerNotFound,
+            "no authorization by a contract running observed Wasm in the supplied recordings, \
+             so there is no account to synthesize for: pass `selected_authorizer` if the \
+             recordings do carry one",
+        )),
+        (Some(first), Some(second)) => {
+            let all: Vec<&str> = candidates.keys().map(String::as_str).collect();
+            let _ = (first, second);
+            Err(ToolError::new(
+                EC::EAuthorizerNotFound,
+                format!(
+                    "the recordings carry {} authorizing accounts, so which one this policy is \
+                     for is a decision rather than a lookup — pass `selected_authorizer`: {}",
+                    all.len(),
+                    all.join(", ")
+                ),
+            ))
+        }
+    }
+}
+
+/// Build the account record from the recordings themselves.
+///
+/// `registry_resolution` is left empty on purpose: synthesis overwrites it with the entry that
+/// actually resolved, and a derived record must not arrive asserting a resolution nothing has
+/// checked yet.
+fn derive_account_record(
+    bundles: &[RecordingBundle],
+    selected_authorizer: &str,
+) -> Result<ozpb_policy_spec::SmartAccountRecord, ToolError> {
+    let candidates = smart_account_candidates(bundles);
+    let observed_code_hash = candidates
+        .get(selected_authorizer)
+        .copied()
+        .ok_or_else(|| {
+            ToolError::new(
+                EC::EAuthorizerNotFound,
+                format!(
+                    "the recordings observed no Wasm code hash for {selected_authorizer}, so an \
+                 account record for it cannot be derived: pass `account` explicitly"
+                ),
+            )
+        })?;
+    Ok(ozpb_policy_spec::SmartAccountRecord {
+        address: selected_authorizer.to_string(),
+        observed_code_hash,
+        registry_resolution: String::new(),
+    })
 }
 
 /// Turn an acquired evidence snapshot into a RecordingBundle output. Acquisition (RPC or
@@ -137,9 +230,27 @@ pub fn synthesize_policy(
     for bundle in &mut bundles {
         bundle.trust = bundle.trust.downgraded_to_self_supplied();
     }
-    let mut account: ozpb_policy_spec::SmartAccountRecord = from_value(&input.account)?;
+    let selected_authorizer = match &input.selected_authorizer {
+        Some(address) => address.clone(),
+        None => derive_selected_authorizer(&bundles)?,
+    };
+    let mut account: ozpb_policy_spec::SmartAccountRecord = match &input.account {
+        Some(value) => from_value(value)?,
+        None => derive_account_record(&bundles, &selected_authorizer)?,
+    };
     let decisions: UserDecisions = from_value(&input.decisions)?;
-    let signed_registry: SignedSnapshot = from_value(&input.signed_registry_snapshot)?;
+    let snapshot_value = input
+        .signed_registry_snapshot
+        .as_ref()
+        .or(registry_trust.configured_snapshot.as_ref())
+        .ok_or_else(|| {
+            ToolError::new(
+                EC::ERegistryEmpty,
+                "no signed registry snapshot: supply `signed_registry_snapshot`, or configure \
+                 one for this deployment",
+            )
+        })?;
+    let signed_registry: SignedSnapshot = from_value(snapshot_value)?;
     let network = bundles[0].network_id;
     let mut registry = match registry_trust.checkpoint.clone() {
         Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
@@ -173,7 +284,14 @@ pub fn synthesize_policy(
     let declared_signer_predicates = &template.signer_predicates;
     let spending_limit_capability = match &input.spending_limit_capability {
         Some(h) => {
-            let hash = parse_hash(h)?;
+            // `pinned` names the reviewed policy this milestone pins, so a caller opts in
+            // without transcribing 64 hex characters. It resolves to a hash and then takes the
+            // identical registry path: naming it shorter must not mean checking it less.
+            let hash = if h == ozpb_api_types::PINNED_SPENDING_LIMIT {
+                ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM
+            } else {
+                parse_hash(h)?
+            };
             let capability = registry.resolve_policy(&hash).map_err(map_registry_err)?;
             if capability.kind != "oz:spending_limit" {
                 return Err(ToolError::new(
@@ -192,7 +310,7 @@ pub fn synthesize_policy(
 
     let syn_input = SynthesisInput {
         bundles,
-        selected_authorizer: input.selected_authorizer.clone(),
+        selected_authorizer: selected_authorizer.clone(),
         account,
         registry_snapshot,
         spending_limit_capability,
@@ -253,6 +371,7 @@ pub fn registry_trust_from_config(
         },
         minimum_version,
         checkpoint: None,
+        configured_snapshot: None,
     })
 }
 
@@ -300,6 +419,7 @@ pub fn registry_trust_from_roots_json(
         root_policy,
         minimum_version,
         checkpoint: config.checkpoint,
+        configured_snapshot: None,
     })
 }
 
@@ -884,9 +1004,9 @@ mod tests {
 
         let syn_input = SynthesizeInput {
             bundles: vec![rec.bundle.clone()],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -965,9 +1085,9 @@ mod tests {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
         let input = SynthesizeInput {
             bundles: vec![rec.bundle],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(d).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -986,9 +1106,9 @@ mod tests {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
         let mut input = SynthesizeInput {
             bundles: vec![rec.bundle],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -999,11 +1119,12 @@ mod tests {
             template_family: "policy-templates/scope@1".to_string(),
         };
 
-        input.signed_registry_snapshot["snapshot"]["version"] = serde_json::json!(999);
+        input.signed_registry_snapshot.as_mut().unwrap()["snapshot"]["version"] =
+            serde_json::json!(999);
         let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
         assert_eq!(err.code, EC::ERegistrySignature);
 
-        input.signed_registry_snapshot = signed_registry_json();
+        input.signed_registry_snapshot = Some(signed_registry_json());
         let attacker_trust = RegistryTrust {
             root_policy: RootPolicy {
                 threshold: 1,
@@ -1014,11 +1135,12 @@ mod tests {
             },
             minimum_version: 1,
             checkpoint: None,
+            configured_snapshot: None,
         };
         let err = synthesize_policy(&input, &attacker_trust).unwrap_err();
         assert_eq!(err.code, EC::ERegistrySignature);
 
-        input.signed_registry_snapshot = signed_registry_json();
+        input.signed_registry_snapshot = Some(signed_registry_json());
         let rollback_floor = RegistryTrust {
             root_policy: RootPolicy {
                 threshold: 1,
@@ -1029,9 +1151,147 @@ mod tests {
             },
             minimum_version: 2,
             checkpoint: None,
+            configured_snapshot: None,
         };
         let err = synthesize_policy(&input, &rollback_floor).unwrap_err();
         assert_eq!(err.code, EC::ERegistryRollback);
+    }
+
+    /// Every field the MCP surface made optional, exercised against the one it replaced.
+    ///
+    /// The assertion is on the spec *hash*, not on "it returned something": these fields feed
+    /// the canonical artifact, so an omitted field that produced a subtly different account
+    /// record or template family would still synthesize — and would hand a reviewer a different
+    /// policy than the explicit call does. Equal hashes are the only statement worth making.
+    mod omitted_inputs_are_derived {
+        use super::*;
+
+        fn explicit() -> SynthesizeInput {
+            let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+            SynthesizeInput {
+                bundles: vec![rec.bundle],
+                selected_authorizer: Some(fx::golden_account_strkey()),
+                account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+                signed_registry_snapshot: Some(signed_registry_json()),
+                decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+                spending_limit_capability: Some(
+                    fx::golden_input()
+                        .spending_limit_capability
+                        .unwrap()
+                        .to_hex(),
+                ),
+                template_family: ozpb_api_types::DEFAULT_TEMPLATE_FAMILY.to_string(),
+            }
+        }
+
+        fn spec_hash(input: &SynthesizeInput, trust: &RegistryTrust) -> String {
+            synthesize_policy(input, trust).unwrap().spec_hash
+        }
+
+        #[test]
+        fn authorizer_and_account_come_from_the_recording() {
+            let baseline = spec_hash(&explicit(), &registry_trust());
+            let mut derived = explicit();
+            derived.selected_authorizer = None;
+            derived.account = None;
+            assert_eq!(spec_hash(&derived, &registry_trust()), baseline);
+        }
+
+        #[test]
+        fn the_pinned_sentinel_resolves_to_the_pinned_hash() {
+            let baseline = spec_hash(&explicit(), &registry_trust());
+            let mut sentinel = explicit();
+            sentinel.spending_limit_capability =
+                Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string());
+            assert_eq!(spec_hash(&sentinel, &registry_trust()), baseline);
+        }
+
+        #[test]
+        fn the_template_family_defaults_to_the_only_registered_one() {
+            let json = serde_json::to_value(explicit()).unwrap();
+            let mut object = json.as_object().unwrap().clone();
+            object.remove("template_family");
+            let without: SynthesizeInput =
+                serde_json::from_value(serde_json::Value::Object(object)).unwrap();
+            assert_eq!(
+                without.template_family,
+                ozpb_api_types::DEFAULT_TEMPLATE_FAMILY
+            );
+            assert_eq!(
+                spec_hash(&without, &registry_trust()),
+                spec_hash(&explicit(), &registry_trust())
+            );
+        }
+
+        /// A configured snapshot decides the default, not whether it is checked — so a request
+        /// that omits one gets the same artifact, and the attacker-root test elsewhere in this
+        /// file still refuses a snapshot signed by anyone else.
+        #[test]
+        fn the_configured_snapshot_is_used_when_the_request_omits_one() {
+            let mut trust = registry_trust();
+            trust.configured_snapshot = Some(signed_registry_json());
+            let mut omitted = explicit();
+            omitted.signed_registry_snapshot = None;
+            assert_eq!(
+                spec_hash(&omitted, &trust),
+                spec_hash(&explicit(), &registry_trust())
+            );
+        }
+
+        #[test]
+        fn omitting_the_snapshot_with_none_configured_is_refused() {
+            let mut omitted = explicit();
+            omitted.signed_registry_snapshot = None;
+            let err = synthesize_policy(&omitted, &registry_trust()).unwrap_err();
+            assert_eq!(err.code, EC::ERegistryEmpty);
+        }
+
+        /// Two candidate accounts is a decision, and the toolkit does not get to make it.
+        ///
+        /// Aimed at the derivation function rather than at `synthesize_policy`, because a
+        /// two-authorizer bundle cannot be reached through the boundary by editing one: every
+        /// decoded view is re-derived from the raw XDR at admission, so a hand-added
+        /// authorization is `E_EVIDENCE_INCOHERENT` long before derivation runs. Producing a
+        /// genuinely coherent two-account recording needs an envelope with two such
+        /// authorizations, which is a fixture this milestone does not carry.
+        #[test]
+        fn a_second_authorizing_account_is_refused_rather_than_picked() {
+            let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+            let mut bundle: RecordingBundle = serde_json::from_value(rec.bundle).unwrap();
+
+            let second = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGO".to_string();
+            let mut extra = bundle.authorizations[0].clone();
+            extra.authorizer = second.clone();
+            bundle.authorizations.push(extra);
+            let observed = bundle
+                .contract_executables
+                .get(&fx::golden_account_strkey())
+                .expect("the fixture observes the account's code")
+                .clone();
+            bundle.contract_executables.insert(second.clone(), observed);
+
+            let bundles = vec![bundle];
+            assert_eq!(smart_account_candidates(&bundles).len(), 2);
+            let err = derive_selected_authorizer(&bundles).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound);
+            assert!(
+                err.message.contains(&second) && err.message.contains(&fx::golden_account_strkey()),
+                "the error has to name the candidates so the caller can choose: {}",
+                err.message
+            );
+        }
+
+        /// A recording whose only authorizer is a classic account has no account to synthesize
+        /// for — the case behind the funding transfer in the demo, which records fine and
+        /// cannot be synthesized from.
+        #[test]
+        fn no_authorizing_contract_is_refused() {
+            let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+            let mut bundle: RecordingBundle = serde_json::from_value(rec.bundle).unwrap();
+            bundle.contract_executables.clear();
+            let err = derive_selected_authorizer(&[bundle]).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound);
+        }
     }
 
     #[test]
@@ -1039,9 +1299,9 @@ mod tests {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
         let base = SynthesizeInput {
             bundles: vec![rec.bundle],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -1053,7 +1313,7 @@ mod tests {
         };
 
         let mut unknown_account = base.clone();
-        unknown_account.account["observed_code_hash"] =
+        unknown_account.account.as_mut().unwrap()["observed_code_hash"] =
             serde_json::json!(ozpb_domain::sha256(b"unknown-account").to_hex());
         let err = synthesize_policy(&unknown_account, &registry_trust()).unwrap_err();
         assert_eq!(err.code, EC::EIncompatibleAccount);
@@ -1118,9 +1378,9 @@ mod tests {
 
         let input = SynthesizeInput {
             bundles: vec![rec.bundle],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: serde_json::to_value(&re_signed).unwrap(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(serde_json::to_value(&re_signed).unwrap()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -1157,9 +1417,9 @@ mod tests {
     fn a_wire_bundle_may_only_have_its_trust_lowered_at_the_synthesis_boundary() {
         let synthesis_input = |bundle: serde_json::Value| SynthesizeInput {
             bundles: vec![bundle],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -1211,9 +1471,9 @@ mod tests {
         assert_ne!(forged, rec.bundle, "the mutation must land");
         let input = SynthesizeInput {
             bundles: vec![forged],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
@@ -1241,9 +1501,9 @@ mod tests {
         forged["trust"] = serde_json::json!("trusted_indexer");
         let input = SynthesizeInput {
             bundles: vec![forged],
-            selected_authorizer: fx::golden_account_strkey(),
-            account: serde_json::to_value(&fx::golden_input().account).unwrap(),
-            signed_registry_snapshot: signed_registry_json(),
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
             decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
             spending_limit_capability: Some(
                 fx::golden_input()
