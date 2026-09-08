@@ -126,6 +126,10 @@ That prints the spec's canonical hash, and it is the same hash the CLI produces 
 inputs — `jq -r .spec_hash "$RUN/04-synthesis.json"` to check. Two surfaces onto one
 implementation is the claim; equal hashes are what makes it checkable.
 
+`bash scripts/demo/mcp-synthesize.sh` is that whole comparison in one command: the same request,
+against the most recent run or one named as its argument, and a non-zero exit if the two hashes
+differ. The request above is worth reading once for the shape; the script is what to run.
+
 Three of those arguments are worth a word each:
 
 - **`bundles`** is a recording, not a path. Over MCP you rarely paste one: `record_transaction`
