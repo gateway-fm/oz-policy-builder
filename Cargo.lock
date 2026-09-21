@@ -1225,6 +1225,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ozpb-harness"
+version = "0.1.0"
+dependencies = [
+ "ozpb-domain",
+ "ozpb-evaluator",
+ "ozpb-policy-spec",
+ "ozpb-synthesizer",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ozpb-mcp-server"
 version = "0.1.0"
 dependencies = [

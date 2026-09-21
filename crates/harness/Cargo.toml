@@ -1,0 +1,18 @@
+[package]
+name = "ozpb-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Dry-run harness: constraint-derived deny-suite generation + labeled permit/deny evidence report (layer 1)"
+
+[dependencies]
+ozpb-domain = { workspace = true }
+ozpb-policy-spec = { workspace = true }
+ozpb-evaluator = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+ozpb-synthesizer = { workspace = true }
