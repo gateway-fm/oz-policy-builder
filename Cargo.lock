@@ -1165,6 +1165,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ozpb-call-surface-core"
+version = "0.1.0"
+dependencies = [
+ "ozpb-domain",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "ozpb-cli"
 version = "0.1.0"
 dependencies = [
