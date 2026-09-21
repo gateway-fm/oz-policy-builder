@@ -23,3 +23,11 @@ anyhow = "1"
 axum = "0.8"
 tokio-util = "0.7"
 url = "2"
+
+[dev-dependencies]
+# The stdio suite drives the real binary, so it needs the same fixtures and the same development
+# registry signer the toolkit tests use — otherwise the one call this milestone contracts stays
+# untested at the boundary that serves it.
+ozpb-synthesizer = { workspace = true }
+ozpb-registry = { workspace = true }
+ozpb-domain = { workspace = true }

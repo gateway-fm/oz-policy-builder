@@ -283,9 +283,12 @@ fn main() -> Result<()> {
                 .collect();
             let input = SynthesizeInput {
                 bundles: bundle_values,
-                selected_authorizer,
-                account: read_json(&account)?,
-                signed_registry_snapshot: read_json(&signed_registry)?,
+                // The CLI keeps asking for these: a script is explicit by nature, and the
+                // derivation exists for an agent holding a recording, not for a pipeline that
+                // already knows every path it passes.
+                selected_authorizer: Some(selected_authorizer),
+                account: Some(read_json(&account)?),
+                signed_registry_snapshot: Some(read_json(&signed_registry)?),
                 decisions: read_json(&decisions)?,
                 spending_limit_capability,
                 template_family,

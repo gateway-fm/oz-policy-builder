@@ -28,6 +28,7 @@ pub(crate) fn registry_trust() -> RegistryTrust {
         },
         minimum_version: 1,
         checkpoint: None,
+        configured_snapshot: None,
     }
 }
 
