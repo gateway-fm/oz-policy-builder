@@ -1,0 +1,24 @@
+[package]
+name = "ozpb-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Dry-run harness: constraint-derived deny-suite generation + labeled permit/deny evidence report (layer 1)"
+
+[dependencies]
+ozpb-domain = { workspace = true }
+ozpb-policy-spec = { workspace = true }
+ozpb-evaluator = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+ozpb-synthesizer = { workspace = true }
+# Only to prove the suite's own fixtures are real: that the addresses it mutates towards
+# decode as StrKeys and the ScVals it substitutes decode as ScVals. Layer 2 has to build
+# both from these cases, so a fixture that only looks right makes a case one layer can run
+# and the other cannot — which is the one thing a differential suite must not have.
+stellar-strkey = { workspace = true }
+stellar-xdr = { workspace = true }

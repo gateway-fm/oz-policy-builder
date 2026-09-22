@@ -27,6 +27,7 @@ members = [
     "crates/build-runner",
     "crates/api-types",
     "crates/toolkit",
+    "crates/harness",
     "crates/mcp-server",
     "crates/cli",
 ]
@@ -74,6 +75,7 @@ ozpb-codegen = { path = "crates/codegen" }
 ozpb-build-runner = { path = "crates/build-runner" }
 ozpb-api-types = { path = "crates/api-types" }
 ozpb-toolkit = { path = "crates/toolkit" }
+ozpb-harness = { path = "crates/harness" }
 
 [profile.release]
 lto = true
