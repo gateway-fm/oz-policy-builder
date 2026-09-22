@@ -13,9 +13,17 @@
 //! entries and their transitive signer/policy closure; a count deficit or a missing
 //! transitive entry fails closed (`E_INCOMPLETE_ACCOUNT_STATE`) rather than yielding a
 //! partial verdict — an archived weak rule could be restored and used in the same
-//! invocation. Dominance is decided conservatively: only the exact designated admin rule
-//! (or a rule a registered implication proves equivalent-or-stronger) is safe; everything
-//! else on a protected surface is rejected with remediation. There is no override.
+//! invocation. Dominance is decided conservatively, and today that means **only** the exact
+//! designated admin rule is safe: every other rule touching a protected surface is rejected
+//! with remediation, and there is no override.
+//!
+//! The parenthetical this doc used to carry — "or a rule a registered implication proves
+//! equivalent-or-stronger" — described a capability this crate does not have. `dominated` is
+//! `false` unconditionally, because signer/policy set inclusion is not a method-level
+//! implication proof for composed policies, and no registry-backed, parameter-aware evidence
+//! is available here. The behaviour is the safe one; the sentence was not, because a reader
+//! deciding whether to rely on this check would have expected a second path that never runs.
+//! `alternate_admin_without_registered_implication_is_unsafe` pins it.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
@@ -97,9 +105,16 @@ pub struct CheckInput<'a> {
     pub account_recognized: bool,
     /// The exact policy contract addresses being installed (from the PolicyBindingSet).
     pub bound_policy_addresses: Vec<String>,
-    /// Policy addresses recognized by the registry (a rule referencing an unrecognized
-    /// policy on a protected surface fails closed).
-    pub recognized_policy_addresses: BTreeSet<String>,
+    /// Policies the registry recognizes, as address → the wasm hash that was reviewed at
+    /// that address. A rule referencing a policy on a protected surface fails closed unless
+    /// the address is here **and** the hash observed in the same snapshot equals this one.
+    ///
+    /// Address alone is not recognition. A policy contract is upgradeable, so an address
+    /// that was reviewed once can be serving an implementation nobody reviewed, and this
+    /// check exists to decide whether installing into the account is safe. `StoredPolicy`
+    /// already carries `observed_wasm_hash` from the same ledger snapshot, so the evidence
+    /// is present; ignoring it is what made an upgraded policy pass.
+    pub recognized_policies: BTreeMap<String, String>,
     /// The single designated administrative rule id.
     pub admin_rule_id: u32,
     pub current_ledger: u32,
@@ -192,6 +207,7 @@ pub enum CheckError {
 #[serde(rename_all = "snake_case")]
 pub enum IncompleteCause {
     /// Fewer decoded live rules than the active count — some rule entry is archived.
+    /// A surplus is `SnapshotMismatch`, not this: it cannot mean a hidden rule.
     Archived,
     /// A referenced signer/policy registry entry is absent.
     Missing,
@@ -202,6 +218,19 @@ pub enum IncompleteCause {
 // ---------------------------------------------------------------------------------------
 // The check
 // ---------------------------------------------------------------------------------------
+
+/// Whether the registry recognizes this policy *as observed*: the address was reviewed and
+/// the code answering at it in this snapshot is the code that was reviewed.
+///
+/// Both halves are required and the second is the one with teeth. A `false` here always
+/// fails the caller closed, so a missing entry and a hash that moved are reported the same
+/// way — the remediation differs, but the verdict must not.
+fn policy_recognized(input: &CheckInput<'_>, policy: &StoredPolicy) -> bool {
+    input
+        .recognized_policies
+        .get(&policy.address)
+        .is_some_and(|approved| approved == &policy.observed_wasm_hash)
+}
 
 pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
     // Enumeration capability gate (D6).
@@ -225,10 +254,14 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             "bound policy addresses must be unique".to_string(),
         ));
     }
+    // Address-only here, deliberately: these are the policies being installed, and this
+    // input carries no observed hash for them — they need not be in `st.policies` yet. The
+    // hash comparison happens for policies already attached to the account, below, which is
+    // where an upgraded implementation would actually be reachable.
     if let Some(unrecognized) = input
         .bound_policy_addresses
         .iter()
-        .find(|address| !input.recognized_policy_addresses.contains(*address))
+        .find(|address| !input.recognized_policies.contains_key(*address))
     {
         return Err(CheckError::UnrecognizedBoundPolicy(unrecognized.clone()));
     }
@@ -252,14 +285,27 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
         }
         live.push(rule);
     }
-    if live.len() as u32 != st.active_count {
-        // Fewer decoded live rules than extant count ⇒ archived/inconsistent state.
-        // Archived weak rules can be restored-and-used in the same invocation, so this
-        // must fail closed — a live-only scan is not a completeness proof (D6).
+    // Both directions fail closed, but they are different faults and the operator fixes
+    // them differently, so they do not share a cause. A deficit means a rule the count knows
+    // about did not decode: it is archived, it can be restored and used in the same
+    // invocation, and a live-only scan is therefore not a completeness proof (D6). A surplus
+    // cannot mean that — there is no such thing as more-than-extant — so it says the snapshot
+    // disagrees with itself and has to be re-read, not that something is hiding in it.
+    if (live.len() as u32) < st.active_count {
         return Err(CheckError::IncompleteState {
             cause: IncompleteCause::Archived,
             detail: format!(
                 "decoded {} live rules but active_count is {}",
+                live.len(),
+                st.active_count
+            ),
+        });
+    }
+    if (live.len() as u32) > st.active_count {
+        return Err(CheckError::IncompleteState {
+            cause: IncompleteCause::SnapshotMismatch,
+            detail: format!(
+                "decoded {} live rules but active_count is only {}",
                 live.len(),
                 st.active_count
             ),
@@ -325,8 +371,7 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
     }
     if let Some(unrecognized) = admin.policy_ids.iter().find_map(|policy_id| {
         st.policies.get(policy_id).and_then(|policy| {
-            (!input.recognized_policy_addresses.contains(&policy.address))
-                .then_some(policy.address.clone())
+            (!policy_recognized(input, policy)).then_some(policy.address.clone())
         })
     }) {
         return Err(CheckError::AdminRuleUnsafe(
@@ -371,7 +416,7 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
         let references_unrecognized_policy = rule.policy_ids.iter().any(|pid| {
             st.policies
                 .get(pid)
-                .map(|p| !input.recognized_policy_addresses.contains(&p.address))
+                .map(|p| !policy_recognized(input, p))
                 .unwrap_or(true)
         });
 
@@ -564,7 +609,12 @@ mod tests {
             .expect("the fixture binding-set hash must encode"),
             account_recognized: true,
             bound_policy_addresses: vec![POLICY.to_string()],
-            recognized_policy_addresses: BTreeSet::from([POLICY.to_string()]),
+            // The hash the fixture's stored policy actually reports, so the healthy
+            // account is recognized. A test that moves it proves the comparison bites.
+            recognized_policies: BTreeMap::from([(
+                POLICY.to_string(),
+                "policy-hash-0".to_string(),
+            )]),
             admin_rule_id: 0,
             current_ledger: 4_000_000,
             enumeration: Enumeration::BoundedNextId,
@@ -706,6 +756,55 @@ mod tests {
     }
 
     #[test]
+    fn upgraded_policy_at_a_recognized_address_is_not_recognized() {
+        // The registry reviewed this address, and the code answering at it has since moved.
+        // Recognition by address alone would accept it, which is the point: a policy
+        // contract is upgradeable, so the address proves what was reviewed once, never what
+        // is running now. Attached to the admin rule, the rule that guards every other rule.
+        let mut st = healthy_state();
+        st.rules.get_mut(&0).expect("admin rule").policy_ids = vec![0];
+        st.policies
+            .get_mut(&0)
+            .expect("the stored policy")
+            .observed_wasm_hash = "policy-hash-upgraded".to_string();
+
+        let err = check(&base_input(&st)).unwrap_err();
+        assert!(
+            matches!(err, CheckError::AdminRuleUnsafe(0, ref why) if why.contains(POLICY)),
+            "expected the admin rule to be refused for an unrecognized policy, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn same_policy_at_the_reviewed_hash_is_recognized() {
+        // The other half of the pair: identical shape, hash untouched, and the account is
+        // safe. Without this the test above would also pass if the check simply refused
+        // every admin rule that references a policy.
+        let mut st = healthy_state();
+        st.rules.get_mut(&0).expect("admin rule").policy_ids = vec![0];
+
+        let v = check(&base_input(&st)).expect("the reviewed hash must be recognized");
+        assert_eq!(v.result, CheckResult::Safe);
+    }
+
+    #[test]
+    fn count_surplus_fails_closed_as_snapshot_mismatch() {
+        // More decoded live rules than the count admits. Nothing is hidden, so calling this
+        // `Archived` would send the operator looking for a restored rule that is not there;
+        // the snapshot simply disagrees with itself and has to be re-read.
+        let mut st = healthy_state();
+        st.active_count = 1;
+        let err = check(&base_input(&st)).unwrap_err();
+        assert!(matches!(
+            err,
+            CheckError::IncompleteState {
+                cause: IncompleteCause::SnapshotMismatch,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn missing_transitive_signer_fails_closed() {
         let mut st = healthy_state();
         st.signers.remove(&2); // rule 1 references signer 2
@@ -811,7 +910,7 @@ mod tests {
     fn bound_policy_must_be_recognized() {
         let st = healthy_state();
         let mut input = base_input(&st);
-        input.recognized_policy_addresses.clear();
+        input.recognized_policies.clear();
         let err = check(&input).unwrap_err();
         assert!(matches!(err, CheckError::UnrecognizedBoundPolicy(_)));
     }
