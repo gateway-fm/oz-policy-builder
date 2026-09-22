@@ -339,6 +339,10 @@ pub struct ImportRecordingInput {
 #[cfg(test)]
 pub(crate) mod test_support;
 
+/// Wire types for the post-MVP operations; see the module for why they live apart.
+pub mod tranche2;
+pub use tranche2::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;
