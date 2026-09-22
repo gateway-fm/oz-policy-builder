@@ -66,7 +66,10 @@ pub struct Outcome {
     /// Which rule this case exercised. Needed so coverage can be checked per rule.
     pub rule_index: usize,
     pub class: MutationClass,
-    pub expected: &'static str,
+    /// "permit" or "deny". Owned, not `&'static str`: this report is `Deserialize`, and a
+    /// borrowed field would require the JSON buffer to outlive the value, which no ordinary
+    /// caller can arrange. The type said the report could be read back and it could not.
+    pub expected: String,
     pub actual: String,
     pub agree: bool,
 }
@@ -74,7 +77,8 @@ pub struct Outcome {
 /// The labeled permit/deny evidence report (architecture §4.5).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvidenceReport {
-    pub layer: &'static str,
+    /// Owned for the same reason as `Outcome::expected`.
+    pub layer: String,
     pub spec_hash: String,
     pub total: usize,
     pub agreements: usize,
@@ -97,7 +101,8 @@ pub struct EvidenceReport {
     /// against the real compiled contract) is where composed policies get exercised.
     pub unmodeled_policies: Vec<UnmodeledPolicy>,
     /// Always present: this is tested evidence, not a proof of universal denial.
-    pub disclaimer: &'static str,
+    /// Owned for the same reason as `Outcome::expected`.
+    pub disclaimer: String,
 }
 
 /// A composed reviewed policy that layer 1 does not model (see [`EvidenceReport`]).
@@ -307,7 +312,7 @@ pub fn run_layer1(spec: &ValidatedSpec) -> EvidenceReport {
             label: case.label.clone(),
             rule_index: case.rule_index,
             class: case.class,
-            expected: if case.expect_permit { "permit" } else { "deny" },
+            expected: if case.expect_permit { "permit" } else { "deny" }.to_string(),
             actual: match &verdict {
                 Verdict::Permit => "permit".to_string(),
                 Verdict::Deny(r) => format!("deny({r:?})"),
@@ -347,7 +352,7 @@ pub fn run_layer1(spec: &ValidatedSpec) -> EvidenceReport {
     }
 
     EvidenceReport {
-        layer: "layer1-reference-evaluator",
+        layer: "layer1-reference-evaluator".to_string(),
         spec_hash: spec.hash().to_hex(),
         total: cases.len(),
         agreements,
@@ -357,7 +362,7 @@ pub fn run_layer1(spec: &ValidatedSpec) -> EvidenceReport {
         expected_classes: expected_classes(spec),
         outcomes,
         unmodeled_policies,
-        disclaimer: DISCLAIMER,
+        disclaimer: DISCLAIMER.to_string(),
     }
 }
 
@@ -410,13 +415,17 @@ fn build_rule_suite(
             expect_permit: false,
         });
 
-        // Different function.
+        // Different function. The name has to be one the rule does not allow, and
+        // `<fn>_x` is not guaranteed to be: a rule may legitimately allow both `foo` and
+        // `foo_x`, and then this "must deny" case invokes a function the rule permits. The
+        // suite would report the evaluator as disagreeing when the evaluator is right.
+        let absent_fn = absent_fn_name(rule, &call.fn_name);
         cases.push(Case {
             rule_index,
-            label: format!("different function ({}__x)", call.fn_name),
+            label: format!("different function ({absent_fn})"),
             class: MutationClass::DifferentFunction,
             invocation: Invocation {
-                fn_name: format!("{}_x", trunc(&call.fn_name)),
+                fn_name: absent_fn,
                 ..base_inv.clone()
             },
             context: ctx0.clone(),
@@ -848,10 +857,18 @@ fn arg_mutations(
             ));
         }
         (ArgValue::ScvalXdr(current), Some(Constraint::EqScval { .. })) => {
-            let alternate = if current == "AAAAAA==" {
-                "AAAAAQ=="
+            // Two canonical `SCV_BOOL`s, false and true: discriminant plus the four-byte
+            // body the type requires. The previous pair was `AAAAAA==`/`AAAAAQ==`, four
+            // bytes each — a bare discriminant. `AAAAAA==` names SCV_BOOL and then stops
+            // before the bool, so it is not a decodable ScVal at all and policy-spec's own
+            // canonical validation rejects it. Layer 1 was "testing" a value that cannot be
+            // a Soroban argument, and layer 2 could not replay the case.
+            const FALSE_XDR: &str = "AAAAAAAAAAA=";
+            const TRUE_XDR: &str = "AAAAAAAAAAE=";
+            let alternate = if current == FALSE_XDR {
+                TRUE_XDR
             } else {
-                "AAAAAA=="
+                FALSE_XDR
             };
             out.push((
                 "different scval".into(),
@@ -994,23 +1011,52 @@ fn baseline_context(spec: &ValidatedSpec, rule: &RuleSpec) -> EvalContext {
     }
 }
 
-fn mutate_contract(c: &str) -> String {
-    // A different but well-formed-looking contract id.
-    format!("{}", ozpb_domain::sha256(c.as_bytes()))
-        .chars()
-        .take(0)
-        .collect::<String>()
-        + "COTHERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+/// A contract id that is not `c` and that a Soroban `Address` can actually be built from.
+///
+/// The previous value was `COTHER…A`: the right length and the right first letter, and not a
+/// StrKey — its checksum does not verify, so nothing downstream can decode it. That mattered
+/// beyond tidiness. The reference evaluator compares addresses as strings and accepted it,
+/// while layer 2 has to turn the same case into a real `Address` to replay it against the
+/// compiled contract, and could not. A case only one layer can run is not a differential.
+///
+/// Fixed rather than derived from `c`: a deny case needs one address the rule does not
+/// accept, and the spec's own addresses are the only ones it does. Encoded from a constant
+/// 32-byte payload, checksum included; `generated_addresses_are_decodable_strkeys` pins it.
+fn mutate_contract(_c: &str) -> String {
+    "CARCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEVQO".to_string()
 }
 
+/// An account address outside the rule, decodable for the same reason as [`mutate_contract`].
+/// Was `GSTRANGER…A`, which no StrKey decoder accepts.
 fn stranger_addr() -> String {
-    "GSTRANGERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string()
+    "GAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCF6M".to_string()
 }
 
 fn stranger_signer() -> SignerSpec {
     SignerSpec::Delegated {
         address: stranger_addr(),
     }
+}
+
+/// A function name this rule allows nowhere, derived from `base`.
+///
+/// Appending `_x` once is not enough: the allowlist is arbitrary and may contain the result.
+/// Suffixes are added until the name is absent, so the case is a denial by construction
+/// rather than by assumption. Bounded by the allowlist's own size — each attempt can collide
+/// with at most one distinct entry, so one more than that many attempts always terminates.
+fn absent_fn_name(rule: &RuleSpec, base: &str) -> String {
+    let allowed: BTreeSet<&str> = rule
+        .allowed_calls
+        .iter()
+        .map(|c| c.fn_name.as_str())
+        .collect();
+    let mut candidate = format!("{}_x", trunc(base));
+    let mut suffix = 0u32;
+    while allowed.contains(candidate.as_str()) {
+        suffix += 1;
+        candidate = format!("{}_x{suffix}", trunc(base));
+    }
+    candidate
 }
 
 fn trunc(s: &str) -> String {
@@ -1442,6 +1488,45 @@ mod tests {
     }
 
     #[test]
+    fn the_different_function_case_names_a_function_the_rule_forbids() {
+        // A rule may legitimately allow both `transfer` and `transfer_x`. The mutation used
+        // to be `<fn>_x` unconditionally, so on this rule the "must deny" case invoked a
+        // function the rule permits — a correct evaluator permits it and the suite records
+        // a disagreement against itself.
+        let base = golden_spec();
+        let mut raw = base.spec().clone();
+        let first = raw.rules[0].allowed_calls[0].clone();
+        let colliding = trunc(&first.fn_name) + "_x";
+        let mut second_call = first.clone();
+        second_call.fn_name = colliding.clone();
+        raw.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        raw.rules[0].allowed_calls.push(second_call);
+        let both = raw
+            .validate()
+            .expect("a rule allowing foo and foo_x is valid");
+
+        let allowed: BTreeSet<&str> = both.spec().rules[0]
+            .allowed_calls
+            .iter()
+            .map(|c| c.fn_name.as_str())
+            .collect();
+        assert!(allowed.contains(colliding.as_str()), "fixture must collide");
+
+        for case in build_suite(&both)
+            .iter()
+            .filter(|c| c.class == MutationClass::DifferentFunction)
+        {
+            assert!(
+                !allowed.contains(case.invocation.fn_name.as_str()),
+                "the deny case invokes {}, which this rule allows",
+                case.invocation.fn_name
+            );
+        }
+    }
+
+    #[test]
     fn cross_products_never_mix_different_functions() {
         let base = golden_spec();
         let mut raw = base.spec().clone();
@@ -1462,5 +1547,51 @@ mod tests {
         assert!(!build_suite(&two_functions)
             .iter()
             .any(|case| case.class == MutationClass::TupleCrossProduct));
+    }
+
+    /// Every address this suite mutates towards must decode as a StrKey, and every ScVal it
+    /// substitutes must decode as an ScVal.
+    ///
+    /// Layer 1 compares addresses as strings and ScVals as base64, so it accepts anything
+    /// shaped roughly right — which is how `COTHER…A`, `GSTRANGER…A` and a four-byte
+    /// `AAAAAA==` survived. Layer 2 replays the same cases against the compiled contract and
+    /// has to build a real `Address` and a real `ScVal` from them, so a fixture that only
+    /// looks right yields a case one layer can run and the other cannot. That is the one
+    /// defect a differential suite cannot tolerate, because it disappears exactly where the
+    /// two implementations are supposed to be compared.
+    #[test]
+    fn generated_fixtures_decode_as_the_types_layer_two_needs() {
+        use stellar_xdr::{Limits, ReadXdr, ScVal};
+
+        let contract = mutate_contract("ignored");
+        assert!(
+            matches!(
+                stellar_strkey::Strkey::from_string(&contract),
+                Ok(stellar_strkey::Strkey::Contract(_))
+            ),
+            "mutate_contract produced {contract}, which is not a contract StrKey"
+        );
+
+        let account = stranger_addr();
+        assert!(
+            matches!(
+                stellar_strkey::Strkey::from_string(&account),
+                Ok(stellar_strkey::Strkey::PublicKeyEd25519(_))
+            ),
+            "stranger_addr produced {account}, which is not an account StrKey"
+        );
+
+        // The pair `arg_mutations` swaps between for an `EqScval` argument.
+        for xdr in ["AAAAAAAAAAA=", "AAAAAAAAAAE="] {
+            let decoded = ScVal::from_xdr_base64(xdr, Limits::none());
+            assert!(decoded.is_ok(), "{xdr} is not a decodable ScVal");
+        }
+
+        // And the value that used to be there is not, so this test would have caught it.
+        // `AAAAAA==` is four bytes: the `SCV_BOOL` discriminant with the bool missing.
+        assert!(
+            ScVal::from_xdr_base64("AAAAAA==", Limits::none()).is_err(),
+            "AAAAAA== decoded, so this test no longer proves anything"
+        );
     }
 }
