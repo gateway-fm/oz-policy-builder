@@ -201,19 +201,58 @@ pub struct SynthesizeInput {
     /// One or more RecordingBundles as JSON.
     pub bundles: Vec<serde_json::Value>,
     /// The selected smart-account authorizer (strkey).
-    pub selected_authorizer: String,
+    ///
+    /// Omit it and synthesis derives it from the recordings, but only when they leave no
+    /// choice to make: exactly one authorizing address that runs observed Wasm. Two such
+    /// addresses is a decision about whose account is being constrained, and a caller who
+    /// did not state it has not made it — so that is an error naming the candidates rather
+    /// than a pick.
+    #[serde(default)]
+    pub selected_authorizer: Option<String>,
     /// The account compatibility record as JSON (SmartAccountRecord).
-    pub account: serde_json::Value,
+    ///
+    /// Omit it and synthesis builds it from the same recordings: the address is the selected
+    /// authorizer and the code hash is the one observed for it. Nothing is invented — an
+    /// account whose code the recordings never observed is still `E_INCOMPATIBLE_ACCOUNT`.
+    #[serde(default)]
+    pub account: Option<serde_json::Value>,
     /// Signed capability-registry snapshot. Its signature, network, validity window, and
     /// rollback version are verified against the server/CLI-configured trusted root; the
     /// request cannot select its own trust root.
-    pub signed_registry_snapshot: serde_json::Value,
+    ///
+    /// Omit it to use the snapshot the operator configured. Supplying one is still allowed and
+    /// still verified against the configured root — a request can bring a newer snapshot, never
+    /// a different root.
+    #[serde(default)]
+    pub signed_registry_snapshot: Option<serde_json::Value>,
     /// The user decisions (UserDecisions) as JSON.
+    ///
+    /// Required, and deliberately: the signer set, the lifetime and the call cap are what the
+    /// grant *is*. A default here would mean the toolkit chose how much authority to hand out.
     pub decisions: serde_json::Value,
     /// Reviewed spending-limit wasm hash (hex), if composing it.
+    ///
+    /// [`PINNED_SPENDING_LIMIT`] selects the pinned reviewed policy by name instead of by 64
+    /// hex characters. It stays an opt-in rather than becoming a default: composing a reviewed
+    /// third-party contract into a grant is a decision, and the tool should not make it because
+    /// a spending limit appeared in the decisions.
     #[serde(default)]
     pub spending_limit_capability: Option<String>,
+    /// Audited template pack to render from. Defaults to [`DEFAULT_TEMPLATE_FAMILY`], the only
+    /// family this milestone registers.
+    #[serde(default = "default_template_family")]
     pub template_family: String,
+}
+
+/// The one template family registered in this milestone.
+pub const DEFAULT_TEMPLATE_FAMILY: &str = "policy-templates/scope@1";
+
+/// Accepted in place of a hex hash in [`SynthesizeInput::spending_limit_capability`] to select
+/// the pinned reviewed spending-limit policy.
+pub const PINNED_SPENDING_LIMIT: &str = "pinned";
+
+fn default_template_family() -> String {
+    DEFAULT_TEMPLATE_FAMILY.to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

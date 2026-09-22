@@ -16,14 +16,22 @@ Nothing here holds a key or deploys anything.
 cargo build -r -p ozpb-mcp-server
 ```
 
-That is the whole setup. `.mcp.json` in the repository root already points at
-`target/release/ozpb-mcp-server`, so a Claude Code session started in this directory has the
-tools available.
+That is the whole setup. `.mcp.json` in the repository root points at
+`scripts/mcp-server-dev.sh`, which runs that binary with registry trust configured — without it
+`synthesize_policy` refuses to run at all. So a Claude Code session started in this directory has
+the tools available.
+
+**The trust that wrapper installs is the committed development pair, and it is not a production
+configuration.** `docs/examples/registry-roots.json` is a key this repository publishes, so
+anything it admits is signed by a key anyone can sign with. That is the right trade for a local
+session and for the demo, and the wrong one for a deployment: a hosted server sets
+`OZPB_REGISTRY_ROOTS_JSON` and `OZPB_REGISTRY_MIN_VERSION` to roots it controls, which is what
+makes a request unable to bring its own. See `docs/DEVELOPERS.md`.
 
 **You never start the server yourself, and there is no daemon to connect to.** A stdio MCP
 server is launched *by the client*, as a child process, once per session, and it exits when
 the session ends. That is the design: one process inside your own trust domain, no port, no
-listener, nothing left running. If you are looking for something to `curl`, see §4 — and
+listener, nothing left running. If you are looking for something to `curl`, see §5 — and
 that is the hosted shape, not the local one.
 
 So the demo is a conversation. Ask for what you want:
@@ -67,7 +75,7 @@ Because they are what a reviewer will ask:
   served set is what this milestone ships, and a list written here would go stale the moment
   it changes.
 - **Give it something impossible** — a spec that is not a spec, a transaction hash that never
-  existed. The refusals are the interesting half, and §3 says what shape they take.
+  existed. The refusals are the interesting half, and §4 says what shape they take.
 
 ## 2. What each tool needs
 
@@ -79,13 +87,68 @@ Only two are pure. Knowing which is which saves a confusing failure.
 | `import_recording` | nothing, but anything arriving this way is labelled `self_supplied`: a `trust` field in caller JSON is a claim, not a receipt |
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
 | `record_simulation` | the network, but no signature and no custody: it asks what an *unsigned* envelope would require. This is the path the demo script uses |
-| `synthesize_policy` | the signed registry snapshot and its root keys. `docs/examples/registry.signed.json` and `docs/examples/registry-roots.json` are the committed pair, and the same bytes the demo feeds it |
+| `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap. Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |
 
 To see them in sequence without an agent, run `bash scripts/demo-tranche1.sh`: it drives the
 same operations through the CLI and keeps every input and output as a file.
 
-## 3. Two answers that look like bugs
+## 3. Synthesizing a policy, in one request
+
+The tool that turns a recording into a policy is the one worth exercising, so here it is end to
+end. It needs two things: a recording, and what you decided about the grant.
+
+```bash
+RUN="$(ls -1dt demo-runs/*/ | head -1)"      # any completed `demo-tranche1.sh` run
+python3 - "$RUN" <<'EOF' > /tmp/mcp-synthesize.jsonl
+import json, sys
+run = sys.argv[1].rstrip("/")
+load = lambda p: json.load(open(p))
+line = lambda o: print(json.dumps(o))
+line({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+    "protocolVersion": "2025-11-25", "capabilities": {},
+    "clientInfo": {"name": "manual", "version": "0"}}})
+line({"jsonrpc": "2.0", "method": "notifications/initialized"})
+line({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+    "name": "synthesize_policy", "arguments": {
+        # `03-recording.json` is the envelope the CLI writes; the tool takes the bundle inside
+        # it, which is also exactly what `record_transaction` hands back over MCP.
+        "bundles": [load(f"{run}/03-recording.json")["bundle"]],
+        "decisions": load(f"{run}/04-decisions.json"),
+        "spending_limit_capability": "pinned"}}})
+EOF
+
+./scripts/mcp-server-dev.sh < /tmp/mcp-synthesize.jsonl 2>/dev/null | tail -1 \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["result"]["structuredContent"]["spec_hash"])'
+```
+
+That prints the spec's canonical hash, and it is the same hash the CLI produces from the same
+inputs — `jq -r .spec_hash "$RUN/04-synthesis.json"` to check. Two surfaces onto one
+implementation is the claim; equal hashes are what makes it checkable.
+
+`bash scripts/demo/mcp-synthesize.sh` is that whole comparison in one command: the same request,
+against the most recent run or one named as its argument, and a non-zero exit if the two hashes
+differ. The request above is worth reading once for the shape; the script is what to run.
+
+Three of those arguments are worth a word each:
+
+- **`bundles`** is a recording, not a path. Over MCP you rarely paste one: `record_transaction`
+  and `record_simulation` return exactly this shape, so an agent that just recorded something
+  already holds it.
+- **`decisions`** stays required. The signer set, the lifetime and the call cap are what the
+  grant *is*; a default would mean the toolkit decided how much authority to hand out.
+- **`spending_limit_capability: "pinned"`** opts in to composing OpenZeppelin's reviewed
+  spending-limit policy without transcribing its hash. It is an opt-in rather than a default:
+  composing a reviewed third-party contract into a grant is a decision too. Omit it and a
+  `decisions` file that asks for a spending limit gets `E_UNREGISTERED_POLICY` rather than a
+  policy quietly composed for you.
+
+You can also pass `selected_authorizer` and `account` explicitly, and the CLI always does. The
+derivation only answers when the recording leaves nothing to choose: two authorizing accounts is
+a decision about whose authority is being constrained, and that comes back as an error naming
+both rather than a pick.
+
+## 4. Two answers that look like bugs
 
 Worth knowing before showing this to anyone, because both invite the wrong conclusion.
 
@@ -113,7 +176,7 @@ definite where it can be: a recipient outside the allowed tuple gives
 fix its arguments and retry, which it cannot do with a transport-level failure. The `code` is
 stable; the prose after it is for humans and may change.
 
-## 4. If you want a listener instead
+## 5. If you want a listener instead
 
 `--http <addr>` serves the same handler at `/v1/mcp`. It will not start bare:
 
@@ -170,7 +233,7 @@ EOF
 ./target/release/ozpb-mcp-server < /tmp/mcp-session.jsonl 2>/dev/null
 ```
 
-That returns the `indeterminate` verdict from §3. Swap `invocation-permit.json` for
+That returns the `indeterminate` verdict from §4. Swap `invocation-permit.json` for
 `invocation-deny.json` to get the definite one, and send a spec that is not one to see the
 error shape — handshake included, since a bare `tools/call` is refused:
 
