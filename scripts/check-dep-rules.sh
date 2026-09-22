@@ -46,7 +46,7 @@ check_forbidden ozpb-evaluator ozpb-codegen
 check_forbidden ozpb-harness ozpb-codegen
 
 # Functional cores: no async runtimes, no transports, no RPC clients.
-CORES="ozpb-domain ozpb-recorder-core ozpb-policy-spec ozpb-synthesizer ozpb-evaluator ozpb-codegen ozpb-harness"
+CORES="ozpb-domain ozpb-recorder-core ozpb-policy-spec ozpb-synthesizer ozpb-evaluator ozpb-codegen ozpb-harness ozpb-call-surface-core"
 for c in $CORES; do
     check_forbidden "$c" tokio rmcp reqwest ureq stellar-rpc-client hyper axum
 done
