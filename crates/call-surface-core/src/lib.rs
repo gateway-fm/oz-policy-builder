@@ -106,6 +106,20 @@ pub struct BoundPolicy {
     pub observed_wasm_hash: String,
 }
 
+/// Recognition evidence already validated by the trusted adapter. The pure core checks
+/// the observed code hash; it does not validate registry signatures or reproduce builds.
+#[derive(Clone, Debug)]
+pub struct VerifiedPolicy {
+    pub wasm_hash: String,
+    pub path: PolicyRecognitionPath,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolicyRecognitionPath {
+    ReviewedRegistry,
+    VerifiedGeneratedManifest,
+}
+
 // ---------------------------------------------------------------------------------------
 // Check inputs
 // ---------------------------------------------------------------------------------------
@@ -125,16 +139,17 @@ pub struct CheckInput<'a> {
     /// their code hashes in the same ledger snapshot as the account state, rather than
     /// copying a previously resolved binding's hash after a possible upgrade.
     pub bound_policies: Vec<BoundPolicy>,
-    /// Policies the registry recognizes, as address → the wasm hash that was reviewed at
-    /// that address. A rule referencing a policy on a protected surface fails closed unless
-    /// the address is here **and** the hash observed in the same snapshot equals this one.
+    /// Policies validated by either a reviewed registry entry or a reproduced generated
+    /// artifact manifest, as address → validated code identity and recognition path. The
+    /// trusted adapter must verify that evidence before passing it here. A policy fails
+    /// closed unless its same-ledger observed hash equals the validated hash.
     ///
     /// Address alone is not recognition. A policy contract is upgradeable, so an address
     /// that was reviewed once can be serving an implementation nobody reviewed, and this
     /// check exists to decide whether installing into the account is safe. `StoredPolicy`
     /// already carries `observed_wasm_hash` from the same ledger snapshot, so the evidence
     /// is present; ignoring it is what made an upgraded policy pass.
-    pub recognized_policies: BTreeMap<String, String>,
+    pub recognized_policies: BTreeMap<String, VerifiedPolicy>,
     /// The single designated administrative rule id.
     pub admin_rule_id: u32,
     pub current_ledger: u32,
@@ -203,7 +218,7 @@ pub enum CheckError {
     EnumerationUnsupported(Enumeration),
     #[error(
         "E_INCOMPLETE_ACCOUNT_STATE: {cause:?}: {detail} — a complete verdict is \
-         unavailable; restore the missing state and re-run the check"
+         unavailable; resolve the missing or undecodable state and re-run the check"
     )]
     IncompleteState {
         cause: IncompleteCause,
@@ -228,9 +243,9 @@ pub enum CheckError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IncompleteCause {
-    /// Fewer decoded live rules than the active count — some rule entry is archived.
-    /// A surplus is `SnapshotMismatch`, not this: it cannot mean a hidden rule.
-    Archived,
+    /// Fewer decoded live rules than the active count; the pure core cannot distinguish
+    /// an archived entry from a missing or undecodable one.
+    UnresolvedRule,
     /// A referenced signer/policy registry entry is absent.
     Missing,
     /// A snapshot inconsistency (ids beyond next_id, duplicate ids, …).
@@ -241,8 +256,8 @@ pub enum IncompleteCause {
 // The check
 // ---------------------------------------------------------------------------------------
 
-/// Whether the registry recognizes this policy *as observed*: the address was reviewed and
-/// the code answering at it in this snapshot is the code that was reviewed.
+/// Whether a trusted recognition path validated this policy *as observed*: the code
+/// answering at the address in this snapshot matches the reviewed or reproduced code.
 ///
 /// Both halves are required and the second is the one with teeth. A `false` here always
 /// fails the caller closed, so a missing entry and a hash that moved are reported the same
@@ -251,7 +266,7 @@ fn policy_recognized(input: &CheckInput<'_>, policy: &StoredPolicy) -> bool {
     input
         .recognized_policies
         .get(&policy.address)
-        .is_some_and(|approved| approved == &policy.observed_wasm_hash)
+        .is_some_and(|verified| verified.wasm_hash == policy.observed_wasm_hash)
 }
 
 pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
@@ -279,7 +294,10 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
     // A bound instance need not yet be in account state, but its executable code is
     // already observable. Compare that same-ledger observation with the reviewed hash.
     if let Some(unrecognized) = input.bound_policies.iter().find(|policy| {
-        input.recognized_policies.get(&policy.address) != Some(&policy.observed_wasm_hash)
+        input
+            .recognized_policies
+            .get(&policy.address)
+            .is_none_or(|verified| verified.wasm_hash != policy.observed_wasm_hash)
     }) {
         return Err(CheckError::UnrecognizedBoundPolicy(
             unrecognized.address.clone(),
@@ -305,15 +323,13 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
         }
         live.push(rule);
     }
-    // Both directions fail closed, but they are different faults and the operator fixes
-    // them differently, so they do not share a cause. A deficit means a rule the count knows
-    // about did not decode: it is archived, it can be restored and used in the same
-    // invocation, and a live-only scan is therefore not a completeness proof (D6). A surplus
-    // cannot mean that — there is no such thing as more-than-extant — so it says the snapshot
-    // disagrees with itself and has to be re-read, not that something is hiding in it.
+    // Both directions fail closed. A deficit means some rule did not decode; this core
+    // cannot tell whether it was archived, missing, or undecodable. An archived weak rule
+    // could be restored and used in the same invocation, so the scan cannot proceed (D6).
+    // A surplus says the supplied snapshot disagrees with itself and must be re-read.
     if (live.len() as u32) < st.active_count {
         return Err(CheckError::IncompleteState {
-            cause: IncompleteCause::Archived,
+            cause: IncompleteCause::UnresolvedRule,
             detail: format!(
                 "decoded {} live rules but active_count is {}",
                 live.len(),
@@ -537,8 +553,8 @@ fn weak_finding(surface: Surface, rule_id: u32) -> Finding {
              requirements"
         ),
         remediation: format!(
-            "strengthen rule {rule_id} to the admin rule's requirements, or remove it, \
-             then re-run the check (there is no verified-mode override)"
+            "remove rule {rule_id} or narrow its context away from both protected \
+             surfaces, then re-run the check (there is no verified-mode override)"
         ),
     }
 }
@@ -670,7 +686,10 @@ mod tests {
             // account is recognized. A test that moves it proves the comparison bites.
             recognized_policies: BTreeMap::from([(
                 POLICY.to_string(),
-                "policy-hash-0".to_string(),
+                VerifiedPolicy {
+                    wasm_hash: "policy-hash-0".to_string(),
+                    path: PolicyRecognitionPath::ReviewedRegistry,
+                },
             )]),
             admin_rule_id: 0,
             current_ledger: 4_000_000,
@@ -684,6 +703,18 @@ mod tests {
         let v = check(&base_input(&st)).unwrap();
         assert_eq!(v.result, CheckResult::Safe);
         assert_eq!(v.observed_ledger, 4_000_000);
+    }
+
+    #[test]
+    fn generated_artifact_recognition_is_a_supported_path() {
+        let st = healthy_state();
+        let mut input = base_input(&st);
+        input
+            .recognized_policies
+            .get_mut(POLICY)
+            .expect("fixture policy")
+            .path = PolicyRecognitionPath::VerifiedGeneratedManifest;
+        assert_eq!(check(&input).unwrap().result, CheckResult::Safe);
     }
 
     #[test]
@@ -765,6 +796,12 @@ mod tests {
                     .iter()
                     .any(|f| f.surface == Surface::AccountManagement));
                 assert!(findings.iter().all(|f| f.offending_rule_id == 2));
+                assert!(findings
+                    .iter()
+                    .all(|f| f.remediation.contains("remove rule 2")));
+                assert!(findings
+                    .iter()
+                    .all(|f| !f.remediation.contains("strengthen")));
             }
             other => panic!("expected unsafe, got {other:?}"),
         }
@@ -851,8 +888,9 @@ mod tests {
     }
 
     #[test]
-    fn count_deficit_fails_closed_archived() {
-        // active_count says 3 but only 2 rules decoded → an archived rule is invisible.
+    fn count_deficit_fails_closed_without_guessing_why() {
+        // active_count says 3 but only 2 rules decoded. The missing rule might be
+        // archived, absent, or undecodable; the pure core cannot tell which.
         let mut st = healthy_state();
         st.next_id = 3;
         st.active_count = 3;
@@ -860,7 +898,7 @@ mod tests {
         assert!(matches!(
             err,
             CheckError::IncompleteState {
-                cause: IncompleteCause::Archived,
+                cause: IncompleteCause::UnresolvedRule,
                 ..
             }
         ));
@@ -901,7 +939,7 @@ mod tests {
     #[test]
     fn count_surplus_fails_closed_as_snapshot_mismatch() {
         // More decoded live rules than the count admits. Nothing is hidden, so calling this
-        // `Archived` would send the operator looking for a restored rule that is not there;
+        // `UnresolvedRule` would send the operator looking for a rule that is not there;
         // the snapshot simply disagrees with itself and has to be re-read.
         let mut st = healthy_state();
         st.active_count = 1;
