@@ -6,6 +6,7 @@ use ozpb_api_types::{
     GenerateCodeInput, ReferenceSuiteInput, ReferenceSuiteOutput, ToolError, VerifyInput,
     VerifyOutput,
 };
+use ozpb_harness::EvidenceReport;
 use ozpb_policy_spec::PolicySpec;
 use std::collections::BTreeMap;
 
@@ -41,6 +42,39 @@ pub fn reference_suite(input: &ReferenceSuiteInput) -> Result<ReferenceSuiteOutp
             .collect(),
         report: to_value(&report)?,
     })
+}
+
+/// Verification builds one rule's artifact, so its behavioral evidence must describe that
+/// same rule even when the supplied spec contains other rules.
+struct RuleBehavior {
+    total: usize,
+    disagreements: usize,
+    missing_classes: Vec<String>,
+    unmodeled_reviewed_policies: Vec<String>,
+}
+
+fn rule_behavior(report: &EvidenceReport, rule_index: usize) -> RuleBehavior {
+    let outcomes: Vec<_> = report
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.rule_index == rule_index)
+        .collect();
+    RuleBehavior {
+        total: outcomes.len(),
+        disagreements: outcomes.iter().filter(|outcome| !outcome.agree).count(),
+        missing_classes: report
+            .missing_classes()
+            .into_iter()
+            .filter(|(rule, _)| *rule == rule_index)
+            .map(|(rule, class)| format!("rule[{rule}]: {class:?}"))
+            .collect(),
+        unmodeled_reviewed_policies: report
+            .unmodeled_policies
+            .iter()
+            .filter(|policy| policy.rule_index == rule_index)
+            .map(|policy| format!("rule[{}]: {}", policy.rule_index, policy.kind))
+            .collect(),
+    }
 }
 
 /// Reproduce generated files and Wasm, and report each verification dimension separately.
@@ -86,12 +120,9 @@ pub fn verify_with_build_config(
         .is_some_and(|claimed| claimed == &generated.build_manifest);
 
     let report = ozpb_harness::run_layer1(&validated);
-    let missing_classes: Vec<String> = report
-        .missing_classes()
-        .iter()
-        .map(|(rule, class)| format!("rule[{rule}]: {class:?}"))
-        .collect();
-    let behavior_ok = report.all_agree() && missing_classes.is_empty();
+    let behavior = rule_behavior(&report, input.rule_index);
+    let models_all_policies = behavior.unmodeled_reviewed_policies.is_empty();
+    let behavior_ok = behavior.disagreements == 0 && behavior.missing_classes.is_empty();
 
     Ok(VerifyOutput {
         spec_conformance: "conforms (validated PolicySpec v1)".to_string(),
@@ -100,21 +131,24 @@ pub fn verify_with_build_config(
         } else {
             "MISMATCH: generated non-lock files differ from regeneration".to_string()
         },
-        offline_behavioral_conformance: if !report.all_agree() {
-            format!("FAIL: {} permit/deny disagreements", report.disagreements)
-        } else if !missing_classes.is_empty() {
+        offline_behavioral_conformance: if behavior.disagreements != 0 {
+            format!("FAIL: {} permit/deny disagreements", behavior.disagreements)
+        } else if !behavior.missing_classes.is_empty() {
             format!(
                 "FAIL: missing boundary classes: {}",
-                missing_classes.join(", ")
+                behavior.missing_classes.join(", ")
             )
-        } else if report.models_all_policies() {
-            format!("pass: {} constraint-derived cases all agree", report.total)
+        } else if models_all_policies {
+            format!(
+                "pass: {} constraint-derived cases all agree",
+                behavior.total
+            )
         } else {
             format!(
                 "pass (scope+count only): {} cases agree; {} composed reviewed policies are \
                  enforced on-chain and not modeled here",
-                report.total,
-                report.unmodeled_policies.len()
+                behavior.total,
+                behavior.unmodeled_reviewed_policies.len()
             )
         },
         wasm_reproduction: match (
@@ -137,12 +171,8 @@ pub fn verify_with_build_config(
         },
         current_network_preflight: "not_checked_here: state-dependent (wallet/live)".to_string(),
         normalized_input_hash: generated.normalized_input_hash,
-        models_all_policies: report.models_all_policies(),
-        unmodeled_reviewed_policies: report
-            .unmodeled_policies
-            .iter()
-            .map(|policy| format!("rule[{}]: {}", policy.rule_index, policy.kind))
-            .collect(),
+        models_all_policies,
+        unmodeled_reviewed_policies: behavior.unmodeled_reviewed_policies,
         matches: source_matches && behavior_ok && wasm_matches && manifest_matches,
     })
 }
@@ -151,6 +181,7 @@ pub fn verify_with_build_config(
 mod tests {
     use super::*;
     use crate::test_support::{build_config, wire_spec};
+    use ozpb_policy_spec::PolicyRef;
 
     #[test]
     fn reference_suite_reports_layer_one_evidence_and_coverage() {
@@ -267,5 +298,72 @@ mod tests {
         let output = verify_with_build_config(&missing_manifest, &build_config).unwrap();
         assert!(!output.matches);
         assert!(output.wasm_reproduction.starts_with("not_verified"));
+    }
+
+    #[test]
+    fn verification_uses_only_the_artifacts_rule_for_behavior_and_policy_scope() {
+        let mut spec = wire_spec().spec().clone();
+        let reviewed_rule = spec.rules[0].clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        spec.rules.push(reviewed_rule);
+        let validated = spec.validate().unwrap();
+        let spec = serde_json::to_value(validated.spec()).unwrap();
+
+        let report = ozpb_harness::run_layer1(&validated);
+        assert!(!report.unmodeled_policies.is_empty());
+        let selected = rule_behavior(&report, 0);
+        assert!(selected.unmodeled_reviewed_policies.is_empty());
+        assert!(selected.total < report.total);
+
+        // A regression in another rule must not change this rule's artifact verdict.
+        let mut other_rule_failed = report;
+        let unrelated = other_rule_failed
+            .outcomes
+            .iter_mut()
+            .find(|outcome| outcome.rule_index == 1)
+            .unwrap();
+        unrelated.agree = false;
+        other_rule_failed.disagreements += 1;
+        other_rule_failed.coverage_by_rule.remove(&1);
+        let selected = rule_behavior(&other_rule_failed, 0);
+        assert_eq!(selected.disagreements, 0);
+        assert!(selected.missing_classes.is_empty());
+        assert!(selected.unmodeled_reviewed_policies.is_empty());
+        let unrelated = rule_behavior(&other_rule_failed, 1);
+        assert_eq!(unrelated.disagreements, 1);
+        assert!(!unrelated.missing_classes.is_empty());
+
+        let build_config = build_config();
+        let generated = generate_code_with_build_config(
+            &GenerateCodeInput {
+                spec: spec.clone(),
+                rule_index: 0,
+            },
+            &build_config,
+        )
+        .unwrap();
+        let claimed_generated_files = generated
+            .files
+            .iter()
+            .filter(|(path, _)| path.as_str() != "Cargo.lock")
+            .map(|(path, contents)| (path.clone(), contents.clone()))
+            .collect();
+        let output = verify_with_build_config(
+            &VerifyInput {
+                spec,
+                rule_index: 0,
+                claimed_generated_files,
+                claimed_wasm_base64: Some(generated.wasm_base64),
+                claimed_build_manifest: Some(generated.build_manifest),
+            },
+            &build_config,
+        )
+        .unwrap();
+        assert!(output.matches);
+        assert!(output.models_all_policies);
+        assert!(output.unmodeled_reviewed_policies.is_empty());
+        assert!(output.offline_behavioral_conformance.starts_with("pass:"));
     }
 }
