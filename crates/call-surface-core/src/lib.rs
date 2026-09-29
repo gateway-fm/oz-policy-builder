@@ -24,6 +24,9 @@
 //! is available here. The behaviour is the safe one; the sentence was not, because a reader
 //! deciding whether to rely on this check would have expected a second path that never runs.
 //! `alternate_admin_without_registered_implication_is_unsafe` pins it.
+//! An external-verifier signer on the designated admin rule is likewise unsupported until
+//! same-ledger verifier code and reviewed capability evidence are supplied. It cannot be
+//! treated as a strong admin merely because its signer entry exists.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
@@ -75,8 +78,16 @@ pub enum StoredContextType {
 #[serde(deny_unknown_fields)]
 pub struct StoredSigner {
     pub id: u32,
-    /// Canonical signer key (delegated address or external verifier+key encoding).
-    pub key: String,
+    /// The on-chain signer variant. An opaque string cannot distinguish a delegated
+    /// signer from an external verifier whose code must be recognized separately.
+    pub key: StoredSignerKey,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StoredSignerKey {
+    Delegated { address: String },
+    External { verifier: String, key_hex: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,6 +96,13 @@ pub struct StoredPolicy {
     pub id: u32,
     pub address: String,
     /// Wasm hash observed in the same ledger snapshot as the account state.
+    pub observed_wasm_hash: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct BoundPolicy {
+    pub address: String,
+    /// Code observed at this address in the same ledger snapshot as `account_state`.
     pub observed_wasm_hash: String,
 }
 
@@ -103,8 +121,10 @@ pub struct CheckInput<'a> {
     pub binding_set_hash: Hash32,
     /// Whether the account implementation is recognized by the registry.
     pub account_recognized: bool,
-    /// The exact policy contract addresses being installed (from the PolicyBindingSet).
-    pub bound_policy_addresses: Vec<String>,
+    /// The exact policy instances being installed. The acquisition adapter must re-read
+    /// their code hashes in the same ledger snapshot as the account state, rather than
+    /// copying a previously resolved binding's hash after a possible upgrade.
+    pub bound_policies: Vec<BoundPolicy>,
     /// Policies the registry recognizes, as address → the wasm hash that was reviewed at
     /// that address. A rule referencing a policy on a protected surface fails closed unless
     /// the address is here **and** the hash observed in the same snapshot equals this one.
@@ -195,7 +215,9 @@ pub enum CheckError {
     AdminRuleNotFound(u32),
     #[error("E_ADMIN_RULE_UNSAFE: designated admin rule {0} is not a strong recognized rule: {1}")]
     AdminRuleUnsafe(u32, String),
-    #[error("E_UNREGISTERED_POLICY: bound policy address {0} is not recognized")]
+    #[error(
+        "E_UNREGISTERED_POLICY: bound policy address {0} or its observed code is not recognized"
+    )]
     UnrecognizedBoundPolicy(String),
     #[error("E_POLICY_BINDING_INVALID: {0}")]
     InvalidBindingSet(String),
@@ -243,27 +265,25 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             input.account_code_hash.clone(),
         ));
     }
-    if input.bound_policy_addresses.is_empty() {
+    if input.bound_policies.is_empty() {
         return Err(CheckError::InvalidBindingSet(
             "at least one exact bound policy address is required".to_string(),
         ));
     }
-    let unique_bound: BTreeSet<&String> = input.bound_policy_addresses.iter().collect();
-    if unique_bound.len() != input.bound_policy_addresses.len() {
+    let unique_bound: BTreeSet<&String> = input.bound_policies.iter().map(|p| &p.address).collect();
+    if unique_bound.len() != input.bound_policies.len() {
         return Err(CheckError::InvalidBindingSet(
             "bound policy addresses must be unique".to_string(),
         ));
     }
-    // Address-only here, deliberately: these are the policies being installed, and this
-    // input carries no observed hash for them — they need not be in `st.policies` yet. The
-    // hash comparison happens for policies already attached to the account, below, which is
-    // where an upgraded implementation would actually be reachable.
-    if let Some(unrecognized) = input
-        .bound_policy_addresses
-        .iter()
-        .find(|address| !input.recognized_policies.contains_key(*address))
-    {
-        return Err(CheckError::UnrecognizedBoundPolicy(unrecognized.clone()));
+    // A bound instance need not yet be in account state, but its executable code is
+    // already observable. Compare that same-ledger observation with the reviewed hash.
+    if let Some(unrecognized) = input.bound_policies.iter().find(|policy| {
+        input.recognized_policies.get(&policy.address) != Some(&policy.observed_wasm_hash)
+    }) {
+        return Err(CheckError::UnrecognizedBoundPolicy(
+            unrecognized.address.clone(),
+        ));
     }
 
     let st = input.account_state;
@@ -369,6 +389,34 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             "a verified administrative rule must require at least one signer".to_string(),
         ));
     }
+    if is_expired(admin, input.current_ledger) {
+        return Err(CheckError::AdminRuleUnsafe(
+            admin.id,
+            "the designated administrative rule has expired".to_string(),
+        ));
+    }
+    let authorizes_management = match &admin.context_type {
+        StoredContextType::Default => true,
+        StoredContextType::CallContract { address } => address == &input.account_address,
+        StoredContextType::CreateContract { .. } => false,
+    };
+    if !authorizes_management {
+        return Err(CheckError::AdminRuleUnsafe(
+            admin.id,
+            "the designated administrative rule cannot authorize account management".to_string(),
+        ));
+    }
+    if admin.signer_ids.iter().any(|id| {
+        st.signers
+            .get(id)
+            .is_some_and(|signer| matches!(&signer.key, StoredSignerKey::External { .. }))
+    }) {
+        return Err(CheckError::AdminRuleUnsafe(
+            admin.id,
+            "an external-verifier signer needs a recognized verifier implementation; this core has no verifier evidence"
+                .to_string(),
+        ));
+    }
     if let Some(unrecognized) = admin.policy_ids.iter().find_map(|policy_id| {
         st.policies.get(policy_id).and_then(|policy| {
             (!policy_recognized(input, policy)).then_some(policy.address.clone())
@@ -385,7 +433,7 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
 
     // Protected addresses: every bound policy contract (direct surface) and the account
     // itself (management surface).
-    let policy_set: BTreeSet<&String> = input.bound_policy_addresses.iter().collect();
+    let policy_set: BTreeSet<&String> = input.bound_policies.iter().map(|p| &p.address).collect();
 
     for rule in &live {
         if rule.id == input.admin_rule_id {
@@ -452,7 +500,11 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
         account_address: input.account_address.clone(),
         account_code_hash: input.account_code_hash.clone(),
         binding_set_hash: input.binding_set_hash,
-        bound_policy_addresses: input.bound_policy_addresses.clone(),
+        bound_policy_addresses: input
+            .bound_policies
+            .iter()
+            .map(|p| p.address.clone())
+            .collect(),
         ordered_state_digest,
         result,
     })
@@ -550,7 +602,9 @@ mod tests {
     fn signer(id: u32) -> StoredSigner {
         StoredSigner {
             id,
-            key: format!("delegated:G{id}"),
+            key: StoredSignerKey::Delegated {
+                address: format!("G{id}"),
+            },
         }
     }
     fn policy(id: u32, addr: &str) -> StoredPolicy {
@@ -608,7 +662,10 @@ mod tests {
             )
             .expect("the fixture binding-set hash must encode"),
             account_recognized: true,
-            bound_policy_addresses: vec![POLICY.to_string()],
+            bound_policies: vec![BoundPolicy {
+                address: POLICY.to_string(),
+                observed_wasm_hash: "policy-hash-0".to_string(),
+            }],
             // The hash the fixture's stored policy actually reports, so the healthy
             // account is recognized. A test that moves it proves the comparison bites.
             recognized_policies: BTreeMap::from([(
@@ -627,6 +684,60 @@ mod tests {
         let v = check(&base_input(&st)).unwrap();
         assert_eq!(v.result, CheckResult::Safe);
         assert_eq!(v.observed_ledger, 4_000_000);
+    }
+
+    #[test]
+    fn upgraded_bound_policy_fails_even_when_its_address_is_recognized() {
+        let st = healthy_state();
+        let mut input = base_input(&st);
+        input.bound_policies[0].observed_wasm_hash = "policy-hash-upgraded".to_string();
+        assert!(matches!(
+            check(&input).unwrap_err(),
+            CheckError::UnrecognizedBoundPolicy(address) if address == POLICY
+        ));
+    }
+
+    #[test]
+    fn external_verifier_cannot_be_assumed_to_be_a_strong_admin_signer() {
+        let mut st = healthy_state();
+        st.signers.get_mut(&0).expect("admin signer").key = StoredSignerKey::External {
+            verifier: "CVERIFIER".to_string(),
+            key_hex: "abcd".to_string(),
+        };
+        let err = check(&base_input(&st)).unwrap_err();
+        assert!(matches!(
+            err,
+            CheckError::AdminRuleUnsafe(0, reason) if reason.contains("external-verifier")
+        ));
+    }
+
+    #[test]
+    fn expired_admin_rule_cannot_authorize_installation() {
+        let mut st = healthy_state();
+        st.rules.get_mut(&0).expect("admin rule").valid_until = Some(1_000);
+        let err = check(&base_input(&st)).unwrap_err();
+        assert!(matches!(
+            err,
+            CheckError::AdminRuleUnsafe(0, reason) if reason.contains("expired")
+        ));
+    }
+
+    #[test]
+    fn admin_rule_scoped_elsewhere_cannot_authorize_account_management() {
+        let mut st = healthy_state();
+        st.rules.get_mut(&0).expect("admin rule").context_type = StoredContextType::CallContract {
+            address: TOKEN.to_string(),
+        };
+        let err = check(&base_input(&st)).unwrap_err();
+        assert!(matches!(
+            err,
+            CheckError::AdminRuleUnsafe(0, reason) if reason.contains("account management")
+        ));
+
+        st.rules.get_mut(&0).expect("admin rule").context_type = StoredContextType::CallContract {
+            address: ACCOUNT.to_string(),
+        };
+        assert_eq!(check(&base_input(&st)).unwrap().result, CheckResult::Safe);
     }
 
     #[test]
