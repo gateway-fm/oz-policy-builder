@@ -24,6 +24,9 @@ use ozpb_registry::{Registry, RegistryCheckpoint, RegistryError, RootPolicy, Sig
 use ozpb_synthesizer::{synthesize, SynthesisInput, UserDecisions};
 use std::collections::BTreeMap;
 
+mod tranche2;
+pub use tranche2::reference_suite;
+
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
 /// contract carries no build settings (see [`ENV_BUILD_TIMEOUT_SECS`] and friends).

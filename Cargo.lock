@@ -1353,6 +1353,7 @@ dependencies = [
  "ozpb-codegen",
  "ozpb-domain",
  "ozpb-evaluator",
+ "ozpb-harness",
  "ozpb-policy-spec",
  "ozpb-recorder-core",
  "ozpb-registry",
