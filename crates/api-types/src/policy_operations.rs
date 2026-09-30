@@ -170,7 +170,14 @@ pub struct PolicyCheckEvidence {
     pub restoration: PolicyStateRestoration,
     /// State may change immediately after this observation. A new live check is needed
     /// immediately before a transaction is signed; this is not a validity interval.
-    pub recheck_before_signing: bool,
+    pub recheck_before_signing: RecheckBeforeSigning,
+}
+
+/// A prediction always requires a fresh live check immediately before signing.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecheckBeforeSigning {
+    Required,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -280,7 +287,7 @@ pub struct PrepareInstallIntentInput {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareInstallIntentOutput {
-    pub operation: String,
+    pub operation: InstallOperation,
     /// The smart-account contract on which `add_context_rule` is invoked.
     pub account_contract: String,
     /// The contract named by the new rule's `CallContract` context.
@@ -297,6 +304,13 @@ pub struct PrepareInstallIntentOutput {
     /// and reject missing or duplicate indexes and addresses before returning an intent.
     pub policies: Vec<InstallPolicy>,
     pub next_steps: Vec<String>,
+}
+
+/// The only account operation represented by a prepared install intent.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallOperation {
+    AddContextRule,
 }
 
 /// Signer arguments accepted by the account. An external signer needs both its verifier
@@ -366,6 +380,7 @@ mod tests {
         let _ = schemars::schema_for!(PolicyCheckSigner);
         let _ = schemars::schema_for!(CheckAgainstPolicyOutput);
         let _ = schemars::schema_for!(PolicyCheckEvidence);
+        let _ = schemars::schema_for!(RecheckBeforeSigning);
         let _ = schemars::schema_for!(PolicyStateRead);
         let _ = schemars::schema_for!(PolicyStateObservation);
         let _ = schemars::schema_for!(PolicyStateRestoration);
@@ -376,6 +391,7 @@ mod tests {
         let _ = schemars::schema_for!(CheckPolicyCallSurfaceOutput);
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
         let _ = schemars::schema_for!(PrepareInstallIntentOutput);
+        let _ = schemars::schema_for!(InstallOperation);
         let _ = schemars::schema_for!(InstallSigner);
         let _ = schemars::schema_for!(InstallPolicy);
         let _ = schemars::schema_for!(InstallPolicyParams);
@@ -394,7 +410,7 @@ mod tests {
                 "storage_reads": [],
                 "configuration_reads": [],
                 "restoration": "not_required",
-                "recheck_before_signing": true
+                "recheck_before_signing": "required"
             }
         });
         assert!(
@@ -402,7 +418,15 @@ mod tests {
                 .is_err()
         );
         evidence_without_rule["evidence"]["installed_context_rule_id"] = serde_json::json!(42);
-        assert!(serde_json::from_value::<CheckAgainstPolicyOutput>(evidence_without_rule).is_ok());
+        assert!(
+            serde_json::from_value::<CheckAgainstPolicyOutput>(evidence_without_rule.clone())
+                .is_ok()
+        );
+        for invalid in [serde_json::json!(false), serde_json::json!(true)] {
+            let mut unsafe_evidence = evidence_without_rule.clone();
+            unsafe_evidence["evidence"]["recheck_before_signing"] = invalid;
+            assert!(serde_json::from_value::<CheckAgainstPolicyOutput>(unsafe_evidence).is_err());
+        }
 
         let unavailable = serde_json::json!({
             "prediction": "unsupported",
@@ -496,7 +520,7 @@ mod tests {
     #[test]
     fn install_intent_preserves_typed_operation_arguments() {
         let intent = PrepareInstallIntentOutput {
-            operation: "add_context_rule".into(),
+            operation: InstallOperation::AddContextRule,
             account_contract: "CACCOUNT".into(),
             context_contract: "CCONTEXT".into(),
             rule_name: "limited".into(),
@@ -529,6 +553,7 @@ mod tests {
         };
 
         let wire = serde_json::to_value(&intent).unwrap();
+        assert_eq!(wire["operation"], "add_context_rule");
         assert_eq!(
             wire["delegate_signers"],
             serde_json::json!([
@@ -538,6 +563,9 @@ mod tests {
         );
         let decoded: PrepareInstallIntentOutput = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(decoded.delegate_signers, intent.delegate_signers);
+        let mut wrong_operation = wire.clone();
+        wrong_operation["operation"] = serde_json::json!("remove_context_rule");
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(wrong_operation).is_err());
         assert_eq!(
             wire["policies"],
             serde_json::json!([
