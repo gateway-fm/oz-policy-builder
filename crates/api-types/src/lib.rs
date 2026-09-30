@@ -341,8 +341,8 @@ pub struct ImportRecordingInput {
 pub(crate) mod test_support;
 
 /// Wire types for evaluation, verification, live checks, and install intent.
-pub mod tranche2;
-pub use tranche2::*;
+pub mod policy_operations;
+pub use policy_operations::*;
 
 #[cfg(test)]
 mod tests {

@@ -3,6 +3,16 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Require a nullable wire field to be present: omission must not deserialize as an
+/// explicit `null` value. `#[schemars(required)]` keeps the JSON Schema aligned.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 // --- reference_suite (layer 1 of the future four-layer dry_run) --------------------------
 
 /// Layer-1 reference evaluation only. The full `dry_run` operation also needs contract
@@ -168,9 +178,20 @@ pub struct PolicyCheckEvidence {
 pub struct PolicyStateRead {
     pub contract_address: String,
     pub key_xdr_base64: String,
-    /// `None` records an absent entry; absence can itself decide a prediction.
-    pub value_xdr_base64: Option<String>,
-    pub live_until_ledger: Option<u32>,
+    /// A checked absence or the exact value and TTL observed at the ledger anchor.
+    pub observation: PolicyStateObservation,
+}
+
+/// A missing key is a real observation, not a missing field. A present entry always
+/// carries both the XDR value and its TTL, so incomplete evidence cannot claim either.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyStateObservation {
+    Absent,
+    Present {
+        value_xdr_base64: String,
+        live_until_ledger: u32,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -265,6 +286,9 @@ pub struct PrepareInstallIntentOutput {
     /// The contract named by the new rule's `CallContract` context.
     pub context_contract: String,
     pub rule_name: String,
+    /// Explicit `null` means no expiration; omission must not silently grant one.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required)]
     pub valid_until_ledger: Option<u32>,
     /// The account's typed signer arguments for `add_context_rule`.
     pub delegate_signers: Vec<InstallSigner>,
@@ -343,6 +367,7 @@ mod tests {
         let _ = schemars::schema_for!(CheckAgainstPolicyOutput);
         let _ = schemars::schema_for!(PolicyCheckEvidence);
         let _ = schemars::schema_for!(PolicyStateRead);
+        let _ = schemars::schema_for!(PolicyStateObservation);
         let _ = schemars::schema_for!(PolicyStateRestoration);
         let _ = schemars::schema_for!(PolicyBindingSet);
         let _ = schemars::schema_for!(PolicyBinding);
@@ -563,5 +588,98 @@ mod tests {
         addresses_only.as_object_mut().unwrap().remove("policies");
         addresses_only["policy_addresses"] = serde_json::json!(["CSPENDING"]);
         assert!(serde_json::from_value::<PrepareInstallIntentOutput>(addresses_only).is_err());
+    }
+
+    #[test]
+    fn state_reads_and_no_expiration_require_explicit_evidence() {
+        let absent = serde_json::json!({
+            "contract_address": "CPOLICY",
+            "key_xdr_base64": "key",
+            "observation": "absent"
+        });
+        assert!(serde_json::from_value::<PolicyStateRead>(absent.clone()).is_ok());
+        let mut false_absence = absent.clone();
+        false_absence["observation"] = serde_json::json!({"absent": {"value_xdr_base64": "value"}});
+        assert!(serde_json::from_value::<PolicyStateRead>(false_absence).is_err());
+        let mut missing_observation = absent;
+        missing_observation
+            .as_object_mut()
+            .unwrap()
+            .remove("observation");
+        assert!(serde_json::from_value::<PolicyStateRead>(missing_observation).is_err());
+
+        let present = serde_json::json!({
+            "contract_address": "CPOLICY",
+            "key_xdr_base64": "key",
+            "observation": {
+                "present": {
+                    "value_xdr_base64": "value",
+                    "live_until_ledger": 1234
+                }
+            }
+        });
+        assert!(serde_json::from_value::<PolicyStateRead>(present.clone()).is_ok());
+        for field in ["value_xdr_base64", "live_until_ledger"] {
+            let mut missing = present.clone();
+            missing["observation"]["present"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(serde_json::from_value::<PolicyStateRead>(missing).is_err());
+        }
+        let mut missing_ttl = present;
+        missing_ttl["observation"]["present"]["live_until_ledger"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<PolicyStateRead>(missing_ttl).is_err());
+        let mut extra_evidence = serde_json::json!({
+            "contract_address": "CPOLICY",
+            "key_xdr_base64": "key",
+            "observation": {
+                "present": {
+                    "value_xdr_base64": "value",
+                    "live_until_ledger": 1234,
+                    "source": "caller_supplied"
+                }
+            }
+        });
+        assert!(serde_json::from_value::<PolicyStateRead>(extra_evidence.clone()).is_err());
+        extra_evidence["observation"]["present"]
+            .as_object_mut()
+            .unwrap()
+            .remove("source");
+        assert!(serde_json::from_value::<PolicyStateRead>(extra_evidence).is_ok());
+
+        let intent = serde_json::json!({
+            "operation": "add_context_rule",
+            "account_contract": "CACCOUNT",
+            "context_contract": "CCONTEXT",
+            "rule_name": "limited",
+            "valid_until_ledger": null,
+            "delegate_signers": [],
+            "policies": [],
+            "next_steps": []
+        });
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(intent.clone()).is_ok());
+        let mut missing_expiration = intent;
+        missing_expiration
+            .as_object_mut()
+            .unwrap()
+            .remove("valid_until_ledger");
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(missing_expiration).is_err());
+
+        for (schema, fields) in [
+            (
+                serde_json::to_value(schemars::schema_for!(PolicyStateRead)).unwrap(),
+                &["observation"][..],
+            ),
+            (
+                serde_json::to_value(schemars::schema_for!(PrepareInstallIntentOutput)).unwrap(),
+                &["valid_until_ledger"][..],
+            ),
+        ] {
+            let required = schema["required"].as_array().unwrap();
+            for field in fields {
+                assert!(required.contains(&serde_json::json!(field)));
+            }
+        }
     }
 }
