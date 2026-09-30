@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn every_post_mvp_dto_has_a_schema() {
+    fn every_policy_operations_dto_has_a_schema() {
         let _ = schemars::schema_for!(ReferenceSuiteInput);
         let _ = schemars::schema_for!(ReferenceSuiteOutput);
         let _ = schemars::schema_for!(VerifyInput);
