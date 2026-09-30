@@ -1491,7 +1491,7 @@ registry-validated); codegen for the first template set (signer predicate with s
 check + tuple scope, immutable configuration, state invariants) + `spending_limit`
 composition; reproducible builds; MCP server v0 (`record_transaction`, `record_simulation`,
 `import_recording`, `synthesize_policy`, `evaluate_spec`, `generate_code`) over stdio — the six
-this phase contracts, not the full planned surface. Wire types for later policy operations live
+contracts in this phase, not the full planned surface. Wire types for later policy operations live
 in `crates/api-types/src/policy_operations.rs`; their server implementation is separate work.
 *Verifiable outcome:* a recorded testnet transfer becomes a compilable Rust policy accepted
 by `stellar contract build`, byte-identical across two cold runs, whose generated policy

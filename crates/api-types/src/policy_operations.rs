@@ -127,6 +127,15 @@ pub struct CheckAgainstPolicyInput {
     pub invocation: serde_json::Value,
 }
 
+impl CheckAgainstPolicyInput {
+    /// Hash the complete typed request, including the spec, bindings, signed snapshot,
+    /// account, network, both rule selectors, signer list, and invocation. The trusted
+    /// server records this hash in every permit/deny result after validating the input.
+    pub fn request_hash(&self) -> Result<ozpb_domain::Hash32, ozpb_domain::DomainError> {
+        ozpb_domain::canonical_hash(ozpb_domain::domains::POLICY_CHECK_REQUEST, self)
+    }
+}
+
 /// Signer identities proposed for a policy check. The current verifier implementation
 /// hash is an observation, so an external signer cannot supply it here.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -156,9 +165,23 @@ pub enum CheckAgainstPolicyOutput {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyCheckEvidence {
+    /// Request identities. A consumer must compare these to the original request and
+    /// independently verify the trusted server's response before relying on a prediction.
+    pub account_address: String,
+    pub network_id: String,
+    pub rule_index: usize,
     /// The on-chain rule whose signer set and policy state were read. The wallet must
     /// select this same rule when authorizing the eventual transaction.
     pub installed_context_rule_id: u32,
+    /// Hash of the validated PolicySpec and exact PolicyBindingSet used for this check.
+    pub spec_hash: String,
+    pub binding_set_hash: String,
+    /// Root of the verified registry snapshot used to recognize policy implementations.
+    pub registry_snapshot_root: String,
+    /// Domain-separated canonical hash of the full [`CheckAgainstPolicyInput`], including
+    /// the invocation and ordered candidate-signer identities. The server computes this
+    /// via [`CheckAgainstPolicyInput::request_hash`]; it never accepts a caller claim.
+    pub request_hash: String,
     /// Ledger at which every storage and configuration entry below was read.
     pub observed_ledger: u32,
     pub ledger_hash: String,
@@ -171,6 +194,21 @@ pub struct PolicyCheckEvidence {
     /// State may change immediately after this observation. A new live check is needed
     /// immediately before a transaction is signed; this is not a validity interval.
     pub recheck_before_signing: RecheckBeforeSigning,
+}
+
+impl PolicyCheckEvidence {
+    /// Check that this evidence belongs to the exact request the caller submitted.
+    /// Artifact hashes and live observations still require validation by the trusted server.
+    pub fn matches_request(
+        &self,
+        request: &CheckAgainstPolicyInput,
+    ) -> Result<bool, ozpb_domain::DomainError> {
+        Ok(self.account_address == request.account_address
+            && self.network_id == request.network_id
+            && self.rule_index == request.rule_index
+            && self.installed_context_rule_id == request.installed_context_rule_id
+            && self.request_hash == request.request_hash()?.to_hex())
+    }
 }
 
 /// A prediction always requires a fresh live check immediately before signing.
@@ -405,6 +443,13 @@ mod tests {
         let mut evidence_without_rule = serde_json::json!({
             "prediction": "permit",
             "evidence": {
+                "account_address": "CACCOUNT",
+                "network_id": "network",
+                "rule_index": 0,
+                "spec_hash": "spec-hash",
+                "binding_set_hash": "binding-hash",
+                "registry_snapshot_root": "registry-root",
+                "request_hash": "request-hash",
                 "observed_ledger": 100,
                 "ledger_hash": "ledger-hash",
                 "storage_reads": [],
@@ -426,6 +471,19 @@ mod tests {
             let mut unsafe_evidence = evidence_without_rule.clone();
             unsafe_evidence["evidence"]["recheck_before_signing"] = invalid;
             assert!(serde_json::from_value::<CheckAgainstPolicyOutput>(unsafe_evidence).is_err());
+        }
+        for field in [
+            "account_address",
+            "network_id",
+            "rule_index",
+            "spec_hash",
+            "binding_set_hash",
+            "registry_snapshot_root",
+            "request_hash",
+        ] {
+            let mut detached = evidence_without_rule.clone();
+            detached["evidence"].as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<CheckAgainstPolicyOutput>(detached).is_err());
         }
 
         let unavailable = serde_json::json!({
@@ -465,9 +523,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn policy_check_request_cannot_supply_evaluator_state() {
-        let mut request = serde_json::json!({
+    fn policy_check_request_wire() -> serde_json::Value {
+        serde_json::json!({
             "spec": {},
             "binding_set": {
                 "schema": POLICY_BINDING_SET_SCHEMA,
@@ -483,7 +540,12 @@ mod tests {
             "rpc_source": "configured-testnet",
             "candidate_signers": [],
             "invocation": {}
-        });
+        })
+    }
+
+    #[test]
+    fn policy_check_request_cannot_supply_evaluator_state() {
+        let mut request = policy_check_request_wire();
         assert!(serde_json::from_value::<CheckAgainstPolicyInput>(request.clone()).is_ok());
         let mut without_installed_id = request.clone();
         without_installed_id
@@ -515,6 +577,64 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn policy_check_evidence_binds_the_complete_request() {
+        let request = policy_check_request_wire();
+        let baseline: CheckAgainstPolicyInput = serde_json::from_value(request.clone()).unwrap();
+        let baseline_hash = baseline.request_hash().unwrap();
+        assert_eq!(baseline_hash, baseline.request_hash().unwrap());
+        let evidence: PolicyCheckEvidence = serde_json::from_value(serde_json::json!({
+            "account_address": baseline.account_address,
+            "network_id": baseline.network_id,
+            "rule_index": baseline.rule_index,
+            "installed_context_rule_id": baseline.installed_context_rule_id,
+            "spec_hash": "spec-hash",
+            "binding_set_hash": "binding-hash",
+            "registry_snapshot_root": "registry-root",
+            "request_hash": baseline_hash.to_hex(),
+            "observed_ledger": 100,
+            "ledger_hash": "ledger-hash",
+            "storage_reads": [],
+            "configuration_reads": [],
+            "restoration": "not_required",
+            "recheck_before_signing": "required"
+        }))
+        .unwrap();
+        assert!(evidence.matches_request(&baseline).unwrap());
+        for (field, value) in [
+            ("account_address", serde_json::json!("COTHER")),
+            ("network_id", serde_json::json!("other-network")),
+            ("rpc_source", serde_json::json!("other-configured-source")),
+            ("rule_index", serde_json::json!(1)),
+            ("installed_context_rule_id", serde_json::json!(43)),
+            ("spec", serde_json::json!({"changed": true})),
+            (
+                "binding_set",
+                serde_json::json!({
+                    "schema": POLICY_BINDING_SET_SCHEMA,
+                    "spec_hash": "other-spec",
+                    "network_id": "network",
+                    "bindings": []
+                }),
+            ),
+            (
+                "signed_registry_snapshot",
+                serde_json::json!({"changed": true}),
+            ),
+            (
+                "candidate_signers",
+                serde_json::json!([{"delegated": {"address": "CDELEGATE"}}]),
+            ),
+            ("invocation", serde_json::json!({"changed": true})),
+        ] {
+            let mut changed = request.clone();
+            changed[field] = value;
+            let changed: CheckAgainstPolicyInput = serde_json::from_value(changed).unwrap();
+            assert_ne!(changed.request_hash().unwrap(), baseline_hash, "{field}");
+            assert!(!evidence.matches_request(&changed).unwrap(), "{field}");
+        }
     }
 
     #[test]
