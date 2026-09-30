@@ -298,9 +298,94 @@ pub struct CheckPolicyCallSurfaceInput {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CheckPolicyCallSurfaceOutput {
+    pub spec_hash: String,
     pub binding_set_hash: String,
-    pub verdict: serde_json::Value,
+    /// Root of the verified signed snapshot used to recognize account and policy code.
+    pub registry_snapshot_root: String,
+    pub verdict: PolicyCallSurfaceVerdict,
+}
+
+/// A complete authority-surface observation at one ledger. The trusted reader must
+/// reconcile the enumeration and its transitive closure before constructing this value;
+/// the preparer must compare the identities and require a safe result.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyCallSurfaceVerdict {
+    pub observed_ledger: u32,
+    pub network_id: String,
+    pub account_address: String,
+    pub account_code_hash: String,
+    pub binding_set_hash: String,
+    pub bound_policy_addresses: Vec<String>,
+    /// Canonical hash of the ordered account rules and transitive storage entries.
+    pub ordered_state_digest: String,
+    pub enumeration_evidence: PolicyRuleEnumerationEvidence,
+    pub dominance_evidence: PolicyDominanceEvidence,
+    pub result: PolicyCallSurfaceResult,
+}
+
+/// Only complete enumeration strategies can produce a verdict. The reader must verify
+/// the active count and resolve every rule's transitive signer and policy references.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyRuleEnumerationEvidence {
+    OnchainList {
+        active_count: u32,
+        rule_ids: Vec<u32>,
+        signer_ids: Vec<u32>,
+        policy_ids: Vec<u32>,
+    },
+    BoundedNextId {
+        next_id: u32,
+        active_count: u32,
+        rule_ids: Vec<u32>,
+        signer_ids: Vec<u32>,
+        policy_ids: Vec<u32>,
+    },
+}
+
+/// The designated administrator and the rules and methods considered on both surfaces.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyDominanceEvidence {
+    pub designated_admin_rule_id: u32,
+    pub admin_rule_fingerprint: String,
+    pub assessed_rule_ids: Vec<u32>,
+    pub protected_methods: Vec<PolicyProtectedMethod>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyProtectedMethod {
+    pub surface: PolicyProtectedSurface,
+    pub contract_address: String,
+    pub function: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyProtectedSurface {
+    DirectPolicy,
+    AccountManagement,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyCallSurfaceResult {
+    Safe,
+    Unsafe { findings: Vec<PolicySurfaceFinding> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicySurfaceFinding {
+    pub surface: PolicyProtectedSurface,
+    pub offending_rule_id: u32,
+    pub code: String,
+    pub reason: String,
+    pub remediation: String,
 }
 
 // --- prepare_install_intent ------------------------------------------------------------
@@ -313,8 +398,9 @@ pub struct PrepareInstallIntentInput {
     pub rule_index: usize,
     /// Exact, recognition-verified deployed policy instances.
     pub binding_set: PolicyBindingSet,
-    /// The complete check artifact. Preparation must compare both its outer hash and the
-    /// inner verdict's binding-set hash, account and code identity with this input.
+    /// The complete check artifact. Preparation must compare its outer spec/binding
+    /// hashes and registry root, plus the verdict's inner binding hash, network,
+    /// account/code identity and safe result against this input.
     pub call_surface_check: CheckPolicyCallSurfaceOutput,
 }
 
@@ -427,6 +513,13 @@ mod tests {
         let _ = schemars::schema_for!(PolicyRecognition);
         let _ = schemars::schema_for!(CheckPolicyCallSurfaceInput);
         let _ = schemars::schema_for!(CheckPolicyCallSurfaceOutput);
+        let _ = schemars::schema_for!(PolicyCallSurfaceVerdict);
+        let _ = schemars::schema_for!(PolicyRuleEnumerationEvidence);
+        let _ = schemars::schema_for!(PolicyDominanceEvidence);
+        let _ = schemars::schema_for!(PolicyProtectedMethod);
+        let _ = schemars::schema_for!(PolicyProtectedSurface);
+        let _ = schemars::schema_for!(PolicyCallSurfaceResult);
+        let _ = schemars::schema_for!(PolicySurfaceFinding);
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
         let _ = schemars::schema_for!(PrepareInstallIntentOutput);
         let _ = schemars::schema_for!(InstallOperation);
@@ -521,6 +614,88 @@ mod tests {
             assert!(error.to_string().contains("unknown field"));
             request.as_object_mut().unwrap().remove(field);
         }
+    }
+
+    #[test]
+    fn call_surface_artifact_requires_typed_observation_and_evidence() {
+        let complete = serde_json::json!({
+            "spec_hash": "spec",
+            "binding_set_hash": "binding",
+            "registry_snapshot_root": "registry",
+            "verdict": {
+                "observed_ledger": 100,
+                "network_id": "network",
+                "account_address": "CACCOUNT",
+                "account_code_hash": "code",
+                "binding_set_hash": "binding",
+                "bound_policy_addresses": ["CPOLICY"],
+                "ordered_state_digest": "state-digest",
+                "enumeration_evidence": {
+                    "method": "bounded_next_id",
+                    "next_id": 2,
+                    "active_count": 1,
+                    "rule_ids": [1],
+                    "signer_ids": [0],
+                    "policy_ids": [0]
+                },
+                "dominance_evidence": {
+                    "designated_admin_rule_id": 1,
+                    "admin_rule_fingerprint": "admin-fingerprint",
+                    "assessed_rule_ids": [1],
+                    "protected_methods": [
+                        {"surface": "direct_policy", "contract_address": "CPOLICY", "function": "install"},
+                        {"surface": "account_management", "contract_address": "CACCOUNT", "function": "add_context_rule"}
+                    ]
+                },
+                "result": "safe"
+            }
+        });
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(complete.clone()).is_ok());
+        for field in [
+            "spec_hash",
+            "binding_set_hash",
+            "registry_snapshot_root",
+            "verdict",
+        ] {
+            let mut incomplete = complete.clone();
+            incomplete.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete).is_err());
+        }
+        for field in [
+            "observed_ledger",
+            "network_id",
+            "account_address",
+            "account_code_hash",
+            "binding_set_hash",
+            "ordered_state_digest",
+            "enumeration_evidence",
+            "dominance_evidence",
+            "result",
+        ] {
+            let mut incomplete = complete.clone();
+            incomplete["verdict"].as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete).is_err());
+        }
+        let mut null_verdict = complete.clone();
+        null_verdict["verdict"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(null_verdict).is_err());
+        let mut unsupported_scan = complete.clone();
+        unsupported_scan["verdict"]["enumeration_evidence"]["method"] = serde_json::json!("none");
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(unsupported_scan).is_err());
+        let mut incomplete_scan = complete.clone();
+        incomplete_scan["verdict"]["enumeration_evidence"]
+            .as_object_mut()
+            .unwrap()
+            .remove("active_count");
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete_scan).is_err());
+        let mut incomplete_dominance = complete;
+        incomplete_dominance["verdict"]["dominance_evidence"]
+            .as_object_mut()
+            .unwrap()
+            .remove("protected_methods");
+        assert!(
+            serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete_dominance).is_err()
+        );
     }
 
     fn policy_check_request_wire() -> serde_json::Value {
