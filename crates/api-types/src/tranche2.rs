@@ -254,9 +254,20 @@ pub struct PrepareInstallIntentOutput {
     pub context_contract: String,
     pub rule_name: String,
     pub valid_until_ledger: Option<u32>,
-    pub delegate_signers: Vec<String>,
+    /// The account's typed signer arguments for `add_context_rule`.
+    pub delegate_signers: Vec<InstallSigner>,
     pub policy_addresses: Vec<String>,
     pub next_steps: Vec<String>,
+}
+
+/// Signer arguments accepted by the account. An external signer needs both its verifier
+/// address and key bytes; the verifier's expected code hash remains in the PolicySpec for
+/// the pre-install recognition check and is not an `add_context_rule` argument.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum InstallSigner {
+    Delegated { address: String },
+    External { verifier: String, key_hex: String },
 }
 
 #[cfg(test)]
@@ -300,6 +311,7 @@ mod tests {
         let _ = schemars::schema_for!(CheckPolicyCallSurfaceOutput);
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
         let _ = schemars::schema_for!(PrepareInstallIntentOutput);
+        let _ = schemars::schema_for!(InstallSigner);
     }
 
     #[test]
@@ -387,5 +399,42 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn install_intent_preserves_account_signer_variants() {
+        let intent = PrepareInstallIntentOutput {
+            operation: "add_context_rule".into(),
+            account_contract: "CACCOUNT".into(),
+            context_contract: "CCONTEXT".into(),
+            rule_name: "limited".into(),
+            valid_until_ledger: Some(1234),
+            delegate_signers: vec![
+                InstallSigner::Delegated {
+                    address: "CDELEGATE".into(),
+                },
+                InstallSigner::External {
+                    verifier: "CVERIFIER".into(),
+                    key_hex: "0123".into(),
+                },
+            ],
+            policy_addresses: vec!["CPOLICY".into()],
+            next_steps: vec![],
+        };
+
+        let wire = serde_json::to_value(&intent).unwrap();
+        assert_eq!(
+            wire["delegate_signers"],
+            serde_json::json!([
+                {"delegated": {"address": "CDELEGATE"}},
+                {"external": {"verifier": "CVERIFIER", "key_hex": "0123"}}
+            ])
+        );
+        let decoded: PrepareInstallIntentOutput = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded.delegate_signers, intent.delegate_signers);
+
+        let mut flattened = wire;
+        flattened["delegate_signers"] = serde_json::json!(["CDELEGATE", "external:CVERIFIER:0123"]);
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(flattened).is_err());
     }
 }
