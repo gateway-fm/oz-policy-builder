@@ -96,7 +96,14 @@ pub struct CheckAgainstPolicyInput {
     pub spec: serde_json::Value,
     pub binding_set: PolicyBindingSet,
     pub signed_registry_snapshot: serde_json::Value,
+    /// Index of the policy rule in `spec`; this is not an on-chain rule ID.
     pub rule_index: usize,
+    /// On-chain context-rule ID selected for this check, not a claim about its state.
+    /// The server must read the rule at the observation ledger, verify its context,
+    /// validity and policy addresses against the selected spec rule and binding set,
+    /// then evaluate its live signers under the spec's authorization semantics. A missing
+    /// or mismatched rule cannot produce a permit. Never infer this ID from `rule_index`.
+    pub installed_context_rule_id: u32,
     /// Smart account whose installed rule and policy state will be read.
     pub account_address: String,
     /// Must match the spec and binding set; the server selects a configured endpoint.
@@ -139,12 +146,16 @@ pub enum CheckAgainstPolicyOutput {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyCheckEvidence {
+    /// The on-chain rule whose signer set and policy state were read. The wallet must
+    /// select this same rule when authorizing the eventual transaction.
+    pub installed_context_rule_id: u32,
     /// Ledger at which every storage and configuration entry below was read.
     pub observed_ledger: u32,
     pub ledger_hash: String,
     /// Exact XDR key/value pairs and TTLs used to evaluate installed policy state.
     pub storage_reads: Vec<PolicyStateRead>,
-    /// Exact XDR key/value pairs and TTLs used to resolve policy configuration.
+    /// Exact XDR key/value pairs and TTLs used to resolve the selected account rule,
+    /// its signers and policies, and the policies' own configuration.
     pub configuration_reads: Vec<PolicyStateRead>,
     pub restoration: PolicyStateRestoration,
     /// State may change immediately after this observation. A new live check is needed
@@ -246,6 +257,7 @@ pub struct PrepareInstallIntentInput {
 /// fees, ledger bounds and restoration preambles (an RPC-backed, wallet-owned step), and
 /// the call-surface check must pass first. Signing is always wallet-owned (§6.2).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PrepareInstallIntentOutput {
     pub operation: String,
     /// The smart-account contract on which `add_context_rule` is invoked.
@@ -256,7 +268,10 @@ pub struct PrepareInstallIntentOutput {
     pub valid_until_ledger: Option<u32>,
     /// The account's typed signer arguments for `add_context_rule`.
     pub delegate_signers: Vec<InstallSigner>,
-    pub policy_addresses: Vec<String>,
+    /// One entry per policy in the selected spec rule. The preparer must match each
+    /// index and address to the binding set, match the install parameters to the spec,
+    /// and reject missing or duplicate indexes and addresses before returning an intent.
+    pub policies: Vec<InstallPolicy>,
     pub next_steps: Vec<String>,
 }
 
@@ -268,6 +283,31 @@ pub struct PrepareInstallIntentOutput {
 pub enum InstallSigner {
     Delegated { address: String },
     External { verifier: String, key_hex: String },
+}
+
+/// One address and its value in the account's `Map<Address, Val>` policy argument.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InstallPolicy {
+    /// Position in the selected PolicySpec rule and its PolicyBindingSet.
+    pub policy_index: usize,
+    /// The exact deployed address from that binding.
+    pub address: String,
+    pub install_params: InstallPolicyParams,
+}
+
+/// Account-install arguments for the policy kinds this toolkit composes. The assembler
+/// encodes `Generated` as the generated policy's ignored `u32` value `0`. The spending
+/// limit fields encode `SpendingLimitAccountParams` from the reviewed account library.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InstallPolicyParams {
+    Generated,
+    SpendingLimit {
+        /// Canonical decimal i128 from the spec's reviewed `limit` parameter.
+        spending_limit: String,
+        period_ledgers: u32,
+    },
 }
 
 #[cfg(test)]
@@ -312,12 +352,32 @@ mod tests {
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
         let _ = schemars::schema_for!(PrepareInstallIntentOutput);
         let _ = schemars::schema_for!(InstallSigner);
+        let _ = schemars::schema_for!(InstallPolicy);
+        let _ = schemars::schema_for!(InstallPolicyParams);
     }
 
     #[test]
     fn a_policy_prediction_cannot_claim_permit_without_observation_evidence() {
         let missing = serde_json::json!({"prediction": "permit"});
         assert!(serde_json::from_value::<CheckAgainstPolicyOutput>(missing).is_err());
+
+        let mut evidence_without_rule = serde_json::json!({
+            "prediction": "permit",
+            "evidence": {
+                "observed_ledger": 100,
+                "ledger_hash": "ledger-hash",
+                "storage_reads": [],
+                "configuration_reads": [],
+                "restoration": "not_required",
+                "recheck_before_signing": true
+            }
+        });
+        assert!(
+            serde_json::from_value::<CheckAgainstPolicyOutput>(evidence_without_rule.clone())
+                .is_err()
+        );
+        evidence_without_rule["evidence"]["installed_context_rule_id"] = serde_json::json!(42);
+        assert!(serde_json::from_value::<CheckAgainstPolicyOutput>(evidence_without_rule).is_ok());
 
         let unavailable = serde_json::json!({
             "prediction": "unsupported",
@@ -368,6 +428,7 @@ mod tests {
             },
             "signed_registry_snapshot": {},
             "rule_index": 0,
+            "installed_context_rule_id": 42,
             "account_address": "CACCOUNT",
             "network_id": "network",
             "rpc_source": "configured-testnet",
@@ -375,6 +436,12 @@ mod tests {
             "invocation": {}
         });
         assert!(serde_json::from_value::<CheckAgainstPolicyInput>(request.clone()).is_ok());
+        let mut without_installed_id = request.clone();
+        without_installed_id
+            .as_object_mut()
+            .unwrap()
+            .remove("installed_context_rule_id");
+        assert!(serde_json::from_value::<CheckAgainstPolicyInput>(without_installed_id).is_err());
         for field in [
             "context",
             "smart_account",
@@ -402,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn install_intent_preserves_account_signer_variants() {
+    fn install_intent_preserves_typed_operation_arguments() {
         let intent = PrepareInstallIntentOutput {
             operation: "add_context_rule".into(),
             account_contract: "CACCOUNT".into(),
@@ -418,7 +485,21 @@ mod tests {
                     key_hex: "0123".into(),
                 },
             ],
-            policy_addresses: vec!["CPOLICY".into()],
+            policies: vec![
+                InstallPolicy {
+                    policy_index: 0,
+                    address: "CSPENDING".into(),
+                    install_params: InstallPolicyParams::SpendingLimit {
+                        spending_limit: "500000000".into(),
+                        period_ledgers: 120_960,
+                    },
+                },
+                InstallPolicy {
+                    policy_index: 1,
+                    address: "CGENERATED".into(),
+                    install_params: InstallPolicyParams::Generated,
+                },
+            ],
             next_steps: vec![],
         };
 
@@ -432,9 +513,55 @@ mod tests {
         );
         let decoded: PrepareInstallIntentOutput = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(decoded.delegate_signers, intent.delegate_signers);
+        assert_eq!(
+            wire["policies"],
+            serde_json::json!([
+                {
+                    "policy_index": 0,
+                    "address": "CSPENDING",
+                    "install_params": {
+                        "kind": "spending_limit",
+                        "spending_limit": "500000000",
+                        "period_ledgers": 120960
+                    }
+                },
+                {
+                    "policy_index": 1,
+                    "address": "CGENERATED",
+                    "install_params": {"kind": "generated"}
+                }
+            ])
+        );
 
         let mut flattened = wire;
         flattened["delegate_signers"] = serde_json::json!(["CDELEGATE", "external:CVERIFIER:0123"]);
         assert!(serde_json::from_value::<PrepareInstallIntentOutput>(flattened).is_err());
+    }
+
+    #[test]
+    fn install_intent_rejects_address_only_policy_entries() {
+        let base = serde_json::json!({
+            "operation": "add_context_rule",
+            "account_contract": "CACCOUNT",
+            "context_contract": "CCONTEXT",
+            "rule_name": "limited",
+            "valid_until_ledger": 1234,
+            "delegate_signers": [],
+            "policies": [{"policy_index": 0, "address": "CSPENDING"}],
+            "next_steps": []
+        });
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(base.clone()).is_err());
+
+        let mut missing_period = base.clone();
+        missing_period["policies"][0]["install_params"] = serde_json::json!({
+            "kind": "spending_limit",
+            "spending_limit": "500000000"
+        });
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(missing_period).is_err());
+
+        let mut addresses_only = base;
+        addresses_only.as_object_mut().unwrap().remove("policies");
+        addresses_only["policy_addresses"] = serde_json::json!(["CSPENDING"]);
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(addresses_only).is_err());
     }
 }
