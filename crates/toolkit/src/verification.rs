@@ -1,4 +1,4 @@
-//! Operations that evaluate runtime policy behavior.
+//! Reference-suite and artifact-verification operations.
 
 use super::{from_value, generate_code_with_build_config, spec_error, to_value, EC};
 use base64::Engine;
