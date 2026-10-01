@@ -103,17 +103,15 @@ pub fn verify_with_build_config(
         .collect();
     let source_matches = regenerated == input.claimed_generated_files;
 
-    let claimed_wasm = input.claimed_wasm_base64.as_deref().and_then(|encoded| {
-        base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .ok()
-    });
+    let claimed_wasm = input
+        .claimed_wasm_base64
+        .as_deref()
+        .map(|encoded| base64::engine::general_purpose::STANDARD.decode(encoded));
     let reproduced_wasm = base64::engine::general_purpose::STANDARD
         .decode(&generated.wasm_base64)
         .map_err(|error| ToolError::new(EC::EInternal, error.to_string()))?;
-    let wasm_matches = claimed_wasm
-        .as_deref()
-        .is_some_and(|claimed| claimed == reproduced_wasm);
+    let wasm_matches =
+        matches!(claimed_wasm.as_ref(), Some(Ok(claimed)) if claimed == &reproduced_wasm);
     let manifest_matches = input
         .claimed_build_manifest
         .as_ref()
@@ -152,20 +150,25 @@ pub fn verify_with_build_config(
             )
         },
         wasm_reproduction: match (
-            &input.claimed_wasm_base64,
+            claimed_wasm.as_ref(),
             wasm_matches,
             &input.claimed_build_manifest,
             manifest_matches,
         ) {
             (None, _, _, _) => "not_verified: no claimed Wasm was supplied".to_string(),
-            (Some(_), false, _, _) => {
+            (Some(Err(error)), _, _, _) => {
+                format!("INVALID: claimed Wasm is not valid base64: {error}")
+            }
+            (Some(Ok(_)), false, _, _) => {
                 "MISMATCH: claimed Wasm differs from reproduction".to_string()
             }
-            (Some(_), true, None, _) => "not_verified: no BuildManifest was supplied".to_string(),
-            (Some(_), true, Some(_), false) => {
+            (Some(Ok(_)), true, None, _) => {
+                "not_verified: no BuildManifest was supplied".to_string()
+            }
+            (Some(Ok(_)), true, Some(_), false) => {
                 "MISMATCH: claimed BuildManifest differs from reproduction".to_string()
             }
-            (Some(_), true, Some(_), true) => {
+            (Some(Ok(_)), true, Some(_), true) => {
                 "reproduced: Wasm and BuildManifest are identical".to_string()
             }
         },
@@ -293,11 +296,31 @@ mod tests {
                 .matches
         );
 
-        let mut missing_manifest = base;
+        let mut missing_manifest = base.clone();
         missing_manifest.claimed_build_manifest = None;
         let output = verify_with_build_config(&missing_manifest, &build_config).unwrap();
         assert!(!output.matches);
         assert!(output.wasm_reproduction.starts_with("not_verified"));
+
+        let mut malformed_wasm = base.clone();
+        malformed_wasm.claimed_wasm_base64 = Some("%%%".to_string());
+        let output = verify_with_build_config(&malformed_wasm, &build_config).unwrap();
+        assert!(!output.matches);
+        assert!(output.source_reproduction.starts_with("reproduced"));
+        assert!(output
+            .wasm_reproduction
+            .starts_with("INVALID: claimed Wasm is not valid base64"));
+
+        let mut different_wasm = base;
+        different_wasm.claimed_wasm_base64 =
+            Some(base64::engine::general_purpose::STANDARD.encode(b"different Wasm bytes"));
+        let output = verify_with_build_config(&different_wasm, &build_config).unwrap();
+        assert!(!output.matches);
+        assert!(output.source_reproduction.starts_with("reproduced"));
+        assert_eq!(
+            output.wasm_reproduction,
+            "MISMATCH: claimed Wasm differs from reproduction"
+        );
     }
 
     #[test]
