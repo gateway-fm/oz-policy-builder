@@ -45,6 +45,8 @@ pub mod domains {
     pub const CODEGEN_INPUT: &str = "ozpb:v1:codegen-input";
     pub const BUILD_MANIFEST: &str = "ozpb:v1:build-manifest";
     pub const POLICY_BINDING_SET: &str = "ozpb:v1:policy-binding-set";
+    /// The full typed request for a state-dependent installed-policy check.
+    pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
     /// The enumerated account rule-set a call-surface verdict was computed over.
     pub const ACCOUNT_STATE: &str = "ozpb:v1:account-state";
     /// A generated crate's source files, lockfile excluded — the value a BuildManifest records
@@ -73,6 +75,7 @@ pub mod domains {
         CODEGEN_INPUT,
         BUILD_MANIFEST,
         POLICY_BINDING_SET,
+        POLICY_CHECK_REQUEST,
         ACCOUNT_STATE,
         GENERATED_SOURCE,
         GENERATED_CRATE_FILES,

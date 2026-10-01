@@ -54,6 +54,7 @@ two as separate and so does this.
 | `ozpb:v1:codegen-input` | the normalized inputs a generated crate is emitted from |
 | `ozpb:v1:build-manifest` | a build manifest |
 | `ozpb:v1:policy-binding-set` | a policy binding set |
+| `ozpb:v1:policy-check-request` | the complete typed `CheckAgainstPolicyInput` |
 | `ozpb:v1:account-state` | the enumerated account rule-set a verdict was computed over |
 | `ozpb:v1:generated-source` | a generated crate's source files, lockfile excluded |
 | `ozpb:v1:generated-crate-files` | a generated crate's complete emitted file set |
@@ -61,6 +62,11 @@ two as separate and so does this.
 
 One structure, one domain. A domain used for two structures forfeits exactly the separation the
 scheme exists to provide.
+
+The policy-check request hash covers the deserialized input, including its specification, binding
+set, signed registry snapshot, account and network identities, both rule selectors, configured RPC
+source, ordered candidate signers, and proposed invocation. The permit/deny evidence records this
+hash as `request_hash` so a consumer can compare it with the request it sent.
 
 ## The encoding
 

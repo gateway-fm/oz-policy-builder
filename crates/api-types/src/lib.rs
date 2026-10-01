@@ -108,6 +108,7 @@ error_codes! {
     EPolicyBindingInvalid => "E_POLICY_BINDING_INVALID",
     EAccountRuleEnumerationUnsupported => "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED",
     EIncompleteAccountState => "E_INCOMPLETE_ACCOUNT_STATE",
+    EAdminRuleNotFound => "E_ADMIN_RULE_NOT_FOUND",
     EAdminRuleUnsafe => "E_ADMIN_RULE_UNSAFE",
     EUnsafeCallSurface => "E_UNSAFE_CALL_SURFACE",
     EUnsafeManagementSurface => "E_UNSAFE_MANAGEMENT_SURFACE",
@@ -338,6 +339,10 @@ pub struct ImportRecordingInput {
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+/// Wire types for evaluation, verification, live checks, and install intent.
+pub mod policy_operations;
+pub use policy_operations::*;
 
 #[cfg(test)]
 mod tests {
