@@ -30,7 +30,7 @@ Section numbers refer to `docs/architecture.md`.
 
 4. **Encoded-literal rendering** — template-pack v2, and one deliberate artifact-hash break.
 
-5. **Generated-suite deny-reason agreement.** The golden transfer fixture's generated suite
+5. **Generated-suite verdict agreement.** The golden transfer fixture's generated suite
    (`contracts/differential/tests/generated_suite.rs`) now replays every constraint-derived case
    through the compiled policy and checks permit/deny. It does not compare exact denial reasons.
    The hand-written `differential.rs` checks both verdict and reason for fewer cases. Extending
