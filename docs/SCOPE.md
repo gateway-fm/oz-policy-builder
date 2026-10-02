@@ -30,8 +30,8 @@ Section numbers refer to `docs/architecture.md`.
 
 4. **Encoded-literal rendering** — template-pack v2, and one deliberate artifact-hash break.
 
-5. **Layer-2 deny-code agreement.** A generated deny-code suite
-   (`contracts/differential/tests/generated_suite.rs`) is a later-milestone deliverable and is not
-   in this tree; when it arrives it asserts the permit/deny boolean only. What this tree has is the
-   hand-written `differential.rs`, which agrees with the compiled contract on the verdict *and* the
-   deny reason — a stronger comparison over fewer cases.
+5. **Generated-suite verdict agreement.** The golden transfer fixture's generated suite
+   (`contracts/differential/tests/generated_suite.rs`) now replays every constraint-derived case
+   through the compiled policy and checks permit/deny. It does not compare exact denial reasons.
+   The hand-written `differential.rs` checks both verdict and reason for fewer cases. Extending
+   that reason check to every generated case remains future work.
