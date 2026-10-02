@@ -20,12 +20,8 @@ pub const MVP_TOOLS: &[&str] = &[
     "generate_code",
 ];
 
-/// The tools contributed by the post-MVP module, which is not part of this milestone.
-///
-/// An empty list rather than no list, so the exact-count assertion stays exact: it is the
-/// union of the two lists that must match the served set, and with the module absent that
-/// union is the MVP set alone.
-pub const POST_MVP_TOOLS: &[&str] = &[];
+/// Layer-1 reference evidence and generated-artifact verification tools.
+pub const VERIFICATION_TOOLS: &[&str] = &["reference_suite", "verify"];
 
 /// Drive the server over stdio with a batch of newline-delimited JSON-RPC requests,
 /// close stdin (which ends the transport and exits the server), and return the parsed

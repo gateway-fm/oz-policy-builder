@@ -24,11 +24,10 @@ fn initialize_and_list_tools() {
         assert!(names.contains(tool), "missing tool {tool}; have {names:?}");
     }
     // Exact count so a newly-added or dropped tool can't silently drift from the contract.
-    // The union while the post-MVP module is present; the MVP set alone once it is removed and
-    // POST_MVP_TOOLS is emptied with it.
+    // The core and verification routers together define the served tool set.
     assert_eq!(
         tools.len(),
-        MVP_TOOLS.len() + POST_MVP_TOOLS.len(),
+        MVP_TOOLS.len() + VERIFICATION_TOOLS.len(),
         "tool set drifted; have {names:?}"
     );
     assert!(
