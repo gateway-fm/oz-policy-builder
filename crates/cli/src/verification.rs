@@ -53,15 +53,14 @@ impl Command {
                 manifest,
                 build,
             } => {
-                let claimed_generated_files =
-                    read_generated_files(&generated_dir, &wasm, &manifest)?;
+                let claimed = read_generated_files(&generated_dir, &wasm, &manifest)?;
                 let claimed_wasm =
                     std::fs::read(&wasm).with_context(|| format!("reading {}", wasm.display()))?;
-                let result = ozpb_toolkit::verify_with_build_config(
+                let mut result = ozpb_toolkit::verify_with_build_config(
                     &VerifyInput {
                         spec: read_json(&spec)?,
                         rule_index: rule,
-                        claimed_generated_files,
+                        claimed_generated_files: claimed.files,
                         claimed_wasm_base64: Some(
                             base64::engine::general_purpose::STANDARD.encode(claimed_wasm),
                         ),
@@ -69,6 +68,13 @@ impl Command {
                     },
                     &build.resolve()?,
                 )?;
+                if !claimed.unrepresentable.is_empty() {
+                    result.matches = false;
+                    result.source_reproduction = format!(
+                        "MISMATCH: generated files have paths or contents that are not UTF-8: {}",
+                        claimed.unrepresentable.join(", ")
+                    );
+                }
                 print_json(&result)?;
             }
         }
@@ -78,12 +84,20 @@ impl Command {
 
 /// Read the complete generated crate, except Cargo.lock and the separately supplied
 /// Wasm/manifest artifacts. The toolkit compares this exact path set with regeneration.
+#[derive(Debug)]
+struct ClaimedFiles {
+    files: BTreeMap<String, String>,
+    unrepresentable: Vec<String>,
+}
+
 fn read_generated_files(
     generated_dir: &Path,
     wasm: &Path,
     manifest: &Path,
-) -> Result<BTreeMap<String, String>> {
-    if std::fs::symlink_metadata(generated_dir)
+) -> Result<ClaimedFiles> {
+    // A trailing separator makes symlink_metadata follow the link on Unix.
+    let root_entry: PathBuf = generated_dir.components().collect();
+    if std::fs::symlink_metadata(&root_entry)
         .with_context(|| format!("reading {}", generated_dir.display()))?
         .file_type()
         .is_symlink()
@@ -110,6 +124,7 @@ fn read_generated_files(
         .with_context(|| format!("reading {}", manifest.display()))?;
 
     let mut files = BTreeMap::new();
+    let mut unrepresentable = Vec::new();
     let mut directories = vec![root.clone()];
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(&directory)
@@ -118,14 +133,14 @@ fn read_generated_files(
             let entry = entry.with_context(|| format!("reading {}", directory.display()))?;
             let path = entry.path();
             let relative = path.strip_prefix(&root)?;
-            if relative == Path::new("Cargo.lock") || path == wasm || path == manifest {
-                continue;
-            }
             let kind = entry
                 .file_type()
                 .with_context(|| format!("reading {}", path.display()))?;
             if kind.is_symlink() {
                 bail!("generated crate contains a symlink: {}", path.display());
+            }
+            if relative == Path::new("Cargo.lock") || path == wasm || path == manifest {
+                continue;
             }
             if kind.is_dir() {
                 directories.push(path);
@@ -137,16 +152,21 @@ fn read_generated_files(
                     path.display()
                 );
             }
-            let key = relative
-                .to_str()
-                .context("generated crate contains a non-UTF-8 path")?
-                .replace(std::path::MAIN_SEPARATOR, "/");
-            let contents = std::fs::read_to_string(&path)
+            let contents = std::fs::read(&path)
                 .with_context(|| format!("reading generated file {}", path.display()))?;
-            files.insert(key, contents);
+            match (relative.to_str(), String::from_utf8(contents)) {
+                (Some(key), Ok(contents)) => {
+                    files.insert(key.replace(std::path::MAIN_SEPARATOR, "/"), contents);
+                }
+                _ => unrepresentable.push(format!("{relative:?}")),
+            }
         }
     }
-    Ok(files)
+    unrepresentable.sort();
+    Ok(ClaimedFiles {
+        files,
+        unrepresentable,
+    })
 }
 
 #[cfg(test)]
@@ -209,12 +229,14 @@ mod tests {
         ] {
             std::fs::write(root.join(path), contents).unwrap();
         }
-        let files = read_generated_files(
+        let claimed = read_generated_files(
             &root,
             &root.join("policy.wasm"),
             &root.join("build-manifest.json"),
         )
         .unwrap();
+        assert!(claimed.unrepresentable.is_empty());
+        let files = claimed.files;
         assert_eq!(files.len(), 5);
         assert_eq!(files.get("Cargo.toml"), Some(&"package".to_string()));
         assert_eq!(files.get("src/extra.rs"), Some(&"extra".to_string()));
@@ -232,5 +254,77 @@ mod tests {
             .unwrap_err();
             assert!(error.to_string().contains("symlink"));
         }
+    }
+
+    #[test]
+    fn binary_extra_file_is_recorded_as_a_source_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("policy.wasm"), b"wasm").unwrap();
+        std::fs::write(root.join("build-manifest.json"), b"{}").unwrap();
+        std::fs::write(root.join("extra.bin"), [0xff]).unwrap();
+
+        let claimed = read_generated_files(
+            root,
+            &root.join("policy.wasm"),
+            &root.join("build-manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(claimed.unrepresentable, vec!["\"extra.bin\"".to_string()]);
+    }
+
+    // APFS rejects invalid UTF-8 names, so exercise this case on Linux filesystems.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn non_utf8_extra_name_is_recorded_as_a_source_mismatch() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("policy.wasm"), b"wasm").unwrap();
+        std::fs::write(root.join("build-manifest.json"), b"{}").unwrap();
+        let name = std::ffi::OsString::from_vec(b"extra-\xff".to_vec());
+        std::fs::write(root.join(name), b"contents").unwrap();
+
+        let claimed = read_generated_files(
+            root,
+            &root.join("policy.wasm"),
+            &root.join("build-manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(claimed.unrepresentable.len(), 1);
+        assert!(claimed.unrepresentable[0].contains("extra-"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_root_symlinks_with_a_trailing_separator_and_lockfile_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("generated");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("policy.wasm"), b"wasm").unwrap();
+        std::fs::write(root.join("build-manifest.json"), b"{}").unwrap();
+        let link = temp.path().join("linked");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let mut link_with_separator = link.as_os_str().to_os_string();
+        link_with_separator.push("/");
+        let error = read_generated_files(
+            &PathBuf::from(link_with_separator),
+            &root.join("policy.wasm"),
+            &root.join("build-manifest.json"),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("root cannot be a symlink"));
+
+        std::os::unix::fs::symlink(root.join("policy.wasm"), root.join("Cargo.lock")).unwrap();
+        let error = read_generated_files(
+            &root,
+            &root.join("policy.wasm"),
+            &root.join("build-manifest.json"),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("contains a symlink"));
     }
 }
