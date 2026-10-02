@@ -25,7 +25,10 @@ impl PolicyBuilderServer {
         &self,
         Parameters(input): Parameters<ReferenceSuiteInput>,
     ) -> Result<Json<ReferenceSuiteOutput>, CallToolResult> {
-        let out = ozpb_toolkit::reference_suite(&input).map_err(tool_err)?;
+        let out = tokio::task::spawn_blocking(move || ozpb_toolkit::reference_suite(&input))
+            .await
+            .map_err(internal_tool_err)?
+            .map_err(tool_err)?;
         Ok(Json(out))
     }
 
