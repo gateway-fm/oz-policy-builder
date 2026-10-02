@@ -9,7 +9,13 @@
 //!   python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)' \\
 //!     < syn.json > spec.json
 //!   ozpb generate --spec spec.json --rule 0 --out ./generated
+//!   ozpb reference-suite --spec spec.json
+//!   ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \\
+//!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
+//!     --manifest ./generated/build-manifest.json
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
+
+mod verification;
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -152,6 +158,9 @@ enum Command {
         #[command(flatten)]
         build: BuildConfigArgs,
     },
+    /// Reference evaluation and artifact reproduction commands.
+    #[command(flatten)]
+    Verification(verification::Command),
     /// Write the development registry trust files (signed snapshot + root policy).
     ///
     /// The pipeline cannot run without them, and they are derived from the code — emitting
@@ -356,6 +365,7 @@ fn main() -> Result<()> {
                 print_json(&generated)?;
             }
         }
+        Command::Verification(command) => command.run()?,
         Command::DevRegistry { out } => {
             std::fs::create_dir_all(&out)?;
             let (snapshot_json, roots_json) = ozpb_registry::dev::dev_trust_files(

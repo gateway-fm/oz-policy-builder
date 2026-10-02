@@ -66,20 +66,23 @@ ozpb synthesize --bundle rec.json --selected-authorizer <C…> \
   --registry-roots registry-roots.json \
   --decisions decisions.json --template-family policy-templates/scope@1 > syn.json
 
-# 3. [Tranche 2] prove it: permit/deny evidence report over the constraint-derived deny suite
+# 3. [Tranche 2] inspect layer-1 reference evidence over the constraint-derived suite.
+# This is offline evidence, not the full four-layer dry run or proof of all possible calls.
 # `synthesize` prints an envelope — the spec, its canonical hash and the per-constraint rationale —
 # while every stage below takes a bare PolicySpec. Handing over the envelope is a parse error rather
 # than something quietly ignored, because `PolicySpec` is `deny_unknown_fields` — the envelope
 # types around it, `SynthesizeOutput` and `RecordOutput`, are not — so lift the spec out first:
 python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)' < syn.json > spec.json
 
-ozpb dry-run --spec spec.json
+ozpb reference-suite --spec spec.json
 
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
 ozpb generate --spec spec.json --rule 0 --out ./generated
 
-# 5. [Tranche 2] reproduce source + Wasm + manifest (live preflight remains separate)
-ozpb verify --spec spec.json --rule 0 --source ./generated/src \
+# 5. [Tranche 2] reproduce the complete generated crate + Wasm + manifest.
+# The crate root matters: Cargo.toml, toolchain settings, and every src/ file are checked.
+# Live network preflight remains separate.
+ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
 
