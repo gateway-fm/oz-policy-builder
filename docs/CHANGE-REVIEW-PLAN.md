@@ -44,7 +44,7 @@ the user and wallet decide whether to sign and submit.
 | Trust boundary | Request parsing, registry roots, snapshots, code hashes, ledger anchors, error mapping | Untrusted values cannot declare recognition, acquisition trust, admin status, or a safe verdict. Unknown, stale, malformed, or incomplete state fails closed. |
 | Authorization | Original permit, mutation denials, signer semantics, rule selection, policy composition | Tests cover a valid control and adversarial changes; the expected result is derived independently of the implementation under test. |
 | Artifact identity | Canonical hashes, file sets, manifests, ordering, and optional claims | Reproduction checks exact bytes and complete sets; absence, malformed input, and mismatch have distinct results. |
-| Shell behavior | CLI and MCP schema, error codes, operator configuration, network access | Shells do not contain policy logic or let callers choose trust roots, build programs, or arbitrary RPC URLs. |
+| Shell behavior | CLI and MCP schema, error codes, operator configuration, network access | Shells do not contain policy logic. Trust roots and build programs stay operator-controlled. HTTP mode accepts only operator-allowlisted RPC endpoints; CLI and stdio mode accept caller-selected endpoints. |
 | Maintenance | Diff, dependencies, docs, examples, release gates | No unrelated changes, private material, stale claims, unexplained dependency, or missing DCO signoff. |
 
 Read the complete diff once for behavior and a second time for claims and omissions. For
@@ -85,10 +85,13 @@ a command merely because a corresponding request type exists.
 
 ## Gates and PR record
 
-For Rust changes run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --
--D warnings`, and `cargo test --workspace`; run the corresponding `contracts` gates when
-that workspace changes. Run `bash scripts/check-dep-rules.sh` for crate-edge changes and
-the relevant part of `scripts/verify-phase1.sh` for changed first-milestone guarantees.
+For Rust changes run `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`.
+Run the `contracts` differential tests, Clippy, and formatting when that workspace changes
+**or** when host-side dependencies of its generated/differential tests change, including
+`harness`, `evaluator`, `policy-spec`, and `codegen`. Run `bash scripts/check-dep-rules.sh`
+for crate-edge changes and the relevant part of `scripts/verify-phase1.sh` for changed
+first-milestone guarantees.
 If a local gate cannot run, record the exact reason and use CI evidence before merge.
 
 Each PR description should record: intended behavior; trusted and untrusted inputs; what
