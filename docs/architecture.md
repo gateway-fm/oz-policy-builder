@@ -665,7 +665,8 @@ The harness therefore runs **four evidence layers**, each labeled in the report:
 **Deny suite — derived from constraints, not a fixed list.** For each accepted call tuple,
 the generator derives: equality mutations for every scalar and nested value; below/at/above
 numeric boundaries (plus min/max extremes); empty, reordered, duplicated, truncated, and
-extended collections; cross-products across accepted tuples (must all deny unless observed);
+extended collections; cross-products across accepted tuples (deny only when no accepted tuple
+admits the mix, including through a range or wildcard);
 absent/extra/wrong/partially-satisfying signer sets **and mutated signer sets against strict
 mode**; alternate rule IDs and context orderings; zero, maximum, and overflow-adjacent call
 counts; times just before/at/after each boundary; wrong target contract and network;

@@ -13,6 +13,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+mod accepted_tuple;
+
 use ozpb_domain::LedgerSeq;
 use ozpb_evaluator::{evaluate_generated_rule, ArgValue, EvalContext, Invocation, Verdict};
 use ozpb_policy_spec::{
@@ -256,13 +258,14 @@ fn expected_classes_for_rule(rule: &RuleSpec) -> BTreeSet<MutationClass> {
     expected
 }
 
-/// Whether mixing two accepted tuples can produce a tuple that is not itself accepted.
+/// Whether mixing two accepted tuples can produce a novel concrete tuple.
 ///
 /// Sharing `(fn_name, arity)` is not sufficient: `add_cross_products` skips any mix that
 /// reproduces an observed tuple, so two tuples differing in exactly ONE position yield nothing
 /// — every single-position swap lands back on one of the originals. Demanding the class there
 /// would fail a perfectly correct spec, which is how a gate earns its way out of CI. Two
-/// tuples must differ in at least two positions for a novel mix to exist.
+/// tuples must differ in at least two positions for a novel mix to exist. A novel mix can
+/// still be permitted by a widened tuple; it remains a case, labeled as a permit.
 fn rule_can_produce_cross_products(rule: &RuleSpec) -> bool {
     for (i, a) in rule.allowed_calls.iter().enumerate() {
         for b in rule.allowed_calls.iter().skip(i + 1) {
@@ -489,6 +492,7 @@ fn build_rule_suite(
 
     // Signer mutations (independent of which call).
     let base_inv = original_invocation(spec, rule);
+    let unknown_signer = fresh_signer(&ctx0.rule_live_signers);
     // Zero signers.
     cases.push(Case {
         rule_index,
@@ -508,7 +512,7 @@ fn build_rule_suite(
         class: MutationClass::WrongSigner,
         invocation: base_inv.clone(),
         context: EvalContext {
-            authenticated_signers: vec![stranger_signer()],
+            authenticated_signers: vec![unknown_signer.clone()],
             ..ctx0.clone()
         },
         expect_permit: false,
@@ -550,7 +554,7 @@ fn build_rule_suite(
         });
     }
     let mut authenticated_with_extra = ctx0.authenticated_signers.clone();
-    authenticated_with_extra.push(stranger_signer());
+    authenticated_with_extra.push(unknown_signer.clone());
     cases.push(Case {
         rule_index,
         label: "authorized signer set plus unrecognized signer".to_string(),
@@ -570,7 +574,7 @@ fn build_rule_suite(
         )
     {
         let mut grown = ctx0.rule_live_signers.clone();
-        grown.push(stranger_signer());
+        grown.push(unknown_signer.clone());
         cases.push(Case {
             rule_index,
             label: "strict set: live rule signer set grew".to_string(),
@@ -588,7 +592,7 @@ fn build_rule_suite(
             class: MutationClass::StrictSetMutation,
             invocation: base_inv.clone(),
             context: EvalContext {
-                rule_live_signers: vec![stranger_signer()],
+                rule_live_signers: vec![unknown_signer],
                 ..ctx0.clone()
             },
             expect_permit: false,
@@ -711,11 +715,39 @@ fn build_rule_suite(
         }
     }
 
-    // Tuple cross-products: if a rule accepts >1 tuple for the same function, mixing
-    // args across observed tuples must deny (unless that mix was itself observed).
+    // Tuple cross-products: a novel mix may still satisfy a widened accepted tuple.
     add_cross_products(cases, spec, rule, &ctx0, rule_index);
 
     for case in &mut cases[first_case..] {
+        // A mutation's local constraint may reject it while another complete tuple of
+        // this rule accepts it. Label invocation-only cases from the independent
+        // Constraint matcher, never from the evaluator this suite checks.
+        if matches!(
+            case.class,
+            MutationClass::ArgEquality
+                | MutationClass::NumericBoundary
+                | MutationClass::DifferentAddressArg
+                | MutationClass::ArgArity
+                | MutationClass::TypeConfusion
+                | MutationClass::TupleCrossProduct
+        ) {
+            let values: Vec<_> = case
+                .invocation
+                .args
+                .iter()
+                .map(|value| match value {
+                    ArgValue::Address(address) => accepted_tuple::Value::Address(address),
+                    ArgValue::I128(number) => accepted_tuple::Value::I128(*number),
+                    ArgValue::ScvalXdr(xdr) => accepted_tuple::Value::ScvalXdr(xdr),
+                })
+                .collect();
+            case.expect_permit = accepted_tuple::accepts(
+                rule,
+                &spec.spec().smart_account.address,
+                &case.invocation.fn_name,
+                &values,
+            );
+        }
         case.label = format!("rule[{rule_index}] {}", case.label);
     }
 }
@@ -991,7 +1023,18 @@ fn original_invocation(spec: &ValidatedSpec, rule: &RuleSpec) -> Invocation {
 }
 
 fn baseline_context(spec: &ValidatedSpec, rule: &RuleSpec) -> EvalContext {
-    let signers = rule.authorization.signers.clone();
+    let mut signers = rule.authorization.signers.clone();
+    if signers.is_empty()
+        && matches!(
+            rule.authorization.kind,
+            PredicateKind::AnyOfCurrentRuleSigners
+        )
+    {
+        // The dynamic predicate names no identities in the spec. Model a real rule
+        // with one live signer so the original can permit and signer mutations test
+        // the predicate, rather than all stopping at ZeroSigners.
+        signers.push(fresh_signer(&signers));
+    }
     let ledger = rule
         .valid_until
         .as_ref()
@@ -1032,10 +1075,21 @@ fn stranger_addr() -> String {
     "GAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCF6M".to_string()
 }
 
-fn stranger_signer() -> SignerSpec {
-    SignerSpec::Delegated {
-        address: stranger_addr(),
+fn fresh_signer(known: &[SignerSpec]) -> SignerSpec {
+    // Candidate addresses are distinct by nonce. Among known.len() + 1 candidates,
+    // at least one is absent from the finite live set, including when a fixture
+    // deliberately uses our first candidate as an authorized signer.
+    for nonce in 0..=known.len() {
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&(nonce as u64).to_le_bytes());
+        let candidate = SignerSpec::Delegated {
+            address: format!("{}", stellar_strkey::ed25519::PublicKey(key)),
+        };
+        if !known.contains(&candidate) {
+            return candidate;
+        }
     }
+    unreachable!("a set cannot contain more than its size of distinct candidates")
 }
 
 /// A function name this rule allows nowhere, derived from `base`.
@@ -1204,6 +1258,134 @@ mod tests {
             "a one-position tuple difference must not demand cross-products: {:?}",
             report.missing_classes()
         );
+    }
+
+    #[test]
+    fn a_mutation_accepted_by_another_tuple_is_labeled_permit() {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let mut next = spec.rules[0].allowed_calls[0].clone();
+        next.args[2].constraint = Constraint::EqI128 {
+            value: "500000001".into(),
+        };
+        spec.rules[0].allowed_calls.push(next);
+        let spec = spec.validate().expect("two accepted amounts");
+        let cases = build_suite(&spec);
+        let plus_one = cases
+            .iter()
+            .find(|case| case.label.contains("i128 +1 arg[2]"))
+            .expect("mutation of the first amount");
+        assert!(
+            plus_one.expect_permit,
+            "the second tuple accepts this mutation"
+        );
+        let report = run_layer1(&spec);
+        assert!(report.all_agree(), "{:#?}", report.outcomes);
+        assert!(report.missing_classes().is_empty());
+    }
+
+    #[test]
+    fn an_arity_mutation_accepted_by_another_tuple_is_labeled_permit() {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let mut longer = spec.rules[0].allowed_calls[0].clone();
+        longer.args.push(ozpb_policy_spec::ArgConstraint {
+            index: 3,
+            constraint: Constraint::EqI128 { value: "1".into() },
+            provenance: ozpb_domain::Provenance::ObservedExact,
+        });
+        spec.rules[0].allowed_calls.push(longer);
+        let spec = spec.validate().expect("two arities for one function");
+        let cases = build_suite(&spec);
+        let accepted_extra = cases
+            .iter()
+            .find(|case| {
+                case.class == MutationClass::ArgArity && case.label.contains("extra argument")
+            })
+            .expect("extra argument case from the shorter tuple");
+        assert!(accepted_extra.expect_permit);
+        let accepted_missing = cases
+            .iter()
+            .find(|case| {
+                case.class == MutationClass::ArgArity
+                    && case.label.contains("missing argument")
+                    && case.invocation.args.len() == 3
+            })
+            .expect("missing argument case from the longer tuple");
+        assert!(accepted_missing.expect_permit);
+        let report = run_layer1(&spec);
+        assert!(report.all_agree(), "{:#?}", report.outcomes);
+        assert!(report.missing_classes().is_empty());
+    }
+
+    #[test]
+    fn a_mixed_tuple_accepted_by_a_range_is_labeled_permit() {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let first = &mut spec.rules[0].allowed_calls[0];
+        first.args[2].constraint = Constraint::EqI128 { value: "10".into() };
+        let mut second = first.clone();
+        second.args[1].constraint = Constraint::EqAddress {
+            value: AddressRef::Address(ozpb_synthesizer::fixtures::golden_delegate_strkey()),
+        };
+        second.args[2].constraint = Constraint::LeI128 { max: "20".into() };
+        second.args[2].provenance = ozpb_domain::Provenance::UserWidened {
+            intent: "allow values up to twenty".into(),
+            blast_radius: ozpb_domain::BlastRadius::Medium,
+        };
+        spec.rules[0].allowed_calls.push(second);
+        let spec = spec.validate().expect("exact and ranged tuples");
+        let cases = build_suite(&spec);
+        let accepted_mix = cases
+            .iter()
+            .filter(|case| case.class == MutationClass::TupleCrossProduct)
+            .find(|case| case.expect_permit)
+            .expect("one novel mix satisfies the ranged tuple");
+        assert_eq!(accepted_mix.invocation.args[2], ArgValue::I128(10));
+        let report = run_layer1(&spec);
+        assert!(report.all_agree(), "{:#?}", report.outcomes);
+        assert!(report.missing_classes().is_empty());
+    }
+
+    #[test]
+    fn dynamic_predicate_seeds_a_real_signer_and_keeps_wrong_one_distinct() {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        spec.rules[0].authorization.kind = PredicateKind::AnyOfCurrentRuleSigners;
+        spec.rules[0].authorization.strict_signer_set = false;
+        spec.rules[0].authorization.signers.clear();
+        let spec = spec
+            .validate()
+            .expect("dynamic rule with no pinned signers");
+        let cases = build_suite(&spec);
+        let original = cases
+            .iter()
+            .find(|case| case.class == MutationClass::Original)
+            .expect("original case");
+        assert_eq!(original.context.rule_live_signers.len(), 1);
+        assert_eq!(
+            original.context.authenticated_signers,
+            original.context.rule_live_signers
+        );
+        let wrong = cases
+            .iter()
+            .find(|case| case.class == MutationClass::WrongSigner)
+            .expect("wrong signer case");
+        assert!(!original
+            .context
+            .rule_live_signers
+            .contains(&wrong.context.authenticated_signers[0]));
+        let report = run_layer1(&spec);
+        assert!(report.all_agree(), "{:#?}", report.outcomes);
+        assert!(report.missing_classes().is_empty());
     }
 
     #[test]
