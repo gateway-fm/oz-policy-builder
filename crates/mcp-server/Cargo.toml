@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "rmcp stdio server exposing the record/synthesize/evaluate/generate tools (no domain logic)"
+description = "rmcp server exposing recording, synthesis, reference evidence, generation and verification"
 
 [[bin]]
 name = "ozpb-mcp-server"

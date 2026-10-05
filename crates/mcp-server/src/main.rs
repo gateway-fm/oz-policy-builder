@@ -22,6 +22,8 @@ use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod verification;
+
 #[derive(Clone)]
 struct RpcEndpointPolicy {
     allowed: Arc<BTreeSet<String>>,
@@ -89,7 +91,7 @@ impl PolicyBuilderServer {
         build_config: ozpb_toolkit::BuildConfig,
     ) -> Self {
         Self {
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::verification_tool_router(),
             registry_trust,
             rpc_policy,
             build_config,
@@ -295,8 +297,9 @@ impl ServerHandler for PolicyBuilderServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "OZ Accounts Policy Builder. Record a Stellar transaction, synthesize a \
-             minimum-permission OpenZeppelin smart-account policy, evaluate it, and \
-             generate reviewable Rust. Deterministic and fail-closed: this server never \
+             minimum-permission OpenZeppelin smart-account policy, evaluate it, run the layer-1 \
+             reference suite, generate reviewable Rust, and verify generated artifacts offline. \
+             Deterministic and fail-closed: this server never \
              deploys, signs, or holds keys — code-first, deploy-second. Widening a grant \
              beyond exactly what was observed requires explicit user decisions.",
         )
