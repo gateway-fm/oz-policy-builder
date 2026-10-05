@@ -119,12 +119,7 @@ pub fn check_observed_call_surface_with_build_config(
             "trusted observation has no ledger anchor",
         ));
     }
-    let enumeration = match account.rule_enumeration.as_str() {
-        "onchain_list" => Enumeration::OnchainList,
-        "bounded_next_id" => Enumeration::BoundedNextId,
-        "verified_event_index" => Enumeration::VerifiedEventIndex,
-        _ => Enumeration::None,
-    };
+    let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
 
     let (binding_set_hash, mut recognized_policies) =
         validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
@@ -241,6 +236,20 @@ fn registry_for(
         ),
     }
     .map_err(map_registry_err)
+}
+
+fn supported_rule_enumeration(method: &str) -> Result<Enumeration, ToolError> {
+    // AccountState and the core currently require a real NextId value. An on-chain list
+    // has no such field; deriving one from its largest ID would invent ledger evidence.
+    // Accept only the strategy this state model actually implements.
+    if method == "bounded_next_id" {
+        Ok(Enumeration::BoundedNextId)
+    } else {
+        Err(ToolError::new(
+            EC::EAccountRuleEnumerationUnsupported,
+            format!("account rule enumeration '{method}' is unsupported by this checker"),
+        ))
+    }
 }
 
 fn validate_bindings(
@@ -686,5 +695,52 @@ mod tests {
             check(&request, &observation).unwrap_err().code,
             EC::EPolicyBindingInvalid
         );
+    }
+
+    #[test]
+    fn signed_onchain_list_capability_cannot_claim_a_bounded_next_id_verdict() {
+        let (mut request, mut observation) = fixture();
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        snapshot
+            .accounts
+            .get_mut(&observation.account_code_hash)
+            .unwrap()
+            .rule_enumeration = "onchain_list".to_string();
+        let signed =
+            ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
+        let mut spec: PolicySpec = serde_json::from_value(request.spec).unwrap();
+        spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
+        let spec = spec.validate().unwrap();
+        request.spec = serde_json::to_value(spec.spec()).unwrap();
+        request.binding_set.spec_hash = spec.hash().to_hex();
+        request.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+
+        // Keep every other binding coherent, so the refusal is about the unsupported
+        // enumeration strategy rather than a mismatched generated artifact.
+        let generated = generate_code_with_build_config(
+            &GenerateCodeInput {
+                spec: request.spec.clone(),
+                rule_index: 0,
+            },
+            &build_config(),
+        )
+        .unwrap();
+        request.binding_set.bindings[1].observed_wasm_hash = generated.wasm_hash.clone();
+        request.binding_set.bindings[1].recognition =
+            PolicyRecognition::VerifiedGeneratedManifest {
+                build_manifest: generated.build_manifest,
+            };
+        observation.bound_policies[1].observed_wasm_hash = generated.wasm_hash.clone();
+        observation
+            .account_state
+            .policies
+            .get_mut(&1)
+            .unwrap()
+            .observed_wasm_hash = generated.wasm_hash;
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EAccountRuleEnumerationUnsupported);
+        assert!(error.message.contains("onchain_list"));
     }
 }

@@ -153,8 +153,8 @@ pub struct CheckInput<'a> {
     /// The single designated administrative rule id.
     pub admin_rule_id: u32,
     pub current_ledger: u32,
-    /// Declared enumeration capability of the account (D6). Only the first two are
-    /// supported in verified mode.
+    /// Declared enumeration capability of the account (D6). This state model requires
+    /// a real NextId value, so only bounded_next_id is currently supported.
     pub enumeration: Enumeration,
 }
 
@@ -213,7 +213,7 @@ pub enum Surface {
 pub enum CheckError {
     #[error(
         "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED: account enumeration capability is \
-         '{0:?}'; verified mode requires onchain_list or bounded_next_id"
+         '{0:?}'; the current state model requires bounded_next_id"
     )]
     EnumerationUnsupported(Enumeration),
     #[error(
@@ -272,7 +272,7 @@ fn policy_recognized(input: &CheckInput<'_>, policy: &StoredPolicy) -> bool {
 pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
     // Enumeration capability gate (D6).
     match input.enumeration {
-        Enumeration::OnchainList | Enumeration::BoundedNextId => {}
+        Enumeration::BoundedNextId => {}
         other => return Err(CheckError::EnumerationUnsupported(other)),
     }
     if !input.account_recognized {
@@ -1022,6 +1022,17 @@ mod tests {
         assert!(matches!(
             check(&input).unwrap_err(),
             CheckError::EnumerationUnsupported(Enumeration::None)
+        ));
+    }
+
+    #[test]
+    fn onchain_list_cannot_use_bounded_next_id_state() {
+        let st = healthy_state();
+        let mut input = base_input(&st);
+        input.enumeration = Enumeration::OnchainList;
+        assert!(matches!(
+            check(&input).unwrap_err(),
+            CheckError::EnumerationUnsupported(Enumeration::OnchainList)
         ));
     }
 
