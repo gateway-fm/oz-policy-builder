@@ -1038,6 +1038,7 @@ dependencies = [
  "ozpb-codegen",
  "ozpb-domain",
  "ozpb-evaluator",
+ "ozpb-harness",
  "ozpb-policy-spec",
  "ozpb-synthesizer",
  "soroban-sdk",
@@ -1065,6 +1066,17 @@ dependencies = [
  "ozpb-policy-spec",
  "serde",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "ozpb-harness"
+version = "0.1.0"
+dependencies = [
+ "ozpb-domain",
+ "ozpb-evaluator",
+ "ozpb-policy-spec",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
