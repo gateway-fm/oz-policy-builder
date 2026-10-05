@@ -18,6 +18,7 @@ ozpb-build-runner = { workspace = true }
 ozpb-api-types = { workspace = true }
 ozpb-harness = { workspace = true }
 ozpb-registry = { workspace = true }
+ozpb-call-surface-core = { workspace = true }
 # The import format lives here. Both shells import through this facade, so the parse and the
 # recording that admits it cannot be separated by a caller; the examples drift gate also
 # serializes the format rather than hand-writing the committed bytes a reader runs.
@@ -26,3 +27,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
+stellar-strkey = { workspace = true }

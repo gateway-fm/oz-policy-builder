@@ -26,6 +26,10 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod call_surface;
+pub use call_surface::{
+    check_observed_call_surface_with_build_config, CallSurfaceObservation, ObservedCallSurfaceCheck,
+};
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
