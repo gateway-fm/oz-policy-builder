@@ -45,3 +45,6 @@ Section numbers refer to `docs/architecture.md`.
    demonstrates that overlapping counted grants have independent rule-ID counters and can exceed
    one installation's cap in aggregate. Its rule setup uses mocked management authorization; it
    does not establish a safe reconfiguration flow, disposable target execution, or live preflight.
+   An internal reader can check a target instance against fetched Wasm bytes, but it does not
+   capture the target's storage or execute a disposable invocation. Its two ledger reads are not
+   an atomic snapshot, even when the endpoint reports the same ledger for both.

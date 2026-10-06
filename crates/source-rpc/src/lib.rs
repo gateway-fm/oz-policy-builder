@@ -7,6 +7,9 @@
 
 #![forbid(unsafe_code)]
 
+#[allow(dead_code)] // Internal prerequisite; no report consumes this observation yet.
+mod target_wasm;
+
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
     StateChange, StateChangeKind, StateChangeSource,
