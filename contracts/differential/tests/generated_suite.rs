@@ -23,8 +23,8 @@ use soroban_sdk::{
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use stellar_accounts::smart_account::{
-    add_context_rule, do_check_auth, AuthPayload, ContextRuleType, Signer, SmartAccount,
-    SmartAccountError,
+    add_context_rule, add_policy, do_check_auth, get_context_rule, AuthPayload, ContextRuleType,
+    Signer, SmartAccount, SmartAccountError,
 };
 
 #[contract]
@@ -165,8 +165,8 @@ fn installed_world(rule_live_signers: &[SignerSpec]) -> InstalledWorld {
     }
 }
 
-fn call_count(world: &InstalledWorld) -> Option<u32> {
-    world.env.as_contract(&world.policy, || {
+fn policy_call_count(world: &InstalledWorld, policy: &Address) -> Option<u32> {
+    world.env.as_contract(policy, || {
         world
             .env
             .storage()
@@ -178,14 +178,22 @@ fn call_count(world: &InstalledWorld) -> Option<u32> {
     })
 }
 
-fn set_call_count(world: &InstalledWorld, count: Option<u32>) {
-    world.env.as_contract(&world.policy, || {
+fn call_count(world: &InstalledWorld) -> Option<u32> {
+    policy_call_count(world, &world.policy)
+}
+
+fn set_policy_call_count(world: &InstalledWorld, policy: &Address, count: Option<u32>) {
+    world.env.as_contract(policy, || {
         let key = PolicyStorageKey::CallCount(world.account.clone(), world.rule_id);
         match count {
             None => world.env.storage().persistent().remove(&key),
             Some(value) => world.env.storage().persistent().set(&key, &value),
         }
     });
+}
+
+fn set_call_count(world: &InstalledWorld, count: Option<u32>) {
+    set_policy_call_count(world, &world.policy, count);
 }
 
 fn authorize(world: &InstalledWorld, cases: &[&Case]) -> Result<(), soroban_sdk::Error> {
@@ -431,5 +439,66 @@ fn generated_suite_commits_permits_and_rolls_back_a_later_denial() {
         call_count(&world),
         Some(*max_calls),
         "cap denial must not write"
+    );
+}
+
+#[test]
+fn later_policy_denial_rolls_back_an_earlier_policy_counter() {
+    // Two instances of the generated contract isolate account-side policy ordering and
+    // transaction atomicity. Rule setup uses the upstream storage helper with mocked
+    // authorization; this does not exercise management access control or a separate
+    // reviewed policy artifact.
+    let spec = fx::golden_spec();
+    let original = build_suite(&spec)
+        .into_iter()
+        .find(|case| case.class == MutationClass::Original)
+        .expect("the golden suite must contain a permitted recorded call");
+    let [StateSpec::CallCountPerInstallation { max_calls }] = spec.spec().rules[0].state.as_slice()
+    else {
+        panic!("the golden fixture must have one call cap");
+    };
+    let world = installed_world(&original.context.rule_live_signers);
+    let later_policy = world.env.register(GeneratedPolicy, ());
+    world.env.as_contract(&world.account, || {
+        add_policy(
+            &world.env,
+            world.rule_id,
+            &later_policy,
+            0u32.into_val(&world.env),
+        )
+    });
+    let stored_rule = world.env.as_contract(&world.account, || {
+        get_context_rule(&world.env, world.rule_id)
+    });
+    assert_eq!(
+        stored_rule.policies,
+        SVec::from_array(&world.env, [world.policy.clone(), later_policy.clone()]),
+        "the generated policy must execute before the added policy"
+    );
+
+    // Control: both installed policy instances see and commit the same permitted call.
+    assert_eq!(call_count(&world), Some(0));
+    assert_eq!(policy_call_count(&world, &later_policy), Some(0));
+    assert_eq!(authorize(&world, &[&original]), Ok(()));
+    assert_eq!(call_count(&world), Some(1));
+    assert_eq!(policy_call_count(&world, &later_policy), Some(1));
+
+    // Only the later instance is exhausted. It must reject after the earlier one has
+    // run, and the host must revert the earlier instance's otherwise-valid write.
+    set_policy_call_count(&world, &later_policy, Some(*max_calls));
+    assert_eq!(
+        authorize(&world, &[&original]),
+        Err(soroban_sdk::Error::from_contract_error(7)),
+        "the later policy must return CallCountExceeded"
+    );
+    assert_eq!(
+        call_count(&world),
+        Some(1),
+        "the earlier write must roll back"
+    );
+    assert_eq!(
+        policy_call_count(&world, &later_policy),
+        Some(*max_calls),
+        "the refusing policy must also retain its committed count"
     );
 }
