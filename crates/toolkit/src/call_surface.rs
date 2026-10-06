@@ -24,7 +24,9 @@ use ozpb_call_surface_core::{
 };
 use ozpb_domain::{domains, Hash32};
 use ozpb_policy_spec::{PolicyRef, PolicySpec, ValidatedSpec};
-use ozpb_registry::{Registry, SignedSnapshot};
+use ozpb_registry::{
+    Registry, SignedSnapshot, MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Ledger observations supplied by a trusted acquisition adapter, never by a tool client.
@@ -82,11 +84,16 @@ pub fn check_observed_call_surface_with_build_config(
             "trusted observation is for a different account or network",
         ));
     }
-    let observed_account_hash = parse_hash(&observation.account_code_hash)
-        .map_err(|_| binding_error("observed account code hash is not a 32-byte hex digest"))?;
+    let observed_account_hash = parse_hash(&observation.account_code_hash).map_err(|_| {
+        ToolError::new(
+            EC::EIncompleteAccountState,
+            "trusted observation account code hash is not a 32-byte hex digest",
+        )
+    })?;
     if observed_account_hash != validated.spec().smart_account.observed_code_hash {
-        return Err(binding_error(
-            "observed account code hash does not match the PolicySpec",
+        return Err(ToolError::new(
+            EC::EIncompleteAccountState,
+            "trusted observation account code hash does not match the PolicySpec",
         ));
     }
 
@@ -107,7 +114,7 @@ pub fn check_observed_call_surface_with_build_config(
     let account = registry
         .resolve_account(&observed_account_hash)
         .map_err(map_registry_err)?;
-    if account.management_evidence != "return_value_and_events_must_agree" {
+    if account.management_evidence != MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE {
         return Err(ToolError::new(
             EC::EIncompatibleAccount,
             "account management-rule evidence strategy is not supported by this checker",
@@ -140,7 +147,7 @@ pub fn check_observed_call_surface_with_build_config(
             "same-ledger bound policy observations do not match the exact PolicyBindingSet",
         ));
     }
-    let mut stored_hashes = BTreeMap::new();
+    let mut stored_hashes: BTreeMap<&str, &str> = BTreeMap::new();
     for policy in observation.account_state.policies.values() {
         if !matches!(
             stellar_strkey::Strkey::from_string(&policy.address),
@@ -153,11 +160,11 @@ pub fn check_observed_call_surface_with_build_config(
             ));
         }
         if stored_hashes
-            .insert(&policy.address, &policy.observed_wasm_hash)
-            .is_some_and(|earlier| earlier != &policy.observed_wasm_hash)
+            .insert(policy.address.as_str(), policy.observed_wasm_hash.as_str())
+            .is_some_and(|earlier| earlier != policy.observed_wasm_hash.as_str())
             || observed_by_address
                 .get(policy.address.as_str())
-                .is_some_and(|hash| *hash != policy.observed_wasm_hash)
+                .is_some_and(|hash| *hash != policy.observed_wasm_hash.as_str())
         {
             return Err(ToolError::new(
                 EC::EIncompleteAccountState,
@@ -666,6 +673,18 @@ mod tests {
             check(&request, &observation).unwrap_err().code,
             EC::EPolicyBindingInvalid
         );
+
+        let (request, mut observation) = fixture();
+        observation.account_code_hash = "not-a-hash".to_string();
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EIncompleteAccountState);
+        assert!(error.message.contains("observation"));
+
+        let (request, mut observation) = fixture();
+        observation.account_code_hash = "00".repeat(32);
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EIncompleteAccountState);
+        assert!(error.message.contains("does not match"));
 
         let (request, mut observation) = fixture();
         observation.account_address = address(99);

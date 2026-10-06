@@ -843,10 +843,12 @@ verification steps that make it trustworthy:**
      onchain_list | bounded_next_id | verified_event_index | none`, where
      `bounded_next_id` is a parameterized operational contract, not a flag:
      `{ schema_version, max_scan_ids, max_rpc_batches, max_transitive_entries,
-     archive_policy, snapshot_policy }`. Verified mode supports the first two by default;
+     archive_policy, snapshot_policy }`. The current checker supports only
+     `bounded_next_id`. An `onchain_list` account needs a distinct state model carrying
+     complete list evidence instead of a `NextId` value before verified mode can accept it;
      a `verified_event_index` must define its completeness proof, trust root, and
-     current-state reconciliation; `none` yields
-     `E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED` — never a partial verdict. The contract API
+     current-state reconciliation. Until those strategies are implemented, they and `none`
+     yield `E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED` — never a partial verdict. The contract API
      alone cannot enumerate (rule IDs are monotonic with holes after removal; the active
      count is not a bound; the next-ID counter is not an exported method), but for
      recognized implementations **ledger state is public**, and the pinned OZ account
