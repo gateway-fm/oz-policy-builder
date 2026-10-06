@@ -702,6 +702,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "generated-soroswap-swap-r0"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-accounts",
+]
+
+[[package]]
 name = "generated-sub-transfer-r0"
 version = "0.1.0"
 dependencies = [
@@ -1034,6 +1042,7 @@ dependencies = [
 name = "ozpb-differential"
 version = "0.1.0"
 dependencies = [
+ "generated-soroswap-swap-r0",
  "generated-sub-transfer-r0",
  "ozpb-codegen",
  "ozpb-domain",

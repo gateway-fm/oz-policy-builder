@@ -417,13 +417,12 @@ fn a_refusal_publishes_nothing() {
 ///
 /// One number is enough for the enforcement event because all four of its fields are
 /// fixed-width: it names the authorization by a 32-byte digest rather than embedding it, so the
-/// size does not depend on what the call was. Here that is assumed rather than swept: the sweep
-/// over a range of argument sizes is `event_payload.rs`, which exercises a Soroswap call and is
-/// therefore later-milestone evidence. That sweep is what validates the assumption this test
-/// rests on; the two do not stand or fall together, because this one pins a single fixture. An
+/// size does not depend on what the call was. The sweep in `event_payload.rs` checks that
+/// property over Soroswap calls with different argument sizes. The two tests do not stand or
+/// fall together, because this one pins a single fixture. An
 /// event that had become size-dependent could still measure 264 bytes for this fixture and pass
 /// here while the sweep fails, and a new fixed-width field moves this number while leaving the
-/// sweep green. Where only this test is present, the assumption is stated and not proven.
+/// sweep green.
 #[test]
 fn an_event_costs_what_the_conformance_record_says_it_costs() {
     use soroban_sdk::xdr::WriteXdr as _;
