@@ -49,26 +49,18 @@ python3 scripts/check-quoted-hashes.py
 # workspace held a banned type. That is the shape of defect this gate exists to prevent, and CI
 # lints the two workspaces separately for the same reason.
 #
-# fmt needs three invocations, for a stronger version of the same reason, and had only one until
-# 30 differences had piled up behind it. `--all` means "the members of this workspace", and the
-# generated policy crate is not a member of one: `contracts` excludes it, since it carries its own
-# `[profile.release]` so it builds standalone as it ships. Running fmt in `contracts` does reach
-# golden-transfer-policy, but only through the differential suite's dev-dependency on it — an edge
-# that exists for testing, not for coverage, and one a later milestone may move — so the crate is
-# named rather than relied upon. Four of the 30 differences were in it, which makes them a defect
-# in the code generator rather than in a checked-in file.
+# `--all` covers only the current workspace. The two generated crates are excluded from
+# `contracts` so they can carry standalone release profiles. Name both explicitly for fmt and
+# clippy, as CI does; compiling one as a dependency does not lint or reliably format it.
 echo "== 2. fmt + clippy (fmt/clippy gates are part of the contract, §4.11) =="
 cargo fmt --all --check
 ( cd contracts && cargo fmt --all --check )
 ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
+( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 cargo clippy --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --all-targets -- -D warnings )
-# The generated crate, which neither invocation above reaches: `contracts` excludes it, and clippy
-# does not lint dependencies, so it entered that run compiled and never linted. CI gained this
-# invocation and the release gate did not, which left the stronger of the two able to pass while
-# the shipped artifact failed `-D warnings`. Named rather than relied upon, for the same reason
-# the fmt invocations below name it.
 ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
+( cd contracts/soroswap-swap-policy && cargo clippy --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --workspace

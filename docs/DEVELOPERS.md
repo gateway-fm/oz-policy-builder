@@ -268,8 +268,12 @@ the tests guide you (TDD: add the failing test first):
    reference semantics). This is the executable spec.
 3. **`crates/codegen`** — emit the check in `emit_lib`'s per-arg match, embedding values as
    validated literals (never interpolated into identifiers); add pre-emission validation in
-   `generate`. Regenerate the committed examples with
-   `UPDATE_GOLDEN=1 cargo test -p ozpb-codegen golden`.
+   `generate`. Regenerate both committed examples by running each fixture test explicitly:
+
+   ```sh
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::golden_crate_matches_committed_output -- --exact
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::soroswap_crate_matches_committed_output -- --exact
+   ```
 4. **`crates/harness`** (Tranche 2) — add mutation cases for it in `build_suite` so the deny
    suite covers the new boundary; add its `concrete_for` arm.
 5. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
