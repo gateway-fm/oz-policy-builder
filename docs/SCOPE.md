@@ -37,6 +37,8 @@ Section numbers refer to `docs/architecture.md`.
    through the compiled policy and checks permit/deny. For the golden fixture's unambiguous
    function, argument, signer, missing-state, and exhausted-counter mutations, it also checks
    the exact denial reason against a hand-stated expectation. Account-side refusals and other
-   generated cases remain verdict-only. The hand-written `differential.rs` checks both verdict
-   and reason for its own cases. Extending exact-reason checks to every generated case remains
-   future work.
+   generated cases remain verdict-only. The Soroswap fixture's generated mutations also run
+   through a registered account (`contracts/differential/tests/swap_generated_suite.rs`), with
+   permit/deny checks over its bounded amounts, exact route, recipient, and caller-chosen deadline.
+   The hand-written `differential.rs` checks both verdict and reason for its own cases. Extending
+   exact-reason checks to every generated case remains future work.

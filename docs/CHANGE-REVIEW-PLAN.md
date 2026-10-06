@@ -60,12 +60,15 @@ requires contract integration through the account, a disposable execution enviro
 and state-dependent live preflight, each with its own evidence and failure status (§4.5).
 Do not infer contract or live behavior from evaluator agreement. Check that deny cases are
 actually denials, including cross-products of accepted tuples and dynamic signer predicates.
-The golden generated-contract comparison in `contracts/differential/tests/generated_suite.rs`
-is partial layer-2 evidence: it runs one fixture's generated mutations through a registered
-smart account's host invocation boundary and checks committed call counts and rollback. It
-does not cover every policy, the full layer-2 stateful behavior, or the later evidence layers
-in §4.5. Label it as partial layer 2 in harness claims and reports; never present it as
-complete layer-2 evidence.
+The golden and Soroswap generated-contract comparisons in
+`contracts/differential/tests/generated_suite.rs` and
+`contracts/differential/tests/swap_generated_suite.rs` are partial layer-2 evidence: both
+run their own fixture's generated mutations through a registered smart account's host
+invocation boundary. The golden test also checks committed call counts and rollback; the
+Soroswap test checks permit/deny over its bounded amounts, exact route, recipient, and
+caller-chosen deadline. They do not cover every policy, the full layer-2 stateful behavior,
+or the later evidence layers in §4.5. Label them as partial layer 2 in harness claims and
+reports; never present them as complete layer-2 evidence.
 Reports state what was committed, mocked, captured, or observed live.
 
 **Authority-surface check.** The trusted reader acquires one coherent ledger snapshot,
