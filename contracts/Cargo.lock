@@ -1077,6 +1077,7 @@ dependencies = [
  "ozpb-policy-spec",
  "serde",
  "serde_json",
+ "stellar-strkey 0.0.18",
 ]
 
 [[package]]

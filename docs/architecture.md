@@ -631,7 +631,9 @@ impl GeneratedPolicy {
 
 ### 4.5 Dry-run harness (`crates/harness`)
 
-> **Scope: Tranche 2.** The dry-run harness is a second-milestone deliverable, described here as design rather than as shipped behavior.
+> **Scope: Tranche 2.** Layer-1 reference evaluation and a golden generated-contract
+> comparison are present. The complete four-layer dry-run described below remains scheduled;
+> present evidence must not be read as a full dry-run.
 
 Trust is earned by demonstrated permit/deny behavior. The harness produces **evidence, not
 proof**: mutation testing shows tested cases behave correctly; it cannot show that every
@@ -665,7 +667,8 @@ The harness therefore runs **four evidence layers**, each labeled in the report:
 **Deny suite — derived from constraints, not a fixed list.** For each accepted call tuple,
 the generator derives: equality mutations for every scalar and nested value; below/at/above
 numeric boundaries (plus min/max extremes); empty, reordered, duplicated, truncated, and
-extended collections; cross-products across accepted tuples (must all deny unless observed);
+extended collections; cross-products across accepted tuples (deny only when no accepted tuple
+admits the mix, including through a range or wildcard);
 absent/extra/wrong/partially-satisfying signer sets **and mutated signer sets against strict
 mode**; alternate rule IDs and context orderings; zero, maximum, and overflow-adjacent call
 counts; times just before/at/after each boundary; wrong target contract and network;
