@@ -8,9 +8,11 @@ Section numbers refer to `docs/architecture.md`.
 
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
    reconciliation and transitive closure). The largest remaining gap to RFP #7:
-   `prepare_install_intent` requires a `Safe` authority-surface verdict, and the pure core is
-   complete and tested but fed a caller-supplied snapshot. Excluded because it is only
-   verifiable against a live network, so most of it cannot be test-driven offline.
+   `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
+   implemented and tested over supplied `bounded_next_id` observations, but it rejects
+   policy-bearing administrative rules until signer enforcement can be proven. The live
+   reader is excluded because it is only verifiable against a live network, so most of it
+   cannot be test-driven offline.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,

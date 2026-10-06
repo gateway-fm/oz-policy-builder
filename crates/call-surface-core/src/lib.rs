@@ -27,6 +27,9 @@
 //! An external-verifier signer on the designated admin rule is likewise unsupported until
 //! same-ledger verifier code and reviewed capability evidence are supplied. It cannot be
 //! treated as a strong admin merely because its signer entry exists.
+//! A policy-bearing admin rule is also unsupported: the account delegates signer checks
+//! to its policies, and recognizing their code hashes does not prove they enforce the
+//! admin signers. A policy-free admin rule uses the account's own signer validation.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
@@ -108,6 +111,7 @@ pub struct BoundPolicy {
 
 /// Recognition evidence already validated by the trusted adapter. The pure core checks
 /// the observed code hash; it does not validate registry signatures or reproduce builds.
+/// Recognition alone does not prove signer enforcement for a policy-bearing admin rule.
 #[derive(Clone, Debug)]
 pub struct VerifiedPolicy {
     pub wasm_hash: String,
@@ -441,6 +445,12 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
         return Err(CheckError::AdminRuleUnsafe(
             admin.id,
             format!("it references unrecognized policy {unrecognized}"),
+        ));
+    }
+    if !admin.policy_ids.is_empty() {
+        return Err(CheckError::AdminRuleUnsafe(
+            admin.id,
+            "a policy-bearing administrative rule needs proof that its policies enforce the required admin signers; this core has no such proof".to_string(),
         ));
     }
 
@@ -925,15 +935,18 @@ mod tests {
     }
 
     #[test]
-    fn same_policy_at_the_reviewed_hash_is_recognized() {
-        // The other half of the pair: identical shape, hash untouched, and the account is
-        // safe. Without this the test above would also pass if the check simply refused
-        // every admin rule that references a policy.
+    fn recognized_policy_does_not_prove_admin_signer_enforcement() {
+        // A matching observed hash establishes which policy runs, but says nothing about
+        // whether it enforces the administrative rule's signers. The account delegates
+        // that validation whenever the rule has a policy attached.
         let mut st = healthy_state();
         st.rules.get_mut(&0).expect("admin rule").policy_ids = vec![0];
 
-        let v = check(&base_input(&st)).expect("the reviewed hash must be recognized");
-        assert_eq!(v.result, CheckResult::Safe);
+        let err = check(&base_input(&st)).unwrap_err();
+        assert!(matches!(
+            err,
+            CheckError::AdminRuleUnsafe(0, reason) if reason.contains("policy-bearing")
+        ));
     }
 
     #[test]

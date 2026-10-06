@@ -176,7 +176,8 @@ pub fn check_observed_call_surface_with_build_config(
     // A policy already installed in another rule is recognized only if its *observed*
     // implementation resolves in the signed registry. Address-only recognition would let an
     // upgrade at that address pass. Generated policies outside the binding set need their own
-    // reproduced manifest and are therefore deliberately left unrecognized here.
+    // reproduced manifest and are therefore deliberately left unrecognized here. The core
+    // still refuses policy-bearing admin rules: code recognition is not signer proof.
     for policy in observation.account_state.policies.values() {
         if recognized_policies.contains_key(&policy.address) {
             continue;
@@ -710,6 +711,31 @@ mod tests {
         };
         let output = check(&request, &observation).unwrap();
         assert!(matches!(output.verdict.result, CheckResult::Unsafe { .. }));
+    }
+
+    #[test]
+    fn reviewed_policy_on_admin_rule_does_not_prove_admin_signers() {
+        let (request, mut observation) = fixture();
+        let reviewed_hash = request.binding_set.bindings[0].observed_wasm_hash.clone();
+        observation.account_state.policies.insert(
+            2,
+            StoredPolicy {
+                id: 2,
+                address: address(42),
+                observed_wasm_hash: reviewed_hash,
+            },
+        );
+        observation
+            .account_state
+            .rules
+            .get_mut(&observation.admin_rule_id)
+            .unwrap()
+            .policy_ids
+            .push(2);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EAdminRuleUnsafe);
+        assert!(error.message.contains("policy-bearing"));
     }
 
     #[test]
