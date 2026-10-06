@@ -41,4 +41,7 @@ Section numbers refer to `docs/architecture.md`.
    through a registered account (`contracts/differential/tests/swap_generated_suite.rs`), with
    permit/deny checks over its bounded amounts, exact route, recipient, and caller-chosen deadline.
    The hand-written `differential.rs` checks both verdict and reason for its own cases. Extending
-   exact-reason checks to every generated case remains future work.
+   exact-reason checks to every generated case remains future work. A local two-rule account test
+   demonstrates that overlapping counted grants have independent rule-ID counters and can exceed
+   one installation's cap in aggregate. Its rule setup uses mocked management authorization; it
+   does not establish a safe reconfiguration flow, disposable target execution, or live preflight.
