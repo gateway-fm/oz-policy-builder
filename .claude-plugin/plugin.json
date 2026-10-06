@@ -1,0 +1,16 @@
+{
+  "name": "oz-policy-builder",
+  "version": "0.1.0",
+  "description": "Record Stellar authorizations and draft scoped smart-account policies with labeled evidence.",
+  "author": { "name": "Gateway.fm" },
+  "license": "Apache-2.0 OR MIT",
+  "mcpServers": {
+    "ozpb": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server-dev.sh",
+      "env": {
+        "RUST_LOG": "warn",
+        "CARGO_TARGET_DIR": "${CLAUDE_PLUGIN_DATA}/target"
+      }
+    }
+  }
+}

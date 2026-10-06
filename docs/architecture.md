@@ -738,9 +738,11 @@ Design rules:
   limits. Self-hostable by anyone (`docker run`, image pinned by digest).
 - **Privacy:** request bodies and recording bundles are confidential by default (§6.5).
 
-### 4.7 Agent skill (`skill/`)
+### 4.7 Agent skill (`skills/policy-builder/`)
 
-> **Scope: Tranche 2.** The agent skill is a second-milestone deliverable, described here as design rather than as shipped behavior.
+> **Scope: Tranche 2.** `skills/policy-builder/SKILL.md` and the Claude plugin are available.
+> They guide recording, synthesis, layer-1 reference checks, generation, and verification.
+> Full contract/live dry-run evidence and wallet installation remain scheduled work.
 
 A packaged Claude skill (portable to other agent frameworks — the skill layer is thin by
 design) that wraps the MCP tools with the conversational entry point the RFP describes:
@@ -756,20 +758,18 @@ policy."*
   strict-vs-dynamic signer semantics, and — always — the delegate signer set), and the
   skill is instructed to resolve each one explicitly before finalizing.
   High-blast-radius widenings are called out as such.
-- **Confirm-before-deploy, layered:**
-  1. deployment/signing is not an MCP capability at all (§4.6);
-  2. the install-handoff step is a human-invoked flow (`disable-model-invocation` on the
-     install sub-skill), and any wallet-adjacent tool is marked to require per-call user
-     interaction so no permission mode can skip the prompt;
-  3. the skill body mandates: show final Rust + dry-run evidence report + call-surface
-     check result + plain-English summary of the grant (including what it does *not*
-     enforce — §6.1 trust boundary and permission-bundle independence), obtain explicit
-     confirmation, then hand off to the wallet flow or emit CLI instructions — never chain
-     past that point.
-- **Packaging:** a Claude plugin bundling `skills/policy-builder/SKILL.md` + `.mcp.json`
-  (stdio for the local binary; HTTP for the hosted endpoint), installable via marketplace or
-  as a committed project-level `.claude/skills` + `.mcp.json` pair. The MCP interface follows
-  the RFP-referenced Cloudflare Agent Setup conventions for how plugins/MCP/skills compose.
+- **Current stopping point:** deployment and signing are not MCP capabilities (§4.6). The
+  skill shows the generated Rust, layer-1 reference report, verification dimensions, and a
+  plain-English account of the grant and its unconstrained parts (§6.1). It stops before
+  installation. A complete dry run, live authority-surface check, and wallet review are
+  prerequisites for a future install handoff; the current skill does not claim they ran.
+- **Future install handoff:** keep it human-invoked (`disable-model-invocation` on the install
+  sub-skill), require per-call user interaction for wallet-adjacent tools, and show the full
+  dry-run report and live call-surface result before explicit confirmation. The agent must
+  never chain past confirmation into signing or submission.
+- **Packaging:** the Claude plugin bundles `skills/policy-builder/SKILL.md` and a stdio MCP
+  server entry in `.claude-plugin/plugin.json`. The repository-level `.mcp.json` also works
+  for local tool use without the skill. A hosted endpoint is separate future work.
 
 ### 4.8 Wallet integration (`wallet/`)
 
@@ -1108,7 +1108,8 @@ contracts/
                     # stellar-accounts, pinned)
   fixtures/         # test accounts / verifiers / target contracts for the harness
 wallet/             # TS workspace (pollywallet integration package)
-skill/              # Claude plugin (SKILL.md + .mcp.json)
+skills/policy-builder/  # Claude plugin skill (SKILL.md)
+.claude-plugin/         # Claude plugin manifest and bundled MCP server entry
 ```
 
 **Dependency rules — enforced in CI, not by convention.** Shells depend on cores, never the
@@ -1607,7 +1608,7 @@ as the toolkit's stewards.
 | Policy primitives | OpenZeppelin `stellar-accounts` (audited release; MIT) — `spending_limit`, `simple_threshold`, `weighted_threshold` + `Policy` trait, resolved by reviewed wasm hash via the capability registry |
 | Core toolkit | Rust workspace: `stellar-xdr` 27.x, `stellar-rpc-client` 27.x, `stellar-strkey`; property testing via `proptest`; independent reference evaluator crate |
 | MCP | official Rust SDK `rmcp` 2.x — stdio + streamable HTTP, typed schemas (`schemars`), structured outputs, elicitation |
-| Agent skill | Claude plugin (SKILL.md + bundled `.mcp.json`); portable skill text for other frameworks |
+| Agent skill | Claude plugin (`skills/policy-builder/SKILL.md` + manifest-bundled MCP server); portable skill text for other frameworks |
 | Wallet | pollywallet (TanStack/React) + `smart-account-kit`; OZ Relayer Channels for submission (direct RPC fallback) |
 | RPC | any Stellar RPC (config; hosted service allowlists endpoints); Gateway public mainnet/testnet endpoints as defaults |
 | CI | determinism jobs, differential evaluator-vs-wasm jobs, registry fail-closed/rollback tests, adversarial direct-call suite, testnet E2E, version-matrix builds, publication-allowlist negative tests; reproducible wasm via digest-pinned containerized toolchain |
