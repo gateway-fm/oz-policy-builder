@@ -14,10 +14,11 @@ Section numbers refer to `docs/architecture.md`.
    rule-state reader requires live network verification and remains scheduled.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
-   keys. It distinguishes returned entries with usable TTL metadata from omitted keys. The RPC's
-   reported ledger sequence is endpoint metadata, not proof of a coherent account-state snapshot.
-   These raw reads do not derive the complete rule set, resolve archive uncertainty, or identify
-   the administrator. Live endpoint behavior needs separate verification.
+   keys. It distinguishes returned entries with usable TTL metadata from omitted keys, and a pure
+   decoder understands the pinned account's rule, signer, policy, and instance-counter shapes.
+   The RPC's reported ledger sequence is endpoint metadata, not proof of a coherent account-state
+   snapshot. These pieces do not derive the complete rule set, resolve archive uncertainty, or
+   identify the administrator. Live endpoint behavior needs separate verification.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,

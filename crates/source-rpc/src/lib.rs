@@ -8,7 +8,12 @@
 
 #![forbid(unsafe_code)]
 
+mod account_storage;
 mod contract_data;
+pub use account_storage::{
+    decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
+    ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
+};
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 
 use ozpb_recorder_core::{
