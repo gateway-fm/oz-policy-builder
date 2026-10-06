@@ -19,6 +19,13 @@ Section numbers refer to `docs/architecture.md`.
    These raw reads do not derive the complete rule set, resolve archive uncertainty, or identify
    the administrator. Live endpoint behavior needs separate verification.
 
+   The toolkit has an internal install-intent draft that checks a spec, binding set, and
+   supplied authority artifact for identity and structural consistency, then derives typed
+   account arguments. It cannot authenticate the supplied `Safe` claim, prove a complete
+   exported-method inventory or transitive ledger reads, or establish freshness. It is not
+   exported through the CLI or MCP server; a trusted reader and complete method-level evidence
+   are required before that operation can be offered for wallet review.
+
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
    canonicalization version, build target). The builder is labelled `local-unattested`, which
