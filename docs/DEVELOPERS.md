@@ -37,16 +37,17 @@ publication boundary; it does not require a commit-origin marker.
 ## 1. Using the toolkit
 
 Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
-(`ozpb-mcp-server`). Both expose the same operations; the pipeline is:
+(`ozpb-mcp-server`). Their available policy-drafting path is:
 
 ```
-record → synthesize → dry_run (prove) → generate → verify → prepare_install_intent
+record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-`dry_run`, `verify`, and `prepare_install_intent` are **Tranche 2** — they depend on the
-later dry-run/installation layers. The first-milestone path is `record → synthesize → generate`;
-`evaluate_spec` is an optional pure check of the generated scope and returns `indeterminate`
-when a reviewed policy would make a whole-composition verdict unsafe.
+The complete `dry_run`, live authority-surface check, and `prepare_install_intent` are
+scheduled operations, not CLI or MCP commands. `reference_suite` is layer-1 evidence only;
+`verify` reproduces source and Wasm but does not perform live preflight. `evaluate_spec` is
+an optional pure check of a candidate invocation and returns `indeterminate` when a
+reviewed policy would make a whole-composition verdict unsafe.
 
 ### CLI
 
@@ -66,7 +67,7 @@ ozpb synthesize --bundle rec.json --selected-authorizer <C…> \
   --registry-roots registry-roots.json \
   --decisions decisions.json --template-family policy-templates/scope@1 > syn.json
 
-# 3. [Tranche 2] inspect layer-1 reference evidence over the constraint-derived suite.
+# 3. inspect layer-1 reference evidence over the constraint-derived suite.
 # This is offline evidence, not the full four-layer dry run or proof of all possible calls.
 # `synthesize` prints an envelope — the spec, its canonical hash and the per-constraint rationale —
 # while every stage below takes a bare PolicySpec. Handing over the envelope is a parse error rather
@@ -79,24 +80,23 @@ ozpb reference-suite --spec spec.json
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
 ozpb generate --spec spec.json --rule 0 --out ./generated
 
-# 5. [Tranche 2] reproduce the complete generated crate + Wasm + manifest.
+# 5. reproduce the complete generated crate + Wasm + manifest.
 # The crate root matters: Cargo.toml, toolchain settings, and every src/ file are checked.
 # Live network preflight remains separate.
 ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
 
-# 6. [Tranche 2] the pure install intent (assemble/sign/submit are wallet-owned). Requires
-#    the exact installed bindings and a Safe authority-surface verdict — see
-#    check-call-surface, also Tranche 2.
-ozpb prepare-install --spec spec.json --rule 0 \
-  --binding-set bindings.json --call-surface-verdict verdict.json
 ```
+
+The install-intent design in §4.8 requires exact installed bindings and a trusted `Safe`
+authority-surface verdict. No CLI command produces that verdict or intent yet; assembly,
+signing, and submission remain wallet-owned.
 
 ### Build configuration (operator-side)
 
-`generate`, `verify` and `check-call-surface` (the latter two are Tranche 2) compile the policy, and all three
-accept the same flags (each with an env fallback the MCP server reads too):
+`generate` and `verify` compile the policy and accept the same build flags (each with an
+environment fallback the MCP server reads too):
 
 | Flag | Env | Default |
 |---|---|---|
@@ -193,15 +193,15 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
-`docs/MCP-WALKTHROUGH.md` is how to use this server: build it once and Claude Code picks it
-up from `.mcp.json` — a stdio server is spawned by the client per session, so there is nothing
-to start or connect to. That page also covers what each tool needs, the two answers that look
-like bugs and are not, and, in an appendix, the raw JSON-RPC for when you want the wire.
+`docs/MCP-WALKTHROUGH.md` covers the server and the `policy-builder` Claude skill. The
+repository's `.mcp.json` exposes the server for local tool use; `claude --plugin-dir .` loads
+the packaged skill and its server entry. The wrapper refreshes a plugin binary from source
+in Claude's persistent plugin data directory and launches a stdio server per session. The
+walkthrough also covers tool inputs and raw JSON-RPC.
 
 ```bash
 cargo build -r -p ozpb-mcp-server
-# stdio (Claude Code, default) — see .mcp.json; the agent skill it pairs with,
-# skills/policy-builder/SKILL.md, is Tranche 2
+# stdio (Claude Code, default) — see .mcp.json or .claude-plugin/plugin.json
 target/release/ozpb-mcp-server
 # streamable HTTP (self-hostable endpoint)
 target/release/ozpb-mcp-server --http 127.0.0.1:8080   # → /v1/mcp
@@ -211,13 +211,14 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
 
 - **Tranche 1** — `record_transaction`, `record_simulation`, `import_recording`,
   `synthesize_policy`, `evaluate_spec`, `generate_code`.
-- **Tranche 2** — `dry_run`, `verify`, `check_against_policy`,
-  `check_policy_call_surface`, `prepare_install_intent`. The
-  dry-run harness, the authority-surface check and the install intent are second-milestone
-  deliverables, so a Tranche 1 delivery is not reviewed against these three.
+- **Available reference and verification tools** — `reference_suite` (layer 1 only) and
+  `verify` (artifact reproduction with separately labeled limits).
+- **Scheduled, not exposed** — `dry_run`, `check_against_policy`,
+  `check_policy_call_surface`, `prepare_install_intent`. The full dry-run harness, live
+  authority-surface check, and install intent need their own evidence before exposure.
 
-They are listed by milestone rather than counted, because any single total is wrong for one of
-the two trees. Errors carry stable machine-readable codes (`E_*`). The server never deploys,
+This list separates tools the server exposes from operations still under development. Errors
+carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`

@@ -10,16 +10,18 @@ Nothing here holds a key or deploys anything.
 
 ---
 
-## 1. Build it, then just use Claude Code
+## 1. Use the server and skill with Claude Code
 
 ```bash
 cargo build -r -p ozpb-mcp-server
 ```
 
-That is the whole setup. `.mcp.json` in the repository root points at
-`scripts/mcp-server-dev.sh`, which runs that binary with registry trust configured — without it
-`synthesize_policy` refuses to run at all. So a Claude Code session started in this directory has
-the tools available.
+For the guided flow, run `claude --plugin-dir .` from this checkout and invoke
+`/oz-policy-builder:policy-builder`. The plugin bundles the skill and an MCP server entry.
+For direct tool use, the repository's `.mcp.json` also points at
+`scripts/mcp-server-dev.sh`. The wrapper refreshes plugin builds in Claude's persistent
+plugin data directory and starts the server with development registry trust configured;
+without trust roots, `synthesize_policy` refuses.
 
 **The trust that wrapper installs is the committed development pair, and it is not a production
 configuration.** `docs/examples/registry-roots.json` is a key this repository publishes, so
@@ -61,11 +63,10 @@ one comes back as `E_RETENTION_EXPIRED` rather than a guess. If you have no hash
 path instead — "what would a transfer of 1 XLM from `C…` to `G…` require?" — which needs no
 hash and no signature.
 
-**Going further than one command is better done with the skill.** The full flow needs
-decisions only you can make — how long the grant lives, a call cap, a spend limit, which
-signer — and a bare agent asks for those unevenly, or guesses. Systematically asking them is
-the skill's job, and the skill is a later milestone (§4.7). Driving the rest by hand is
-covered in the appendix; driving it conversationally is worth waiting for.
+**Going further than one command is better done with the skill.** The flow needs decisions
+only you can make — how long the grant lives, a call cap, a spend limit, which signer.
+The skill asks for them and guides the available record, synthesize, reference, generate,
+and verify tools. It stops before deployment or installation (§4.7).
 
 ### Two more things worth trying
 
@@ -79,7 +80,9 @@ Because they are what a reviewer will ask:
 
 ## 2. What each tool needs
 
-Only two are pure. Knowing which is which saves a confusing failure.
+`evaluate_spec`, `reference_suite`, `synthesize_policy`, and `import_recording` run offline;
+network recording reads RPC, while generation and verification build Wasm. Knowing which is
+which saves a confusing failure.
 
 | Tool | Needs |
 |---|---|
@@ -88,10 +91,13 @@ Only two are pure. Knowing which is which saves a confusing failure.
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
 | `record_simulation` | the network, but no signature and no custody: it asks what an *unsigned* envelope would require. This is the path the demo script uses |
 | `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap. Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
+| `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |
+| `verify` | the spec, selected rule, complete generated non-lock files, claimed Wasm and BuildManifest; reports reproduction and evidence limits separately |
 
-To see them in sequence without an agent, run `bash scripts/demo-tranche1.sh`: it drives the
-same operations through the CLI and keeps every input and output as a file.
+To see recording and synthesis in sequence without an agent, run
+`bash scripts/demo-tranche1.sh`: it drives those operations through the CLI and keeps every
+input and output as a file.
 
 ## 3. Synthesizing a policy, in one request
 
@@ -251,12 +257,12 @@ Every command on this page was run to write it, and the outputs are pasted from 
 
 ## What this does not show
 
-No policy is installed and nothing is signed, here or anywhere in this milestone. The
-permit/deny dry-run report, the wallet install flow and the hosted endpoint are the next
-tranche's deliverables. `evaluate_spec` is the reference evaluator answering about a spec —
+No policy is installed and nothing is signed here. The complete permit/deny dry-run report,
+wallet install flow, and hosted endpoint are scheduled work. `evaluate_spec` is the reference
+evaluator answering about a spec —
 not a smart account executing a policy, which is a different and stronger claim that belongs
 with the harness.
 
-The agent skill that pairs with this server — its clarification questions, its
-confirm-before-deploy flow — is also a later milestone. Without it, an agent driving these
-tools is capable and unguided; that gap is the reason the skill exists.
+The `policy-builder` skill guides the available tools and stops at an artifact and evidence
+summary. Its layer-1 reference suite is not the full contract/live dry run. The complete
+dry-run report, wallet install flow, and hosted endpoint remain scheduled work.
