@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod account_reconciliation;
 mod account_storage;
 mod contract_data;
 pub use account_storage::{

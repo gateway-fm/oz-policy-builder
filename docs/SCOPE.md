@@ -16,6 +16,9 @@ Section numbers refer to `docs/architecture.md`.
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes returned entries with usable TTL metadata from omitted keys, and a pure
    decoder understands the pinned account's rule, signer, policy, and instance-counter shapes.
+   An internal consistency check can compare supplied rule slots, `Count`, and transitive
+   reference counts; it does not authenticate those values, handle absent counters on a pristine
+   account, or inspect reverse lookup keys.
    The RPC's reported ledger sequence is endpoint metadata, not proof of a coherent account-state
    snapshot. These pieces do not derive the complete rule set, resolve archive uncertainty, or
    identify the administrator. Live endpoint behavior needs separate verification.
