@@ -15,11 +15,19 @@ offline result is safe to install. Discover the server's current tool schemas be
 ## Record the authorization
 
 Ask for one of these inputs: a recent executed transaction hash, an unsigned transaction
-envelope to simulate, or a recording bundle. Call `record_transaction`, `record_simulation`, or
-`import_recording` accordingly. Ask for the network and RPC source the tool needs; do not choose
-an endpoint or trust root on the user's behalf. A simulation is proposed behavior, not an
-executed transaction. An imported bundle is self-supplied evidence, even if it claims stronger
-trust. Treat a server refusal as a refusal and explain what evidence is missing.
+envelope to simulate, a raw-XDR evidence document, or an existing `RecordingBundle`.
+Use `record_transaction` for a hash and `record_simulation` for an envelope. Use
+`import_recording` only for the raw-XDR document; its input requires
+`network_passphrase`, `envelope_xdr_base64`, and `successful`, with optional result XDR,
+result metadata, ledger, and timestamp. If the user already has a `RecordOutput.bundle` or
+`RecordingBundle`, put that bundle directly in `SynthesizeInput.bundles`; do not import it
+again. Synthesis verifies the bundle's internal consistency and lowers any claimed RPC
+trust to `self_supplied`. Ask for the network and RPC source when a network tool needs them;
+do not choose an endpoint or trust root on the user's behalf. A simulation is proposed
+behavior, not an executed transaction. A raw-XDR import with result XDR can be labeled
+`self_supplied` when the result agrees with the claimed outcome; without result XDR it is
+`incomplete` and cannot drive synthesis. Treat a server refusal as a refusal and explain
+what evidence is missing.
 
 Show the recorded account, target contracts, functions, relevant arguments, observed code
 identities, and evidence trust level. If a recording includes several independent calls, explain
