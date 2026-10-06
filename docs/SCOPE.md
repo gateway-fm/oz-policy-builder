@@ -32,8 +32,11 @@ Section numbers refer to `docs/architecture.md`.
 
 4. **Encoded-literal rendering** — template-pack v2, and one deliberate artifact-hash break.
 
-5. **Generated-suite verdict agreement.** The golden transfer fixture's generated suite
+5. **Complete generated-suite reason agreement.** The golden transfer fixture's generated suite
    (`contracts/differential/tests/generated_suite.rs`) now replays every constraint-derived case
-   through the compiled policy and checks permit/deny. It does not compare exact denial reasons.
-   The hand-written `differential.rs` checks both verdict and reason for fewer cases. Extending
-   that reason check to every generated case remains future work.
+   through the compiled policy and checks permit/deny. For the golden fixture's unambiguous
+   function, argument, signer, missing-state, and exhausted-counter mutations, it also checks
+   the exact denial reason against a hand-stated expectation. Account-side refusals and other
+   generated cases remain verdict-only. The hand-written `differential.rs` checks both verdict
+   and reason for its own cases. Extending exact-reason checks to every generated case remains
+   future work.

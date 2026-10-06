@@ -2,8 +2,9 @@
 //!
 //! `harness::build_suite` derives cases from this fixture's constraints. This test replays
 //! every case through the compiled policy in a committed-state Soroban environment and
-//! checks its permit/deny verdict against the harness expectation. It covers this fixture
-//! and these generated mutations, not every policy or all four dry-run layers.
+//! checks its permit/deny verdict against the harness expectation. Selected mutations also
+//! check exact reasons against hand-stated fixture expectations. This covers one fixture,
+//! not every policy or all four dry-run layers.
 //!
 //! This test alone in the contracts workspace uses the harness. The existing differential
 //! tests retain their independent, hand-written cases.
@@ -11,7 +12,7 @@
 use generated_sub_transfer_r0::contract::{GeneratedPolicy, PolicyStorageKey};
 use ozpb_evaluator::{ArgValue, Invocation};
 use ozpb_harness::{build_suite, Case, MutationClass};
-use ozpb_policy_spec::{SignerSpec, StateSpec};
+use ozpb_policy_spec::{Constraint, PredicateKind, SignerSpec, StateSpec};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext, CustomAccountInterface};
 use soroban_sdk::crypto::Hash;
@@ -20,7 +21,7 @@ use soroban_sdk::{
     contract, contractimpl, Address, Bytes, Env, IntoVal, Map, Symbol, Val, Vec as SVec,
 };
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use stellar_accounts::smart_account::{
     add_context_rule, do_check_auth, AuthPayload, ContextRuleType, Signer, SmartAccount,
     SmartAccountError,
@@ -267,6 +268,103 @@ fn generated_deny_suite_agrees_with_the_real_contract() {
             case.label, case.class, permitted, case.expect_permit, result.err()
         );
     }
+}
+
+#[test]
+fn generated_golden_denials_preserve_the_expected_reason() {
+    let spec = fx::golden_spec();
+    let [rule] = spec.spec().rules.as_slice() else {
+        panic!("this reason oracle is scoped to the one-rule golden fixture");
+    };
+    let [call] = rule.allowed_calls.as_slice() else {
+        panic!("this reason oracle requires one complete allowed tuple");
+    };
+    assert_eq!(call.fn_name, "transfer");
+    assert!(call.args.iter().all(|arg| matches!(
+        arg.constraint,
+        Constraint::EqAddress { .. } | Constraint::EqI128 { .. }
+    )));
+    assert_eq!(rule.authorization.kind, PredicateKind::AnyOf);
+    assert!(rule.authorization.strict_signer_set);
+    assert_eq!(
+        rule.authorization.signers,
+        vec![SignerSpec::Delegated {
+            address: fx::golden_delegate_strkey(),
+        }]
+    );
+    let [StateSpec::CallCountPerInstallation { max_calls }] = rule.state.as_slice() else {
+        panic!("this reason oracle requires one per-installation call cap");
+    };
+
+    let mut covered = BTreeSet::new();
+    for case in build_suite(&spec) {
+        // These expected codes follow from the fixed fixture and one mutation at a
+        // time. They are hand-stated here, not obtained from the evaluator or the
+        // generated policy. Target, expiry, and unknown-signer cases can be refused
+        // by the account before the policy runs, so they are outside this oracle.
+        let expected_code = match case.class {
+            MutationClass::DifferentFunction => Some(5), // FunctionNotAllowed
+            MutationClass::ArgEquality
+            | MutationClass::NumericBoundary
+            | MutationClass::DifferentAddressArg
+            | MutationClass::ArgArity
+            | MutationClass::TypeConfusion => Some(6), // NoTupleMatched
+            MutationClass::ZeroSigners => Some(1),       // ZeroSigners
+            MutationClass::StrictSetMutation => {
+                let authenticated = case
+                    .context
+                    .authenticated_signers
+                    .first()
+                    .expect("strict-set cases retain the golden delegate");
+                if case.context.rule_live_signers.contains(authenticated) {
+                    Some(3) // SignerSetDiverged: the delegate still matches a grown live set.
+                } else {
+                    // The account rejects a swapped set's now-unknown signer first.
+                    None
+                }
+            }
+            MutationClass::MissingState => Some(8), // MissingState
+            MutationClass::CallCountBoundary
+                if case
+                    .context
+                    .call_count_so_far
+                    .is_some_and(|used| used >= *max_calls) =>
+            {
+                Some(7) // CallCountExceeded
+            }
+            _ => None,
+        };
+        let Some(code) = expected_code else { continue };
+        assert!(
+            !case.expect_permit,
+            "{} changed from a denial to a permit in the generated suite",
+            case.label
+        );
+        assert_eq!(
+            run_case(&case),
+            Err(soroban_sdk::Error::from_contract_error(code)),
+            "{} ({:?}) must return policy error {code}",
+            case.label,
+            case.class
+        );
+        covered.insert(case.class);
+    }
+    assert_eq!(
+        covered,
+        BTreeSet::from([
+            MutationClass::DifferentFunction,
+            MutationClass::ArgEquality,
+            MutationClass::NumericBoundary,
+            MutationClass::DifferentAddressArg,
+            MutationClass::ArgArity,
+            MutationClass::TypeConfusion,
+            MutationClass::ZeroSigners,
+            MutationClass::StrictSetMutation,
+            MutationClass::MissingState,
+            MutationClass::CallCountBoundary,
+        ]),
+        "a fixture change must not silently remove a reason-checked class"
+    );
 }
 
 #[test]
