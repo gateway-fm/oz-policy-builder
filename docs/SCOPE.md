@@ -11,12 +11,13 @@ Section numbers refer to `docs/architecture.md`.
    `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
    implemented and tested over supplied `bounded_next_id` observations, but it rejects
    policy-bearing administrative rules until signer enforcement can be proven. The full live
-   rule-state reader is excluded because it requires live network verification; most of it
-   cannot be tested offline.
+   rule-state reader requires live network verification and remains scheduled.
 
-   `source-rpc` can now read a bounded set of contract-instance Wasm hashes in one checked
-   RPC response. Its reported ledger sequence is endpoint metadata, not proof of a coherent
-   account-state snapshot; it does not enumerate rules or identify the administrator.
+   `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
+   keys. It distinguishes returned entries with usable TTL metadata from omitted keys. The RPC's
+   reported ledger sequence is endpoint metadata, not proof of a coherent account-state snapshot.
+   These raw reads do not derive the complete rule set, resolve archive uncertainty, or identify
+   the administrator. Live endpoint behavior needs separate verification.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
