@@ -10,15 +10,14 @@
 
 use generated_sub_transfer_r0::contract::{GeneratedPolicy, PolicyStorageKey};
 use ozpb_evaluator::{ArgValue, Invocation};
-use ozpb_harness::{build_suite, Case};
-use ozpb_policy_spec::SignerSpec;
+use ozpb_harness::{build_suite, Case, MutationClass};
+use ozpb_policy_spec::{SignerSpec, StateSpec};
 use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext, CustomAccountInterface};
 use soroban_sdk::crypto::Hash;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{
-    contract, contractimpl, vec as svec, Address, Bytes, Env, IntoVal, Map, Symbol, Val,
-    Vec as SVec,
+    contract, contractimpl, Address, Bytes, Env, IntoVal, Map, Symbol, Val, Vec as SVec,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -128,16 +127,22 @@ fn context_of(env: &Env, map: &AddrMap, inv: &Invocation) -> Context {
     })
 }
 
-fn run_case(case: &Case) -> Result<(), String> {
+struct InstalledWorld {
+    env: Env,
+    policy: Address,
+    account: Address,
+    rule_id: u32,
+}
+
+fn installed_world(rule_live_signers: &[SignerSpec]) -> InstalledWorld {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger()
         .with_mut(|ledger| ledger.sequence_number = 1_000);
     let policy = env.register(GeneratedPolicy, ());
     let account = env.register(HarnessAccount, ());
-    let map = AddrMap::new(&env, &account);
-    let target = map.get(&fx::golden_token_strkey());
-    let live_signers = signers(&env, &map, &case.context.rule_live_signers);
+    let target = Address::from_str(&env, &fx::golden_token_strkey());
+    let live_signers = signers(&env, &AddrMap::new(&env, &account), rule_live_signers);
     let mut policies = Map::new(&env);
     policies.set(policy.clone(), 0u32.into_val(&env));
     let stored_rule = env.as_contract(&account, || {
@@ -151,42 +156,82 @@ fn run_case(case: &Case) -> Result<(), String> {
         )
     });
 
-    // The account installed the policy through the real add_context_rule path. Adjust
-    // committed policy state to the case's boundary value after installation.
-    env.as_contract(&policy, || {
-        let key = PolicyStorageKey::CallCount(account.clone(), stored_rule.id);
-        match case.context.call_count_so_far {
-            None => env.storage().persistent().remove(&key),
-            Some(n) => {
-                env.storage().persistent().set(&key, &n);
-            }
+    InstalledWorld {
+        env,
+        policy,
+        account,
+        rule_id: stored_rule.id,
+    }
+}
+
+fn call_count(world: &InstalledWorld) -> Option<u32> {
+    world.env.as_contract(&world.policy, || {
+        world
+            .env
+            .storage()
+            .persistent()
+            .get(&PolicyStorageKey::CallCount(
+                world.account.clone(),
+                world.rule_id,
+            ))
+    })
+}
+
+fn set_call_count(world: &InstalledWorld, count: Option<u32>) {
+    world.env.as_contract(&world.policy, || {
+        let key = PolicyStorageKey::CallCount(world.account.clone(), world.rule_id);
+        match count {
+            None => world.env.storage().persistent().remove(&key),
+            Some(value) => world.env.storage().persistent().set(&key, &value),
         }
     });
+}
 
+fn authorize(world: &InstalledWorld, cases: &[&Case]) -> Result<(), soroban_sdk::Error> {
+    let first = cases.first().expect("authorization needs a context");
+    let env = &world.env;
     env.ledger()
-        .with_mut(|l| l.sequence_number = case.context.current_ledger.0);
+        .with_mut(|l| l.sequence_number = first.context.current_ledger.0);
+    let map = AddrMap::new(env, &world.account);
 
-    let ctx = context_of(&env, &map, &case.invocation);
-    let mut authenticated = Map::new(&env);
-    for authenticated_signer in &case.context.authenticated_signers {
-        authenticated.set(signer(&map, authenticated_signer), Bytes::new(&env));
+    let mut authenticated = Map::new(env);
+    for authenticated_signer in &first.context.authenticated_signers {
+        authenticated.set(signer(&map, authenticated_signer), Bytes::new(env));
     }
     let payload = AuthPayload {
         signers: authenticated,
-        context_rule_ids: svec![&env, stored_rule.id],
+        context_rule_ids: SVec::from_iter(env, cases.iter().map(|_| world.rule_id)),
     };
-    let auth_contexts = svec![&env, ctx];
-    let signature_payload: Hash<32> = env.crypto().sha256(&Bytes::new(&env));
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        env.as_contract(&account, || {
-            do_check_auth(&env, &signature_payload, &payload, &auth_contexts)
-        })
-    }));
+    let auth_contexts = SVec::from_iter(
+        env,
+        cases
+            .iter()
+            .map(|case| context_of(env, &map, &case.invocation)),
+    );
+    let signature_payload: Hash<32> = env.crypto().sha256(&Bytes::new(env));
+    // Use the host-managed account invocation. Calling `do_check_auth` inside
+    // `as_contract` bypasses the invocation boundary, so a later policy panic can
+    // leave an earlier counter write visible to the test even though a real failed
+    // authorization would revert it.
+    let result = env.try_invoke_contract_check_auth::<soroban_sdk::Error>(
+        &world.account,
+        &signature_payload.to_bytes(),
+        payload.into_val(env),
+        &auth_contexts,
+    );
     match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(format!("{error:?}")),
-        Err(_) => Err("authorization trapped".to_string()),
+        Ok(()) => Ok(()),
+        Err(Ok(error)) => Err(error),
+        Err(Err(error)) => panic!("account invocation failed without a contract error: {error:?}"),
     }
+}
+
+fn run_case(case: &Case) -> Result<(), soroban_sdk::Error> {
+    let world = installed_world(&case.context.rule_live_signers);
+    // Each generated case starts from its named boundary state. The sequence test below
+    // instead lets successful authorizations advance the same committed counter.
+    set_call_count(&world, case.context.call_count_so_far);
+    authorize(&world, &[case])
 }
 
 #[test]
@@ -222,4 +267,71 @@ fn generated_deny_suite_agrees_with_the_real_contract() {
             case.label, case.class, permitted, case.expect_permit, result.err()
         );
     }
+}
+
+#[test]
+fn generated_suite_commits_permits_and_rolls_back_a_later_denial() {
+    let spec = fx::golden_spec();
+    let suite = build_suite(&spec);
+    let original = suite
+        .iter()
+        .find(|case| case.class == MutationClass::Original)
+        .expect("the generated suite must contain the recorded call");
+    let wrong_function = suite
+        .iter()
+        .find(|case| case.class == MutationClass::DifferentFunction && !case.expect_permit)
+        .expect("the generated suite must contain a denied function mutation");
+    let [StateSpec::CallCountPerInstallation { max_calls }] = spec.spec().rules[0].state.as_slice()
+    else {
+        panic!("the golden fixture must have one call cap");
+    };
+    assert!(
+        *max_calls > 2,
+        "the fixture needs room for the multi-context control"
+    );
+
+    let world = installed_world(&original.context.rule_live_signers);
+    assert_eq!(
+        call_count(&world),
+        Some(0),
+        "install initializes the counter"
+    );
+
+    // A successful authorization with two contexts must commit two policy writes. This
+    // control also establishes that the second context is reached by the account path.
+    assert_eq!(authorize(&world, &[original, original]), Ok(()));
+    assert_eq!(call_count(&world), Some(2));
+
+    // Both contexts pass account-side rule matching. The generated policy permits the
+    // first, then rejects the changed function in the second. The whole authorization
+    // must roll back the first counter increment, rather than consume one call.
+    assert_eq!(
+        authorize(&world, &[original, wrong_function]),
+        Err(soroban_sdk::Error::from_contract_error(5)),
+        "the changed function must reach the generated policy and return FunctionNotAllowed"
+    );
+    assert_eq!(
+        call_count(&world),
+        Some(2),
+        "later denial must roll back prior writes"
+    );
+
+    for used in 2..*max_calls {
+        assert_eq!(
+            authorize(&world, &[original]),
+            Ok(()),
+            "call {used} must permit"
+        );
+        assert_eq!(call_count(&world), Some(used + 1));
+    }
+    assert_eq!(
+        authorize(&world, &[original]),
+        Err(soroban_sdk::Error::from_contract_error(7)),
+        "call N+1 must return CallCountExceeded"
+    );
+    assert_eq!(
+        call_count(&world),
+        Some(*max_calls),
+        "cap denial must not write"
+    );
 }

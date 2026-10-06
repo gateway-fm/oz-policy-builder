@@ -61,10 +61,11 @@ and state-dependent live preflight, each with its own evidence and failure statu
 Do not infer contract or live behavior from evaluator agreement. Check that deny cases are
 actually denials, including cross-products of accepted tuples and dynamic signer predicates.
 The golden generated-contract comparison in `contracts/differential/tests/generated_suite.rs`
-is partial layer-2 evidence: it runs one fixture's generated mutations against the compiled
-policy through the smart-account authorization helper, but does not cover the full layer-2
-contract integration and stateful behavior in §4.5. Label it as partial layer 2 in harness
-claims and reports; never present it as complete layer-2 evidence.
+is partial layer-2 evidence: it runs one fixture's generated mutations through a registered
+smart account's host invocation boundary and checks committed call counts and rollback. It
+does not cover every policy, the full layer-2 stateful behavior, or the later evidence layers
+in §4.5. Label it as partial layer 2 in harness claims and reports; never present it as
+complete layer-2 evidence.
 Reports state what was committed, mocked, captured, or observed live.
 
 **Authority-surface check.** The trusted reader acquires one coherent ledger snapshot,
