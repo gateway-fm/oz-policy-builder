@@ -165,17 +165,22 @@ fn installed_world(rule_live_signers: &[SignerSpec]) -> InstalledWorld {
     }
 }
 
-fn policy_call_count(world: &InstalledWorld, policy: &Address) -> Option<u32> {
+fn policy_call_count_for_rule(
+    world: &InstalledWorld,
+    policy: &Address,
+    rule_id: u32,
+) -> Option<u32> {
     world.env.as_contract(policy, || {
         world
             .env
             .storage()
             .persistent()
-            .get(&PolicyStorageKey::CallCount(
-                world.account.clone(),
-                world.rule_id,
-            ))
+            .get(&PolicyStorageKey::CallCount(world.account.clone(), rule_id))
     })
+}
+
+fn policy_call_count(world: &InstalledWorld, policy: &Address) -> Option<u32> {
+    policy_call_count_for_rule(world, policy, world.rule_id)
 }
 
 fn call_count(world: &InstalledWorld) -> Option<u32> {
@@ -196,7 +201,11 @@ fn set_call_count(world: &InstalledWorld, count: Option<u32>) {
     set_policy_call_count(world, &world.policy, count);
 }
 
-fn authorize(world: &InstalledWorld, cases: &[&Case]) -> Result<(), soroban_sdk::Error> {
+fn authorize_on_rule(
+    world: &InstalledWorld,
+    cases: &[&Case],
+    rule_id: u32,
+) -> Result<(), soroban_sdk::Error> {
     let first = cases.first().expect("authorization needs a context");
     let env = &world.env;
     env.ledger()
@@ -209,7 +218,7 @@ fn authorize(world: &InstalledWorld, cases: &[&Case]) -> Result<(), soroban_sdk:
     }
     let payload = AuthPayload {
         signers: authenticated,
-        context_rule_ids: SVec::from_iter(env, cases.iter().map(|_| world.rule_id)),
+        context_rule_ids: SVec::from_iter(env, cases.iter().map(|_| rule_id)),
     };
     let auth_contexts = SVec::from_iter(
         env,
@@ -233,6 +242,10 @@ fn authorize(world: &InstalledWorld, cases: &[&Case]) -> Result<(), soroban_sdk:
         Err(Ok(error)) => Err(error),
         Err(Err(error)) => panic!("account invocation failed without a contract error: {error:?}"),
     }
+}
+
+fn authorize(world: &InstalledWorld, cases: &[&Case]) -> Result<(), soroban_sdk::Error> {
+    authorize_on_rule(world, cases, world.rule_id)
 }
 
 fn run_case(case: &Case) -> Result<(), soroban_sdk::Error> {
@@ -501,4 +514,93 @@ fn later_policy_denial_rolls_back_an_earlier_policy_counter() {
         Some(*max_calls),
         "the refusing policy must also retain its committed count"
     );
+}
+
+#[test]
+fn overlapping_counted_rules_multiply_aggregate_authority() {
+    // Risk demonstration for §4.5 and §4.8: an account can carry two context rules
+    // using the same generated policy instance. The per-installation cap is keyed
+    // by rule ID, so both rule IDs must be considered together before allowing an
+    // overlap. The setup bypasses management authorization; this test measures
+    // account authorization, not whether the management operation should be allowed.
+    let spec = fx::golden_spec();
+    let original = build_suite(&spec)
+        .into_iter()
+        .find(|case| case.class == MutationClass::Original)
+        .expect("the golden suite must contain its permitted recorded call");
+    let [StateSpec::CallCountPerInstallation { max_calls }] = spec.spec().rules[0].state.as_slice()
+    else {
+        panic!("the golden fixture must have one per-installation call cap");
+    };
+    assert!(*max_calls > 0, "the fixture needs a usable counted grant");
+    let world = installed_world(&original.context.rule_live_signers);
+    let first_rule = world.env.as_contract(&world.account, || {
+        get_context_rule(&world.env, world.rule_id)
+    });
+    let mut policies = Map::new(&world.env);
+    policies.set(world.policy.clone(), 0u32.into_val(&world.env));
+    let second_rule = world.env.as_contract(&world.account, || {
+        add_context_rule(
+            &world.env,
+            &first_rule.context_type,
+            &soroban_sdk::String::from_str(&world.env, "parallel-grant"),
+            first_rule.valid_until,
+            &first_rule.signers,
+            &policies,
+        )
+    });
+    assert_ne!(first_rule.id, second_rule.id);
+    assert_eq!(first_rule.policies, second_rule.policies);
+    assert_eq!(
+        second_rule.policies,
+        SVec::from_array(&world.env, [world.policy.clone()]),
+        "the second rule must really bind the same generated policy"
+    );
+    assert_eq!(
+        policy_call_count_for_rule(&world, &world.policy, first_rule.id),
+        Some(0)
+    );
+    assert_eq!(
+        policy_call_count_for_rule(&world, &world.policy, second_rule.id),
+        Some(0)
+    );
+
+    // Both selectors authorize the same invocation while installed together. Calling
+    // through the host-managed account path keeps rule-ID selection and policy writes
+    // in the same transaction boundary.
+    for used in 0..*max_calls {
+        for id in [first_rule.id, second_rule.id] {
+            assert_eq!(
+                authorize_on_rule(&world, &[&original], id),
+                Ok(()),
+                "rule {id} must permit call {used} within its own cap"
+            );
+            assert_eq!(
+                policy_call_count_for_rule(&world, &world.policy, id),
+                Some(used + 1)
+            );
+        }
+    }
+    assert_eq!(
+        u64::from(
+            policy_call_count_for_rule(&world, &world.policy, first_rule.id)
+                .expect("first counter remains installed")
+        ) + u64::from(
+            policy_call_count_for_rule(&world, &world.policy, second_rule.id)
+                .expect("second counter remains installed")
+        ),
+        u64::from(*max_calls) * 2,
+        "the aggregate permitted calls exceed one installation's cap"
+    );
+    for id in [first_rule.id, second_rule.id] {
+        assert_eq!(
+            authorize_on_rule(&world, &[&original], id),
+            Err(soroban_sdk::Error::from_contract_error(7)),
+            "rule {id} must independently deny call N+1"
+        );
+        assert_eq!(
+            policy_call_count_for_rule(&world, &world.policy, id),
+            Some(*max_calls),
+        );
+    }
 }
