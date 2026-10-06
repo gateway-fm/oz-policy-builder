@@ -19,6 +19,8 @@ Section numbers refer to `docs/architecture.md`.
    An internal consistency check can compare supplied rule slots, `Count`, and transitive
    reference counts; it does not authenticate those values, handle absent counters on a pristine
    account, or inspect reverse lookup keys.
+   An internal typed page reader derives pinned account storage keys and decodes one bounded
+   endpoint response; omitted keys remain uncertain and it does not combine pages.
    The RPC's reported ledger sequence is endpoint metadata, not proof of a coherent account-state
    snapshot. These pieces do not derive the complete rule set, resolve archive uncertainty, or
    identify the administrator. Live endpoint behavior needs separate verification.
