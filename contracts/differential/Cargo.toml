@@ -10,6 +10,7 @@ publish = false
 
 [dev-dependencies]
 generated-sub-transfer-r0 = { path = "../golden-transfer-policy" }
+generated-soroswap-swap-r0 = { path = "../soroswap-swap-policy" }
 soroban-sdk = { version = "=26.1.0", features = ["testutils"] }
 stellar-accounts = "=0.7.2"
 ozpb-domain = { path = "../../crates/domain" }
