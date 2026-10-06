@@ -1,12 +1,15 @@
 //! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
-//! the pure recorder, plus bounded contract-code observations. Executed transactions and
-//! record-mode simulations both come back as `rpc_reported` — trusted exactly as far as the
+//! the pure recorder, plus bounded contract-code and contract-data observations. Executed
+//! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
 //! tested offline.
 
 #![forbid(unsafe_code)]
+
+mod contract_data;
+pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
