@@ -607,9 +607,8 @@ approved — a 32-byte digest of the `Context`, which is what makes 264 a number
 a figure that moves with whatever the call was. Asserted exactly rather than bounded, in
 `an_event_costs_what_the_conformance_record_says_it_costs`
 (`contracts/differential/tests/events.rs`), so a field added to an event has to move the number
-here too. That it does not move with the *arguments* is asserted by a sweep over an unconstrained
-argument, which needs the second generated policy crate and is therefore later-milestone evidence
-rather than a gate in this tree.
+here too. The generated Soroswap policy crate supplies an unconstrained argument for a separate
+size sweep; the sweep is not yet a gate in this tree.
 
 **What still cannot be observed, and why that is a property.** A **denial** leaves nothing behind,
 and this is technically unrealizable rather than unimplemented — worth keeping recorded so it is
@@ -1013,9 +1012,9 @@ spec hash, including the ones sealed into `docs/TESTNET-EVIDENCE.md`. Hashing ch
 *says* and nothing about what a policy *decides*, which is the smaller change by every measure that
 matters here.
 
-**What holds it, in the tree that has it.** The sweep below runs against the second generated
-policy crate, which a later milestone contracts; this tree carries the fixed-context assertion in
-`events.rs` and not the sweep. `contracts/differential/tests/event_payload.rs`: an admissible Soroswap call
+**What holds it, in the tree that has it.** This tree carries the generated Soroswap policy and
+the fixed-context assertion in `events.rs`, but not the size sweep yet. The planned
+`contracts/differential/tests/event_payload.rs` checks an admissible Soroswap call
 swept over six `deadline` sizes from 0 to 65,536 bytes, asserting at each that the compiled
 contract and the reference evaluator agree, that exactly one event is published, and that its
 serialized size is identical at every size and below the limit. A sweep rather than one value,

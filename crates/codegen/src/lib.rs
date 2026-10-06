@@ -4279,6 +4279,66 @@ mod tests {
         }
     }
 
+    /// The committed swap policy is a complete generated source crate for W3. Its
+    /// amount bounds, exact route, and caller-chosen deadline exercise distinct
+    /// emission paths, so compare the entire crate, including its lockfile.
+    #[test]
+    fn w3_golden_crate_matches_committed_output() {
+        let spec = ozpb_synthesizer::walkthroughs::soroswap_swap_spec();
+        let generated = generate(&spec, 0, &Pins::default()).unwrap();
+        let source = emitted_rust(&generated);
+        // Keep each comparison tied to its argument. Independent substring
+        // searches could pass if the emitter swapped the two amount bounds.
+        assert!(source.contains(
+            "let Some(v0) = args.get(0u32) else {\n        return false;\n    };\n    \
+             match i128::try_from_val(e, &v0) {\n        Ok(x) => {\n            \
+             if x > 1000000000i128 {"
+        ));
+        assert!(source.contains(
+            "let Some(v1) = args.get(1u32) else {\n        return false;\n    };\n    \
+             match i128::try_from_val(e, &v1) {\n        Ok(x) => {\n            \
+             if x < 950000000i128 {"
+        ));
+        assert!(source.contains("if v2.to_xdr(e) != Bytes::from_slice(e, &CALL_0_ARG_2_XDR)"));
+        assert!(source.contains("if args.get(4u32).is_none()"));
+        assert!(!source.contains("let Some(v4)"));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/soroswap-swap-policy");
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for (rel, content) in &generated.files {
+                std::fs::write(root.join(rel), content).unwrap();
+            }
+            return;
+        }
+
+        let mut committed_files: Vec<String> = walk(&root)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            })
+            .collect();
+        committed_files.sort();
+        let mut generated_files: Vec<String> = generated.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed swap policy and codegen output have different file sets"
+        );
+        for (rel, content) in &generated.files {
+            let committed = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|_| panic!("missing committed swap policy file {rel}"));
+            assert_eq!(
+                &committed, content,
+                "committed swap policy file {rel} differs from codegen output"
+            );
+        }
+    }
+
     #[test]
     fn generated_crate_contains_the_pinned_dependency_lockfile() {
         let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
