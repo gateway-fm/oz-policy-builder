@@ -147,30 +147,36 @@ pub fn check_observed_call_surface_with_build_config(
             "same-ledger bound policy observations do not match the exact PolicyBindingSet",
         ));
     }
-    let mut stored_hashes: BTreeMap<&str, &str> = BTreeMap::new();
+    // An address has one executable at one ledger, even if it appears as both the
+    // account and a policy. Compare parsed hashes across every observation source.
+    let mut code_by_address = BTreeMap::new();
+    code_by_address.insert(observation.account_address.as_str(), observed_account_hash);
+    for policy in &observation.bound_policies {
+        let hash = Hash32::from_hex(&policy.observed_wasm_hash).map_err(|_| {
+            ToolError::new(
+                EC::EIncompleteAccountState,
+                "bound policy observation has an invalid code hash",
+            )
+        })?;
+        record_observed_code(&mut code_by_address, &policy.address, hash)?;
+    }
     for policy in observation.account_state.policies.values() {
         if !matches!(
             stellar_strkey::Strkey::from_string(&policy.address),
             Ok(stellar_strkey::Strkey::Contract(_))
-        ) || Hash32::from_hex(&policy.observed_wasm_hash).is_err()
-        {
+        ) {
             return Err(ToolError::new(
                 EC::EIncompleteAccountState,
-                "account policy data contains an invalid address or code hash",
+                "account policy data contains an invalid address",
             ));
         }
-        if stored_hashes
-            .insert(policy.address.as_str(), policy.observed_wasm_hash.as_str())
-            .is_some_and(|earlier| earlier != policy.observed_wasm_hash.as_str())
-            || observed_by_address
-                .get(policy.address.as_str())
-                .is_some_and(|hash| *hash != policy.observed_wasm_hash.as_str())
-        {
-            return Err(ToolError::new(
+        let hash = Hash32::from_hex(&policy.observed_wasm_hash).map_err(|_| {
+            ToolError::new(
                 EC::EIncompleteAccountState,
-                "account policy data and code observations disagree at one ledger",
-            ));
-        }
+                "account policy data contains an invalid code hash",
+            )
+        })?;
+        record_observed_code(&mut code_by_address, &policy.address, hash)?;
     }
 
     // A policy already installed in another rule is recognized only if its *observed*
@@ -225,6 +231,24 @@ pub fn check_observed_call_surface_with_build_config(
         registry_snapshot_root: loaded_root,
         verdict,
     })
+}
+
+fn record_observed_code<'a>(
+    code_by_address: &mut BTreeMap<&'a str, Hash32>,
+    address: &'a str,
+    hash: Hash32,
+) -> Result<(), ToolError> {
+    if code_by_address
+        .get(address)
+        .is_some_and(|previous| *previous != hash)
+    {
+        return Err(ToolError::new(
+            EC::EIncompleteAccountState,
+            format!("trusted observation reports conflicting code hashes for {address}"),
+        ));
+    }
+    code_by_address.insert(address, hash);
+    Ok(())
 }
 
 fn registry_for(
@@ -689,6 +713,48 @@ mod tests {
             check(&request, &observation).unwrap_err().code,
             EC::EPolicyBindingInvalid
         );
+    }
+
+    #[test]
+    fn account_address_has_one_code_hash_across_policy_observations() {
+        let (mut request, mut observation) = fixture();
+        assert_ne!(
+            request.binding_set.bindings[0].observed_wasm_hash,
+            observation.account_code_hash
+        );
+        request.binding_set.bindings[0].contract_address = observation.account_address.clone();
+        observation.bound_policies[0].address = observation.account_address.clone();
+        observation
+            .account_state
+            .policies
+            .get_mut(&0)
+            .unwrap()
+            .address = observation.account_address.clone();
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EIncompleteAccountState);
+        assert!(error.message.contains("conflicting code hashes"));
+
+        let (request, mut observation) = fixture();
+        observation.account_state.policies.insert(
+            2,
+            StoredPolicy {
+                id: 2,
+                address: observation.account_address.clone(),
+                observed_wasm_hash: request.binding_set.bindings[0].observed_wasm_hash.clone(),
+            },
+        );
+        observation
+            .account_state
+            .rules
+            .get_mut(&1)
+            .unwrap()
+            .policy_ids
+            .push(2);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EIncompleteAccountState);
+        assert!(error.message.contains("conflicting code hashes"));
     }
 
     #[test]
