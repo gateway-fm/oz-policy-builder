@@ -90,6 +90,10 @@ pub struct AccountCapability {
     pub review_reference: String,
 }
 
+/// Registry value for management-rule identity backed by matching return and event IDs.
+pub const MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE: &str =
+    "return_value_and_events_must_agree";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerifierCapability {
@@ -879,7 +883,8 @@ pub mod dev {
             AccountCapability {
                 release: "stellar-accounts@0.7.x".to_string(),
                 rule_enumeration: "bounded_next_id".to_string(),
-                management_evidence: "return_value_and_events_must_agree".to_string(),
+                management_evidence:
+                    MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE.to_string(),
                 review_reference: "OpenZeppelin/stellar-contracts examples/multisig-smart-account/account @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
                     .to_string(),
             },

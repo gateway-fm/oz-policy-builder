@@ -16,7 +16,7 @@ use ozpb_api_types::{
 use ozpb_codegen::{generate, Pins};
 use ozpb_domain::Hash32;
 use ozpb_evaluator::{evaluate, EvalContext, Invocation, Verdict};
-use ozpb_policy_spec::{PolicyRef, PolicySpec};
+use ozpb_policy_spec::{PolicyRef, PolicySpec, RuleSpec};
 use ozpb_recorder_core::{
     record, EvidenceSnapshot, ObservedExecutable, RecordOptions, RecordingBundle,
 };
@@ -26,6 +26,10 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod call_surface;
+pub use call_surface::{
+    check_observed_call_surface_with_build_config, CallSurfaceObservation, ObservedCallSurfaceCheck,
+};
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
@@ -333,7 +337,7 @@ pub fn synthesize_policy(
 
     let out = synthesize(&syn_input, &decisions).map_err(map_synth_errs)?;
     within_declared_capabilities(
-        &out.spec,
+        out.spec.rules.iter().enumerate(),
         &input.template_family,
         declared_constraint_kinds,
         declared_signer_predicates,
@@ -553,7 +557,7 @@ fn spec_error(errs: &[ozpb_policy_spec::SpecError]) -> ToolError {
         .with_details(errs.iter().map(|e| e.to_string()).collect())
 }
 
-/// Refuse a spec that uses a constraint or predicate the resolved template does not declare.
+/// Refuse rules that use constraints or predicates the resolved template does not declare.
 ///
 /// The registry entry for a template family records which predicate and constraint kinds a
 /// reviewed instantiation implements. Until now nothing read those lists: they were an
@@ -578,14 +582,14 @@ fn spec_error(errs: &[ozpb_policy_spec::SpecError]) -> ToolError {
 /// caller-supplied spec and are handed no snapshot, so neither can run this; closing that path
 /// means making the snapshot a required input to those operations, which breaks the wire
 /// contract and, for `verify`, belongs to a later milestone regardless.
-fn within_declared_capabilities(
-    spec: &PolicySpec,
+fn within_declared_capabilities<'a>(
+    rules: impl IntoIterator<Item = (usize, &'a RuleSpec)>,
     resolved_family: &str,
     declared_constraint_kinds: &[String],
     declared_signer_predicates: &[String],
 ) -> Result<(), ToolError> {
     let mut undeclared: Vec<String> = Vec::new();
-    for (rule_index, rule) in spec.rules.iter().enumerate() {
+    for (rule_index, rule) in rules {
         let predicate = rule.authorization.kind.kind_name();
         if !declared_signer_predicates.iter().any(|d| d == predicate) {
             undeclared.push(format!(

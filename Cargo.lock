@@ -1351,6 +1351,7 @@ dependencies = [
  "hex",
  "ozpb-api-types",
  "ozpb-build-runner",
+ "ozpb-call-surface-core",
  "ozpb-codegen",
  "ozpb-domain",
  "ozpb-evaluator",
@@ -1362,6 +1363,7 @@ dependencies = [
  "ozpb-synthesizer",
  "serde",
  "serde_json",
+ "stellar-strkey 0.0.18",
 ]
 
 [[package]]
