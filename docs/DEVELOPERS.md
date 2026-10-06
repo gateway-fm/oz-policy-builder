@@ -269,14 +269,21 @@ the tests guide you (TDD: add the failing test first):
    reference semantics). This is the executable spec.
 3. **`crates/codegen`** — emit the check in `emit_lib`'s per-arg match, embedding values as
    validated literals (never interpolated into identifiers); add pre-emission validation in
-   `generate`. Regenerate goldens with `UPDATE_GOLDEN=1 cargo test -p ozpb-codegen golden`.
+   `generate`. Regenerate both committed examples by running each fixture test explicitly:
+
+   ```sh
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::golden_crate_matches_committed_output -- --exact
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::soroswap_crate_matches_committed_output -- --exact
+   ```
 4. **`crates/harness`** (Tranche 2) — add mutation cases for it in `build_suite` so the deny
    suite covers the new boundary; add its `concrete_for` arm.
 5. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
    a `Widening`/adapter). Never let it in heuristically.
-6. **`contracts/`** — the Tranche 1 differential suite drives the generated policy contract
-   directly in the Soroban environment. Add explicit evaluator/contract cases for the new
-   constraint. Full `stellar-accounts::__check_auth` integration belongs to Tranche 2.
+6. **`contracts/`** — the differential suite drives the generated transfer policy in the
+   Soroban environment. The committed Soroswap policy is a second generated example; its
+   complete file set must match regeneration, and it builds as a standalone crate. Add
+   explicit evaluator/contract cases for new constraints. End-to-end account
+   integration and live preflight remain separate work.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove

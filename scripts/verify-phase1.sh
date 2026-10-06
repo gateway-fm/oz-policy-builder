@@ -49,26 +49,18 @@ python3 scripts/check-quoted-hashes.py
 # workspace held a banned type. That is the shape of defect this gate exists to prevent, and CI
 # lints the two workspaces separately for the same reason.
 #
-# fmt needs three invocations, for a stronger version of the same reason, and had only one until
-# 30 differences had piled up behind it. `--all` means "the members of this workspace", and the
-# generated policy crate is not a member of one: `contracts` excludes it, since it carries its own
-# `[profile.release]` so it builds standalone as it ships. Running fmt in `contracts` does reach
-# golden-transfer-policy, but only through the differential suite's dev-dependency on it — an edge
-# that exists for testing, not for coverage, and one a later milestone may move — so the crate is
-# named rather than relied upon. Four of the 30 differences were in it, which makes them a defect
-# in the code generator rather than in a checked-in file.
+# `--all` covers only the current workspace. The two generated crates are excluded from
+# `contracts` so they can carry standalone release profiles. Name both explicitly for fmt and
+# clippy, as CI does; compiling one as a dependency does not lint or reliably format it.
 echo "== 2. fmt + clippy (fmt/clippy gates are part of the contract, §4.11) =="
 cargo fmt --all --check
 ( cd contracts && cargo fmt --all --check )
 ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
+( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 cargo clippy --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --all-targets -- -D warnings )
-# The generated crate, which neither invocation above reaches: `contracts` excludes it, and clippy
-# does not lint dependencies, so it entered that run compiled and never linted. CI gained this
-# invocation and the release gate did not, which left the stronger of the two able to pass while
-# the shipped artifact failed `-D warnings`. Named rather than relied upon, for the same reason
-# the fmt invocations below name it.
 ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
+( cd contracts/soroswap-swap-policy && cargo clippy --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --workspace
@@ -76,31 +68,10 @@ cargo test --workspace
 echo "== 4. contracts: differential suite (evaluator vs real compiled policy) =="
 ( cd contracts && cargo test -p ozpb-differential )
 
-echo "== 5. determinism: codegen is byte-identical and the golden crate is in step =="
-# Asserted without a toolchain, so this gate is meaningful on a machine without stellar-cli.
-#
-# Each name is required to have MATCHED at least one passing test rather than merely to have
-# exited 0, because `cargo test <filter>` exits 0 when the filter matches nothing: a gate
-# naming a test that was renamed, moved, or never existed here keeps reporting a pass while
-# asserting nothing whatsoever. That is not hypothetical — this gate carried a third name that
-# matched no test in this tree, and its green said so about a property nobody was checking.
-# Matched with bash's own regex rather than through a pipe to `grep -q`: under `pipefail`, grep
-# exiting the moment it matches leaves the test binary killed by SIGPIPE, and the pipeline
-# reports that death — so the check failed on a test that had just passed.
-ran_at_least_one='test result: ok\. [1-9][0-9]* passed'
-for t in generation_is_byte_deterministic golden_crate_matches_committed_output; do
-    if ! out="$(cargo test -q -p ozpb-codegen "$t" 2>&1)"; then
-        echo "  DETERMINISM GATE FAILED: $t"
-        printf '%s\n' "$out" | tail -20
-        exit 1
-    fi
-    if [[ ! "$out" =~ $ran_at_least_one ]]; then
-        echo "  DETERMINISM GATE ASSERTED NOTHING: no passing test matched '$t'"
-        printf '%s\n' "$out" | tail -20
-        exit 1
-    fi
-done
-echo "  codegen deterministic; golden crate matches codegen output"
+echo "== 5. determinism: codegen is byte-identical and both committed crates are in step =="
+# The shared CI/release check runs each full test name with --exact and requires one passing
+# test. Cargo exits 0 when a filter matches nothing, so a successful process alone is vacuous.
+bash scripts/check-codegen-fixtures.sh
 # The end-to-end shell path additionally proves the CLI emits those same bytes, but it
 # compiles the policy, so it needs the toolchain.
 if [ "$MODE" = release ]; then

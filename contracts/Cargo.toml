@@ -8,4 +8,4 @@ resolver = "2"
 # users). `differential` still path-depends on them. Keeping them as members would make
 # cargo ignore their profiles ("profiles for the non-root package will be ignored").
 members = ["differential"]
-exclude = ["golden-transfer-policy"]
+exclude = ["golden-transfer-policy", "soroswap-swap-policy"]
