@@ -12,7 +12,7 @@
 
 use super::{
     from_value, generate_code_with_build_config, map_registry_err, parse_hash, spec_error,
-    to_value, RegistryTrust,
+    to_value, within_declared_capabilities, RegistryTrust,
 };
 use ozpb_api_types::{
     CheckPolicyCallSurfaceInput, ErrorCode as EC, GenerateCodeInput, PolicyBindingSet,
@@ -290,11 +290,14 @@ fn validate_bindings(
     let mut recognized = BTreeMap::new();
     let mut generated = BTreeMap::new();
     for binding in &binding_set.bindings {
-        let policy = spec
+        let rule = spec
             .spec()
             .rules
             .get(binding.rule_index)
-            .and_then(|rule| rule.policies.get(binding.policy_index))
+            .ok_or_else(|| binding_error("PolicyBindingSet position is out of range"))?;
+        let policy = rule
+            .policies
+            .get(binding.policy_index)
             .ok_or_else(|| binding_error("PolicyBindingSet position is out of range"))?;
         if !positions.insert((binding.rule_index, binding.policy_index)) {
             return Err(binding_error("PolicyBindingSet has a duplicate position"));
@@ -362,6 +365,12 @@ fn validate_bindings(
                         "generated binding capability schema differs from the registry",
                     ));
                 }
+                within_declared_capabilities(
+                    std::iter::once((binding.rule_index, rule)),
+                    template_family,
+                    &template.constraint_kinds,
+                    &template.signer_predicates,
+                )?;
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     generated.entry(binding.rule_index)
                 {
@@ -583,6 +592,44 @@ mod tests {
         )
     }
 
+    /// Keep the test spec, generated artifact, and same-ledger observations coherent after
+    /// replacing the signed capability snapshot.
+    fn replace_fixture_snapshot(
+        request: &mut CheckPolicyCallSurfaceInput,
+        observation: &mut CallSurfaceObservation,
+        snapshot: ozpb_registry::RegistrySnapshot,
+    ) {
+        let signed =
+            ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
+        let mut spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+        spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
+        let spec = spec.validate().unwrap();
+        request.spec = serde_json::to_value(spec.spec()).unwrap();
+        request.binding_set.spec_hash = spec.hash().to_hex();
+        request.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+
+        let generated = generate_code_with_build_config(
+            &GenerateCodeInput {
+                spec: request.spec.clone(),
+                rule_index: 0,
+            },
+            &build_config(),
+        )
+        .unwrap();
+        request.binding_set.bindings[1].observed_wasm_hash = generated.wasm_hash.clone();
+        request.binding_set.bindings[1].recognition =
+            PolicyRecognition::VerifiedGeneratedManifest {
+                build_manifest: generated.build_manifest,
+            };
+        observation.bound_policies[1].observed_wasm_hash = generated.wasm_hash.clone();
+        observation
+            .account_state
+            .policies
+            .get_mut(&1)
+            .unwrap()
+            .observed_wasm_hash = generated.wasm_hash;
+    }
+
     #[test]
     fn exact_checked_bindings_produce_a_safe_core_verdict() {
         let (request, observation) = fixture();
@@ -726,40 +773,51 @@ mod tests {
             .get_mut(&observation.account_code_hash)
             .unwrap()
             .rule_enumeration = "onchain_list".to_string();
-        let signed =
-            ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
-        let mut spec: PolicySpec = serde_json::from_value(request.spec).unwrap();
-        spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
-        let spec = spec.validate().unwrap();
-        request.spec = serde_json::to_value(spec.spec()).unwrap();
-        request.binding_set.spec_hash = spec.hash().to_hex();
-        request.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
-
-        // Keep every other binding coherent, so the refusal is about the unsupported
-        // enumeration strategy rather than a mismatched generated artifact.
-        let generated = generate_code_with_build_config(
-            &GenerateCodeInput {
-                spec: request.spec.clone(),
-                rule_index: 0,
-            },
-            &build_config(),
-        )
-        .unwrap();
-        request.binding_set.bindings[1].observed_wasm_hash = generated.wasm_hash.clone();
-        request.binding_set.bindings[1].recognition =
-            PolicyRecognition::VerifiedGeneratedManifest {
-                build_manifest: generated.build_manifest,
-            };
-        observation.bound_policies[1].observed_wasm_hash = generated.wasm_hash.clone();
-        observation
-            .account_state
-            .policies
-            .get_mut(&1)
-            .unwrap()
-            .observed_wasm_hash = generated.wasm_hash;
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
 
         let error = check(&request, &observation).unwrap_err();
         assert_eq!(error.code, EC::EAccountRuleEnumerationUnsupported);
         assert!(error.message.contains("onchain_list"));
+    }
+
+    #[test]
+    fn signed_template_must_declare_the_generated_rules_capabilities() {
+        let (mut request, mut observation) = fixture();
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        snapshot
+            .templates
+            .get_mut("policy-templates/scope@1")
+            .unwrap()
+            .constraint_kinds
+            .retain(|kind| kind != "eq_address");
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EUnsupportedPattern);
+        assert!(error.message.contains("policy-templates/scope@1"));
+        assert!(error
+            .details
+            .iter()
+            .any(|detail| detail.contains("eq_address")));
+
+        let (mut request, mut observation) = fixture();
+        let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+        let predicate = spec.rules[0].authorization.kind.kind_name();
+        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        snapshot
+            .templates
+            .get_mut("policy-templates/scope@1")
+            .unwrap()
+            .signer_predicates
+            .retain(|kind| kind != predicate);
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EUnsupportedPattern);
+        assert!(error
+            .details
+            .iter()
+            .any(|detail| detail.contains(predicate)));
     }
 }
