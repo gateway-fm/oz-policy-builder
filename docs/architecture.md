@@ -631,7 +631,9 @@ impl GeneratedPolicy {
 
 ### 4.5 Dry-run harness (`crates/harness`)
 
-> **Scope: Tranche 2.** The dry-run harness is a second-milestone deliverable, described here as design rather than as shipped behavior.
+> **Scope: Tranche 2.** Layer-1 reference evaluation and a golden generated-contract
+> comparison are present. The complete four-layer dry-run described below remains scheduled;
+> present evidence must not be read as a full dry-run.
 
 Trust is earned by demonstrated permit/deny behavior. The harness produces **evidence, not
 proof**: mutation testing shows tested cases behave correctly; it cannot show that every
