@@ -37,3 +37,12 @@ Section numbers refer to `docs/architecture.md`.
    through the compiled policy and checks permit/deny. It does not compare exact denial reasons.
    The hand-written `differential.rs` checks both verdict and reason for fewer cases. Extending
    that reason check to every generated case remains future work.
+
+6. **Complete account management-surface evidence** (§4.8, §4.10). The registry has a
+   typed, source-reviewed method inventory candidate associated with the pinned OpenZeppelin
+   multisig example hash, including its wrapper methods. It remains separate from signed
+   snapshots: the exact pinned Wasm export set has not been independently checked, so no
+   consumer receives it as complete management evidence. Existing signed snapshot bytes and
+   `AccountCapability` construction remain unchanged.
+   Current rules, policy calls, and a coherent ledger snapshot still need trusted acquisition
+   and analysis before a live authority verdict is possible.
