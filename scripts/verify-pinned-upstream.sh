@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Reproduce the pinned upstream wasm hashes in `ozpb_domain::pinned_upstream` and check them
-# against the constants this repository ships.
+# Reproduce the pinned upstream wasm hashes in `ozpb_domain::pinned_upstream`, check them
+# against the constants this repository ships, and check the account's function exports.
 #
 # Why this exists. Those constants are trust anchors: the capability registry recognizes an
 # on-chain contract by matching its code hash against them, and refuses anything else. A hash
@@ -24,7 +24,7 @@ TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
 CLI_REPO="https://github.com/stellar/stellar-cli.git"
 CLI_RELEASES="https://github.com/stellar/stellar-cli/releases"
 
-for tool in git stellar; do
+for tool in git stellar python3; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required"; exit 1; }
 done
 
@@ -129,7 +129,8 @@ for entry in "${NAMES[@]}"; do
     dir="${entry%%:*}"; rest="${entry#*:}"; artifact="${rest%%:*}"; const="${rest##*:}"
     ( cd "$WORK/src/examples/multisig-smart-account/$dir" \
         && RUSTUP_TOOLCHAIN="$TOOLCHAIN" stellar contract build >/dev/null 2>&1 )
-    built="$(shasum -a 256 "$WORK/src/target/wasm32v1-none/release/$artifact.wasm" | cut -d' ' -f1)"
+    wasm="$WORK/src/target/wasm32v1-none/release/$artifact.wasm"
+    built="$(shasum -a 256 "$wasm" | cut -d' ' -f1)"
 
     # The shipped constant, read back out of the source as bytes.
     pinned="$(python3 - "$const" <<'PY'
@@ -143,6 +144,12 @@ PY
 )"
     if [ "$built" = "$pinned" ]; then
         printf "  %-28s %s ✔\n" "$dir" "$built"
+        if [ "$const" = "OZ_SMART_ACCOUNT_WASM" ]; then
+            # Hash equality binds this export check to the exact recognized account artifact.
+            # Export names establish the call surface, not the methods' authorization behavior.
+            python3 scripts/check-wasm-exports.py "$wasm" \
+                crates/registry/tests/fixtures/pinned_account_exports.txt "$pinned"
+        fi
     else
         printf "  %-28s MISMATCH\n     built:  %s\n     pinned: %s\n" "$dir" "$built" "$pinned"
         fail=1

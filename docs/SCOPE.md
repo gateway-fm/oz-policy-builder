@@ -39,10 +39,12 @@ Section numbers refer to `docs/architecture.md`.
    that reason check to every generated case remains future work.
 
 6. **Complete account management-surface evidence** (§4.8, §4.10). The registry has a
-   typed, source-reviewed method inventory candidate associated with the pinned OpenZeppelin
-   multisig example hash, including its wrapper methods. It remains separate from signed
-   snapshots: the exact pinned Wasm export set has not been independently checked, so no
-   consumer receives it as complete management evidence. Existing signed snapshot bytes and
-   `AccountCapability` construction remain unchanged.
-   Current rules, policy calls, and a coherent ledger snapshot still need trusted acquisition
-   and analysis before a live authority verdict is possible.
+   typed method inventory candidate for the pinned OpenZeppelin multisig example hash,
+   including its wrapper methods. A Wasm blob with the exact pinned SHA-256 has 17 function
+   exports matching the reviewed name fixture; `scripts/verify-pinned-upstream.sh` repeats
+   that check when it reproduces the artifact.
+   Authorization guards and state effects come from source review, not from parsing the Wasm.
+   The candidate remains separate from signed snapshots, so no consumer receives it as a
+   live management-surface verdict. Existing signed snapshot bytes and `AccountCapability`
+   construction remain unchanged. Current rules, policy calls, and a coherent ledger snapshot
+   still need trusted acquisition and analysis before a live authority verdict is possible.

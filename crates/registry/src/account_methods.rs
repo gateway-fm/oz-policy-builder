@@ -3,15 +3,15 @@
 //! The `SmartAccount` trait alone is incomplete: the example wrapper also exposes a
 //! constructor, authorization hook, batch signer helper, arbitrary execution entrypoint,
 //! and upgrade method. This source-reviewed candidate is associated with
-//! `OZ_SMART_ACCOUNT_WASM`, but the exact pinned Wasm export set has not yet been inspected.
-//! This module is separate from the signed snapshot and cannot establish a complete management
-//! surface. No live account or rule state is inferred.
+//! `OZ_SMART_ACCOUNT_WASM`. The export names match the exact pinned Wasm; guards and effects
+//! come from source review. This module is separate from the signed snapshot and cannot
+//! establish a complete management surface. No live account or rule state is inferred.
 
 use ozpb_domain::{pinned_upstream, Hash32};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Candidate export map and effects from source associated with a pinned account hash.
+/// Method inventory data; callers must separately establish code identity and provenance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountMethodInventory {
@@ -71,8 +71,9 @@ pub enum AccountMethodEffect {
 /// Sources: `stellar-accounts = 0.7.2` `smart_account/mod.rs` and
 /// `OpenZeppelin/stellar-contracts@a9c4216`
 /// `examples/multisig-smart-account/account/src/contract.rs` (the actual wrapper).
-/// The claimed Wasm hash is `pinned_upstream::OZ_SMART_ACCOUNT_WASM`. The actual binary's
-/// exports still require independent inspection before this can support a complete verdict.
+/// The binary export names are checked against the fixture by
+/// `scripts/verify-pinned-upstream.sh` for `pinned_upstream::OZ_SMART_ACCOUNT_WASM`.
+/// Guards and effects are source-reviewed claims, not conclusions from Wasm exports.
 pub fn source_reviewed_oz_multisig_candidate() -> AccountMethodInventory {
     use AccountMethodAuthorization::{
         NoRequireAuth as None, RequireCurrentContractAuth as SelfAuth,
@@ -236,6 +237,15 @@ mod tests {
         assert!(candidate.methods["get_context_rule"]
             .effects
             .contains(&AccountMethodEffect::StorageTtl));
+    }
+
+    #[test]
+    fn candidate_names_match_the_pinned_binary_export_fixture() {
+        let candidate = source_reviewed_oz_multisig_candidate();
+        let fixture = include_str!("../tests/fixtures/pinned_account_exports.txt");
+        let expected: BTreeSet<_> = fixture.lines().collect();
+        let actual: BTreeSet<_> = candidate.methods.keys().map(String::as_str).collect();
+        assert_eq!(actual, expected);
     }
 
     #[test]
