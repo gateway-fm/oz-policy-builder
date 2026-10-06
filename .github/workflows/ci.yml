@@ -92,9 +92,7 @@ jobs:
       # source out, and no drift between codegen and the committed golden crates. Wasm-level
       # reproducibility needs the real toolchain and runs in the `nightly live` workflow.
       - name: determinism (codegen byte-identical; both committed crates in step)
-        run: |
-          cargo test -q -p ozpb-codegen generation_is_byte_deterministic
-          cargo test -q -p ozpb-codegen golden_crate_matches_committed_output
+        run: bash scripts/check-codegen-fixtures.sh
 
   contracts:
     name: contracts (differential suite · generated code compiles)

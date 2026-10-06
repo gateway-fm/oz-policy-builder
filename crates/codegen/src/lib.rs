@@ -4283,7 +4283,7 @@ mod tests {
     /// amount bounds, exact route, and caller-chosen deadline exercise distinct
     /// emission paths, so compare the entire crate, including its lockfile.
     #[test]
-    fn w3_golden_crate_matches_committed_output() {
+    fn soroswap_crate_matches_committed_output() {
         let spec = ozpb_synthesizer::walkthroughs::soroswap_swap_spec();
         let generated = generate(&spec, 0, &Pins::default()).unwrap();
         let source = emitted_rust(&generated);

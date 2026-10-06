@@ -76,31 +76,10 @@ cargo test --workspace
 echo "== 4. contracts: differential suite (evaluator vs real compiled policy) =="
 ( cd contracts && cargo test -p ozpb-differential )
 
-echo "== 5. determinism: codegen is byte-identical and the golden crate is in step =="
-# Asserted without a toolchain, so this gate is meaningful on a machine without stellar-cli.
-#
-# Each name is required to have MATCHED at least one passing test rather than merely to have
-# exited 0, because `cargo test <filter>` exits 0 when the filter matches nothing: a gate
-# naming a test that was renamed, moved, or never existed here keeps reporting a pass while
-# asserting nothing whatsoever. That is not hypothetical — this gate carried a third name that
-# matched no test in this tree, and its green said so about a property nobody was checking.
-# Matched with bash's own regex rather than through a pipe to `grep -q`: under `pipefail`, grep
-# exiting the moment it matches leaves the test binary killed by SIGPIPE, and the pipeline
-# reports that death — so the check failed on a test that had just passed.
-ran_at_least_one='test result: ok\. [1-9][0-9]* passed'
-for t in generation_is_byte_deterministic golden_crate_matches_committed_output; do
-    if ! out="$(cargo test -q -p ozpb-codegen "$t" 2>&1)"; then
-        echo "  DETERMINISM GATE FAILED: $t"
-        printf '%s\n' "$out" | tail -20
-        exit 1
-    fi
-    if [[ ! "$out" =~ $ran_at_least_one ]]; then
-        echo "  DETERMINISM GATE ASSERTED NOTHING: no passing test matched '$t'"
-        printf '%s\n' "$out" | tail -20
-        exit 1
-    fi
-done
-echo "  codegen deterministic; golden crate matches codegen output"
+echo "== 5. determinism: codegen is byte-identical and both committed crates are in step =="
+# The shared CI/release check runs each full test name with --exact and requires one passing
+# test. Cargo exits 0 when a filter matches nothing, so a successful process alone is vacuous.
+bash scripts/check-codegen-fixtures.sh
 # The end-to-end shell path additionally proves the CLI emits those same bytes, but it
 # compiles the policy, so it needs the toolchain.
 if [ "$MODE" = release ]; then
