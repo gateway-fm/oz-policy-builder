@@ -34,7 +34,24 @@ pub(super) fn draft_install_intent(
         .rules
         .get(input.rule_index)
         .ok_or_else(|| ToolError::new(EC::ESpecInvalid, "rule_index is out of range"))?;
+    let account_address = validated.spec().smart_account.address.as_str();
+    if rule.context.contract == account_address {
+        return Err(ToolError::new(
+            EC::EUnsafeManagementSurface,
+            "selected rule targets the account management surface",
+        ));
+    }
     let binding_hash = validate_binding_shape(&validated, &input.binding_set)?;
+    if input
+        .binding_set
+        .bindings
+        .iter()
+        .any(|binding| binding.contract_address == rule.context.contract)
+    {
+        return Err(unsafe_artifact(
+            "selected rule targets a bound policy's direct surface",
+        ));
+    }
     validate_artifact_consistency(input, &validated, binding_hash)?;
 
     let policies = rule
@@ -141,6 +158,11 @@ fn validate_binding_shape(
             .ok_or_else(|| binding_error("binding position is out of range"))?;
         if !positions.insert((binding.rule_index, binding.policy_index)) {
             return Err(binding_error("binding position is duplicated"));
+        }
+        if binding.contract_address == spec.spec().smart_account.address {
+            return Err(binding_error(
+                "policy binding cannot use the smart account address",
+            ));
         }
         if !addresses.insert(&binding.contract_address)
             || !matches!(
@@ -280,7 +302,7 @@ fn validate_artifact_consistency(
     let account = spec.spec().smart_account.address.as_str();
     let mut methods = BTreeSet::new();
     let mut covered_policies = BTreeSet::new();
-    let mut covers_management = false;
+    let mut covered_management = BTreeSet::new();
     for method in &dominance.protected_methods {
         let surface = match &method.surface {
             PolicyProtectedSurface::DirectPolicy => 0,
@@ -304,7 +326,7 @@ fn validate_artifact_consistency(
                 covered_policies.insert(method.contract_address.as_str());
             }
             PolicyProtectedSurface::AccountManagement if method.contract_address == account => {
-                covers_management = true;
+                covered_management.insert(method.function.as_str());
             }
             _ => {
                 return Err(unsafe_artifact(
@@ -313,9 +335,34 @@ fn validate_artifact_consistency(
             }
         }
     }
-    if covered_policies != policy_addresses || !covers_management {
+    // These known methods are a floor, not a claim that the caller-supplied list is
+    // complete. The trusted reader must still establish the full binary surface.
+    const POLICY_METHODS: [&str; 3] = ["install", "enforce", "uninstall"];
+    const ACCOUNT_METHODS: [&str; 11] = [
+        "add_context_rule",
+        "update_context_rule_name",
+        "update_context_rule_valid_until",
+        "remove_context_rule",
+        "add_signer",
+        "remove_signer",
+        "add_policy",
+        "remove_policy",
+        "batch_add_signer",
+        "execute",
+        "upgrade",
+    ];
+    if covered_policies != policy_addresses
+        || policy_addresses.iter().any(|address| {
+            POLICY_METHODS
+                .iter()
+                .any(|name| !methods.contains(&(0, *address, *name)))
+        })
+        || ACCOUNT_METHODS
+            .iter()
+            .any(|name| !covered_management.contains(name))
+    {
         return Err(unsafe_artifact(
-            "protected method list omits a required surface",
+            "protected method list omits a known method or required surface",
         ));
     }
     Ok(())
@@ -429,23 +476,38 @@ mod tests {
                     designated_admin_rule_id: 0,
                     admin_rule_fingerprint: "22".repeat(32),
                     assessed_rule_ids: vec![1],
-                    protected_methods: vec![
-                        PolicyProtectedMethod {
-                            surface: PolicyProtectedSurface::DirectPolicy,
-                            contract_address: address(40),
-                            function: "install".to_string(),
-                        },
-                        PolicyProtectedMethod {
-                            surface: PolicyProtectedSurface::DirectPolicy,
-                            contract_address: address(41),
-                            function: "enforce".to_string(),
-                        },
-                        PolicyProtectedMethod {
-                            surface: PolicyProtectedSurface::AccountManagement,
-                            contract_address: account,
-                            function: "add_context_rule".to_string(),
-                        },
-                    ],
+                    protected_methods: [address(40), address(41)]
+                        .into_iter()
+                        .flat_map(|contract_address| {
+                            ["install", "enforce", "uninstall"].map(|function| {
+                                PolicyProtectedMethod {
+                                    surface: PolicyProtectedSurface::DirectPolicy,
+                                    contract_address: contract_address.clone(),
+                                    function: function.to_string(),
+                                }
+                            })
+                        })
+                        .chain(
+                            [
+                                "add_context_rule",
+                                "update_context_rule_name",
+                                "update_context_rule_valid_until",
+                                "remove_context_rule",
+                                "add_signer",
+                                "remove_signer",
+                                "add_policy",
+                                "remove_policy",
+                                "batch_add_signer",
+                                "execute",
+                                "upgrade",
+                            ]
+                            .map(|function| PolicyProtectedMethod {
+                                surface: PolicyProtectedSurface::AccountManagement,
+                                contract_address: account.clone(),
+                                function: function.to_string(),
+                            }),
+                        )
+                        .collect(),
                 },
                 result: PolicyCallSurfaceResult::Safe,
             },
@@ -465,6 +527,302 @@ mod tests {
     ) {
         change(&mut input);
         assert_eq!(draft_install_intent(&input).unwrap_err().code, code);
+    }
+
+    fn rejected_with_message(
+        mut input: PrepareInstallIntentInput,
+        change: impl FnOnce(&mut PrepareInstallIntentInput),
+        code: EC,
+        message: &str,
+    ) {
+        change(&mut input);
+        let error = draft_install_intent(&input).unwrap_err();
+        assert_eq!(error.code, code, "{error}");
+        assert!(error.message.contains(message), "{error}");
+    }
+
+    fn retarget_context(
+        mut input: PrepareInstallIntentInput,
+        contract: &str,
+    ) -> PrepareInstallIntentInput {
+        input.spec["rules"][0]["context"]["contract"] = serde_json::json!(contract);
+        let spec: PolicySpec = serde_json::from_value(input.spec.clone()).unwrap();
+        let validated = spec.validate().unwrap();
+        input.binding_set.spec_hash = validated.hash().to_hex();
+        let PolicyRecognition::VerifiedGeneratedManifest { build_manifest } =
+            &mut input.binding_set.bindings[1].recognition
+        else {
+            panic!("generated binding")
+        };
+        build_manifest["spec_hash"] = serde_json::json!(validated.hash().to_hex());
+        let binding_hash =
+            ozpb_domain::canonical_hash(domains::POLICY_BINDING_SET, &input.binding_set)
+                .unwrap()
+                .to_hex();
+        input.call_surface_check.spec_hash = validated.hash().to_hex();
+        input.call_surface_check.binding_set_hash = binding_hash.clone();
+        input.call_surface_check.verdict.binding_set_hash = binding_hash;
+        input
+    }
+
+    #[test]
+    fn new_rule_cannot_target_account_or_bound_policy_surface() {
+        let base = fixture(false);
+        let account = base.call_surface_check.verdict.account_address.clone();
+        let account_target = retarget_context(base.clone(), &account);
+        let error = draft_install_intent(&account_target).unwrap_err();
+        assert_eq!(error.code, EC::EUnsafeManagementSurface);
+        assert!(error.message.contains("account management"));
+
+        let policy_target = retarget_context(base, &address(40));
+        let error = draft_install_intent(&policy_target).unwrap_err();
+        assert_eq!(error.code, EC::EUnsafeCallSurface);
+        assert!(error.message.contains("bound policy"));
+    }
+
+    #[test]
+    fn account_cannot_be_its_own_policy_binding() {
+        rejected_with_message(
+            fixture(false),
+            |input| {
+                input.binding_set.bindings[0].contract_address =
+                    input.call_surface_check.verdict.account_address.clone();
+            },
+            EC::EPolicyBindingInvalid,
+            "cannot use the smart account address",
+        );
+    }
+
+    #[test]
+    fn minimum_known_method_coverage_is_required_for_every_surface() {
+        let base = fixture(false);
+        let methods = &base
+            .call_surface_check
+            .verdict
+            .dominance_evidence
+            .protected_methods;
+        for method in methods {
+            rejected_with_message(
+                base.clone(),
+                |input| {
+                    input
+                        .call_surface_check
+                        .verdict
+                        .dominance_evidence
+                        .protected_methods
+                        .retain(|entry| {
+                            std::mem::discriminant(&entry.surface)
+                                != std::mem::discriminant(&method.surface)
+                                || entry.contract_address != method.contract_address
+                                || entry.function != method.function
+                        });
+                },
+                EC::EUnsafeCallSurface,
+                "omits a known method",
+            );
+        }
+    }
+
+    #[test]
+    fn binding_structure_and_each_manifest_identity_field_are_checked() {
+        let base = fixture(false);
+        rejected_with_message(
+            base.clone(),
+            |input| input.binding_set.schema = "other/v1".into(),
+            EC::EPolicyBindingInvalid,
+            "schema/spec/network",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                input.binding_set.bindings.pop();
+            },
+            EC::EPolicyBindingInvalid,
+            "cover every spec policy",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                let reviewed = &input.binding_set.bindings[0];
+                input.binding_set.bindings[1] = PolicyBinding {
+                    rule_index: 0,
+                    policy_index: 0,
+                    contract_address: address(42),
+                    observed_wasm_hash: reviewed.observed_wasm_hash.clone(),
+                    recognition: PolicyRecognition::ReviewedRegistry,
+                    resolution_reference: "second reviewed instance".into(),
+                };
+            },
+            EC::EPolicyBindingInvalid,
+            "position is duplicated",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| input.binding_set.bindings[0].contract_address = "bad-address".into(),
+            EC::EPolicyBindingInvalid,
+            "policy address is duplicated or invalid",
+        );
+        for (field, value) in [
+            ("schema", serde_json::json!("other/v1")),
+            ("spec_hash", serde_json::json!("00".repeat(32))),
+            ("registry_snapshot", serde_json::json!("00".repeat(32))),
+            ("rule_index", serde_json::json!(1)),
+            ("template_family", serde_json::json!("other-template")),
+            ("wasm_hash", serde_json::json!("00".repeat(32))),
+        ] {
+            rejected_with_message(
+                base.clone(),
+                |input| {
+                    let PolicyRecognition::VerifiedGeneratedManifest { build_manifest } =
+                        &mut input.binding_set.bindings[1].recognition
+                    else {
+                        panic!("generated binding")
+                    };
+                    build_manifest[field] = value;
+                },
+                EC::EPolicyBindingInvalid,
+                "manifest identity differs",
+            );
+        }
+    }
+
+    #[test]
+    fn every_independent_authority_artifact_constraint_is_checked() {
+        let base = fixture(false);
+        rejected_with_message(
+            base.clone(),
+            |input| input.call_surface_check.verdict.ordered_state_digest = "not-hex".into(),
+            EC::EUnsafeCallSurface,
+            "unanchored",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                let PolicyRuleEnumerationEvidence::BoundedNextId { next_id, .. } =
+                    &mut input.call_surface_check.verdict.enumeration_evidence
+                else {
+                    panic!("bounded")
+                };
+                *next_id = 1;
+            },
+            EC::EUnsafeCallSurface,
+            "enumeration is internally incomplete",
+        );
+        for field in ["rule_ids", "signer_ids", "policy_ids"] {
+            rejected_with_message(
+                base.clone(),
+                |input| {
+                    let PolicyRuleEnumerationEvidence::BoundedNextId {
+                        rule_ids,
+                        signer_ids,
+                        policy_ids,
+                        ..
+                    } = &mut input.call_surface_check.verdict.enumeration_evidence
+                    else {
+                        panic!("bounded")
+                    };
+                    match field {
+                        "rule_ids" => *rule_ids = vec![1, 0],
+                        "signer_ids" => *signer_ids = vec![1, 0],
+                        _ => *policy_ids = vec![1, 0],
+                    }
+                },
+                EC::EUnsafeCallSurface,
+                "enumeration is internally incomplete",
+            );
+        }
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .designated_admin_rule_id = 9
+            },
+            EC::EUnsafeCallSurface,
+            "dominance omits",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .admin_rule_fingerprint = "bad".into()
+            },
+            EC::EUnsafeCallSurface,
+            "dominance omits",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .protected_methods[0]
+                    .function
+                    .clear()
+            },
+            EC::EUnsafeCallSurface,
+            "empty or duplicated",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                let first = input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .protected_methods[0]
+                    .clone();
+                input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .protected_methods
+                    .push(first);
+            },
+            EC::EUnsafeCallSurface,
+            "empty or duplicated",
+        );
+        rejected_with_message(
+            base.clone(),
+            |input| {
+                input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .protected_methods[0]
+                    .contract_address = address(99)
+            },
+            EC::EUnsafeCallSurface,
+            "unrelated surface",
+        );
+        rejected_with_message(
+            base,
+            |input| {
+                input
+                    .call_surface_check
+                    .verdict
+                    .dominance_evidence
+                    .protected_methods
+                    .retain(|method| method.contract_address != address(41));
+            },
+            EC::EUnsafeCallSurface,
+            "omits a known method",
+        );
+    }
+
+    #[test]
+    fn expiry_boundary_allows_the_last_viable_observation() {
+        let mut input = fixture(false);
+        let spec: PolicySpec = serde_json::from_value(input.spec.clone()).unwrap();
+        let valid_until = spec.rules[0].valid_until.as_ref().unwrap().ledger.0;
+        input.call_surface_check.verdict.observed_ledger = valid_until - 1;
+        assert!(draft_install_intent(&input).is_ok());
     }
 
     #[test]
