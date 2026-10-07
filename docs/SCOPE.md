@@ -6,6 +6,9 @@ what was left out on purpose from what was overlooked.
 
 Section numbers refer to `docs/architecture.md`.
 
+The source-reviewed account method inventory and its limits are described in
+[`ACCOUNT-METHOD-INVENTORY.md`](ACCOUNT-METHOD-INVENTORY.md).
+
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
    reconciliation and transitive closure). The largest remaining gap to RFP #7:
    `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
@@ -37,14 +40,3 @@ Section numbers refer to `docs/architecture.md`.
    through the compiled policy and checks permit/deny. It does not compare exact denial reasons.
    The hand-written `differential.rs` checks both verdict and reason for fewer cases. Extending
    that reason check to every generated case remains future work.
-
-6. **Complete account management-surface evidence** (§4.8, §4.10). The registry has a
-   typed method inventory candidate for the pinned OpenZeppelin multisig example hash,
-   including its wrapper methods. A Wasm blob with the exact pinned SHA-256 has 17 function
-   exports matching the reviewed name fixture; `scripts/verify-pinned-upstream.sh` repeats
-   that check when it reproduces the artifact.
-   Authorization guards and state effects come from source review, not from parsing the Wasm.
-   The candidate remains separate from signed snapshots, so no consumer receives it as a
-   live management-surface verdict. Existing signed snapshot bytes and `AccountCapability`
-   construction remain unchanged. Current rules, policy calls, and a coherent ledger snapshot
-   still need trusted acquisition and analysis before a live authority verdict is possible.

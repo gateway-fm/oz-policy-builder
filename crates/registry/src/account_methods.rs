@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Method inventory data; callers must separately establish code identity and provenance.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Keep this constructed in Rust until a duplicate-key-rejecting JSON reader exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AccountMethodInventory {
     pub methods: BTreeMap<String, AccountMethod>,
 }
@@ -76,7 +76,7 @@ pub enum AccountMethodEffect {
 /// Guards and effects are source-reviewed claims, not conclusions from Wasm exports.
 pub fn source_reviewed_oz_multisig_candidate() -> AccountMethodInventory {
     use AccountMethodAuthorization::{
-        NoRequireAuth as None, RequireCurrentContractAuth as SelfAuth,
+        NoRequireAuth as NoAuth, RequireCurrentContractAuth as SelfAuth,
     };
     use AccountMethodEffect::{
         ArbitraryContractCall as Arbitrary, Authorization as Auth, Code, Policies,
@@ -94,42 +94,62 @@ pub fn source_reviewed_oz_multisig_candidate() -> AccountMethodInventory {
         (
             "__constructor",
             Constructor,
-            None,
+            NoAuth,
             &[Rules, Signers, Policies, Callback, Verifier],
         ),
-        ("__check_auth", Hook, None, &[Auth, Callback, Verifier, Ttl]),
-        ("get_context_rules_count", Call, None, &[]),
-        ("get_context_rule", Call, None, &[Ttl]),
-        ("get_signer_id", Call, None, &[Ttl]),
-        ("get_policy_id", Call, None, &[Ttl]),
+        (
+            "__check_auth",
+            Hook,
+            NoAuth,
+            &[Auth, Callback, Verifier, Ttl],
+        ),
+        ("get_context_rules_count", Call, NoAuth, &[]),
+        ("get_context_rule", Call, NoAuth, &[Ttl]),
+        ("get_signer_id", Call, NoAuth, &[Ttl]),
+        ("get_policy_id", Call, NoAuth, &[Ttl]),
         (
             "add_context_rule",
             Call,
             SelfAuth,
-            &[Rules, Signers, Policies, Callback, Verifier],
+            &[Rules, Signers, Policies, Callback, Verifier, Ttl],
         ),
-        ("update_context_rule_name", Call, SelfAuth, &[Rules]),
-        ("update_context_rule_valid_until", Call, SelfAuth, &[Rules]),
+        ("update_context_rule_name", Call, SelfAuth, &[Rules, Ttl]),
+        (
+            "update_context_rule_valid_until",
+            Call,
+            SelfAuth,
+            &[Rules, Ttl],
+        ),
         (
             "remove_context_rule",
             Call,
             SelfAuth,
-            &[Rules, Signers, Policies, Callback],
+            &[Rules, Signers, Policies, Callback, Ttl],
         ),
-        ("add_signer", Call, SelfAuth, &[Rules, Signers, Verifier]),
-        ("remove_signer", Call, SelfAuth, &[Rules, Signers]),
-        ("add_policy", Call, SelfAuth, &[Rules, Policies, Callback]),
+        (
+            "add_signer",
+            Call,
+            SelfAuth,
+            &[Rules, Signers, Verifier, Ttl],
+        ),
+        ("remove_signer", Call, SelfAuth, &[Rules, Signers, Ttl]),
+        (
+            "add_policy",
+            Call,
+            SelfAuth,
+            &[Rules, Policies, Callback, Ttl],
+        ),
         (
             "remove_policy",
             Call,
             SelfAuth,
-            &[Rules, Policies, Callback],
+            &[Rules, Policies, Callback, Ttl],
         ),
         (
             "batch_add_signer",
             Call,
             SelfAuth,
-            &[Rules, Signers, Verifier],
+            &[Rules, Signers, Verifier, Ttl],
         ),
         ("execute", Call, SelfAuth, &[Arbitrary]),
         ("upgrade", Call, SelfAuth, &[Code]),
@@ -237,6 +257,24 @@ mod tests {
         assert!(candidate.methods["get_context_rule"]
             .effects
             .contains(&AccountMethodEffect::StorageTtl));
+        for name in [
+            "add_context_rule",
+            "update_context_rule_name",
+            "update_context_rule_valid_until",
+            "remove_context_rule",
+            "add_signer",
+            "remove_signer",
+            "add_policy",
+            "remove_policy",
+            "batch_add_signer",
+        ] {
+            assert!(
+                candidate.methods[name]
+                    .effects
+                    .contains(&AccountMethodEffect::StorageTtl),
+                "missing TTL effect for {name}"
+            );
+        }
     }
 
     #[test]

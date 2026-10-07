@@ -39,8 +39,6 @@ class Reader:
                 raise InvalidWasm("u32 LEB128 overflow")
             result |= (byte & 0x7F) << shift
             if byte < 0x80:
-                if shift and result < 1 << shift:
-                    raise InvalidWasm("noncanonical u32 LEB128")
                 return result
         raise InvalidWasm("unterminated u32 LEB128")
 

@@ -223,6 +223,8 @@ jobs:
       # Reads checked-out files only — no toolchain, no network, about a second.
       - name: quoted hashes resolve to a current artifact or a declared exception
         run: python3 scripts/check-quoted-hashes.py
+      - name: Wasm export checker self-tests
+        run: python3 scripts/test-check-wasm-exports.py
 
   supply-chain:
     name: supply-chain (permissive licenses · sources · advisories)

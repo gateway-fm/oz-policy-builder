@@ -147,8 +147,10 @@ PY
         if [ "$const" = "OZ_SMART_ACCOUNT_WASM" ]; then
             # Hash equality binds this export check to the exact recognized account artifact.
             # Export names establish the call surface, not the methods' authorization behavior.
-            python3 scripts/check-wasm-exports.py "$wasm" \
-                crates/registry/tests/fixtures/pinned_account_exports.txt "$pinned"
+            if ! python3 scripts/check-wasm-exports.py "$wasm" \
+                crates/registry/tests/fixtures/pinned_account_exports.txt "$pinned"; then
+                fail=1
+            fi
         fi
     else
         printf "  %-28s MISMATCH\n     built:  %s\n     pinned: %s\n" "$dir" "$built" "$pinned"

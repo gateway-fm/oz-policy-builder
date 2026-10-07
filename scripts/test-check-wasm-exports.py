@@ -26,14 +26,26 @@ def section(kind: int, content: bytes) -> bytes:
     return bytes([kind]) + u32(len(content)) + content
 
 
-def minimal_wasm(exports: list[str]) -> bytes:
+def minimal_wasm(
+    exports: list[str], other_exports: Optional[list[tuple[str, int]]] = None
+) -> bytes:
     # One [] -> [] function, which may be exported under multiple distinct names.
     type_section = section(1, b"\x01\x60\x00\x00")
     function_section = section(3, b"\x01\x00")
-    entries = b"".join(u32(len(name.encode())) + name.encode() + b"\x00\x00" for name in exports)
-    export_section = section(7, u32(len(exports)) + entries)
+    # Include actual memory and global definitions for non-function exports.
+    memory_section = section(5, b"\x01\x00\x01")
+    global_section = section(6, b"\x01\x7f\x00\x41\x00\x0b")
+    all_exports = [(name, 0) for name in exports] + (other_exports or [])
+    entries = b"".join(
+        u32(len(name.encode())) + name.encode() + bytes([kind, 0])
+        for name, kind in all_exports
+    )
+    export_section = section(7, u32(len(all_exports)) + entries)
     code_section = section(10, b"\x01\x02\x00\x0b")
-    return MAGIC + type_section + function_section + export_section + code_section
+    return (
+        MAGIC + type_section + function_section + memory_section + global_section
+        + export_section + code_section
+    )
 
 
 def check(
@@ -65,8 +77,12 @@ class ExportCheckTests(unittest.TestCase):
 
     def test_missing_and_unexpected_names_fail(self) -> None:
         wasm = minimal_wasm(["alpha", "beta"])
-        self.assertIn("unexpected=['beta']", check(wasm, ["alpha"]).stderr)
-        self.assertIn("missing=['gamma']", check(wasm, ["alpha", "beta", "gamma"]).stderr)
+        unexpected = check(wasm, ["alpha"])
+        missing = check(wasm, ["alpha", "beta", "gamma"])
+        self.assertNotEqual(unexpected.returncode, 0)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("unexpected=['beta']", unexpected.stderr)
+        self.assertIn("missing=['gamma']", missing.stderr)
 
     def test_duplicate_export_and_truncated_binary_fail(self) -> None:
         duplicate = check(minimal_wasm(["alpha", "alpha"]), ["alpha"])
@@ -75,9 +91,38 @@ class ExportCheckTests(unittest.TestCase):
         self.assertIn("truncated section", truncated.stderr)
 
     def test_wrong_hash_fails_before_export_comparison(self) -> None:
-        result = check(minimal_wasm(["alpha"]), ["alpha"], "0" * 64)
+        result = check(b"not wasm", ["alpha"], "0" * 64)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Wasm hash mismatch", result.stderr)
+        self.assertNotIn("expected core Wasm magic", result.stderr)
+
+    def test_non_function_exports_are_ignored(self) -> None:
+        result = check(minimal_wasm(["alpha"], [("memory", 2), ("data_end", 3)]), ["alpha"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_malformed_export_sections_fail_closed(self) -> None:
+        wasm = minimal_wasm(["alpha"])
+        export = section(7, b"\x01\x05alpha\x00\x00")
+        duplicate_section = check(wasm + export, ["alpha"])
+        invalid_name = check(wasm.replace(b"alpha", b"\xfflpha"), ["alpha"])
+        missing_section = check(wasm.replace(export, b""), ["alpha"])
+        for result, reason in [
+            (duplicate_section, "duplicate export section"),
+            (invalid_name, "invalid UTF-8 export name"),
+            (missing_section, "missing export section"),
+        ]:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(reason, result.stderr)
+
+    def test_padded_section_size_is_valid(self) -> None:
+        wasm = minimal_wasm(["alpha"])
+        export = section(7, b"\x01\x05alpha\x00\x00")
+        padded_export = (
+            b"\x07" + bytes([len(export) - 2 | 0x80, 0x80, 0x80, 0x80, 0])
+            + export[2:]
+        )
+        result = check(wasm.replace(export, padded_export), ["alpha"])
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
