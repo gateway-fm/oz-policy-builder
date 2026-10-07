@@ -85,6 +85,7 @@ fn sdk_encoded_instance_keys_find_both_counters() {
     assert_eq!(
         decode_account_storage(&ledger_key(ScVal::LedgerKeyContractInstance), &value).unwrap(),
         AccountStorageEntry::Instance(InstanceCounters {
+            wasm_hash: ozpb_domain::Hash32([9; 32]),
             next_id: Some(18),
             count: Some(3),
         })

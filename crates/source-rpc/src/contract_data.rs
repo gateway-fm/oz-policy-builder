@@ -1,4 +1,4 @@
-//! Bounded raw contract-data reads. A missing key may be archived or never created;
+//! Bounded raw contract-data reads. An omitted key has an unknown history;
 //! this adapter does not interpret it as account state or an authorization verdict.
 
 use super::{
@@ -21,8 +21,13 @@ const MAX_CONTRACT_ADDRESS_BYTES: usize = 128;
 /// One requested key's status in a single `getLedgerEntries` response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractDataStatus {
-    /// The endpoint omitted this key. It may be archived; absence is not proof of nonexistence.
+    /// The endpoint omitted this key. Omission is not proof that it never existed.
     Absent,
+    /// The endpoint returned this entry but its TTL has expired at the reported ledger.
+    Archived {
+        value: ScVal,
+        last_modified_ledger: u32,
+    },
     /// An entry whose XDR and metadata matched the requested key, with a TTL at least as
     /// high as the RPC's reported latest ledger. This is not a cross-call state anchor.
     Present {
@@ -47,7 +52,7 @@ pub struct ContractDataRead {
 /// The caller supplies the requested keys and network passphrase. The endpoint is checked
 /// with `getNetwork` before the read, but endpoint selection and authentication remain the
 /// caller's responsibility. This function does not derive the complete key set or an authority
-/// verdict. `Absent` must be handled as uncertainty when archival is possible.
+/// verdict. An omitted key remains uncertain even when the endpoint reports archives.
 pub fn read_contract_data<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -55,53 +60,55 @@ pub fn read_contract_data<T: RpcTransport>(
     key_xdr_base64: &[String],
 ) -> Result<ContractDataRead, RpcError> {
     if key_xdr_base64.is_empty() || key_xdr_base64.len() > MAX_LEDGER_ENTRY_KEYS {
-        return Err(RpcError::Malformed(format!(
+        return Err(RpcError::InvalidRequest(format!(
             "contract-data read requires 1–{MAX_LEDGER_ENTRY_KEYS} keys"
         )));
     }
     if contract_id.len() > MAX_CONTRACT_ADDRESS_BYTES {
-        return Err(RpcError::Malformed(
+        return Err(RpcError::InvalidRequest(
             "contract address exceeds the encoded address size limit".to_string(),
         ));
     }
     let contract = contract_id
         .parse::<stellar_strkey::Contract>()
         .map_err(|error| {
-            RpcError::Malformed(format!("invalid contract address {contract_id}: {error}"))
+            RpcError::InvalidRequest(format!("invalid contract address {contract_id}: {error}"))
         })?;
     let expected_address = ScAddress::Contract(ContractId(Hash(contract.0)));
     let mut requested = BTreeMap::<String, LedgerKeyContractData>::new();
     let mut total_bytes = 0usize;
     for (index, encoded) in key_xdr_base64.iter().enumerate() {
         if encoded.len() > MAX_KEY_BASE64_BYTES {
-            return Err(RpcError::Malformed(format!(
+            return Err(RpcError::InvalidRequest(format!(
                 "contract-data key {index} exceeds the encoded key size limit"
             )));
         }
         total_bytes = total_bytes.saturating_add(encoded.len());
         if total_bytes > MAX_REQUEST_BASE64_BYTES {
-            return Err(RpcError::Malformed(
+            return Err(RpcError::InvalidRequest(
                 "contract-data request exceeds the encoded key budget".to_string(),
             ));
         }
         let key = LedgerKey::from_xdr_base64(encoded, xdr_limits()).map_err(|error| {
-            RpcError::Malformed(format!("contract-data key {index} is invalid XDR: {error}"))
+            RpcError::InvalidRequest(format!("contract-data key {index} is invalid XDR: {error}"))
         })?;
         let LedgerKey::ContractData(key) = key else {
-            return Err(RpcError::Malformed(format!(
+            return Err(RpcError::InvalidRequest(format!(
                 "contract-data key {index} is not a contract-data ledger key"
             )));
         };
         if key.contract != expected_address {
-            return Err(RpcError::Malformed(format!(
+            return Err(RpcError::InvalidRequest(format!(
                 "contract-data key {index} belongs to another contract"
             )));
         }
         let canonical = LedgerKey::ContractData(key.clone())
             .to_xdr_base64(xdr_limits())
-            .map_err(|error| RpcError::Malformed(format!("contract-data key {index}: {error}")))?;
+            .map_err(|error| {
+                RpcError::InvalidRequest(format!("contract-data key {index}: {error}"))
+            })?;
         if requested.insert(canonical, key).is_some() {
-            return Err(RpcError::Malformed(format!(
+            return Err(RpcError::InvalidRequest(format!(
                 "contract-data key {index} duplicates a requested key"
             )));
         }
@@ -186,29 +193,24 @@ fn parse_contract_data(
         }
         let last_modified = ledger_field(entry, index, "lastModifiedLedgerSeq")?;
         let live_until = ledger_field(entry, index, "liveUntilLedgerSeq")?;
-        if last_modified == 0 {
-            return Err(RpcError::Malformed(format!(
-                "getLedgerEntries entry {index} has unusable lastModifiedLedgerSeq zero"
-            )));
-        }
         if last_modified > latest {
             return Err(RpcError::Malformed(format!(
                 "getLedgerEntries entry {index} was modified after reported latestLedger"
             )));
         }
-        if live_until < latest {
-            return Err(RpcError::Malformed(format!(
-                "getLedgerEntries entry {index} is not live at reported latestLedger"
-            )));
-        }
-        observed.insert(
-            key.to_string(),
+        let status = if live_until < latest {
+            ContractDataStatus::Archived {
+                value: data.val,
+                last_modified_ledger: last_modified,
+            }
+        } else {
             ContractDataStatus::Present {
                 value: data.val,
                 last_modified_ledger: last_modified,
                 live_until_ledger: live_until,
-            },
-        );
+            }
+        };
+        observed.insert(key.to_string(), status);
     }
     Ok(ContractDataRead {
         network_id,
@@ -326,6 +328,10 @@ mod tests {
     #[test]
     fn invalid_requests_stop_before_network_access() {
         let mock = mock(json!({"latestLedger": 10, "entries": []}));
+        assert!(matches!(
+            read(&mock, vec![]),
+            Err(RpcError::InvalidRequest(_))
+        ));
         malformed(&mock, vec![], "requires 1");
         malformed(&mock, vec![key(1); 201], "requires 1");
         malformed(&mock, vec![key(1), key(1)], "duplicates");
@@ -362,9 +368,9 @@ mod tests {
         .unwrap();
         malformed(&mock, vec![wrong], "another contract");
         let oversized_address = "C".repeat(MAX_CONTRACT_ADDRESS_BYTES + 1);
-        let error = read_contract_data(&mock, NETWORK, &oversized_address, &[key(1)])
-            .unwrap_err()
-            .to_string();
+        let error = read_contract_data(&mock, NETWORK, &oversized_address, &[key(1)]).unwrap_err();
+        assert!(matches!(error, RpcError::InvalidRequest(_)));
+        let error = error.to_string();
         assert!(error.contains("address size limit"), "{error}");
         assert!(mock.calls.borrow().is_empty());
     }
@@ -430,11 +436,18 @@ mod tests {
         );
         let mut zero_modified = entry(1);
         zero_modified["lastModifiedLedgerSeq"] = json!(0);
-        malformed(
+        let result = read(
             &mock(json!({"latestLedger": 10, "entries": [zero_modified]})),
             vec![key(1)],
-            "lastModifiedLedgerSeq zero",
-        );
+        )
+        .unwrap();
+        assert!(matches!(
+            result.entries[&key(1)],
+            ContractDataStatus::Present {
+                last_modified_ledger: 0,
+                ..
+            }
+        ));
         let mut missing_ttl = entry(1);
         missing_ttl
             .as_object_mut()
@@ -445,13 +458,22 @@ mod tests {
             vec![key(1)],
             "liveUntilLedgerSeq",
         );
-        let mut expired = entry(1);
-        expired["liveUntilLedgerSeq"] = json!(9);
-        malformed(
-            &mock(json!({"latestLedger": 10, "entries": [expired]})),
-            vec![key(1)],
-            "not live",
-        );
+        for live_until in [0, 9] {
+            let mut archived = entry(1);
+            archived["liveUntilLedgerSeq"] = json!(live_until);
+            let result = read(
+                &mock(json!({"latestLedger": 10, "entries": [archived]})),
+                vec![key(1)],
+            )
+            .unwrap();
+            assert_eq!(
+                result.entries[&key(1)],
+                ContractDataStatus::Archived {
+                    value: ScVal::U32(101),
+                    last_modified_ledger: 9,
+                }
+            );
+        }
         let mut future = entry(1);
         future["lastModifiedLedgerSeq"] = json!(11);
         malformed(

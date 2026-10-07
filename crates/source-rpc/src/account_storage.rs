@@ -5,6 +5,7 @@
 //! Unknown keys in the contract-instance map are allowed because other account extensions
 //! and the pinned account's own counters share that map. Targeted keys and records are exact.
 
+use ozpb_domain::Hash32;
 use std::collections::BTreeSet;
 use stellar_xdr::{
     ContractDataDurability, ContractExecutable, LedgerKeyContractData, ScAddress, ScMap, ScVal,
@@ -32,6 +33,8 @@ enum StorageKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceCounters {
+    /// Code identity observed in the same instance value as these counters.
+    pub wasm_hash: Hash32,
     /// Both fields are absent before the first rule is added. A later scanner must apply
     /// the release-specific default and must not infer anything from an absent ledger entry.
     pub next_id: Option<u32>,
@@ -129,12 +132,13 @@ fn decode_instance(value: &ScVal) -> Result<InstanceCounters, AccountStorageErro
     let ScVal::ContractInstance(instance) = value else {
         return Err(AccountStorageError::Invalid("contract instance value"));
     };
-    if !matches!(instance.executable, ContractExecutable::Wasm(_)) {
+    let ContractExecutable::Wasm(hash) = &instance.executable else {
         return Err(AccountStorageError::Invalid(
             "account executable is not Wasm",
         ));
-    }
+    };
     let mut counters = InstanceCounters {
+        wasm_hash: Hash32(hash.0),
         next_id: None,
         count: None,
     };
@@ -185,14 +189,14 @@ fn decode_instance(value: &ScVal) -> Result<InstanceCounters, AccountStorageErro
 fn decode_rule(id: u32, value: &ScVal) -> Result<ContextRuleRecord, AccountStorageError> {
     let map = exact_map(value, 5, "ContextRuleEntry")?;
     let name = match field(map, b"name")? {
-        ScVal::String(s) => std::str::from_utf8(s.as_slice())
-            .map_err(|_| AccountStorageError::Invalid("name UTF-8"))?
-            .to_string(),
+        ScVal::String(s) => {
+            if s.len() > MAX_NAME_BYTES {
+                return Err(AccountStorageError::Invalid("name length"));
+            }
+            String::from_utf8_lossy(s.as_slice()).into_owned()
+        }
         _ => return Err(AccountStorageError::Invalid("name value")),
     };
-    if name.len() > MAX_NAME_BYTES {
-        return Err(AccountStorageError::Invalid("name length"));
-    }
     let context_type = decode_context_type(field(map, b"context_type")?)?;
     let valid_until = match field(map, b"valid_until")? {
         ScVal::Void => None,
@@ -405,17 +409,24 @@ mod tests {
         })
     }
 
-    fn rule() -> ScVal {
+    fn rule_with_name(name: &[u8]) -> ScVal {
         record(vec![
             (
                 "context_type",
                 vector(vec![symbol("CallContract"), contract_address(8)]),
             ),
-            ("name", ScVal::String(ScString("admin".try_into().unwrap()))),
+            (
+                "name",
+                ScVal::String(ScString(name.to_vec().try_into().unwrap())),
+            ),
             ("policy_ids", vector(vec![ScVal::U32(3)])),
             ("signer_ids", vector(vec![ScVal::U32(2)])),
             ("valid_until", ScVal::Void),
         ])
+    }
+
+    fn rule() -> ScVal {
+        rule_with_name(b"admin")
     }
 
     fn invalid(key: &LedgerKeyContractData, value: &ScVal, expected: &'static str) {
@@ -435,6 +446,7 @@ mod tests {
         assert_eq!(
             decode_account_storage(&instance_key(), &value).unwrap(),
             AccountStorageEntry::Instance(InstanceCounters {
+                wasm_hash: Hash32([9; 32]),
                 next_id: Some(3),
                 count: Some(1),
             })
@@ -442,6 +454,7 @@ mod tests {
         assert_eq!(
             decode_account_storage(&instance_key(), &instance(vec![])).unwrap(),
             AccountStorageEntry::Instance(InstanceCounters {
+                wasm_hash: Hash32([9; 32]),
                 next_id: None,
                 count: None,
             })
@@ -526,6 +539,18 @@ mod tests {
             &no_authorizers,
             "rule has no signers or policies",
         );
+    }
+
+    #[test]
+    fn non_utf8_display_name_does_not_discard_valid_authority_fields() {
+        let entry =
+            decode_account_storage(&key("ContextRuleData", 17), &rule_with_name(b"\xff")).unwrap();
+        let AccountStorageEntry::ContextRule(rule) = entry else {
+            panic!("context rule")
+        };
+        assert_eq!(rule.name, "\u{fffd}");
+        assert_eq!(rule.signer_ids, vec![2]);
+        assert_eq!(rule.policy_ids, vec![3]);
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
     addresses: &[String],
 ) -> Result<ContractCodeRead, RpcError> {
     if addresses.is_empty() || addresses.len() > MAX_LEDGER_ENTRY_KEYS {
-        return Err(RpcError::CodeRead(format!(
+        return Err(RpcError::InvalidRequest(format!(
             "contract code read requires 1..={MAX_LEDGER_ENTRY_KEYS} unique addresses"
         )));
     }
@@ -50,10 +50,10 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
         let contract = address
             .parse::<stellar_strkey::Contract>()
             .map_err(|error| {
-                RpcError::CodeRead(format!("invalid contract address {address:?}: {error}"))
+                RpcError::InvalidRequest(format!("invalid contract address {address:?}: {error}"))
             })?;
         if !seen_contracts.insert(contract.0) {
-            return Err(RpcError::CodeRead(
+            return Err(RpcError::InvalidRequest(
                 "contract code read contains a duplicate contract address".to_string(),
             ));
         }
@@ -65,7 +65,7 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
         });
         let encoded_key = key
             .to_xdr_base64(xdr_limits())
-            .map_err(|error| RpcError::CodeRead(error.to_string()))?;
+            .map_err(|error| RpcError::InvalidRequest(error.to_string()))?;
         requested.insert(encoded_key, (address.clone(), sc_address));
     }
 

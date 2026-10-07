@@ -87,6 +87,8 @@ pub fn xdr_limits() -> Limits {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
+    #[error("E_RPC: invalid request: {0}")]
+    InvalidRequest(String),
     #[error("E_RPC: transport error: {0}")]
     Transport(String),
     #[error("E_RPC: malformed response: {0}")]
@@ -1435,6 +1437,15 @@ mod tests {
             .into_iter()
             .map(|byte| format!("{}", stellar_strkey::Contract([byte; 32])))
             .collect()
+    }
+
+    #[test]
+    fn code_read_rejects_bad_request_before_contacting_rpc() {
+        let transport = code_read_transport(std::convert::identity);
+        let error =
+            read_contract_wasm_hashes(&transport, NET, &["not-a-contract".into()]).unwrap_err();
+        assert!(matches!(error, RpcError::InvalidRequest(_)));
+        assert!(transport.calls.borrow().is_empty());
     }
 
     fn code_read_key(byte: u8) -> String {

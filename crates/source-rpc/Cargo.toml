@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Stellar RPC acquisition adapter for recording evidence and checked contract code reads"
+description = "Stellar RPC acquisition adapter for recording evidence and checked contract code/data reads"
 
 [dependencies]
 ozpb-recorder-core = { workspace = true }

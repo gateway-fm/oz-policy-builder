@@ -201,6 +201,7 @@ mod tests {
     fn fixture() -> Fixture {
         Fixture {
             counters: InstanceCounters {
+                wasm_hash: ozpb_domain::Hash32([9; 32]),
                 next_id: Some(3),
                 count: Some(2),
             },
@@ -260,6 +261,7 @@ mod tests {
         // Removing the last rule leaves the monotonic NextId at one and Count at zero.
         let all_removed = Fixture {
             counters: InstanceCounters {
+                wasm_hash: ozpb_domain::Hash32([9; 32]),
                 next_id: Some(1),
                 count: Some(0),
             },

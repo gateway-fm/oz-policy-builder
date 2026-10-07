@@ -1,7 +1,7 @@
 //! One bounded read of selected pinned account storage entries.
 //!
 //! The endpoint supplies values and ledger metadata. This page does not authenticate the
-//! endpoint, distinguish an omitted key from an archived one, or establish a coherent
+//! endpoint, infer the history of an omitted key, or establish a coherent
 //! snapshot with another call. No authority decision may be inferred from this page alone.
 
 #![allow(
@@ -34,8 +34,12 @@ pub(crate) enum AccountEntryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AccountEntryStatus {
-    /// No live entry was returned. It may be archived, removed, or never created.
+    /// The endpoint omitted this key; its history is unknown.
     Absent,
+    Archived {
+        entry: AccountStorageEntry,
+        last_modified_ledger: u32,
+    },
     Present {
         entry: AccountStorageEntry,
         last_modified_ledger: u32,
@@ -56,7 +60,7 @@ pub(crate) struct AccountEntryPage {
 ///
 /// The caller chooses the endpoint and requested IDs. Network identity is checked against
 /// `getNetwork`, but endpoint authentication remains the caller's responsibility. This
-/// function makes no completeness or archive-status claim.
+/// function makes no completeness claim about omitted keys.
 pub(crate) fn read_account_entry_page<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -64,18 +68,18 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
     requested: &[AccountEntryKey],
 ) -> Result<AccountEntryPage, RpcError> {
     if requested.is_empty() || requested.len() > MAX_LEDGER_ENTRY_KEYS {
-        return Err(RpcError::Malformed(format!(
+        return Err(RpcError::InvalidRequest(format!(
             "account entry page requires 1–{MAX_LEDGER_ENTRY_KEYS} keys"
         )));
     }
     if contract_id.len() > MAX_CONTRACT_ADDRESS_BYTES {
-        return Err(RpcError::Malformed(
+        return Err(RpcError::InvalidRequest(
             "contract address exceeds the encoded address size limit".into(),
         ));
     }
     let contract = contract_id
         .parse::<stellar_strkey::Contract>()
-        .map_err(|error| RpcError::Malformed(format!("invalid contract address: {error}")))?;
+        .map_err(|error| RpcError::InvalidRequest(format!("invalid contract address: {error}")))?;
     let contract = ContractId(Hash(contract.0));
 
     let mut keyed = BTreeMap::new();
@@ -83,9 +87,13 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
         let key = ledger_key(&contract, request);
         let encoded = LedgerKey::ContractData(key)
             .to_xdr_base64(xdr_limits())
-            .map_err(|error| RpcError::Malformed(format!("cannot encode account key: {error}")))?;
+            .map_err(|error| {
+                RpcError::InvalidRequest(format!("cannot encode account key: {error}"))
+            })?;
         if keyed.insert(encoded, request).is_some() {
-            return Err(RpcError::Malformed("duplicate account entry key".into()));
+            return Err(RpcError::InvalidRequest(
+                "duplicate account entry key".into(),
+            ));
         }
     }
     let encoded_keys = keyed.keys().cloned().collect::<Vec<_>>();
@@ -97,6 +105,21 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
         })?;
         let status = match status {
             ContractDataStatus::Absent => AccountEntryStatus::Absent,
+            ContractDataStatus::Archived {
+                value,
+                last_modified_ledger,
+            } => {
+                let entry = decode_account_storage(&ledger_key(&contract, request), value)
+                    .map_err(|error| {
+                        RpcError::Malformed(format!(
+                            "archived account entry {request:?} has invalid pinned storage: {error}"
+                        ))
+                    })?;
+                AccountEntryStatus::Archived {
+                    entry,
+                    last_modified_ledger: *last_modified_ledger,
+                }
+            }
             ContractDataStatus::Present {
                 value,
                 last_modified_ledger,
@@ -312,6 +335,7 @@ mod tests {
             page.entries[&AccountEntryKey::Instance],
             AccountEntryStatus::Present {
                 entry: AccountStorageEntry::Instance(InstanceCounters {
+                    wasm_hash: ozpb_domain::Hash32([9; 32]),
                     next_id: None,
                     count: None,
                 }),
@@ -319,6 +343,29 @@ mod tests {
                 live_until_ledger: 20,
             }
         );
+    }
+
+    #[test]
+    fn archived_entry_is_distinct_from_an_omitted_key() {
+        let mut archived = response_entry(AccountEntryKey::Rule(17), fixture("rule_value"));
+        archived["liveUntilLedgerSeq"] = json!(0);
+        let mock = mock(json!({"latestLedger": 10, "entries": [archived]}));
+        let page = read(
+            &mock,
+            &[AccountEntryKey::Rule(17), AccountEntryKey::Rule(18)],
+        )
+        .unwrap();
+        assert_eq!(
+            page.entries[&AccountEntryKey::Rule(18)],
+            AccountEntryStatus::Absent
+        );
+        assert!(matches!(
+            &page.entries[&AccountEntryKey::Rule(17)],
+            AccountEntryStatus::Archived {
+                entry: AccountStorageEntry::ContextRule(ContextRuleRecord { id: 17, .. }),
+                last_modified_ledger: 9,
+            }
+        ));
     }
 
     #[test]
@@ -353,7 +400,10 @@ mod tests {
             vec![AccountEntryKey::Rule(1); 201],
             vec![AccountEntryKey::Rule(1), AccountEntryKey::Rule(1)],
         ] {
-            assert!(read(&mock, &requests).is_err());
+            assert!(matches!(
+                read(&mock, &requests),
+                Err(RpcError::InvalidRequest(_))
+            ));
         }
         assert!(mock.calls.borrow().is_empty());
 
