@@ -17,6 +17,7 @@ use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext, CustomAccountInterface};
 use soroban_sdk::crypto::Hash;
 use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{
     contract, contractimpl, Address, Bytes, Env, IntoVal, Map, Symbol, Val, Vec as SVec,
 };
@@ -52,16 +53,16 @@ impl CustomAccountInterface for HarnessAccount {
 /// the spec's own fixture strkeys map to `Address::from_str` of that exact strkey (so the
 /// contract's compiled-in literals match), and any other string gets a fresh generated
 /// address (distinct, valid). Same string → same Address.
-struct AddrMap<'a> {
-    env: &'a Env,
+struct AddrMap {
+    env: Env,
     known: Vec<String>,
     cache: RefCell<BTreeMap<String, Address>>,
 }
 
-impl<'a> AddrMap<'a> {
-    fn new(env: &'a Env, account: &Address) -> Self {
+impl AddrMap {
+    fn new(env: &Env, account: &Address) -> Self {
         let map = AddrMap {
-            env,
+            env: env.clone(),
             known: vec![
                 fx::golden_token_strkey(),
                 fx::golden_merchant_strkey(),
@@ -79,11 +80,11 @@ impl<'a> AddrMap<'a> {
             return a.clone();
         }
         let addr = if self.known.iter().any(|k| k == s) {
-            Address::from_str(self.env, s)
+            Address::from_str(&self.env, s)
         } else {
             // Unknown/mutated address string (stranger, other-contract) → fresh valid
             // address; distinctness preserves the string-inequality the evaluator uses.
-            Address::generate(self.env)
+            Address::generate(&self.env)
         };
         self.cache.borrow_mut().insert(s.to_string(), addr.clone());
         addr
@@ -130,6 +131,7 @@ fn context_of(env: &Env, map: &AddrMap, inv: &Invocation) -> Context {
 
 struct InstalledWorld {
     env: Env,
+    addresses: AddrMap,
     policy: Address,
     account: Address,
     rule_id: u32,
@@ -137,13 +139,16 @@ struct InstalledWorld {
 
 fn installed_world(rule_live_signers: &[SignerSpec]) -> InstalledWorld {
     let env = Env::default();
+    // The fixture mocks both management setup and delegated-signer authentication.
+    // The account and generated policy still execute; digest binding is outside this test.
     env.mock_all_auths();
     env.ledger()
         .with_mut(|ledger| ledger.sequence_number = 1_000);
     let policy = env.register(GeneratedPolicy, ());
     let account = env.register(HarnessAccount, ());
     let target = Address::from_str(&env, &fx::golden_token_strkey());
-    let live_signers = signers(&env, &AddrMap::new(&env, &account), rule_live_signers);
+    let addresses = AddrMap::new(&env, &account);
+    let live_signers = signers(&env, &addresses, rule_live_signers);
     let mut policies = Map::new(&env);
     policies.set(policy.clone(), 0u32.into_val(&env));
     let stored_rule = env.as_contract(&account, || {
@@ -159,6 +164,7 @@ fn installed_world(rule_live_signers: &[SignerSpec]) -> InstalledWorld {
 
     InstalledWorld {
         env,
+        addresses,
         policy,
         account,
         rule_id: stored_rule.id,
@@ -210,11 +216,11 @@ fn authorize_on_rule(
     let env = &world.env;
     env.ledger()
         .with_mut(|l| l.sequence_number = first.context.current_ledger.0);
-    let map = AddrMap::new(env, &world.account);
+    let map = &world.addresses;
 
     let mut authenticated = Map::new(env);
     for authenticated_signer in &first.context.authenticated_signers {
-        authenticated.set(signer(&map, authenticated_signer), Bytes::new(env));
+        authenticated.set(signer(map, authenticated_signer), Bytes::new(env));
     }
     let payload = AuthPayload {
         signers: authenticated,
@@ -224,8 +230,10 @@ fn authorize_on_rule(
         env,
         cases
             .iter()
-            .map(|case| context_of(env, &map, &case.invocation)),
+            .map(|case| context_of(env, map, &case.invocation)),
     );
+    // Delegated authentication is mocked here, so this placeholder digest does not
+    // exercise the signer's digest-bound authorization.
     let signature_payload: Hash<32> = env.crypto().sha256(&Bytes::new(env));
     // Use the host-managed account invocation. Calling `do_check_auth` inside
     // `as_contract` bypasses the invocation boundary, so a later policy panic can
@@ -239,7 +247,8 @@ fn authorize_on_rule(
     );
     match result {
         Ok(()) => Ok(()),
-        Err(Ok(error)) => Err(error),
+        Err(Ok(error)) if error.is_type(ScErrorType::Contract) => Err(error),
+        Err(Ok(error)) => panic!("account invocation failed outside the contract: {error:?}"),
         Err(Err(error)) => panic!("account invocation failed without a contract error: {error:?}"),
     }
 }
@@ -321,16 +330,27 @@ fn generated_golden_denials_preserve_the_expected_reason() {
     for case in build_suite(&spec) {
         // These expected codes follow from the fixed fixture and one mutation at a
         // time. They are hand-stated here, not obtained from the evaluator or the
-        // generated policy. Target, expiry, and unknown-signer cases can be refused
-        // by the account before the policy runs, so they are outside this oracle.
+        // generated policy. Account refusals use the pinned account's error numbers.
         let expected_code = match case.class {
-            MutationClass::DifferentFunction => Some(5), // FunctionNotAllowed
+            MutationClass::DifferentContract => Some(3002), // UnvalidatedContext
+            MutationClass::DifferentFunction => Some(5),    // FunctionNotAllowed
             MutationClass::ArgEquality
             | MutationClass::NumericBoundary
             | MutationClass::DifferentAddressArg
             | MutationClass::ArgArity
             | MutationClass::TypeConfusion => Some(6), // NoTupleMatched
-            MutationClass::ZeroSigners => Some(1),       // ZeroSigners
+            MutationClass::ZeroSigners => Some(1),          // ZeroSigners
+            MutationClass::WrongSigner => Some(3016),       // UnauthorizedSigner
+            MutationClass::SignerBoundary
+                if !case.expect_permit
+                    && case
+                        .context
+                        .authenticated_signers
+                        .iter()
+                        .any(|signer| !case.context.rule_live_signers.contains(signer)) =>
+            {
+                Some(3016) // UnauthorizedSigner for the extra unknown signer.
+            }
             MutationClass::StrictSetMutation => {
                 let authenticated = case
                     .context
@@ -340,10 +360,10 @@ fn generated_golden_denials_preserve_the_expected_reason() {
                 if case.context.rule_live_signers.contains(authenticated) {
                     Some(3) // SignerSetDiverged: the delegate still matches a grown live set.
                 } else {
-                    // The account rejects a swapped set's now-unknown signer first.
-                    None
+                    Some(3016) // UnauthorizedSigner for a swapped live signer set.
                 }
             }
+            MutationClass::TimeBoundary if !case.expect_permit => Some(3002),
             MutationClass::MissingState => Some(8), // MissingState
             MutationClass::CallCountBoundary
                 if case
@@ -373,6 +393,7 @@ fn generated_golden_denials_preserve_the_expected_reason() {
     assert_eq!(
         covered,
         BTreeSet::from([
+            MutationClass::DifferentContract,
             MutationClass::DifferentFunction,
             MutationClass::ArgEquality,
             MutationClass::NumericBoundary,
@@ -380,11 +401,34 @@ fn generated_golden_denials_preserve_the_expected_reason() {
             MutationClass::ArgArity,
             MutationClass::TypeConfusion,
             MutationClass::ZeroSigners,
+            MutationClass::WrongSigner,
+            MutationClass::SignerBoundary,
             MutationClass::StrictSetMutation,
+            MutationClass::TimeBoundary,
             MutationClass::MissingState,
             MutationClass::CallCountBoundary,
         ]),
         "a fixture change must not silently remove a reason-checked class"
+    );
+}
+
+#[test]
+fn unknown_signer_keeps_one_address_across_install_and_authorization() {
+    let spec = fx::golden_spec();
+    let mut case = build_suite(&spec)
+        .into_iter()
+        .find(|case| case.class == MutationClass::Original)
+        .expect("golden original case");
+    let unknown = SignerSpec::Delegated {
+        address: format!("{}", stellar_strkey::ed25519::PublicKey([99; 32])),
+    };
+    case.context.rule_live_signers = vec![unknown.clone()];
+    case.context.authenticated_signers = vec![unknown];
+    // The account recognizes its installed signer. The generated policy then rejects
+    // the predicate, rather than the account rejecting an unrelated address.
+    assert_eq!(
+        run_case(&case),
+        Err(soroban_sdk::Error::from_contract_error(2))
     );
 }
 

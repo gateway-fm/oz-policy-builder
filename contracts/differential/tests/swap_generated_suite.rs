@@ -13,7 +13,7 @@ use ozpb_synthesizer::walkthroughs::soroswap_swap_spec;
 use soroban_sdk::auth::{Context, ContractContext, CustomAccountInterface};
 use soroban_sdk::crypto::Hash;
 use soroban_sdk::testutils::Ledger;
-use soroban_sdk::xdr::{Limits, ReadXdr, ScVal};
+use soroban_sdk::xdr::{Limits, ReadXdr, ScErrorType, ScVal};
 use soroban_sdk::{
     contract, contractimpl, Address, Bytes, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec as SVec,
 };
@@ -92,7 +92,9 @@ fn run_case(spec: &ValidatedSpec, case: &Case) -> Result<(), soroban_sdk::Error>
         panic!("the swap fixture must have exactly one rule");
     };
     let env = Env::default();
-    env.mock_all_auths(); // Install/setup only; the explicit account check below still runs.
+    // Management setup and delegated-signer authentication are both mocked. The
+    // account and generated policy still run, but digest binding is not tested here.
+    env.mock_all_auths();
     env.ledger()
         .with_mut(|ledger| ledger.sequence_number = 1_000);
     let policy = env.register(GeneratedPolicy, ());
@@ -139,6 +141,7 @@ fn run_case(spec: &ValidatedSpec, case: &Case) -> Result<(), soroban_sdk::Error>
         context_rule_ids: SVec::from_array(&env, [stored_rule.id]),
     };
     let contexts = SVec::from_array(&env, [context(&env, spec, &account, &case.invocation)]);
+    // Placeholder digest: delegated authentication is mocked in this fixture.
     let digest = env.crypto().sha256(&Bytes::new(&env));
     match env.try_invoke_contract_check_auth::<soroban_sdk::Error>(
         &account,
@@ -147,7 +150,8 @@ fn run_case(spec: &ValidatedSpec, case: &Case) -> Result<(), soroban_sdk::Error>
         &contexts,
     ) {
         Ok(()) => Ok(()),
-        Err(Ok(error)) => Err(error),
+        Err(Ok(error)) if error.is_type(ScErrorType::Contract) => Err(error),
+        Err(Ok(error)) => panic!("account invocation failed outside the contract: {error:?}"),
         Err(Err(error)) => panic!("account invocation failed without a contract error: {error:?}"),
     }
 }
@@ -219,10 +223,22 @@ fn swap_mutations_agree_through_the_smart_account() {
             if changed.len() == 1 {
                 match (case.class, changed[0], actual.is_ok()) {
                     (MutationClass::NumericBoundary, index @ (0 | 1), false) => {
+                        assert_eq!(
+                            actual,
+                            Err(soroban_sdk::Error::from_contract_error(6)),
+                            "{} must fail with NoTupleMatched",
+                            case.label
+                        );
                         denied_numeric_positions.insert(index);
                     }
-                    (MutationClass::ArgEquality, 2, false) => denied_path = true,
-                    (MutationClass::DifferentAddressArg, 3, false) => denied_recipient = true,
+                    (MutationClass::ArgEquality, 2, false) => {
+                        assert_eq!(actual, Err(soroban_sdk::Error::from_contract_error(6)));
+                        denied_path = true;
+                    }
+                    (MutationClass::DifferentAddressArg, 3, false) => {
+                        assert_eq!(actual, Err(soroban_sdk::Error::from_contract_error(6)));
+                        denied_recipient = true;
+                    }
                     (MutationClass::TypeConfusion, 4, true) => permitted_deadline = true,
                     _ => {}
                 }

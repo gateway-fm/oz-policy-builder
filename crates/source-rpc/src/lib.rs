@@ -7,9 +7,6 @@
 
 #![forbid(unsafe_code)]
 
-#[allow(dead_code)] // Internal prerequisite; no report consumes this observation yet.
-mod target_wasm;
-
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
     StateChange, StateChangeKind, StateChangeSource,
@@ -63,6 +60,9 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// bundle (`docs/architecture.md:1448`), so that promise is outstanding rather than withdrawn
 /// by this gate.
 const MAX_SUPPORTED_PROTOCOL: u32 = 28;
+
+#[allow(dead_code)] // Internal prerequisite; no report consumes this observation yet.
+mod target_wasm;
 
 /// The limits every parse in this adapter runs under. Public so conformance tests decode
 /// captured responses under exactly the production configuration instead of restating the

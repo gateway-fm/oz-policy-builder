@@ -35,16 +35,20 @@ Section numbers refer to `docs/architecture.md`.
 5. **Complete generated-suite reason agreement.** The golden transfer fixture's generated suite
    (`contracts/differential/tests/generated_suite.rs`) now replays every constraint-derived case
    through the compiled policy and checks permit/deny. For the golden fixture's unambiguous
-   function, argument, signer, missing-state, and exhausted-counter mutations, it also checks
-   the exact denial reason against a hand-stated expectation. Account-side refusals and other
-   generated cases remain verdict-only. The Soroswap fixture's generated mutations also run
+   function, argument, signer, target, expiry, missing-state, and exhausted-counter mutations,
+   it also checks the exact denial reason against a hand-stated expectation, including the
+   account's refusals for unknown signers and unvalidated context. Other generated cases remain
+   verdict-only. The Soroswap fixture's generated mutations also run
    through a registered account (`contracts/differential/tests/swap_generated_suite.rs`), with
-   permit/deny checks over its bounded amounts, exact route, recipient, and caller-chosen deadline.
+   permit/deny checks over its bounded amounts, exact route, recipient, and caller-chosen deadline;
+   cap, floor, route, and recipient denials must return the policy's `NoTupleMatched` reason.
+   Both suites mock management setup and delegated-signer authentication. They execute the
+   account and policy logic, but do not test the delegate's digest-bound signature.
    The hand-written `differential.rs` checks both verdict and reason for its own cases. Extending
    exact-reason checks to every generated case remains future work. A local two-rule account test
    demonstrates that overlapping counted grants have independent rule-ID counters and can exceed
    one installation's cap in aggregate. Its rule setup uses mocked management authorization; it
    does not establish a safe reconfiguration flow, disposable target execution, or live preflight.
    An internal reader can check a target instance against fetched Wasm bytes, but it does not
-   capture the target's storage or execute a disposable invocation. Its two ledger reads are not
-   an atomic snapshot, even when the endpoint reports the same ledger for both.
+   capture the target's storage or execute a disposable invocation. Its instance and code reads
+   carry separate endpoint-reported ledgers and are not an atomic snapshot.

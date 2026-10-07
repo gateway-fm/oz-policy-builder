@@ -1,8 +1,8 @@
 //! Read a target's instance and Wasm bytes for later disposable execution.
 //!
-//! The two `getLedgerEntries` calls are separate. Equal `latestLedger` values are only an
-//! endpoint consistency check; they do not prove historical coherence or capture the target's
-//! other storage. No dry-run evidence layer is established by this reader alone.
+//! The two `getLedgerEntries` calls are separate, and each keeps its own reported ledger.
+//! They do not prove historical coherence or capture the target's other storage. No dry-run
+//! evidence layer is established by this reader alone.
 
 use crate::{ensure_base64_size, verify_network, xdr_limits, RpcError, RpcTransport};
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
@@ -19,12 +19,18 @@ const MAX_CONTRACT_ADDRESS_BYTES: usize = 128;
 pub(crate) enum TargetWasmError {
     #[error(transparent)]
     Rpc(#[from] RpcError),
-    #[error("{entry} is absent from getLedgerEntries (possibly archived)")]
+    #[error("invalid target request: {0}")]
+    InvalidRequest(String),
+    #[error("{entry} is absent from getLedgerEntries (history unknown)")]
     MissingLedgerEntry { entry: &'static str },
+    #[error("{entry} is archived at reported ledger {reported} (live until {live_until})")]
+    ArchivedLedgerEntry {
+        entry: &'static str,
+        reported: u32,
+        live_until: u32,
+    },
     #[error("target contract {contract} does not use a Wasm executable")]
     NonWasmExecutable { contract: String },
-    #[error("instance and code reads report different ledgers ({instance}, {code})")]
-    InconsistentLedgers { instance: u32, code: u32 },
     #[error("contract code hash mismatch: expected {expected}, received {actual}")]
     CodeHashMismatch { expected: String, actual: String },
 }
@@ -39,8 +45,10 @@ pub(crate) struct EndpointWasmObservation {
     pub wasm: Vec<u8>,
     /// Bare `LedgerEntryData` XDR from the instance reply, for later fixture construction.
     pub instance_xdr_base64: String,
-    /// Both replies *reported* this ledger; the calls were not an atomic snapshot.
-    pub endpoint_reported_ledger: LedgerSeq,
+    /// The instance-to-code link was observed in this first response.
+    pub instance_reported_ledger: LedgerSeq,
+    /// Content-addressed code was fetched in this second response.
+    pub code_reported_ledger: LedgerSeq,
     pub instance_last_modified_ledger: LedgerSeq,
     pub code_last_modified_ledger: LedgerSeq,
     pub instance_live_until_ledger: LedgerSeq,
@@ -64,15 +72,14 @@ pub(crate) fn read_target_wasm<T: RpcTransport>(
     contract_address: &str,
 ) -> Result<EndpointWasmObservation, TargetWasmError> {
     if contract_address.len() > MAX_CONTRACT_ADDRESS_BYTES {
-        return Err(RpcError::Malformed(
+        return Err(TargetWasmError::InvalidRequest(
             "target contract address exceeds the encoded address size limit".to_string(),
-        )
-        .into());
+        ));
     }
     let contract = contract_address
         .parse::<stellar_strkey::Contract>()
         .map_err(|error| {
-            RpcError::Malformed(format!("invalid target contract address: {error}"))
+            TargetWasmError::InvalidRequest(format!("invalid target contract address: {error}"))
         })?;
     verify_network(transport, network_passphrase)?;
 
@@ -130,12 +137,6 @@ pub(crate) fn read_target_wasm<T: RpcTransport>(
         }),
         "contract code",
     )?;
-    if instance.reported_ledger != code.reported_ledger {
-        return Err(TargetWasmError::InconsistentLedgers {
-            instance: instance.reported_ledger,
-            code: code.reported_ledger,
-        });
-    }
     let LedgerEntryData::ContractCode(code_data) = code.data else {
         return Err(
             RpcError::Malformed("target code reply is not contract code".to_string()).into(),
@@ -161,7 +162,8 @@ pub(crate) fn read_target_wasm<T: RpcTransport>(
         code_hash: Hash32(code_hash.0),
         wasm: code_data.code.into_vec(),
         instance_xdr_base64: instance.xdr_base64,
-        endpoint_reported_ledger: LedgerSeq(instance.reported_ledger),
+        instance_reported_ledger: LedgerSeq(instance.reported_ledger),
+        code_reported_ledger: LedgerSeq(code.reported_ledger),
         instance_last_modified_ledger: LedgerSeq(instance.last_modified_ledger),
         code_last_modified_ledger: LedgerSeq(code.last_modified_ledger),
         instance_live_until_ledger: LedgerSeq(instance.live_until_ledger),
@@ -174,9 +176,9 @@ fn read_entry<T: RpcTransport>(
     key: LedgerKey,
     entry: &'static str,
 ) -> Result<EntryReply, TargetWasmError> {
-    let encoded_key = key
-        .to_xdr_base64(xdr_limits())
-        .map_err(|error| RpcError::Malformed(format!("cannot encode {entry} key: {error}")))?;
+    let encoded_key = key.to_xdr_base64(xdr_limits()).map_err(|error| {
+        TargetWasmError::InvalidRequest(format!("cannot encode {entry} key: {error}"))
+    })?;
     let result = transport.call(
         "getLedgerEntries",
         json!({ "keys": [encoded_key], "xdrFormat": "base64" }),
@@ -222,12 +224,6 @@ fn read_entry<T: RpcTransport>(
         })?
         .try_into()
         .map_err(|_| RpcError::Malformed(format!("{entry} lastModifiedLedgerSeq exceeds u32")))?;
-    if last_modified_ledger == 0 {
-        return Err(RpcError::Malformed(format!(
-            "{entry} reply has unusable lastModifiedLedgerSeq zero"
-        ))
-        .into());
-    }
     if last_modified_ledger > reported_ledger {
         return Err(
             RpcError::Malformed(format!("{entry} was modified after its reported ledger")).into(),
@@ -241,11 +237,6 @@ fn read_entry<T: RpcTransport>(
         })?
         .try_into()
         .map_err(|_| RpcError::Malformed(format!("{entry} liveUntilLedgerSeq exceeds u32")))?;
-    if live_until_ledger < reported_ledger {
-        return Err(
-            RpcError::Malformed(format!("{entry} is not live at its reported ledger")).into(),
-        );
-    }
     let xdr_base64 = value
         .get("xdr")
         .and_then(serde_json::Value::as_str)
@@ -253,6 +244,13 @@ fn read_entry<T: RpcTransport>(
     ensure_base64_size("xdr", xdr_base64)?;
     let data = LedgerEntryData::from_xdr_base64(xdr_base64, xdr_limits())
         .map_err(|error| RpcError::Malformed(format!("{entry} reply has invalid XDR: {error}")))?;
+    if live_until_ledger < reported_ledger {
+        return Err(TargetWasmError::ArchivedLedgerEntry {
+            entry,
+            reported: reported_ledger,
+            live_until: live_until_ledger,
+        });
+    }
     Ok(EntryReply {
         reported_ledger,
         last_modified_ledger,
@@ -323,10 +321,10 @@ mod tests {
             .to_owned()
     }
 
-    fn instance_xdr(executable: ContractExecutable) -> String {
+    fn instance_xdr_for(contract_id: [u8; 32], executable: ContractExecutable) -> String {
         LedgerEntryData::ContractData(ContractDataEntry {
             ext: ExtensionPoint::V0,
-            contract: ScAddress::Contract(ContractId(Hash(CONTRACT_ID))),
+            contract: ScAddress::Contract(ContractId(Hash(contract_id))),
             key: ScVal::LedgerKeyContractInstance,
             durability: ContractDataDurability::Persistent,
             val: ScVal::ContractInstance(ScContractInstance {
@@ -336,6 +334,10 @@ mod tests {
         })
         .to_xdr_base64(xdr_limits())
         .expect("instance XDR")
+    }
+
+    fn instance_xdr(executable: ContractExecutable) -> String {
+        instance_xdr_for(CONTRACT_ID, executable)
     }
 
     fn code_xdr(hash: Hash, bytes: &[u8]) -> String {
@@ -394,7 +396,8 @@ mod tests {
         assert_eq!(observation.contract_address, contract_address());
         assert_eq!(observation.code_hash, Hash32(Sha256::digest(WASM).into()));
         assert_eq!(observation.wasm, WASM);
-        assert_eq!(observation.endpoint_reported_ledger, LedgerSeq(100));
+        assert_eq!(observation.instance_reported_ledger, LedgerSeq(100));
+        assert_eq!(observation.code_reported_ledger, LedgerSeq(100));
         assert_eq!(observation.instance_last_modified_ledger, LedgerSeq(95));
         assert_eq!(observation.code_last_modified_ledger, LedgerSeq(90));
         assert_eq!(observation.instance_live_until_ledger, LedgerSeq(120));
@@ -470,16 +473,12 @@ mod tests {
     }
 
     #[test]
-    fn refuses_different_reported_ledgers_and_non_wasm_instances() {
+    fn records_different_reported_ledgers_and_refuses_non_wasm_instances() {
         let mut transport = fixture();
         transport.code["latestLedger"] = json!(101);
-        assert!(matches!(
-            read_target_wasm(&transport, NETWORK, &contract_address()),
-            Err(TargetWasmError::InconsistentLedgers {
-                instance: 100,
-                code: 101
-            })
-        ));
+        let observation = read_target_wasm(&transport, NETWORK, &contract_address()).unwrap();
+        assert_eq!(observation.instance_reported_ledger, LedgerSeq(100));
+        assert_eq!(observation.code_reported_ledger, LedgerSeq(101));
 
         let mut transport = fixture();
         transport.instance["entries"][0]["xdr"] =
@@ -502,10 +501,12 @@ mod tests {
 
         let mut transport = fixture();
         transport.code["entries"][0]["lastModifiedLedgerSeq"] = json!(0);
-        assert!(matches!(
-            read_target_wasm(&transport, NETWORK, &contract_address()),
-            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("lastModifiedLedgerSeq zero")
-        ));
+        assert_eq!(
+            read_target_wasm(&transport, NETWORK, &contract_address())
+                .unwrap()
+                .code_last_modified_ledger,
+            LedgerSeq(0)
+        );
 
         let mut transport = fixture();
         transport.code["entries"][0]
@@ -521,14 +522,114 @@ mod tests {
         transport.code["entries"][0]["liveUntilLedgerSeq"] = json!(99);
         assert!(matches!(
             read_target_wasm(&transport, NETWORK, &contract_address()),
-            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("not live")
+            Err(TargetWasmError::ArchivedLedgerEntry {
+                entry: "contract code",
+                reported: 100,
+                live_until: 99
+            })
         ));
 
         let transport = fixture();
         assert!(matches!(
             read_target_wasm(&transport, NETWORK, &"C".repeat(129)),
-            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("size limit")
+            Err(TargetWasmError::InvalidRequest(message)) if message.contains("size limit")
+        ));
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, "not-a-contract"),
+            Err(TargetWasmError::InvalidRequest(message)) if message.contains("invalid target contract address")
         ));
         assert!(transport.calls.borrow().is_empty(), "reject before RPC I/O");
+    }
+
+    #[test]
+    fn refuses_response_key_payload_count_and_metadata_errors() {
+        let mut transport = fixture();
+        let different_key = LedgerKey::ContractData(LedgerKeyContractData {
+            contract: ScAddress::Contract(ContractId(Hash([8; 32]))),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+        })
+        .to_xdr_base64(xdr_limits())
+        .unwrap();
+        transport.instance["entries"][0]["key"] = json!(different_key);
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("unrequested key")
+        ));
+
+        let mut transport = fixture();
+        transport.instance["entries"][0]["xdr"] = json!(instance_xdr_for(
+            [8; 32],
+            ContractExecutable::Wasm(transport.expected_code_hash.clone()),
+        ));
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("requested key")
+        ));
+
+        let mut transport = fixture();
+        let entry = transport.instance["entries"][0].clone();
+        transport.instance["entries"] = json!([entry.clone(), entry]);
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("2 entries")
+        ));
+
+        let mut transport = fixture();
+        transport.instance["entries"][0]["lastModifiedLedgerSeq"] = json!(101);
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("modified after")
+        ));
+
+        let mut transport = fixture();
+        transport.code["entries"][0]["xdr"] = json!("A".repeat(crate::MAX_XDR_BASE64_BYTES + 1));
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("XDR size limit")
+        ));
+
+        let mut transport = fixture();
+        transport.code["entries"][0]["xdr"] = json!(instance_xdr(ContractExecutable::Wasm(
+            transport.expected_code_hash.clone()
+        )));
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("not contract code")
+        ));
+    }
+
+    #[test]
+    fn archived_entries_and_external_references_are_distinct_refusals() {
+        let mut transport = fixture();
+        transport.instance["entries"][0]["liveUntilLedgerSeq"] = json!(0);
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::ArchivedLedgerEntry {
+                entry: "contract instance",
+                reported: 100,
+                live_until: 0
+            })
+        ));
+
+        let mut malformed_archive = fixture();
+        malformed_archive.instance["entries"][0]["liveUntilLedgerSeq"] = json!(0);
+        malformed_archive.instance["entries"][0]["xdr"] = json!("not-base64");
+        assert!(matches!(
+            read_target_wasm(&malformed_archive, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::Malformed(message))) if message.contains("invalid XDR")
+        ));
+
+        let mut transport = fixture();
+        transport.instance["entries"][0]["xdr"] = json!(instance_xdr(
+            ContractExecutable::ExternalRef(stellar_xdr::ContractExecutableExternalRef {
+                executable_owner: ScAddress::Contract(ContractId(Hash([8; 32]))),
+                tag: stellar_xdr::ScString("v1".try_into().unwrap()),
+            })
+        ));
+        assert!(matches!(
+            read_target_wasm(&transport, NETWORK, &contract_address()),
+            Err(TargetWasmError::Rpc(RpcError::ExternalRefExecutable { .. }))
+        ));
     }
 }
