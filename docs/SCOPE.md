@@ -105,9 +105,12 @@ The source-reviewed account method inventory and its limits are described in
    A separate Wasm gate (`scripts/test-pinned-account-authorization.sh`) builds the exact
    recognized account from pinned public source and a generated transfer policy with a fixed
    test signer. It checks real delegated Ed25519 authorization through the account's complete
-   `__check_auth` path, rejects a changed payload, commits counts across ledger advances, and
-   checks N+1 denial and rollback. Run the script before merging changes to this path; the
-   scheduled toolchain job also runs it and fails when a prerequisite or hash is unavailable.
+   `__check_auth` path and rejects a changed payload. Entries that name the requested digest but
+   carry a signature over another digest, a flipped signature bit, or another key are refused
+   by account authentication, not invocation matching. It also commits counts across ledger
+   advances and checks N+1 denial and rollback. Run the script before merging changes to this
+   path; the scheduled toolchain job also runs it and fails when a prerequisite or hash is
+   unavailable.
    The ordinary contracts suite explicitly ignores this test because it needs source-built Wasm.
    This is one fixture and one account code hash. It does not establish general layer-2 coverage,
    disposable target execution, or live preflight.

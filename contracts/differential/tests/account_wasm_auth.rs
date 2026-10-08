@@ -70,34 +70,73 @@ fn insert_account(env: &Env, public_key: [u8; 32]) {
     env.host().add_ledger_entry(&key, &entry, None).unwrap();
 }
 
+/// How a delegate's authorization entry departs from an honest one. Every variant keeps the
+/// root invocation equal to the digest the account requests, so the host matches the entry
+/// and must then reject it on the signature alone.
+#[derive(Clone, Copy)]
+enum Forgery<'a> {
+    None,
+    /// A valid signature by the delegate, over the preimage for a different digest.
+    SignsOtherDigest,
+    /// The honest signature with one bit flipped.
+    FlippedSignatureBit,
+    /// Another key signs and presents its own public key for the delegate's address.
+    WrongKey(&'a SigningKey),
+}
+
+fn check_auth_invocation(
+    env: &Env,
+    account: &Address,
+    digest: Vec<u8>,
+) -> SorobanAuthorizedInvocation {
+    SorobanAuthorizedInvocation {
+        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+            contract_address: as_sc_address(env, account),
+            function_name: "__check_auth".try_into().unwrap(),
+            args: vec![ScVal::Bytes(digest.try_into().unwrap())]
+                .try_into()
+                .unwrap(),
+        }),
+        sub_invocations: VecM::default(),
+    }
+}
+
 fn signed_delegate_auth(
     env: &Env,
     account: &Address,
     key: &SigningKey,
     auth_digest: &Bytes,
     nonce: i64,
+    forgery: Forgery,
 ) -> SorobanAuthorizationEntry {
     let signature_expiration_ledger = 2000;
-    let root_invocation = SorobanAuthorizedInvocation {
-        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
-            contract_address: as_sc_address(env, account),
-            function_name: "__check_auth".try_into().unwrap(),
-            args: vec![ScVal::Bytes(bytes_vec(auth_digest).try_into().unwrap())]
-                .try_into()
-                .unwrap(),
-        }),
-        sub_invocations: VecM::default(),
+    let root_invocation = check_auth_invocation(env, account, bytes_vec(auth_digest));
+    let signed_invocation = match forgery {
+        Forgery::SignsOtherDigest => {
+            let mut other = bytes_vec(auth_digest);
+            other[0] ^= 1;
+            check_auth_invocation(env, account, other)
+        }
+        _ => root_invocation.clone(),
     };
     let preimage = HashIdPreimage::SorobanAuthorization(HashIdPreimageSorobanAuthorization {
         network_id: XdrHash(env.ledger().network_id().to_array()),
         nonce,
         signature_expiration_ledger,
-        invocation: root_invocation.clone(),
+        invocation: signed_invocation,
     });
     let payload = Sha256::digest(preimage.to_xdr(Limits::none()).unwrap());
+    let signing_key = match forgery {
+        Forgery::WrongKey(other) => other,
+        _ => key,
+    };
+    let mut signature = signing_key.sign(&payload).to_bytes();
+    if let Forgery::FlippedSignatureBit = forgery {
+        signature[0] ^= 1;
+    }
     let sig = AccountEd25519Signature {
-        public_key: BytesN::from_array(env, &key.verifying_key().to_bytes()),
-        signature: BytesN::from_array(env, &key.sign(&payload).to_bytes()),
+        public_key: BytesN::from_array(env, &signing_key.verifying_key().to_bytes()),
+        signature: BytesN::from_array(env, &signature),
     };
     let signature =
         ScVal::from_xdr(bytes_vec(&svec![env, sig].to_xdr(env)), Limits::none()).unwrap();
@@ -130,6 +169,17 @@ impl AuthHarness<'_> {
         signed_payload: &Bytes,
         actual_payload: &Bytes,
     ) -> Result<(), Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
+        self.check_auth_with(count, nonce, signed_payload, actual_payload, Forgery::None)
+    }
+
+    fn check_auth_with(
+        &self,
+        count: u32,
+        nonce: i64,
+        signed_payload: &Bytes,
+        actual_payload: &Bytes,
+        forgery: Forgery,
+    ) -> Result<(), Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
         let env = self.env;
         let account = self.account;
         let signer = self.signer;
@@ -156,6 +206,7 @@ impl AuthHarness<'_> {
             signer,
             &auth_digest.to_bytes().to_bytes(),
             nonce,
+            forgery,
         )]);
         let signature_payload = env.crypto().sha256(actual_payload);
         env.try_invoke_contract_check_auth::<soroban_sdk::Error>(
@@ -164,6 +215,21 @@ impl AuthHarness<'_> {
             auth_payload.into_val(env),
             &contexts,
         )
+    }
+}
+
+/// Where the host refused the last authorization, read from its diagnostic events: the entry
+/// either matched no requested invocation, or matched and then failed account authentication.
+/// Equal error codes cannot tell these apart, and only the second exercises the signature.
+fn refusal_stage(env: &Env) -> &'static str {
+    let events = format!("{:?}", env.host().get_diagnostic_events().unwrap());
+    match (
+        events.contains("Unauthorized function call"),
+        events.contains("failed account authentication"),
+    ) {
+        (true, false) => "invocation matching",
+        (false, true) => "account authentication",
+        other => panic!("cannot attribute the authorization refusal: {other:?}"),
     }
 }
 
@@ -248,7 +314,43 @@ fn pinned_account_wasm_full_authorization() {
         ))),
         "signature must bind to the supplied payload"
     );
+    assert_eq!(refusal_stage(&env), "invocation matching");
     assert_eq!(remaining_calls(&env, &policy, &account), 12);
+
+    // The changed payload above is refused while the host matches invocations, before any
+    // signature is checked. These entries name exactly the digest the account requests, so
+    // only account authentication can refuse them; the honest form of the same entry
+    // succeeds in the loop below.
+    let payload = Bytes::from_array(&env, &[3u8; 32]);
+    let other_key = SigningKey::from_bytes(&[43u8; 32]);
+    for (nonce, forgery, label) in [
+        (
+            101,
+            Forgery::SignsOtherDigest,
+            "a signature over another digest",
+        ),
+        (
+            102,
+            Forgery::FlippedSignatureBit,
+            "a signature with one flipped bit",
+        ),
+        (
+            103,
+            Forgery::WrongKey(&other_key),
+            "a key that is not the delegate's",
+        ),
+    ] {
+        assert_eq!(
+            harness.check_auth_with(1, nonce, &payload, &payload, forgery),
+            Err(Ok(soroban_sdk::Error::from_type_and_code(
+                ScErrorType::Auth,
+                ScErrorCode::InvalidAction
+            ))),
+            "{label} must be refused"
+        );
+        assert_eq!(refusal_stage(&env), "account authentication", "{label}");
+        assert_eq!(remaining_calls(&env, &policy, &account), 12);
+    }
 
     for i in 0..11 {
         let payload = Bytes::from_array(&env, &[i as u8 + 1; 32]);
