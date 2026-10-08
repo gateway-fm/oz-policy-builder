@@ -1293,6 +1293,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ozpb-registry"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "ozpb-domain",
+ "ozpb-policy-spec",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "ozpb-source-rpc"
 version = "0.1.0"
 dependencies = [
@@ -1300,6 +1313,7 @@ dependencies = [
  "ozpb-call-surface-core",
  "ozpb-domain",
  "ozpb-recorder-core",
+ "ozpb-registry",
  "serde",
  "serde_json",
  "sha2",
