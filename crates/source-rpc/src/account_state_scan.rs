@@ -755,6 +755,168 @@ mod tests {
             inspect(&missing_signer),
             Err(AccountScanError::Incomplete(_))
         ));
+
+        // Automatic restoration makes an archived entry usable again, so it is never read
+        // as live or as merely missing.
+        let archived_instance = mock();
+        archived_instance
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Instance))
+            .unwrap()
+            .1 = 0;
+        assert!(matches!(
+            inspect(&archived_instance),
+            Err(AccountScanError::Archived(what)) if what == "account instance"
+        ));
+        assert_eq!(archived_instance.calls.get(), 1);
+
+        let archived_signer = mock();
+        archived_signer
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Signer(2)))
+            .unwrap()
+            .1 = 0;
+        assert!(matches!(
+            inspect(&archived_signer),
+            Err(AccountScanError::Archived(what)) if what == "Signer(2)"
+        ));
+    }
+
+    #[test]
+    fn later_ledger_changes_and_conflicting_rereads_fail_closed() {
+        // With one candidate target the calls are: instance, rules, closure, code, instance.
+        let code_read = Mock {
+            changed_ledger_at: Some(4),
+            ..mock()
+        };
+        code_read.values.borrow_mut().insert(
+            encoded(8, AccountEntryKey::Instance),
+            (
+                ScVal::ContractInstance(ScContractInstance {
+                    executable: ContractExecutable::Wasm(Hash([3; 32])),
+                    storage: None,
+                }),
+                20,
+            ),
+        );
+        let single = AccountScanBounds {
+            max_attempts: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &code_read,
+                NETWORK,
+                &address(7),
+                &[address(8)],
+                single
+            ),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+
+        // Without targets the fourth call is the final instance read.
+        let final_read = Mock {
+            changed_ledger_at: Some(4),
+            ..mock()
+        };
+        assert!(matches!(
+            inspect(&final_read),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+        assert_eq!(final_read.calls.get(), 4);
+
+        // The account's own instance, requested again as a code target, must carry the
+        // same raw payload as the first read even though its code hash is unchanged.
+        let conflicting = Mock {
+            changed_unmodeled_instance_at: Some(4),
+            ..mock()
+        };
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &conflicting,
+                NETWORK,
+                &address(7),
+                &[address(7)],
+                single
+            ),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+        assert_eq!(conflicting.calls.get(), 4);
+    }
+
+    #[test]
+    fn each_scan_bound_fails_before_reading_past_it() {
+        let bounds = |max_scan_ids, max_transitive_entries| AccountScanBounds {
+            max_scan_ids,
+            max_transitive_entries,
+            max_attempts: 1,
+            ..Default::default()
+        };
+
+        let wide = mock();
+        wide.values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Instance))
+            .unwrap()
+            .0 = instance(5, 1);
+        assert!(matches!(
+            scan_account_state(&wide, NETWORK, &address(7), bounds(4, 1_000)),
+            Err(AccountScanError::Budget("NextId exceeds max_scan_ids"))
+        ));
+        assert_eq!(wide.calls.get(), 1);
+
+        let with_policy = || {
+            let mock = mock();
+            mock.values.borrow_mut().insert(
+                encoded(7, AccountEntryKey::Rule(0)),
+                (rule_with_policies(vec![3]), 20),
+            );
+            mock.values
+                .borrow_mut()
+                .insert(encoded(7, AccountEntryKey::Policy(3)), (policy(), 20));
+            mock
+        };
+        let closure = with_policy();
+        assert!(matches!(
+            scan_account_state(&closure, NETWORK, &address(7), bounds(1_000, 1)),
+            Err(AccountScanError::Budget(
+                "transitive entry closure exceeds bound"
+            ))
+        ));
+        assert_eq!(closure.calls.get(), 2);
+
+        let targets = mock();
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &targets,
+                NETWORK,
+                &address(7),
+                &[address(8), address(9)],
+                bounds(1_000, 1)
+            ),
+            Err(AccountScanError::Budget(
+                "too many candidate policy addresses"
+            ))
+        ));
+        assert_eq!(targets.calls.get(), 0);
+
+        // The targets and the entry closure each fit the bound; their code addresses do not.
+        let code = with_policy();
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &code,
+                NETWORK,
+                &address(7),
+                &[address(9), address(10)],
+                bounds(1_000, 2)
+            ),
+            Err(AccountScanError::Budget(
+                "policy code closure exceeds bound"
+            ))
+        ));
+        assert_eq!(code.calls.get(), 3);
     }
 
     #[test]
