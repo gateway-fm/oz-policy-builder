@@ -9,7 +9,9 @@
 //! This test alone in the contracts workspace uses the harness. The existing differential
 //! tests retain their independent, hand-written cases.
 
-use generated_sub_transfer_r0::contract::{GeneratedPolicy, PolicyStorageKey};
+use generated_sub_transfer_r0::contract::{
+    GeneratedPolicy, GeneratedPolicyClient, PolicyStorageKey,
+};
 use ozpb_evaluator::{ArgValue, Invocation};
 use ozpb_harness::{build_suite, Case, MutationClass};
 use ozpb_policy_spec::{Constraint, PredicateKind, SignerSpec, StateSpec};
@@ -647,4 +649,66 @@ fn overlapping_counted_rules_multiply_aggregate_authority() {
             Some(*max_calls),
         );
     }
+}
+
+#[test]
+fn direct_mutating_calls_require_the_smart_account_authorization() {
+    // The account installed this policy through its own management path. A caller
+    // reaching the policy directly must not be able to reset, consume, or remove
+    // that installation without the account's authorization. This test has no
+    // alternate account rule, so it checks the policy's own authorization gate,
+    // not the account's wider call surface.
+    let spec = fx::golden_spec();
+    let original = build_suite(&spec)
+        .into_iter()
+        .find(|case| case.class == MutationClass::Original)
+        .expect("the golden suite must contain its permitted call");
+    let world = installed_world(&original.context.rule_live_signers);
+    let client = GeneratedPolicyClient::new(&world.env, &world.policy);
+    let rule = world.env.as_contract(&world.account, || {
+        get_context_rule(&world.env, world.rule_id)
+    });
+    let mut fresh_rule = rule.clone();
+    fresh_rule.id = world.rule_id + 1;
+    let context = context_of(&world.env, &world.addresses, &original.invocation);
+    let authenticated = signers(
+        &world.env,
+        &world.addresses,
+        &original.context.authenticated_signers,
+    );
+    assert_eq!(call_count(&world), Some(0));
+    assert!(client.is_installed(&world.rule_id, &world.account));
+    assert!(!client.is_installed(&fresh_rule.id, &world.account));
+
+    // Installation setup used broad test authorization. Clear it before every
+    // direct call so each method has to request account authorization itself.
+    world.env.mock_auths(&[]);
+    assert!(
+        client.try_install(&0, &fresh_rule, &world.account).is_err(),
+        "direct install without account authorization must fail"
+    );
+    assert_eq!(call_count(&world), Some(0));
+    assert!(!client.is_installed(&fresh_rule.id, &world.account));
+
+    world.env.mock_auths(&[]);
+    assert!(
+        client
+            .try_enforce(&context, &authenticated, &rule, &world.account)
+            .is_err(),
+        "direct enforce without account authorization must fail"
+    );
+    assert_eq!(call_count(&world), Some(0));
+
+    world.env.mock_auths(&[]);
+    assert!(
+        client.try_uninstall(&rule, &world.account).is_err(),
+        "direct uninstall without account authorization must fail"
+    );
+    assert_eq!(call_count(&world), Some(0));
+    assert!(client.is_installed(&world.rule_id, &world.account));
+
+    // A permitted account-path authorization still advances the installation.
+    world.env.mock_all_auths();
+    assert_eq!(authorize(&world, &[&original]), Ok(()));
+    assert_eq!(call_count(&world), Some(1));
 }

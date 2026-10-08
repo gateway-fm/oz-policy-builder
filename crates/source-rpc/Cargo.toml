@@ -5,11 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Stellar RPC acquisition adapter for recording evidence and checked contract code/data reads"
+description = "Stellar RPC adapter for recording, checked contract reads, and transaction preflight"
 
 [dependencies]
 ozpb-recorder-core = { workspace = true }
 ozpb-domain = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ureq = { workspace = true }

@@ -1,7 +1,8 @@
 //! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
-//! the pure recorder, plus bounded contract-code and contract-data observations. Executed
+//! the pure recorder, plus bounded contract-code and contract-data observations and an
+//! authorization-enforcing transaction preflight. Executed
 //! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
 //! tested offline.
@@ -12,11 +13,13 @@ mod account_entry_page;
 mod account_reconciliation;
 mod account_storage;
 mod contract_data;
+mod preflight;
 pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
 };
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
+pub use preflight::{preflight_transaction, PreflightObservation, PreflightOutcome};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
@@ -534,7 +537,7 @@ pub fn simulate_transaction<T: RpcTransport>(
     network_passphrase: &str,
     envelope_xdr_base64: &str,
 ) -> Result<EvidenceSnapshot, RpcError> {
-    validate_simulation_envelope(envelope_xdr_base64)?;
+    let _ = validate_simulation_envelope(envelope_xdr_base64)?;
     verify_network(transport, network_passphrase)?;
     let result = transport.call(
         "simulateTransaction",
@@ -559,7 +562,9 @@ pub fn simulate_transaction<T: RpcTransport>(
 ///
 /// `simulateTransaction` takes a transaction carrying exactly one operation, and this adapter
 /// records Soroban invocations, so that operation must be an `InvokeHostFunction`.
-fn validate_simulation_envelope(envelope_xdr_base64: &str) -> Result<(), RpcError> {
+fn validate_simulation_envelope(
+    envelope_xdr_base64: &str,
+) -> Result<TransactionEnvelope, RpcError> {
     ensure_base64_size("transaction", envelope_xdr_base64)?;
     let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
         .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))?;
@@ -585,7 +590,7 @@ fn validate_simulation_envelope(envelope_xdr_base64: &str) -> Result<(), RpcErro
             "the operation to simulate must be an InvokeHostFunction".to_string(),
         ));
     }
-    Ok(())
+    Ok(envelope)
 }
 
 fn acquire_contract_executables<T: RpcTransport>(

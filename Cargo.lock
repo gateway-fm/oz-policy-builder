@@ -1321,6 +1321,7 @@ version = "0.1.0"
 dependencies = [
  "ozpb-domain",
  "ozpb-recorder-core",
+ "serde",
  "serde_json",
  "sha2",
  "stellar-strkey 0.0.18",
