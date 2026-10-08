@@ -2,7 +2,8 @@
 //!
 //! The digest is an identity of endpoint responses, not a cryptographic ledger proof.
 //! Every field is length-delimited or fixed-width. Keys are canonical XDR and sorted by
-//! their bytes; absent requested keys are included with a distinct tag.
+//! their bytes; absent requested keys are included with a distinct tag. The byte layout is
+//! specified in `docs/CANONICAL-HASHING.md`.
 
 use ozpb_domain::{domains, Hash32, NetworkId};
 use sha2::{Digest, Sha256};
@@ -62,6 +63,26 @@ mod tests {
 
     fn digest(entries: &BTreeMap<Vec<u8>, LedgerWitness>) -> Hash32 {
         ordered_ledger_witness_digest(NetworkId(Hash32([3; 32])), [7; 32], 10, entries)
+    }
+
+    #[test]
+    fn digest_is_the_documented_byte_layout() {
+        // Recomputed outside this crate from the layout in docs/CANONICAL-HASHING.md.
+        let entries = BTreeMap::from([
+            (
+                vec![1],
+                LedgerWitness::Present {
+                    entry_data_xdr: vec![1, 2, 3],
+                    last_modified_ledger: 4,
+                    live_until_ledger: 20,
+                },
+            ),
+            (vec![2], LedgerWitness::Absent),
+        ]);
+        assert_eq!(
+            digest(&entries).to_hex(),
+            "ac6be4d14e27d084fad6f9908747ea68f3bd8484a6a5a91f8c13b17c8a657497"
+        );
     }
 
     #[test]

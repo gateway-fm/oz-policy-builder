@@ -27,8 +27,10 @@ The source-reviewed account method inventory and its limits are described in
    A bounded account scanner now derives pinned keys, reads every rule slot through `NextId`,
    follows the signer/policy closure, checks reference counts and `Count`, observes the code at
    every installed policy address, and re-reads the account instance. It retries a changed
-   endpoint ledger or instance as a whole. Returned archived entries, missing referenced
-   entries, a count mismatch, and exceeded scan bounds fail closed. Its output remains an
+   endpoint ledger or instance as a whole. Returned archived or undecodable entries, missing
+   referenced entries, and a count mismatch fail closed as incomplete account state; exceeded
+   scan bounds, including a fixed 24 MiB ceiling on the entry XDR one scan retains, fail closed
+   as a budget error. Its output remains an
    endpoint-reported inspection: equal `latestLedger` values across calls are not an
    authenticated ledger-state proof, and an omitted rule key is treated as a removed hole
    only when the stored count reconciles. The scan does not identify the wallet's intended
