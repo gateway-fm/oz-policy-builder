@@ -137,6 +137,38 @@ pub enum RpcError {
     CodeRead(String),
 }
 
+/// Remove endpoint-controlled detail from errors on ledger-key requests. HTTP
+/// error bodies and JSON-RPC messages may quote a requested key or an envelope
+/// field. Call only around transport I/O; local validation keeps its detail.
+fn redact_ledger_request_error(error: RpcError) -> RpcError {
+    const WITHHELD: &str = "ledger-entry request failed (endpoint detail withheld)";
+    match error {
+        RpcError::InvalidRequest(_) => RpcError::InvalidRequest(WITHHELD.to_string()),
+        RpcError::Transport(_) => RpcError::Transport(WITHHELD.to_string()),
+        RpcError::Malformed(_) => RpcError::Malformed(WITHHELD.to_string()),
+        RpcError::Rpc(_) => RpcError::Rpc(WITHHELD.to_string()),
+        RpcError::NotFound(_) => RpcError::NotFound("identifier withheld".to_string()),
+        RpcError::NetworkMismatch { .. } => RpcError::NetworkMismatch {
+            expected: "withheld".to_string(),
+            actual: "withheld".to_string(),
+        },
+        RpcError::UnsupportedProtocol {
+            reported,
+            supported,
+        } => RpcError::UnsupportedProtocol {
+            reported,
+            supported,
+        },
+        RpcError::ExternalRefExecutable { .. } => RpcError::ExternalRefExecutable {
+            contract: "withheld".to_string(),
+            owner: "withheld".to_string(),
+            tag: "withheld".to_string(),
+        },
+        RpcError::Evidence(_) => RpcError::Evidence(WITHHELD.to_string()),
+        RpcError::CodeRead(_) => RpcError::CodeRead(WITHHELD.to_string()),
+    }
+}
+
 /// A minimal JSON-RPC transport. The real client uses HTTP; tests inject a canned
 /// responder so parsing is verified without a network.
 pub trait RpcTransport {

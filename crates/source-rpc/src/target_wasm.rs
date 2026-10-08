@@ -5,7 +5,8 @@
 //! evidence layer is established by this reader alone.
 
 use crate::{
-    ensure_base64_size, verify_network, xdr_limits, RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
+    ensure_base64_size, redact_ledger_request_error, verify_network, xdr_limits, RpcError,
+    RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use serde_json::json;
@@ -75,6 +76,7 @@ pub struct TargetCapture {
 /// validate the code key. The final reply rechecks the instance-to-code link and
 /// the code bytes, so a code change between requests cannot silently pass. RPC
 /// does not prove that the caller supplied the target's entire storage closure.
+/// Endpoint error detail is withheld because it may echo a selected key.
 pub fn read_target_capture<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -147,16 +149,18 @@ pub fn read_target_capture<T: RpcTransport>(
     let instance_encoded = instance_key.to_xdr_base64(xdr_limits()).map_err(|error| {
         TargetWasmError::InvalidRequest(format!("cannot encode target instance key: {error}"))
     })?;
-    let code_encoded = code_key.to_xdr_base64(xdr_limits()).map_err(|error| {
-        TargetWasmError::InvalidRequest(format!("cannot encode target code key: {error}"))
+    let code_encoded = code_key.to_xdr_base64(xdr_limits()).map_err(|_| {
+        TargetWasmError::InvalidRequest("cannot encode target code key".to_string())
     })?;
     selected.insert(instance_encoded.clone(), instance_key);
     selected.insert(code_encoded.clone(), code_key);
     let keys: Vec<&String> = selected.keys().collect();
-    let response = transport.call(
-        "getLedgerEntries",
-        json!({ "keys": keys, "xdrFormat": "base64" }),
-    )?;
+    let response = transport
+        .call(
+            "getLedgerEntries",
+            json!({ "keys": keys, "xdrFormat": "base64" }),
+        )
+        .map_err(redact_ledger_request_error)?;
     let reported_ledger: u32 = response
         .get("latestLedger")
         .and_then(serde_json::Value::as_u64)
@@ -200,10 +204,8 @@ pub fn read_target_capture<T: RpcTransport>(
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| RpcError::Malformed(format!("capture entry {index} lacks XDR")))?;
         ensure_base64_size("capture entry XDR", encoded_data)?;
-        let data =
-            LedgerEntryData::from_xdr_base64(encoded_data, xdr_limits()).map_err(|error| {
-                RpcError::Malformed(format!("capture entry {index} has invalid XDR: {error}"))
-            })?;
+        let data = LedgerEntryData::from_xdr_base64(encoded_data, xdr_limits())
+            .map_err(|_| RpcError::Malformed(format!("capture entry {index} has invalid XDR")))?;
         if data.to_key() != *expected {
             return Err(RpcError::Malformed(format!(
                 "capture entry {index} payload differs from its requested key"
@@ -443,13 +445,15 @@ fn read_entry<T: RpcTransport>(
     key: LedgerKey,
     entry: &'static str,
 ) -> Result<EntryReply, TargetWasmError> {
-    let encoded_key = key.to_xdr_base64(xdr_limits()).map_err(|error| {
-        TargetWasmError::InvalidRequest(format!("cannot encode {entry} key: {error}"))
-    })?;
-    let result = transport.call(
-        "getLedgerEntries",
-        json!({ "keys": [encoded_key], "xdrFormat": "base64" }),
-    )?;
+    let encoded_key = key
+        .to_xdr_base64(xdr_limits())
+        .map_err(|_| TargetWasmError::InvalidRequest(format!("cannot encode {entry} key")))?;
+    let result = transport
+        .call(
+            "getLedgerEntries",
+            json!({ "keys": [encoded_key], "xdrFormat": "base64" }),
+        )
+        .map_err(redact_ledger_request_error)?;
     let reported_ledger: u32 = result
         .get("latestLedger")
         .and_then(serde_json::Value::as_u64)
@@ -510,7 +514,7 @@ fn read_entry<T: RpcTransport>(
         .ok_or_else(|| RpcError::Malformed(format!("{entry} reply has no string xdr")))?;
     ensure_base64_size("xdr", xdr_base64)?;
     let data = LedgerEntryData::from_xdr_base64(xdr_base64, xdr_limits())
-        .map_err(|error| RpcError::Malformed(format!("{entry} reply has invalid XDR: {error}")))?;
+        .map_err(|_| RpcError::Malformed(format!("{entry} reply has invalid XDR")))?;
     if live_until_ledger < reported_ledger {
         return Err(TargetWasmError::ArchivedLedgerEntry {
             entry,
@@ -547,6 +551,7 @@ mod tests {
         code: Value,
         expected_code_hash: Hash,
         calls: RefCell<Vec<String>>,
+        failure: RefCell<Option<RpcError>>,
     }
 
     impl RpcTransport for FixtureTransport {
@@ -555,6 +560,9 @@ mod tests {
             match method {
                 "getNetwork" => Ok(self.network.clone()),
                 "getLedgerEntries" => {
+                    if let Some(error) = self.failure.borrow_mut().take() {
+                        return Err(error);
+                    }
                     let keys = params["keys"].as_array().expect("one key array");
                     assert_eq!(keys.len(), 1);
                     assert_eq!(params["xdrFormat"], "base64");
@@ -651,12 +659,14 @@ mod tests {
             }),
             expected_code_hash: Hash(Sha256::digest(WASM).into()),
             calls: RefCell::new(Vec::new()),
+            failure: RefCell::new(None),
         }
     }
 
     struct CaptureTransport {
         base: FixtureTransport,
         final_response: Value,
+        final_failure: RefCell<Option<RpcError>>,
     }
 
     impl RpcTransport for CaptureTransport {
@@ -664,6 +674,9 @@ mod tests {
             if method == "getLedgerEntries"
                 && params["keys"].as_array().is_some_and(|keys| keys.len() > 1)
             {
+                if let Some(error) = self.final_failure.borrow_mut().take() {
+                    return Err(error);
+                }
                 let requested = params["keys"].as_array().unwrap();
                 let returned = self.final_response["entries"].as_array().unwrap();
                 for entry in returned {
@@ -709,6 +722,7 @@ mod tests {
             CaptureTransport {
                 base,
                 final_response,
+                final_failure: RefCell::new(None),
             },
             key,
         )
@@ -732,6 +746,46 @@ mod tests {
         assert_eq!(capture.entries[&key].last_modified_ledger, LedgerSeq(96));
         assert_eq!(capture.entries[&key].live_until_ledger, LedgerSeq(120));
         assert_eq!(transport.base.calls.borrow().len(), 4);
+    }
+
+    #[test]
+    fn capture_endpoint_errors_cannot_echo_requested_keys() {
+        let (transport, selected_key) = capture_fixture();
+        *transport.final_failure.borrow_mut() = Some(RpcError::Transport(format!(
+            "HTTP body echoed selected key {selected_key}"
+        )));
+        let error = read_target_capture(
+            &transport,
+            NETWORK,
+            &contract_address(),
+            std::slice::from_ref(&selected_key),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &error,
+            TargetWasmError::Rpc(RpcError::Transport(_))
+        ));
+        assert!(!error.to_string().contains(&selected_key));
+        assert!(!error.to_string().contains("HTTP body"));
+
+        let (transport, selected_key) = capture_fixture();
+        let instance_key = transport.base.instance["entries"][0]["key"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        *transport.base.failure.borrow_mut() = Some(RpcError::Rpc(format!(
+            "JSON-RPC error echoed instance key {instance_key}"
+        )));
+        let error = read_target_capture(
+            &transport,
+            NETWORK,
+            &contract_address(),
+            std::slice::from_ref(&selected_key),
+        )
+        .unwrap_err();
+        assert!(matches!(&error, TargetWasmError::Rpc(RpcError::Rpc(_))));
+        assert!(!error.to_string().contains(&instance_key));
+        assert!(!error.to_string().contains("JSON-RPC error"));
     }
 
     #[test]

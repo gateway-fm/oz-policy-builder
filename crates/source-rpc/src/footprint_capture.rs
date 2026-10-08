@@ -5,8 +5,8 @@
 //! RPC key could be absent or archived. Neither case is silently filled in.
 
 use crate::{
-    ensure_base64_size, validate_simulation_envelope, verify_network, xdr_limits, RpcError,
-    RpcTransport, MAX_LEDGER_ENTRY_KEYS,
+    ensure_base64_size, redact_ledger_request_error, validate_simulation_envelope, verify_network,
+    xdr_limits, RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{sha256, Hash32, LedgerSeq, NetworkId};
 use serde_json::json;
@@ -80,7 +80,8 @@ pub struct InvocationFootprintCapture {
 /// Every captured Wasm instance must have its matching code key in this same
 /// response, and the code bytes must hash to the key. New write keys that are
 /// absent at the endpoint are refused because RPC cannot establish their
-/// history or TTL from this method.
+/// history or TTL from this method. Endpoint error detail is withheld because
+/// it may echo a declared key.
 pub fn read_invocation_footprint<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -157,10 +158,12 @@ pub fn read_invocation_footprint<T: RpcTransport>(
     let envelope_xdr_sha256 = sha256(&canonical);
     verify_network(transport, network_passphrase)?;
     let keys: Vec<&String> = requested.keys().collect();
-    let response = transport.call(
-        "getLedgerEntries",
-        json!({ "keys": keys, "xdrFormat": "base64" }),
-    )?;
+    let response = transport
+        .call(
+            "getLedgerEntries",
+            json!({ "keys": keys, "xdrFormat": "base64" }),
+        )
+        .map_err(redact_ledger_request_error)?;
     let reported_ledger: u32 = response
         .get("latestLedger")
         .and_then(serde_json::Value::as_u64)
@@ -202,10 +205,8 @@ pub fn read_invocation_footprint<T: RpcTransport>(
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| RpcError::Malformed(format!("footprint entry {index} lacks XDR")))?;
         ensure_base64_size("footprint entry XDR", encoded_data)?;
-        let data =
-            LedgerEntryData::from_xdr_base64(encoded_data, xdr_limits()).map_err(|error| {
-                RpcError::Malformed(format!("footprint entry {index} has invalid XDR: {error}"))
-            })?;
+        let data = LedgerEntryData::from_xdr_base64(encoded_data, xdr_limits())
+            .map_err(|_| RpcError::Malformed(format!("footprint entry {index} has invalid XDR")))?;
         if data.to_key() != *key {
             return Err(RpcError::Malformed(format!(
                 "footprint entry {index} payload differs from its declared key"
@@ -276,10 +277,10 @@ pub fn read_invocation_footprint<T: RpcTransport>(
                     ContractExecutable::Wasm(hash) => {
                         let code_key =
                             LedgerKey::ContractCode(LedgerKeyContractCode { hash: hash.clone() });
-                        let encoded = code_key.to_xdr_base64(xdr_limits()).map_err(|error| {
-                            FootprintCaptureError::InvalidFootprint(format!(
-                                "cannot encode code key: {error}"
-                            ))
+                        let encoded = code_key.to_xdr_base64(xdr_limits()).map_err(|_| {
+                            FootprintCaptureError::InvalidFootprint(
+                                "cannot encode captured code key".to_string(),
+                            )
                         })?;
                         if !entries.contains_key(&encoded) {
                             return Err(FootprintCaptureError::MissingCodeKey);
@@ -335,6 +336,7 @@ mod tests {
     struct CannedRpc {
         response: Value,
         calls: RefCell<Vec<String>>,
+        failure: RefCell<Option<RpcError>>,
     }
 
     impl RpcTransport for CannedRpc {
@@ -343,6 +345,9 @@ mod tests {
             match method {
                 "getNetwork" => Ok(json!({"passphrase": NETWORK, "protocolVersion": 28})),
                 "getLedgerEntries" => {
+                    if let Some(error) = self.failure.borrow_mut().take() {
+                        return Err(error);
+                    }
                     assert_eq!(params["xdrFormat"], "base64");
                     let requested = params["keys"].as_array().unwrap();
                     assert!(!requested.is_empty());
@@ -455,6 +460,7 @@ mod tests {
             CannedRpc {
                 response,
                 calls: RefCell::new(Vec::new()),
+                failure: RefCell::new(None),
             },
         )
     }
@@ -533,6 +539,36 @@ mod tests {
             read_invocation_footprint(&rpc, NETWORK, &envelope),
             Err(FootprintCaptureError::Rpc(RpcError::Malformed(message))) if message.contains("undeclared key")
         ));
+    }
+
+    #[test]
+    fn endpoint_errors_cannot_echo_declared_keys() {
+        let (envelope, rpc) = fixture();
+        let key = rpc.response["entries"][0]["key"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        *rpc.failure.borrow_mut() = Some(RpcError::Transport(format!(
+            "HTTP body echoed confidential key {key}"
+        )));
+        let error = read_invocation_footprint(&rpc, NETWORK, &envelope).unwrap_err();
+        assert!(matches!(
+            &error,
+            FootprintCaptureError::Rpc(RpcError::Transport(_))
+        ));
+        assert!(!error.to_string().contains(&key));
+        assert!(!error.to_string().contains("HTTP body"));
+
+        *rpc.failure.borrow_mut() = Some(RpcError::Rpc(format!(
+            "JSON-RPC error echoed confidential key {key}"
+        )));
+        let error = read_invocation_footprint(&rpc, NETWORK, &envelope).unwrap_err();
+        assert!(matches!(
+            &error,
+            FootprintCaptureError::Rpc(RpcError::Rpc(_))
+        ));
+        assert!(!error.to_string().contains(&key));
+        assert!(!error.to_string().contains("JSON-RPC error"));
     }
 
     #[test]
