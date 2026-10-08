@@ -351,6 +351,9 @@ fn pinned_account_wasm_full_authorization() {
             "{label} must be refused"
         );
         assert_eq!(refusal_stage(&env), "account authentication", "{label}");
+        // A consistency check, not the evidence: a refused top-level check_auth rolls the
+        // account's storage back whatever refused it, so this count cannot change here. The
+        // refusal stage above is what shows account authentication refused the forgery.
         assert_eq!(remaining_calls(&env, &policy, &account), 12);
     }
 
