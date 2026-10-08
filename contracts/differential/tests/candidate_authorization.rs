@@ -11,7 +11,7 @@ mod captured_snapshot;
 #[path = "support/signed_auth.rs"]
 mod signed_auth;
 
-use captured_snapshot::reconstruct;
+use captured_snapshot::{reconstruct, EntryState};
 use ed25519_dalek::SigningKey;
 use generated_sub_transfer_r0::contract::PolicyStorageKey;
 use ozpb_domain::{pinned_upstream::OZ_SMART_ACCOUNT_WASM, NetworkId};
@@ -31,8 +31,8 @@ use soroban_sdk::{
     },
     Address, Bytes, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec as SVec,
 };
-use std::cell::RefCell;
-use stellar_accounts::smart_account::{AuthPayload, Signer};
+use std::{cell::RefCell, collections::BTreeSet};
+use stellar_accounts::smart_account::{AuthPayload, Signer, SmartAccountStorageKey};
 use stellar_xdr::{
     ContractCodeEntry, ContractCodeEntryExt, ContractDataDurability, ContractDataEntry,
     ContractExecutable, ContractId, ExtensionPoint, Hash, HostFunction, InvokeContractArgs,
@@ -74,6 +74,31 @@ fn contract() -> ScAddress {
             .unwrap()
             .0,
     )))
+}
+
+fn persistent_key<K: IntoVal<Env, Val>>(
+    env: &Env,
+    contract: &Address,
+    key: K,
+) -> sdk_xdr::LedgerKey {
+    sdk_xdr::LedgerKey::ContractData(sdk_xdr::LedgerKeyContractData {
+        contract: as_sc_address(env, contract),
+        key: sdk_scval(env, key),
+        durability: sdk_xdr::ContractDataDurability::Persistent,
+    })
+}
+
+fn encoded(key: &sdk_xdr::LedgerKey) -> String {
+    key.to_xdr_base64(sdk_xdr::Limits::none()).unwrap()
+}
+
+fn contract_data(state: &EntryState) -> (&sdk_xdr::ScVal, Option<u32>) {
+    match state {
+        Some((sdk_xdr::LedgerEntryData::ContractData(data), live_until)) => {
+            (&data.val, *live_until)
+        }
+        other => panic!("expected contract data, got {other:?}"),
+    }
 }
 
 fn nonce_key(env: &Env, address: &Address, nonce: i64) -> sdk_xdr::LedgerKey {
@@ -361,11 +386,11 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
     assert_eq!(call.contract_address, fx::golden_token_strkey());
     assert_eq!(call.function_name, "transfer");
     assert_eq!(call.args_xdr_base64.len(), 3);
-    let count_key = sdk_xdr::LedgerKey::ContractData(sdk_xdr::LedgerKeyContractData {
-        contract: as_sc_address(&setup, &policy),
-        key: sdk_scval(&setup, PolicyStorageKey::CallCount(account.clone(), 0)),
-        durability: sdk_xdr::ContractDataDurability::Persistent,
-    });
+    let count_key = persistent_key(
+        &setup,
+        &policy,
+        PolicyStorageKey::CallCount(account.clone(), 0),
+    );
     let mut missing_candidate = candidate.clone();
     let original_len = missing_candidate.ledger_entries.len();
     missing_candidate
@@ -547,6 +572,62 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
         world.allowed_absent,
         "every allowed absent key must be read, and only those"
     );
+
+    // Exact committed change set against captured and candidate state. The
+    // balance and call count change value only, and the account path extends
+    // the TTL of the three entries it reads. The permitted call creates its two
+    // nonces; the failed calls leave theirs uncommitted. Any other committed
+    // data or TTL change, including a deletion, fails here.
+    let balance_key = persistent_key(env, &target, Symbol::new(env, "balance"));
+    let count_key = persistent_key(
+        env,
+        &policy,
+        PolicyStorageKey::CallCount(account.clone(), 0),
+    );
+    let extended = [
+        persistent_key(env, &account, SmartAccountStorageKey::ContextRuleData(0)),
+        persistent_key(env, &account, SmartAccountStorageKey::SignerData(0)),
+        persistent_key(env, &account, SmartAccountStorageKey::PolicyData(0)),
+    ];
+    let created = [
+        nonce_key(env, &account, 500),
+        nonce_key(env, &delegate, 1500),
+    ];
+    let changes = world.committed_changes();
+    let expected: BTreeSet<String> = [&balance_key, &count_key]
+        .into_iter()
+        .chain(&extended)
+        .chain(&created)
+        .map(encoded)
+        .collect();
+    assert_eq!(
+        changes.keys().cloned().collect::<BTreeSet<_>>(),
+        expected,
+        "committed state must change exactly the expected keys"
+    );
+    for (key, value) in [
+        (&balance_key, sdk_scval(env, START_BALANCE - AMOUNT)),
+        (&count_key, sdk_scval(env, 1u32)),
+    ] {
+        let change = &changes[&encoded(key)];
+        let (_, before_ttl) = contract_data(&change.before);
+        assert_eq!(contract_data(&change.after), (&value, before_ttl));
+    }
+    for key in &extended {
+        let change = &changes[&encoded(key)];
+        let (before_val, before_ttl) = contract_data(&change.before);
+        let (after_val, after_ttl) = contract_data(&change.after);
+        assert_eq!(after_val, before_val, "account entry must change TTL only");
+        assert!(after_ttl > before_ttl, "account entry TTL must be extended");
+    }
+    for key in &created {
+        let change = &changes[&encoded(key)];
+        assert!(change.before.is_none());
+        assert_eq!(
+            contract_data(&change.after),
+            (&sdk_xdr::ScVal::Void, Some(2000))
+        );
+    }
 
     env.ledger().with_mut(|ledger| ledger.sequence_number += 1);
     let committed = env.to_ledger_snapshot();

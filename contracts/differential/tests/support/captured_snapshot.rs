@@ -14,8 +14,10 @@ use std::{
 };
 use stellar_xdr::WriteXdr as _;
 
+type StoredEntries = BTreeMap<String, (Rc<sdk_xdr::LedgerEntry>, Option<u32>)>;
+
 struct ExactSource {
-    entries: BTreeMap<String, (Rc<sdk_xdr::LedgerEntry>, Option<u32>)>,
+    entries: StoredEntries,
     allowed_absent_keys: BTreeSet<String>,
     absent_reads: Rc<RefCell<BTreeSet<String>>>,
     rejected: Rc<RefCell<usize>>,
@@ -53,11 +55,46 @@ pub struct ReconstructedEnv {
     pub absent_reads: Rc<RefCell<BTreeSet<String>>>,
     pub captured_entry_count: usize,
     pub candidate_entry_count: usize,
+    initial: StoredEntries,
+}
+
+/// Entry data and live-until ledger for one key, absent as `None`.
+pub type EntryState = Option<(sdk_xdr::LedgerEntryData, Option<u32>)>;
+
+/// One key whose committed state differs from its captured or candidate state.
+#[derive(Debug)]
+pub struct StateChange {
+    pub before: EntryState,
+    pub after: EntryState,
+}
+
+impl ReconstructedEnv {
+    /// Every encoded key whose committed host state differs from the combined
+    /// captured and candidate state. `Env::to_ledger_snapshot` is built from
+    /// these stored entries; reading them directly also shows deletions, which
+    /// the snapshot would drop. Last-modified ledger numbers are not compared,
+    /// so a write that keeps the same data and TTL is not a change.
+    pub fn committed_changes(&self) -> BTreeMap<String, StateChange> {
+        let mut changes = BTreeMap::new();
+        for (key, stored) in self.env.host().get_stored_entries().unwrap() {
+            let encoded = key.to_xdr_base64(sdk_xdr::Limits::none()).unwrap();
+            let before = self
+                .initial
+                .get(&encoded)
+                .map(|(entry, live_until)| (entry.data.clone(), *live_until));
+            let after = stored.map(|(entry, live_until)| (entry.data.clone(), live_until));
+            if before != after {
+                changes.insert(encoded, StateChange { before, after });
+            }
+        }
+        changes
+    }
 }
 
 /// Candidate entries come from a locally created account/policy snapshot. The
 /// target entries come from one checked RPC reply at its reported ledger. Key
 /// overlap is refused, and every other key fails rather than appearing absent.
+/// The source governs reads only; `committed_changes` reports what committed.
 pub fn reconstruct(
     capture: &InvocationFootprintCapture,
     candidate: Option<&LedgerSnapshot>,
@@ -127,6 +164,7 @@ pub fn reconstruct(
     let mut ledger_info = Env::default().ledger().get();
     ledger_info.sequence_number = capture.reported_ledger.0;
     ledger_info.network_id = capture.network_id.0 .0;
+    let initial = entries.clone();
     let env = Env::from_ledger_snapshot(SnapshotSourceInput {
         source: Rc::new(ExactSource {
             entries,
@@ -144,5 +182,6 @@ pub fn reconstruct(
         absent_reads,
         captured_entry_count,
         candidate_entry_count,
+        initial,
     }
 }

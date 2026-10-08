@@ -142,7 +142,11 @@ The source-reviewed account method inventory and its limits are described in
    The target call returns only the host's generic context error, which a missing or
    mismatched authorization entry would also produce; the policy's diagnostic error event
    attributes that refusal to the same denial. The target has sufficient balance in both
-   cases. The permitted write and call count commit. These tests use
+   cases. The permitted write and call count commit. The committed state differs from the
+   combined captured and candidate state in exactly seven keys: the balance and call count
+   change value only, the permitted call's two nonces are new, and three account entries
+   read by its authorization path change TTL only. Any other committed data or TTL change,
+   including a deletion, fails. These tests use
    deterministic fixture RPC data, synthetic candidate account/policy state, and SDK default
    ledger header/configuration apart from the reported sequence and network ID. They
    demonstrate only these fixed-key calls. They do not establish key closure or authorization
