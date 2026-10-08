@@ -1,9 +1,9 @@
 //! rmcp stdio MCP server (architecture §4.6, §4.11).
 //!
-//! A thin shell: every `#[tool]` is a wrapper over `ozpb_toolkit`, with types from
-//! `ozpb_api_types` so input/output JSON Schemas are generated from the same structs the
-//! core consumes. No domain logic lives here. Tools are stateless; annotations mark the
-//! read/pure/mutating nature per §4.6 (record_* touch the network; the rest are pure).
+//! A thin shell over `ozpb_toolkit` for policy operations and `ozpb_source_rpc` for
+//! network observations, with wire types from `ozpb_api_types`. Recording and exact-envelope
+//! preflight read the selected RPC endpoint; generation and verification may build Wasm.
+//! No domain logic or transaction submission lives here.
 //!
 //! Deployment and signing are deliberately NOT capabilities of this server.
 
@@ -22,6 +22,7 @@ use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod preflight;
 mod verification;
 
 #[derive(Clone)]
@@ -91,7 +92,9 @@ impl PolicyBuilderServer {
         build_config: ozpb_toolkit::BuildConfig,
     ) -> Self {
         Self {
-            tool_router: Self::tool_router() + Self::verification_tool_router(),
+            tool_router: Self::tool_router()
+                + Self::verification_tool_router()
+                + Self::preflight_tool_router(),
             registry_trust,
             rpc_policy,
             build_config,

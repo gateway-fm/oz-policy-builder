@@ -15,6 +15,7 @@
 //!     --manifest ./generated/build-manifest.json
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
+mod preflight;
 mod verification;
 
 use anyhow::{Context, Result};
@@ -100,6 +101,17 @@ enum Command {
     Simulate {
         #[arg(long)]
         envelope_xdr: String,
+        #[arg(long)]
+        rpc_url: String,
+        #[arg(long)]
+        network: String,
+    },
+    /// Simulate an exact transaction envelope, including intended authorization entries.
+    /// Returns endpoint-reported, state-dependent evidence; never submits it.
+    PreflightTransaction {
+        /// File containing base64 transaction envelope XDR (kept out of process arguments).
+        #[arg(long)]
+        envelope_file: PathBuf,
         #[arg(long)]
         rpc_url: String,
         #[arg(long)]
@@ -263,6 +275,11 @@ fn main() -> Result<()> {
             let out = record(&snapshot, RecordOptions::default())?;
             print_json(&out)?;
         }
+        Command::PreflightTransaction {
+            envelope_file,
+            rpc_url,
+            network,
+        } => preflight::run(rpc_url, network, envelope_file)?,
         Command::Import { bundle } => {
             let out = ozpb_toolkit::import_recording(
                 &read_import_document(&bundle)?,
@@ -570,5 +587,22 @@ mod tests {
             }
             _ => panic!("expected the Generate subcommand"),
         }
+    }
+
+    #[test]
+    fn preflight_is_an_explicit_network_read_command() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "ozpb",
+            "preflight-transaction",
+            "--envelope-file",
+            "envelope.xdr.base64",
+            "--rpc-url",
+            "https://rpc.example",
+            "--network",
+            "Test SDF Network ; September 2015",
+        ])
+        .expect("preflight command");
+        assert!(matches!(cli.command, Command::PreflightTransaction { .. }));
     }
 }

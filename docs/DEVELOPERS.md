@@ -49,6 +49,11 @@ scheduled operations, not CLI or MCP commands. `reference_suite` is layer-1 evid
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
 
+`preflight_transaction` is a separate network read for an exact transaction envelope
+carrying the intended authorization entries. It uses RPC authorization enforcement and
+reports the endpoint's simulation outcome at its reported ledger. It does not establish
+that the generated policy is installed or selected, and it never commits writes.
+
 ### CLI
 
 ```bash
@@ -86,6 +91,13 @@ ozpb generate --spec spec.json --rule 0 --out ./generated
 ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
+
+# Optional: simulate an exact envelope with its intended authorization entries.
+# Read it from a file so the base64 and signatures stay out of shell history/process arguments.
+# This reports endpoint state at one ledger, not an installed-policy or Safe verdict.
+ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
+  --rpc-url https://rpc.testnet.stellar.gateway.fm \
+  --network "Test SDF Network ; September 2015"
 
 ```
 
@@ -213,6 +225,8 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   `synthesize_policy`, `evaluate_spec`, `generate_code`.
 - **Available reference and verification tools** — `reference_suite` (layer 1 only) and
   `verify` (artifact reproduction with separately labeled limits).
+- **Exact-envelope network evidence** — `preflight_transaction` reports one
+  authorization-enforcing RPC simulation; it does not identify an installed policy.
 - **Scheduled, not exposed** — `dry_run`, `check_against_policy`,
   `check_policy_call_surface`, `prepare_install_intent`. The full dry-run harness, live
   authority-surface check, and install intent need their own evidence before exposure.
@@ -283,7 +297,7 @@ the tests guide you (TDD: add the failing test first):
    Soroban environment. The committed Soroswap policy is a second generated example; its
    complete file set must match regeneration, and it builds as a standalone crate. Add
    explicit evaluator/contract cases for new constraints. End-to-end account
-   integration and live preflight remain separate work.
+   integration and policy-aware live preflight remain separate work.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove
