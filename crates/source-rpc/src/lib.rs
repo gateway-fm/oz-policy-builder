@@ -14,6 +14,7 @@ mod account_reconciliation;
 mod account_state_projection;
 mod account_state_scan;
 mod account_storage;
+mod checked_account_observation;
 mod contract_data;
 mod footprint_capture;
 mod ledger_witness;
@@ -28,6 +29,10 @@ pub use account_state_scan::{
 pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
+};
+pub use checked_account_observation::{
+    CheckedAccountObservation, CheckedAccountObservationError, OperatorAccountSource,
+    OperatorAccountSourceConfig, ReviewedPolicyBinding,
 };
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 pub use footprint_capture::{

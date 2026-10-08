@@ -45,10 +45,16 @@ The source-reviewed account method inventory and its limits are described in
    bounded scan protocol to the exact pinned account Wasm. Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
    authority evidence.
-   This tree has no operator-pinned authenticated source for a live account snapshot and no
-   wallet-authenticated binding to the intended administrator. A registry signature covers
+   An internal operator-configured reader now pins an RPC endpoint, network passphrase,
+   governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
+   each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
+   and compares the account, installed policies, and selected policy bindings with code hashes
+   observed by the bounded scanner. Unknown, revoked, or changed implementations are refused.
+   The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
+   calls and re-reading the instance do not authenticate a coherent ledger snapshot. There is
+   no wallet-authenticated binding to the intended administrator. A registry signature covers
    implementation capabilities, not live ledger state; a client-provided fingerprint cannot
-   establish wallet intent. Those trust anchors are required before a public authority verdict.
+   establish wallet intent. The missing assurances are required before a public authority verdict.
 
    The toolkit has an internal install-intent draft that checks a spec, binding set, and
    supplied authority artifact for identity and structural consistency, then derives typed
