@@ -81,7 +81,7 @@ impl OperatorAccountSource {
             ));
         }
         // Validate the signed snapshot and durable checkpoint before constructing a source.
-        let _ = verified_registry(&config)?;
+        let _ = verified_registry(&config, unix_now()?)?;
         let transport = HttpTransport::new(config.rpc_url.clone());
         Ok(Self { config, transport })
     }
@@ -94,7 +94,24 @@ impl OperatorAccountSource {
         expected_account_wasm_hash: Hash32,
         bindings: &[ReviewedPolicyBinding],
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
-        let registry = verified_registry(&self.config)?;
+        self.inspect_at(
+            account_address,
+            expected_account_wasm_hash,
+            bindings,
+            unix_now()?,
+        )
+    }
+
+    /// [`Self::inspect`] at a supplied trusted time. The snapshot is verified at that time
+    /// before the endpoint is contacted, so tests can fix the clock without a network.
+    fn inspect_at(
+        &self,
+        account_address: &str,
+        expected_account_wasm_hash: Hash32,
+        bindings: &[ReviewedPolicyBinding],
+        now_unix: i64,
+    ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
+        let registry = verified_registry(&self.config, now_unix)?;
         inspect_with_transport(
             &self.transport,
             &self.config,
@@ -106,15 +123,25 @@ impl OperatorAccountSource {
     }
 }
 
+/// Wall-clock time for snapshot validity, read the same way as `Registry::load`.
+fn unix_now() -> Result<i64, CheckedAccountObservationError> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| RegistryError::Internal(error.to_string()))?;
+    i64::try_from(elapsed.as_secs())
+        .map_err(|_| RegistryError::Internal("system time exceeds i64".to_string()).into())
+}
+
 fn verified_registry(
     config: &OperatorAccountSourceConfig,
+    now_unix: i64,
 ) -> Result<Registry, CheckedAccountObservationError> {
     let mut registry = Registry::with_pinned_roots_for_network_at_checkpoint(
         config.registry_roots.clone(),
         NetworkId::from_passphrase(&config.network_passphrase),
         config.registry_checkpoint.clone(),
     )?;
-    registry.load(&config.signed_registry_snapshot)?;
+    registry.load_at(&config.signed_registry_snapshot, now_unix)?;
     Ok(registry)
 }
 
@@ -266,6 +293,8 @@ mod tests {
     };
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
+    /// A fixed trusted time inside every test snapshot's validity interval.
+    const NOW: i64 = 1_800_000_000;
 
     fn address(byte: u8) -> String {
         format!("{}", stellar_strkey::Contract([byte; 32]))
@@ -276,6 +305,12 @@ mod tests {
     }
 
     fn signed_snapshot() -> ozpb_registry::SignedSnapshot {
+        signed_snapshot_with(|_| {})
+    }
+
+    fn signed_snapshot_with(
+        edit: impl FnOnce(&mut RegistrySnapshot),
+    ) -> ozpb_registry::SignedSnapshot {
         let mut snapshot: RegistrySnapshot =
             dev::dev_snapshot(NetworkId::from_passphrase(NETWORK), 1);
         let account = snapshot
@@ -298,6 +333,7 @@ mod tests {
             )
             .unwrap(),
         );
+        edit(&mut snapshot);
         sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
     }
 
@@ -390,7 +426,7 @@ mod tests {
         config: &OperatorAccountSourceConfig,
         bindings: &[ReviewedPolicyBinding],
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
-        let registry = verified_registry(config)?;
+        let registry = verified_registry(config, NOW)?;
         let authority = registry
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
             .unwrap();
@@ -420,86 +456,89 @@ mod tests {
         assert_eq!(observed.source_name, "operator-testnet");
     }
 
+    /// Serves an account with `NextId` 0 and the bound policy's instance: one instance read,
+    /// one code read, and the final instance read make three `getLedgerEntries` batches.
+    struct Endpoint;
+    impl RpcTransport for Endpoint {
+        fn call(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, super::super::RpcError> {
+            if method == "getNetwork" {
+                return Ok(serde_json::json!({"passphrase": NETWORK, "protocolVersion": 28}));
+            }
+            assert_eq!(method, "getLedgerEntries");
+            let mut entries = Vec::new();
+            for encoded in params["keys"].as_array().unwrap() {
+                let encoded = encoded.as_str().unwrap();
+                let LedgerKey::ContractData(key) =
+                    LedgerKey::from_xdr_base64(encoded, crate::xdr_limits()).unwrap()
+                else {
+                    panic!("contract-data key expected");
+                };
+                assert_eq!(key.key, ScVal::LedgerKeyContractInstance);
+                let account = matches!(
+                    &key.contract,
+                    ScAddress::Contract(contract) if contract.0.0 == [7; 32]
+                );
+                let expected = if account {
+                    pinned_upstream::OZ_SMART_ACCOUNT_WASM
+                } else {
+                    assert!(matches!(
+                        &key.contract,
+                        ScAddress::Contract(contract) if contract.0.0 == [14; 32]
+                    ));
+                    pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM
+                };
+                let storage = if account {
+                    let mut values = vec![
+                        ScMapEntry {
+                            key: ScVal::Vec(Some(
+                                vec![ScVal::Symbol("Count".try_into().unwrap())]
+                                    .try_into()
+                                    .unwrap(),
+                            )),
+                            val: ScVal::U32(0),
+                        },
+                        ScMapEntry {
+                            key: ScVal::Vec(Some(
+                                vec![ScVal::Symbol("NextId".try_into().unwrap())]
+                                    .try_into()
+                                    .unwrap(),
+                            )),
+                            val: ScVal::U32(0),
+                        },
+                    ];
+                    values.sort_by(|a, b| a.key.cmp(&b.key));
+                    Some(values.try_into().unwrap())
+                } else {
+                    None
+                };
+                entries.push(serde_json::json!({
+                    "key": encoded,
+                    "xdr": LedgerEntryData::ContractData(ContractDataEntry {
+                        ext: ExtensionPoint::V0,
+                        contract: key.contract,
+                        key: key.key,
+                        durability: key.durability,
+                        val: ScVal::ContractInstance(ScContractInstance {
+                            executable: ContractExecutable::Wasm(Hash(expected.0)),
+                            storage,
+                        }),
+                    }).to_xdr_base64(crate::xdr_limits()).unwrap(),
+                    "lastModifiedLedgerSeq": 9,
+                    "liveUntilLedgerSeq": 20,
+                }));
+            }
+            Ok(serde_json::json!({"latestLedger": 10, "entries": entries}))
+        }
+    }
+
     #[test]
     fn operator_source_acquires_account_and_binding_at_one_reported_ledger() {
-        struct Endpoint;
-        impl RpcTransport for Endpoint {
-            fn call(
-                &self,
-                method: &str,
-                params: serde_json::Value,
-            ) -> Result<serde_json::Value, super::super::RpcError> {
-                if method == "getNetwork" {
-                    return Ok(serde_json::json!({"passphrase": NETWORK, "protocolVersion": 28}));
-                }
-                assert_eq!(method, "getLedgerEntries");
-                let mut entries = Vec::new();
-                for encoded in params["keys"].as_array().unwrap() {
-                    let encoded = encoded.as_str().unwrap();
-                    let LedgerKey::ContractData(key) =
-                        LedgerKey::from_xdr_base64(encoded, crate::xdr_limits()).unwrap()
-                    else {
-                        panic!("contract-data key expected");
-                    };
-                    assert_eq!(key.key, ScVal::LedgerKeyContractInstance);
-                    let account = matches!(
-                        &key.contract,
-                        ScAddress::Contract(contract) if contract.0.0 == [7; 32]
-                    );
-                    let expected = if account {
-                        pinned_upstream::OZ_SMART_ACCOUNT_WASM
-                    } else {
-                        assert!(matches!(
-                            &key.contract,
-                            ScAddress::Contract(contract) if contract.0.0 == [14; 32]
-                        ));
-                        pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM
-                    };
-                    let storage = if account {
-                        let mut values = vec![
-                            ScMapEntry {
-                                key: ScVal::Vec(Some(
-                                    vec![ScVal::Symbol("Count".try_into().unwrap())]
-                                        .try_into()
-                                        .unwrap(),
-                                )),
-                                val: ScVal::U32(0),
-                            },
-                            ScMapEntry {
-                                key: ScVal::Vec(Some(
-                                    vec![ScVal::Symbol("NextId".try_into().unwrap())]
-                                        .try_into()
-                                        .unwrap(),
-                                )),
-                                val: ScVal::U32(0),
-                            },
-                        ];
-                        values.sort_by(|a, b| a.key.cmp(&b.key));
-                        Some(values.try_into().unwrap())
-                    } else {
-                        None
-                    };
-                    entries.push(serde_json::json!({
-                        "key": encoded,
-                        "xdr": LedgerEntryData::ContractData(ContractDataEntry {
-                            ext: ExtensionPoint::V0,
-                            contract: key.contract,
-                            key: key.key,
-                            durability: key.durability,
-                            val: ScVal::ContractInstance(ScContractInstance {
-                                executable: ContractExecutable::Wasm(Hash(expected.0)),
-                                storage,
-                            }),
-                        }).to_xdr_base64(crate::xdr_limits()).unwrap(),
-                        "lastModifiedLedgerSeq": 9,
-                        "liveUntilLedgerSeq": 20,
-                    }));
-                }
-                Ok(serde_json::json!({"latestLedger": 10, "entries": entries}))
-            }
-        }
         let config = config(signed_snapshot());
-        let registry = verified_registry(&config).unwrap();
+        let registry = verified_registry(&config, NOW).unwrap();
         let observed = inspect_with_transport(
             &Endpoint,
             &config,
@@ -513,6 +552,53 @@ mod tests {
         assert_eq!(observed.scan.rpc_batches, 3);
         assert_eq!(observed.bound_policies[0].address, address(14));
         assert!(observed.projection.admin_candidates.is_empty());
+    }
+
+    /// The endpoint read above needs three batches. The ceiling comes from the signed
+    /// account capability, never from the scanner's defaults.
+    #[test]
+    fn signed_scan_bounds_limit_the_operator_read() {
+        let config = config(signed_snapshot_with(|snapshot| {
+            let account = snapshot
+                .accounts
+                .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+                .unwrap();
+            account.bounded_next_id.as_mut().unwrap().max_rpc_batches = 2;
+        }));
+        let registry = verified_registry(&config, NOW).unwrap();
+        assert!(matches!(
+            inspect_with_transport(
+                &Endpoint,
+                &config,
+                &registry,
+                &address(7),
+                pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+                &bindings(),
+            ),
+            Err(CheckedAccountObservationError::Scan(
+                AccountScanError::Budget(_)
+            ))
+        ));
+    }
+
+    /// A source accepted while its snapshot was valid must not keep using it once expired.
+    #[test]
+    fn each_inspection_reverifies_the_snapshot_at_its_own_time() {
+        let config = config(signed_snapshot_with(|snapshot| {
+            snapshot.expires_at_unix = i64::MAX - 1;
+        }));
+        let source = OperatorAccountSource::new(config).unwrap();
+        assert!(matches!(
+            source.inspect_at(
+                &address(7),
+                pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+                &bindings(),
+                i64::MAX,
+            ),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::Expired { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -612,7 +698,7 @@ mod tests {
         let mut bad_signature = config(signed_snapshot());
         bad_signature.signed_registry_snapshot.signatures.clear();
         assert!(matches!(
-            verified_registry(&bad_signature),
+            verified_registry(&bad_signature, NOW),
             Err(CheckedAccountObservationError::Registry(
                 RegistryError::Signature
             ))
@@ -620,13 +706,13 @@ mod tests {
         let mut bad_checkpoint = config(signed_snapshot());
         bad_checkpoint.registry_checkpoint.root = Hash32([42; 32]);
         assert!(matches!(
-            verified_registry(&bad_checkpoint),
+            verified_registry(&bad_checkpoint, NOW),
             Err(CheckedAccountObservationError::Registry(
                 RegistryError::Transparency(_)
             ))
         ));
         let good = config(signed_snapshot());
-        let registry = verified_registry(&good).unwrap();
+        let registry = verified_registry(&good, NOW).unwrap();
         let duplicate = vec![bindings()[0].clone(), bindings()[0].clone()];
         assert!(matches!(
             inspect_with_transport(
@@ -677,7 +763,7 @@ mod tests {
             }
         }
         let good = config(signed_snapshot());
-        let registry = verified_registry(&good).unwrap();
+        let registry = verified_registry(&good, NOW).unwrap();
         let error = inspect_with_transport(
             &Echo,
             &good,
