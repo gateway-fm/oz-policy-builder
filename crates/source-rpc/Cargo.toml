@@ -10,8 +10,10 @@ description = "Stellar RPC acquisition adapter for recording evidence and checke
 [dependencies]
 ozpb-recorder-core = { workspace = true }
 ozpb-domain = { workspace = true }
+ozpb-call-surface-core = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
 ureq = { workspace = true }
 stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }

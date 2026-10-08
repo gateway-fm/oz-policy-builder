@@ -35,8 +35,16 @@ The source-reviewed account method inventory and its limits are described in
    administrator or establish complete reviewed method evidence. The scanner hashes the ordered
    XDR keys and values, TTL metadata, and requested absences, including inspected policy
    instances. This digest identifies endpoint responses, not an authenticated ledger snapshot.
-   Live endpoint behavior still needs separate verification before it can
-   underpin a public authority verdict.
+   A structural adapter maps the completed scan into the pure authority model, requires
+   observed code for every installed policy, and lists eligible policy-free management rules
+   with observed fingerprints. Its output keeps the raw XDR/TTL digest separate from the
+   decoded core-state digest: changing a TTL or an unmodeled instance field can change the
+   former without changing the latter. These are candidates; the adapter does not choose
+   an administrator or turn endpoint data into a trusted verdict.
+   This tree has no operator-pinned authenticated source for a live account snapshot and no
+   wallet-authenticated binding to the intended administrator. A registry signature covers
+   implementation capabilities, not live ledger state; a client-provided fingerprint cannot
+   establish wallet intent. Those trust anchors are required before a public authority verdict.
 
    The toolkit has an internal install-intent draft that checks a spec, binding set, and
    supplied authority artifact for identity and structural consistency, then derives typed

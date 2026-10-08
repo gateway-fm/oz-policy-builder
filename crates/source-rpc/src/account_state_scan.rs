@@ -960,4 +960,44 @@ mod tests {
         .ordered_entry_digest;
         assert_ne!(first, second);
     }
+
+    #[test]
+    fn raw_entry_changes_can_leave_the_decoded_authority_state_unchanged() {
+        let original = crate::project_account_state(&inspect(&mock()).unwrap()).unwrap();
+
+        let ttl_only = mock();
+        ttl_only
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Rule(0)))
+            .unwrap()
+            .1 = 21;
+        let ttl_projection = crate::project_account_state(&inspect(&ttl_only).unwrap()).unwrap();
+        assert_ne!(
+            original.raw_ordered_entry_digest,
+            ttl_projection.raw_ordered_entry_digest
+        );
+        assert_eq!(
+            original.decoded_state_digest,
+            ttl_projection.decoded_state_digest
+        );
+
+        let extra_field = mock();
+        extra_field
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Instance))
+            .unwrap()
+            .0 = instance_with_extra(1, 1);
+        let extra_projection =
+            crate::project_account_state(&inspect(&extra_field).unwrap()).unwrap();
+        assert_ne!(
+            original.raw_ordered_entry_digest,
+            extra_projection.raw_ordered_entry_digest
+        );
+        assert_eq!(
+            original.decoded_state_digest,
+            extra_projection.decoded_state_digest
+        );
+    }
 }
