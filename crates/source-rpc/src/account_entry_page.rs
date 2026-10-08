@@ -137,7 +137,7 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
             } => {
                 let entry = decode_account_storage(&ledger_key(&contract, request), value)
                     .map_err(|error| {
-                        RpcError::Malformed(format!(
+                        RpcError::UndecodableAccountStorage(format!(
                             "archived account entry {request:?} has invalid pinned storage: {error}"
                         ))
                     })?;
@@ -153,7 +153,7 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
             } => {
                 let entry = decode_account_storage(&ledger_key(&contract, request), value)
                     .map_err(|error| {
-                        RpcError::Malformed(format!(
+                        RpcError::UndecodableAccountStorage(format!(
                             "account entry {request:?} has invalid pinned storage: {error}"
                         ))
                     })?;
@@ -417,10 +417,12 @@ mod tests {
             "latestLedger": 10,
             "entries": [response_entry(AccountEntryKey::Rule(17), ScVal::U32(1))]
         }));
-        let error = read(&bad_value, &[AccountEntryKey::Rule(17)])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("invalid pinned storage"), "{error}");
+        let error = read(&bad_value, &[AccountEntryKey::Rule(17)]).unwrap_err();
+        assert!(
+            matches!(&error, RpcError::UndecodableAccountStorage(detail)
+                if detail.contains("invalid pinned storage")),
+            "{error}"
+        );
 
         let mut wrong_payload = response_entry(AccountEntryKey::Signer(9), fixture("signer_value"));
         wrong_payload["key"] =

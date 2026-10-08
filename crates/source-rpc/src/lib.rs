@@ -137,6 +137,10 @@ pub enum RpcError {
     Evidence(String),
     #[error("E_RPC: contract code read: {0}")]
     CodeRead(String),
+    /// A returned account entry matched its requested key but does not decode against the
+    /// pinned storage schema. The account scanner reports it as incomplete account state.
+    #[error("E_RPC: undecodable account storage: {0}")]
+    UndecodableAccountStorage(String),
 }
 
 /// A minimal JSON-RPC transport. The real client uses HTTP; tests inject a canned

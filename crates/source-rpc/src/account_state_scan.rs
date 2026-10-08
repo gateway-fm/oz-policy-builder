@@ -84,6 +84,9 @@ pub enum AccountScanError {
     Incomplete(String),
     #[error("E_INCOMPLETE_ACCOUNT_STATE: returned archived {0}")]
     Archived(String),
+    /// A returned entry does not decode against the pinned storage schema.
+    #[error("E_INCOMPLETE_ACCOUNT_STATE: undecodable: {0}")]
+    Undecodable(String),
     #[error(
         "E_INCOMPLETE_ACCOUNT_STATE: endpoint ledger or account instance changed during inspection"
     )]
@@ -94,9 +97,10 @@ impl AccountScanError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Budget(_) => "E_SCAN_BUDGET_EXCEEDED",
-            Self::Incomplete(_) | Self::Archived(_) | Self::SnapshotChanged => {
-                "E_INCOMPLETE_ACCOUNT_STATE"
-            }
+            Self::Incomplete(_)
+            | Self::Archived(_)
+            | Self::Undecodable(_)
+            | Self::SnapshotChanged => "E_INCOMPLETE_ACCOUNT_STATE",
             Self::Rpc(RpcError::NetworkMismatch { .. }) => "E_NETWORK_MISMATCH",
             Self::Rpc(_) | Self::InvalidBounds(_) => "E_RPC",
         }
@@ -464,7 +468,10 @@ fn read_page<T: RpcTransport>(
     bounds: AccountScanBounds,
 ) -> Result<super::account_entry_page::AccountEntryPage, AccountScanError> {
     reserve_batch(batches, bounds)?;
-    read_account_entry_page(transport, passphrase, account, keys).map_err(Into::into)
+    read_account_entry_page(transport, passphrase, account, keys).map_err(|error| match error {
+        RpcError::UndecodableAccountStorage(detail) => AccountScanError::Undecodable(detail),
+        other => AccountScanError::Rpc(other),
+    })
 }
 
 fn reserve_batch(batches: &mut u32, bounds: AccountScanBounds) -> Result<(), AccountScanError> {
@@ -782,6 +789,27 @@ mod tests {
             inspect(&archived_signer),
             Err(AccountScanError::Archived(what)) if what == "Signer(2)"
         ));
+    }
+
+    #[test]
+    fn undecodable_live_or_archived_storage_is_incomplete_account_state() {
+        for ttl in [20, 0] {
+            let undecodable = mock();
+            *undecodable
+                .values
+                .borrow_mut()
+                .get_mut(&encoded(7, AccountEntryKey::Rule(0)))
+                .unwrap() = (ScVal::U32(1), ttl);
+            let error = inspect(&undecodable).unwrap_err();
+            assert!(matches!(error, AccountScanError::Undecodable(_)), "{error}");
+            assert_eq!(error.code(), "E_INCOMPLETE_ACCOUNT_STATE", "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("E_INCOMPLETE_ACCOUNT_STATE: undecodable"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
