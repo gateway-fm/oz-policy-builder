@@ -2,14 +2,16 @@
 //!
 //! The operator pins the endpoint, network and governance checkpoint. The signed registry
 //! supplies scan ceilings and exact code capabilities; the endpoint supplies storage and
-//! observed executable hashes. Matching `latestLedger` metadata and a final instance read
-//! detect ordinary races, but do not prove that separate RPC replies came from one coherent
-//! ledger state. No wallet administrator is selected here, and this is not an install verdict.
+//! observed executable hashes. Installed policies and external-signer verifiers are
+//! recognized by that observed code; a contract delegate is refused. Matching `latestLedger`
+//! metadata and a final instance read detect ordinary races, but do not prove that separate
+//! RPC replies came from one coherent ledger state. No wallet administrator is selected here,
+//! and this is not an install verdict.
 
 use super::{
     project_account_state, scan_account_state_with_targets, AccountProjectionError,
     AccountScanBounds, AccountScanError, AccountStateProjection, AccountStateScan, HttpTransport,
-    RpcTransport,
+    RpcTransport, SignerIdentity,
 };
 use ozpb_call_surface_core::BoundPolicy;
 use ozpb_domain::{Hash32, NetworkId};
@@ -202,6 +204,30 @@ fn check_scan(
         )?;
         registry.resolve_policy(observed)?;
     }
+    // Signers of every rule, expired ones included, since a management call can revive them.
+    // A verifier is recognized by its observed code. A contract delegate authorizes through
+    // its own rule state, which this reader does not inspect, so it is refused rather than
+    // reported as checked. A G-address delegate is the classic account itself.
+    for signer in scan.signers.values() {
+        match &signer.signer {
+            SignerIdentity::External { verifier, .. } => {
+                let observed = scan.observed_code_hashes.get(verifier).ok_or(
+                    CheckedAccountObservationError::Identity(
+                        "external signer verifier has no observed code",
+                    ),
+                )?;
+                registry.resolve_verifier(observed)?;
+            }
+            SignerIdentity::Delegated(address)
+                if address.parse::<stellar_strkey::Contract>().is_ok() =>
+            {
+                return Err(CheckedAccountObservationError::Identity(
+                    "contract delegated signer requires nested account inspection",
+                ));
+            }
+            SignerIdentity::Delegated(_) => {}
+        }
+    }
     let mut bound_policies = Vec::with_capacity(bindings.len());
     for binding in bindings {
         if scan.observed_code_hashes.get(&binding.address) != Some(&binding.expected_wasm_hash) {
@@ -227,7 +253,7 @@ fn check_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerIdentity, SignerRecord};
+    use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerRecord};
     use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq};
     use ozpb_registry::{
         account_methods, dev, sign_snapshot, snapshot_root, AccountArchivePolicy,
@@ -243,6 +269,10 @@ mod tests {
 
     fn address(byte: u8) -> String {
         format!("{}", stellar_strkey::Contract([byte; 32]))
+    }
+
+    fn account_id(byte: u8) -> String {
+        format!("{}", stellar_strkey::ed25519::PublicKey([byte; 32]))
     }
 
     fn signed_snapshot() -> ozpb_registry::SignedSnapshot {
@@ -326,7 +356,7 @@ mod tests {
                 10,
                 SignerRecord {
                     id: 10,
-                    signer: SignerIdentity::Delegated(address(12)),
+                    signer: SignerIdentity::Delegated(account_id(12)),
                     reference_count: 2,
                 },
             )]),
@@ -521,6 +551,59 @@ mod tests {
         assert!(matches!(
             check(wrong, &config, &bindings()),
             Err(CheckedAccountObservationError::Registry(_))
+        ));
+    }
+
+    /// A verifier decides which signatures an external signer accepts, so it is recognized
+    /// by observed code exactly like an installed policy (architecture section 4.10).
+    #[test]
+    fn external_signer_requires_a_registered_verifier_implementation() {
+        let config = config(signed_snapshot());
+        let external = || {
+            let mut scan = scan();
+            scan.signers.get_mut(&10).unwrap().signer = SignerIdentity::External {
+                verifier: address(15),
+                key: vec![1; 32],
+            };
+            scan
+        };
+        assert!(matches!(
+            check(external(), &config, &bindings()),
+            Err(CheckedAccountObservationError::Identity(_))
+        ));
+
+        let mut unknown = external();
+        unknown
+            .observed_code_hashes
+            .insert(address(15), Hash32([42; 32]));
+        assert!(matches!(
+            check(unknown, &config, &bindings()),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::UnknownVerifier(_)
+            ))
+        ));
+
+        let mut reviewed = external();
+        reviewed
+            .observed_code_hashes
+            .insert(address(15), pinned_upstream::OZ_ED25519_VERIFIER_WASM);
+        let observed = check(reviewed, &config, &bindings()).unwrap();
+        assert!(observed.projection.admin_candidates.is_empty());
+    }
+
+    /// A contract delegate authorizes through its own `__check_auth` and rule state. This
+    /// reader does not inspect a nested account, so it must not report one as checked.
+    #[test]
+    fn contract_delegated_signer_is_refused_without_nested_account_inspection() {
+        let config = config(signed_snapshot());
+        let mut nested = scan();
+        nested.signers.get_mut(&10).unwrap().signer = SignerIdentity::Delegated(address(12));
+        nested
+            .observed_code_hashes
+            .insert(address(12), pinned_upstream::OZ_SMART_ACCOUNT_WASM);
+        assert!(matches!(
+            check(nested, &config, &bindings()),
+            Err(CheckedAccountObservationError::Identity(_))
         ));
     }
 

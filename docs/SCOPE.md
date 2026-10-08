@@ -26,15 +26,17 @@ The source-reviewed account method inventory and its limits are described in
    account, or inspect reverse lookup keys.
    A bounded account scanner now derives pinned keys, reads every rule slot through `NextId`,
    follows the signer/policy closure, checks reference counts and `Count`, observes the code at
-   every installed policy address, and re-reads the account instance. It retries a changed
+   every installed policy address and at each contract verifier named by an external signer,
+   and re-reads the account instance. It retries a changed
    endpoint ledger or instance as a whole. Returned archived entries, missing referenced
    entries, a count mismatch, and exceeded scan bounds fail closed. Its output remains an
    endpoint-reported inspection: equal `latestLedger` values across calls are not an
    authenticated ledger-state proof, and an omitted rule key is treated as a removed hole
    only when the stored count reconciles. The scan does not identify the wallet's intended
    administrator or establish complete reviewed method evidence. The scanner hashes the ordered
-   XDR keys and values, TTL metadata, and requested absences, including inspected policy
-   instances. This digest identifies endpoint responses, not an authenticated ledger snapshot.
+   XDR keys and values, TTL metadata, and requested absences, including inspected policy and
+   verifier instances. This digest identifies endpoint responses, not an authenticated ledger
+   snapshot.
    A structural adapter maps the completed scan into the pure authority model, requires
    observed code for every installed policy, and lists eligible policy-free management rules
    with observed fingerprints. Its output keeps the raw XDR/TTL digest separate from the
@@ -48,8 +50,11 @@ The source-reviewed account method inventory and its limits are described in
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
-   and compares the account, installed policies, and selected policy bindings with code hashes
-   observed by the bounded scanner. Unknown, revoked, or changed implementations are refused.
+   and compares the account, installed policies, external-signer verifiers, and selected policy
+   bindings with code hashes observed by the bounded scanner. Unknown, revoked, or changed
+   implementations are refused; a verifier is recognized only by its code at the observed
+   ledger. A contract-address delegated signer is refused: the reader does not inspect a nested
+   account's own rules, so it cannot say who that signer is.
    The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
    calls and re-reading the instance do not authenticate a coherent ledger snapshot. There is
    no wallet-authenticated binding to the intended administrator. A registry signature covers
