@@ -707,9 +707,12 @@ impl Registry {
             return Err(unsupported());
         }
         let claimed = capability.method_inventory_digest.ok_or_else(unsupported)?;
+        // The compiled table was reviewed for one exact build. A signed entry under any
+        // other hash cannot borrow it, even when it commits to the same digest.
+        if *wasm_hash != pinned_upstream::OZ_SMART_ACCOUNT_WASM {
+            return Err(unsupported());
+        }
         let methods = account_methods::source_reviewed_oz_multisig_candidate();
-        account_methods::validate_source_reviewed_candidate(wasm_hash, &methods)
-            .map_err(|_| unsupported())?;
         let actual = ozpb_domain::canonical_hash(domains::ACCOUNT_METHOD_INVENTORY, &methods)
             .map_err(|error| RegistryError::Internal(error.to_string()))?;
         if actual != claimed {
@@ -1230,6 +1233,59 @@ mod tests {
             registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM),
             Err(RegistryError::AccountAuthorityUnsupported(_))
         ));
+
+        // Each entry below is governance-signed, so only the resolver's own checks can
+        // refuse it. The unedited copy under the pinned hash is the passing control.
+        let resolve_signed = |hash: Hash32, edit: fn(&mut AccountCapability)| {
+            let mut snapshot = signed.snapshot.clone();
+            let mut entry =
+                snapshot.accounts[&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex()].clone();
+            edit(&mut entry);
+            snapshot.accounts.insert(hash.to_hex(), entry);
+            let mut registry = pinned_test_registry();
+            registry
+                .load_at(
+                    &sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap(),
+                    100,
+                )
+                .unwrap();
+            registry.resolve_account_authority(&hash)
+        };
+        let pinned = pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+        assert!(resolve_signed(pinned, |_| {}).is_ok());
+        // The method table was reviewed for one build. Another registered hash with the
+        // same signed fields and digest has no reviewed methods of its own.
+        assert!(matches!(
+            resolve_signed(Hash32([98; 32]), |_| {}),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
+        type Edit = fn(&mut AccountCapability);
+        let edits: [(&str, Edit); 5] = [
+            ("schema version 2", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().schema_version = 2
+            }),
+            ("zero attempts", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_attempts = 0
+            }),
+            ("four attempts", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_attempts = 4
+            }),
+            ("129 batches", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 129
+            }),
+            ("on-chain list", |entry| {
+                entry.rule_enumeration = "onchain_list".into()
+            }),
+        ];
+        for (case, edit) in edits {
+            assert!(
+                matches!(
+                    resolve_signed(pinned, edit),
+                    Err(RegistryError::AccountAuthorityUnsupported(_))
+                ),
+                "{case}"
+            );
+        }
     }
 
     #[test]
