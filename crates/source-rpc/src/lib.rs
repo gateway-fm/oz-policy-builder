@@ -75,6 +75,9 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// by this gate.
 const MAX_SUPPORTED_PROTOCOL: u32 = 28;
 
+#[allow(dead_code)] // Internal prerequisite; no report consumes this observation yet.
+mod target_wasm;
+
 /// The limits every parse in this adapter runs under. Public so conformance tests decode
 /// captured responses under exactly the production configuration instead of restating the
 /// numbers, which would let the fixtures and the parser drift apart silently.
