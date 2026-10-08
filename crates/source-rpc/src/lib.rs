@@ -34,7 +34,10 @@ pub use footprint_capture::{
     read_invocation_footprint, CapturedFootprintEntry, FootprintCaptureError,
     InvocationFootprintCapture,
 };
-pub use preflight::{preflight_transaction, PreflightObservation, PreflightOutcome};
+pub use preflight::{
+    preflight_transaction, DeclaredResource, PreflightObservation, PreflightOutcome,
+    SimulationAuthMode,
+};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,

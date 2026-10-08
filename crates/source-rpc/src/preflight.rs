@@ -15,8 +15,8 @@ use crate::{
     ensure_base64_size, validate_simulation_envelope, verify_network, xdr_limits, RpcError,
     RpcTransport,
 };
-use ozpb_domain::{sha256, NetworkId};
-use serde::{Deserialize, Serialize};
+use ozpb_domain::{sha256, NetworkId, TrustLevel};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use stellar_xdr::{
@@ -25,7 +25,9 @@ use stellar_xdr::{
 };
 
 /// Result of an enforcement-mode trial of one transaction, never a policy verdict.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialize-only, like the observation: an outcome comes from running a simulation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightOutcome {
     /// The invocation succeeded at the endpoint's state, and the envelope's declared Soroban
@@ -50,7 +52,7 @@ pub enum PreflightOutcome {
 /// A part of the envelope's declared `SorobanTransactionData` that is checked against the
 /// simulated one. An envelope without Soroban transaction data declares an empty footprint
 /// and zero limits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeclaredResource {
     /// A key the simulation read is in neither declared footprint list. A read-write
@@ -71,7 +73,10 @@ pub enum DeclaredResource {
 /// adapter compared the declared Soroban footprint and resource limits with the simulated
 /// ones. Signatures, the transaction fee, sequence number, and time bounds and other
 /// preconditions were not evaluated by either.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// It is built only by [`preflight_transaction`] and has no deserializer: the trust and
+/// mode labels are earned by the request this adapter made, never accepted from input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PreflightObservation {
     /// SHA-256 of the canonical envelope XDR bytes, not a transaction hash.
     pub envelope_xdr_sha256: String,
@@ -79,13 +84,21 @@ pub struct PreflightObservation {
     pub reported_ledger: u32,
     pub outcome: PreflightOutcome,
     /// The request uses `authMode=enforce`; a record-mode result never reaches here.
-    pub auth_mode: String,
-    /// The endpoint's result is trusted only as far as the configured RPC endpoint.
-    pub evidence_trust: String,
+    pub auth_mode: SimulationAuthMode,
+    /// `rpc_reported`: the result is trusted only as far as the configured RPC endpoint.
+    pub evidence_trust: TrustLevel,
     /// A new ledger or restoration can change the result immediately.
     pub state_dependent: bool,
     /// Simulation discards writes, even when an invocation succeeds.
     pub writes_committed: bool,
+}
+
+/// The `authMode` a preflight request is sent with. Enforcement is the only mode here;
+/// record-mode simulation is a separate acquisition path with its own evidence type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimulationAuthMode {
+    Enforce,
 }
 
 /// Simulate the caller's one-operation envelope in authorization-enforcing mode.
@@ -283,8 +296,8 @@ fn parse_preflight(
         network_id,
         reported_ledger,
         outcome,
-        auth_mode: "enforce".to_string(),
-        evidence_trust: "rpc_reported".to_string(),
+        auth_mode: SimulationAuthMode::Enforce,
+        evidence_trust: TrustLevel::rpc_reported(),
         state_dependent: true,
         writes_committed: false,
     })
@@ -467,8 +480,13 @@ mod tests {
         let transport = CannedTransport::new(success());
         let observation = preflight_transaction(&transport, NETWORK, &tx).unwrap();
         assert_eq!(observation.outcome, PreflightOutcome::SimulatedSuccess);
-        assert_eq!(observation.auth_mode, "enforce");
-        assert_eq!(observation.evidence_trust, "rpc_reported");
+        assert_eq!(observation.auth_mode, SimulationAuthMode::Enforce);
+        assert_eq!(observation.evidence_trust, TrustLevel::rpc_reported());
+        // The wire labels stay the strings the shells already emit.
+        let serialized = serde_json::to_value(&observation).unwrap();
+        assert_eq!(serialized["auth_mode"], "enforce");
+        assert_eq!(serialized["evidence_trust"], "rpc_reported");
+        assert_eq!(serialized["outcome"], "simulated_success");
         assert!(observation.state_dependent);
         assert_eq!(observation.reported_ledger, 4_200_101);
         assert!(!observation.writes_committed);
@@ -486,6 +504,23 @@ mod tests {
         assert_eq!(calls[1].0, "simulateTransaction");
         assert_eq!(calls[1].1["authMode"], "enforce");
         assert_eq!(calls[1].1["transaction"], tx);
+    }
+
+    /// Trust and mode labels are earned by running the request, never accepted from input
+    /// (docs/CHANGE-REVIEW-PLAN.md), so neither the observation nor its outcome has a
+    /// deserializer that would let JSON claim `ledger_verified`, `record`, or a success. This
+    /// compiles only while neither type implements `Deserialize`: with an implementation the
+    /// two candidate impls below make the call ambiguous.
+    #[test]
+    fn an_observation_cannot_be_deserialized_into_existence() {
+        trait AmbiguousIfDeserialize<A> {
+            fn check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfDeserialize<()> for T {}
+        struct Deserializable;
+        impl<T: serde::de::DeserializeOwned> AmbiguousIfDeserialize<Deserializable> for T {}
+        <PreflightObservation as AmbiguousIfDeserialize<_>>::check();
+        <PreflightOutcome as AmbiguousIfDeserialize<_>>::check();
     }
 
     #[test]
