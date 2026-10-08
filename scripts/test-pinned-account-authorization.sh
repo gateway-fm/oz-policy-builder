@@ -39,9 +39,8 @@ PY
 cargo run --locked --quiet -p ozpb-cli -- generate \
     --spec "$work/signable-spec.json" --rule 0 --out "$work/generated-policy"
 
-# The Rust test checks this generated Wasm against its reviewed hash
-# (27980fdd1b892397fdd25ea511eccc1825b1209c2a9ae8e48359a1d70a22287d),
-# derived with rustc 1.91.1, stellar-cli 27.0.0#5a7c5fe and the pinned locks.
+# The Rust test checks this generated Wasm against its reviewed hash, derived
+# with rustc 1.91.1, stellar-cli 27.0.0#5a7c5fe and the pinned locks.
 
 export OZPB_ACCOUNT_WASM="$account_wasm"
 export OZPB_POLICY_WASM="$work/generated-policy/generated_sub_transfer_r0.wasm"
