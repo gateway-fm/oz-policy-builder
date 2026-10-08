@@ -147,7 +147,7 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
     })
 }
 
-fn ledger_key(contract: &ContractId, request: AccountEntryKey) -> LedgerKeyContractData {
+pub(super) fn ledger_key(contract: &ContractId, request: AccountEntryKey) -> LedgerKeyContractData {
     let key = match request {
         AccountEntryKey::Instance => ScVal::LedgerKeyContractInstance,
         AccountEntryKey::Rule(id) => enum_key("ContextRuleData", id),

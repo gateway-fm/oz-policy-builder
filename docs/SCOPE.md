@@ -13,8 +13,9 @@ The source-reviewed account method inventory and its limits are described in
    reconciliation and transitive closure). The largest remaining gap to RFP #7:
    `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
    implemented and tested over supplied `bounded_next_id` observations, but it rejects
-   policy-bearing administrative rules until signer enforcement can be proven. The full live
-   rule-state reader requires live network verification and remains scheduled.
+   policy-bearing administrative rules until signer enforcement can be proven. The bounded
+   reader described below still needs live network verification before its observations
+   can support an authority verdict.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes live entries, returned archived entries, and omitted keys. A pure
@@ -23,11 +24,17 @@ The source-reviewed account method inventory and its limits are described in
    An internal consistency check can compare supplied rule slots, `Count`, and transitive
    reference counts; it does not authenticate those values, handle absent counters on a pristine
    account, or inspect reverse lookup keys.
-   An internal typed page reader derives pinned account storage keys and decodes one bounded
-   endpoint response; omitted keys remain uncertain and it does not combine pages.
-   The RPC's reported ledger sequence is endpoint metadata, not proof of a coherent account-state
-   snapshot. These pieces do not derive the complete rule set, resolve the history of omitted keys, or
-   identify the administrator. Live endpoint behavior needs separate verification.
+   A bounded account scanner now derives pinned keys, reads every rule slot through `NextId`,
+   follows the signer/policy closure, checks reference counts and `Count`, observes the code at
+   every installed policy address, and re-reads the account instance. It retries a changed
+   endpoint ledger or instance as a whole. Returned archived entries, missing referenced
+   entries, a count mismatch, and exceeded scan bounds fail closed. Its output remains an
+   endpoint-reported inspection: equal `latestLedger` values across calls are not an
+   authenticated ledger-state proof, and an omitted rule key is treated as a removed hole
+   only when the stored count reconciles. The scan does not identify the wallet's intended
+   administrator, record an ordered key/value/TTL digest, or establish complete reviewed
+   method evidence. Live endpoint behavior still needs separate verification before it can
+   underpin a public authority verdict.
 
    The toolkit has an internal install-intent draft that checks a spec, binding set, and
    supplied authority artifact for identity and structural consistency, then derives typed
