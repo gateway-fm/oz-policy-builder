@@ -893,7 +893,8 @@ pub mod dev {
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
     /// Version of the committed, signed development example. Version 1 remains the
-    /// historical parent; changing its contents would fork persisted checkpoints.
+    /// historical parent; changing its contents would fork persisted checkpoints. The same
+    /// holds for this version once published, so tests pin both roots.
     pub const SIGNED_EXAMPLE_VERSION: u64 = 2;
 
     /// Deterministic development root key (NOT a production root; production roots are
@@ -1088,6 +1089,34 @@ mod tests {
         assert_eq!(
             snapshot_root(&old).unwrap().to_hex(),
             "2957b9b07f55b960a58711c1935cb341dc5fe0b3f568b9bce85bbebfb9af0807"
+        );
+    }
+
+    /// The committed signed example is published: an operator may have persisted a checkpoint
+    /// at its root. Regenerating different contents under the same version would fork that
+    /// checkpoint while `examples_are_current` passes, so new contents need a new
+    /// `SIGNED_EXAMPLE_VERSION` that extends this root, and a new pin here.
+    #[test]
+    fn published_signed_example_root_is_immutable() {
+        const PUBLISHED_V2_ROOT: &str =
+            "4474ec405262f83c3d125cffde8f362eefcf4c90120cefa5cae74aec4e929ed9";
+        assert_eq!(
+            dev::SIGNED_EXAMPLE_VERSION,
+            2,
+            "a new signed example version must pin its own published root here"
+        );
+        let generated = dev::account_authority_successor(network()).unwrap();
+        assert_eq!(
+            snapshot_root(&generated).unwrap().to_hex(),
+            PUBLISHED_V2_ROOT,
+            "published development example v2 changed; publish new contents as a new version"
+        );
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(
+            snapshot_root(&committed.snapshot).unwrap().to_hex(),
+            PUBLISHED_V2_ROOT
         );
     }
 
