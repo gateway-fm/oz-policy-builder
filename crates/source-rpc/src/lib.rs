@@ -1,7 +1,8 @@
 //! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
-//! the pure recorder, plus bounded contract-code and contract-data observations. Executed
+//! the pure recorder, plus bounded contract-code, contract-data, and declared-footprint
+//! observations and an authorization-enforcing transaction preflight. Executed
 //! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
 //! tested offline.
@@ -14,7 +15,9 @@ mod account_state_projection;
 mod account_state_scan;
 mod account_storage;
 mod contract_data;
+mod footprint_capture;
 mod ledger_witness;
+mod preflight;
 pub use account_state_projection::{
     project_account_state, AccountProjectionError, AccountStateProjection, AdminRuleCandidate,
 };
@@ -27,6 +30,11 @@ pub use account_storage::{
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
 };
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
+pub use footprint_capture::{
+    read_invocation_footprint, CapturedFootprintEntry, FootprintCaptureError,
+    InvocationFootprintCapture,
+};
+pub use preflight::{preflight_transaction, PreflightObservation, PreflightOutcome};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
@@ -85,8 +93,8 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// by this gate.
 const MAX_SUPPORTED_PROTOCOL: u32 = 28;
 
-#[allow(dead_code)] // Internal prerequisite; no report consumes this observation yet.
 mod target_wasm;
+pub use target_wasm::{read_target_capture, CapturedTargetEntry, TargetCapture, TargetWasmError};
 
 /// The limits every parse in this adapter runs under. Public so conformance tests decode
 /// captured responses under exactly the production configuration instead of restating the
@@ -137,6 +145,38 @@ pub enum RpcError {
     Evidence(String),
     #[error("E_RPC: contract code read: {0}")]
     CodeRead(String),
+}
+
+/// Remove endpoint-controlled detail from errors on ledger-key requests. HTTP
+/// error bodies and JSON-RPC messages may quote a requested key or an envelope
+/// field. Call only around transport I/O; local validation keeps its detail.
+fn redact_ledger_request_error(error: RpcError) -> RpcError {
+    const WITHHELD: &str = "ledger-entry request failed (endpoint detail withheld)";
+    match error {
+        RpcError::InvalidRequest(_) => RpcError::InvalidRequest(WITHHELD.to_string()),
+        RpcError::Transport(_) => RpcError::Transport(WITHHELD.to_string()),
+        RpcError::Malformed(_) => RpcError::Malformed(WITHHELD.to_string()),
+        RpcError::Rpc(_) => RpcError::Rpc(WITHHELD.to_string()),
+        RpcError::NotFound(_) => RpcError::NotFound("identifier withheld".to_string()),
+        RpcError::NetworkMismatch { .. } => RpcError::NetworkMismatch {
+            expected: "withheld".to_string(),
+            actual: "withheld".to_string(),
+        },
+        RpcError::UnsupportedProtocol {
+            reported,
+            supported,
+        } => RpcError::UnsupportedProtocol {
+            reported,
+            supported,
+        },
+        RpcError::ExternalRefExecutable { .. } => RpcError::ExternalRefExecutable {
+            contract: "withheld".to_string(),
+            owner: "withheld".to_string(),
+            tag: "withheld".to_string(),
+        },
+        RpcError::Evidence(_) => RpcError::Evidence(WITHHELD.to_string()),
+        RpcError::CodeRead(_) => RpcError::CodeRead(WITHHELD.to_string()),
+    }
 }
 
 /// A minimal JSON-RPC transport. The real client uses HTTP; tests inject a canned
@@ -544,7 +584,7 @@ pub fn simulate_transaction<T: RpcTransport>(
     network_passphrase: &str,
     envelope_xdr_base64: &str,
 ) -> Result<EvidenceSnapshot, RpcError> {
-    validate_simulation_envelope(envelope_xdr_base64)?;
+    let _ = validate_simulation_envelope(envelope_xdr_base64)?;
     verify_network(transport, network_passphrase)?;
     let result = transport.call(
         "simulateTransaction",
@@ -569,7 +609,9 @@ pub fn simulate_transaction<T: RpcTransport>(
 ///
 /// `simulateTransaction` takes a transaction carrying exactly one operation, and this adapter
 /// records Soroban invocations, so that operation must be an `InvokeHostFunction`.
-fn validate_simulation_envelope(envelope_xdr_base64: &str) -> Result<(), RpcError> {
+fn validate_simulation_envelope(
+    envelope_xdr_base64: &str,
+) -> Result<TransactionEnvelope, RpcError> {
     ensure_base64_size("transaction", envelope_xdr_base64)?;
     let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
         .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))?;
@@ -595,7 +637,7 @@ fn validate_simulation_envelope(envelope_xdr_base64: &str) -> Result<(), RpcErro
             "the operation to simulate must be an InvokeHostFunction".to_string(),
         ));
     }
-    Ok(())
+    Ok(envelope)
 }
 
 fn acquire_contract_executables<T: RpcTransport>(
