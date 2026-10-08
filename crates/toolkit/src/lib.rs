@@ -714,6 +714,9 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::UnknownAccount(_) | RegistryError::AccountAuthorityUnsupported(_) => {
             EC::EIncompatibleAccount
         }
+        RegistryError::AccountRuleEnumerationUnsupported { .. } => {
+            EC::EAccountRuleEnumerationUnsupported
+        }
         RegistryError::UnknownVerifier(_) => EC::EUnregisteredVerifier,
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,
@@ -806,6 +809,28 @@ mod tests {
             ),
         ] {
             assert_eq!(map_build_err(error.clone()).code, expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn account_authority_registry_errors_keep_their_architecture_codes() {
+        for (error, expected) in [
+            (
+                RegistryError::AccountAuthorityUnsupported("00".repeat(32)),
+                EC::EIncompatibleAccount,
+            ),
+            (
+                RegistryError::AccountRuleEnumerationUnsupported {
+                    wasm_hash: "00".repeat(32),
+                    method: "onchain_list".to_string(),
+                },
+                EC::EAccountRuleEnumerationUnsupported,
+            ),
+        ] {
+            let message = error.to_string();
+            let mapped = map_registry_err(error);
+            assert_eq!(mapped.code, expected, "{message}");
+            assert!(message.starts_with(expected.as_str()), "{message}");
         }
     }
 

@@ -16,10 +16,17 @@ use super::{
     account_storage::{AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerRecord},
     contract_code::read_contract_wasm_hashes_with_witnesses,
     ledger_witness::{ordered_ledger_witness_digest, LedgerWitness},
-    RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
+    RpcError, RpcTransport, MAX_HTTP_RESPONSE_BYTES, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Key and entry XDR bytes one attempt may retain for its digest. Each response is bounded
+/// on its own, but up to 128 batches could otherwise accumulate gigabytes. One maximal
+/// response's worth leaves room above the pinned schema's largest entries, about 11 MiB
+/// for 10,000 rules and 10,000 signer or policy entries; large policy instances can still
+/// exceed it, and the scan then fails closed as a budget error.
+const MAX_SCAN_WITNESS_BYTES: usize = MAX_HTTP_RESPONSE_BYTES;
 
 /// Operational ceilings for one inspection. Registry-backed verified mode would need
 /// signed, release-specific bounds; caller-chosen bounds here grant no authority.
@@ -84,6 +91,9 @@ pub enum AccountScanError {
     Incomplete(String),
     #[error("E_INCOMPLETE_ACCOUNT_STATE: returned archived {0}")]
     Archived(String),
+    /// A returned entry does not decode against the pinned storage schema.
+    #[error("E_INCOMPLETE_ACCOUNT_STATE: undecodable: {0}")]
+    Undecodable(String),
     #[error(
         "E_INCOMPLETE_ACCOUNT_STATE: endpoint ledger or account instance changed during inspection"
     )]
@@ -94,9 +104,10 @@ impl AccountScanError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Budget(_) => "E_SCAN_BUDGET_EXCEEDED",
-            Self::Incomplete(_) | Self::Archived(_) | Self::SnapshotChanged => {
-                "E_INCOMPLETE_ACCOUNT_STATE"
-            }
+            Self::Incomplete(_)
+            | Self::Archived(_)
+            | Self::Undecodable(_)
+            | Self::SnapshotChanged => "E_INCOMPLETE_ACCOUNT_STATE",
             Self::Rpc(RpcError::NetworkMismatch { .. }) => "E_NETWORK_MISMATCH",
             Self::Rpc(_) | Self::InvalidBounds(_) => "E_RPC",
         }
@@ -222,7 +233,9 @@ fn scan_once<T: RpcTransport>(
         bounds,
     )?;
     let ledger = first.rpc_reported_latest_ledger;
-    let mut witnesses = first.witnesses.clone();
+    let mut witnesses = BTreeMap::new();
+    let mut witness_bytes = 0;
+    merge_witnesses(&mut witnesses, &mut witness_bytes, first.witnesses.clone())?;
     let status = first
         .entries
         .get(&AccountEntryKey::Instance)
@@ -272,7 +285,7 @@ fn scan_once<T: RpcTransport>(
             bounds,
         )?;
         same_ledger(ledger, page.rpc_reported_latest_ledger)?;
-        merge_witnesses(&mut witnesses, page.witnesses)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, page.witnesses)?;
         for (&key, status) in &page.entries {
             let AccountEntryKey::Rule(id) = key else {
                 return Err(AccountScanError::Incomplete("unexpected rule key".into()));
@@ -315,7 +328,7 @@ fn scan_once<T: RpcTransport>(
             bounds,
         )?;
         same_ledger(ledger, page.rpc_reported_latest_ledger)?;
-        merge_witnesses(&mut witnesses, page.witnesses)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, page.witnesses)?;
         for (&key, status) in &page.entries {
             let entry = match status {
                 AccountEntryStatus::Present { entry, .. } => entry,
@@ -377,7 +390,7 @@ fn scan_once<T: RpcTransport>(
                     other => AccountScanError::Rpc(other),
                 })?;
         same_ledger(ledger, read.reported_latest_ledger)?;
-        merge_witnesses(&mut witnesses, code_witnesses)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, code_witnesses)?;
         observed_code_hashes.extend(read.wasm_hashes);
     }
     if observed_code_hashes
@@ -424,13 +437,30 @@ fn scan_once<T: RpcTransport>(
     })
 }
 
+/// Add a page's witnesses, refusing a changed re-read of a key and counting each newly
+/// retained key and payload against [`MAX_SCAN_WITNESS_BYTES`].
 fn merge_witnesses(
     all: &mut BTreeMap<Vec<u8>, LedgerWitness>,
+    retained_bytes: &mut usize,
     next: BTreeMap<Vec<u8>, LedgerWitness>,
 ) -> Result<(), AccountScanError> {
     for (key, value) in next {
-        if all.get(&key).is_some_and(|previous| *previous != value) {
-            return Err(AccountScanError::SnapshotChanged);
+        match all.get(&key) {
+            Some(previous) if *previous != value => return Err(AccountScanError::SnapshotChanged),
+            Some(_) => continue,
+            None => {}
+        }
+        let payload = match &value {
+            LedgerWitness::Absent => 0,
+            LedgerWitness::Present { entry_data_xdr, .. } => entry_data_xdr.len(),
+        };
+        *retained_bytes = retained_bytes
+            .saturating_add(key.len())
+            .saturating_add(payload);
+        if *retained_bytes > MAX_SCAN_WITNESS_BYTES {
+            return Err(AccountScanError::Budget(
+                "retained entry bytes exceed bound",
+            ));
         }
         all.insert(key, value);
     }
@@ -464,7 +494,10 @@ fn read_page<T: RpcTransport>(
     bounds: AccountScanBounds,
 ) -> Result<super::account_entry_page::AccountEntryPage, AccountScanError> {
     reserve_batch(batches, bounds)?;
-    read_account_entry_page(transport, passphrase, account, keys).map_err(Into::into)
+    read_account_entry_page(transport, passphrase, account, keys).map_err(|error| match error {
+        RpcError::UndecodableAccountStorage(detail) => AccountScanError::Undecodable(detail),
+        other => AccountScanError::Rpc(other),
+    })
 }
 
 fn reserve_batch(batches: &mut u32, bounds: AccountScanBounds) -> Result<(), AccountScanError> {
@@ -502,7 +535,8 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use stellar_xdr::{
         ContractDataEntry, ContractExecutable, ContractId, ExtensionPoint, Hash, LedgerEntryData,
-        LedgerKey, ReadXdr, ScAddress, ScContractInstance, ScMapEntry, ScString, ScVal, WriteXdr,
+        LedgerKey, ReadXdr, ScAddress, ScBytes, ScContractInstance, ScMapEntry, ScString, ScVal,
+        WriteXdr,
     };
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
@@ -755,6 +789,239 @@ mod tests {
             inspect(&missing_signer),
             Err(AccountScanError::Incomplete(_))
         ));
+
+        // Automatic restoration makes an archived entry usable again, so it is never read
+        // as live or as merely missing.
+        let archived_instance = mock();
+        archived_instance
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Instance))
+            .unwrap()
+            .1 = 0;
+        assert!(matches!(
+            inspect(&archived_instance),
+            Err(AccountScanError::Archived(what)) if what == "account instance"
+        ));
+        assert_eq!(archived_instance.calls.get(), 1);
+
+        let archived_signer = mock();
+        archived_signer
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Signer(2)))
+            .unwrap()
+            .1 = 0;
+        assert!(matches!(
+            inspect(&archived_signer),
+            Err(AccountScanError::Archived(what)) if what == "Signer(2)"
+        ));
+    }
+
+    #[test]
+    fn undecodable_live_or_archived_storage_is_incomplete_account_state() {
+        for ttl in [20, 0] {
+            let undecodable = mock();
+            *undecodable
+                .values
+                .borrow_mut()
+                .get_mut(&encoded(7, AccountEntryKey::Rule(0)))
+                .unwrap() = (ScVal::U32(1), ttl);
+            let error = inspect(&undecodable).unwrap_err();
+            assert!(matches!(error, AccountScanError::Undecodable(_)), "{error}");
+            assert_eq!(error.code(), "E_INCOMPLETE_ACCOUNT_STATE", "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("E_INCOMPLETE_ACCOUNT_STATE: undecodable"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn later_ledger_changes_and_conflicting_rereads_fail_closed() {
+        // With one candidate target the calls are: instance, rules, closure, code, instance.
+        let code_read = Mock {
+            changed_ledger_at: Some(4),
+            ..mock()
+        };
+        code_read.values.borrow_mut().insert(
+            encoded(8, AccountEntryKey::Instance),
+            (
+                ScVal::ContractInstance(ScContractInstance {
+                    executable: ContractExecutable::Wasm(Hash([3; 32])),
+                    storage: None,
+                }),
+                20,
+            ),
+        );
+        let single = AccountScanBounds {
+            max_attempts: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &code_read,
+                NETWORK,
+                &address(7),
+                &[address(8)],
+                single
+            ),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+
+        // Without targets the fourth call is the final instance read.
+        let final_read = Mock {
+            changed_ledger_at: Some(4),
+            ..mock()
+        };
+        assert!(matches!(
+            inspect(&final_read),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+        assert_eq!(final_read.calls.get(), 4);
+
+        // The account's own instance, requested again as a code target, must carry the
+        // same raw payload as the first read even though its code hash is unchanged.
+        let conflicting = Mock {
+            changed_unmodeled_instance_at: Some(4),
+            ..mock()
+        };
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &conflicting,
+                NETWORK,
+                &address(7),
+                &[address(7)],
+                single
+            ),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+        assert_eq!(conflicting.calls.get(), 4);
+    }
+
+    #[test]
+    fn each_scan_bound_fails_before_reading_past_it() {
+        let bounds = |max_scan_ids, max_transitive_entries| AccountScanBounds {
+            max_scan_ids,
+            max_transitive_entries,
+            max_attempts: 1,
+            ..Default::default()
+        };
+
+        let wide = mock();
+        wide.values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Instance))
+            .unwrap()
+            .0 = instance(5, 1);
+        assert!(matches!(
+            scan_account_state(&wide, NETWORK, &address(7), bounds(4, 1_000)),
+            Err(AccountScanError::Budget("NextId exceeds max_scan_ids"))
+        ));
+        assert_eq!(wide.calls.get(), 1);
+
+        let with_policy = || {
+            let mock = mock();
+            mock.values.borrow_mut().insert(
+                encoded(7, AccountEntryKey::Rule(0)),
+                (rule_with_policies(vec![3]), 20),
+            );
+            mock.values
+                .borrow_mut()
+                .insert(encoded(7, AccountEntryKey::Policy(3)), (policy(), 20));
+            mock
+        };
+        let closure = with_policy();
+        assert!(matches!(
+            scan_account_state(&closure, NETWORK, &address(7), bounds(1_000, 1)),
+            Err(AccountScanError::Budget(
+                "transitive entry closure exceeds bound"
+            ))
+        ));
+        assert_eq!(closure.calls.get(), 2);
+
+        let targets = mock();
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &targets,
+                NETWORK,
+                &address(7),
+                &[address(8), address(9)],
+                bounds(1_000, 1)
+            ),
+            Err(AccountScanError::Budget(
+                "too many candidate policy addresses"
+            ))
+        ));
+        assert_eq!(targets.calls.get(), 0);
+
+        // The targets and the entry closure each fit the bound; their code addresses do not.
+        let code = with_policy();
+        assert!(matches!(
+            scan_account_state_with_targets(
+                &code,
+                NETWORK,
+                &address(7),
+                &[address(9), address(10)],
+                bounds(1_000, 2)
+            ),
+            Err(AccountScanError::Budget(
+                "policy code closure exceeds bound"
+            ))
+        ));
+        assert_eq!(code.calls.get(), 3);
+    }
+
+    #[test]
+    fn retained_entry_bytes_are_bounded_across_batches() {
+        // Each candidate instance is well inside the per-value XDR bound and the targets fit
+        // one code-read batch; together they exceed what one scan may retain.
+        const PAYLOAD: usize = 400 * 1024;
+        let count = MAX_SCAN_WITNESS_BYTES / PAYLOAD + 1;
+        let first = 100;
+        let large = mock();
+        for index in 0..count {
+            let byte = first + u8::try_from(index).unwrap();
+            let storage = vec![ScMapEntry {
+                key: symbol("blob"),
+                val: ScVal::Bytes(ScBytes(vec![byte; PAYLOAD].try_into().unwrap())),
+            }];
+            large.values.borrow_mut().insert(
+                encoded(byte, AccountEntryKey::Instance),
+                (
+                    ScVal::ContractInstance(ScContractInstance {
+                        executable: ContractExecutable::Wasm(Hash([3; 32])),
+                        storage: Some(storage.try_into().unwrap()),
+                    }),
+                    20,
+                ),
+            );
+        }
+        let targets = (0..count)
+            .map(|index| address(first + u8::try_from(index).unwrap()))
+            .collect::<Vec<_>>();
+        let result = scan_account_state_with_targets(
+            &large,
+            NETWORK,
+            &address(7),
+            &targets,
+            AccountScanBounds {
+                max_attempts: 1,
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(AccountScanError::Budget(
+                    "retained entry bytes exceed bound"
+                ))
+            ),
+            "{result:?}"
+        );
+        assert_eq!(large.calls.get(), 4);
     }
 
     #[test]
