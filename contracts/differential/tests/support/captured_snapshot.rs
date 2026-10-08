@@ -17,6 +17,7 @@ use stellar_xdr::WriteXdr as _;
 struct ExactSource {
     entries: BTreeMap<String, (Rc<sdk_xdr::LedgerEntry>, Option<u32>)>,
     allowed_absent_keys: BTreeSet<String>,
+    absent_reads: Rc<RefCell<BTreeSet<String>>>,
     rejected: Rc<RefCell<usize>>,
 }
 
@@ -32,6 +33,7 @@ impl SnapshotSource for ExactSource {
         if self.allowed_absent_keys.contains(&encoded) {
             // Only the exact new nonce keys declared by this candidate run may
             // begin absent. Existing account and policy storage must be present.
+            self.absent_reads.borrow_mut().insert(encoded);
             return Ok(None);
         }
         *self.rejected.borrow_mut() += 1;
@@ -45,6 +47,10 @@ impl SnapshotSource for ExactSource {
 pub struct ReconstructedEnv {
     pub env: Env,
     pub rejected: Rc<RefCell<usize>>,
+    /// Encoded keys allowed to begin absent, and those the host actually read.
+    /// A caller can require every allowance to be used.
+    pub allowed_absent: BTreeSet<String>,
+    pub absent_reads: Rc<RefCell<BTreeSet<String>>>,
     pub captured_entry_count: usize,
     pub candidate_entry_count: usize,
 }
@@ -115,6 +121,7 @@ pub fn reconstruct(
         );
     }
     let rejected = Rc::new(RefCell::new(0));
+    let absent_reads = Rc::new(RefCell::new(BTreeSet::new()));
     // RPC gives no full header or network configuration. These are SDK test
     // defaults except for the reported sequence and network ID.
     let mut ledger_info = Env::default().ledger().get();
@@ -123,7 +130,8 @@ pub fn reconstruct(
     let env = Env::from_ledger_snapshot(SnapshotSourceInput {
         source: Rc::new(ExactSource {
             entries,
-            allowed_absent_keys: allowed_absent,
+            allowed_absent_keys: allowed_absent.clone(),
+            absent_reads: absent_reads.clone(),
             rejected: rejected.clone(),
         }),
         ledger_info: Some(ledger_info),
@@ -132,6 +140,8 @@ pub fn reconstruct(
     ReconstructedEnv {
         env,
         rejected,
+        allowed_absent,
+        absent_reads,
         captured_entry_count,
         candidate_entry_count,
     }

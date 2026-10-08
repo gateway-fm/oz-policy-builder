@@ -401,11 +401,13 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
     );
     assert!(*unrelated.rejected.borrow() > 0);
 
+    // The host reads an address's nonce only after that address authenticates.
+    // The denied call's account nonce 501 is therefore never read; were the
+    // account path to accept it, the strict source would refuse that read.
     let allowed_absent = vec![
         nonce_key(&setup, &account, 500),
         nonce_key(&setup, &delegate, 1500),
         nonce_key(&setup, &delegate, 1600),
-        nonce_key(&setup, &account, 501),
         nonce_key(&setup, &delegate, 1501),
     ];
     let world = reconstruct(&capture, Some(&candidate), allowed_absent);
@@ -540,6 +542,11 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
     assert_eq!(balance(env, &target), START_BALANCE - AMOUNT);
     assert_eq!(remaining_calls(env, &policy, &account), 11);
     assert_eq!(*world.rejected.borrow(), 0);
+    assert_eq!(
+        *world.absent_reads.borrow(),
+        world.allowed_absent,
+        "every allowed absent key must be read, and only those"
+    );
 
     env.ledger().with_mut(|ledger| ledger.sequence_number += 1);
     let committed = env.to_ledger_snapshot();

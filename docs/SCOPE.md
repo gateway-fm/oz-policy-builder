@@ -134,10 +134,10 @@ The source-reviewed account method inventory and its limits are described in
    after a ledger advance. Missing declared state and a changed call's uncaptured key refuse.
    A second, source-built target fixture calls `require_auth` before writing its one fixed
    balance key. It combines target entries from one checked fixture RPC reply with a freshly
-   constructed account and policy snapshot, uses exact new nonce-key allowances, and executes
-   the captured transfer call with locally signed authorization through the pinned account
-   Wasm and generated policy Wasm. The target fixture debits one balance key; it does not
-   credit a recipient.
+   constructed account and policy snapshot, and executes the captured transfer call with
+   locally signed authorization through the pinned account Wasm and generated policy Wasm.
+   Only four exact new nonce keys may begin absent, and the run must read each of them. The
+   target fixture debits one balance key; it does not credit a recipient.
    A direct signed account check returns the policy's exact denial for an adjacent amount.
    The target call returns only the host's generic context error, which a missing or
    mismatched authorization entry would also produce; the policy's diagnostic error event
