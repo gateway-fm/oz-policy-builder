@@ -1032,7 +1032,9 @@ back or equivocate on is not a root.
   and revocation response. PolicySpec and InstallationRecord bind every external signer to
   its verifier entry. Unknown verifier implementations **fail verified mode**. For
   `Signer::Delegated` C-account signers, the nested-account trust assumption is stated
-  explicitly, with optional recursive account recognition.
+  explicitly, with optional recursive account recognition. Recursive recognition is deferred:
+  until it exists, the checked account reader refuses a C-address delegated signer
+  (`E_INCOMPLETE_ACCOUNT_STATE`) rather than accept it under an unexamined nested account.
 
 **Two verification paths — reviewed vs generated (they are different problems):** a static
 registry keyed by exact wasm hash cannot pre-recognize per-grant generated wasm that does
