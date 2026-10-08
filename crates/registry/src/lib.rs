@@ -1270,9 +1270,12 @@ mod tests {
             Err(RegistryError::AccountAuthorityUnsupported(_))
         ));
         type Edit = fn(&mut AccountCapability);
-        let edits: [(&str, Edit); 4] = [
+        let edits: [(&str, Edit); 8] = [
             ("schema version 2", |entry| {
                 entry.bounded_next_id.as_mut().unwrap().schema_version = 2
+            }),
+            ("zero scan IDs", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_scan_ids = 0
             }),
             ("zero attempts", |entry| {
                 entry.bounded_next_id.as_mut().unwrap().max_attempts = 0
@@ -1280,8 +1283,25 @@ mod tests {
             ("four attempts", |entry| {
                 entry.bounded_next_id.as_mut().unwrap().max_attempts = 4
             }),
+            ("zero batches", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 0
+            }),
             ("129 batches", |entry| {
                 entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 129
+            }),
+            ("zero transitive entries", |entry| {
+                entry
+                    .bounded_next_id
+                    .as_mut()
+                    .unwrap()
+                    .max_transitive_entries = 0
+            }),
+            ("10001 transitive entries", |entry| {
+                entry
+                    .bounded_next_id
+                    .as_mut()
+                    .unwrap()
+                    .max_transitive_entries = 10_001
             }),
         ];
         for (case, edit) in edits {
