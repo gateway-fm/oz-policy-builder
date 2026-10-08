@@ -32,7 +32,7 @@ fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
     assert_eq!(call["result"]["isError"], true, "{call}");
     assert!(call.get("error").is_none(), "{call}");
     let error = &call["result"]["structuredContent"];
-    assert_eq!(error["code"], "E_RPC", "{call}");
+    assert_eq!(error["code"], "E_ENVELOPE_PARSE", "{call}");
     let message = error["message"].as_str().expect("error message");
     assert!(message.contains("invalid transaction envelope"), "{call}");
     assert!(!message.contains("transport"), "{call}");
@@ -41,6 +41,19 @@ fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
         0,
         "the envelope reached the network: {call}"
     );
+}
+
+#[test]
+fn an_oversized_envelope_is_a_resource_limit_before_the_network() {
+    let endpoint = preflight_rpc::CountingEndpoint::bind();
+    let oversized = "A".repeat(ozpb_source_rpc::MAX_XDR_BASE64_BYTES + 1);
+    let call = preflight_call(&endpoint.url, &oversized);
+    let error = &call["result"]["structuredContent"];
+    assert_eq!(call["result"]["isError"], true, "{error}");
+    assert_eq!(error["code"], "E_RESOURCE_LIMIT", "{error}");
+    let message = error["message"].as_str().expect("error message");
+    assert!(!message.contains("response"), "{error}");
+    assert_eq!(endpoint.connections(), 0, "{error}");
 }
 
 fn preflight_call(rpc_url: &str, envelope: &str) -> serde_json::Value {

@@ -135,6 +135,11 @@ fn rpc_tool_err(error: ozpb_source_rpc::RpcError) -> ToolError {
         ozpb_source_rpc::RpcError::NetworkMismatch { .. } => {
             ozpb_api_types::ErrorCode::ENetworkMismatch
         }
+        ozpb_source_rpc::RpcError::EnvelopeTooLarge(_) => ozpb_api_types::ErrorCode::EResourceLimit,
+        ozpb_source_rpc::RpcError::EnvelopeParse(_) => ozpb_api_types::ErrorCode::EEnvelopeParse,
+        ozpb_source_rpc::RpcError::UnsupportedEnvelope(_) => {
+            ozpb_api_types::ErrorCode::EUnsupportedEnvelope
+        }
         _ => ozpb_api_types::ErrorCode::ERpc,
     };
     ToolError::new(code, error.to_string())

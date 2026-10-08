@@ -56,7 +56,11 @@ reports the endpoint's simulation outcome at its reported ledger: `simulated_suc
 means the invocation succeeded in simulation but the envelope declares a smaller footprint or
 lower resource limits than it used; `insufficient_declared_resources` names each such
 dimension, never the keys. It does not establish that the generated policy is installed or
-selected, and it never commits writes.
+selected, and it never commits writes. An envelope refused before any request carries an input
+code in both shells: `E_RESOURCE_LIMIT` over the XDR size bound, `E_ENVELOPE_PARSE` when it
+does not decode as transaction XDR, and `E_UNSUPPORTED_ENVELOPE` for a shape simulation does
+not take (not exactly one `InvokeHostFunction` operation, or a memo). `E_RPC` is left for the
+endpoint and its transport.
 
 ### CLI
 

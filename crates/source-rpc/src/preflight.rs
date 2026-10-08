@@ -12,8 +12,8 @@
 //! same way, or that a transaction was submitted.
 
 use crate::{
-    ensure_base64_size, validate_simulation_envelope, verify_network, xdr_limits, RpcError,
-    RpcTransport,
+    ensure_base64_size, simulation_shape, verify_network, xdr_limits, RpcError, RpcTransport,
+    MAX_XDR_BASE64_BYTES,
 };
 use ozpb_domain::{sha256, NetworkId, TrustLevel};
 use serde::Serialize;
@@ -115,10 +115,10 @@ pub fn preflight_transaction<T: RpcTransport>(
     network_passphrase: &str,
     envelope_xdr_base64: &str,
 ) -> Result<PreflightObservation, RpcError> {
-    let envelope = validate_simulation_envelope(envelope_xdr_base64)?;
-    let envelope_xdr = envelope
-        .to_xdr(xdr_limits())
-        .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))?;
+    let envelope = local_envelope(envelope_xdr_base64)?;
+    let envelope_xdr = envelope.to_xdr(xdr_limits()).map_err(|error| {
+        RpcError::EnvelopeParse(format!("invalid transaction envelope: {error}"))
+    })?;
     let envelope_xdr_sha256 = sha256(&envelope_xdr).to_hex();
     let declared = declared_transaction_data(&envelope);
     verify_network(transport, network_passphrase)?;
@@ -138,6 +138,25 @@ pub fn preflight_transaction<T: RpcTransport>(
         envelope_xdr_sha256,
         NetworkId::from_passphrase(network_passphrase).0.to_hex(),
     )
+}
+
+/// The caller's envelope, refused with an input code when it is too large, does not decode, or
+/// has a shape simulation does not take. Each is the caller's input rather than an endpoint
+/// reply, and nothing is sent for any of them.
+fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
+    if envelope_xdr_base64.len() > MAX_XDR_BASE64_BYTES {
+        return Err(RpcError::EnvelopeTooLarge(format!(
+            "transaction envelope is {} encoded bytes, over the {MAX_XDR_BASE64_BYTES}-byte XDR \
+             size limit",
+            envelope_xdr_base64.len()
+        )));
+    }
+    let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
+        .map_err(|error| {
+            RpcError::EnvelopeParse(format!("invalid transaction envelope: {error}"))
+        })?;
+    simulation_shape(&envelope).map_err(RpcError::UnsupportedEnvelope)?;
+    Ok(envelope)
 }
 
 /// The Soroban transaction data the envelope declares, or none (an empty footprint and zero
@@ -822,11 +841,32 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(&error, RpcError::Malformed(message) if message.contains("memo")),
+            matches!(&error, RpcError::UnsupportedEnvelope(message) if message.contains("memo")),
             "{error}"
         );
+        assert!(error.to_string().starts_with("E_UNSUPPORTED_ENVELOPE: "));
         assert!(!error.to_string().contains("private invoice"));
         assert!(transport.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn local_input_refusals_carry_input_codes_before_any_request() {
+        // The caller's own input, refused here, is not a reply from the endpoint: an agent
+        // told "malformed response" would look for a fault in the RPC instead of its envelope.
+        let oversized = "A".repeat(crate::MAX_XDR_BASE64_BYTES + 1);
+        for (input, code) in [
+            (oversized.as_str(), "E_RESOURCE_LIMIT: "),
+            ("not-base64", "E_ENVELOPE_PARSE: "),
+            ("AAAA", "E_ENVELOPE_PARSE: "),
+        ] {
+            let transport = CannedTransport::new(success());
+            let error = preflight_transaction(&transport, NETWORK, input)
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(code), "{error}");
+            assert!(!error.contains("response"), "{error}");
+            assert!(transport.calls.borrow().is_empty(), "{error}");
+        }
     }
 
     #[test]

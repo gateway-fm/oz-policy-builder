@@ -62,9 +62,10 @@ pub use contract_code::{read_contract_wasm_hashes, ContractCodeRead};
 // Keep acquisition aligned with recorder-core's per-value bound. Accepted evidence must remain
 // small enough for the recorder's canonical 4 MiB hash preimage after decoding and summarizing.
 const MAX_XDR_BYTES: usize = 512 * 1024;
-// The base64 form of the byte bound, named once: three fields are checked against it today
-// and each new XDR field the RPC gains is another chance to mistype the arithmetic.
-const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
+/// The base64 form of the byte bound, named once: several fields are checked against it, and
+/// each new XDR field the RPC gains is another chance to mistype the arithmetic. Public so a
+/// shell reading an envelope from a file stops at the same bound.
+pub const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
 const MAX_XDR_DEPTH: u32 = 128;
 // Not gated on the transport: the account scan sizes its retained-witness budget from it too.
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
@@ -157,6 +158,18 @@ pub enum RpcError {
     /// pinned storage schema. The account scanner reports it as incomplete account state.
     #[error("E_RPC: undecodable account storage: {0}")]
     UndecodableAccountStorage(String),
+    /// The caller's preflight envelope is larger than the XDR bound. Refused locally; nothing
+    /// was sent. Named by its own code because it is the caller's input, not an RPC reply.
+    #[error("E_RESOURCE_LIMIT: {0}")]
+    EnvelopeTooLarge(String),
+    /// The caller's preflight envelope is not one unbroken line of transaction XDR base64.
+    /// Refused locally; nothing was sent.
+    #[error("E_ENVELOPE_PARSE: {0}")]
+    EnvelopeParse(String),
+    /// The caller's preflight envelope decodes but has a shape simulation does not take.
+    /// Refused locally; nothing was sent.
+    #[error("E_UNSUPPORTED_ENVELOPE: {0}")]
+    UnsupportedEnvelope(String),
 }
 
 /// Remove endpoint-controlled detail from errors on ledger-key requests. HTTP
@@ -191,6 +204,9 @@ fn redact_ledger_request_error(error: RpcError) -> RpcError {
         RpcError::UndecodableAccountStorage(_) => {
             RpcError::UndecodableAccountStorage(WITHHELD.to_string())
         }
+        RpcError::EnvelopeTooLarge(_) => RpcError::EnvelopeTooLarge(WITHHELD.to_string()),
+        RpcError::EnvelopeParse(_) => RpcError::EnvelopeParse(WITHHELD.to_string()),
+        RpcError::UnsupportedEnvelope(_) => RpcError::UnsupportedEnvelope(WITHHELD.to_string()),
     }
 }
 
@@ -638,20 +654,8 @@ pub fn simulate_transaction<T: RpcTransport>(
 fn validate_simulation_envelope(
     envelope_xdr_base64: &str,
 ) -> Result<TransactionEnvelope, RpcError> {
-    let envelope = validate_invocation_envelope(envelope_xdr_base64)?;
-    let memo = match &envelope {
-        TransactionEnvelope::Tx(v1) => &v1.tx.memo,
-        TransactionEnvelope::TxFeeBump(bump) => {
-            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
-            &inner.tx.memo
-        }
-        TransactionEnvelope::TxV0(v0) => &v0.tx.memo,
-    };
-    if !matches!(memo, stellar_xdr::Memo::None) {
-        return Err(RpcError::Malformed(
-            "simulation refuses a transaction with a memo".to_string(),
-        ));
-    }
+    let envelope = decode_envelope(envelope_xdr_base64)?;
+    simulation_shape(&envelope).map_err(RpcError::Malformed)?;
     Ok(envelope)
 }
 
@@ -660,32 +664,56 @@ fn validate_simulation_envelope(
 fn validate_invocation_envelope(
     envelope_xdr_base64: &str,
 ) -> Result<TransactionEnvelope, RpcError> {
+    let envelope = decode_envelope(envelope_xdr_base64)?;
+    invocation_shape(&envelope).map_err(RpcError::Malformed)?;
+    Ok(envelope)
+}
+
+fn decode_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
     ensure_base64_size("transaction", envelope_xdr_base64)?;
-    let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
-        .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))?;
+    TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
+        .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))
+}
+
+/// [`invocation_shape`], and no memo: the endpoint refuses any memo before it simulates
+/// ("Soroban transactions do not support memos").
+fn simulation_shape(envelope: &TransactionEnvelope) -> Result<(), String> {
+    invocation_shape(envelope)?;
+    let memo = match envelope {
+        TransactionEnvelope::Tx(v1) => &v1.tx.memo,
+        TransactionEnvelope::TxFeeBump(bump) => {
+            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+            &inner.tx.memo
+        }
+        TransactionEnvelope::TxV0(v0) => &v0.tx.memo,
+    };
+    if !matches!(memo, stellar_xdr::Memo::None) {
+        return Err("simulation refuses a transaction with a memo".to_string());
+    }
+    Ok(())
+}
+
+/// Exactly one operation, and it is an `InvokeHostFunction`.
+fn invocation_shape(envelope: &TransactionEnvelope) -> Result<(), String> {
     // Pre-Soroban envelopes cannot carry an InvokeHostFunction operation at all; the recorder
     // refuses them too, and saying so here costs no round trip.
     if matches!(envelope, TransactionEnvelope::TxV0(_)) {
-        return Err(RpcError::Malformed(
-            "a TransactionV0 envelope cannot carry a Soroban operation".to_string(),
-        ));
+        return Err("a TransactionV0 envelope cannot carry a Soroban operation".to_string());
     }
-    let operations = envelope_operations(&envelope);
+    let operations = envelope_operations(envelope);
     let [operation] = operations else {
-        return Err(RpcError::Malformed(format!(
+        return Err(format!(
             "simulation takes a transaction with exactly one operation; this envelope has {}",
             operations.len()
-        )));
+        ));
     };
     if !matches!(
         operation.body,
         stellar_xdr::OperationBody::InvokeHostFunction(_)
     ) {
-        return Err(RpcError::Malformed(
-            "the operation to simulate must be an InvokeHostFunction".to_string(),
-        ));
+        return Err("the operation to simulate must be an InvokeHostFunction".to_string());
     }
-    Ok(envelope)
+    Ok(())
 }
 
 fn acquire_contract_executables<T: RpcTransport>(

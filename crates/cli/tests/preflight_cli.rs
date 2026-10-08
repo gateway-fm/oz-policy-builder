@@ -99,11 +99,30 @@ fn malformed_envelope_fails_before_any_rpc_request() {
     let output = preflight(&endpoint.url, "not-base64");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("invalid transaction envelope"), "{stderr}");
+    assert!(
+        stderr.contains("E_ENVELOPE_PARSE: invalid transaction envelope"),
+        "{stderr}"
+    );
     assert!(!stderr.contains("transport"), "{stderr}");
     assert_eq!(
         endpoint.connections(),
         0,
         "the envelope reached the network: {stderr}"
     );
+}
+
+#[test]
+fn an_oversized_envelope_file_is_a_resource_limit_before_the_network() {
+    let limit = ozpb_source_rpc::MAX_XDR_BASE64_BYTES;
+    // One byte over the envelope bound fits the file reader's allowance for a line ending, so
+    // the shared envelope check refuses it; three bytes over, the file reader itself does.
+    for contents in ["A".repeat(limit + 1), "A".repeat(limit + 3)] {
+        let endpoint = preflight_rpc::CountingEndpoint::bind();
+        let output = preflight(&endpoint.url, &contents);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("E_RESOURCE_LIMIT: "), "{stderr}");
+        assert!(!stderr.contains("E_RPC"), "{stderr}");
+        assert_eq!(endpoint.connections(), 0, "{stderr}");
+    }
 }
