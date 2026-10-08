@@ -81,16 +81,18 @@ The account admin-candidate fingerprint identifies one eligible management rule 
 observed it. Its preimage is a named struct, so a `Map` keyed by these field `Symbol`s:
 
 ```text
-network_id       String(hex of the 32-byte network ID)
+network_id       String(lowercase hex of the 32-byte network ID)
 account_address  String(account C-strkey)
 rule_id          U32(rule ID)
 scope            Vec [ Symbol("default") ]  |  Vec [ Symbol("call_account") ]
 valid_until      Vec []  |  Vec [ U32(ledger) ]
-signer_entries   Vec [ Vec [ U32(signer ID), String(delegated C-strkey) ], … ]  ascending by ID
+signer_entries   Vec [ Vec [ U32(signer ID), String(delegated G- or C-strkey) ], … ]  ascending by ID
 ```
 
-`scope` is `default` for a `Default` rule and `call_account` for a `CallContract` rule naming the
-account itself. The rule's display name is not committed.
+`network_id` is a `NetworkId`, a newtype over `Hash32`, and `Hash32` serializes as its 64
+lowercase hex characters. A delegated signer is an account (G-) or contract (C-) address, written
+as its canonical strkey. `scope` is `default` for a `Default` rule and `call_account` for a
+`CallContract` rule naming the account itself. The rule's display name is not committed.
 `admin_fingerprint_is_the_documented_canonical_structure` in
 `crates/source-rpc/src/account_state_projection.rs` builds this `ScVal` by hand and pins two
 known answers.
