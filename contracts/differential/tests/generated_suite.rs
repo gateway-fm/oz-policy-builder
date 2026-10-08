@@ -19,7 +19,7 @@ use ozpb_synthesizer::fixtures as fx;
 use soroban_sdk::auth::{Context, ContractContext, CustomAccountInterface};
 use soroban_sdk::crypto::Hash;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::xdr::ScErrorType;
+use soroban_sdk::xdr::{ScErrorCode, ScErrorType};
 use soroban_sdk::{
     contract, contractimpl, Address, Bytes, Env, IntoVal, Map, Symbol, Val, Vec as SVec,
 };
@@ -682,28 +682,29 @@ fn direct_mutating_calls_require_the_smart_account_authorization() {
 
     // Installation setup used broad test authorization. Clear it before every
     // direct call so each method has to request account authorization itself.
+    // This SDK reports an unmatched mocked authorization as Context/InvalidAction.
+    let missing_auth =
+        soroban_sdk::Error::from_type_and_code(ScErrorType::Context, ScErrorCode::InvalidAction);
     world.env.mock_auths(&[]);
-    assert!(
-        client.try_install(&0, &fresh_rule, &world.account).is_err(),
-        "direct install without account authorization must fail"
-    );
+    match client.try_install(&0, &fresh_rule, &world.account) {
+        Err(Ok(error)) => assert_eq!(error, missing_auth),
+        other => panic!("direct install must fail at account authorization: {other:?}"),
+    }
     assert_eq!(call_count(&world), Some(0));
     assert!(!client.is_installed(&fresh_rule.id, &world.account));
 
     world.env.mock_auths(&[]);
-    assert!(
-        client
-            .try_enforce(&context, &authenticated, &rule, &world.account)
-            .is_err(),
-        "direct enforce without account authorization must fail"
-    );
+    match client.try_enforce(&context, &authenticated, &rule, &world.account) {
+        Err(Ok(error)) => assert_eq!(error, missing_auth),
+        other => panic!("direct enforce must fail at account authorization: {other:?}"),
+    }
     assert_eq!(call_count(&world), Some(0));
 
     world.env.mock_auths(&[]);
-    assert!(
-        client.try_uninstall(&rule, &world.account).is_err(),
-        "direct uninstall without account authorization must fail"
-    );
+    match client.try_uninstall(&rule, &world.account) {
+        Err(Ok(error)) => assert_eq!(error, missing_auth),
+        other => panic!("direct uninstall must fail at account authorization: {other:?}"),
+    }
     assert_eq!(call_count(&world), Some(0));
     assert!(client.is_installed(&world.rule_id, &world.account));
 
@@ -711,4 +712,19 @@ fn direct_mutating_calls_require_the_smart_account_authorization() {
     world.env.mock_all_auths();
     assert_eq!(authorize(&world, &[&original]), Ok(()));
     assert_eq!(call_count(&world), Some(1));
+
+    // With account authorization supplied, those same direct arguments work.
+    // This also guards against a future non-auth error making the refusal checks pass.
+    client.install(&0, &fresh_rule, &world.account);
+    assert!(client.is_installed(&fresh_rule.id, &world.account));
+    assert_eq!(
+        policy_call_count_for_rule(&world, &world.policy, fresh_rule.id),
+        Some(0)
+    );
+    client.enforce(&context, &authenticated, &rule, &world.account);
+    assert_eq!(call_count(&world), Some(2));
+    client.uninstall(&rule, &world.account);
+    assert!(!client.is_installed(&world.rule_id, &world.account));
+    assert_eq!(call_count(&world), None);
+    assert!(client.is_installed(&fresh_rule.id, &world.account));
 }
