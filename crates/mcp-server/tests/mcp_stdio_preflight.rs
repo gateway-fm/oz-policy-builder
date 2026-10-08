@@ -23,6 +23,19 @@ fn preflight_has_a_schema_and_does_not_advertise_a_policy_verdict() {
     let description = tool["description"].as_str().unwrap();
     assert!(description.contains("exact envelope"));
     assert!(description.contains("Does not identify an installed policy"));
+    // Preflight is not consequence-free: signed entries outlive the call that carried them.
+    assert!(
+        description.contains("Signed authorization entries are live authorizations"),
+        "{description}"
+    );
+    assert!(
+        description.contains("signatureExpirationLedger"),
+        "{description}"
+    );
+    assert!(
+        description.contains("A hosted server refuses signed envelopes"),
+        "{description}"
+    );
 }
 
 #[test]

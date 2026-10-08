@@ -36,8 +36,8 @@ pub use footprint_capture::{
     InvocationFootprintCapture,
 };
 pub use preflight::{
-    preflight_transaction, DeclaredResource, PreflightObservation, PreflightOutcome,
-    SimulationAuthMode,
+    envelope_carries_signatures, preflight_transaction, DeclaredResource, PreflightObservation,
+    PreflightOutcome, SimulationAuthMode,
 };
 
 use ozpb_recorder_core::{

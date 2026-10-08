@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 /// simulated with authorization enforced by the RPC endpoint.
 /// The envelope is the exact transaction being tested. `rpc_url` is subject to the
 /// server's operator allowlist in hosted mode; a local CLI or stdio server uses the
-/// caller's chosen endpoint. Simulation does not submit the transaction.
+/// caller's chosen endpoint. Simulation does not submit the transaction, but that does not
+/// make a signed envelope harmless: a Soroban authorization signature covers the network,
+/// the entry's nonce, its `signatureExpirationLedger` and the invocation, not the transaction
+/// that carries it, so anyone who sees the entry can submit it until it expires, and
+/// simulation does not consume the nonce. The envelope reaches the RPC endpoint and, through
+/// MCP, the agent's transcript. A hosted server refuses an envelope carrying transaction
+/// signatures or signed entries with `E_UNSUPPORTED_ENVELOPE`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightTransactionInput {

@@ -12,16 +12,17 @@
 //! same way, or that a transaction was submitted.
 
 use crate::{
-    ensure_base64_size, simulation_shape, verify_network, xdr_limits, RpcError, RpcTransport,
-    MAX_XDR_BASE64_BYTES,
+    ensure_base64_size, envelope_operations, simulation_shape, verify_network, xdr_limits,
+    RpcError, RpcTransport, MAX_XDR_BASE64_BYTES,
 };
 use ozpb_domain::{sha256, NetworkId, TrustLevel};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use stellar_xdr::{
-    LedgerKey, ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionData,
-    SorobanTransactionDataExt, TransactionEnvelope, TransactionExt, WriteXdr,
+    LedgerKey, OperationBody, ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanCredentials,
+    SorobanDelegateSignature, SorobanTransactionData, SorobanTransactionDataExt,
+    TransactionEnvelope, TransactionExt, WriteXdr,
 };
 
 /// Result of an enforcement-mode trial of one transaction, never a policy verdict.
@@ -143,6 +144,57 @@ pub fn preflight_transaction<T: RpcTransport>(
         envelope_xdr_sha256,
         NetworkId::from_passphrase(network_passphrase).0.to_hex(),
     )
+}
+
+/// Whether the envelope carries signed material: a transaction signature, or an authorization
+/// entry whose credentials, or any delegate's, carry a signature.
+///
+/// Either is a live authorization. A signed transaction can be submitted as it is. A Soroban
+/// authorization signature covers the network, the entry's nonce, its
+/// `signatureExpirationLedger` and the authorized invocation, but not the transaction or source
+/// account that carries it, so anyone holding the entry can submit it in a transaction of their
+/// own until it expires; simulating it does not consume the nonce. The envelope is refused
+/// exactly as [`preflight_transaction`] refuses it, and nothing is sent.
+pub fn envelope_carries_signatures(envelope_xdr_base64: &str) -> Result<bool, RpcError> {
+    let envelope = local_envelope(envelope_xdr_base64)?;
+    let transaction_signed = match &envelope {
+        TransactionEnvelope::Tx(v1) => !v1.signatures.is_empty(),
+        TransactionEnvelope::TxFeeBump(bump) => {
+            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+            !bump.signatures.is_empty() || !inner.signatures.is_empty()
+        }
+        TransactionEnvelope::TxV0(v0) => !v0.signatures.is_empty(),
+    };
+    let entry_signed =
+        envelope_operations(&envelope)
+            .iter()
+            .any(|operation| match &operation.body {
+                OperationBody::InvokeHostFunction(invoke) => invoke
+                    .auth
+                    .iter()
+                    .any(|entry| credentials_signed(&entry.credentials)),
+                _ => false,
+            });
+    Ok(transaction_signed || entry_signed)
+}
+
+fn credentials_signed(credentials: &SorobanCredentials) -> bool {
+    match credentials {
+        SorobanCredentials::SourceAccount => false,
+        SorobanCredentials::Address(address) | SorobanCredentials::AddressV2(address) => {
+            address.signature != ScVal::Void
+        }
+        SorobanCredentials::AddressWithDelegates(delegated) => {
+            delegated.address_credentials.signature != ScVal::Void
+                || delegates_signed(&delegated.delegates)
+        }
+    }
+}
+
+fn delegates_signed(delegates: &[SorobanDelegateSignature]) -> bool {
+    delegates.iter().any(|delegate| {
+        delegate.signature != ScVal::Void || delegates_signed(&delegate.nested_delegates)
+    })
 }
 
 /// The caller's envelope, refused with an input code when it is too large, is not one unbroken
@@ -849,6 +901,123 @@ mod tests {
         let error = preflight_transaction(&transport, NETWORK, &envelope()).unwrap_err();
         assert!(matches!(error, RpcError::Rpc(_)), "{error}");
         assert!(!error.to_string().contains("private invocation"));
+    }
+
+    #[test]
+    fn signed_material_is_found_wherever_the_envelope_carries_it() {
+        use stellar_xdr::{
+            DecoratedSignature, OperationBody, Signature, SignatureHint, SorobanCredentials,
+            SorobanDelegateSignature,
+        };
+        let parsed = TransactionEnvelope::from_xdr_base64(envelope(), xdr_limits()).unwrap();
+        let TransactionEnvelope::Tx(unsigned) = &parsed else {
+            panic!("fixture has one ordinary transaction")
+        };
+        let signature = ScVal::Bytes(vec![7; 64].try_into().unwrap());
+        let decorated: VecM<DecoratedSignature, 20> = vec![DecoratedSignature {
+            hint: SignatureHint([1; 4]),
+            signature: Signature(vec![7; 64].try_into().unwrap()),
+        }]
+        .try_into()
+        .unwrap();
+        // Rewrite the fixture's one address credential (unsigned: a void signature).
+        let with_credentials = |rewrite: &dyn Fn(&mut SorobanCredentials)| {
+            let mut v1 = unsigned.clone();
+            let mut operations = v1.tx.operations.to_vec();
+            let OperationBody::InvokeHostFunction(invoke) = &mut operations[0].body else {
+                panic!("fixture invokes a host function")
+            };
+            let mut auth = invoke.auth.to_vec();
+            rewrite(&mut auth[0].credentials);
+            invoke.auth = auth.try_into().unwrap();
+            v1.tx.operations = operations.try_into().unwrap();
+            TransactionEnvelope::Tx(v1)
+        };
+        let address = |credentials: &SorobanCredentials| match credentials {
+            SorobanCredentials::Address(address) => address.clone(),
+            _ => panic!("fixture uses address credentials"),
+        };
+
+        let mut transaction_signed = unsigned.clone();
+        transaction_signed.signatures = decorated.clone();
+        let entry_signed = with_credentials(&|credentials| {
+            let mut signed = address(credentials);
+            signed.signature = signature.clone();
+            *credentials = SorobanCredentials::Address(signed);
+        });
+        let delegate_signed = with_credentials(&|credentials| {
+            let unsigned_address = address(credentials);
+            let nested = SorobanDelegateSignature {
+                address: unsigned_address.address.clone(),
+                signature: signature.clone(),
+                nested_delegates: VecM::default(),
+            };
+            *credentials = SorobanCredentials::AddressWithDelegates(
+                stellar_xdr::SorobanAddressCredentialsWithDelegates {
+                    address_credentials: unsigned_address.clone(),
+                    delegates: vec![SorobanDelegateSignature {
+                        address: unsigned_address.address,
+                        signature: ScVal::Void,
+                        nested_delegates: vec![nested].try_into().unwrap(),
+                    }]
+                    .try_into()
+                    .unwrap(),
+                },
+            );
+        });
+        let source_account = with_credentials(&|credentials| {
+            *credentials = SorobanCredentials::SourceAccount;
+        });
+        let fee_bump = |inner: stellar_xdr::TransactionV1Envelope, outer: VecM<_, 20>| {
+            TransactionEnvelope::TxFeeBump(stellar_xdr::FeeBumpTransactionEnvelope {
+                tx: stellar_xdr::FeeBumpTransaction {
+                    fee_source: stellar_xdr::MuxedAccount::Ed25519(stellar_xdr::Uint256([9; 32])),
+                    fee: 200,
+                    inner_tx: stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner),
+                    ext: stellar_xdr::FeeBumpTransactionExt::V0,
+                },
+                signatures: outer,
+            })
+        };
+
+        for (name, candidate, signed) in [
+            ("void address signature", parsed.clone(), false),
+            ("source-account credentials", source_account, false),
+            (
+                "transaction signature",
+                TransactionEnvelope::Tx(transaction_signed.clone()),
+                true,
+            ),
+            ("signed address credentials", entry_signed, true),
+            ("signed nested delegate", delegate_signed, true),
+            (
+                "unsigned fee bump",
+                fee_bump(unsigned.clone(), VecM::default()),
+                false,
+            ),
+            (
+                "signed fee-bump wrapper",
+                fee_bump(unsigned.clone(), decorated.clone()),
+                true,
+            ),
+            (
+                "signed inner transaction",
+                fee_bump(transaction_signed, VecM::default()),
+                true,
+            ),
+        ] {
+            let encoded = candidate.to_xdr_base64(xdr_limits()).unwrap();
+            assert_eq!(
+                envelope_carries_signatures(&encoded).unwrap(),
+                signed,
+                "{name}"
+            );
+        }
+        // Input is refused exactly as preflight refuses it.
+        assert!(matches!(
+            envelope_carries_signatures("not-base64"),
+            Err(RpcError::EnvelopeParse(_))
+        ));
     }
 
     #[test]

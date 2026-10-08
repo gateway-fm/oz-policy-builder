@@ -56,7 +56,21 @@ reports the endpoint's simulation outcome at its reported ledger: `simulated_suc
 means the invocation succeeded in simulation but the envelope declares a smaller footprint or
 lower resource limits than it used; `insufficient_declared_resources` names each such
 dimension, never the keys. It does not establish that the generated policy is installed or
-selected, and it never commits writes. An envelope refused before any request carries an input
+selected, and it never commits writes.
+
+That does not make preflight consequence-free. Enforcement-mode simulation of a smart account
+needs signed `Address`-credential authorization entries, and a Soroban authorization signature
+covers the network ID, the entry's nonce, its `signatureExpirationLedger` and the authorized
+invocation, not the transaction or its source account. Anyone who holds a signed entry can put
+it in a transaction of their own and submit it until it expires, and simulation does not
+consume the nonce. The envelope reaches the RPC endpoint and, through MCP, the agent's
+transcript. Prefer testnet, or sign with a short `signatureExpirationLedger`, and run
+preflight from the CLI or a local stdio server against an RPC endpoint you trust. A hosted
+(`--http`) server refuses any envelope carrying transaction signatures or signed authorization
+entries with `E_UNSUPPORTED_ENVELOPE`, because the hosted service must never hold material
+that can authorize on a user's account (architecture §6.2, §6.5).
+
+An envelope refused before any request carries an input
 code in both shells: `E_RESOURCE_LIMIT` over the XDR size bound, `E_ENVELOPE_PARSE` when it
 is not one unbroken base64 string of transaction XDR, and `E_UNSUPPORTED_ENVELOPE` for a shape
 simulation does not take (not exactly one `InvokeHostFunction` operation, or a memo). `E_RPC`
@@ -104,7 +118,9 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 
 # Optional: simulate an exact envelope with its intended authorization entries.
 # Read it from a file so the base64 and signatures stay out of shell history/process arguments.
-# This reports endpoint state at one ledger, not an installed-policy or Safe verdict.
+# Signed entries are live authorizations until their signatureExpirationLedger: prefer testnet
+# or a short expiration, and an RPC endpoint you trust. This never submits the envelope, and
+# it reports endpoint state at one ledger, not an installed-policy or Safe verdict.
 ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
   --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015"
