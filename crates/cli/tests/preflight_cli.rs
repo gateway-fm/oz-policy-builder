@@ -95,22 +95,15 @@ fn an_endpoint_refusal_is_an_rpc_error_without_endpoint_text() {
 
 #[test]
 fn malformed_envelope_fails_before_any_rpc_request() {
-    let directory = tempfile::tempdir().expect("temporary envelope directory");
-    let envelope_file = directory.path().join("invalid.xdr.base64");
-    std::fs::write(&envelope_file, "not-base64").expect("write invalid envelope");
-    let output = Command::new(env!("CARGO_BIN_EXE_ozpb"))
-        .arg("preflight-transaction")
-        .arg("--envelope-file")
-        .arg(&envelope_file)
-        .args([
-            "--rpc-url",
-            "http://127.0.0.1:1",
-            "--network",
-            preflight_rpc::NETWORK,
-        ])
-        .output()
-        .expect("run CLI");
-    assert!(!output.status.success());
+    let endpoint = preflight_rpc::CountingEndpoint::bind();
+    let output = preflight(&endpoint.url, "not-base64");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("E_RPC"), "{stderr}");
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("invalid transaction envelope"), "{stderr}");
+    assert!(!stderr.contains("transport"), "{stderr}");
+    assert_eq!(
+        endpoint.connections(),
+        0,
+        "the envelope reached the network: {stderr}"
+    );
 }

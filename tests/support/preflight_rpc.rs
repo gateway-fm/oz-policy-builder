@@ -5,6 +5,8 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use stellar_xdr::{
@@ -206,6 +208,64 @@ pub fn spawn(simulation: Value) -> (String, JoinHandle<Vec<Value>>) {
         requests
     });
     (address, handle)
+}
+
+/// A local endpoint that accepts and drops every connection, counting them.
+///
+/// A command that must refuse its input before the network is pointed here, then shown to have
+/// made no connection at all. A closed port cannot show that: an attempted connection to it and
+/// a local refusal both end in `E_RPC`.
+pub struct CountingEndpoint {
+    pub url: String,
+    connections: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl CountingEndpoint {
+    pub fn bind() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind counting endpoint");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = thread::spawn({
+            let (connections, stop) = (connections.clone(), stop.clone());
+            move || loop {
+                // Accept before checking `stop`, so a connection already queued when the
+                // command under test exited is still counted.
+                match listener.accept() {
+                    Ok(_) => {
+                        connections.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept on counting endpoint: {error}"),
+                }
+            }
+        });
+        Self {
+            url,
+            connections,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// Stop listening and return how many connections were made.
+    pub fn connections(mut self) -> usize {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("counting endpoint thread");
+        }
+        self.connections.load(Ordering::SeqCst)
+    }
 }
 
 fn read_request(stream: &mut TcpStream) -> Value {

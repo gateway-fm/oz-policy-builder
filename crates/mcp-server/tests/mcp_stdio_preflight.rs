@@ -27,25 +27,20 @@ fn preflight_has_a_schema_and_does_not_advertise_a_policy_verdict() {
 
 #[test]
 fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
-    let responses = run_session(&[
-        initialize(),
-        initialized(),
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "preflight_transaction", "arguments": {
-                "rpc_url": "https://127.0.0.1:1",
-                "network_passphrase": "Test SDF Network ; September 2015",
-                "envelope_xdr_base64": "not-base64"
-            }}
-        }),
-    ]);
-    let call = by_id(&responses, 2);
+    let endpoint = preflight_rpc::CountingEndpoint::bind();
+    let call = preflight_call(&endpoint.url, "not-base64");
     assert_eq!(call["result"]["isError"], true, "{call}");
-    assert_eq!(
-        call["result"]["structuredContent"]["code"], "E_RPC",
-        "{call}"
-    );
     assert!(call.get("error").is_none(), "{call}");
+    let error = &call["result"]["structuredContent"];
+    assert_eq!(error["code"], "E_RPC", "{call}");
+    let message = error["message"].as_str().expect("error message");
+    assert!(message.contains("invalid transaction envelope"), "{call}");
+    assert!(!message.contains("transport"), "{call}");
+    assert_eq!(
+        endpoint.connections(),
+        0,
+        "the envelope reached the network: {call}"
+    );
 }
 
 fn preflight_call(rpc_url: &str, envelope: &str) -> serde_json::Value {
