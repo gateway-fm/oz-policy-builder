@@ -5,7 +5,8 @@
 //! observations and an authorization-enforcing transaction preflight. Executed
 //! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
-//! tested offline.
+//! tested offline. The HTTP transport is the default `http` feature; a caller that supplies
+//! its own [`RpcTransport`] can build without it and without the HTTP and TLS stack.
 
 #![forbid(unsafe_code)]
 
@@ -45,7 +46,9 @@ use ozpb_recorder_core::{
 };
 use serde_json::json;
 use std::collections::BTreeMap;
+#[cfg(feature = "http")]
 use std::io::Read;
+#[cfg(feature = "http")]
 use std::time::Duration;
 use stellar_xdr::{
     ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntry, LedgerEntryData,
@@ -63,8 +66,10 @@ const MAX_XDR_BYTES: usize = 512 * 1024;
 // and each new XDR field the RPC gains is another chance to mistype the arithmetic.
 const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
 const MAX_XDR_DEPTH: u32 = 128;
+#[cfg(feature = "http")]
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 /// How much of a non-JSON-RPC error body an error message may quote.
+#[cfg(feature = "http")]
 const MAX_ERROR_BODY_EXCERPT_BYTES: usize = 200;
 /// The official `getLedgerEntries` maximum for its `keys` array. Not our budget to choose: the
 /// endpoint refuses a longer array, and recorder-core admits more executable observations than
@@ -189,11 +194,13 @@ pub trait RpcTransport {
 }
 
 /// HTTP transport over a single Stellar RPC endpoint.
+#[cfg(feature = "http")]
 pub struct HttpTransport {
     url: String,
     agent: ureq::Agent,
 }
 
+#[cfg(feature = "http")]
 impl HttpTransport {
     pub fn new(url: impl Into<String>) -> Self {
         let agent = ureq::AgentBuilder::new()
@@ -209,6 +216,7 @@ impl HttpTransport {
     }
 }
 
+#[cfg(feature = "http")]
 impl RpcTransport for HttpTransport {
     fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
         let req = json!({
@@ -260,6 +268,7 @@ impl RpcTransport for HttpTransport {
 /// deliberately not correlated here — an endpoint refusing with an HTTP error need not echo it,
 /// and nothing from this path is admitted as evidence; it is a message for the operator, so the
 /// message is worth more than the correlation.
+#[cfg(feature = "http")]
 fn jsonrpc_error_of(envelope: &serde_json::Value) -> Option<String> {
     if envelope.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0") {
         return None;
@@ -272,6 +281,7 @@ fn jsonrpc_error_of(envelope: &serde_json::Value) -> Option<String> {
 ///
 /// Both the declared length and the reader are capped: `Content-Length` can be absent, or a
 /// lie, or describe compressed bytes, so the header check alone bounds nothing.
+#[cfg(feature = "http")]
 fn read_bounded_body(response: ureq::Response) -> Result<Vec<u8>, RpcError> {
     if response
         .header("content-length")
@@ -298,6 +308,7 @@ fn read_bounded_body(response: ureq::Response) -> Result<Vec<u8>, RpcError> {
 
 /// Enough of a non-JSON-RPC body to identify what answered, and not more: the body may be
 /// megabytes of HTML, and an error message is not a place to put it.
+#[cfg(feature = "http")]
 fn body_excerpt(body: &[u8]) -> String {
     let head = &body[..body.len().min(MAX_ERROR_BODY_EXCERPT_BYTES)];
     // Cut at a character boundary: a body truncated mid-sequence would otherwise be reported
@@ -317,6 +328,7 @@ fn body_excerpt(body: &[u8]) -> String {
 
 /// The id every request from this transport carries. One in-flight synchronous call at a time,
 /// so a constant is enough — what matters is that the response is checked against it.
+#[cfg(feature = "http")]
 const JSONRPC_REQUEST_ID: u64 = 1;
 
 /// The `result` of a JSON-RPC 2.0 response to *our* request.
@@ -326,6 +338,7 @@ const JSONRPC_REQUEST_ID: u64 = 1;
 /// is already the trust boundary and these calls are synchronous, so this is not a live race;
 /// it is what catches a proxy, a cache or a mock returning the wrong payload, and it is what
 /// the protocol asks of a client either way.
+#[cfg(feature = "http")]
 fn jsonrpc_result(response: &serde_json::Value) -> Result<serde_json::Value, RpcError> {
     if response.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0") {
         return Err(RpcError::Malformed(
@@ -361,6 +374,7 @@ fn jsonrpc_result(response: &serde_json::Value) -> Result<serde_json::Value, Rpc
 /// A JSON-RPC error object as its code and message, so a caller reads what happened instead of
 /// re-parsing a blob of JSON. Anything not shaped like the documented object is kept verbatim
 /// rather than described as something it is not.
+#[cfg(feature = "http")]
 fn describe_jsonrpc_error(error: &serde_json::Value) -> String {
     let code = error.get("code").and_then(serde_json::Value::as_i64);
     let message = error.get("message").and_then(|value| value.as_str());
@@ -1066,7 +1080,7 @@ fn str_field(v: &serde_json::Value, field: &str) -> Result<String, RpcError> {
         .ok_or_else(|| RpcError::Malformed(format!("missing string field '{field}'")))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "http"))]
 mod transport_tests {
     use super::*;
     use std::io::Write;
