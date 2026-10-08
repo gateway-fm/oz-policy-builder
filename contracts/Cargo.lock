@@ -1224,6 +1224,7 @@ dependencies = [
  "ozpb-evaluator",
  "ozpb-harness",
  "ozpb-policy-spec",
+ "ozpb-recorder-core",
  "ozpb-source-rpc",
  "ozpb-synthesizer",
  "serde_json",
