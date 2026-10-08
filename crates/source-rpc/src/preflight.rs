@@ -120,13 +120,18 @@ pub fn preflight_transaction<T: RpcTransport>(
         RpcError::EnvelopeParse(format!("invalid transaction envelope: {error}"))
     })?;
     let envelope_xdr_sha256 = sha256(&envelope_xdr).to_hex();
+    // The endpoint receives the bytes that were hashed, canonically encoded, never the
+    // caller's own spelling of them.
+    let canonical = envelope.to_xdr_base64(xdr_limits()).map_err(|error| {
+        RpcError::EnvelopeParse(format!("invalid transaction envelope: {error}"))
+    })?;
     let declared = declared_transaction_data(&envelope);
     verify_network(transport, network_passphrase)?;
     let result = transport
         .call(
             "simulateTransaction",
             json!({
-                "transaction": envelope_xdr_base64,
+                "transaction": canonical,
                 "authMode": "enforce",
                 "xdrFormat": "base64"
             }),
@@ -140,9 +145,13 @@ pub fn preflight_transaction<T: RpcTransport>(
     )
 }
 
-/// The caller's envelope, refused with an input code when it is too large, does not decode, or
-/// has a shape simulation does not take. Each is the caller's input rather than an endpoint
-/// reply, and nothing is sent for any of them.
+/// The caller's envelope, refused with an input code when it is too large, is not one unbroken
+/// base64 string, does not decode, or has a shape simulation does not take. Each is the
+/// caller's input rather than an endpoint reply, and nothing is sent for any of them.
+///
+/// Whitespace is refused rather than skipped. The XDR decoder skips ASCII whitespace, so a
+/// spaced-out string decodes to the same bytes as the canonical one; refusing it keeps the
+/// CLI and MCP tool to one rule and leaves no second spelling of an envelope to forward.
 fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
     if envelope_xdr_base64.len() > MAX_XDR_BASE64_BYTES {
         return Err(RpcError::EnvelopeTooLarge(format!(
@@ -150,6 +159,15 @@ fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcE
              size limit",
             envelope_xdr_base64.len()
         )));
+    }
+    if envelope_xdr_base64
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace())
+    {
+        return Err(RpcError::EnvelopeParse(
+            "transaction envelope base64 contains whitespace; send it as one unbroken string"
+                .to_string(),
+        ));
     }
     let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
         .map_err(|error| {
@@ -522,7 +540,14 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].0, "simulateTransaction");
         assert_eq!(calls[1].1["authMode"], "enforce");
+        // The endpoint receives the hashed bytes, canonically encoded.
         assert_eq!(calls[1].1["transaction"], tx);
+        let forwarded = calls[1].1["transaction"].as_str().unwrap();
+        let forwarded = stellar_xdr::TransactionEnvelope::from_xdr_base64(forwarded, xdr_limits())
+            .unwrap()
+            .to_xdr(xdr_limits())
+            .unwrap();
+        assert_eq!(sha256(&forwarded).to_hex(), observation.envelope_xdr_sha256);
     }
 
     /// Trust and mode labels are earned by running the request, never accepted from input
@@ -847,6 +872,29 @@ mod tests {
         assert!(error.to_string().starts_with("E_UNSUPPORTED_ENVELOPE: "));
         assert!(!error.to_string().contains("private invoice"));
         assert!(transport.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn whitespace_anywhere_in_an_envelope_is_refused_before_any_request() {
+        // The XDR decoder skips ASCII whitespace, so a spaced-out envelope would decode and
+        // hash as the canonical bytes while a different string went to the endpoint.
+        let tx = envelope();
+        let (head, tail) = tx.split_at(tx.len() / 2);
+        for whitespace in [" ", "\t", "\n", "\r\n", "\x0c"] {
+            for spaced in [
+                format!("{head}{whitespace}{tail}"),
+                format!("{tx}{whitespace}"),
+                format!("{whitespace}{tx}"),
+            ] {
+                let transport = CannedTransport::new(success());
+                let error = preflight_transaction(&transport, NETWORK, &spaced).unwrap_err();
+                assert!(
+                    matches!(&error, RpcError::EnvelopeParse(message) if message.contains("whitespace")),
+                    "{whitespace:?}: {error}"
+                );
+                assert!(transport.calls.borrow().is_empty(), "{whitespace:?}");
+            }
+        }
     }
 
     #[test]

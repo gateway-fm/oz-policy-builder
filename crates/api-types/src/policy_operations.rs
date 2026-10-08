@@ -25,7 +25,8 @@ pub struct PreflightTransactionInput {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightTransactionOutput {
-    /// SHA-256 of canonical envelope XDR bytes, not a transaction hash.
+    /// SHA-256 of canonical envelope XDR bytes, not a transaction hash. The endpoint received
+    /// exactly these bytes, base64-encoded.
     pub envelope_xdr_sha256: String,
     pub network_id: String,
     /// Ledger sequence as reported by the selected RPC endpoint.

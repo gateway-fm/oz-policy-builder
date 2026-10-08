@@ -44,6 +44,25 @@ fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
 }
 
 #[test]
+fn whitespace_inside_the_envelope_is_refused_before_the_network() {
+    let envelope = preflight_rpc::envelope();
+    for whitespace in preflight_rpc::ENVELOPE_WHITESPACE {
+        let endpoint = preflight_rpc::CountingEndpoint::bind();
+        let spaced = preflight_rpc::with_inner(&envelope, whitespace);
+        let call = preflight_call(&endpoint.url, &spaced);
+        let error = &call["result"]["structuredContent"];
+        assert_eq!(call["result"]["isError"], true, "{whitespace:?}: {call}");
+        let message = error["message"].as_str().expect("error message");
+        assert!(
+            format!("{}: {message}", error["code"].as_str().unwrap_or(""))
+                .contains(preflight_rpc::WHITESPACE_REFUSAL),
+            "{whitespace:?}: {call}"
+        );
+        assert_eq!(endpoint.connections(), 0, "{whitespace:?}: {call}");
+    }
+}
+
+#[test]
 fn an_oversized_envelope_is_a_resource_limit_before_the_network() {
     let endpoint = preflight_rpc::CountingEndpoint::bind();
     let oversized = "A".repeat(ozpb_source_rpc::MAX_XDR_BASE64_BYTES + 1);

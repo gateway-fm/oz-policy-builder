@@ -49,6 +49,19 @@ fn captured_simulation() -> Value {
     .expect("captured simulation JSON")
 }
 
+/// Whitespace the XDR decoder would skip, each tried inside an envelope by both shells.
+pub const ENVELOPE_WHITESPACE: [&str; 4] = [" ", "\t", "\n", "\r\n"];
+
+/// What both shells say when an envelope contains whitespace.
+pub const WHITESPACE_REFUSAL: &str =
+    "E_ENVELOPE_PARSE: transaction envelope base64 contains whitespace";
+
+/// `envelope` with `whitespace` inserted in the middle.
+pub fn with_inner(envelope: &str, whitespace: &str) -> String {
+    let (head, tail) = envelope.split_at(envelope.len() / 2);
+    format!("{head}{whitespace}{tail}")
+}
+
 /// The Soroban transaction data `envelope` declares.
 pub fn declared(envelope: &str) -> SorobanTransactionData {
     match TransactionEnvelope::from_xdr_base64(envelope, Limits::none()).expect("envelope XDR") {

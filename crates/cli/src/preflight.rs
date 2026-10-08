@@ -34,13 +34,12 @@ fn read_envelope(path: &PathBuf) -> Result<String> {
             path.display()
         )
     })?;
+    // Only the file's own line ending is removed. Whitespace inside the envelope is left for the
+    // adapter, which refuses it for this command and the MCP tool alike.
     let text = text
         .strip_suffix("\r\n")
         .or_else(|| text.strip_suffix('\n'))
         .unwrap_or(&text);
-    if text.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
-        anyhow::bail!("E_ENVELOPE_PARSE: preflight envelope file has extra line breaks");
-    }
     Ok(text.to_string())
 }
 
@@ -55,11 +54,10 @@ mod tests {
         std::fs::write(&path, "AAAA\r\n").expect("write CRLF envelope");
         assert_eq!(read_envelope(&path).unwrap(), "AAAA");
 
+        // Anything left is the envelope's own whitespace, which the adapter's shared rule
+        // refuses for the CLI and the MCP tool alike.
         std::fs::write(&path, "AAAA\n\n").expect("write extra newline envelope");
-        let error = read_envelope(&path).unwrap_err().to_string();
-        assert!(error.starts_with("E_ENVELOPE_PARSE: "), "{error}");
-        assert!(error.contains("extra line breaks"), "{error}");
-        assert!(!error.contains("AAAA"), "{error}");
+        assert_eq!(read_envelope(&path).unwrap(), "AAAA\n");
     }
 
     #[test]

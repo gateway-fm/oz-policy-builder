@@ -58,9 +58,11 @@ lower resource limits than it used; `insufficient_declared_resources` names each
 dimension, never the keys. It does not establish that the generated policy is installed or
 selected, and it never commits writes. An envelope refused before any request carries an input
 code in both shells: `E_RESOURCE_LIMIT` over the XDR size bound, `E_ENVELOPE_PARSE` when it
-does not decode as transaction XDR, and `E_UNSUPPORTED_ENVELOPE` for a shape simulation does
-not take (not exactly one `InvokeHostFunction` operation, or a memo). `E_RPC` is left for the
-endpoint and its transport.
+is not one unbroken base64 string of transaction XDR, and `E_UNSUPPORTED_ENVELOPE` for a shape
+simulation does not take (not exactly one `InvokeHostFunction` operation, or a memo). `E_RPC`
+is left for the endpoint and its transport. Whitespace anywhere in the envelope is refused
+rather than skipped; the CLI removes only the envelope file's final line ending. The endpoint
+receives the canonical base64 of the bytes `envelope_xdr_sha256` hashes.
 
 ### CLI
 

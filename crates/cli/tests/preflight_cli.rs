@@ -112,6 +112,24 @@ fn malformed_envelope_fails_before_any_rpc_request() {
 }
 
 #[test]
+fn whitespace_inside_the_envelope_is_refused_before_the_network() {
+    let envelope = preflight_rpc::envelope();
+    for whitespace in preflight_rpc::ENVELOPE_WHITESPACE {
+        let endpoint = preflight_rpc::CountingEndpoint::bind();
+        let spaced = preflight_rpc::with_inner(&envelope, whitespace);
+        // The file still ends with the one line break a text editor adds.
+        let output = preflight(&endpoint.url, &format!("{spaced}\n"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{whitespace:?}: {stderr}");
+        assert!(
+            stderr.contains(preflight_rpc::WHITESPACE_REFUSAL),
+            "{whitespace:?}: {stderr}"
+        );
+        assert_eq!(endpoint.connections(), 0, "{whitespace:?}: {stderr}");
+    }
+}
+
+#[test]
 fn an_oversized_envelope_file_is_a_resource_limit_before_the_network() {
     let limit = ozpb_source_rpc::MAX_XDR_BASE64_BYTES;
     // One byte over the envelope bound fits the file reader's allowance for a line ending, so
