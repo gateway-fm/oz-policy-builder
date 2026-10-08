@@ -21,6 +21,8 @@ use ozpb_domain::{domains, Hash32, NetworkId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod account_methods;
+
 pub const REGISTRY_SCHEMA: &str = "registry/v1";
 
 // ---------------------------------------------------------------------------------------

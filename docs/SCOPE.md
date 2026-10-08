@@ -6,6 +6,9 @@ what was left out on purpose from what was overlooked.
 
 Section numbers refer to `docs/architecture.md`.
 
+The source-reviewed account method inventory and its limits are described in
+[`ACCOUNT-METHOD-INVENTORY.md`](ACCOUNT-METHOD-INVENTORY.md).
+
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
    reconciliation and transitive closure). The largest remaining gap to RFP #7:
    `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
