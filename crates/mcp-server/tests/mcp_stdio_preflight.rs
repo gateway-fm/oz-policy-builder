@@ -48,6 +48,65 @@ fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
     assert!(call.get("error").is_none(), "{call}");
 }
 
+fn preflight_call(rpc_url: &str, envelope: &str) -> serde_json::Value {
+    let responses = run_session(&[
+        initialize(),
+        initialized(),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "preflight_transaction", "arguments": {
+                "rpc_url": rpc_url,
+                "network_passphrase": preflight_rpc::NETWORK,
+                "envelope_xdr_base64": envelope
+            }}
+        }),
+    ]);
+    by_id(&responses, 2).clone()
+}
+
+#[test]
+fn every_simulation_outcome_is_reported_without_endpoint_text() {
+    let envelope = preflight_rpc::envelope();
+    for case in preflight_rpc::outcome_cases(&envelope) {
+        let (rpc_url, requests) = preflight_rpc::spawn(case.simulation);
+        let call = preflight_call(&rpc_url, &envelope);
+        // A reported outcome, failure included, is a result rather than a tool error.
+        assert_ne!(call["result"]["isError"], true, "{}: {call}", case.name);
+        let output = &call["result"]["structuredContent"];
+        assert_eq!(output["outcome"], case.outcome, "{}: {call}", case.name);
+        assert_eq!(
+            output["insufficient_declared_resources"],
+            serde_json::json!(case.insufficient_declared_resources),
+            "{}: {call}",
+            case.name
+        );
+        assert!(
+            !call.to_string().contains(preflight_rpc::ENDPOINT_DETAIL),
+            "{}: endpoint text reached the response",
+            case.name
+        );
+        requests.join().expect("RPC fixture thread");
+    }
+}
+
+#[test]
+fn an_endpoint_refusal_is_an_rpc_error_without_endpoint_text() {
+    let envelope = preflight_rpc::envelope();
+    let (rpc_url, requests) = preflight_rpc::spawn(preflight_rpc::refusal());
+    let call = preflight_call(&rpc_url, &envelope);
+    assert_eq!(call["result"]["isError"], true, "{call}");
+    let error = &call["result"]["structuredContent"];
+    assert_eq!(error["code"], "E_RPC", "{call}");
+    let message = error["message"].as_str().expect("error message");
+    assert!(message.contains("rpc error"), "{call}");
+    assert!(message.contains("withheld"), "{call}");
+    assert!(
+        !call.to_string().contains(preflight_rpc::ENDPOINT_DETAIL),
+        "{call}"
+    );
+    requests.join().expect("RPC fixture thread");
+}
+
 #[test]
 fn successful_preflight_reports_only_exact_envelope_rpc_evidence() {
     let envelope = preflight_rpc::envelope();

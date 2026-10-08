@@ -8,7 +8,8 @@ use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use stellar_xdr::{
-    Limits, ReadXdr, SorobanTransactionData, TransactionEnvelope, TransactionExt, WriteXdr,
+    Limits, ReadXdr, SorobanResourcesExtV0, SorobanTransactionData, SorobanTransactionDataExt,
+    TransactionEnvelope, TransactionExt, WriteXdr,
 };
 
 pub const NETWORK: &str = "Test SDF Network ; September 2015";
@@ -72,6 +73,87 @@ pub fn success(envelope: &str) -> Value {
     simulation_using(&declared(envelope))
 }
 
+/// Text an endpoint put in its reply. It stands in for anything the endpoint could echo from
+/// the confidential envelope, so no shell output may contain it.
+pub const ENDPOINT_DETAIL: &str = "endpoint-detail-echoing-the-envelope";
+
+/// The endpoint read its ledger and then reported an error.
+pub fn failure() -> Value {
+    json!({
+        "latestLedger": 4_104_380,
+        "error": format!("HostError: Error(Auth, InvalidAction) {ENDPOINT_DETAIL}")
+    })
+}
+
+/// The endpoint refused before reading its ledger: stellar-rpc answers with `latestLedger` 0.
+pub fn refusal() -> Value {
+    json!({
+        "latestLedger": 0,
+        "error": format!("cannot simulate this transaction: {ENDPOINT_DETAIL}")
+    })
+}
+
+/// One simulation reply and what both shells must report for it.
+pub struct OutcomeCase {
+    pub name: &'static str,
+    pub simulation: Value,
+    pub outcome: &'static str,
+    pub insufficient_declared_resources: Vec<&'static str>,
+}
+
+/// Every non-success outcome, each from a reply the endpoint can send for `envelope`.
+pub fn outcome_cases(envelope: &str) -> Vec<OutcomeCase> {
+    let declared = declared(envelope);
+
+    let mut preamble = success(envelope);
+    preamble["restorePreamble"] = json!({
+        "transactionData": declared.to_xdr_base64(Limits::none()).expect("transaction data XDR"),
+        "minResourceFee": "100"
+    });
+
+    // Since protocol 23 the endpoint restores archived entries inside the simulation and
+    // lists them, by read-write footprint index, in the simulated transaction data.
+    let mut restored = declared.clone();
+    assert!(
+        !restored.resources.footprint.read_write.is_empty(),
+        "the example writes ledger state"
+    );
+    restored.ext = SorobanTransactionDataExt::V1(SorobanResourcesExtV0 {
+        archived_soroban_entries: vec![0].try_into().expect("one archived index"),
+    });
+
+    let mut over = declared.clone();
+    over.resources.instructions += 1;
+    over.resource_fee += 1;
+
+    vec![
+        OutcomeCase {
+            name: "failed simulation",
+            simulation: failure(),
+            outcome: "simulation_failed",
+            insufficient_declared_resources: vec![],
+        },
+        OutcomeCase {
+            name: "restoration preamble",
+            simulation: preamble,
+            outcome: "restoration_required",
+            insufficient_declared_resources: vec![],
+        },
+        OutcomeCase {
+            name: "entries restored inside the simulation",
+            simulation: simulation_using(&restored),
+            outcome: "restoration_required",
+            insufficient_declared_resources: vec![],
+        },
+        OutcomeCase {
+            name: "under-declared resources",
+            simulation: simulation_using(&over),
+            outcome: "declared_resources_insufficient",
+            insufficient_declared_resources: vec!["instructions", "resource_fee"],
+        },
+    ]
+}
+
 /// Serve `getNetwork` and one `simulateTransaction` answered with `simulation`, returning
 /// both exact requests.
 pub fn spawn(simulation: Value) -> (String, JoinHandle<Vec<Value>>) {
@@ -97,6 +179,9 @@ pub fn spawn(simulation: Value) -> (String, JoinHandle<Vec<Value>>) {
                     Err(error) => panic!("accept RPC request: {error}"),
                 }
             };
+            // A socket accepted from a non-blocking listener is itself non-blocking on BSD
+            // and macOS, so a read could fail before the client has written its request.
+            stream.set_nonblocking(false).expect("blocking RPC stream");
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
