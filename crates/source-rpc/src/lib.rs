@@ -36,8 +36,8 @@ pub use footprint_capture::{
     InvocationFootprintCapture,
 };
 pub use preflight::{
-    envelope_carries_signatures, preflight_transaction, DeclaredResource, PreflightObservation,
-    PreflightOutcome, SimulationAuthMode,
+    envelope_carries_signatures, preflight_transaction, DeclaredResource, EstimatedResource,
+    PreflightObservation, PreflightOutcome, SimulationAuthMode,
 };
 
 use ozpb_recorder_core::{
@@ -67,7 +67,7 @@ const MAX_XDR_BYTES: usize = 512 * 1024;
 /// shell reading an envelope from a file stops at the same bound.
 pub const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
 const MAX_XDR_DEPTH: u32 = 128;
-// Not gated on the transport: the account scan sizes its retained-witness budget from it too.
+#[cfg(feature = "http")]
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 /// How much of a non-JSON-RPC error body an error message may quote.
 #[cfg(feature = "http")]
@@ -1385,6 +1385,26 @@ mod tests {
     };
 
     const NET: &str = "Test SDF Network ; September 2015";
+
+    #[test]
+    fn ledger_request_redaction_keeps_the_category_and_drops_endpoint_text() {
+        let secret = "endpoint echoed requested key AAAAsecret".to_string();
+        for error in [
+            RpcError::InvalidRequest(secret.clone()),
+            RpcError::Transport(secret.clone()),
+            RpcError::Malformed(secret.clone()),
+            RpcError::Rpc(secret.clone()),
+            RpcError::NotFound(secret.clone()),
+            RpcError::Evidence(secret.clone()),
+            RpcError::CodeRead(secret.clone()),
+            RpcError::UndecodableAccountStorage(secret.clone()),
+        ] {
+            let category = std::mem::discriminant(&error);
+            let redacted = redact_ledger_request_error(error);
+            assert_eq!(std::mem::discriminant(&redacted), category, "{redacted}");
+            assert!(!redacted.to_string().contains("AAAAsecret"), "{redacted}");
+        }
+    }
 
     /// What `getNetwork` really answers: the passphrase and the protocol the endpoint is on.
     fn network_response() -> serde_json::Value {
