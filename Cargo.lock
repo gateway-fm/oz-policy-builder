@@ -1319,6 +1319,8 @@ dependencies = [
 name = "ozpb-source-rpc"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "ozpb-call-surface-core",
  "ozpb-domain",
  "ozpb-recorder-core",
  "serde",

@@ -49,6 +49,12 @@ pub mod domains {
     pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
     /// The enumerated account rule-set a call-surface verdict was computed over.
     pub const ACCOUNT_STATE: &str = "ozpb:v1:account-state";
+    /// Ordered raw account and policy-instance ledger values, TTLs, and omitted keys.
+    pub const ACCOUNT_LEDGER_WITNESS: &str = "ozpb:v1:account-ledger-witness";
+    /// Reviewed method inventory for an exact account Wasm hash.
+    pub const ACCOUNT_METHOD_INVENTORY: &str = "ozpb:v1:account-method-inventory";
+    /// Observed, eligible management rule identity; wallet intent is established separately.
+    pub const ACCOUNT_ADMIN_CANDIDATE: &str = "ozpb:v1:account-admin-candidate";
     /// A generated crate's source files, lockfile excluded — the value a BuildManifest records
     /// as `source_hash`.
     pub const GENERATED_SOURCE: &str = "ozpb:v1:generated-source";
@@ -77,6 +83,9 @@ pub mod domains {
         POLICY_BINDING_SET,
         POLICY_CHECK_REQUEST,
         ACCOUNT_STATE,
+        ACCOUNT_LEDGER_WITNESS,
+        ACCOUNT_METHOD_INVENTORY,
+        ACCOUNT_ADMIN_CANDIDATE,
         GENERATED_SOURCE,
         GENERATED_CRATE_FILES,
         SURFACE_VERDICT,

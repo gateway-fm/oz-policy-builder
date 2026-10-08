@@ -7,15 +7,15 @@
 //! authority verdict without a separate snapshot and rule-enumeration protocol.
 
 use super::{
-    parse_contract_executables, verify_network, xdr_limits, ObservedExecutable, RpcError,
-    RpcTransport, MAX_LEDGER_ENTRY_KEYS,
+    ledger_witness::LedgerWitness, parse_contract_executables, verify_network, xdr_limits,
+    ObservedExecutable, RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use stellar_xdr::{
-    ContractDataDurability, ContractId, Hash, LedgerKey, LedgerKeyContractData, ScAddress, ScVal,
-    WriteXdr,
+    ContractDataDurability, ContractId, Hash, LedgerEntryData, LedgerKey, LedgerKeyContractData,
+    ReadXdr, ScAddress, ScVal, WriteXdr,
 };
 
 /// Wasm code identities returned in one checked `getLedgerEntries` response.
@@ -38,6 +38,17 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
     network_passphrase: &str,
     addresses: &[String],
 ) -> Result<ContractCodeRead, RpcError> {
+    read_contract_wasm_hashes_with_witnesses(transport, network_passphrase, addresses)
+        .map(|(read, _)| read)
+}
+
+/// Preserve validated full entry payloads for a scanner without changing the public
+/// code-read result shape.
+pub(crate) fn read_contract_wasm_hashes_with_witnesses<T: RpcTransport>(
+    transport: &T,
+    network_passphrase: &str,
+    addresses: &[String],
+) -> Result<(ContractCodeRead, BTreeMap<Vec<u8>, LedgerWitness>), RpcError> {
     if addresses.is_empty() || addresses.len() > MAX_LEDGER_ENTRY_KEYS {
         return Err(RpcError::InvalidRequest(format!(
             "contract code read requires 1..={MAX_LEDGER_ENTRY_KEYS} unique addresses"
@@ -98,6 +109,7 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
     let entries = result["entries"]
         .as_array()
         .ok_or_else(|| RpcError::Malformed("getLedgerEntries has no entries array".to_string()))?;
+    let mut witnesses = BTreeMap::new();
     for (index, entry) in entries.iter().enumerate() {
         let live_until: u32 = entry
             .get("liveUntilLedgerSeq")
@@ -118,6 +130,46 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
                 "getLedgerEntries entry {index} is not live at reported ledger {reported_latest_ledger}"
             )));
         }
+        let key = entry["key"]
+            .as_str()
+            .ok_or_else(|| RpcError::Malformed(format!("entry {index} has no string key")))?;
+        let key_xdr = LedgerKey::from_xdr_base64(key, xdr_limits())
+            .and_then(|key| key.to_xdr(xdr_limits()))
+            .map_err(|error| RpcError::Malformed(format!("entry {index} key XDR: {error}")))?;
+        let data = entry["xdr"]
+            .as_str()
+            .ok_or_else(|| RpcError::Malformed(format!("entry {index} has no string xdr")))?;
+        let LedgerEntryData::ContractData(data) =
+            LedgerEntryData::from_xdr_base64(data, xdr_limits()).map_err(|error| {
+                RpcError::Malformed(format!("entry {index} value XDR: {error}"))
+            })?
+        else {
+            return Err(RpcError::Malformed(format!(
+                "entry {index} is not contract data"
+            )));
+        };
+        let entry_data_xdr = LedgerEntryData::ContractData(data)
+            .to_xdr(xdr_limits())
+            .map_err(|error| RpcError::Malformed(format!("entry {index} payload XDR: {error}")))?;
+        let last_modified_ledger: u32 = entry["lastModifiedLedgerSeq"]
+            .as_u64()
+            .ok_or_else(|| {
+                RpcError::Malformed(format!(
+                    "entry {index} has no integer lastModifiedLedgerSeq"
+                ))
+            })?
+            .try_into()
+            .map_err(|_| {
+                RpcError::Malformed(format!("entry {index} lastModifiedLedgerSeq exceeds u32"))
+            })?;
+        witnesses.insert(
+            key_xdr,
+            LedgerWitness::Present {
+                entry_data_xdr,
+                last_modified_ledger,
+                live_until_ledger: live_until,
+            },
+        );
     }
 
     let mut wasm_hashes = BTreeMap::new();
@@ -129,9 +181,12 @@ pub fn read_contract_wasm_hashes<T: RpcTransport>(
         };
         wasm_hashes.insert(address, code_hash);
     }
-    Ok(ContractCodeRead {
-        network_id: NetworkId::from_passphrase(network_passphrase),
-        reported_latest_ledger: LedgerSeq(reported_latest_ledger),
-        wasm_hashes,
-    })
+    Ok((
+        ContractCodeRead {
+            network_id: NetworkId::from_passphrase(network_passphrase),
+            reported_latest_ledger: LedgerSeq(reported_latest_ledger),
+            wasm_hashes,
+        },
+        witnesses,
+    ))
 }

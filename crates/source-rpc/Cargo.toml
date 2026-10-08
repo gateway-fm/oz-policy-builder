@@ -10,9 +10,11 @@ description = "Stellar RPC adapter for recording, checked contract reads, and tr
 [dependencies]
 ozpb-recorder-core = { workspace = true }
 ozpb-domain = { workspace = true }
+ozpb-call-surface-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
 ureq = { workspace = true }
 stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }
