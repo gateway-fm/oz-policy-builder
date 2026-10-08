@@ -24,6 +24,7 @@ sha2 = "0.10"
 serde_json = "1"
 ozpb-source-rpc = { path = "../../crates/source-rpc" }
 ozpb-recorder-core = { path = "../../crates/recorder-core" }
+ed25519-dalek = "2"
 
 # The generated suite test exercises the harness cases against the compiled golden policy.
 # Cargo applies this dev-dependency to the package, even though only that test uses it.

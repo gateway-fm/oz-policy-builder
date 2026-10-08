@@ -102,9 +102,10 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-echo "== cloning $UPSTREAM_REPO at $UPSTREAM_TAG =="
+source_repo="${OZPB_PINNED_UPSTREAM_SOURCE:-$UPSTREAM_REPO}"
+echo "== cloning $source_repo at $UPSTREAM_TAG =="
 if ! git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" \
-    "$UPSTREAM_REPO" "$WORK/src" 2>/dev/null; then
+    "$source_repo" "$WORK/src" 2>/dev/null; then
     echo "  clone failed — no network, or the tag no longer exists upstream"
     exit 1
 fi
@@ -150,6 +151,10 @@ PY
             if ! python3 scripts/check-wasm-exports.py "$wasm" \
                 crates/registry/tests/fixtures/pinned_account_exports.txt "$pinned"; then
                 fail=1
+            elif [ -n "${OZPB_VERIFIED_ACCOUNT_WASM_OUT:-}" ]; then
+                # Optional output for the full account authorization test. Only copy after
+                # the exact hash and export set both match the reviewed pin.
+                cp "$wasm" "$OZPB_VERIFIED_ACCOUNT_WASM_OUT"
             fi
         fi
     else
