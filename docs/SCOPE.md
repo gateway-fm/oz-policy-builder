@@ -138,9 +138,11 @@ The source-reviewed account method inventory and its limits are described in
    the captured transfer call with locally signed authorization through the pinned account
    Wasm and generated policy Wasm. The target fixture debits one balance key; it does not
    credit a recipient.
-   A direct signed account check returns the policy's exact denial for an adjacent amount,
-   while the target call refuses it with a host context error; the target has sufficient
-   balance in both cases. The permitted write and call count commit. These tests use
+   A direct signed account check returns the policy's exact denial for an adjacent amount.
+   The target call returns only the host's generic context error, which a missing or
+   mismatched authorization entry would also produce; the policy's diagnostic error event
+   attributes that refusal to the same denial. The target has sufficient balance in both
+   cases. The permitted write and call count commit. These tests use
    deterministic fixture RPC data, synthetic candidate account/policy state, and SDK default
    ledger header/configuration apart from the reported sequence and network ID. They
    demonstrate only these fixed-key calls. They do not establish key closure or authorization

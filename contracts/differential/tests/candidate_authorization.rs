@@ -48,6 +48,8 @@ const EXPECTED_TARGET_HASH: &str =
     "d3766fbdf07170a55da903b75ef2262e3e84541e0304ac93425261c812032098";
 const EXPECTED_POLICY_HASH: &str =
     "27980fdd1b892397fdd25ea511eccc1825b1209c2a9ae8e48359a1d70a22287d";
+/// Generated policy error for a context that no accepted call tuple admits.
+const NO_TUPLE_MATCHED: u32 = 6;
 
 fn sdk_scval<T: IntoVal<Env, Val>>(env: &Env, value: T) -> sdk_xdr::ScVal {
     <sdk_xdr::ScVal as sdk_xdr::ReadXdr>::from_xdr(
@@ -285,6 +287,30 @@ fn remaining_calls(env: &Env, policy: &Address, account: &Address) -> u32 {
     )
 }
 
+/// Diagnostic `error` events raised by `contract` with this contract error
+/// code, among the events of the last top-level invocation.
+fn contract_error_events(env: &Env, contract: &Address, code: u32) -> usize {
+    let sdk_xdr::ScAddress::Contract(contract_id) = as_sc_address(env, contract) else {
+        panic!("expected a contract address")
+    };
+    let topics = [
+        sdk_scval(env, Symbol::new(env, "error")),
+        sdk_xdr::ScVal::Error(sdk_xdr::ScError::Contract(code)),
+    ];
+    env.host()
+        .get_diagnostic_events()
+        .unwrap()
+        .0
+        .iter()
+        .filter(|event| {
+            let sdk_xdr::ContractEventBody::V0(body) = &event.event.body;
+            event.event.type_ == sdk_xdr::ContractEventType::Diagnostic
+                && event.event.contract_id.as_ref() == Some(&contract_id)
+                && body.topics.as_slice() == topics.as_slice()
+        })
+        .count()
+}
+
 #[test]
 #[ignore = "requires source-built account, generated policy, and target Wasm; run scripts/test-pinned-account-authorization.sh"]
 fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
@@ -435,12 +461,11 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
     assert_eq!(remaining_calls(env, &policy, &account), 11);
     assert_eq!(*world.rejected.borrow(), 0);
 
-    // Adjacent amount remains within the target balance, so only the account
-    // policy can explain this denial. The failed call cannot spend policy state.
-    // First ask the complete account path for the exact mutated context and
-    // assert its specific policy error. The host wraps that error as a context
-    // failure when the target calls require_auth, so this control preserves the
-    // denial's attribution rather than accepting any target failure.
+    // Adjacent amount remains within the target balance, so the target's own
+    // checks admit it. The failed call cannot spend policy state. First ask the
+    // complete account path for the exact mutated context and assert its
+    // specific policy error. This direct check signs a fixed test payload: it
+    // shows which error the context draws, not why the target call fails.
     let mut signers = Map::new(env);
     signers.set(Signer::Delegated(delegate.clone()), Bytes::new(env));
     let rule_ids = svec![env, 0u32];
@@ -474,9 +499,21 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
         .into_val(env),
         &svec![env, context],
     );
-    assert_eq!(direct, Err(Ok(soroban_sdk::Error::from_contract_error(6))));
+    assert_eq!(
+        direct,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            NO_TUPLE_MATCHED
+        )))
+    );
     assert_eq!(remaining_calls(env, &policy, &account), 11);
 
+    // The host's try_call narrows every recoverable non-contract failure to
+    // Error(Context, InvalidAction): a target panic, a missing auth entry, and
+    // an entry signed for another amount all return the same code. The policy's
+    // own diagnostic error event attributes this denial. The SDK clears the
+    // host event buffer at each top-level invocation, so the events are read
+    // before the next call, and none from the direct check is still in view.
+    assert_eq!(contract_error_events(env, &policy, NO_TUPLE_MATCHED), 0);
     env.set_auths(&signed_entries(&signing, AMOUNT + 1, 501));
     let denied = env.try_invoke_contract::<(), soroban_sdk::Error>(
         &target,
@@ -495,6 +532,10 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
             ScErrorCode::InvalidAction,
         ))),
         "host must refuse the policy-denied target authorization"
+    );
+    assert!(
+        contract_error_events(env, &policy, NO_TUPLE_MATCHED) > 0,
+        "the policy must record NoTupleMatched for the denied target call"
     );
     assert_eq!(balance(env, &target), START_BALANCE - AMOUNT);
     assert_eq!(remaining_calls(env, &policy, &account), 11);
