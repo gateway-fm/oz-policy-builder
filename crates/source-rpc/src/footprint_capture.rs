@@ -3,6 +3,10 @@
 //! This is endpoint-reported state for the original envelope's declared keys.
 //! A candidate policy or changed invocation can touch other keys, and an omitted
 //! RPC key could be absent or archived. Neither case is silently filled in.
+//!
+//! The declared footprint is the envelope's own claim. The network enforces it when
+//! the transaction executes; a simulation of an invocation ignores it, and nothing
+//! here compares it with one (`preflight_transaction` does that separately).
 
 use crate::{
     ensure_base64_size, redact_ledger_request_error, validate_simulation_envelope, verify_network,

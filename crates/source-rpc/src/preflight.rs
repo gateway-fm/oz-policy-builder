@@ -1,9 +1,15 @@
 //! State-dependent simulation of one exact transaction envelope.
 //!
-//! This uses authorization enforcement, unlike record-mode acquisition. A successful
-//! RPC simulation is evidence about that envelope at the endpoint's reported ledger;
-//! it does not establish that an installed policy was selected, that a later ledger
-//! will behave the same way, or that a transaction was submitted.
+//! This uses authorization enforcement, unlike record-mode acquisition. The endpoint
+//! simulates only part of the envelope: its source account (or the operation's), the one
+//! operation's host function and authorization entries, under `authMode=enforce`. It does
+//! not evaluate the envelope's signatures, fee, sequence number, or time bounds and other
+//! preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
+//! resource limits. This adapter compares those declared limits with what the simulation
+//! used; nothing else in the envelope is checked against the result. A successful
+//! simulation is evidence about that invocation at the endpoint's reported ledger; it does
+//! not establish that an installed policy was selected, that a later ledger will behave the
+//! same way, or that a transaction was submitted.
 
 use crate::{
     ensure_base64_size, validate_simulation_envelope, verify_network, xdr_limits, RpcError,
@@ -12,15 +18,18 @@ use crate::{
 use ozpb_domain::{sha256, NetworkId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use stellar_xdr::{
-    ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionData, SorobanTransactionDataExt,
-    WriteXdr,
+    LedgerKey, ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionData,
+    SorobanTransactionDataExt, TransactionEnvelope, TransactionExt, WriteXdr,
 };
 
 /// Result of an enforcement-mode trial of one transaction, never a policy verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightOutcome {
+    /// The invocation succeeded at the endpoint's state, and the envelope's declared Soroban
+    /// footprint and resource limits cover what the simulation used.
     SimulatedSuccess,
     SimulationFailed,
     /// The invocation reached success only with archived entries restored, whether the
@@ -28,9 +37,36 @@ pub enum PreflightOutcome {
     /// inside the simulation and listed them in the simulated transaction data. It is not a
     /// success against the endpoint's current state.
     RestorationRequired,
+    /// The invocation succeeded in simulation, but the envelope as written declares less
+    /// than the simulation used in each listed dimension, so the network would refuse or
+    /// fail it. Keys are not named: the footprint is confidential envelope content.
+    DeclaredResourcesInsufficient(Vec<DeclaredResource>),
 }
 
-/// RPC-reported, state-dependent evidence for the exact envelope identified by its XDR hash.
+/// A part of the envelope's declared `SorobanTransactionData` that is checked against the
+/// simulated one. An envelope without Soroban transaction data declares an empty footprint
+/// and zero limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeclaredResource {
+    /// A key the simulation read is in neither declared footprint list. A read-write
+    /// declaration also permits reads.
+    ReadOnlyFootprint,
+    /// A key the simulation wrote is not in the declared read-write list.
+    ReadWriteFootprint,
+    Instructions,
+    DiskReadBytes,
+    WriteBytes,
+    ResourceFee,
+}
+
+/// RPC-reported, state-dependent evidence about one envelope's invocation.
+///
+/// `envelope_xdr_sha256` identifies the input bytes, not everything that was evaluated: the
+/// endpoint simulated the source account, host function and authorization entries; this
+/// adapter compared the declared Soroban footprint and resource limits with the simulated
+/// ones. Signatures, the transaction fee, sequence number, and time bounds and other
+/// preconditions were not evaluated by either.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreflightObservation {
     /// SHA-256 of the canonical envelope XDR bytes, not a transaction hash.
@@ -54,7 +90,9 @@ pub struct PreflightObservation {
 /// the envelope. RPC errors in a result become `SimulationFailed`; the endpoint's raw
 /// error string is withheld because it can reflect confidential envelope contents.
 /// A success that needed archived entries restored, by preamble or by the endpoint's
-/// automatic restoration, is `RestorationRequired`, not a successful invocation.
+/// automatic restoration, is `RestorationRequired`, not a successful invocation. A
+/// success outside the envelope's declared footprint or resource limits is
+/// `DeclaredResourcesInsufficient`.
 pub fn preflight_transaction<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -65,6 +103,7 @@ pub fn preflight_transaction<T: RpcTransport>(
         .to_xdr(xdr_limits())
         .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))?;
     let envelope_xdr_sha256 = sha256(&envelope_xdr).to_hex();
+    let declared = declared_transaction_data(&envelope);
     verify_network(transport, network_passphrase)?;
     let result = transport
         .call(
@@ -78,9 +117,84 @@ pub fn preflight_transaction<T: RpcTransport>(
         .map_err(redact_simulation_error)?;
     parse_preflight(
         &result,
+        &declared,
         envelope_xdr_sha256,
         NetworkId::from_passphrase(network_passphrase).0.to_hex(),
     )
+}
+
+/// The Soroban transaction data the envelope declares, or none (an empty footprint and zero
+/// limits). A fee bump declares its inner transaction's.
+fn declared_transaction_data(envelope: &TransactionEnvelope) -> SorobanTransactionData {
+    let ext = match envelope {
+        TransactionEnvelope::Tx(v1) => &v1.tx.ext,
+        TransactionEnvelope::TxFeeBump(bump) => {
+            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+            &inner.tx.ext
+        }
+        // Refused by `validate_simulation_envelope`; a v0 transaction declares nothing.
+        TransactionEnvelope::TxV0(_) => return SorobanTransactionData::default(),
+    };
+    match ext {
+        TransactionExt::V1(data) => data.clone(),
+        TransactionExt::V0 => SorobanTransactionData::default(),
+    }
+}
+
+/// Each dimension in which the declared data does not cover the simulated data.
+fn declared_shortfall(
+    declared: &SorobanTransactionData,
+    simulated: &SorobanTransactionData,
+) -> Vec<DeclaredResource> {
+    let declared_read_only: BTreeSet<&LedgerKey> =
+        declared.resources.footprint.read_only.iter().collect();
+    let declared_read_write: BTreeSet<&LedgerKey> =
+        declared.resources.footprint.read_write.iter().collect();
+    let mut short = Vec::new();
+    if simulated
+        .resources
+        .footprint
+        .read_only
+        .iter()
+        .any(|key| !declared_read_only.contains(key) && !declared_read_write.contains(key))
+    {
+        short.push(DeclaredResource::ReadOnlyFootprint);
+    }
+    if simulated
+        .resources
+        .footprint
+        .read_write
+        .iter()
+        .any(|key| !declared_read_write.contains(key))
+    {
+        short.push(DeclaredResource::ReadWriteFootprint);
+    }
+    let (declared_limits, used) = (&declared.resources, &simulated.resources);
+    for (dimension, declared_limit, used) in [
+        (
+            DeclaredResource::Instructions,
+            declared_limits.instructions,
+            used.instructions,
+        ),
+        (
+            DeclaredResource::DiskReadBytes,
+            declared_limits.disk_read_bytes,
+            used.disk_read_bytes,
+        ),
+        (
+            DeclaredResource::WriteBytes,
+            declared_limits.write_bytes,
+            used.write_bytes,
+        ),
+    ] {
+        if declared_limit < used {
+            short.push(dimension);
+        }
+    }
+    if declared.resource_fee < simulated.resource_fee {
+        short.push(DeclaredResource::ResourceFee);
+    }
+    short
 }
 
 fn redact_simulation_error(error: RpcError) -> RpcError {
@@ -103,6 +217,7 @@ fn redact_simulation_error(error: RpcError) -> RpcError {
 
 fn parse_preflight(
     result: &Value,
+    declared: &SorobanTransactionData,
     envelope_xdr_sha256: String,
     network_id: String,
 ) -> Result<PreflightObservation, RpcError> {
@@ -141,10 +256,18 @@ fn parse_preflight(
     } else if let Some(restore) = result.get("restorePreamble") {
         validate_restoration(restore)?;
         PreflightOutcome::RestorationRequired
-    } else if restores_archived_entries(&validate_success(result)?)? {
-        PreflightOutcome::RestorationRequired
     } else {
-        PreflightOutcome::SimulatedSuccess
+        let simulated = validate_success(result)?;
+        if restores_archived_entries(&simulated)? {
+            PreflightOutcome::RestorationRequired
+        } else {
+            let short = declared_shortfall(declared, &simulated);
+            if short.is_empty() {
+                PreflightOutcome::SimulatedSuccess
+            } else {
+                PreflightOutcome::DeclaredResourcesInsufficient(short)
+            }
+        }
     };
     Ok(PreflightObservation {
         envelope_xdr_sha256,
@@ -263,8 +386,8 @@ mod tests {
     use ozpb_recorder_core::{fixtures, record, RecordOptions};
     use std::cell::RefCell;
     use stellar_xdr::{
-        ContractDataDurability, ContractId, Hash, LedgerKey, LedgerKeyContractData, ScAddress,
-        SorobanResourcesExtV0, SorobanTransactionDataExt,
+        ContractDataDurability, ContractId, Hash, LedgerKeyContractData, ScAddress,
+        SorobanResourcesExtV0, VecM,
     };
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
@@ -397,6 +520,169 @@ mod tests {
             archived_soroban_entries: indices.try_into().unwrap(),
         });
         data
+    }
+
+    /// The fixture envelope with `declared` as its Soroban transaction data.
+    fn envelope_declaring(declared: &SorobanTransactionData) -> String {
+        let mut parsed =
+            stellar_xdr::TransactionEnvelope::from_xdr_base64(envelope(), xdr_limits()).unwrap();
+        let stellar_xdr::TransactionEnvelope::Tx(v1) = &mut parsed else {
+            panic!("fixture has one ordinary transaction")
+        };
+        v1.tx.ext = stellar_xdr::TransactionExt::V1(declared.clone());
+        parsed.to_xdr_base64(xdr_limits()).unwrap()
+    }
+
+    fn success_using(simulated: &SorobanTransactionData) -> Value {
+        let mut result = success();
+        result["transactionData"] = json!(simulated.to_xdr_base64(xdr_limits()).unwrap());
+        result["minResourceFee"] = json!(simulated.resource_fee.to_string());
+        result
+    }
+
+    #[test]
+    fn a_success_outside_the_declared_footprint_is_not_an_unqualified_success() {
+        // stellar-rpc ignores the envelope's own footprint for an invocation and reports the
+        // one it recorded, so the envelope as written can still fail on submission.
+        let mut simulated = SorobanTransactionData::default();
+        simulated.resources.footprint.read_only = vec![storage_key(1)].try_into().unwrap();
+        let observation = preflight_transaction(
+            &CannedTransport::new(success_using(&simulated)),
+            NETWORK,
+            &envelope_declaring(&SorobanTransactionData::default()),
+        )
+        .unwrap();
+        assert_eq!(
+            observation.outcome,
+            PreflightOutcome::DeclaredResourcesInsufficient(vec![
+                DeclaredResource::ReadOnlyFootprint
+            ])
+        );
+    }
+
+    fn realistic_usage() -> SorobanTransactionData {
+        let mut data = SorobanTransactionData::default();
+        data.resources.footprint.read_only = vec![storage_key(1)].try_into().unwrap();
+        data.resources.footprint.read_write = vec![storage_key(2)].try_into().unwrap();
+        data.resources.instructions = 1_000_000;
+        data.resources.disk_read_bytes = 2_000;
+        data.resources.write_bytes = 300;
+        data.resource_fee = 40_000;
+        data
+    }
+
+    fn outcome_declaring(simulated: &SorobanTransactionData, envelope: &str) -> PreflightOutcome {
+        preflight_transaction(
+            &CannedTransport::new(success_using(simulated)),
+            NETWORK,
+            envelope,
+        )
+        .unwrap()
+        .outcome
+    }
+
+    #[test]
+    fn declared_resources_are_compared_with_the_simulation_dimension_by_dimension() {
+        let simulated = realistic_usage();
+        // Controls: exactly what was used covers it, and so does declaring a read as a
+        // write, because a read-write footprint entry also permits reads.
+        assert_eq!(
+            outcome_declaring(&simulated, &envelope_declaring(&simulated)),
+            PreflightOutcome::SimulatedSuccess
+        );
+        let mut widened = simulated.clone();
+        widened.resources.footprint.read_only = VecM::default();
+        widened.resources.footprint.read_write =
+            vec![storage_key(2), storage_key(1)].try_into().unwrap();
+        assert_eq!(
+            outcome_declaring(&simulated, &envelope_declaring(&widened)),
+            PreflightOutcome::SimulatedSuccess
+        );
+
+        type Shrink = fn(&mut SorobanTransactionData);
+        let cases: [(Shrink, DeclaredResource); 6] = [
+            (
+                |data| data.resources.footprint.read_only = VecM::default(),
+                DeclaredResource::ReadOnlyFootprint,
+            ),
+            (
+                // The written key is declared, but only for reading.
+                |data| {
+                    data.resources.footprint.read_only =
+                        vec![storage_key(1), storage_key(2)].try_into().unwrap();
+                    data.resources.footprint.read_write = VecM::default();
+                },
+                DeclaredResource::ReadWriteFootprint,
+            ),
+            (
+                |data| data.resources.instructions -= 1,
+                DeclaredResource::Instructions,
+            ),
+            (
+                |data| data.resources.disk_read_bytes -= 1,
+                DeclaredResource::DiskReadBytes,
+            ),
+            (
+                |data| data.resources.write_bytes -= 1,
+                DeclaredResource::WriteBytes,
+            ),
+            (|data| data.resource_fee -= 1, DeclaredResource::ResourceFee),
+        ];
+        for (shrink, dimension) in cases {
+            let mut declared = simulated.clone();
+            shrink(&mut declared);
+            assert_eq!(
+                outcome_declaring(&simulated, &envelope_declaring(&declared)),
+                PreflightOutcome::DeclaredResourcesInsufficient(vec![dimension])
+            );
+        }
+
+        // An envelope with no Soroban transaction data declares nothing, and a fee bump
+        // declares its inner transaction's data.
+        assert_eq!(
+            outcome_declaring(&simulated, &envelope()),
+            PreflightOutcome::DeclaredResourcesInsufficient(vec![
+                DeclaredResource::ReadOnlyFootprint,
+                DeclaredResource::ReadWriteFootprint,
+                DeclaredResource::Instructions,
+                DeclaredResource::DiskReadBytes,
+                DeclaredResource::WriteBytes,
+                DeclaredResource::ResourceFee,
+            ])
+        );
+        assert_eq!(
+            outcome_declaring(&simulated, &fee_bump_declaring(&simulated)),
+            PreflightOutcome::SimulatedSuccess
+        );
+        let mut short = simulated.clone();
+        short.resources.instructions -= 1;
+        assert_eq!(
+            outcome_declaring(&simulated, &fee_bump_declaring(&short)),
+            PreflightOutcome::DeclaredResourcesInsufficient(vec![DeclaredResource::Instructions])
+        );
+    }
+
+    fn fee_bump_declaring(declared: &SorobanTransactionData) -> String {
+        let stellar_xdr::TransactionEnvelope::Tx(inner) =
+            stellar_xdr::TransactionEnvelope::from_xdr_base64(
+                envelope_declaring(declared),
+                xdr_limits(),
+            )
+            .unwrap()
+        else {
+            panic!("fixture has one ordinary transaction")
+        };
+        stellar_xdr::TransactionEnvelope::TxFeeBump(stellar_xdr::FeeBumpTransactionEnvelope {
+            tx: stellar_xdr::FeeBumpTransaction {
+                fee_source: stellar_xdr::MuxedAccount::Ed25519(stellar_xdr::Uint256([9; 32])),
+                fee: 200,
+                inner_tx: stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner),
+                ext: stellar_xdr::FeeBumpTransactionExt::V0,
+            },
+            signatures: VecM::default(),
+        })
+        .to_xdr_base64(xdr_limits())
+        .unwrap()
     }
 
     #[test]

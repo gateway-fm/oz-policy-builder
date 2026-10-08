@@ -106,8 +106,10 @@ The source-reviewed account method inventory and its limits are described in
    footprint reader can capture every key declared by one original Soroban envelope in one
    bounded `getLedgerEntries` reply, including keys of dependency contracts, and validates all
    captured Wasm instance-to-code links. Omitted keys are unavailable because the endpoint does
-   not identify their absence or archive history. The original footprint does not prove which
-   additional keys a candidate account, policy, or changed invocation could read.
+   not identify their absence or archive history. The declared footprint is the envelope's own
+   claim; the network enforces it only when the transaction executes, and the reader does not
+   compare it with any simulation. The original footprint does not prove which additional keys
+   a candidate account, policy, or changed invocation could read.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
@@ -117,11 +119,18 @@ The source-reviewed account method inventory and its limits are described in
    evidence. Restoration is reported whether the endpoint returns a separate restoration
    preamble or, as current stellar-rpc does for an invocation, restores archived entries inside
    the simulation and lists them in the simulated transaction data; neither is a success
-   against the endpoint's current state. A successful simulation says only that this exact envelope simulated under the
-   endpoint's state: it does not prove that a particular installed policy was selected, that
-   the same transaction will succeed at a later ledger, or that any writes committed. The
-   caller must supply signed authorization entries in the envelope where the invocation needs
-   them. The source adapter does not return raw RPC error details that could echo confidential
-   envelope contents. Disposable execution against a complete captured target-state fixture,
-   with an explicit ledger context and policy-bound authorization, and a full policy-bound live
-   preflight remain scheduled.
+   against the endpoint's current state. The endpoint simulates only the envelope's source
+   account, its operation's host function, and its authorization entries. It does not evaluate
+   signatures, the transaction fee, the sequence number, or time bounds and other
+   preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
+   resource limits. The adapter therefore compares the declared footprint, instructions,
+   disk-read bytes, write bytes, and resource fee with the simulated ones, and reports a
+   separate outcome naming each insufficient dimension, without naming keys. A successful
+   simulation says only that this invocation succeeded under the endpoint's state within the
+   envelope's declared footprint and limits: it does not prove that a particular installed
+   policy was selected, that the same transaction will succeed at a later ledger, or that any
+   writes committed. The caller must supply signed authorization entries in the envelope where
+   the invocation needs them. The source adapter does not return raw RPC error details that
+   could echo confidential envelope contents. Disposable execution against a complete captured
+   target-state fixture, with an explicit ledger context and policy-bound authorization, and a
+   full policy-bound live preflight remain scheduled.
