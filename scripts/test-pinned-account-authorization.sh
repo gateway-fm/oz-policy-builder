@@ -52,3 +52,25 @@ grep -qx 'test pinned_account_wasm_full_authorization ... ok' "$work/test.log" |
     echo "the required full-authorization test did not run and pass" >&2
     exit 1
 }
+
+# Build the small target from reviewed source. Its hash is asserted in the
+# joined test, and no Wasm artifact is checked into the repository.
+bash scripts/check-build-input-pins.sh
+target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
+case "$target_dir" in
+    /*) ;;
+    *) target_dir="$PWD/$target_dir" ;;
+esac
+CARGO_TARGET_DIR="$target_dir" cargo build --locked --release --target wasm32v1-none \
+    --manifest-path contracts/authorized-target-fixture/Cargo.toml
+export OZPB_TARGET_WASM="$target_dir/wasm32v1-none/release/ozpb_authorized_target_fixture.wasm"
+
+( cd contracts && cargo test --locked -p ozpb-differential \
+    --test candidate_authorization -- --ignored --exact \
+    signed_candidate_executes_captured_target_and_denies_adjacent_amount ) \
+    | tee "$work/candidate.log"
+grep -qx 'test signed_candidate_executes_captured_target_and_denies_adjacent_amount ... ok' \
+    "$work/candidate.log" || {
+    echo "the required signed candidate target test did not run and pass" >&2
+    exit 1
+}

@@ -93,8 +93,8 @@ The source-reviewed account method inventory and its limits are described in
    checks N+1 denial and rollback. Run the script before merging changes to this path; the
    scheduled toolchain job also runs it and fails when a prerequisite or hash is unavailable.
    The ordinary contracts suite explicitly ignores this test because it needs source-built Wasm.
-   This is one fixture and one account code hash. It does not establish general layer-2 coverage,
-   disposable target execution, or live preflight.
+   This account-path test covers one fixture and one account code hash. It does not establish
+   general layer-2 coverage or live preflight.
    The hand-written `differential.rs` checks both verdict and reason for its own cases. Extending
    exact-reason checks to every generated case remains future work. A local two-rule account test
    demonstrates that overlapping counted grants have independent rule-ID counters and can exceed
@@ -108,15 +108,34 @@ The source-reviewed account method inventory and its limits are described in
    caller-selected keys do not establish all state an invocation can read. A narrow test runs
    a small target Wasm fixture through `Env::from_ledger_snapshot` with these captured entries
    and SDK test ledger defaults; a strict source rejects an uncaptured storage read. The RPC
-   capture does not supply a full ledger header or network configuration. The test does not
-   reconstruct the original call, authorize through the account and policy, or demonstrate a
-   stateful mutation suite. It also updates one already captured storage key, advances the
-   disposable ledger, and observes the committed value in a fresh SDK environment. A separate
-   footprint reader can capture every key declared by one original Soroban envelope in one
-   bounded `getLedgerEntries` reply, including keys of dependency contracts, and validates all
-   captured Wasm instance-to-code links. Omitted keys are unavailable because the endpoint does
-   not identify their absence or archive history. The original footprint does not prove which
-   additional keys a candidate account, policy, or changed invocation could read.
+   capture does not supply a full ledger header or network configuration. That earlier narrow
+   test does not reconstruct the original call or authorize through the account and policy.
+   It does not demonstrate a stateful mutation suite. It updates one already captured
+   storage key, advances the disposable ledger, and observes the committed value in a fresh
+   SDK environment. A separate footprint reader captures every key declared by one original
+   Soroban envelope in one bounded `getLedgerEntries` reply, including dependency contract
+   keys. It validates all captured Wasm instance-to-code links. Omitted keys are unavailable
+   because the endpoint does not identify their absence or archive history. The original
+   footprint does not prove which additional keys a candidate account, policy, or changed
+   invocation could read.
+   One exact-footprint fixture derives the original target call from its envelope XDR,
+   captures its declared instance, code, and fixed storage key in one fixture RPC reply,
+   executes that Wasm from a strict SDK snapshot, and observes a committed known-key write
+   after a ledger advance. Missing declared state and a changed call's uncaptured key refuse.
+   A second, source-built target fixture calls `require_auth` before writing its one fixed
+   balance key. It combines target entries from one checked fixture RPC reply with a freshly
+   constructed account and policy snapshot, uses exact new nonce-key allowances, and executes
+   the captured transfer call with locally signed authorization through the pinned account
+   Wasm and generated policy Wasm. The target fixture debits one balance key; it does not
+   credit a recipient.
+   A direct signed account check returns the policy's exact denial for an adjacent amount,
+   while the target call refuses it with a host context error; the target has sufficient
+   balance in both cases. The permitted write and call count commit. These tests use
+   deterministic fixture RPC data, synthetic candidate account/policy state, and SDK default
+   ledger header/configuration apart from the reported sequence and network ID. They
+   demonstrate only these fixed-key calls. They do not establish key closure or authorization
+   for arbitrary target code, reconstruct actual network account state, or provide a public
+   complete dry-run report.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
@@ -128,6 +147,6 @@ The source-reviewed account method inventory and its limits are described in
    the same transaction will succeed at a later ledger, or that any writes committed. The
    caller must supply signed authorization entries in the envelope where the invocation needs
    them. The source adapter does not return raw RPC error details that could echo confidential
-   envelope contents. Disposable execution against a complete captured target-state fixture,
-   with an explicit ledger context and policy-bound authorization, and a full policy-bound live
-   preflight remain scheduled.
+   envelope contents. General disposable execution against complete captured target and
+   dependency state with a full ledger context, and a policy-bound live preflight remain
+   scheduled.

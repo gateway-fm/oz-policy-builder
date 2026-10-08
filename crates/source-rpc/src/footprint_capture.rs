@@ -119,6 +119,15 @@ pub fn read_invocation_footprint<T: RpcTransport>(
                         )
                     })?
                     .to_string();
+                if function_name.is_empty()
+                    || !function_name
+                        .bytes()
+                        .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+                {
+                    return Err(FootprintCaptureError::InvalidFootprint(
+                        "InvokeContract function name is not a valid symbol".to_string(),
+                    ));
+                }
                 let mut args_xdr_base64 = Vec::with_capacity(call.args.len());
                 for arg in call.args.iter() {
                     args_xdr_base64.push(arg.to_xdr_base64(xdr_limits()).map_err(|_| {
@@ -522,6 +531,11 @@ mod tests {
     fn captures_target_and_dependency_keys_declared_by_the_envelope() {
         let (envelope, rpc) = fixture();
         let capture = read_invocation_footprint(&rpc, NETWORK, &envelope).unwrap();
+        let call = capture
+            .invocation
+            .as_ref()
+            .expect("fixture invokes a contract");
+        assert_eq!(call.function_name, "transfer");
         assert_eq!(capture.network_id, NetworkId::from_passphrase(NETWORK));
         assert_eq!(capture.reported_ledger, LedgerSeq(101));
         assert_eq!(capture.validated_wasm_instances, 1);
@@ -537,6 +551,30 @@ mod tests {
             1
         );
         assert_eq!(*rpc.calls.borrow(), ["getNetwork", "getLedgerEntries"]);
+    }
+
+    #[test]
+    fn refuses_a_function_name_the_sdk_cannot_reconstruct() {
+        let (encoded, rpc) = fixture();
+        let mut envelope = TransactionEnvelope::from_xdr_base64(&encoded, xdr_limits()).unwrap();
+        let TransactionEnvelope::Tx(v1) = &mut envelope else {
+            panic!("ordinary transaction")
+        };
+        let mut operations: Vec<_> = v1.tx.operations.iter().cloned().collect();
+        let stellar_xdr::OperationBody::InvokeHostFunction(op) = &mut operations[0].body else {
+            panic!("invoke operation")
+        };
+        let stellar_xdr::HostFunction::InvokeContract(call) = &mut op.host_function else {
+            panic!("invoke contract")
+        };
+        call.function_name = b"bad!".to_vec().try_into().unwrap();
+        v1.tx.operations = operations.try_into().unwrap();
+        let encoded = envelope.to_xdr_base64(xdr_limits()).unwrap();
+        assert!(matches!(
+            read_invocation_footprint(&rpc, NETWORK, &encoded),
+            Err(FootprintCaptureError::InvalidFootprint(message)) if message.contains("valid symbol")
+        ));
+        assert!(rpc.calls.borrow().is_empty());
     }
 
     #[test]

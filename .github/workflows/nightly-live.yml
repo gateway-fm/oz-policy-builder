@@ -210,8 +210,10 @@ jobs:
       # This gate compiles the reviewed upstream account source at the recorded
       # tag, checks its exact code hash, then invokes a generated policy Wasm
       # through the full account __check_auth path using a signed delegated
-      # authorization. It fails if either binary cannot be built or differs.
-      - name: pinned account authorization and committed-state limit
+      # authorization. It also builds a source-defined target Wasm and checks one
+      # signed, synthetic candidate transfer against exact fixture target keys.
+      # It fails if any of the three Wasm artifacts cannot be built or differs.
+      - name: pinned account authorization and signed target fixture
         run: bash scripts/test-pinned-account-authorization.sh
 
       # The Tranche-1 outcome, executed against live testnet from scratch: deploy an OZ smart
