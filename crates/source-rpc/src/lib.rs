@@ -188,6 +188,9 @@ fn redact_ledger_request_error(error: RpcError) -> RpcError {
         },
         RpcError::Evidence(_) => RpcError::Evidence(WITHHELD.to_string()),
         RpcError::CodeRead(_) => RpcError::CodeRead(WITHHELD.to_string()),
+        RpcError::UndecodableAccountStorage(_) => {
+            RpcError::UndecodableAccountStorage(WITHHELD.to_string())
+        }
     }
 }
 
@@ -1354,6 +1357,26 @@ mod tests {
     };
 
     const NET: &str = "Test SDF Network ; September 2015";
+
+    #[test]
+    fn ledger_request_redaction_keeps_the_category_and_drops_endpoint_text() {
+        let secret = "endpoint echoed requested key AAAAsecret".to_string();
+        for error in [
+            RpcError::InvalidRequest(secret.clone()),
+            RpcError::Transport(secret.clone()),
+            RpcError::Malformed(secret.clone()),
+            RpcError::Rpc(secret.clone()),
+            RpcError::NotFound(secret.clone()),
+            RpcError::Evidence(secret.clone()),
+            RpcError::CodeRead(secret.clone()),
+            RpcError::UndecodableAccountStorage(secret.clone()),
+        ] {
+            let category = std::mem::discriminant(&error);
+            let redacted = redact_ledger_request_error(error);
+            assert_eq!(std::mem::discriminant(&redacted), category, "{redacted}");
+            assert!(!redacted.to_string().contains("AAAAsecret"), "{redacted}");
+        }
+    }
 
     /// What `getNetwork` really answers: the passphrase and the protocol the endpoint is on.
     fn network_response() -> serde_json::Value {

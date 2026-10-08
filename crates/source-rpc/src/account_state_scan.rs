@@ -1052,6 +1052,8 @@ mod tests {
         );
         // Instance, rules, signers, then the second code-read batch is the one refused.
         assert_eq!(large.calls.get(), 5);
+        // The cap exists only with the HTTP transport this test stands in for.
+        #[cfg(feature = "http")]
         assert!(measured.largest_response.get() <= crate::MAX_HTTP_RESPONSE_BYTES);
     }
 
