@@ -18,7 +18,6 @@ use crate::{
 use ozpb_domain::{sha256, NetworkId, TrustLevel};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use stellar_xdr::{
     LedgerKey, ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionData,
     SorobanTransactionDataExt, TransactionEnvelope, TransactionExt, WriteXdr,
@@ -30,8 +29,8 @@ use stellar_xdr::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightOutcome {
-    /// The invocation succeeded at the endpoint's state, and the envelope's declared Soroban
-    /// footprint and resource limits cover what the simulation used.
+    /// The invocation succeeded at the endpoint's state. The envelope declares exactly the
+    /// simulated footprint, and its declared resource limits cover the simulated ones.
     SimulatedSuccess,
     /// The endpoint reported an error after reading its ledger. That covers an invocation or
     /// authorization failure and an error inside the endpoint's simulator alike; the text
@@ -43,9 +42,10 @@ pub enum PreflightOutcome {
     /// inside the simulation and listed them in the simulated transaction data. It is not a
     /// success against the endpoint's current state.
     RestorationRequired,
-    /// The invocation succeeded in simulation, but the envelope as written declares less
-    /// than the simulation used in each listed dimension, so the network would refuse or
-    /// fail it. Keys are not named: the footprint is confidential envelope content.
+    /// The invocation succeeded in simulation, but in each listed dimension the envelope as
+    /// written does not declare what the simulation used, so the simulation does not show
+    /// that the envelope can succeed. Keys are not named: the footprint is confidential
+    /// envelope content.
     DeclaredResourcesInsufficient(Vec<DeclaredResource>),
 }
 
@@ -55,10 +55,14 @@ pub enum PreflightOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeclaredResource {
-    /// A key the simulation read is in neither declared footprint list. A read-write
-    /// declaration also permits reads.
+    /// The declared read-only list is not exactly the simulated one, in any order: a key is
+    /// missing, extra, or repeated. The network charges for the footprint the envelope
+    /// declares, so an extra key is not harmless: an extra classic entry adds disk-read
+    /// bytes, and a read declared read-write is also listed under `ReadWriteFootprint`.
     ReadOnlyFootprint,
-    /// A key the simulation wrote is not in the declared read-write list.
+    /// The declared read-write list is not exactly the simulated one, in any order. The
+    /// network writes every existing read-write entry back and counts it against the
+    /// declared write bytes, so an extra key can exceed a limit the simulation fit.
     ReadWriteFootprint,
     Instructions,
     DiskReadBytes,
@@ -158,32 +162,23 @@ fn declared_transaction_data(envelope: &TransactionEnvelope) -> SorobanTransacti
     }
 }
 
-/// Each dimension in which the declared data does not cover the simulated data.
+/// Each dimension in which the declared data does not match the simulated data: a footprint
+/// list that is not exactly the simulated one, or a limit below the simulated one.
 fn declared_shortfall(
     declared: &SorobanTransactionData,
     simulated: &SorobanTransactionData,
 ) -> Vec<DeclaredResource> {
-    let declared_read_only: BTreeSet<&LedgerKey> =
-        declared.resources.footprint.read_only.iter().collect();
-    let declared_read_write: BTreeSet<&LedgerKey> =
-        declared.resources.footprint.read_write.iter().collect();
     let mut short = Vec::new();
-    if simulated
-        .resources
-        .footprint
-        .read_only
-        .iter()
-        .any(|key| !declared_read_only.contains(key) && !declared_read_write.contains(key))
-    {
+    if !same_keys(
+        &declared.resources.footprint.read_only,
+        &simulated.resources.footprint.read_only,
+    ) {
         short.push(DeclaredResource::ReadOnlyFootprint);
     }
-    if simulated
-        .resources
-        .footprint
-        .read_write
-        .iter()
-        .any(|key| !declared_read_write.contains(key))
-    {
+    if !same_keys(
+        &declared.resources.footprint.read_write,
+        &simulated.resources.footprint.read_write,
+    ) {
         short.push(DeclaredResource::ReadWriteFootprint);
     }
     let (declared_limits, used) = (&declared.resources, &simulated.resources);
@@ -212,6 +207,16 @@ fn declared_shortfall(
         short.push(DeclaredResource::ResourceFee);
     }
     short
+}
+
+/// Whether two footprint lists hold the same keys in any order. Repeats count, so a declared
+/// list that repeats a key, which the network refuses, does not match one that does not.
+fn same_keys(declared: &[LedgerKey], simulated: &[LedgerKey]) -> bool {
+    let mut declared = declared.iter().collect::<Vec<_>>();
+    let mut simulated = simulated.iter().collect::<Vec<_>>();
+    declared.sort_unstable();
+    simulated.sort_unstable();
+    declared == simulated
 }
 
 fn redact_simulation_error(error: RpcError) -> RpcError {
@@ -647,39 +652,102 @@ mod tests {
         .outcome
     }
 
+    fn keys(ids: &[u32]) -> VecM<LedgerKey> {
+        ids.iter()
+            .copied()
+            .map(storage_key)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
     #[test]
-    fn declared_resources_are_compared_with_the_simulation_dimension_by_dimension() {
+    fn the_declared_footprint_must_be_exactly_the_simulated_one() {
+        // The network charges for the footprint the envelope declares, not the one the
+        // simulation recorded: every existing read-write entry is written back and counted
+        // against the declared write bytes, and an extra classic entry adds disk-read bytes.
         let simulated = realistic_usage();
-        // Controls: exactly what was used covers it, and so does declaring a read as a
-        // write, because a read-write footprint entry also permits reads.
         assert_eq!(
             outcome_declaring(&simulated, &envelope_declaring(&simulated)),
             PreflightOutcome::SimulatedSuccess
         );
-        let mut widened = simulated.clone();
-        widened.resources.footprint.read_only = VecM::default();
-        widened.resources.footprint.read_write =
-            vec![storage_key(2), storage_key(1)].try_into().unwrap();
+        // The same keys in another order are the same footprint.
+        let mut reordered = simulated.clone();
+        reordered.resources.footprint.read_only = keys(&[3, 1]);
+        let mut simulated_two_reads = simulated.clone();
+        simulated_two_reads.resources.footprint.read_only = keys(&[1, 3]);
         assert_eq!(
-            outcome_declaring(&simulated, &envelope_declaring(&widened)),
+            outcome_declaring(&simulated_two_reads, &envelope_declaring(&reordered)),
+            PreflightOutcome::SimulatedSuccess
+        );
+
+        type Edit = fn(&mut SorobanTransactionData);
+        let cases: [(&str, Edit, Vec<DeclaredResource>); 6] = [
+            (
+                "a read is undeclared",
+                |data| data.resources.footprint.read_only = VecM::default(),
+                vec![DeclaredResource::ReadOnlyFootprint],
+            ),
+            (
+                "a read is declared as a write",
+                |data| {
+                    data.resources.footprint.read_only = VecM::default();
+                    data.resources.footprint.read_write = keys(&[2, 1]);
+                },
+                vec![
+                    DeclaredResource::ReadOnlyFootprint,
+                    DeclaredResource::ReadWriteFootprint,
+                ],
+            ),
+            (
+                "a write is declared only for reading",
+                |data| {
+                    data.resources.footprint.read_only = keys(&[1, 2]);
+                    data.resources.footprint.read_write = VecM::default();
+                },
+                vec![
+                    DeclaredResource::ReadOnlyFootprint,
+                    DeclaredResource::ReadWriteFootprint,
+                ],
+            ),
+            (
+                "an untouched key is declared for reading",
+                |data| data.resources.footprint.read_only = keys(&[1, 3]),
+                vec![DeclaredResource::ReadOnlyFootprint],
+            ),
+            (
+                "an untouched key is declared for writing",
+                |data| data.resources.footprint.read_write = keys(&[2, 3]),
+                vec![DeclaredResource::ReadWriteFootprint],
+            ),
+            (
+                // The network refuses a footprint that repeats a key.
+                "a read is declared twice",
+                |data| data.resources.footprint.read_only = keys(&[1, 1]),
+                vec![DeclaredResource::ReadOnlyFootprint],
+            ),
+        ];
+        for (case, edit, expected) in cases {
+            let mut declared = simulated.clone();
+            edit(&mut declared);
+            assert_eq!(
+                outcome_declaring(&simulated, &envelope_declaring(&declared)),
+                PreflightOutcome::DeclaredResourcesInsufficient(expected),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_resources_are_compared_with_the_simulation_dimension_by_dimension() {
+        let simulated = realistic_usage();
+        assert_eq!(
+            outcome_declaring(&simulated, &envelope_declaring(&simulated)),
             PreflightOutcome::SimulatedSuccess
         );
 
         type Shrink = fn(&mut SorobanTransactionData);
-        let cases: [(Shrink, DeclaredResource); 6] = [
-            (
-                |data| data.resources.footprint.read_only = VecM::default(),
-                DeclaredResource::ReadOnlyFootprint,
-            ),
-            (
-                // The written key is declared, but only for reading.
-                |data| {
-                    data.resources.footprint.read_only =
-                        vec![storage_key(1), storage_key(2)].try_into().unwrap();
-                    data.resources.footprint.read_write = VecM::default();
-                },
-                DeclaredResource::ReadWriteFootprint,
-            ),
+        let cases: [(Shrink, DeclaredResource); 4] = [
             (
                 |data| data.resources.instructions -= 1,
                 DeclaredResource::Instructions,

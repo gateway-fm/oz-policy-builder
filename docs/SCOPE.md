@@ -129,11 +129,11 @@ The source-reviewed account method inventory and its limits are described in
    account, its operation's host function, and its authorization entries. It does not evaluate
    signatures, the transaction fee, the sequence number, or time bounds and other
    preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
-   resource limits. The adapter therefore compares the declared footprint, instructions,
-   disk-read bytes, write bytes, and resource fee with the simulated ones, and reports a
-   separate outcome naming each insufficient dimension, without naming keys. A successful
-   simulation says only that this invocation succeeded under the endpoint's state within the
-   envelope's declared footprint and limits: it does not prove that a particular installed
+   resource limits. The adapter therefore requires each declared footprint list to be exactly
+   the simulated one, compares the declared instructions, disk-read bytes, write bytes, and
+   resource fee with the simulated ones, and reports a separate outcome naming each dimension
+   that fails, without naming keys. A successful simulation says only that this invocation
+   succeeded under the endpoint's state with the envelope's declared footprint and limits: it does not prove that a particular installed
    policy was selected, that the same transaction will succeed at a later ledger, or that any
    writes committed. The caller must supply signed authorization entries in the envelope where
    the invocation needs them. The source adapter does not return raw RPC error details that
