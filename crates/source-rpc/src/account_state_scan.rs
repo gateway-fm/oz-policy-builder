@@ -5,8 +5,8 @@
 //! `NextId`, `Count`, and reference counts. These checks catch ordinary races and
 //! incomplete responses; the endpoint's `latestLedger` is metadata, not a ledger-state
 //! proof. An omitted rule can be a removed hole only when the complete count agrees.
-//! This result carries no ordered key/value/TTL digest or designated administrator and
-//! cannot establish a Safe install verdict.
+//! This result carries an ordered key/value/TTL digest but no designated administrator.
+//! The digest identifies endpoint responses; it cannot establish a Safe install verdict.
 
 use super::{
     account_entry_page::{read_account_entry_page, AccountEntryKey, AccountEntryStatus},
@@ -14,7 +14,9 @@ use super::{
         check_supplied_account_entries, ReconciliationBounds, ReconciliationError,
     },
     account_storage::{AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerRecord},
-    read_contract_wasm_hashes, RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
+    contract_code::read_contract_wasm_hashes_with_witnesses,
+    ledger_witness::{ordered_ledger_witness_digest, LedgerWitness},
+    RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -62,6 +64,10 @@ pub struct AccountStateScan {
     /// Includes every installed policy and each extra contract requested by the caller.
     /// Each instance was live when its individual response was read.
     pub observed_code_hashes: BTreeMap<String, Hash32>,
+    /// SHA-256 over canonical XDR keys and values, TTL metadata, and requested absences.
+    /// This identifies the validated entry payloads and ledger metadata used by the scan;
+    /// it does not authenticate a ledger snapshot or authorize installation.
+    pub ordered_entry_digest: Hash32,
     pub rpc_batches: u32,
     pub attempts: u32,
 }
@@ -118,24 +124,49 @@ pub fn scan_account_state_with_targets<T: RpcTransport>(
     bounds: AccountScanBounds,
 ) -> Result<AccountStateScan, AccountScanError> {
     validate_bounds(bounds)?;
+    if account_address.len() > 128 {
+        return Err(AccountScanError::Rpc(RpcError::InvalidRequest(
+            "account address exceeds the encoded address size limit".into(),
+        )));
+    }
+    let account_contract = account_address
+        .parse::<stellar_strkey::Contract>()
+        .map_err(|error| {
+            AccountScanError::Rpc(RpcError::InvalidRequest(format!(
+                "invalid account contract address: {error}"
+            )))
+        })?;
+    let canonical_account_address = account_contract.to_string();
     if target_addresses.len() > bounds.max_transitive_entries {
         return Err(AccountScanError::Budget(
             "too many candidate policy addresses",
         ));
     }
-    for address in target_addresses {
-        if address.len() > 128 || address.parse::<stellar_strkey::Contract>().is_err() {
-            return Err(AccountScanError::Rpc(RpcError::InvalidRequest(
-                "candidate policy address must be a valid C-strkey".into(),
-            )));
-        }
-    }
+    let canonical_targets = target_addresses
+        .iter()
+        .map(|address| {
+            if address.len() > 128 {
+                return Err(AccountScanError::Rpc(RpcError::InvalidRequest(
+                    "candidate policy address must be a valid C-strkey".into(),
+                )));
+            }
+            address
+                .parse::<stellar_strkey::Contract>()
+                .map(|contract| format!("{contract}"))
+                .map_err(|_| {
+                    AccountScanError::Rpc(RpcError::InvalidRequest(
+                        "candidate policy address must be a valid C-strkey".into(),
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     for attempt in 1..=bounds.max_attempts {
         match scan_once(
             transport,
             network_passphrase,
-            account_address,
-            target_addresses,
+            &canonical_account_address,
+            account_contract.0,
+            &canonical_targets,
             bounds,
         ) {
             Ok(mut scan) => {
@@ -177,6 +208,7 @@ fn scan_once<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
     account_address: &str,
+    account_id: [u8; 32],
     target_addresses: &[String],
     bounds: AccountScanBounds,
 ) -> Result<AccountStateScan, AccountScanError> {
@@ -190,6 +222,7 @@ fn scan_once<T: RpcTransport>(
         bounds,
     )?;
     let ledger = first.rpc_reported_latest_ledger;
+    let mut witnesses = first.witnesses.clone();
     let status = first
         .entries
         .get(&AccountEntryKey::Instance)
@@ -239,6 +272,7 @@ fn scan_once<T: RpcTransport>(
             bounds,
         )?;
         same_ledger(ledger, page.rpc_reported_latest_ledger)?;
+        merge_witnesses(&mut witnesses, page.witnesses)?;
         for (&key, status) in &page.entries {
             let AccountEntryKey::Rule(id) = key else {
                 return Err(AccountScanError::Incomplete("unexpected rule key".into()));
@@ -281,6 +315,7 @@ fn scan_once<T: RpcTransport>(
             bounds,
         )?;
         same_ledger(ledger, page.rpc_reported_latest_ledger)?;
+        merge_witnesses(&mut witnesses, page.witnesses)?;
         for (&key, status) in &page.entries {
             let entry = match status {
                 AccountEntryStatus::Present { entry, .. } => entry,
@@ -333,16 +368,16 @@ fn scan_once<T: RpcTransport>(
     let mut observed_code_hashes = BTreeMap::new();
     for chunk in addresses.chunks(MAX_LEDGER_ENTRY_KEYS) {
         reserve_batch(&mut batches, bounds)?;
-        let read =
-            read_contract_wasm_hashes(transport, network_passphrase, chunk).map_err(|error| {
-                match error {
+        let (read, code_witnesses) =
+            read_contract_wasm_hashes_with_witnesses(transport, network_passphrase, chunk)
+                .map_err(|error| match error {
                     RpcError::CodeRead(detail) => AccountScanError::Incomplete(format!(
                         "installed or candidate policy code is unavailable: {detail}"
                     )),
                     other => AccountScanError::Rpc(other),
-                }
-            })?;
+                })?;
         same_ledger(ledger, read.reported_latest_ledger)?;
+        merge_witnesses(&mut witnesses, code_witnesses)?;
         observed_code_hashes.extend(read.wasm_hashes);
     }
     if observed_code_hashes
@@ -364,6 +399,11 @@ fn scan_once<T: RpcTransport>(
     if last.entries.get(&AccountEntryKey::Instance) != Some(&first_status) {
         return Err(AccountScanError::SnapshotChanged);
     }
+    if last.witnesses != first.witnesses {
+        return Err(AccountScanError::SnapshotChanged);
+    }
+    let ordered_entry_digest =
+        ordered_ledger_witness_digest(first.network_id, account_id, ledger.0, &witnesses);
     Ok(AccountStateScan {
         network_id: first.network_id,
         account_address: account_address.to_string(),
@@ -378,9 +418,23 @@ fn scan_once<T: RpcTransport>(
         signers,
         policies,
         observed_code_hashes,
+        ordered_entry_digest,
         rpc_batches: batches,
         attempts: 0,
     })
+}
+
+fn merge_witnesses(
+    all: &mut BTreeMap<Vec<u8>, LedgerWitness>,
+    next: BTreeMap<Vec<u8>, LedgerWitness>,
+) -> Result<(), AccountScanError> {
+    for (key, value) in next {
+        if all.get(&key).is_some_and(|previous| *previous != value) {
+            return Err(AccountScanError::SnapshotChanged);
+        }
+        all.insert(key, value);
+    }
+    Ok(())
 }
 
 fn closure_ids(
@@ -459,6 +513,7 @@ mod tests {
         calls: Cell<usize>,
         changed_ledger_at: Option<usize>,
         changed_instance_at: Option<usize>,
+        changed_unmodeled_instance_at: Option<usize>,
     }
 
     impl RpcTransport for Mock {
@@ -483,6 +538,11 @@ mod tests {
                                 && key.key == ScVal::LedgerKeyContractInstance
                             {
                                 value = instance(2, 0);
+                            }
+                            if self.changed_unmodeled_instance_at == Some(call)
+                                && key.key == ScVal::LedgerKeyContractInstance
+                            {
+                                value = instance_with_extra(1, 1);
                             }
                             entries.push(json!({
                                 "key": encoded,
@@ -535,6 +595,14 @@ mod tests {
     }
 
     fn instance(next_id: u32, count: u32) -> ScVal {
+        instance_with_optional_extra(next_id, count, false)
+    }
+
+    fn instance_with_extra(next_id: u32, count: u32) -> ScVal {
+        instance_with_optional_extra(next_id, count, true)
+    }
+
+    fn instance_with_optional_extra(next_id: u32, count: u32, extra: bool) -> ScVal {
         let mut storage = vec![
             ScMapEntry {
                 key: vector(vec![symbol("NextId")]),
@@ -545,6 +613,12 @@ mod tests {
                 val: ScVal::U32(count),
             },
         ];
+        if extra {
+            storage.push(ScMapEntry {
+                key: vector(vec![symbol("Unmodeled")]),
+                val: ScVal::U32(1),
+            });
+        }
         storage.sort_by(|a, b| a.key.cmp(&b.key));
         ScVal::ContractInstance(ScContractInstance {
             executable: ContractExecutable::Wasm(Hash([9; 32])),
@@ -611,6 +685,7 @@ mod tests {
             calls: Cell::new(0),
             changed_ledger_at: None,
             changed_instance_at: None,
+            changed_unmodeled_instance_at: None,
         }
     }
 
@@ -686,6 +761,17 @@ mod tests {
     fn instance_reread_detects_same_ledger_mutation_and_budget_is_enforced() {
         let changed = Mock {
             changed_instance_at: Some(4),
+            ..mock()
+        };
+        assert!(matches!(
+            inspect(&changed),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+
+        // The typed decoder ignores unrelated instance-map fields. The raw witness
+        // comparison must still catch their change under unchanged ledger metadata.
+        let changed = Mock {
+            changed_unmodeled_instance_at: Some(4),
             ..mock()
         };
         assert!(matches!(
@@ -824,5 +910,54 @@ mod tests {
         assert_eq!(scan.extant_count, 0);
         assert!(scan.rules.is_empty());
         assert_eq!(scan.rpc_batches, 4);
+    }
+
+    #[test]
+    fn ordered_digest_changes_with_rule_ttl_and_policy_instance_code() {
+        let base = inspect(&mock()).unwrap().ordered_entry_digest;
+        let extended = mock();
+        extended
+            .values
+            .borrow_mut()
+            .get_mut(&encoded(7, AccountEntryKey::Rule(0)))
+            .unwrap()
+            .1 = 21;
+        assert_ne!(base, inspect(&extended).unwrap().ordered_entry_digest);
+
+        let observed = mock();
+        let candidate_key = encoded(8, AccountEntryKey::Instance);
+        let make_instance = |code| {
+            ScVal::ContractInstance(ScContractInstance {
+                executable: ContractExecutable::Wasm(Hash([code; 32])),
+                storage: None,
+            })
+        };
+        observed
+            .values
+            .borrow_mut()
+            .insert(candidate_key.clone(), (make_instance(3), 20));
+        let first = scan_account_state_with_targets(
+            &observed,
+            NETWORK,
+            &address(7),
+            &[address(8)],
+            AccountScanBounds::default(),
+        )
+        .unwrap()
+        .ordered_entry_digest;
+        observed
+            .values
+            .borrow_mut()
+            .insert(candidate_key, (make_instance(4), 20));
+        let second = scan_account_state_with_targets(
+            &observed,
+            NETWORK,
+            &address(7),
+            &[address(8)],
+            AccountScanBounds::default(),
+        )
+        .unwrap()
+        .ordered_entry_digest;
+        assert_ne!(first, second);
     }
 }

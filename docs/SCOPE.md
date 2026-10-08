@@ -32,8 +32,10 @@ The source-reviewed account method inventory and its limits are described in
    endpoint-reported inspection: equal `latestLedger` values across calls are not an
    authenticated ledger-state proof, and an omitted rule key is treated as a removed hole
    only when the stored count reconciles. The scan does not identify the wallet's intended
-   administrator, record an ordered key/value/TTL digest, or establish complete reviewed
-   method evidence. Live endpoint behavior still needs separate verification before it can
+   administrator or establish complete reviewed method evidence. The scanner hashes the ordered
+   XDR keys and values, TTL metadata, and requested absences, including inspected policy
+   instances. This digest identifies endpoint responses, not an authenticated ledger snapshot.
+   Live endpoint behavior still needs separate verification before it can
    underpin a public authority verdict.
 
    The toolkit has an internal install-intent draft that checks a spec, binding set, and
