@@ -66,7 +66,7 @@ const MAX_XDR_BYTES: usize = 512 * 1024;
 // and each new XDR field the RPC gains is another chance to mistype the arithmetic.
 const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
 const MAX_XDR_DEPTH: u32 = 128;
-#[cfg(feature = "http")]
+// Not gated on the transport: the account scan sizes its retained-witness budget from it too.
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 /// How much of a non-JSON-RPC error body an error message may quote.
 #[cfg(feature = "http")]
@@ -188,6 +188,9 @@ fn redact_ledger_request_error(error: RpcError) -> RpcError {
         },
         RpcError::Evidence(_) => RpcError::Evidence(WITHHELD.to_string()),
         RpcError::CodeRead(_) => RpcError::CodeRead(WITHHELD.to_string()),
+        RpcError::UndecodableAccountStorage(_) => {
+            RpcError::UndecodableAccountStorage(WITHHELD.to_string())
+        }
     }
 }
 
