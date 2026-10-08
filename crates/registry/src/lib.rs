@@ -269,6 +269,13 @@ pub enum RegistryError {
     UnknownAccount(String),
     #[error("E_INCOMPATIBLE_ACCOUNT: authority capability for account wasm {0} is incomplete or disagrees with the reviewed implementation")]
     AccountAuthorityUnsupported(String),
+    /// The signed entry names a rule-enumeration strategy the account-state model cannot
+    /// execute (§4.8). Distinct from an incomplete capability: the entry may be accurate.
+    #[error(
+        "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED: account wasm {wasm_hash} declares rule \
+         enumeration '{method}'; this checker supports only bounded_next_id"
+    )]
+    AccountRuleEnumerationUnsupported { wasm_hash: String, method: String },
     #[error("E_UNREGISTERED_VERIFIER: no trusted verifier entry for wasm hash {0}")]
     UnknownVerifier(String),
     #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
@@ -695,7 +702,10 @@ impl Registry {
         let capability = self.resolve_account(wasm_hash)?;
         let unsupported = || RegistryError::AccountAuthorityUnsupported(wasm_hash.to_hex());
         if capability.rule_enumeration != "bounded_next_id" {
-            return Err(unsupported());
+            return Err(RegistryError::AccountRuleEnumerationUnsupported {
+                wasm_hash: wasm_hash.to_hex(),
+                method: capability.rule_enumeration.clone(),
+            });
         }
         let scan = capability.bounded_next_id.clone().ok_or_else(unsupported)?;
         if scan.schema_version != 1
@@ -1236,7 +1246,7 @@ mod tests {
 
         // Each entry below is governance-signed, so only the resolver's own checks can
         // refuse it. The unedited copy under the pinned hash is the passing control.
-        let resolve_signed = |hash: Hash32, edit: fn(&mut AccountCapability)| {
+        let resolve_signed = |hash: Hash32, edit: &dyn Fn(&mut AccountCapability)| {
             let mut snapshot = signed.snapshot.clone();
             let mut entry =
                 snapshot.accounts[&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex()].clone();
@@ -1252,15 +1262,15 @@ mod tests {
             registry.resolve_account_authority(&hash)
         };
         let pinned = pinned_upstream::OZ_SMART_ACCOUNT_WASM;
-        assert!(resolve_signed(pinned, |_| {}).is_ok());
+        assert!(resolve_signed(pinned, &|_| {}).is_ok());
         // The method table was reviewed for one build. Another registered hash with the
         // same signed fields and digest has no reviewed methods of its own.
         assert!(matches!(
-            resolve_signed(Hash32([98; 32]), |_| {}),
+            resolve_signed(Hash32([98; 32]), &|_| {}),
             Err(RegistryError::AccountAuthorityUnsupported(_))
         ));
         type Edit = fn(&mut AccountCapability);
-        let edits: [(&str, Edit); 5] = [
+        let edits: [(&str, Edit); 4] = [
             ("schema version 2", |entry| {
                 entry.bounded_next_id.as_mut().unwrap().schema_version = 2
             }),
@@ -1273,17 +1283,26 @@ mod tests {
             ("129 batches", |entry| {
                 entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 129
             }),
-            ("on-chain list", |entry| {
-                entry.rule_enumeration = "onchain_list".into()
-            }),
         ];
         for (case, edit) in edits {
             assert!(
                 matches!(
-                    resolve_signed(pinned, edit),
+                    resolve_signed(pinned, &edit),
                     Err(RegistryError::AccountAuthorityUnsupported(_))
                 ),
                 "{case}"
+            );
+        }
+        // §4.8: a strategy this checker does not implement has its own refusal, distinct
+        // from an incomplete or mismatched capability.
+        for method in ["onchain_list", "verified_event_index", "none"] {
+            assert!(
+                matches!(
+                    resolve_signed(pinned, &|entry| entry.rule_enumeration = method.into()),
+                    Err(RegistryError::AccountRuleEnumerationUnsupported { method: found, .. })
+                        if found == method
+                ),
+                "{method}"
             );
         }
     }
