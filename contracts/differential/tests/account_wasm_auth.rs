@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM;
 use ozpb_synthesizer::fixtures as fx;
 use sha2::{Digest, Sha256};
-use signed_auth::{insert_account, signed_delegate_auth};
+use signed_auth::{insert_account, signed_delegate_auth, Forgery};
 use soroban_sdk::auth::{Context, ContractContext};
 use soroban_sdk::testutils::Ledger;
 use soroban_sdk::xdr::ToXdr;
@@ -35,6 +35,17 @@ impl AuthHarness<'_> {
         nonce: i64,
         signed_payload: &Bytes,
         actual_payload: &Bytes,
+    ) -> Result<(), Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
+        self.check_auth_with(count, nonce, signed_payload, actual_payload, Forgery::None)
+    }
+
+    fn check_auth_with(
+        &self,
+        count: u32,
+        nonce: i64,
+        signed_payload: &Bytes,
+        actual_payload: &Bytes,
+        forgery: Forgery,
     ) -> Result<(), Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
         let env = self.env;
         let account = self.account;
@@ -62,6 +73,7 @@ impl AuthHarness<'_> {
             signer,
             &auth_digest.to_bytes().to_bytes(),
             nonce,
+            forgery,
         )]);
         let signature_payload = env.crypto().sha256(actual_payload);
         env.try_invoke_contract_check_auth::<soroban_sdk::Error>(
@@ -70,6 +82,21 @@ impl AuthHarness<'_> {
             auth_payload.into_val(env),
             &contexts,
         )
+    }
+}
+
+/// Where the host refused the last authorization, read from its diagnostic events: the entry
+/// either matched no requested invocation, or matched and then failed account authentication.
+/// Equal error codes cannot tell these apart, and only the second exercises the signature.
+fn refusal_stage(env: &Env) -> &'static str {
+    let events = format!("{:?}", env.host().get_diagnostic_events().unwrap());
+    match (
+        events.contains("Unauthorized function call"),
+        events.contains("failed account authentication"),
+    ) {
+        (true, false) => "invocation matching",
+        (false, true) => "account authentication",
+        other => panic!("cannot attribute the authorization refusal: {other:?}"),
     }
 }
 
@@ -96,7 +123,9 @@ fn pinned_account_wasm_full_authorization() {
     let policy_hash: [u8; 32] = Sha256::digest(&policy_wasm).into();
     // The script changes only the golden spec's signer to the fixed Ed25519
     // test key, then builds with the repository's pinned rustc and stellar CLI.
-    // A changed source, dependency, or build input must be reviewed here.
+    // A changed source, dependency, or build input must be reviewed here, and a
+    // codegen, template, or account change must rerun the script before merge:
+    // the nightly run would report this hash only after the change has landed.
     assert_eq!(
         policy_hash,
         ozpb_domain::Hash32::from_hex(
@@ -154,7 +183,46 @@ fn pinned_account_wasm_full_authorization() {
         ))),
         "signature must bind to the supplied payload"
     );
+    assert_eq!(refusal_stage(&env), "invocation matching");
     assert_eq!(remaining_calls(&env, &policy, &account), 12);
+
+    // The changed payload above is refused while the host matches invocations, before any
+    // signature is checked. These entries name exactly the digest the account requests, so
+    // only account authentication can refuse them; the honest form of the same entry
+    // succeeds in the loop below.
+    let payload = Bytes::from_array(&env, &[3u8; 32]);
+    let other_key = SigningKey::from_bytes(&[43u8; 32]);
+    for (nonce, forgery, label) in [
+        (
+            101,
+            Forgery::SignsOtherDigest,
+            "a signature over another digest",
+        ),
+        (
+            102,
+            Forgery::FlippedSignatureBit,
+            "a signature with one flipped bit",
+        ),
+        (
+            103,
+            Forgery::WrongKey(&other_key),
+            "a key that is not the delegate's",
+        ),
+    ] {
+        assert_eq!(
+            harness.check_auth_with(1, nonce, &payload, &payload, forgery),
+            Err(Ok(soroban_sdk::Error::from_type_and_code(
+                ScErrorType::Auth,
+                ScErrorCode::InvalidAction
+            ))),
+            "{label} must be refused"
+        );
+        assert_eq!(refusal_stage(&env), "account authentication", "{label}");
+        // A consistency check, not the evidence: a refused top-level check_auth rolls the
+        // account's storage back whatever refused it, so this count cannot change here. The
+        // refusal stage above is what shows account authentication refused the forgery.
+        assert_eq!(remaining_calls(&env, &policy, &account), 12);
+    }
 
     for i in 0..11 {
         let payload = Bytes::from_array(&env, &[i as u8 + 1; 32]);

@@ -5,7 +5,10 @@
 //! observations and an authorization-enforcing transaction preflight. Executed
 //! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
-//! tested offline.
+//! tested offline. The HTTP transport is the default `http` feature; a caller that supplies
+//! its own [`RpcTransport`] can build without it and without the HTTP and TLS stack. The
+//! registry-checked operator account source reads through that transport, so it exists
+//! only with the feature.
 
 #![forbid(unsafe_code)]
 
@@ -14,6 +17,7 @@ mod account_reconciliation;
 mod account_state_projection;
 mod account_state_scan;
 mod account_storage;
+#[cfg(feature = "http")]
 mod checked_account_observation;
 mod contract_data;
 mod footprint_capture;
@@ -30,6 +34,7 @@ pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
 };
+#[cfg(feature = "http")]
 pub use checked_account_observation::{
     CheckedAccountObservation, CheckedAccountObservationError, OperatorAccountSource,
     OperatorAccountSourceConfig, ReviewedPolicyBinding,
@@ -37,9 +42,12 @@ pub use checked_account_observation::{
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 pub use footprint_capture::{
     read_invocation_footprint, CapturedFootprintEntry, CapturedInvocation, FootprintCaptureError,
-    InvocationFootprintCapture,
+    FootprintList, InvocationFootprintCapture,
 };
-pub use preflight::{preflight_transaction, PreflightObservation, PreflightOutcome};
+pub use preflight::{
+    envelope_carries_signatures, preflight_transaction, DeclaredResource, EstimatedResource,
+    PreflightObservation, PreflightOutcome, SimulationAuthMode,
+};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
@@ -47,7 +55,9 @@ use ozpb_recorder_core::{
 };
 use serde_json::json;
 use std::collections::BTreeMap;
+#[cfg(feature = "http")]
 use std::io::Read;
+#[cfg(feature = "http")]
 use std::time::Duration;
 use stellar_xdr::{
     ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntry, LedgerEntryData,
@@ -61,12 +71,15 @@ pub use contract_code::{read_contract_wasm_hashes, ContractCodeRead};
 // Keep acquisition aligned with recorder-core's per-value bound. Accepted evidence must remain
 // small enough for the recorder's canonical 4 MiB hash preimage after decoding and summarizing.
 const MAX_XDR_BYTES: usize = 512 * 1024;
-// The base64 form of the byte bound, named once: three fields are checked against it today
-// and each new XDR field the RPC gains is another chance to mistype the arithmetic.
-const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
+/// The base64 form of the byte bound, named once: several fields are checked against it, and
+/// each new XDR field the RPC gains is another chance to mistype the arithmetic. Public so a
+/// shell reading an envelope from a file stops at the same bound.
+pub const MAX_XDR_BASE64_BYTES: usize = MAX_XDR_BYTES.div_ceil(3) * 4;
 const MAX_XDR_DEPTH: u32 = 128;
+#[cfg(feature = "http")]
 const MAX_HTTP_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 /// How much of a non-JSON-RPC error body an error message may quote.
+#[cfg(feature = "http")]
 const MAX_ERROR_BODY_EXCERPT_BYTES: usize = 200;
 /// The official `getLedgerEntries` maximum for its `keys` array. Not our budget to choose: the
 /// endpoint refuses a longer array, and recorder-core admits more executable observations than
@@ -150,6 +163,22 @@ pub enum RpcError {
     Evidence(String),
     #[error("E_RPC: contract code read: {0}")]
     CodeRead(String),
+    /// A returned account entry matched its requested key but does not decode against the
+    /// pinned storage schema. The account scanner reports it as incomplete account state.
+    #[error("E_RPC: undecodable account storage: {0}")]
+    UndecodableAccountStorage(String),
+    /// The caller's preflight envelope is larger than the XDR bound. Refused locally; nothing
+    /// was sent. Named by its own code because it is the caller's input, not an RPC reply.
+    #[error("E_RESOURCE_LIMIT: {0}")]
+    EnvelopeTooLarge(String),
+    /// The caller's preflight envelope is not one unbroken line of transaction XDR base64.
+    /// Refused locally; nothing was sent.
+    #[error("E_ENVELOPE_PARSE: {0}")]
+    EnvelopeParse(String),
+    /// The caller's preflight envelope decodes but has a shape simulation does not take.
+    /// Refused locally; nothing was sent.
+    #[error("E_UNSUPPORTED_ENVELOPE: {0}")]
+    UnsupportedEnvelope(String),
 }
 
 /// Remove endpoint-controlled detail from errors on ledger-key requests. HTTP
@@ -181,6 +210,12 @@ fn redact_ledger_request_error(error: RpcError) -> RpcError {
         },
         RpcError::Evidence(_) => RpcError::Evidence(WITHHELD.to_string()),
         RpcError::CodeRead(_) => RpcError::CodeRead(WITHHELD.to_string()),
+        RpcError::UndecodableAccountStorage(_) => {
+            RpcError::UndecodableAccountStorage(WITHHELD.to_string())
+        }
+        RpcError::EnvelopeTooLarge(_) => RpcError::EnvelopeTooLarge(WITHHELD.to_string()),
+        RpcError::EnvelopeParse(_) => RpcError::EnvelopeParse(WITHHELD.to_string()),
+        RpcError::UnsupportedEnvelope(_) => RpcError::UnsupportedEnvelope(WITHHELD.to_string()),
     }
 }
 
@@ -191,11 +226,13 @@ pub trait RpcTransport {
 }
 
 /// HTTP transport over a single Stellar RPC endpoint.
+#[cfg(feature = "http")]
 pub struct HttpTransport {
     url: String,
     agent: ureq::Agent,
 }
 
+#[cfg(feature = "http")]
 impl HttpTransport {
     pub fn new(url: impl Into<String>) -> Self {
         let agent = ureq::AgentBuilder::new()
@@ -211,6 +248,7 @@ impl HttpTransport {
     }
 }
 
+#[cfg(feature = "http")]
 impl RpcTransport for HttpTransport {
     fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
         let req = json!({
@@ -262,6 +300,7 @@ impl RpcTransport for HttpTransport {
 /// deliberately not correlated here — an endpoint refusing with an HTTP error need not echo it,
 /// and nothing from this path is admitted as evidence; it is a message for the operator, so the
 /// message is worth more than the correlation.
+#[cfg(feature = "http")]
 fn jsonrpc_error_of(envelope: &serde_json::Value) -> Option<String> {
     if envelope.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0") {
         return None;
@@ -274,6 +313,7 @@ fn jsonrpc_error_of(envelope: &serde_json::Value) -> Option<String> {
 ///
 /// Both the declared length and the reader are capped: `Content-Length` can be absent, or a
 /// lie, or describe compressed bytes, so the header check alone bounds nothing.
+#[cfg(feature = "http")]
 fn read_bounded_body(response: ureq::Response) -> Result<Vec<u8>, RpcError> {
     if response
         .header("content-length")
@@ -300,6 +340,7 @@ fn read_bounded_body(response: ureq::Response) -> Result<Vec<u8>, RpcError> {
 
 /// Enough of a non-JSON-RPC body to identify what answered, and not more: the body may be
 /// megabytes of HTML, and an error message is not a place to put it.
+#[cfg(feature = "http")]
 fn body_excerpt(body: &[u8]) -> String {
     let head = &body[..body.len().min(MAX_ERROR_BODY_EXCERPT_BYTES)];
     // Cut at a character boundary: a body truncated mid-sequence would otherwise be reported
@@ -319,6 +360,7 @@ fn body_excerpt(body: &[u8]) -> String {
 
 /// The id every request from this transport carries. One in-flight synchronous call at a time,
 /// so a constant is enough — what matters is that the response is checked against it.
+#[cfg(feature = "http")]
 const JSONRPC_REQUEST_ID: u64 = 1;
 
 /// The `result` of a JSON-RPC 2.0 response to *our* request.
@@ -328,6 +370,7 @@ const JSONRPC_REQUEST_ID: u64 = 1;
 /// is already the trust boundary and these calls are synchronous, so this is not a live race;
 /// it is what catches a proxy, a cache or a mock returning the wrong payload, and it is what
 /// the protocol asks of a client either way.
+#[cfg(feature = "http")]
 fn jsonrpc_result(response: &serde_json::Value) -> Result<serde_json::Value, RpcError> {
     if response.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0") {
         return Err(RpcError::Malformed(
@@ -363,6 +406,7 @@ fn jsonrpc_result(response: &serde_json::Value) -> Result<serde_json::Value, Rpc
 /// A JSON-RPC error object as its code and message, so a caller reads what happened instead of
 /// re-parsing a blob of JSON. Anything not shaped like the documented object is kept verbatim
 /// rather than described as something it is not.
+#[cfg(feature = "http")]
 fn describe_jsonrpc_error(error: &serde_json::Value) -> String {
     let code = error.get("code").and_then(serde_json::Value::as_i64);
     let message = error.get("message").and_then(|value| value.as_str());
@@ -613,36 +657,72 @@ pub fn simulate_transaction<T: RpcTransport>(
 /// network, and the endpoint's time and bandwidth are not ours to spend on it.
 ///
 /// `simulateTransaction` takes a transaction carrying exactly one operation, and this adapter
-/// records Soroban invocations, so that operation must be an `InvokeHostFunction`.
+/// records Soroban invocations, so that operation must be an `InvokeHostFunction`. The
+/// endpoint also refuses any memo before it simulates ("Soroban transactions do not support
+/// memos").
 fn validate_simulation_envelope(
     envelope_xdr_base64: &str,
 ) -> Result<TransactionEnvelope, RpcError> {
+    let envelope = decode_envelope(envelope_xdr_base64)?;
+    simulation_shape(&envelope).map_err(RpcError::Malformed)?;
+    Ok(envelope)
+}
+
+/// An envelope carrying exactly one `InvokeHostFunction` operation, within the XDR size bound.
+/// This is the shape check alone, for a reader that takes an envelope without simulating it.
+fn validate_invocation_envelope(
+    envelope_xdr_base64: &str,
+) -> Result<TransactionEnvelope, RpcError> {
+    let envelope = decode_envelope(envelope_xdr_base64)?;
+    invocation_shape(&envelope).map_err(RpcError::Malformed)?;
+    Ok(envelope)
+}
+
+fn decode_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
     ensure_base64_size("transaction", envelope_xdr_base64)?;
-    let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
-        .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))?;
+    TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
+        .map_err(|error| RpcError::Malformed(format!("invalid transaction envelope: {error}")))
+}
+
+/// [`invocation_shape`], and no memo: the endpoint refuses any memo before it simulates
+/// ("Soroban transactions do not support memos").
+fn simulation_shape(envelope: &TransactionEnvelope) -> Result<(), String> {
+    invocation_shape(envelope)?;
+    let memo = match envelope {
+        TransactionEnvelope::Tx(v1) => &v1.tx.memo,
+        TransactionEnvelope::TxFeeBump(bump) => {
+            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+            &inner.tx.memo
+        }
+        TransactionEnvelope::TxV0(v0) => &v0.tx.memo,
+    };
+    if !matches!(memo, stellar_xdr::Memo::None) {
+        return Err("simulation refuses a transaction with a memo".to_string());
+    }
+    Ok(())
+}
+
+/// Exactly one operation, and it is an `InvokeHostFunction`.
+fn invocation_shape(envelope: &TransactionEnvelope) -> Result<(), String> {
     // Pre-Soroban envelopes cannot carry an InvokeHostFunction operation at all; the recorder
     // refuses them too, and saying so here costs no round trip.
     if matches!(envelope, TransactionEnvelope::TxV0(_)) {
-        return Err(RpcError::Malformed(
-            "a TransactionV0 envelope cannot carry a Soroban operation".to_string(),
-        ));
+        return Err("a TransactionV0 envelope cannot carry a Soroban operation".to_string());
     }
-    let operations = envelope_operations(&envelope);
+    let operations = envelope_operations(envelope);
     let [operation] = operations else {
-        return Err(RpcError::Malformed(format!(
+        return Err(format!(
             "simulation takes a transaction with exactly one operation; this envelope has {}",
             operations.len()
-        )));
+        ));
     };
     if !matches!(
         operation.body,
         stellar_xdr::OperationBody::InvokeHostFunction(_)
     ) {
-        return Err(RpcError::Malformed(
-            "the operation to simulate must be an InvokeHostFunction".to_string(),
-        ));
+        return Err("the operation to simulate must be an InvokeHostFunction".to_string());
     }
-    Ok(envelope)
+    Ok(())
 }
 
 fn acquire_contract_executables<T: RpcTransport>(
@@ -1044,7 +1124,7 @@ fn str_field(v: &serde_json::Value, field: &str) -> Result<String, RpcError> {
         .ok_or_else(|| RpcError::Malformed(format!("missing string field '{field}'")))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "http"))]
 mod transport_tests {
     use super::*;
     use std::io::Write;
@@ -1314,6 +1394,26 @@ mod tests {
     };
 
     const NET: &str = "Test SDF Network ; September 2015";
+
+    #[test]
+    fn ledger_request_redaction_keeps_the_category_and_drops_endpoint_text() {
+        let secret = "endpoint echoed requested key AAAAsecret".to_string();
+        for error in [
+            RpcError::InvalidRequest(secret.clone()),
+            RpcError::Transport(secret.clone()),
+            RpcError::Malformed(secret.clone()),
+            RpcError::Rpc(secret.clone()),
+            RpcError::NotFound(secret.clone()),
+            RpcError::Evidence(secret.clone()),
+            RpcError::CodeRead(secret.clone()),
+            RpcError::UndecodableAccountStorage(secret.clone()),
+        ] {
+            let category = std::mem::discriminant(&error);
+            let redacted = redact_ledger_request_error(error);
+            assert_eq!(std::mem::discriminant(&redacted), category, "{redacted}");
+            assert!(!redacted.to_string().contains("AAAAsecret"), "{redacted}");
+        }
+    }
 
     /// What `getNetwork` really answers: the passphrase and the protocol the endpoint is on.
     fn network_response() -> serde_json::Value {
@@ -2132,11 +2232,22 @@ mod tests {
             v1.tx.operations = operations.try_into().unwrap();
             base64(&TransactionEnvelope::Tx(v1))
         };
+        // stellar-rpc refuses any memo before it simulates.
+        let with_memo = {
+            let TransactionEnvelope::Tx(mut v1) =
+                TransactionEnvelope::from_xdr_base64(&valid, xdr_limits()).unwrap()
+            else {
+                panic!("the fixture envelope is a v1 transaction");
+            };
+            v1.tx.memo = stellar_xdr::Memo::Id(42);
+            base64(&TransactionEnvelope::Tx(v1))
+        };
         for (envelope, expected) in [
             ("not-base64-xdr".to_string(), "envelope"),
             ("A".repeat(MAX_XDR_BASE64_BYTES + 1), "size limit"),
             (two_operations, "operation"),
             (not_soroban, "InvokeHostFunction"),
+            (with_memo, "memo"),
         ] {
             let transport = simulation();
             let error = simulate_transaction(&transport, NET, &envelope)

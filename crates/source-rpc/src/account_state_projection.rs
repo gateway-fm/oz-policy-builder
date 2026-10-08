@@ -13,6 +13,7 @@ use ozpb_call_surface_core::{
     AccountState, StoredContextType, StoredPolicy, StoredRule, StoredSigner, StoredSignerKey,
 };
 use ozpb_domain::{canonical_hash, domains, Hash32, LedgerSeq, NetworkId};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// A rule that could be designated by separately authenticated wallet intent.
@@ -42,6 +43,27 @@ pub struct AccountStateProjection {
     pub decoded_state_digest: Hash32,
     pub account_state: AccountState,
     pub admin_candidates: Vec<AdminRuleCandidate>,
+}
+
+/// Canonical preimage of [`AdminRuleCandidate::observed_fingerprint`] under
+/// `ozpb:v1:account-admin-candidate`; `docs/CANONICAL-HASHING.md` specifies its encoding.
+#[derive(Serialize)]
+struct AdminCandidatePreimage<'a> {
+    network_id: NetworkId,
+    account_address: &'a str,
+    rule_id: u32,
+    scope: AdminCandidateScope,
+    valid_until: Option<u32>,
+    /// (Signer storage ID, canonical delegated address), ordered by ID.
+    signer_entries: &'a [(u32, String)],
+}
+
+/// The management surface a candidate rule reaches: every call, or calls to the account.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AdminCandidateScope {
+    Default,
+    CallAccount,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -184,9 +206,9 @@ pub fn project_account_state(
             continue;
         }
         let scope = match &rule.context_type {
-            ContextType::Default => "default",
+            ContextType::Default => AdminCandidateScope::Default,
             ContextType::CallContract(address) if address == &scan.account_address => {
-                "call_account"
+                AdminCandidateScope::CallAccount
             }
             _ => continue,
         };
@@ -207,14 +229,14 @@ pub fn project_account_state(
             continue;
         }
         signer_entries.sort_by_key(|(id, _)| *id);
-        let preimage = serde_json::json!({
-            "network_id": scan.network_id.0.to_hex(),
-            "account_address": scan.account_address,
-            "rule_id": id,
-            "scope": scope,
-            "valid_until": rule.valid_until,
-            "signer_entries": signer_entries,
-        });
+        let preimage = AdminCandidatePreimage {
+            network_id: scan.network_id,
+            account_address: &scan.account_address,
+            rule_id: id,
+            scope,
+            valid_until: rule.valid_until,
+            signer_entries: &signer_entries,
+        };
         let observed_fingerprint = canonical_hash(domains::ACCOUNT_ADMIN_CANDIDATE, &preimage)
             .map_err(|error| AccountProjectionError::Digest(error.to_string()))?;
         admin_candidates.push(AdminRuleCandidate {
@@ -250,7 +272,8 @@ pub fn project_account_state(
 mod tests {
     use super::*;
     use crate::{ContextRuleRecord, PolicyRecord, SignerRecord};
-    use ozpb_domain::{LedgerSeq, NetworkId};
+    use ozpb_domain::{canonical_hash_of, LedgerSeq, NetworkId};
+    use stellar_xdr::{ScMap, ScMapEntry, ScString, ScSymbol, ScVal};
 
     fn address(byte: u8) -> String {
         format!("{}", stellar_strkey::Contract([byte; 32]))
@@ -389,6 +412,64 @@ mod tests {
             projection.admin_candidates[0].observed_fingerprint,
             project_account_state(&changed).unwrap().admin_candidates[0].observed_fingerprint
         );
+    }
+
+    #[test]
+    fn admin_fingerprint_is_the_documented_canonical_structure() {
+        let string = |value: &str| ScVal::String(ScString(value.try_into().unwrap()));
+        let symbol = |value: &str| ScVal::Symbol(ScSymbol(value.try_into().unwrap()));
+        let vector = |items: Vec<ScVal>| ScVal::Vec(Some(items.try_into().unwrap()));
+        let mut call_account = scan();
+        let rule = call_account.rules.get_mut(&0).unwrap();
+        rule.context_type = ContextType::CallContract(address(7));
+        rule.valid_until = Some(20);
+        for (scan, scope, valid_until, known_answer) in [
+            (
+                scan(),
+                "default",
+                vector(vec![]),
+                "716d79e7fed5973eb96adc5871b90cb1bc64ad2b4381e46ea197b1a5bab5765f",
+            ),
+            (
+                call_account,
+                "call_account",
+                vector(vec![ScVal::U32(20)]),
+                "be95557e3520d6fb56be1f8f240209adf239dd02f0cec04900e6aa099e71703a",
+            ),
+        ] {
+            // Assembled from the documented rules: a named struct is a Map keyed by field
+            // Symbols, a unit variant is Vec [Symbol], and an Option is a zero- or
+            // one-element Vec. The known answers were also recomputed outside this crate.
+            let body = ScVal::Map(Some(
+                ScMap::sorted_from_entries(
+                    [
+                        ("account_address", string(&address(7))),
+                        ("network_id", string(&Hash32([3; 32]).to_hex())),
+                        ("rule_id", ScVal::U32(0)),
+                        ("scope", vector(vec![symbol(scope)])),
+                        (
+                            "signer_entries",
+                            vector(vec![vector(vec![ScVal::U32(10), string(&address(12))])]),
+                        ),
+                        ("valid_until", valid_until),
+                    ]
+                    .into_iter()
+                    .map(|(key, val)| ScMapEntry {
+                        key: symbol(key),
+                        val,
+                    }),
+                )
+                .unwrap(),
+            ));
+            let fingerprint =
+                project_account_state(&scan).unwrap().admin_candidates[0].observed_fingerprint;
+            assert_eq!(
+                fingerprint,
+                canonical_hash_of(domains::ACCOUNT_ADMIN_CANDIDATE, body).unwrap(),
+                "{scope}"
+            );
+            assert_eq!(fingerprint.to_hex(), known_answer, "{scope}");
+        }
     }
 
     #[test]

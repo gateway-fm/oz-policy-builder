@@ -3,10 +3,14 @@
 //! This is endpoint-reported state for the original envelope's declared keys.
 //! A candidate policy or changed invocation can touch other keys, and an omitted
 //! RPC key could be absent or archived. Neither case is silently filled in.
+//!
+//! The declared footprint is the envelope's own claim. The network enforces it when
+//! the transaction executes; a simulation of an invocation ignores it, and nothing
+//! here compares it with one (`preflight_transaction` does that separately).
 
 use crate::{
     ensure_base64_size, envelope_operations, redact_ledger_request_error,
-    validate_simulation_envelope, verify_network, xdr_limits, RpcError, RpcTransport,
+    validate_invocation_envelope, verify_network, xdr_limits, RpcError, RpcTransport,
     MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{sha256, Hash32, LedgerSeq, NetworkId};
@@ -27,15 +31,23 @@ pub enum FootprintCaptureError {
     Rpc(#[from] RpcError),
     #[error("invalid invocation footprint: {0}")]
     InvalidFootprint(String),
+    /// `position` is the key's index in the envelope's own `list`, the only pointer to it
+    /// an error may carry while key detail is withheld.
     #[error(
-        "declared key {index} is missing from getLedgerEntries (absence versus archive unknown)"
+        "declared {list} key {position} is missing from getLedgerEntries (absence versus archive \
+         unknown)"
     )]
-    MissingDeclaredKey { index: usize },
+    MissingDeclaredKey {
+        list: FootprintList,
+        position: usize,
+    },
     #[error(
-        "declared key {index} is archived at reported ledger {reported} (live until {live_until})"
+        "declared {list} key {position} is archived at reported ledger {reported} (live until \
+         {live_until})"
     )]
     ArchivedDeclaredKey {
-        index: usize,
+        list: FootprintList,
+        position: usize,
         reported: u32,
         live_until: u32,
     },
@@ -45,6 +57,22 @@ pub enum FootprintCaptureError {
     CodeHashMismatch,
     #[error("external-reference executables are unsupported in a local footprint fixture")]
     ExternalExecutable,
+}
+
+/// The declared footprint list a key belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FootprintList {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl std::fmt::Display for FootprintList {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            FootprintList::ReadOnly => "read_only",
+            FootprintList::ReadWrite => "read_write",
+        })
+    }
 }
 
 /// Bare entry data and metadata returned by RPC for one declared key.
@@ -101,7 +129,7 @@ pub fn read_invocation_footprint<T: RpcTransport>(
     network_passphrase: &str,
     envelope_xdr_base64: &str,
 ) -> Result<InvocationFootprintCapture, FootprintCaptureError> {
-    let envelope = validate_simulation_envelope(envelope_xdr_base64)?;
+    let envelope = validate_invocation_envelope(envelope_xdr_base64)?;
     let invocation = match &envelope_operations(&envelope)[0].body {
         OperationBody::InvokeHostFunction(op) => match &op.host_function {
             HostFunction::InvokeContract(call) => {
@@ -177,14 +205,15 @@ pub fn read_invocation_footprint<T: RpcTransport>(
         )));
     }
     let mut requested = BTreeMap::<String, LedgerKey>::new();
+    let mut declared_at = BTreeMap::<String, (FootprintList, usize)>::new();
     let mut read_only_keys = BTreeSet::new();
     let mut read_write_keys = BTreeSet::new();
     let mut total_bytes = 0usize;
-    for (is_write, keys) in [
-        (false, footprint.read_only.as_slice()),
-        (true, footprint.read_write.as_slice()),
+    for (list, keys) in [
+        (FootprintList::ReadOnly, footprint.read_only.as_slice()),
+        (FootprintList::ReadWrite, footprint.read_write.as_slice()),
     ] {
-        for key in keys {
+        for (position, key) in keys.iter().enumerate() {
             let encoded = key.to_xdr_base64(xdr_limits()).map_err(|error| {
                 FootprintCaptureError::InvalidFootprint(format!(
                     "cannot encode a declared key: {error}"
@@ -206,11 +235,11 @@ pub fn read_invocation_footprint<T: RpcTransport>(
                     "duplicate declared ledger key".to_string(),
                 ));
             }
-            if is_write {
-                read_write_keys.insert(encoded);
-            } else {
-                read_only_keys.insert(encoded);
-            }
+            declared_at.insert(encoded.clone(), (list, position));
+            match list {
+                FootprintList::ReadOnly => read_only_keys.insert(encoded),
+                FootprintList::ReadWrite => read_write_keys.insert(encoded),
+            };
         }
     }
     let canonical = envelope.to_xdr(xdr_limits()).map_err(|error| {
@@ -294,8 +323,10 @@ pub fn read_invocation_footprint<T: RpcTransport>(
         }
         if let Some(live_until) = live_until {
             if live_until < reported_ledger {
+                let (list, position) = declared_at[encoded_key];
                 return Err(FootprintCaptureError::ArchivedDeclaredKey {
-                    index,
+                    list,
+                    position,
                     reported: reported_ledger,
                     live_until,
                 });
@@ -311,10 +342,14 @@ pub fn read_invocation_footprint<T: RpcTransport>(
             },
         );
     }
-    for (index, encoded) in requested.keys().enumerate() {
-        if !entries.contains_key(encoded) {
-            return Err(FootprintCaptureError::MissingDeclaredKey { index });
-        }
+    // Report the first missing key in declaration order, read-only before read-write.
+    if let Some((list, position)) = declared_at
+        .iter()
+        .filter(|(encoded, _)| !entries.contains_key(*encoded))
+        .map(|(_, declared)| *declared)
+        .min()
+    {
+        return Err(FootprintCaptureError::MissingDeclaredKey { list, position });
     }
     let mut validated_wasm_instances = 0;
     for entry in entries.values() {
@@ -575,6 +610,49 @@ mod tests {
             Err(FootprintCaptureError::InvalidFootprint(message)) if message.contains("valid symbol")
         ));
         assert!(rpc.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_memo_does_not_prevent_reading_the_declared_footprint() {
+        // Only simulation refuses a memo; this reader takes the envelope's declared keys.
+        let (encoded, rpc) = fixture();
+        let mut parsed = TransactionEnvelope::from_xdr_base64(&encoded, xdr_limits()).unwrap();
+        let TransactionEnvelope::Tx(v1) = &mut parsed else {
+            panic!("ordinary transaction")
+        };
+        v1.tx.memo = stellar_xdr::Memo::Id(42);
+        let encoded = parsed.to_xdr_base64(xdr_limits()).unwrap();
+        let capture = read_invocation_footprint(&rpc, NETWORK, &encoded).unwrap();
+        assert_eq!(capture.entries.len(), 5);
+    }
+
+    /// Key detail is withheld, so the list and position in the envelope's own footprint are
+    /// the operator's only pointer to the offending key; neither the reply's order nor a
+    /// sorted order would find it.
+    #[test]
+    fn missing_and_archived_keys_are_named_by_their_declared_list_and_position() {
+        // read_only = [instance, code, dependency, account], read_write = [target]; the reply
+        // lists instance, code, target, dependency, account.
+        let (envelope, mut rpc) = fixture();
+        rpc.response["entries"].as_array_mut().unwrap().pop();
+        let error = read_invocation_footprint(&rpc, NETWORK, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("declared read_only key 3 "), "{error}");
+
+        let (envelope, mut rpc) = fixture();
+        rpc.response["entries"][3]["liveUntilLedgerSeq"] = json!(100);
+        let error = read_invocation_footprint(&rpc, NETWORK, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("declared read_only key 2 "), "{error}");
+
+        let (envelope, mut rpc) = fixture();
+        rpc.response["entries"][2]["liveUntilLedgerSeq"] = json!(100);
+        let error = read_invocation_footprint(&rpc, NETWORK, &envelope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("declared read_write key 0 "), "{error}");
     }
 
     #[test]

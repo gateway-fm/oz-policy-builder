@@ -269,6 +269,13 @@ pub enum RegistryError {
     UnknownAccount(String),
     #[error("E_INCOMPATIBLE_ACCOUNT: authority capability for account wasm {0} is incomplete or disagrees with the reviewed implementation")]
     AccountAuthorityUnsupported(String),
+    /// The signed entry names a rule-enumeration strategy the account-state model cannot
+    /// execute (§4.8). Distinct from an incomplete capability: the entry may be accurate.
+    #[error(
+        "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED: account wasm {wasm_hash} declares rule \
+         enumeration '{method}'; this checker supports only bounded_next_id"
+    )]
+    AccountRuleEnumerationUnsupported { wasm_hash: String, method: String },
     #[error("E_UNREGISTERED_VERIFIER: no trusted verifier entry for wasm hash {0}")]
     UnknownVerifier(String),
     #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
@@ -695,7 +702,10 @@ impl Registry {
         let capability = self.resolve_account(wasm_hash)?;
         let unsupported = || RegistryError::AccountAuthorityUnsupported(wasm_hash.to_hex());
         if capability.rule_enumeration != "bounded_next_id" {
-            return Err(unsupported());
+            return Err(RegistryError::AccountRuleEnumerationUnsupported {
+                wasm_hash: wasm_hash.to_hex(),
+                method: capability.rule_enumeration.clone(),
+            });
         }
         let scan = capability.bounded_next_id.clone().ok_or_else(unsupported)?;
         if scan.schema_version != 1
@@ -707,9 +717,12 @@ impl Registry {
             return Err(unsupported());
         }
         let claimed = capability.method_inventory_digest.ok_or_else(unsupported)?;
+        // The compiled table was reviewed for one exact build. A signed entry under any
+        // other hash cannot borrow it, even when it commits to the same digest.
+        if *wasm_hash != pinned_upstream::OZ_SMART_ACCOUNT_WASM {
+            return Err(unsupported());
+        }
         let methods = account_methods::source_reviewed_oz_multisig_candidate();
-        account_methods::validate_source_reviewed_candidate(wasm_hash, &methods)
-            .map_err(|_| unsupported())?;
         let actual = ozpb_domain::canonical_hash(domains::ACCOUNT_METHOD_INVENTORY, &methods)
             .map_err(|error| RegistryError::Internal(error.to_string()))?;
         if actual != claimed {
@@ -893,7 +906,8 @@ pub mod dev {
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
     /// Version of the committed, signed development example. Version 1 remains the
-    /// historical parent; changing its contents would fork persisted checkpoints.
+    /// historical parent; changing its contents would fork persisted checkpoints. The same
+    /// holds for this version once published, so tests pin both roots.
     pub const SIGNED_EXAMPLE_VERSION: u64 = 2;
 
     /// Deterministic development root key (NOT a production root; production roots are
@@ -936,6 +950,8 @@ pub mod dev {
         Ok((snapshot_json, roots_json))
     }
 
+    /// Public half of [`dev_signing_key`]: development-only, because anyone can sign with
+    /// it. The operator account reader in `ozpb-source-rpc` refuses it outside testnet.
     pub fn dev_root_verifying_bytes() -> [u8; 32] {
         dev_signing_key().verifying_key().to_bytes()
     }
@@ -1086,6 +1102,34 @@ mod tests {
         assert_eq!(
             snapshot_root(&old).unwrap().to_hex(),
             "2957b9b07f55b960a58711c1935cb341dc5fe0b3f568b9bce85bbebfb9af0807"
+        );
+    }
+
+    /// The committed signed example is published: an operator may have persisted a checkpoint
+    /// at its root. Regenerating different contents under the same version would fork that
+    /// checkpoint while `examples_are_current` passes, so new contents need a new
+    /// `SIGNED_EXAMPLE_VERSION` that extends this root, and a new pin here.
+    #[test]
+    fn published_signed_example_root_is_immutable() {
+        const PUBLISHED_V2_ROOT: &str =
+            "4474ec405262f83c3d125cffde8f362eefcf4c90120cefa5cae74aec4e929ed9";
+        assert_eq!(
+            dev::SIGNED_EXAMPLE_VERSION,
+            2,
+            "a new signed example version must pin its own published root here"
+        );
+        let generated = dev::account_authority_successor(network()).unwrap();
+        assert_eq!(
+            snapshot_root(&generated).unwrap().to_hex(),
+            PUBLISHED_V2_ROOT,
+            "published development example v2 changed; publish new contents as a new version"
+        );
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(
+            snapshot_root(&committed.snapshot).unwrap().to_hex(),
+            PUBLISHED_V2_ROOT
         );
     }
 
@@ -1298,6 +1342,88 @@ mod tests {
             registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM),
             Err(RegistryError::AccountAuthorityUnsupported(_))
         ));
+
+        // Each entry below is governance-signed, so only the resolver's own checks can
+        // refuse it. The unedited copy under the pinned hash is the passing control.
+        let resolve_signed = |hash: Hash32, edit: &dyn Fn(&mut AccountCapability)| {
+            let mut snapshot = signed.snapshot.clone();
+            let mut entry =
+                snapshot.accounts[&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex()].clone();
+            edit(&mut entry);
+            snapshot.accounts.insert(hash.to_hex(), entry);
+            let mut registry = pinned_test_registry();
+            registry
+                .load_at(
+                    &sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap(),
+                    100,
+                )
+                .unwrap();
+            registry.resolve_account_authority(&hash)
+        };
+        let pinned = pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+        assert!(resolve_signed(pinned, &|_| {}).is_ok());
+        // The method table was reviewed for one build. Another registered hash with the
+        // same signed fields and digest has no reviewed methods of its own.
+        assert!(matches!(
+            resolve_signed(Hash32([98; 32]), &|_| {}),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
+        type Edit = fn(&mut AccountCapability);
+        let edits: [(&str, Edit); 8] = [
+            ("schema version 2", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().schema_version = 2
+            }),
+            ("zero scan IDs", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_scan_ids = 0
+            }),
+            ("zero attempts", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_attempts = 0
+            }),
+            ("four attempts", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_attempts = 4
+            }),
+            ("zero batches", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 0
+            }),
+            ("129 batches", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 129
+            }),
+            ("zero transitive entries", |entry| {
+                entry
+                    .bounded_next_id
+                    .as_mut()
+                    .unwrap()
+                    .max_transitive_entries = 0
+            }),
+            ("10001 transitive entries", |entry| {
+                entry
+                    .bounded_next_id
+                    .as_mut()
+                    .unwrap()
+                    .max_transitive_entries = 10_001
+            }),
+        ];
+        for (case, edit) in edits {
+            assert!(
+                matches!(
+                    resolve_signed(pinned, &edit),
+                    Err(RegistryError::AccountAuthorityUnsupported(_))
+                ),
+                "{case}"
+            );
+        }
+        // §4.8: a strategy this checker does not implement has its own refusal, distinct
+        // from an incomplete or mismatched capability.
+        for method in ["onchain_list", "verified_event_index", "none"] {
+            assert!(
+                matches!(
+                    resolve_signed(pinned, &|entry| entry.rule_enumeration = method.into()),
+                    Err(RegistryError::AccountRuleEnumerationUnsupported { method: found, .. })
+                        if found == method
+                ),
+                "{method}"
+            );
+        }
     }
 
     #[test]

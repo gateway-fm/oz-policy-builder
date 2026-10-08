@@ -17,7 +17,10 @@
 #   * a generated policy builds for wasm32v1-none via the real `stellar contract build`;
 #   * the same source produces byte-identical wasm across two clean builds (§6.3);
 #   * the boundary-shape and golden E2E build tests that are `#[ignore]`d elsewhere because
-#     they need the toolchain.
+#     they need the toolchain;
+#   * the pinned account's full authorization path through a generated policy Wasm, and one
+#     signed candidate call into a source-built target fixture, in their own job so that its
+#     result and the live testnet step's are reported independently.
 # Generated code *compiling* is already covered in ci.yml: the `contracts` job builds the
 # golden policy crate as a dev-dependency of the differential suite.
 name: nightly live
@@ -207,15 +210,6 @@ jobs:
       - name: real-compile tests (normally #[ignore]d)
         run: cargo test -p ozpb-build-runner -- --ignored --test-threads=1
 
-      # This gate compiles the reviewed upstream account source at the recorded
-      # tag, checks its exact code hash, then invokes a generated policy Wasm
-      # through the full account __check_auth path using a signed delegated
-      # authorization. It also builds a source-defined target Wasm and checks one
-      # signed, synthetic candidate transfer against exact fixture target keys.
-      # It fails if any of the three Wasm artifacts cannot be built or differs.
-      - name: pinned account authorization and signed target fixture
-        run: bash scripts/test-pinned-account-authorization.sh
-
       # The Tranche-1 outcome, executed against live testnet from scratch: deploy an OZ smart
       # account, record a transfer's authorization, synthesize, generate, compile. This is the
       # only check that touches the network, so it is the only one that can catch acquisition
@@ -234,3 +228,88 @@ jobs:
       #   3. the public endpoint is down, which is not our bug but still blocks the demo.
       # Whichever it is, the answer is to look before the next demo, not to disable the job.
 
+  # Separate from `wasm` so that neither result can hide the other: a failure here would skip
+  # the live testnet step, and that step's own failures would mask a regression here. The gate
+  # compiles the reviewed upstream account source at the recorded tag, checks its exact code
+  # hash, then invokes a generated policy Wasm through the full account `__check_auth` path
+  # with a signed delegated authorization. It also builds a source-defined target Wasm and
+  # checks one signed, synthetic candidate transfer against exact fixture target keys. It fails
+  # if any of the three Wasm artifacts cannot be built or differs. It needs the pinned
+  # toolchain and the network to clone public sources, and no secrets.
+  pinned-account-authorization:
+    name: pinned account authorization (source-built account + generated policy + target fixture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: recorded build inputs match the pins in use (rustc · stellar-cli)
+        run: bash scripts/check-build-input-pins.sh
+
+      - name: toolchain
+        run: |
+          rustup show # rust-toolchain.toml pins the channel + components
+          rustup target add wasm32v1-none
+
+      # The same verified install as the `wasm` job: both halves of `cliver` are inside the
+      # account and policy hashes this gate asserts.
+      - name: stellar-cli (pinned by version, revision and checksum)
+        run: |
+          set -euo pipefail
+          asset="stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          url="https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${asset}"
+          curl -sSfL "$url" -o "$asset"
+          echo "${STELLAR_CLI_SHA256}  ${asset}" | sha256sum -c -
+
+          # Its own directory placed first on PATH, as in the `wasm` job.
+          mkdir -p "${RUNNER_TEMP}/stellar-cli"
+          tar -xzf "$asset" -C "${RUNNER_TEMP}/stellar-cli" stellar
+          # `$GITHUB_PATH` takes effect for *subsequent* steps, not this one, so the assertions
+          # below invoke the extracted binary by absolute path.
+          echo "${RUNNER_TEMP}/stellar-cli" >> "$GITHUB_PATH"
+
+          cli="${RUNNER_TEMP}/stellar-cli/stellar"
+          line=$("$cli" --version | head -1)
+          have=$(printf '%s\n' "$line" | awk '{print $2}')
+          have_rev=$(printf '%s\n' "$line" | awk '{gsub(/[()]/, "", $3); print $3}')
+          if [ "$have" != "${STELLAR_CLI_VERSION}" ]; then
+            echo "::error::extracted stellar reports $have, expected ${STELLAR_CLI_VERSION}"
+            exit 1
+          fi
+          # Both halves of cliver are hashed, so the version alone is not the artifact's identity.
+          if [ "$have_rev" != "${STELLAR_CLI_REVISION}" ]; then
+            echo "::error::extracted stellar is ${have:-?}#${have_rev:-unknown}, expected ${STELLAR_CLI_VERSION}#${STELLAR_CLI_REVISION}"
+            exit 1
+          fi
+          printf '%s\n' "$line"
+
+      - name: the resolved stellar is the verified one
+        run: |
+          set -euo pipefail
+          resolved=$(command -v stellar)
+          if [ "$resolved" != "${RUNNER_TEMP}/stellar-cli/stellar" ]; then
+            echo "::error::PATH resolves stellar to $resolved, not the verified download"
+            exit 1
+          fi
+          line=$(stellar --version | head -1)
+          rev=$(printf '%s\n' "$line" | awk '{gsub(/[()]/, "", $3); print $3}')
+          [ "$rev" = "${STELLAR_CLI_REVISION}" ] || {
+            echo "::error::resolved stellar is revision ${rev:-unknown}, expected ${STELLAR_CLI_REVISION}"
+            exit 1
+          }
+          echo "stellar resolves to $resolved ($line)"
+
+      # Only the differential test build is cached. The account, policy and target Wasm are
+      # rebuilt from source on every run, and their hashes are asserted.
+      - name: cache the contracts test build directory
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: contracts/target
+          key: pinned-account-auth-${{ runner.os }}-cli${{ env.STELLAR_CLI_VERSION }}-${{ hashFiles('contracts/**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            pinned-account-auth-${{ runner.os }}-cli${{ env.STELLAR_CLI_VERSION }}-
+
+      - name: pinned account authorization and signed target fixture
+        run: bash scripts/test-pinned-account-authorization.sh

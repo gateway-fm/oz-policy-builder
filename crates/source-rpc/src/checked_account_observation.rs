@@ -2,19 +2,21 @@
 //!
 //! The operator pins the endpoint, network and governance checkpoint. The signed registry
 //! supplies scan ceilings and exact code capabilities; the endpoint supplies storage and
-//! observed executable hashes. Matching `latestLedger` metadata and a final instance read
-//! detect ordinary races, but do not prove that separate RPC replies came from one coherent
-//! ledger state. No wallet administrator is selected here, and this is not an install verdict.
+//! observed executable hashes. Installed policies and external-signer verifiers are
+//! recognized by that observed code; a contract delegate is refused. Matching `latestLedger`
+//! metadata and a final instance read detect ordinary races, but do not prove that separate
+//! RPC replies came from one coherent ledger state. No wallet administrator is selected here,
+//! and this is not an install verdict.
 
 use super::{
     project_account_state, scan_account_state_with_targets, AccountProjectionError,
     AccountScanBounds, AccountScanError, AccountStateProjection, AccountStateScan, HttpTransport,
-    RpcTransport,
+    RpcTransport, SignerIdentity,
 };
 use ozpb_call_surface_core::BoundPolicy;
-use ozpb_domain::{Hash32, NetworkId};
+use ozpb_domain::{Hash32, NetworkId, TESTNET_PASSPHRASE};
 use ozpb_registry::{
-    account_methods::AccountMethodInventory, Registry, RegistryCheckpoint, RegistryError,
+    account_methods::AccountMethodInventory, dev, Registry, RegistryCheckpoint, RegistryError,
     RootPolicy, SignedSnapshot,
 };
 use std::collections::BTreeSet;
@@ -78,8 +80,23 @@ impl OperatorAccountSource {
                 "operator source name and network passphrase must be nonempty",
             ));
         }
+        // Anyone can recompute the development root's private key from its published seed, so
+        // a snapshot it signs carries no review authority. Only the testnet example may use it.
+        let development_root = dev::dev_root_verifying_bytes();
+        if config.network_passphrase != TESTNET_PASSPHRASE
+            && config
+                .registry_roots
+                .keys
+                .values()
+                .any(|key| *key == development_root)
+        {
+            return Err(RegistryError::RootPolicy(
+                "the public development registry root is accepted only on testnet".into(),
+            )
+            .into());
+        }
         // Validate the signed snapshot and durable checkpoint before constructing a source.
-        let _ = verified_registry(&config)?;
+        let _ = verified_registry(&config, unix_now()?)?;
         let transport = HttpTransport::new(config.rpc_url.clone());
         Ok(Self { config, transport })
     }
@@ -92,7 +109,24 @@ impl OperatorAccountSource {
         expected_account_wasm_hash: Hash32,
         bindings: &[ReviewedPolicyBinding],
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
-        let registry = verified_registry(&self.config)?;
+        self.inspect_at(
+            account_address,
+            expected_account_wasm_hash,
+            bindings,
+            unix_now()?,
+        )
+    }
+
+    /// [`Self::inspect`] at a supplied trusted time. The snapshot is verified at that time
+    /// before the endpoint is contacted, so tests can fix the clock without a network.
+    fn inspect_at(
+        &self,
+        account_address: &str,
+        expected_account_wasm_hash: Hash32,
+        bindings: &[ReviewedPolicyBinding],
+        now_unix: i64,
+    ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
+        let registry = verified_registry(&self.config, now_unix)?;
         inspect_with_transport(
             &self.transport,
             &self.config,
@@ -104,15 +138,25 @@ impl OperatorAccountSource {
     }
 }
 
+/// Wall-clock time for snapshot validity, read the same way as `Registry::load`.
+fn unix_now() -> Result<i64, CheckedAccountObservationError> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| RegistryError::Internal(error.to_string()))?;
+    i64::try_from(elapsed.as_secs())
+        .map_err(|_| RegistryError::Internal("system time exceeds i64".to_string()).into())
+}
+
 fn verified_registry(
     config: &OperatorAccountSourceConfig,
+    now_unix: i64,
 ) -> Result<Registry, CheckedAccountObservationError> {
     let mut registry = Registry::with_pinned_roots_for_network_at_checkpoint(
         config.registry_roots.clone(),
         NetworkId::from_passphrase(&config.network_passphrase),
         config.registry_checkpoint.clone(),
     )?;
-    registry.load(&config.signed_registry_snapshot)?;
+    registry.load_at(&config.signed_registry_snapshot, now_unix)?;
     Ok(registry)
 }
 
@@ -202,6 +246,30 @@ fn check_scan(
         )?;
         registry.resolve_policy(observed)?;
     }
+    // Signers of every rule, expired ones included, since a management call can revive them.
+    // A verifier is recognized by its observed code. A contract delegate authorizes through
+    // its own rule state, which this reader does not inspect, so it is refused rather than
+    // reported as checked. A G-address delegate is the classic account itself.
+    for signer in scan.signers.values() {
+        match &signer.signer {
+            SignerIdentity::External { verifier, .. } => {
+                let observed = scan.observed_code_hashes.get(verifier).ok_or(
+                    CheckedAccountObservationError::Identity(
+                        "external signer verifier has no observed code",
+                    ),
+                )?;
+                registry.resolve_verifier(observed)?;
+            }
+            SignerIdentity::Delegated(address)
+                if address.parse::<stellar_strkey::Contract>().is_ok() =>
+            {
+                return Err(CheckedAccountObservationError::Identity(
+                    "contract delegated signer requires nested account inspection",
+                ));
+            }
+            SignerIdentity::Delegated(_) => {}
+        }
+    }
     let mut bound_policies = Vec::with_capacity(bindings.len());
     for binding in bindings {
         if scan.observed_code_hashes.get(&binding.address) != Some(&binding.expected_wasm_hash) {
@@ -227,11 +295,11 @@ fn check_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerIdentity, SignerRecord};
-    use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq};
+    use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerRecord};
+    use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq, MAINNET_PASSPHRASE};
     use ozpb_registry::{
-        account_methods, dev, sign_snapshot, snapshot_root, AccountArchivePolicy,
-        AccountSnapshotPolicy, BoundedNextIdCapability, RegistrySnapshot,
+        account_methods, sign_snapshot, snapshot_root, AccountArchivePolicy, AccountSnapshotPolicy,
+        BoundedNextIdCapability, RegistrySnapshot,
     };
     use std::collections::BTreeMap;
     use stellar_xdr::{
@@ -240,12 +308,24 @@ mod tests {
     };
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
+    /// A fixed trusted time inside every test snapshot's validity interval.
+    const NOW: i64 = 1_800_000_000;
 
     fn address(byte: u8) -> String {
         format!("{}", stellar_strkey::Contract([byte; 32]))
     }
 
+    fn account_id(byte: u8) -> String {
+        format!("{}", stellar_strkey::ed25519::PublicKey([byte; 32]))
+    }
+
     fn signed_snapshot() -> ozpb_registry::SignedSnapshot {
+        signed_snapshot_with(|_| {})
+    }
+
+    fn signed_snapshot_with(
+        edit: impl FnOnce(&mut RegistrySnapshot),
+    ) -> ozpb_registry::SignedSnapshot {
         let mut snapshot: RegistrySnapshot =
             dev::dev_snapshot(NetworkId::from_passphrase(NETWORK), 1);
         let account = snapshot
@@ -268,6 +348,7 @@ mod tests {
             )
             .unwrap(),
         );
+        edit(&mut snapshot);
         sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
     }
 
@@ -326,7 +407,7 @@ mod tests {
                 10,
                 SignerRecord {
                     id: 10,
-                    signer: SignerIdentity::Delegated(address(12)),
+                    signer: SignerIdentity::Delegated(account_id(12)),
                     reference_count: 2,
                 },
             )]),
@@ -360,7 +441,7 @@ mod tests {
         config: &OperatorAccountSourceConfig,
         bindings: &[ReviewedPolicyBinding],
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
-        let registry = verified_registry(config)?;
+        let registry = verified_registry(config, NOW)?;
         let authority = registry
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
             .unwrap();
@@ -390,86 +471,89 @@ mod tests {
         assert_eq!(observed.source_name, "operator-testnet");
     }
 
+    /// Serves an account with `NextId` 0 and the bound policy's instance: one instance read,
+    /// one code read, and the final instance read make three `getLedgerEntries` batches.
+    struct Endpoint;
+    impl RpcTransport for Endpoint {
+        fn call(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, super::super::RpcError> {
+            if method == "getNetwork" {
+                return Ok(serde_json::json!({"passphrase": NETWORK, "protocolVersion": 28}));
+            }
+            assert_eq!(method, "getLedgerEntries");
+            let mut entries = Vec::new();
+            for encoded in params["keys"].as_array().unwrap() {
+                let encoded = encoded.as_str().unwrap();
+                let LedgerKey::ContractData(key) =
+                    LedgerKey::from_xdr_base64(encoded, crate::xdr_limits()).unwrap()
+                else {
+                    panic!("contract-data key expected");
+                };
+                assert_eq!(key.key, ScVal::LedgerKeyContractInstance);
+                let account = matches!(
+                    &key.contract,
+                    ScAddress::Contract(contract) if contract.0.0 == [7; 32]
+                );
+                let expected = if account {
+                    pinned_upstream::OZ_SMART_ACCOUNT_WASM
+                } else {
+                    assert!(matches!(
+                        &key.contract,
+                        ScAddress::Contract(contract) if contract.0.0 == [14; 32]
+                    ));
+                    pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM
+                };
+                let storage = if account {
+                    let mut values = vec![
+                        ScMapEntry {
+                            key: ScVal::Vec(Some(
+                                vec![ScVal::Symbol("Count".try_into().unwrap())]
+                                    .try_into()
+                                    .unwrap(),
+                            )),
+                            val: ScVal::U32(0),
+                        },
+                        ScMapEntry {
+                            key: ScVal::Vec(Some(
+                                vec![ScVal::Symbol("NextId".try_into().unwrap())]
+                                    .try_into()
+                                    .unwrap(),
+                            )),
+                            val: ScVal::U32(0),
+                        },
+                    ];
+                    values.sort_by(|a, b| a.key.cmp(&b.key));
+                    Some(values.try_into().unwrap())
+                } else {
+                    None
+                };
+                entries.push(serde_json::json!({
+                    "key": encoded,
+                    "xdr": LedgerEntryData::ContractData(ContractDataEntry {
+                        ext: ExtensionPoint::V0,
+                        contract: key.contract,
+                        key: key.key,
+                        durability: key.durability,
+                        val: ScVal::ContractInstance(ScContractInstance {
+                            executable: ContractExecutable::Wasm(Hash(expected.0)),
+                            storage,
+                        }),
+                    }).to_xdr_base64(crate::xdr_limits()).unwrap(),
+                    "lastModifiedLedgerSeq": 9,
+                    "liveUntilLedgerSeq": 20,
+                }));
+            }
+            Ok(serde_json::json!({"latestLedger": 10, "entries": entries}))
+        }
+    }
+
     #[test]
     fn operator_source_acquires_account_and_binding_at_one_reported_ledger() {
-        struct Endpoint;
-        impl RpcTransport for Endpoint {
-            fn call(
-                &self,
-                method: &str,
-                params: serde_json::Value,
-            ) -> Result<serde_json::Value, super::super::RpcError> {
-                if method == "getNetwork" {
-                    return Ok(serde_json::json!({"passphrase": NETWORK, "protocolVersion": 28}));
-                }
-                assert_eq!(method, "getLedgerEntries");
-                let mut entries = Vec::new();
-                for encoded in params["keys"].as_array().unwrap() {
-                    let encoded = encoded.as_str().unwrap();
-                    let LedgerKey::ContractData(key) =
-                        LedgerKey::from_xdr_base64(encoded, crate::xdr_limits()).unwrap()
-                    else {
-                        panic!("contract-data key expected");
-                    };
-                    assert_eq!(key.key, ScVal::LedgerKeyContractInstance);
-                    let account = matches!(
-                        &key.contract,
-                        ScAddress::Contract(contract) if contract.0.0 == [7; 32]
-                    );
-                    let expected = if account {
-                        pinned_upstream::OZ_SMART_ACCOUNT_WASM
-                    } else {
-                        assert!(matches!(
-                            &key.contract,
-                            ScAddress::Contract(contract) if contract.0.0 == [14; 32]
-                        ));
-                        pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM
-                    };
-                    let storage = if account {
-                        let mut values = vec![
-                            ScMapEntry {
-                                key: ScVal::Vec(Some(
-                                    vec![ScVal::Symbol("Count".try_into().unwrap())]
-                                        .try_into()
-                                        .unwrap(),
-                                )),
-                                val: ScVal::U32(0),
-                            },
-                            ScMapEntry {
-                                key: ScVal::Vec(Some(
-                                    vec![ScVal::Symbol("NextId".try_into().unwrap())]
-                                        .try_into()
-                                        .unwrap(),
-                                )),
-                                val: ScVal::U32(0),
-                            },
-                        ];
-                        values.sort_by(|a, b| a.key.cmp(&b.key));
-                        Some(values.try_into().unwrap())
-                    } else {
-                        None
-                    };
-                    entries.push(serde_json::json!({
-                        "key": encoded,
-                        "xdr": LedgerEntryData::ContractData(ContractDataEntry {
-                            ext: ExtensionPoint::V0,
-                            contract: key.contract,
-                            key: key.key,
-                            durability: key.durability,
-                            val: ScVal::ContractInstance(ScContractInstance {
-                                executable: ContractExecutable::Wasm(Hash(expected.0)),
-                                storage,
-                            }),
-                        }).to_xdr_base64(crate::xdr_limits()).unwrap(),
-                        "lastModifiedLedgerSeq": 9,
-                        "liveUntilLedgerSeq": 20,
-                    }));
-                }
-                Ok(serde_json::json!({"latestLedger": 10, "entries": entries}))
-            }
-        }
         let config = config(signed_snapshot());
-        let registry = verified_registry(&config).unwrap();
+        let registry = verified_registry(&config, NOW).unwrap();
         let observed = inspect_with_transport(
             &Endpoint,
             &config,
@@ -483,6 +567,83 @@ mod tests {
         assert_eq!(observed.scan.rpc_batches, 3);
         assert_eq!(observed.bound_policies[0].address, address(14));
         assert!(observed.projection.admin_candidates.is_empty());
+    }
+
+    /// The endpoint read above needs three batches. The ceiling comes from the signed
+    /// account capability, never from the scanner's defaults.
+    #[test]
+    fn signed_scan_bounds_limit_the_operator_read() {
+        let config = config(signed_snapshot_with(|snapshot| {
+            let account = snapshot
+                .accounts
+                .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+                .unwrap();
+            account.bounded_next_id.as_mut().unwrap().max_rpc_batches = 2;
+        }));
+        let registry = verified_registry(&config, NOW).unwrap();
+        assert!(matches!(
+            inspect_with_transport(
+                &Endpoint,
+                &config,
+                &registry,
+                &address(7),
+                pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+                &bindings(),
+            ),
+            Err(CheckedAccountObservationError::Scan(
+                AccountScanError::Budget(_)
+            ))
+        ));
+    }
+
+    /// A source accepted while its snapshot was valid must not keep using it once expired.
+    #[test]
+    fn each_inspection_reverifies_the_snapshot_at_its_own_time() {
+        let config = config(signed_snapshot_with(|snapshot| {
+            snapshot.expires_at_unix = i64::MAX - 1;
+        }));
+        let source = OperatorAccountSource::new(config).unwrap();
+        assert!(matches!(
+            source.inspect_at(
+                &address(7),
+                pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+                &bindings(),
+                i64::MAX,
+            ),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::Expired { .. }
+            ))
+        ));
+    }
+
+    /// The development root's seed is public, so a snapshot it signs proves nothing about who
+    /// reviewed it. It may configure the reproducible testnet example and nothing else.
+    #[test]
+    fn public_development_root_is_refused_outside_testnet() {
+        let mainnet = || {
+            let mut config = config(signed_snapshot_with(|snapshot| {
+                snapshot.network_id = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
+            }));
+            config.network_passphrase = MAINNET_PASSPHRASE.into();
+            config
+        };
+        // The signature, network, and checkpoint are all consistent; only the root is wrong.
+        assert!(verified_registry(&mainnet(), NOW).is_ok());
+        assert!(matches!(
+            OperatorAccountSource::new(mainnet()),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::RootPolicy(_)
+            ))
+        ));
+
+        let mut also_governed = mainnet();
+        also_governed
+            .registry_roots
+            .keys
+            .insert("governance".into(), [3; 32]);
+        assert!(OperatorAccountSource::new(also_governed).is_err());
+
+        assert!(OperatorAccountSource::new(config(signed_snapshot())).is_ok());
     }
 
     #[test]
@@ -524,12 +685,65 @@ mod tests {
         ));
     }
 
+    /// A verifier decides which signatures an external signer accepts, so it is recognized
+    /// by observed code exactly like an installed policy (architecture section 4.10).
+    #[test]
+    fn external_signer_requires_a_registered_verifier_implementation() {
+        let config = config(signed_snapshot());
+        let external = || {
+            let mut scan = scan();
+            scan.signers.get_mut(&10).unwrap().signer = SignerIdentity::External {
+                verifier: address(15),
+                key: vec![1; 32],
+            };
+            scan
+        };
+        assert!(matches!(
+            check(external(), &config, &bindings()),
+            Err(CheckedAccountObservationError::Identity(_))
+        ));
+
+        let mut unknown = external();
+        unknown
+            .observed_code_hashes
+            .insert(address(15), Hash32([42; 32]));
+        assert!(matches!(
+            check(unknown, &config, &bindings()),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::UnknownVerifier(_)
+            ))
+        ));
+
+        let mut reviewed = external();
+        reviewed
+            .observed_code_hashes
+            .insert(address(15), pinned_upstream::OZ_ED25519_VERIFIER_WASM);
+        let observed = check(reviewed, &config, &bindings()).unwrap();
+        assert!(observed.projection.admin_candidates.is_empty());
+    }
+
+    /// A contract delegate authorizes through its own `__check_auth` and rule state. This
+    /// reader does not inspect a nested account, so it must not report one as checked.
+    #[test]
+    fn contract_delegated_signer_is_refused_without_nested_account_inspection() {
+        let config = config(signed_snapshot());
+        let mut nested = scan();
+        nested.signers.get_mut(&10).unwrap().signer = SignerIdentity::Delegated(address(12));
+        nested
+            .observed_code_hashes
+            .insert(address(12), pinned_upstream::OZ_SMART_ACCOUNT_WASM);
+        assert!(matches!(
+            check(nested, &config, &bindings()),
+            Err(CheckedAccountObservationError::Identity(_))
+        ));
+    }
+
     #[test]
     fn untrusted_roots_checkpoint_and_binding_claims_fail_before_acceptance() {
         let mut bad_signature = config(signed_snapshot());
         bad_signature.signed_registry_snapshot.signatures.clear();
         assert!(matches!(
-            verified_registry(&bad_signature),
+            verified_registry(&bad_signature, NOW),
             Err(CheckedAccountObservationError::Registry(
                 RegistryError::Signature
             ))
@@ -537,13 +751,13 @@ mod tests {
         let mut bad_checkpoint = config(signed_snapshot());
         bad_checkpoint.registry_checkpoint.root = Hash32([42; 32]);
         assert!(matches!(
-            verified_registry(&bad_checkpoint),
+            verified_registry(&bad_checkpoint, NOW),
             Err(CheckedAccountObservationError::Registry(
                 RegistryError::Transparency(_)
             ))
         ));
         let good = config(signed_snapshot());
-        let registry = verified_registry(&good).unwrap();
+        let registry = verified_registry(&good, NOW).unwrap();
         let duplicate = vec![bindings()[0].clone(), bindings()[0].clone()];
         assert!(matches!(
             inspect_with_transport(
@@ -594,7 +808,7 @@ mod tests {
             }
         }
         let good = config(signed_snapshot());
-        let registry = verified_registry(&good).unwrap();
+        let registry = verified_registry(&good, NOW).unwrap();
         let error = inspect_with_transport(
             &Echo,
             &good,

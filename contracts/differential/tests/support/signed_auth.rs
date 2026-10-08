@@ -58,34 +58,76 @@ pub fn insert_account(env: &Env, public_key: [u8; 32]) {
     env.host().add_ledger_entry(&key, &entry, None).unwrap();
 }
 
+/// How a delegate's authorization entry departs from an honest one. Every variant keeps the
+/// root invocation equal to the digest the account requests, so the host matches the entry
+/// and must then reject it on the signature alone.
+// Every suite that includes this module signs honestly; only the pinned account test
+// constructs the forgeries, so the other suites would report those variants as unused.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum Forgery<'a> {
+    None,
+    /// A valid signature by the delegate, over the preimage for a different digest.
+    SignsOtherDigest,
+    /// The honest signature with one bit flipped.
+    FlippedSignatureBit,
+    /// Another key signs and presents its own public key for the delegate's address.
+    WrongKey(&'a SigningKey),
+}
+
+fn check_auth_invocation(
+    env: &Env,
+    account: &Address,
+    digest: Vec<u8>,
+) -> SorobanAuthorizedInvocation {
+    SorobanAuthorizedInvocation {
+        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+            contract_address: as_sc_address(env, account),
+            function_name: "__check_auth".try_into().unwrap(),
+            args: vec![ScVal::Bytes(digest.try_into().unwrap())]
+                .try_into()
+                .unwrap(),
+        }),
+        sub_invocations: VecM::default(),
+    }
+}
+
 pub fn signed_delegate_auth(
     env: &Env,
     account: &Address,
     key: &SigningKey,
     auth_digest: &Bytes,
     nonce: i64,
+    forgery: Forgery,
 ) -> SorobanAuthorizationEntry {
     let signature_expiration_ledger = 2000;
-    let root_invocation = SorobanAuthorizedInvocation {
-        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
-            contract_address: as_sc_address(env, account),
-            function_name: "__check_auth".try_into().unwrap(),
-            args: vec![ScVal::Bytes(bytes_vec(auth_digest).try_into().unwrap())]
-                .try_into()
-                .unwrap(),
-        }),
-        sub_invocations: VecM::default(),
+    let root_invocation = check_auth_invocation(env, account, bytes_vec(auth_digest));
+    let signed_invocation = match forgery {
+        Forgery::SignsOtherDigest => {
+            let mut other = bytes_vec(auth_digest);
+            other[0] ^= 1;
+            check_auth_invocation(env, account, other)
+        }
+        _ => root_invocation.clone(),
     };
     let preimage = HashIdPreimage::SorobanAuthorization(HashIdPreimageSorobanAuthorization {
         network_id: XdrHash(env.ledger().network_id().to_array()),
         nonce,
         signature_expiration_ledger,
-        invocation: root_invocation.clone(),
+        invocation: signed_invocation,
     });
     let payload = Sha256::digest(preimage.to_xdr(Limits::none()).unwrap());
+    let signing_key = match forgery {
+        Forgery::WrongKey(other) => other,
+        _ => key,
+    };
+    let mut signature = signing_key.sign(&payload).to_bytes();
+    if let Forgery::FlippedSignatureBit = forgery {
+        signature[0] ^= 1;
+    }
     let sig = AccountEd25519Signature {
-        public_key: BytesN::from_array(env, &key.verifying_key().to_bytes()),
-        signature: BytesN::from_array(env, &key.sign(&payload).to_bytes()),
+        public_key: BytesN::from_array(env, &signing_key.verifying_key().to_bytes()),
+        signature: BytesN::from_array(env, &signature),
     };
     let signature =
         ScVal::from_xdr(bytes_vec(&svec![env, sig].to_xdr(env)), Limits::none()).unwrap();

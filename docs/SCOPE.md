@@ -26,15 +26,19 @@ The source-reviewed account method inventory and its limits are described in
    account, or inspect reverse lookup keys.
    A bounded account scanner now derives pinned keys, reads every rule slot through `NextId`,
    follows the signer/policy closure, checks reference counts and `Count`, observes the code at
-   every installed policy address, and re-reads the account instance. It retries a changed
-   endpoint ledger or instance as a whole. Returned archived entries, missing referenced
-   entries, a count mismatch, and exceeded scan bounds fail closed. Its output remains an
+   every installed policy address and at each contract verifier named by an external signer,
+   and re-reads the account instance. It retries a changed
+   endpoint ledger or instance as a whole. Returned archived or undecodable entries, missing
+   referenced entries, and a count mismatch fail closed as incomplete account state; exceeded
+   scan bounds, including a fixed 24 MiB ceiling on the entry XDR one scan retains, fail closed
+   as a budget error. Its output remains an
    endpoint-reported inspection: equal `latestLedger` values across calls are not an
    authenticated ledger-state proof, and an omitted rule key is treated as a removed hole
    only when the stored count reconciles. The scan does not identify the wallet's intended
    administrator or establish complete reviewed method evidence. The scanner hashes the ordered
-   XDR keys and values, TTL metadata, and requested absences, including inspected policy
-   instances. This digest identifies endpoint responses, not an authenticated ledger snapshot.
+   XDR keys and values, TTL metadata, and requested absences, including inspected policy and
+   verifier instances. This digest identifies endpoint responses, not an authenticated ledger
+   snapshot.
    A structural adapter maps the completed scan into the pure authority model, requires
    observed code for every installed policy, and lists eligible policy-free management rules
    with observed fingerprints. Its output keeps the raw XDR/TTL digest separate from the
@@ -44,12 +48,16 @@ The source-reviewed account method inventory and its limits are described in
    The signed version-2 development registry example binds the reviewed method-map digest and
    bounded scan protocol to the exact pinned account Wasm. Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
-   authority evidence.
+   authority evidence. The operator reader below refuses that root unless its pinned network
+   is testnet.
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
-   and compares the account, installed policies, and selected policy bindings with code hashes
-   observed by the bounded scanner. Unknown, revoked, or changed implementations are refused.
+   and compares the account, installed policies, external-signer verifiers, and selected policy
+   bindings with code hashes observed by the bounded scanner. Unknown, revoked, or changed
+   implementations are refused; a verifier is recognized only by its code at the observed
+   ledger. A contract-address delegated signer is refused: the reader does not inspect a nested
+   account's own rules, so it cannot say who that signer is.
    The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
    calls and re-reading the instance do not authenticate a coherent ledger snapshot. There is
    no wallet-authenticated binding to the intended administrator. A registry signature covers
@@ -99,9 +107,14 @@ The source-reviewed account method inventory and its limits are described in
    A separate Wasm gate (`scripts/test-pinned-account-authorization.sh`) builds the exact
    recognized account from pinned public source and a generated transfer policy with a fixed
    test signer. It checks real delegated Ed25519 authorization through the account's complete
-   `__check_auth` path, rejects a changed payload, commits counts across ledger advances, and
-   checks N+1 denial and rollback. Run the script before merging changes to this path; the
-   scheduled toolchain job also runs it and fails when a prerequisite or hash is unavailable.
+   `__check_auth` path and rejects a changed payload. Entries that name the requested digest but
+   carry a signature over another digest, a flipped signature bit, or another key are refused
+   by account authentication, not invocation matching. It also commits counts across ledger
+   advances and checks N+1 denial and rollback. The test pins the generated policy's Wasm hash,
+   so a change to code generation or its templates, the example spec, pinned build inputs, or
+   the account authorization path must rerun the script before merge. The scheduled workflow
+   also runs it in its own job and fails when a prerequisite or hash is unavailable, but that is
+   a backstop after merge, not the review gate.
    The ordinary contracts suite explicitly ignores this test because it needs source-built Wasm.
    This account-path test covers one fixture and one account code hash. It does not establish
    general layer-2 coverage or live preflight.
@@ -125,9 +138,11 @@ The source-reviewed account method inventory and its limits are described in
    SDK environment. A separate footprint reader captures every key declared by one original
    Soroban envelope in one bounded `getLedgerEntries` reply, including dependency contract
    keys. It validates all captured Wasm instance-to-code links. Omitted keys are unavailable
-   because the endpoint does not identify their absence or archive history. The original
-   footprint does not prove which additional keys a candidate account, policy, or changed
-   invocation could read.
+   because the endpoint does not identify their absence or archive history. The declared
+   footprint is the envelope's own claim; the network enforces it only when the transaction
+   executes, and the reader does not compare it with any simulation. The original footprint
+   does not prove which additional keys a candidate account, policy, or changed invocation
+   could read.
    One exact-footprint fixture derives the original target call from its envelope XDR,
    captures its declared instance, code, and fixed storage key in one fixture RPC reply,
    executes that Wasm from a strict SDK snapshot, and observes a committed known-key write
@@ -156,13 +171,40 @@ The source-reviewed account method inventory and its limits are described in
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
-   `authMode=enforce` for one caller-supplied envelope. It records the endpoint's ledger and
-   labels success, execution failure, or required archival restoration as state-dependent RPC
-   evidence. A successful simulation says only that this exact envelope simulated under the
-   endpoint's state: it does not prove that a particular installed policy was selected, that
-   the same transaction will succeed at a later ledger, or that any writes committed. The
-   caller must supply signed authorization entries in the envelope where the invocation needs
-   them. The source adapter does not return raw RPC error details that could echo confidential
+   `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
+   endpoint would refuse before simulating, such as one with a memo. It records the endpoint's
+   ledger and labels success, a failed simulation, or required archival restoration as
+   state-dependent RPC evidence. A failed simulation covers an invocation or authorization
+   failure and an error inside the endpoint's simulator alike, because the endpoint's text that
+   would distinguish them is withheld; a refusal before the endpoint reads its ledger is an RPC
+   error rather than an outcome. Restoration is reported whether the endpoint returns a separate
+   restoration preamble or, as current stellar-rpc does for an invocation, restores archived
+   entries inside the simulation and lists them in the simulated transaction data; neither is a
+   success against the endpoint's current state. The endpoint simulates only the envelope's source
+   account, its operation's host function, and its authorization entries. It does not evaluate
+   signatures, the transaction fee, the sequence number, or time bounds and other
+   preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
+   resource limits. The adapter therefore requires each declared footprint list to be exactly
+   the simulated one and the declared disk-read and write bytes to cover the simulated use,
+   which the endpoint reports unpadded, and reports a separate outcome naming each dimension
+   that fails, without naming keys. The endpoint reports instructions and the resource fee
+   only as padded estimates, so a declaration below either estimate is reported as advice
+   beside the outcome and never changes it. A successful simulation says only that this
+   invocation succeeded under the endpoint's state with the envelope's declared footprint and
+   at least the simulated disk-read and write bytes: it does not establish that the declared
+   instructions and fee suffice, that a particular installed policy was selected, that the
+   same transaction will succeed at a later ledger, or that any writes committed. The caller
+   must supply signed authorization entries in the envelope where the invocation needs them.
+   The source adapter does not return raw RPC error details that could echo confidential
    envelope contents. General disposable execution against complete captured target and
    dependency state with a full ledger context, and a policy-bound live preflight remain
    scheduled.
+
+   The CLI `preflight-transaction` command and the MCP `preflight_transaction` tool expose this
+   observation for one exact envelope, with the failing dimensions in
+   `insufficient_declared_resources` and the advice in `below_endpoint_estimate`, apart from
+   the outcome. That does not make it a dry run: they identify no
+   installed policy, run no mutation suite, and give no authority verdict. Signed authorization
+   entries in the envelope stay live authorizations until their expiration ledger, so a hosted
+   server refuses an envelope carrying signatures, while the CLI and a stdio server send it to
+   the caller's chosen endpoint.

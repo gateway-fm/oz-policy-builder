@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "rmcp server exposing recording, synthesis, reference evidence, generation and verification"
+description = "rmcp server exposing recording, synthesis, reference evidence, generation, verification and exact-envelope preflight"
 
 [[bin]]
 name = "ozpb-mcp-server"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 ozpb-toolkit = { workspace = true }
 ozpb-api-types = { workspace = true }
 ozpb-recorder-core = { workspace = true }
-ozpb-source-rpc = { workspace = true }
+ozpb-source-rpc = { workspace = true, features = ["http"] }
 rmcp = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
@@ -31,3 +31,5 @@ url = "2"
 ozpb-synthesizer = { workspace = true }
 ozpb-registry = { workspace = true }
 ozpb-domain = { workspace = true }
+# The shared RPC responder derives its simulation replies from the envelope under test.
+stellar-xdr = { workspace = true }

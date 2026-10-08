@@ -20,6 +20,10 @@
 //!
 //!     cargo run -p ozpb-cli -- dev-registry
 //!     UPDATE_EXAMPLES=1 cargo test -p ozpb-toolkit --test examples_are_current
+//!
+//! Regeneration keeps these files in step with the code, not with what was published. A signed
+//! snapshot's contents are fixed once released, and `ozpb-registry` pins each published root:
+//! new contents need a new `SIGNED_EXAMPLE_VERSION`, not a rewrite of the current one.
 
 use ozpb_domain::{NetworkId, TESTNET_PASSPHRASE};
 use ozpb_registry::{Registry, SignedSnapshot};
@@ -49,7 +53,8 @@ fn the_committed_signed_snapshot_is_current() {
         committed("registry.signed.json"),
         snapshot,
         "docs/examples/registry.signed.json has drifted from registry::dev — regenerate with \
-         `cargo run -p ozpb-cli -- dev-registry` and review the diff"
+         `cargo run -p ozpb-cli -- dev-registry` and review the diff; changed contents need a \
+         new SIGNED_EXAMPLE_VERSION"
     );
 }
 

@@ -20,7 +20,7 @@ use ozpb_source_rpc::{read_invocation_footprint, RpcError, RpcTransport};
 use ozpb_synthesizer::fixtures as fx;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use signed_auth::{as_sc_address, bytes_vec, insert_account, signed_delegate_auth};
+use signed_auth::{as_sc_address, bytes_vec, insert_account, signed_delegate_auth, Forgery};
 use soroban_sdk::auth::{Context, ContractContext};
 use soroban_sdk::{
     testutils::Ledger,
@@ -296,7 +296,14 @@ fn signed_entries(
         }),
         root_invocation,
     };
-    let delegate_entry = signed_delegate_auth(env, account, key, &delegate_digest, nonce + 1000);
+    let delegate_entry = signed_delegate_auth(
+        env,
+        account,
+        key,
+        &delegate_digest,
+        nonce + 1000,
+        Forgery::None,
+    );
     [account_entry, delegate_entry]
 }
 
@@ -503,7 +510,14 @@ fn signed_candidate_executes_captured_target_and_denies_adjacent_amount() {
         .to_bytes();
     digest_preimage.append(&rule_ids.clone().to_xdr(env));
     let digest = env.crypto().sha256(&digest_preimage).to_bytes().to_bytes();
-    env.set_auths(&[signed_delegate_auth(env, &account, &signer, &digest, 1600)]);
+    env.set_auths(&[signed_delegate_auth(
+        env,
+        &account,
+        &signer,
+        &digest,
+        1600,
+        Forgery::None,
+    )]);
     let context = Context::Contract(ContractContext {
         contract: target.clone(),
         fn_name: Symbol::new(env, "transfer"),

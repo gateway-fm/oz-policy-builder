@@ -16,7 +16,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
-ureq = { workspace = true }
+ureq = { workspace = true, optional = true }
 stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }
 sha2 = { workspace = true }
+
+[features]
+default = ["http"]
+# `HttpTransport`. Off for a caller that supplies its own `RpcTransport` (the contracts
+# workspace's canned-response tests), so it does not pull the HTTP and TLS stack.
+http = ["dep:ureq"]
