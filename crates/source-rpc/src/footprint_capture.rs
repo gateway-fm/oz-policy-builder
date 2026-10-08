@@ -9,7 +9,7 @@
 //! here compares it with one (`preflight_transaction` does that separately).
 
 use crate::{
-    ensure_base64_size, redact_ledger_request_error, validate_simulation_envelope, verify_network,
+    ensure_base64_size, redact_ledger_request_error, validate_invocation_envelope, verify_network,
     xdr_limits, RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{sha256, Hash32, LedgerSeq, NetworkId};
@@ -91,7 +91,7 @@ pub fn read_invocation_footprint<T: RpcTransport>(
     network_passphrase: &str,
     envelope_xdr_base64: &str,
 ) -> Result<InvocationFootprintCapture, FootprintCaptureError> {
-    let envelope = validate_simulation_envelope(envelope_xdr_base64)?;
+    let envelope = validate_invocation_envelope(envelope_xdr_base64)?;
     let ext = match &envelope {
         TransactionEnvelope::Tx(v1) => &v1.tx.ext,
         TransactionEnvelope::TxFeeBump(bump) => {
@@ -488,6 +488,20 @@ mod tests {
             1
         );
         assert_eq!(*rpc.calls.borrow(), ["getNetwork", "getLedgerEntries"]);
+    }
+
+    #[test]
+    fn a_memo_does_not_prevent_reading_the_declared_footprint() {
+        // Only simulation refuses a memo; this reader takes the envelope's declared keys.
+        let (encoded, rpc) = fixture();
+        let mut parsed = TransactionEnvelope::from_xdr_base64(&encoded, xdr_limits()).unwrap();
+        let TransactionEnvelope::Tx(v1) = &mut parsed else {
+            panic!("ordinary transaction")
+        };
+        v1.tx.memo = stellar_xdr::Memo::Id(42);
+        let encoded = parsed.to_xdr_base64(xdr_limits()).unwrap();
+        let capture = read_invocation_footprint(&rpc, NETWORK, &encoded).unwrap();
+        assert_eq!(capture.entries.len(), 5);
     }
 
     #[test]

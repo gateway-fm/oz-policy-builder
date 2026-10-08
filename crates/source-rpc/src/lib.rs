@@ -608,8 +608,32 @@ pub fn simulate_transaction<T: RpcTransport>(
 /// network, and the endpoint's time and bandwidth are not ours to spend on it.
 ///
 /// `simulateTransaction` takes a transaction carrying exactly one operation, and this adapter
-/// records Soroban invocations, so that operation must be an `InvokeHostFunction`.
+/// records Soroban invocations, so that operation must be an `InvokeHostFunction`. The
+/// endpoint also refuses any memo before it simulates ("Soroban transactions do not support
+/// memos").
 fn validate_simulation_envelope(
+    envelope_xdr_base64: &str,
+) -> Result<TransactionEnvelope, RpcError> {
+    let envelope = validate_invocation_envelope(envelope_xdr_base64)?;
+    let memo = match &envelope {
+        TransactionEnvelope::Tx(v1) => &v1.tx.memo,
+        TransactionEnvelope::TxFeeBump(bump) => {
+            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+            &inner.tx.memo
+        }
+        TransactionEnvelope::TxV0(v0) => &v0.tx.memo,
+    };
+    if !matches!(memo, stellar_xdr::Memo::None) {
+        return Err(RpcError::Malformed(
+            "simulation refuses a transaction with a memo".to_string(),
+        ));
+    }
+    Ok(envelope)
+}
+
+/// An envelope carrying exactly one `InvokeHostFunction` operation, within the XDR size bound.
+/// This is the shape check alone, for a reader that takes an envelope without simulating it.
+fn validate_invocation_envelope(
     envelope_xdr_base64: &str,
 ) -> Result<TransactionEnvelope, RpcError> {
     ensure_base64_size("transaction", envelope_xdr_base64)?;
@@ -2127,11 +2151,22 @@ mod tests {
             v1.tx.operations = operations.try_into().unwrap();
             base64(&TransactionEnvelope::Tx(v1))
         };
+        // stellar-rpc refuses any memo before it simulates.
+        let with_memo = {
+            let TransactionEnvelope::Tx(mut v1) =
+                TransactionEnvelope::from_xdr_base64(&valid, xdr_limits()).unwrap()
+            else {
+                panic!("the fixture envelope is a v1 transaction");
+            };
+            v1.tx.memo = stellar_xdr::Memo::Id(42);
+            base64(&TransactionEnvelope::Tx(v1))
+        };
         for (envelope, expected) in [
             ("not-base64-xdr".to_string(), "envelope"),
             ("A".repeat(MAX_XDR_BASE64_BYTES + 1), "size limit"),
             (two_operations, "operation"),
             (not_soroban, "InvokeHostFunction"),
+            (with_memo, "memo"),
         ] {
             let transport = simulation();
             let error = simulate_transaction(&transport, NET, &envelope)

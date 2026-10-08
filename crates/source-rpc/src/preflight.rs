@@ -751,6 +751,28 @@ mod tests {
     }
 
     #[test]
+    fn a_memo_is_refused_before_any_request() {
+        let mut parsed = TransactionEnvelope::from_xdr_base64(envelope(), xdr_limits()).unwrap();
+        let TransactionEnvelope::Tx(v1) = &mut parsed else {
+            panic!("fixture has one ordinary transaction")
+        };
+        v1.tx.memo = stellar_xdr::Memo::Text("private invoice".try_into().unwrap());
+        let transport = CannedTransport::new(success());
+        let error = preflight_transaction(
+            &transport,
+            NETWORK,
+            &parsed.to_xdr_base64(xdr_limits()).unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, RpcError::Malformed(message) if message.contains("memo")),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("private invoice"));
+        assert!(transport.calls.borrow().is_empty());
+    }
+
+    #[test]
     fn malformed_envelope_stops_before_network_and_rpc_error_detail_is_withheld() {
         let transport = CannedTransport::new(success());
         assert!(preflight_transaction(&transport, NETWORK, "not XDR").is_err());

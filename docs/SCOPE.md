@@ -114,9 +114,10 @@ The source-reviewed account method inventory and its limits are described in
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
-   `authMode=enforce` for one caller-supplied envelope. It records the endpoint's ledger and
-   labels success, execution failure, or required archival restoration as state-dependent RPC
-   evidence. Restoration is reported whether the endpoint returns a separate restoration
+   `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
+   endpoint would refuse before simulating, such as one with a memo. It records the endpoint's
+   ledger and labels success, execution failure, or required archival restoration as
+   state-dependent RPC evidence. Restoration is reported whether the endpoint returns a separate restoration
    preamble or, as current stellar-rpc does for an invocation, restores archived entries inside
    the simulation and lists them in the simulated transaction data; neither is a success
    against the endpoint's current state. The endpoint simulates only the envelope's source
