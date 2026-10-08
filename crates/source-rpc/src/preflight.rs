@@ -347,9 +347,25 @@ fn validate_success(result: &Value) -> Result<SorobanTransactionData, RpcError> 
         .ok_or_else(|| {
             RpcError::Malformed("successful preflight lacks minResourceFee".to_string())
         })?;
-    fee.parse::<u64>()
+    let fee = fee
+        .parse::<u64>()
         .map_err(|_| RpcError::Malformed("preflight minResourceFee is not a u64".to_string()))?;
+    ensure_min_fee_is_data_fee("preflight", fee, &simulated)?;
     Ok(simulated)
+}
+
+/// stellar-rpc reports a `minResourceFee` that is its transaction data's own resource fee.
+fn ensure_min_fee_is_data_fee(
+    context: &str,
+    min_fee: u64,
+    data: &SorobanTransactionData,
+) -> Result<(), RpcError> {
+    if i64::try_from(min_fee).ok() != Some(data.resource_fee) {
+        return Err(RpcError::Malformed(format!(
+            "{context} minResourceFee is not its transaction data's resource fee"
+        )));
+    }
+    Ok(())
 }
 
 /// Whether the simulated success needed archived entries restored first.
@@ -385,14 +401,15 @@ fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
         .get("transactionData")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::Malformed("restorePreamble lacks transactionData".to_string()))?;
-    validate_transaction_data(transaction_data)?;
+    let data = validate_transaction_data(transaction_data)?;
     let fee = object
         .get("minResourceFee")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::Malformed("restorePreamble lacks minResourceFee".to_string()))?;
-    fee.parse::<u64>().map_err(|_| {
+    let fee = fee.parse::<u64>().map_err(|_| {
         RpcError::Malformed("restorePreamble minResourceFee is not a u64".to_string())
     })?;
+    ensure_min_fee_is_data_fee("restorePreamble", fee, &data)?;
     Ok(())
 }
 
@@ -470,7 +487,8 @@ mod tests {
                 "auth": []
             }],
             "transactionData": transaction_data(),
-            "minResourceFee": "100"
+            // stellar-rpc reports the simulated data's own resource fee here.
+            "minResourceFee": "0"
         })
     }
 
@@ -538,9 +556,13 @@ mod tests {
 
     #[test]
     fn restoration_is_a_separate_non_success_outcome() {
+        let preamble = SorobanTransactionData {
+            resource_fee: 200,
+            ..Default::default()
+        };
         let mut result = success();
         result["restorePreamble"] = json!({
-            "transactionData": transaction_data(),
+            "transactionData": preamble.to_xdr_base64(xdr_limits()).unwrap(),
             "minResourceFee": "200"
         });
         let observation =
@@ -764,16 +786,16 @@ mod tests {
         let mut failed_and_success = success();
         failed_and_success["error"] = json!("failed");
         for result in [
-            json!({"results": success()["results"], "transactionData": transaction_data(), "minResourceFee": "100"}),
-            json!({"latestLedger": 0, "results": success()["results"], "transactionData": transaction_data(), "minResourceFee": "100"}),
+            json!({"results": success()["results"], "transactionData": transaction_data(), "minResourceFee": "0"}),
+            json!({"latestLedger": 0, "results": success()["results"], "transactionData": transaction_data(), "minResourceFee": "0"}),
             missing_auth,
             invalid_xdr,
             invalid_auth,
             many_results,
             failed_and_success,
             json!({"latestLedger": 4200101, "error": ""}),
-            json!({"latestLedger": 4200101, "results": success()["results"], "transactionData": "invalid", "minResourceFee": "100"}),
-            json!({"latestLedger": 4200101, "restorePreamble": {"transactionData": "invalid", "minResourceFee": "100"}}),
+            json!({"latestLedger": 4200101, "results": success()["results"], "transactionData": "invalid", "minResourceFee": "0"}),
+            json!({"latestLedger": 4200101, "restorePreamble": {"transactionData": "invalid", "minResourceFee": "0"}}),
             json!({"latestLedger": 4200101, "restorePreamble": {"transactionData": transaction_data(), "minResourceFee": "-1"}}),
             json!({
                 "latestLedger": 4200101,
@@ -781,7 +803,7 @@ mod tests {
                 "transactionData": with_archived(SorobanTransactionData::default(), vec![0])
                     .to_xdr_base64(xdr_limits())
                     .unwrap(),
-                "minResourceFee": "100"
+                "minResourceFee": "0"
             }),
         ] {
             assert!(
@@ -790,6 +812,31 @@ mod tests {
                     Err(RpcError::Malformed(_))
                 ),
                 "malformed response must not be reported as a successful simulation"
+            );
+        }
+    }
+
+    #[test]
+    fn a_min_resource_fee_other_than_the_transaction_data_fee_is_malformed() {
+        // stellar-rpc sets `minResourceFee` to the resource fee inside the transaction data it
+        // returns, for the simulation and for a restore preamble alike.
+        let simulated = SorobanTransactionData {
+            resource_fee: 100,
+            ..Default::default()
+        };
+        let mut success = success_using(&simulated);
+        success["minResourceFee"] = json!("99");
+        let mut preamble = success_using(&simulated);
+        preamble["restorePreamble"] = json!({
+            "transactionData": simulated.to_xdr_base64(xdr_limits()).unwrap(),
+            "minResourceFee": "101"
+        });
+        for result in [success, preamble] {
+            let error = preflight_transaction(&CannedTransport::new(result), NETWORK, &envelope())
+                .unwrap_err();
+            assert!(
+                matches!(&error, RpcError::Malformed(message) if message.contains("minResourceFee")),
+                "{error}"
             );
         }
     }
