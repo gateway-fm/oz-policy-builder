@@ -114,7 +114,10 @@ The source-reviewed account method inventory and its limits are described in
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
    `authMode=enforce` for one caller-supplied envelope. It records the endpoint's ledger and
    labels success, execution failure, or required archival restoration as state-dependent RPC
-   evidence. A successful simulation says only that this exact envelope simulated under the
+   evidence. Restoration is reported whether the endpoint returns a separate restoration
+   preamble or, as current stellar-rpc does for an invocation, restores archived entries inside
+   the simulation and lists them in the simulated transaction data; neither is a success
+   against the endpoint's current state. A successful simulation says only that this exact envelope simulated under the
    endpoint's state: it does not prove that a particular installed policy was selected, that
    the same transaction will succeed at a later ledger, or that any writes committed. The
    caller must supply signed authorization entries in the envelope where the invocation needs

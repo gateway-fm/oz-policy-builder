@@ -12,7 +12,10 @@ use crate::{
 use ozpb_domain::{sha256, NetworkId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use stellar_xdr::{ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionData, WriteXdr};
+use stellar_xdr::{
+    ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionData, SorobanTransactionDataExt,
+    WriteXdr,
+};
 
 /// Result of an enforcement-mode trial of one transaction, never a policy verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +23,10 @@ use stellar_xdr::{ReadXdr, ScVal, SorobanAuthorizationEntry, SorobanTransactionD
 pub enum PreflightOutcome {
     SimulatedSuccess,
     SimulationFailed,
+    /// The invocation reached success only with archived entries restored, whether the
+    /// endpoint reported a separate `restorePreamble` or (since protocol 23) restored them
+    /// inside the simulation and listed them in the simulated transaction data. It is not a
+    /// success against the endpoint's current state.
     RestorationRequired,
 }
 
@@ -46,7 +53,8 @@ pub struct PreflightObservation {
 /// The caller must provide the signed authorization entries it wants enforced inside
 /// the envelope. RPC errors in a result become `SimulationFailed`; the endpoint's raw
 /// error string is withheld because it can reflect confidential envelope contents.
-/// An archived-entry preamble is `RestorationRequired`, not a successful invocation.
+/// A success that needed archived entries restored, by preamble or by the endpoint's
+/// automatic restoration, is `RestorationRequired`, not a successful invocation.
 pub fn preflight_transaction<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -133,8 +141,9 @@ fn parse_preflight(
     } else if let Some(restore) = result.get("restorePreamble") {
         validate_restoration(restore)?;
         PreflightOutcome::RestorationRequired
+    } else if restores_archived_entries(&validate_success(result)?)? {
+        PreflightOutcome::RestorationRequired
     } else {
-        validate_success(result)?;
         PreflightOutcome::SimulatedSuccess
     };
     Ok(PreflightObservation {
@@ -149,7 +158,7 @@ fn parse_preflight(
     })
 }
 
-fn validate_success(result: &Value) -> Result<(), RpcError> {
+fn validate_success(result: &Value) -> Result<SorobanTransactionData, RpcError> {
     let results = result
         .get("results")
         .and_then(Value::as_array)
@@ -186,7 +195,7 @@ fn validate_success(result: &Value) -> Result<(), RpcError> {
         .ok_or_else(|| {
             RpcError::Malformed("successful preflight lacks transactionData".to_string())
         })?;
-    validate_transaction_data(transaction_data)?;
+    let simulated = validate_transaction_data(transaction_data)?;
     let fee = result
         .get("minResourceFee")
         .and_then(Value::as_str)
@@ -195,7 +204,32 @@ fn validate_success(result: &Value) -> Result<(), RpcError> {
         })?;
     fee.parse::<u64>()
         .map_err(|_| RpcError::Malformed("preflight minResourceFee is not a u64".to_string()))?;
-    Ok(())
+    Ok(simulated)
+}
+
+/// Whether the simulated success needed archived entries restored first.
+///
+/// Since protocol 23 the endpoint restores archived entries inside the simulated invocation
+/// and sends no `restorePreamble`: stellar-rpc builds the result with no preamble and
+/// `soroban-simulation` lists the restored entries, by index into the simulated read-write
+/// footprint, in `SorobanTransactionDataExt::V1`. That success is against restored state, not
+/// the state the endpoint reports, so it is the same outcome as a preamble.
+fn restores_archived_entries(simulated: &SorobanTransactionData) -> Result<bool, RpcError> {
+    let SorobanTransactionDataExt::V1(ext) = &simulated.ext else {
+        return Ok(false);
+    };
+    let writable = simulated.resources.footprint.read_write.len();
+    if ext
+        .archived_soroban_entries
+        .iter()
+        .any(|index| usize::try_from(*index).map_or(true, |index| index >= writable))
+    {
+        return Err(RpcError::Malformed(
+            "preflight archived entry index is outside the simulated read-write footprint"
+                .to_string(),
+        ));
+    }
+    Ok(!ext.archived_soroban_entries.is_empty())
 }
 
 fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
@@ -217,12 +251,10 @@ fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
     Ok(())
 }
 
-fn validate_transaction_data(encoded: &str) -> Result<(), RpcError> {
+fn validate_transaction_data(encoded: &str) -> Result<SorobanTransactionData, RpcError> {
     ensure_base64_size("preflight transactionData", encoded)?;
-    SorobanTransactionData::from_xdr_base64(encoded, xdr_limits()).map_err(|error| {
-        RpcError::Malformed(format!("invalid preflight transactionData: {error}"))
-    })?;
-    Ok(())
+    SorobanTransactionData::from_xdr_base64(encoded, xdr_limits())
+        .map_err(|error| RpcError::Malformed(format!("invalid preflight transactionData: {error}")))
 }
 
 #[cfg(test)]
@@ -230,6 +262,10 @@ mod tests {
     use super::*;
     use ozpb_recorder_core::{fixtures, record, RecordOptions};
     use std::cell::RefCell;
+    use stellar_xdr::{
+        ContractDataDurability, ContractId, Hash, LedgerKey, LedgerKeyContractData, ScAddress,
+        SorobanResourcesExtV0, SorobanTransactionDataExt,
+    };
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
 
@@ -345,6 +381,40 @@ mod tests {
         assert_eq!(observation.outcome, PreflightOutcome::RestorationRequired);
     }
 
+    fn storage_key(id: u32) -> LedgerKey {
+        LedgerKey::ContractData(LedgerKeyContractData {
+            contract: ScAddress::Contract(ContractId(Hash([7; 32]))),
+            key: ScVal::U32(id),
+            durability: ContractDataDurability::Persistent,
+        })
+    }
+
+    fn with_archived(
+        mut data: SorobanTransactionData,
+        indices: Vec<u32>,
+    ) -> SorobanTransactionData {
+        data.ext = SorobanTransactionDataExt::V1(SorobanResourcesExtV0 {
+            archived_soroban_entries: indices.try_into().unwrap(),
+        });
+        data
+    }
+
+    #[test]
+    fn auto_restored_archived_entries_are_restoration_not_success() {
+        // Since protocol 23 stellar-rpc sends no restorePreamble for an invocation. The
+        // archived entries it had to restore to reach success are listed by read-write
+        // footprint index in the simulated transaction data instead.
+        let mut data = SorobanTransactionData::default();
+        data.resources.footprint.read_write = vec![storage_key(1)].try_into().unwrap();
+        let mut result = success();
+        result["transactionData"] = json!(with_archived(data, vec![0])
+            .to_xdr_base64(xdr_limits())
+            .unwrap());
+        let observation =
+            preflight_transaction(&CannedTransport::new(result), NETWORK, &envelope()).unwrap();
+        assert_eq!(observation.outcome, PreflightOutcome::RestorationRequired);
+    }
+
     #[test]
     fn malformed_or_contradictory_replies_cannot_claim_success() {
         let mut missing_auth = success();
@@ -375,6 +445,14 @@ mod tests {
             json!({"latestLedger": 4200101, "results": success()["results"], "transactionData": "invalid", "minResourceFee": "100"}),
             json!({"latestLedger": 4200101, "restorePreamble": {"transactionData": "invalid", "minResourceFee": "100"}}),
             json!({"latestLedger": 4200101, "restorePreamble": {"transactionData": transaction_data(), "minResourceFee": "-1"}}),
+            json!({
+                "latestLedger": 4200101,
+                "results": success()["results"],
+                "transactionData": with_archived(SorobanTransactionData::default(), vec![0])
+                    .to_xdr_base64(xdr_limits())
+                    .unwrap(),
+                "minResourceFee": "100"
+            }),
         ] {
             assert!(
                 matches!(
