@@ -698,6 +698,7 @@ endpoint; API role + isolated sandbox-worker role, §3).
 |---|---|---|
 | `record_transaction` | network read | tx hash (+ network) → RecordingBundle (`rpc_reported`) |
 | `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`) |
+| `preflight_transaction` | network read, state-dependent; **confidential input**, and signed entries in it are live authorizations | exact envelope with its intended authorization entries → one RPC `authMode: enforce` simulation: outcome, endpoint-reported ledger, and any under-declared Soroban resources. Not a policy, installation, or authority verdict, and never submits; a hosted server refuses envelopes carrying signatures |
 | `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied` when the bundle's transaction result XDR backs its claimed outcome, `incomplete` without it — synthesis refuses the latter; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
 | `synthesize_policy` | pure | bundle(s) + user decisions → PolicySpec + per-constraint rationale + open questions |
 | `evaluate_spec` | pure | PolicySpec + candidate invocation → reference-evaluator verdict for the generated scope; `indeterminate` if an attached reviewed policy is unmodelled |

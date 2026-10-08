@@ -39,6 +39,28 @@ fn preflight_has_a_schema_and_does_not_advertise_a_policy_verdict() {
 }
 
 #[test]
+fn server_instructions_name_preflight_as_a_state_dependent_network_read() {
+    let responses = run_session(&[initialize(), initialized()]);
+    let instructions = by_id(&responses, 1)["result"]["instructions"]
+        .as_str()
+        .expect("server instructions");
+    assert!(
+        instructions.contains("preflight_transaction"),
+        "{instructions}"
+    );
+    // Determinism is a property of the pure tools only; the network reads depend on ledger state.
+    assert!(
+        !instructions.contains("Deterministic and fail-closed"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("Pure tools are deterministic"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("ledger state"), "{instructions}");
+}
+
+#[test]
 fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
     let endpoint = preflight_rpc::CountingEndpoint::bind();
     let call = preflight_call(&endpoint.url, "not-base64");

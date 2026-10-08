@@ -306,10 +306,14 @@ impl ServerHandler for PolicyBuilderServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "OZ Accounts Policy Builder. Record a Stellar transaction, synthesize a \
              minimum-permission OpenZeppelin smart-account policy, evaluate it, run the layer-1 \
-             reference suite, generate reviewable Rust, and verify generated artifacts offline. \
-             Deterministic and fail-closed: this server never \
-             deploys, signs, or holds keys — code-first, deploy-second. Widening a grant \
-             beyond exactly what was observed requires explicit user decisions.",
+             reference suite, generate reviewable Rust, verify generated artifacts offline, and \
+             optionally simulate one exact envelope with preflight_transaction. Pure tools are \
+             deterministic; record_transaction, record_simulation and preflight_transaction \
+             read Stellar RPC, and their results depend on ledger state. Fail-closed: this \
+             server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
+             Signed authorization entries given to preflight_transaction stay live \
+             authorizations until they expire. Widening a grant beyond exactly what was \
+             observed requires explicit user decisions.",
         )
     }
 }

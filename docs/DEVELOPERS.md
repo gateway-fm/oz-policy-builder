@@ -78,6 +78,11 @@ is left for the endpoint and its transport. Whitespace anywhere in the envelope 
 rather than skipped; the CLI removes only the envelope file's final line ending. The endpoint
 receives the canonical base64 of the bytes `envelope_xdr_sha256` hashes.
 
+Every reported outcome is a completed observation, not a command failure: the CLI exits 0 for
+`simulation_failed`, `restoration_required` and `declared_resources_insufficient` as well as
+for `simulated_success`, and the MCP tool returns them as results. A script must read
+`outcome`; a zero exit status says only that the endpoint answered.
+
 ### CLI
 
 ```bash
@@ -121,6 +126,7 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 # Signed entries are live authorizations until their signatureExpirationLedger: prefer testnet
 # or a short expiration, and an RPC endpoint you trust. This never submits the envelope, and
 # it reports endpoint state at one ledger, not an installed-policy or Safe verdict.
+# It exits 0 for every reported outcome, simulation_failed included: check `outcome`.
 ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
   --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015"

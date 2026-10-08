@@ -140,3 +140,10 @@ The source-reviewed account method inventory and its limits are described in
    could echo confidential envelope contents. Disposable execution against a complete captured
    target-state fixture, with an explicit ledger context and policy-bound authorization, and a
    full policy-bound live preflight remain scheduled.
+
+   The CLI `preflight-transaction` command and the MCP `preflight_transaction` tool expose this
+   observation for one exact envelope. That does not make it a dry run: they identify no
+   installed policy, run no mutation suite, and give no authority verdict. Signed authorization
+   entries in the envelope stay live authorizations until their expiration ledger, so a hosted
+   server refuses an envelope carrying signatures, while the CLI and a stdio server send it to
+   the caller's chosen endpoint.
