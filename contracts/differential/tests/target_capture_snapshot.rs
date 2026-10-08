@@ -213,4 +213,49 @@ fn captured_wasm_runs_for_selected_key_and_refuses_uncaptured_read() {
     }));
     assert!(unknown.is_err() || unknown.unwrap().is_err());
     assert!(*rejected.borrow() > 0);
+
+    let refused_before_write = *rejected.borrow();
+    let unlisted_write = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.try_invoke_contract::<(), soroban_sdk::Error>(
+            &target,
+            &Symbol::new(&env, "put"),
+            soroban_sdk::vec![
+                &env,
+                Symbol::new(&env, "unknown").into_val(&env),
+                Symbol::new(&env, "untrusted").into_val(&env),
+            ],
+        )
+    }));
+    assert!(unlisted_write.is_err() || unlisted_write.unwrap().is_err());
+    assert!(*rejected.borrow() > refused_before_write);
+    let still_known: Option<Symbol> = env.invoke_contract(
+        &target,
+        &Symbol::new(&env, "get"),
+        soroban_sdk::vec![&env, Symbol::new(&env, "known").into_val(&env)],
+    );
+    assert_eq!(still_known, Some(Symbol::new(&env, "value")));
+
+    // A write to an already captured key commits in the disposable environment.
+    // A later ledger and a fresh environment observe the changed value. This
+    // deliberately says nothing about new keys or account authorization.
+    env.invoke_contract::<()>(
+        &target,
+        &Symbol::new(&env, "put"),
+        soroban_sdk::vec![
+            &env,
+            Symbol::new(&env, "known").into_val(&env),
+            Symbol::new(&env, "changed").into_val(&env),
+        ],
+    );
+    env.ledger().with_mut(|ledger| ledger.sequence_number += 1);
+    let committed = env.to_ledger_snapshot();
+    assert_eq!(committed.sequence_number, capture.reported_ledger.0 + 1);
+    let later = Env::from_ledger_snapshot(committed);
+    let later_target = Address::from_str(&later, &capture.contract_address);
+    let changed: Option<Symbol> = later.invoke_contract(
+        &later_target,
+        &Symbol::new(&later, "get"),
+        soroban_sdk::vec![&later, Symbol::new(&later, "known").into_val(&later)],
+    );
+    assert_eq!(changed, Some(Symbol::new(&later, "changed")));
 }

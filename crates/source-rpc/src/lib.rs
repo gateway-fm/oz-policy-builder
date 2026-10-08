@@ -1,8 +1,8 @@
 //! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
-//! the pure recorder, plus bounded contract-code and contract-data observations and an
-//! authorization-enforcing transaction preflight. Executed
+//! the pure recorder, plus bounded contract-code, contract-data, and declared-footprint
+//! observations and an authorization-enforcing transaction preflight. Executed
 //! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
 //! tested offline.
@@ -13,12 +13,17 @@ mod account_entry_page;
 mod account_reconciliation;
 mod account_storage;
 mod contract_data;
+mod footprint_capture;
 mod preflight;
 pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
 };
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
+pub use footprint_capture::{
+    read_invocation_footprint, CapturedFootprintEntry, FootprintCaptureError,
+    InvocationFootprintCapture,
+};
 pub use preflight::{preflight_transaction, PreflightObservation, PreflightOutcome};
 
 use ozpb_recorder_core::{

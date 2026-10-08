@@ -84,7 +84,13 @@ The source-reviewed account method inventory and its limits are described in
    and SDK test ledger defaults; a strict source rejects an uncaptured storage read. The RPC
    capture does not supply a full ledger header or network configuration. The test does not
    reconstruct the original call, authorize through the account and policy, or demonstrate a
-   stateful mutation suite.
+   stateful mutation suite. It also updates one already captured storage key, advances the
+   disposable ledger, and observes the committed value in a fresh SDK environment. A separate
+   footprint reader can capture every key declared by one original Soroban envelope in one
+   bounded `getLedgerEntries` reply, including keys of dependency contracts, and validates all
+   captured Wasm instance-to-code links. Omitted keys are unavailable because the endpoint does
+   not identify their absence or archive history. The original footprint does not prove which
+   additional keys a candidate account, policy, or changed invocation could read.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
