@@ -976,20 +976,31 @@ mod tests {
 
     #[test]
     fn retained_entry_bytes_are_bounded_across_batches() {
-        // Each candidate instance is well inside the per-value XDR bound and the targets fit
-        // one code-read batch; together they exceed what one scan may retain.
-        const PAYLOAD: usize = 400 * 1024;
-        let count = MAX_SCAN_WITNESS_BYTES / PAYLOAD + 1;
-        let first = 100;
+        // The candidate instances span two code-read batches. Each batch is a response the
+        // HTTP transport accepts and retains less than the bound on its own; only their sum
+        // exceeds it, so the bound has to be carried from one batch to the next.
+        const PAYLOAD: usize = 64 * 1024;
+        const COUNT: usize = MAX_SCAN_WITNESS_BYTES / PAYLOAD + 1;
+        const {
+            assert!(COUNT > MAX_LEDGER_ENTRY_KEYS);
+            assert!(MAX_LEDGER_ENTRY_KEYS * (PAYLOAD + 1024) < MAX_SCAN_WITNESS_BYTES);
+        }
         let large = mock();
-        for index in 0..count {
-            let byte = first + u8::try_from(index).unwrap();
+        let mut targets = Vec::new();
+        for index in 0..COUNT {
+            let mut id = [100; 32];
+            id[..2].copy_from_slice(&u16::try_from(index).unwrap().to_be_bytes());
             let storage = vec![ScMapEntry {
                 key: symbol("blob"),
-                val: ScVal::Bytes(ScBytes(vec![byte; PAYLOAD].try_into().unwrap())),
+                val: ScVal::Bytes(ScBytes(vec![id[1]; PAYLOAD].try_into().unwrap())),
             }];
             large.values.borrow_mut().insert(
-                encoded(byte, AccountEntryKey::Instance),
+                LedgerKey::ContractData(ledger_key(
+                    &ContractId(Hash(id)),
+                    AccountEntryKey::Instance,
+                ))
+                .to_xdr_base64(xdr_limits())
+                .unwrap(),
                 (
                     ScVal::ContractInstance(ScContractInstance {
                         executable: ContractExecutable::Wasm(Hash([3; 32])),
@@ -998,12 +1009,28 @@ mod tests {
                     20,
                 ),
             );
+            targets.push(format!("{}", stellar_strkey::Contract(id)));
         }
-        let targets = (0..count)
-            .map(|index| address(first + u8::try_from(index).unwrap()))
-            .collect::<Vec<_>>();
+
+        struct Measured<'a> {
+            inner: &'a Mock,
+            largest_response: Cell<usize>,
+        }
+        impl RpcTransport for Measured<'_> {
+            fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+                let response = self.inner.call(method, params)?;
+                let length = response.to_string().len();
+                self.largest_response
+                    .set(self.largest_response.get().max(length));
+                Ok(response)
+            }
+        }
+        let measured = Measured {
+            inner: &large,
+            largest_response: Cell::new(0),
+        };
         let result = scan_account_state_with_targets(
-            &large,
+            &measured,
             NETWORK,
             &address(7),
             &targets,
@@ -1021,7 +1048,38 @@ mod tests {
             ),
             "{result:?}"
         );
-        assert_eq!(large.calls.get(), 4);
+        // Instance, rules, signers, then the second code-read batch is the one refused.
+        assert_eq!(large.calls.get(), 5);
+        assert!(measured.largest_response.get() <= crate::MAX_HTTP_RESPONSE_BYTES);
+    }
+
+    #[test]
+    fn merge_witnesses_counts_each_retained_key_once_across_calls() {
+        let present = |length: usize| LedgerWitness::Present {
+            entry_data_xdr: vec![0; length],
+            last_modified_ledger: 9,
+            live_until_ledger: 20,
+        };
+        // Each page alone is under the bound; the first and third together are over it.
+        let half = MAX_SCAN_WITNESS_BYTES / 2;
+        let mut all = BTreeMap::new();
+        let mut retained = 0;
+        let mut merge = |key: u8| {
+            merge_witnesses(
+                &mut all,
+                &mut retained,
+                BTreeMap::from([(vec![key], present(half))]),
+            )
+        };
+        assert!(matches!(merge(1), Ok(())));
+        // An identical re-read retains nothing new, so it cannot exhaust the bound.
+        assert!(matches!(merge(1), Ok(())));
+        assert!(matches!(
+            merge(2),
+            Err(AccountScanError::Budget(
+                "retained entry bytes exceed bound"
+            ))
+        ));
     }
 
     #[test]
