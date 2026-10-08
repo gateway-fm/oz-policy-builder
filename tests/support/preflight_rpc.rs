@@ -10,8 +10,9 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use stellar_xdr::{
-    Limits, ReadXdr, SorobanResourcesExtV0, SorobanTransactionData, SorobanTransactionDataExt,
-    TransactionEnvelope, TransactionExt, WriteXdr,
+    AccountId, LedgerKey, LedgerKeyAccount, Limits, PublicKey, ReadXdr, SorobanResourcesExtV0,
+    SorobanTransactionData, SorobanTransactionDataExt, TransactionEnvelope, TransactionExt,
+    Uint256, WriteXdr,
 };
 
 pub const NETWORK: &str = "Test SDF Network ; September 2015";
@@ -114,16 +115,19 @@ pub struct OutcomeCase {
     pub simulation: Value,
     pub outcome: &'static str,
     pub insufficient_declared_resources: Vec<&'static str>,
+    pub below_endpoint_estimate: Vec<&'static str>,
 }
 
-/// Every non-success outcome, each from a reply the endpoint can send for `envelope`.
+/// Every non-success outcome, and advice beside a success, each from a reply the endpoint can
+/// send for `envelope`.
 pub fn outcome_cases(envelope: &str) -> Vec<OutcomeCase> {
     let declared = declared(envelope);
 
+    // A preamble's minimum fee is the resource fee in its own transaction data.
     let mut preamble = success(envelope);
     preamble["restorePreamble"] = json!({
         "transactionData": declared.to_xdr_base64(Limits::none()).expect("transaction data XDR"),
-        "minResourceFee": "100"
+        "minResourceFee": declared.resource_fee.to_string()
     });
 
     // Since protocol 23 the endpoint restores archived entries inside the simulation and
@@ -137,9 +141,20 @@ pub fn outcome_cases(envelope: &str) -> Vec<OutcomeCase> {
         archived_soroban_entries: vec![0].try_into().expect("one archived index"),
     });
 
+    // The simulation read a key the envelope does not declare, and wrote more than it allows.
     let mut over = declared.clone();
-    over.resources.instructions += 1;
-    over.resource_fee += 1;
+    let mut read_only = over.resources.footprint.read_only.to_vec();
+    read_only.push(LedgerKey::Account(LedgerKeyAccount {
+        account_id: AccountId(PublicKey::PublicKeyTypeEd25519(Uint256([5; 32]))),
+    }));
+    over.resources.footprint.read_only = read_only.try_into().expect("read-only footprint");
+    over.resources.write_bytes += 1;
+
+    // The endpoint's padded estimates exceed what the envelope declares; its footprint and
+    // byte limits still match the simulation.
+    let mut estimated = declared.clone();
+    estimated.resources.instructions += 1;
+    estimated.resource_fee += 1;
 
     vec![
         OutcomeCase {
@@ -147,24 +162,35 @@ pub fn outcome_cases(envelope: &str) -> Vec<OutcomeCase> {
             simulation: failure(),
             outcome: "simulation_failed",
             insufficient_declared_resources: vec![],
+            below_endpoint_estimate: vec![],
         },
         OutcomeCase {
             name: "restoration preamble",
             simulation: preamble,
             outcome: "restoration_required",
             insufficient_declared_resources: vec![],
+            below_endpoint_estimate: vec![],
         },
         OutcomeCase {
             name: "entries restored inside the simulation",
             simulation: simulation_using(&restored),
             outcome: "restoration_required",
             insufficient_declared_resources: vec![],
+            below_endpoint_estimate: vec![],
         },
         OutcomeCase {
-            name: "under-declared resources",
+            name: "undeclared key and write bytes",
             simulation: simulation_using(&over),
             outcome: "declared_resources_insufficient",
-            insufficient_declared_resources: vec!["instructions", "resource_fee"],
+            insufficient_declared_resources: vec!["read_only_footprint", "write_bytes"],
+            below_endpoint_estimate: vec![],
+        },
+        OutcomeCase {
+            name: "below the endpoint's estimate",
+            simulation: simulation_using(&estimated),
+            outcome: "simulated_success",
+            insufficient_declared_resources: vec![],
+            below_endpoint_estimate: vec!["instructions", "resource_fee"],
         },
     ]
 }

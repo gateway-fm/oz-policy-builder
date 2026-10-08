@@ -37,6 +37,7 @@ fn preflight_command_reports_the_same_bounded_evidence_as_rpc_acquisition() {
         result["insufficient_declared_resources"],
         serde_json::json!([])
     );
+    assert_eq!(result["below_endpoint_estimate"], serde_json::json!([]));
     assert_eq!(result["auth_mode"], "enforce");
     assert_eq!(result["evidence_trust"], "rpc_reported");
     assert_eq!(result["reported_ledger"], 4_104_380);
@@ -67,6 +68,12 @@ fn every_simulation_outcome_is_reported_without_endpoint_text() {
         assert_eq!(
             result["insufficient_declared_resources"],
             serde_json::json!(case.insufficient_declared_resources),
+            "{}: {result}",
+            case.name
+        );
+        assert_eq!(
+            result["below_endpoint_estimate"],
+            serde_json::json!(case.below_endpoint_estimate),
             "{}: {result}",
             case.name
         );

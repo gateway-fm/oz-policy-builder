@@ -23,6 +23,11 @@ fn preflight_has_a_schema_and_does_not_advertise_a_policy_verdict() {
     let description = tool["description"].as_str().unwrap();
     assert!(description.contains("exact envelope"));
     assert!(description.contains("Does not identify an installed policy"));
+    // Values below the endpoint's padded estimates are advice, not a fifth outcome.
+    assert!(
+        description.contains("below_endpoint_estimate is advice"),
+        "{description}"
+    );
     // Preflight is not consequence-free: signed entries outlive the call that carried them.
     assert!(
         description.contains("Signed authorization entries are live authorizations"),
@@ -142,6 +147,12 @@ fn every_simulation_outcome_is_reported_without_endpoint_text() {
             "{}: {call}",
             case.name
         );
+        assert_eq!(
+            output["below_endpoint_estimate"],
+            serde_json::json!(case.below_endpoint_estimate),
+            "{}: {call}",
+            case.name
+        );
         assert!(
             !call.to_string().contains(preflight_rpc::ENDPOINT_DETAIL),
             "{}: endpoint text reached the response",
@@ -191,6 +202,11 @@ fn successful_preflight_reports_only_exact_envelope_rpc_evidence() {
     assert_eq!(output["outcome"], "simulated_success", "{call}");
     assert_eq!(
         output["insufficient_declared_resources"],
+        serde_json::json!([]),
+        "{call}"
+    );
+    assert_eq!(
+        output["below_endpoint_estimate"],
         serde_json::json!([]),
         "{call}"
     );

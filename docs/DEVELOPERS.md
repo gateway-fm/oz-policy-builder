@@ -53,10 +53,15 @@ reviewed policy would make a whole-composition verdict unsafe.
 carrying the intended authorization entries. It uses RPC authorization enforcement and
 reports the endpoint's simulation outcome at its reported ledger: `simulated_success`,
 `simulation_failed`, `restoration_required`, or `declared_resources_insufficient`. The last
-means the invocation succeeded in simulation but the envelope declares a smaller footprint or
-lower resource limits than it used; `insufficient_declared_resources` names each such
-dimension, never the keys. It does not establish that the generated policy is installed or
-selected, and it never commits writes.
+means the invocation succeeded in simulation but the envelope does not declare what it used:
+`insufficient_declared_resources` names each declared footprint list that is not exactly the
+simulated one (a key missing, extra, or repeated) and each disk-read or write limit below the
+simulated use, never the keys. The endpoint reports instructions and the resource fee only as
+padded estimates, so `below_endpoint_estimate` lists a declared value below either estimate as
+advice beside `simulated_success` or `declared_resources_insufficient`; it never changes the
+outcome, and `simulated_success` does not establish that the declared instructions and fee
+suffice. It does not establish that the generated policy is installed or selected, and it
+never commits writes.
 
 That does not make preflight consequence-free. Enforcement-mode simulation of a smart account
 needs signed `Address`-credential authorization entries, and a Soroban authorization signature

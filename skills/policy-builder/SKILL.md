@@ -137,9 +137,14 @@ signer identities, spending limits, and policy composition visible in the propos
    `simulated_success`, `simulation_failed`, `restoration_required`, or
    `declared_resources_insufficient` outcome is evidence for that envelope at the
    endpoint-reported ledger. `declared_resources_insufficient` means the invocation succeeded
-   in simulation but the envelope declares less than it used, in each dimension listed in
-   `insufficient_declared_resources`, so the network would refuse it as written; the envelope
-   must be re-assembled, and it is not a success. The server cannot establish that
+   in simulation but the envelope does not declare what it used, in each dimension listed in
+   `insufficient_declared_resources`: a footprint list that is not exactly the simulated one,
+   or disk-read or write bytes below the use. The simulation then does not show that the
+   envelope can succeed; it must be re-assembled, and it is not a success. A non-empty
+   `below_endpoint_estimate` is advice, not a failure: the declared instructions or resource
+   fee are below the endpoint's padded estimate. Tell the user, and do not present
+   `simulated_success` as proof that the declared instructions and fee suffice. The server
+   cannot establish that
    the generated policy is installed or selected, or that the account authority surface is Safe.
    A successful simulation does not predict a later transaction's outcome. No writes are
    committed, and the tool never submits the envelope, but neither makes the signed entries in

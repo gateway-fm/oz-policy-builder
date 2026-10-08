@@ -146,7 +146,9 @@ The source-reviewed account method inventory and its limits are described in
    live preflight remain scheduled.
 
    The CLI `preflight-transaction` command and the MCP `preflight_transaction` tool expose this
-   observation for one exact envelope. That does not make it a dry run: they identify no
+   observation for one exact envelope, with the failing dimensions in
+   `insufficient_declared_resources` and the advice in `below_endpoint_estimate`, apart from
+   the outcome. That does not make it a dry run: they identify no
    installed policy, run no mutation suite, and give no authority verdict. Signed authorization
    entries in the envelope stay live authorizations until their expiration ledger, so a hosted
    server refuses an envelope carrying signatures, while the CLI and a stdio server send it to

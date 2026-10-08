@@ -28,9 +28,13 @@ impl PolicyBuilderServer {
                        entries, through Stellar RPC with authorization enforced. \
                        Returns the endpoint-reported outcome \
                        (simulated_success, simulation_failed, restoration_required, or \
-                       declared_resources_insufficient with the under-declared resources) \
-                       and ledger for that exact envelope. State-dependent; writes are \
-                       discarded. Does not identify an installed policy or submit a transaction. \
+                       declared_resources_insufficient naming each footprint list that is not \
+                       exactly the simulated one and each disk-read or write limit below the \
+                       use) and ledger for that exact envelope. below_endpoint_estimate is \
+                       advice: declared instructions or resource fee below the endpoint's \
+                       padded estimate, which never changes the outcome. State-dependent; \
+                       writes are discarded. Does not identify an installed policy or submit a \
+                       transaction. \
                        Signed authorization entries are live authorizations: anyone who sees \
                        the envelope can submit them until their signatureExpirationLedger, and \
                        simulation does not consume their nonce. The envelope reaches the RPC \

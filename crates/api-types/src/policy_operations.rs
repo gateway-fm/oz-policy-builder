@@ -24,10 +24,11 @@ pub struct PreflightTransactionInput {
 
 /// One RPC-reported simulation of the exact envelope. `simulated_success` means that
 /// this transaction's invocation simulated successfully at the reported ledger with
-/// authorization enforcement, within the envelope's declared Soroban footprint and resource
-/// limits; it does not identify which policy was selected, predict a later ledger, or say
-/// that any writes were committed. Required restoration and an insufficient declaration are
-/// separate outcomes.
+/// authorization enforcement, with exactly the envelope's declared Soroban footprint and at
+/// least the simulated disk-read and write bytes declared. It does not establish that the
+/// declared instructions and resource fee suffice (see `below_endpoint_estimate`), identify
+/// which policy was selected, predict a later ledger, or say that any writes were committed.
+/// Required restoration and an insufficient declaration are separate outcomes.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightTransactionOutput {
@@ -38,10 +39,15 @@ pub struct PreflightTransactionOutput {
     /// Ledger sequence as reported by the selected RPC endpoint.
     pub reported_ledger: u32,
     pub outcome: PreflightTransactionOutcome,
-    /// Each declared Soroban resource that does not cover what the simulation used. Non-empty
+    /// Each declared Soroban resource that does not match what the simulation used. Non-empty
     /// exactly when `outcome` is `declared_resources_insufficient`. Footprint keys are not
     /// named: they are confidential envelope content.
     pub insufficient_declared_resources: Vec<PreflightDeclaredResource>,
+    /// Advice only: declared values below the endpoint's padded estimate, compared only after
+    /// a simulated success (`simulated_success` or `declared_resources_insufficient`) and empty
+    /// otherwise. It never changes `outcome`: a declaration below an estimate can still cover
+    /// the use, and one above it can still fall short at the network's rates.
+    pub below_endpoint_estimate: Vec<PreflightEstimatedResource>,
     /// `enforce`, as opposed to recording authorization without enforcing it.
     pub auth_mode: String,
     /// `rpc_reported`; the endpoint supplies the simulation result.
@@ -55,8 +61,9 @@ pub struct PreflightTransactionOutput {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightTransactionOutcome {
-    /// The invocation succeeded at the endpoint's state, within the envelope's declared
-    /// footprint and resource limits.
+    /// The invocation succeeded at the endpoint's state. The envelope declares exactly the
+    /// simulated footprint and at least the simulated disk-read and write bytes; its
+    /// instructions and resource fee are not established.
     SimulatedSuccess,
     /// The endpoint reported an error after reading its ledger: an invocation or authorization
     /// failure, or an error inside its simulator. The endpoint's text is withheld because it
@@ -65,26 +72,43 @@ pub enum PreflightTransactionOutcome {
     /// Success needed archived entries restored first, whether by a separate restoration
     /// preamble or inside the simulation. It is not a success against current state.
     RestorationRequired,
-    /// The invocation succeeded in simulation, but the envelope as written declares less than
-    /// the simulation used, so the network would refuse or fail it.
+    /// The invocation succeeded in simulation, but in each listed dimension the envelope as
+    /// written does not declare what the simulation used, so the simulation does not show that
+    /// the envelope can succeed.
     DeclaredResourcesInsufficient,
 }
 
-/// A part of the envelope's declared Soroban transaction data that is compared with the
-/// simulation. An envelope without Soroban transaction data declares an empty footprint and
-/// zero limits.
+/// A part of the envelope's declared Soroban transaction data that must match the simulated
+/// one, which the endpoint reports as used, without padding. An envelope without Soroban
+/// transaction data declares an empty footprint and zero limits.
 #[derive(
     Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightDeclaredResource {
-    /// A key the simulation read is in neither declared footprint list.
+    /// The declared read-only list is not exactly the simulated one, in any order: a key is
+    /// missing, extra, or repeated. Extra keys are not harmless: the network charges for the
+    /// declared footprint.
     ReadOnlyFootprint,
-    /// A key the simulation wrote is not in the declared read-write list.
+    /// The declared read-write list is not exactly the simulated one, in any order.
     ReadWriteFootprint,
-    Instructions,
+    /// The declared disk-read bytes are below the simulated use.
     DiskReadBytes,
+    /// The declared write bytes are below the simulated use.
     WriteBytes,
+}
+
+/// A declared value below the endpoint's own padded estimate for it. Advice only, because the
+/// endpoint reports these padded rather than as used.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightEstimatedResource {
+    /// Below the endpoint's recommended instruction budget, which pads the simulated use.
+    Instructions,
+    /// Below the endpoint's resource fee estimate, priced from padded resources at its
+    /// reported ledger's rates.
     ResourceFee,
 }
 
@@ -589,6 +613,7 @@ mod tests {
         let _ = schemars::schema_for!(PreflightTransactionOutput);
         let _ = schemars::schema_for!(PreflightTransactionOutcome);
         let _ = schemars::schema_for!(PreflightDeclaredResource);
+        let _ = schemars::schema_for!(PreflightEstimatedResource);
         let _ = schemars::schema_for!(ReferenceSuiteInput);
         let _ = schemars::schema_for!(ReferenceSuiteOutput);
         let _ = schemars::schema_for!(VerifyInput);
@@ -673,10 +698,14 @@ mod tests {
                 PreflightDeclaredResource::ReadWriteFootprint,
                 "read_write_footprint",
             ),
-            (PreflightDeclaredResource::Instructions, "instructions"),
             (PreflightDeclaredResource::DiskReadBytes, "disk_read_bytes"),
             (PreflightDeclaredResource::WriteBytes, "write_bytes"),
-            (PreflightDeclaredResource::ResourceFee, "resource_fee"),
+        ] {
+            assert_eq!(serde_json::to_value(resource).unwrap(), wire);
+        }
+        for (resource, wire) in [
+            (PreflightEstimatedResource::Instructions, "instructions"),
+            (PreflightEstimatedResource::ResourceFee, "resource_fee"),
         ] {
             assert_eq!(serde_json::to_value(resource).unwrap(), wire);
         }
