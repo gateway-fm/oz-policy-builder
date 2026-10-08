@@ -892,6 +892,10 @@ pub mod dev {
     use ozpb_domain::sha256;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
+    /// Version of the committed, signed development example. Version 1 remains the
+    /// historical parent; changing its contents would fork persisted checkpoints.
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 2;
+
     /// Deterministic development root key (NOT a production root; production roots are
     /// threshold-held and pinned at release time).
     pub fn dev_signing_key() -> SigningKey {
@@ -913,7 +917,12 @@ pub mod dev {
         network_id: NetworkId,
         version: u64,
     ) -> Result<(String, String), RegistryError> {
-        let signed = crate::sign_snapshot(&dev_signing_key(), dev_snapshot(network_id, version))?;
+        let snapshot = if version == SIGNED_EXAMPLE_VERSION {
+            account_authority_successor(network_id)?
+        } else {
+            dev_snapshot(network_id, version)
+        };
+        let signed = crate::sign_snapshot(&dev_signing_key(), snapshot)?;
         let snapshot_json = serde_json::to_string_pretty(&signed)
             .map_err(|error| RegistryError::Internal(error.to_string()))?
             + "\n";
@@ -929,6 +938,40 @@ pub mod dev {
 
     pub fn dev_root_verifying_bytes() -> [u8; 32] {
         dev_signing_key().verifying_key().to_bytes()
+    }
+
+    /// Extend the original development snapshot with reviewed code-capability
+    /// metadata for the pinned account. This signs no live state or administrator
+    /// intent and cannot authorize a public `Safe` verdict.
+    pub fn account_authority_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        let previous = dev_snapshot(network_id, 1);
+        let mut snapshot = dev_snapshot(network_id, SIGNED_EXAMPLE_VERSION);
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let account = snapshot
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .ok_or_else(|| {
+                RegistryError::Internal("pinned development account is absent".into())
+            })?;
+        account.bounded_next_id = Some(BoundedNextIdCapability {
+            schema_version: 1,
+            max_scan_ids: 1_000,
+            max_rpc_batches: 16,
+            max_transitive_entries: 1_000,
+            max_attempts: 2,
+            archive_policy: AccountArchivePolicy::RejectUnresolved,
+            snapshot_policy: AccountSnapshotPolicy::SameLedgerAndInstance,
+        });
+        account.method_inventory_digest = Some(
+            ozpb_domain::canonical_hash(
+                domains::ACCOUNT_METHOD_INVENTORY,
+                &account_methods::source_reviewed_oz_multisig_candidate(),
+            )
+            .map_err(|error| RegistryError::Internal(error.to_string()))?,
+        );
+        Ok(snapshot)
     }
 
     /// A Phase 1 snapshot: the scope template family, a pinned spending-limit hash, a
@@ -1034,6 +1077,46 @@ mod tests {
     use super::*;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
+    #[test]
+    fn historical_development_root_is_immutable() {
+        let old = dev::dev_snapshot(
+            NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
+            1,
+        );
+        assert_eq!(
+            snapshot_root(&old).unwrap().to_hex(),
+            "2957b9b07f55b960a58711c1935cb341dc5fe0b3f568b9bce85bbebfb9af0807"
+        );
+    }
+
+    #[test]
+    fn committed_development_successor_extends_a_persisted_v1_checkpoint() {
+        let previous =
+            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
+        let mut registry = pinned_test_registry();
+        registry.load_at(&previous, 100).unwrap();
+        let checkpoint = registry.checkpoint().unwrap();
+
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(committed.snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
+        assert_eq!(committed.snapshot.previous_root, Some(checkpoint.root));
+        let mut restored = Registry::with_pinned_roots_for_network_at_checkpoint(
+            RootPolicy {
+                threshold: 1,
+                keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+            },
+            network(),
+            checkpoint,
+        )
+        .unwrap();
+        restored.load_at(&committed, 100).unwrap();
+        restored
+            .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
+            .unwrap();
+    }
+
     /// The shipped snapshot must carry the *pinned upstream* hashes, not values derived
     /// locally. It previously held `sha256("dev:oz:spending_limit:wasm")` — a hash of a text
     /// label, not of any code — so the mechanism worked while recognizing nothing real. A
@@ -1128,31 +1211,17 @@ mod tests {
     }
 
     fn signed_authority_snapshot() -> SignedSnapshot {
-        let mut snapshot = dev::dev_snapshot(network(), 1);
-        let account = snapshot
-            .accounts
-            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
-            .unwrap();
-        account.bounded_next_id = Some(BoundedNextIdCapability {
-            schema_version: 1,
-            max_scan_ids: 1_000,
-            max_rpc_batches: 16,
-            max_transitive_entries: 1_000,
-            max_attempts: 2,
-            archive_policy: AccountArchivePolicy::RejectUnresolved,
-            snapshot_policy: AccountSnapshotPolicy::SameLedgerAndInstance,
-        });
-        let methods = account_methods::source_reviewed_oz_multisig_candidate();
-        account.method_inventory_digest =
-            Some(ozpb_domain::canonical_hash(domains::ACCOUNT_METHOD_INVENTORY, &methods).unwrap());
-        sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
+        sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::account_authority_successor(network()).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn signed_account_authority_requires_exact_method_and_scan_bindings() {
-        let legacy: SignedSnapshot =
-            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
-                .unwrap();
+        let legacy =
+            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
         let mut registry = pinned_test_registry();
         registry.load_at(&legacy, 100).unwrap();
         assert!(matches!(
@@ -1161,7 +1230,6 @@ mod tests {
         ));
 
         let signed = signed_authority_snapshot();
-        let mut registry = pinned_test_registry();
         registry.load_at(&signed, 100).unwrap();
         let resolved = registry
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)

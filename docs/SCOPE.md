@@ -41,10 +41,20 @@ The source-reviewed account method inventory and its limits are described in
    decoded core-state digest: changing a TTL or an unmodeled instance field can change the
    former without changing the latter. These are candidates; the adapter does not choose
    an administrator or turn endpoint data into a trusted verdict.
-   This tree has no operator-pinned authenticated source for a live account snapshot and no
-   wallet-authenticated binding to the intended administrator. A registry signature covers
+   The signed version-2 development registry example binds the reviewed method-map digest and
+   bounded scan protocol to the exact pinned account Wasm. Its public development signing key
+   makes this a reproducible code-capability example, not production governance or live-state
+   authority evidence.
+   An internal operator-configured reader now pins an RPC endpoint, network passphrase,
+   governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
+   each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
+   and compares the account, installed policies, and selected policy bindings with code hashes
+   observed by the bounded scanner. Unknown, revoked, or changed implementations are refused.
+   The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
+   calls and re-reading the instance do not authenticate a coherent ledger snapshot. There is
+   no wallet-authenticated binding to the intended administrator. A registry signature covers
    implementation capabilities, not live ledger state; a client-provided fingerprint cannot
-   establish wallet intent. Those trust anchors are required before a public authority verdict.
+   establish wallet intent. The missing assurances are required before a public authority verdict.
 
    The toolkit has an internal install-intent draft that checks a spec, binding set, and
    supplied authority artifact for identity and structural consistency, then derives typed
@@ -86,6 +96,15 @@ The source-reviewed account method inventory and its limits are described in
    The golden fixture also checks that direct `install`, `enforce`, and `uninstall` calls
    without account authorization fail without changing its installed state. This checks
    the generated policy's gate; it does not exercise a weaker alternate account rule.
+   A separate Wasm gate (`scripts/test-pinned-account-authorization.sh`) builds the exact
+   recognized account from pinned public source and a generated transfer policy with a fixed
+   test signer. It checks real delegated Ed25519 authorization through the account's complete
+   `__check_auth` path, rejects a changed payload, commits counts across ledger advances, and
+   checks N+1 denial and rollback. Run the script before merging changes to this path; the
+   scheduled toolchain job also runs it and fails when a prerequisite or hash is unavailable.
+   The ordinary contracts suite explicitly ignores this test because it needs source-built Wasm.
+   This is one fixture and one account code hash. It does not establish general layer-2 coverage,
+   disposable target execution, or live preflight.
    The hand-written `differential.rs` checks both verdict and reason for its own cases. Extending
    exact-reason checks to every generated case remains future work. A local two-rule account test
    demonstrates that overlapping counted grants have independent rule-ID counters and can exceed

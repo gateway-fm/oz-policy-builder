@@ -241,7 +241,7 @@ synthesize() {   # $1 = account record; prints the synthesis JSON on stdout
         --bundle "$WORK/03-recording.json" --selected-authorizer "$ACCOUNT" \
         --account "$1" \
         --signed-registry docs/examples/registry.signed.json \
-        --registry-roots docs/examples/registry-roots.json --registry-min-version 1 \
+        --registry-roots docs/examples/registry-roots.json --registry-min-version 2 \
         --decisions "$WORK/04-decisions.json" \
         --template-family policy-templates/scope@1 \
         --spending-limit-capability "$PINNED_SPENDING_LIMIT"

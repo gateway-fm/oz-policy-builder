@@ -207,6 +207,13 @@ jobs:
       - name: real-compile tests (normally #[ignore]d)
         run: cargo test -p ozpb-build-runner -- --ignored --test-threads=1
 
+      # This gate compiles the reviewed upstream account source at the recorded
+      # tag, checks its exact code hash, then invokes a generated policy Wasm
+      # through the full account __check_auth path using a signed delegated
+      # authorization. It fails if either binary cannot be built or differs.
+      - name: pinned account authorization and committed-state limit
+        run: bash scripts/test-pinned-account-authorization.sh
+
       # The Tranche-1 outcome, executed against live testnet from scratch: deploy an OZ smart
       # account, record a transfer's authorization, synthesize, generate, compile. This is the
       # only check that touches the network, so it is the only one that can catch acquisition

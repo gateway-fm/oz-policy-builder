@@ -1323,6 +1323,7 @@ dependencies = [
  "ozpb-call-surface-core",
  "ozpb-domain",
  "ozpb-recorder-core",
+ "ozpb-registry",
  "serde",
  "serde_json",
  "sha2",
