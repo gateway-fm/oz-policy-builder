@@ -108,9 +108,11 @@ The source-reviewed account method inventory and its limits are described in
    `__check_auth` path and rejects a changed payload. Entries that name the requested digest but
    carry a signature over another digest, a flipped signature bit, or another key are refused
    by account authentication, not invocation matching. It also commits counts across ledger
-   advances and checks N+1 denial and rollback. Run the script before merging changes to this
-   path; the scheduled toolchain job also runs it and fails when a prerequisite or hash is
-   unavailable.
+   advances and checks N+1 denial and rollback. The test pins the generated policy's Wasm hash,
+   so a change to code generation or its templates, the example spec, pinned build inputs, or
+   the account authorization path must rerun the script before merge. The scheduled workflow
+   also runs it in its own job and fails when a prerequisite or hash is unavailable, but that is
+   a backstop after merge, not the review gate.
    The ordinary contracts suite explicitly ignores this test because it needs source-built Wasm.
    This is one fixture and one account code hash. It does not establish general layer-2 coverage,
    disposable target execution, or live preflight.

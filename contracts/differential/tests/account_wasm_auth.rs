@@ -256,7 +256,9 @@ fn pinned_account_wasm_full_authorization() {
     let policy_hash: [u8; 32] = Sha256::digest(&policy_wasm).into();
     // The script changes only the golden spec's signer to the fixed Ed25519
     // test key, then builds with the repository's pinned rustc and stellar CLI.
-    // A changed source, dependency, or build input must be reviewed here.
+    // A changed source, dependency, or build input must be reviewed here, and a
+    // codegen, template, or account change must rerun the script before merge:
+    // the nightly run would report this hash only after the change has landed.
     assert_eq!(
         policy_hash,
         ozpb_domain::Hash32::from_hex(
