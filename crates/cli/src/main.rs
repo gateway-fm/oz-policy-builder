@@ -387,7 +387,7 @@ fn main() -> Result<()> {
             std::fs::create_dir_all(&out)?;
             let (snapshot_json, roots_json) = ozpb_registry::dev::dev_trust_files(
                 ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
-                1,
+                ozpb_registry::dev::SIGNED_EXAMPLE_VERSION,
             )
             .map_err(|e| anyhow::anyhow!("building the development trust files: {e}"))?;
             let snapshot_path = out.join("registry.signed.json");

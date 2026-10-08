@@ -41,6 +41,10 @@ The source-reviewed account method inventory and its limits are described in
    decoded core-state digest: changing a TTL or an unmodeled instance field can change the
    former without changing the latter. These are candidates; the adapter does not choose
    an administrator or turn endpoint data into a trusted verdict.
+   The signed version-2 development registry example binds the reviewed method-map digest and
+   bounded scan protocol to the exact pinned account Wasm. Its public development signing key
+   makes this a reproducible code-capability example, not production governance or live-state
+   authority evidence.
    This tree has no operator-pinned authenticated source for a live account snapshot and no
    wallet-authenticated binding to the intended administrator. A registry signature covers
    implementation capabilities, not live ledger state; a client-provided fingerprint cannot

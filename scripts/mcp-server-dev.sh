@@ -21,7 +21,7 @@ if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] || [ ! -x "$BIN" ]; then
     cargo build --locked --release -p ozpb-mcp-server --manifest-path "$HERE/Cargo.toml" >&2
 fi
 export OZPB_REGISTRY_ROOTS_JSON="$(cat "$HERE/docs/examples/registry-roots.json")"
-export OZPB_REGISTRY_MIN_VERSION="${OZPB_REGISTRY_MIN_VERSION:-1}"
+export OZPB_REGISTRY_MIN_VERSION="${OZPB_REGISTRY_MIN_VERSION:-2}"
 # The snapshot a request may omit, so an agent holding a recording can synthesize without
 # transcribing a signed document. Verified against the roots above either way.
 export OZPB_REGISTRY_SNAPSHOT_JSON="$(cat "$HERE/docs/examples/registry.signed.json")"
