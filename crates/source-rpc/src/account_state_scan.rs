@@ -16,17 +16,19 @@ use super::{
     account_storage::{AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerRecord},
     contract_code::read_contract_wasm_hashes_with_witnesses,
     ledger_witness::{ordered_ledger_witness_digest, LedgerWitness},
-    RpcError, RpcTransport, MAX_HTTP_RESPONSE_BYTES, MAX_LEDGER_ENTRY_KEYS,
+    RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Key and entry XDR bytes one attempt may retain for its digest. Each response is bounded
-/// on its own, but up to 128 batches could otherwise accumulate gigabytes. One maximal
-/// response's worth leaves room above the pinned schema's largest entries, about 11 MiB
-/// for 10,000 rules and 10,000 signer or policy entries; large policy instances can still
-/// exceed it, and the scan then fails closed as a budget error.
-const MAX_SCAN_WITNESS_BYTES: usize = MAX_HTTP_RESPONSE_BYTES;
+/// on its own, but up to 128 batches could otherwise accumulate gigabytes. This is a scan
+/// budget, not the transport's response cap: a maximal 24 MiB HTTP response carries at most
+/// about 18 MiB of decoded XDR, and a caller's own transport has no cap at all. 24 MiB
+/// leaves room above the pinned schema's largest entries, about 11 MiB for 10,000 rules and
+/// 10,000 signer or policy entries; large policy instances can still exceed it, and the scan
+/// then fails closed as a budget error.
+const MAX_SCAN_WITNESS_BYTES: usize = 24 * 1024 * 1024;
 
 /// Operational ceilings for one inspection. Registry-backed verified mode would need
 /// signed, release-specific bounds; caller-chosen bounds here grant no authority.
