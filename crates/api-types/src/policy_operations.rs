@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 /// simulated with authorization enforced by the RPC endpoint.
 /// The envelope is the exact transaction being tested. `rpc_url` is subject to the
 /// server's operator allowlist in hosted mode; a local CLI or stdio server uses the
-/// caller's chosen endpoint. Simulation does not submit the transaction.
+/// caller's chosen endpoint. Simulation does not submit the transaction, but that does not
+/// make a signed envelope harmless: a Soroban authorization signature covers the network,
+/// the entry's nonce, its `signatureExpirationLedger` and the invocation, not the transaction
+/// that carries it, so anyone who sees the entry can submit it until it expires, and
+/// simulation does not consume the nonce. The envelope reaches the RPC endpoint and, through
+/// MCP, the agent's transcript. A hosted server refuses an envelope carrying transaction
+/// signatures or signed entries with `E_UNSUPPORTED_ENVELOPE`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightTransactionInput {
@@ -17,18 +23,31 @@ pub struct PreflightTransactionInput {
 }
 
 /// One RPC-reported simulation of the exact envelope. `simulated_success` means that
-/// this transaction simulated successfully at the reported ledger with authorization
-/// enforcement; it does not identify which policy was selected, predict a later ledger,
-/// or say that any writes were committed. A restoration preamble is reported separately.
+/// this transaction's invocation simulated successfully at the reported ledger with
+/// authorization enforcement, with exactly the envelope's declared Soroban footprint and at
+/// least the simulated disk-read and write bytes declared. It does not establish that the
+/// declared instructions and resource fee suffice (see `below_endpoint_estimate`), identify
+/// which policy was selected, predict a later ledger, or say that any writes were committed.
+/// Required restoration and an insufficient declaration are separate outcomes.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightTransactionOutput {
-    /// SHA-256 of canonical envelope XDR bytes, not a transaction hash.
+    /// SHA-256 of canonical envelope XDR bytes, not a transaction hash. The endpoint received
+    /// exactly these bytes, base64-encoded.
     pub envelope_xdr_sha256: String,
     pub network_id: String,
     /// Ledger sequence as reported by the selected RPC endpoint.
     pub reported_ledger: u32,
     pub outcome: PreflightTransactionOutcome,
+    /// Each declared Soroban resource that does not match what the simulation used. Non-empty
+    /// exactly when `outcome` is `declared_resources_insufficient`. Footprint keys are not
+    /// named: they are confidential envelope content.
+    pub insufficient_declared_resources: Vec<PreflightDeclaredResource>,
+    /// Advice only: declared values below the endpoint's padded estimate, compared only after
+    /// a simulated success (`simulated_success` or `declared_resources_insufficient`) and empty
+    /// otherwise. It never changes `outcome`: a declaration below an estimate can still cover
+    /// the use, and one above it can still fall short at the network's rates.
+    pub below_endpoint_estimate: Vec<PreflightEstimatedResource>,
     /// `enforce`, as opposed to recording authorization without enforcing it.
     pub auth_mode: String,
     /// `rpc_reported`; the endpoint supplies the simulation result.
@@ -42,9 +61,55 @@ pub struct PreflightTransactionOutput {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PreflightTransactionOutcome {
+    /// The invocation succeeded at the endpoint's state. The envelope declares exactly the
+    /// simulated footprint and at least the simulated disk-read and write bytes; its
+    /// instructions and resource fee are not established.
     SimulatedSuccess,
+    /// The endpoint reported an error after reading its ledger: an invocation or authorization
+    /// failure, or an error inside its simulator. The endpoint's text is withheld because it
+    /// can echo the envelope. A refusal before the endpoint read its ledger is an error.
     SimulationFailed,
+    /// Success needed archived entries restored first, whether by a separate restoration
+    /// preamble or inside the simulation. It is not a success against current state.
     RestorationRequired,
+    /// The invocation succeeded in simulation, but in each listed dimension the envelope as
+    /// written does not declare what the simulation used, so the simulation does not show that
+    /// the envelope can succeed.
+    DeclaredResourcesInsufficient,
+}
+
+/// A part of the envelope's declared Soroban transaction data that must match the simulated
+/// one, which the endpoint reports as used, without padding. An envelope without Soroban
+/// transaction data declares an empty footprint and zero limits.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightDeclaredResource {
+    /// The declared read-only list is not exactly the simulated one, in any order: a key is
+    /// missing, extra, or repeated. Extra keys are not harmless: the network charges for the
+    /// declared footprint.
+    ReadOnlyFootprint,
+    /// The declared read-write list is not exactly the simulated one, in any order.
+    ReadWriteFootprint,
+    /// The declared disk-read bytes are below the simulated use.
+    DiskReadBytes,
+    /// The declared write bytes are below the simulated use.
+    WriteBytes,
+}
+
+/// A declared value below the endpoint's own padded estimate for it. Advice only, because the
+/// endpoint reports these padded rather than as used.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightEstimatedResource {
+    /// Below the endpoint's recommended instruction budget, which pads the simulated use.
+    Instructions,
+    /// Below the endpoint's resource fee estimate, priced from padded resources at its
+    /// reported ledger's rates.
+    ResourceFee,
 }
 
 /// Require a nullable wire field to be present: omission must not deserialize as an
@@ -547,6 +612,8 @@ mod tests {
         let _ = schemars::schema_for!(PreflightTransactionInput);
         let _ = schemars::schema_for!(PreflightTransactionOutput);
         let _ = schemars::schema_for!(PreflightTransactionOutcome);
+        let _ = schemars::schema_for!(PreflightDeclaredResource);
+        let _ = schemars::schema_for!(PreflightEstimatedResource);
         let _ = schemars::schema_for!(ReferenceSuiteInput);
         let _ = schemars::schema_for!(ReferenceSuiteOutput);
         let _ = schemars::schema_for!(VerifyInput);
@@ -598,6 +665,50 @@ mod tests {
         let mut extra = input;
         extra["auth_mode"] = serde_json::json!("record");
         assert!(serde_json::from_value::<PreflightTransactionInput>(extra).is_err());
+    }
+
+    #[test]
+    fn preflight_outcome_and_resource_wire_strings_are_stable() {
+        for (outcome, wire) in [
+            (
+                PreflightTransactionOutcome::SimulatedSuccess,
+                "simulated_success",
+            ),
+            (
+                PreflightTransactionOutcome::SimulationFailed,
+                "simulation_failed",
+            ),
+            (
+                PreflightTransactionOutcome::RestorationRequired,
+                "restoration_required",
+            ),
+            (
+                PreflightTransactionOutcome::DeclaredResourcesInsufficient,
+                "declared_resources_insufficient",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(outcome).unwrap(), wire);
+        }
+        for (resource, wire) in [
+            (
+                PreflightDeclaredResource::ReadOnlyFootprint,
+                "read_only_footprint",
+            ),
+            (
+                PreflightDeclaredResource::ReadWriteFootprint,
+                "read_write_footprint",
+            ),
+            (PreflightDeclaredResource::DiskReadBytes, "disk_read_bytes"),
+            (PreflightDeclaredResource::WriteBytes, "write_bytes"),
+        ] {
+            assert_eq!(serde_json::to_value(resource).unwrap(), wire);
+        }
+        for (resource, wire) in [
+            (PreflightEstimatedResource::Instructions, "instructions"),
+            (PreflightEstimatedResource::ResourceFee, "resource_fee"),
+        ] {
+            assert_eq!(serde_json::to_value(resource).unwrap(), wire);
+        }
     }
 
     #[test]

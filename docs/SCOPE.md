@@ -28,8 +28,10 @@ The source-reviewed account method inventory and its limits are described in
    follows the signer/policy closure, checks reference counts and `Count`, observes the code at
    every installed policy address and at each contract verifier named by an external signer,
    and re-reads the account instance. It retries a changed
-   endpoint ledger or instance as a whole. Returned archived entries, missing referenced
-   entries, a count mismatch, and exceeded scan bounds fail closed. Its output remains an
+   endpoint ledger or instance as a whole. Returned archived or undecodable entries, missing
+   referenced entries, and a count mismatch fail closed as incomplete account state; exceeded
+   scan bounds, including a fixed 24 MiB ceiling on the entry XDR one scan retains, fail closed
+   as a budget error. Its output remains an
    endpoint-reported inspection: equal `latestLedger` values across calls are not an
    authenticated ledger-state proof, and an omitted rule key is treated as a removed hole
    only when the stored count reconciles. The scan does not identify the wallet's intended
@@ -136,19 +138,48 @@ The source-reviewed account method inventory and its limits are described in
    footprint reader can capture every key declared by one original Soroban envelope in one
    bounded `getLedgerEntries` reply, including keys of dependency contracts, and validates all
    captured Wasm instance-to-code links. Omitted keys are unavailable because the endpoint does
-   not identify their absence or archive history. The original footprint does not prove which
-   additional keys a candidate account, policy, or changed invocation could read.
+   not identify their absence or archive history. The declared footprint is the envelope's own
+   claim; the network enforces it only when the transaction executes, and the reader does not
+   compare it with any simulation. The original footprint does not prove which additional keys
+   a candidate account, policy, or changed invocation could read.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
-   `authMode=enforce` for one caller-supplied envelope. It records the endpoint's ledger and
-   labels success, execution failure, or required archival restoration as state-dependent RPC
-   evidence. A successful simulation says only that this exact envelope simulated under the
-   endpoint's state: it does not prove that a particular installed policy was selected, that
-   the same transaction will succeed at a later ledger, or that any writes committed. The
-   caller must supply signed authorization entries in the envelope where the invocation needs
-   them. The source adapter does not return raw RPC error details that could echo confidential
+   `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
+   endpoint would refuse before simulating, such as one with a memo. It records the endpoint's
+   ledger and labels success, a failed simulation, or required archival restoration as
+   state-dependent RPC evidence. A failed simulation covers an invocation or authorization
+   failure and an error inside the endpoint's simulator alike, because the endpoint's text that
+   would distinguish them is withheld; a refusal before the endpoint reads its ledger is an RPC
+   error rather than an outcome. Restoration is reported whether the endpoint returns a separate
+   restoration preamble or, as current stellar-rpc does for an invocation, restores archived
+   entries inside the simulation and lists them in the simulated transaction data; neither is a
+   success against the endpoint's current state. The endpoint simulates only the envelope's source
+   account, its operation's host function, and its authorization entries. It does not evaluate
+   signatures, the transaction fee, the sequence number, or time bounds and other
+   preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
+   resource limits. The adapter therefore requires each declared footprint list to be exactly
+   the simulated one and the declared disk-read and write bytes to cover the simulated use,
+   which the endpoint reports unpadded, and reports a separate outcome naming each dimension
+   that fails, without naming keys. The endpoint reports instructions and the resource fee
+   only as padded estimates, so a declaration below either estimate is reported as advice
+   beside the outcome and never changes it. A successful simulation says only that this
+   invocation succeeded under the endpoint's state with the envelope's declared footprint and
+   at least the simulated disk-read and write bytes: it does not establish that the declared
+   instructions and fee suffice, that a particular installed policy was selected, that the
+   same transaction will succeed at a later ledger, or that any writes committed. The caller
+   must supply signed authorization entries in the envelope where the invocation needs them.
+   The source adapter does not return raw RPC error details that could echo confidential
    envelope contents. Disposable execution against a complete captured target-state fixture,
-   with an explicit ledger context and policy-bound authorization, and a full policy-bound live
-   preflight remain scheduled.
+   with an explicit ledger context and policy-bound authorization, and a full policy-bound
+   live preflight remain scheduled.
+
+   The CLI `preflight-transaction` command and the MCP `preflight_transaction` tool expose this
+   observation for one exact envelope, with the failing dimensions in
+   `insufficient_declared_resources` and the advice in `below_endpoint_estimate`, apart from
+   the outcome. That does not make it a dry run: they identify no
+   installed policy, run no mutation suite, and give no authority verdict. Signed authorization
+   entries in the envelope stay live authorizations until their expiration ledger, so a hosted
+   server refuses an envelope carrying signatures, while the CLI and a stdio server send it to
+   the caller's chosen endpoint.

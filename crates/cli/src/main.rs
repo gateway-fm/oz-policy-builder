@@ -107,7 +107,9 @@ enum Command {
         network: String,
     },
     /// Simulate an exact transaction envelope, including intended authorization entries.
-    /// Returns endpoint-reported, state-dependent evidence; never submits it.
+    /// Returns endpoint-reported, state-dependent evidence; never submits it. Signed entries
+    /// stay live authorizations until their signatureExpirationLedger: anyone who sees the
+    /// envelope, including the RPC endpoint, can submit them.
     PreflightTransaction {
         /// File containing base64 transaction envelope XDR (kept out of process arguments).
         #[arg(long)]
