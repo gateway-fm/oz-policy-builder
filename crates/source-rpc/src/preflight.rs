@@ -31,6 +31,10 @@ pub enum PreflightOutcome {
     /// The invocation succeeded at the endpoint's state, and the envelope's declared Soroban
     /// footprint and resource limits cover what the simulation used.
     SimulatedSuccess,
+    /// The endpoint reported an error after reading its ledger. That covers an invocation or
+    /// authorization failure and an error inside the endpoint's simulator alike; the text
+    /// that could tell them apart is withheld because it can echo the envelope. A refusal
+    /// before the endpoint read its ledger is an `RpcError::Rpc`, not this outcome.
     SimulationFailed,
     /// The invocation reached success only with archived entries restored, whether the
     /// endpoint reported a separate `restorePreamble` or (since protocol 23) restored them
@@ -221,17 +225,6 @@ fn parse_preflight(
     envelope_xdr_sha256: String,
     network_id: String,
 ) -> Result<PreflightObservation, RpcError> {
-    let reported_ledger: u32 = result
-        .get("latestLedger")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| RpcError::Malformed("preflight lacks integer latestLedger".to_string()))?
-        .try_into()
-        .map_err(|_| RpcError::Malformed("preflight latestLedger exceeds u32".to_string()))?;
-    if reported_ledger == 0 {
-        return Err(RpcError::Malformed(
-            "preflight latestLedger cannot be zero".to_string(),
-        ));
-    }
     let has_error = match result.get("error") {
         None => false,
         Some(Value::String(message)) if !message.is_empty() => true,
@@ -246,12 +239,28 @@ fn parse_preflight(
             ))
         }
     };
+    if has_error && (result.get("restorePreamble").is_some() || result.get("results").is_some()) {
+        return Err(RpcError::Malformed(
+            "failed preflight also reports success or restoration".to_string(),
+        ));
+    }
+    let reported_ledger: u32 = result
+        .get("latestLedger")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RpcError::Malformed("preflight lacks integer latestLedger".to_string()))?
+        .try_into()
+        .map_err(|_| RpcError::Malformed("preflight latestLedger exceeds u32".to_string()))?;
+    if reported_ledger == 0 {
+        // stellar-rpc answers a request it refuses before reading its ledger (an envelope it
+        // will not simulate) with the error and `latestLedger` 0. Nothing was simulated, and
+        // the reply is well formed: it is the endpoint refusing, with its text withheld.
+        return Err(if has_error {
+            redact_simulation_error(RpcError::Rpc(String::new()))
+        } else {
+            RpcError::Malformed("preflight latestLedger cannot be zero".to_string())
+        });
+    }
     let outcome = if has_error {
-        if result.get("restorePreamble").is_some() || result.get("results").is_some() {
-            return Err(RpcError::Malformed(
-                "failed preflight also reports success or restoration".to_string(),
-            ));
-        }
         PreflightOutcome::SimulationFailed
     } else if let Some(restore) = result.get("restorePreamble") {
         validate_restoration(restore)?;
@@ -721,7 +730,7 @@ mod tests {
         failed_and_success["error"] = json!("failed");
         for result in [
             json!({"results": success()["results"], "transactionData": transaction_data(), "minResourceFee": "100"}),
-            json!({"latestLedger": 0, "error": "failed"}),
+            json!({"latestLedger": 0, "results": success()["results"], "transactionData": transaction_data(), "minResourceFee": "100"}),
             missing_auth,
             invalid_xdr,
             invalid_auth,
@@ -748,6 +757,19 @@ mod tests {
                 "malformed response must not be reported as a successful simulation"
             );
         }
+    }
+
+    #[test]
+    fn a_refusal_before_simulation_is_an_rpc_refusal_not_a_malformed_reply() {
+        // stellar-rpc refuses some requests before it reads its ledger and answers with the
+        // error and `latestLedger` 0. That is the endpoint declining, not a broken reply.
+        let transport = CannedTransport::new(json!({
+            "latestLedger": 0,
+            "error": "private invocation echoed in a refusal"
+        }));
+        let error = preflight_transaction(&transport, NETWORK, &envelope()).unwrap_err();
+        assert!(matches!(error, RpcError::Rpc(_)), "{error}");
+        assert!(!error.to_string().contains("private invocation"));
     }
 
     #[test]

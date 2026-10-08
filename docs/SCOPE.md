@@ -116,11 +116,14 @@ The source-reviewed account method inventory and its limits are described in
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
    `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
    endpoint would refuse before simulating, such as one with a memo. It records the endpoint's
-   ledger and labels success, execution failure, or required archival restoration as
-   state-dependent RPC evidence. Restoration is reported whether the endpoint returns a separate restoration
-   preamble or, as current stellar-rpc does for an invocation, restores archived entries inside
-   the simulation and lists them in the simulated transaction data; neither is a success
-   against the endpoint's current state. The endpoint simulates only the envelope's source
+   ledger and labels success, a failed simulation, or required archival restoration as
+   state-dependent RPC evidence. A failed simulation covers an invocation or authorization
+   failure and an error inside the endpoint's simulator alike, because the endpoint's text that
+   would distinguish them is withheld; a refusal before the endpoint reads its ledger is an RPC
+   error rather than an outcome. Restoration is reported whether the endpoint returns a separate
+   restoration preamble or, as current stellar-rpc does for an invocation, restores archived
+   entries inside the simulation and lists them in the simulated transaction data; neither is a
+   success against the endpoint's current state. The endpoint simulates only the envelope's source
    account, its operation's host function, and its authorization entries. It does not evaluate
    signatures, the transaction fee, the sequence number, or time bounds and other
    preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
