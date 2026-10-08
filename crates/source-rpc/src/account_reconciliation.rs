@@ -2,10 +2,8 @@
 //!
 //! A passing check does not authenticate the entries, establish one ledger snapshot, identify
 //! archive status, recognize code, derive an administrator, inspect reverse lookup keys, or decide
-//! authority. A later reader must earn those claims through acquisition before using this guard
-//! in a public operation.
-
-#![allow(dead_code, reason = "awaiting the trusted account-state reader")]
+//! authority. The scanner uses this guard after acquisition, while retaining the endpoint's
+//! trust limits.
 
 use super::account_storage::{ContextRuleRecord, InstanceCounters, PolicyRecord, SignerRecord};
 use std::collections::{BTreeMap, BTreeSet};

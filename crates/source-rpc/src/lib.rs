@@ -10,8 +10,18 @@
 
 mod account_entry_page;
 mod account_reconciliation;
+mod account_state_projection;
+mod account_state_scan;
 mod account_storage;
 mod contract_data;
+mod ledger_witness;
+pub use account_state_projection::{
+    project_account_state, AccountProjectionError, AccountStateProjection, AdminRuleCandidate,
+};
+pub use account_state_scan::{
+    scan_account_state, scan_account_state_with_targets, AccountScanBounds, AccountScanError,
+    AccountStateScan,
+};
 pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,

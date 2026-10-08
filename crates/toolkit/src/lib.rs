@@ -711,7 +711,9 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::NotYetValid { .. } | RegistryError::Expired { .. } => EC::ERegistryExpired,
         RegistryError::Validity { .. } => EC::ERegistryValidity,
         RegistryError::UnknownPolicy(_) => EC::EUnregisteredPolicy,
-        RegistryError::UnknownAccount(_) => EC::EIncompatibleAccount,
+        RegistryError::UnknownAccount(_) | RegistryError::AccountAuthorityUnsupported(_) => {
+            EC::EIncompatibleAccount
+        }
         RegistryError::UnknownVerifier(_) => EC::EUnregisteredVerifier,
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,

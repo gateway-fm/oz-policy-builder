@@ -4,14 +4,10 @@
 //! endpoint, infer the history of an omitted key, or establish a coherent
 //! snapshot with another call. No authority decision may be inferred from this page alone.
 
-#![allow(
-    dead_code,
-    reason = "awaiting the account-state acquisition coordinator"
-)]
-
 use super::{
     account_storage::{decode_account_storage, AccountStorageEntry},
-    contract_data::{read_contract_data, ContractDataStatus},
+    contract_data::{read_contract_data_with_payloads, ContractDataStatus},
+    ledger_witness::LedgerWitness,
     xdr_limits, RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{LedgerSeq, NetworkId};
@@ -54,6 +50,9 @@ pub(crate) struct AccountEntryPage {
     pub network_id: NetworkId,
     pub rpc_reported_latest_ledger: LedgerSeq,
     pub entries: BTreeMap<AccountEntryKey, AccountEntryStatus>,
+    /// Raw XDR and metadata for the ordered scan digest. Returned archived entries are
+    /// omitted because the scanner rejects them before constructing a digest.
+    pub witnesses: BTreeMap<Vec<u8>, LedgerWitness>,
 }
 
 /// Derive exact ledger keys locally, read them once, and decode any returned live entries.
@@ -97,12 +96,39 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
         }
     }
     let encoded_keys = keyed.keys().cloned().collect::<Vec<_>>();
-    let read = read_contract_data(transport, network_passphrase, contract_id, &encoded_keys)?;
+    let (read, entry_payloads) = read_contract_data_with_payloads(
+        transport,
+        network_passphrase,
+        contract_id,
+        &encoded_keys,
+    )?;
     let mut statuses = BTreeMap::new();
+    let mut witnesses = BTreeMap::new();
     for (encoded, request) in keyed {
         let status = read.entries.get(&encoded).ok_or_else(|| {
             RpcError::Malformed("contract-data reader omitted a requested key".into())
         })?;
+        let key_xdr = LedgerKey::ContractData(ledger_key(&contract, request))
+            .to_xdr(xdr_limits())
+            .map_err(|error| RpcError::Malformed(format!("account key XDR: {error}")))?;
+        let witness = match status {
+            ContractDataStatus::Absent => Some(LedgerWitness::Absent),
+            ContractDataStatus::Present {
+                value: _,
+                last_modified_ledger,
+                live_until_ledger,
+            } => Some(LedgerWitness::Present {
+                entry_data_xdr: entry_payloads.get(&encoded).cloned().ok_or_else(|| {
+                    RpcError::Malformed("present account entry lacks validated payload".into())
+                })?,
+                last_modified_ledger: *last_modified_ledger,
+                live_until_ledger: *live_until_ledger,
+            }),
+            ContractDataStatus::Archived { .. } => None,
+        };
+        if let Some(witness) = witness {
+            witnesses.insert(key_xdr, witness);
+        }
         let status = match status {
             ContractDataStatus::Absent => AccountEntryStatus::Absent,
             ContractDataStatus::Archived {
@@ -144,10 +170,11 @@ pub(crate) fn read_account_entry_page<T: RpcTransport>(
         network_id: read.network_id,
         rpc_reported_latest_ledger: read.reported_latest_ledger,
         entries: statuses,
+        witnesses,
     })
 }
 
-fn ledger_key(contract: &ContractId, request: AccountEntryKey) -> LedgerKeyContractData {
+pub(super) fn ledger_key(contract: &ContractId, request: AccountEntryKey) -> LedgerKeyContractData {
     let key = match request {
         AccountEntryKey::Instance => ScVal::LedgerKeyContractInstance,
         AccountEntryKey::Rule(id) => enum_key("ContextRuleData", id),
@@ -295,6 +322,22 @@ mod tests {
         assert_eq!(page.network_id, NetworkId::from_passphrase(NETWORK));
         assert_eq!(page.rpc_reported_latest_ledger, LedgerSeq(10));
         assert_eq!(page.entries.len(), 3);
+        let rule_key = LedgerKey::ContractData(ledger_key(
+            &ContractId(Hash(CONTRACT)),
+            AccountEntryKey::Rule(17),
+        ))
+        .to_xdr(xdr_limits())
+        .unwrap();
+        let LedgerWitness::Present { entry_data_xdr, .. } = &page.witnesses[&rule_key] else {
+            panic!("expected present rule witness");
+        };
+        let LedgerEntryData::ContractData(payload) =
+            LedgerEntryData::from_xdr(entry_data_xdr.clone(), xdr_limits()).unwrap()
+        else {
+            panic!("witness must contain the complete contract-data payload");
+        };
+        assert_eq!(payload.ext, ExtensionPoint::V0);
+        assert_eq!(payload.val, fixture("rule_value"));
         assert_eq!(
             page.entries[&AccountEntryKey::Policy(11)],
             AccountEntryStatus::Absent
