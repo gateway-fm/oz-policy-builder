@@ -86,6 +86,15 @@ The source-reviewed account method inventory and its limits are described in
    The golden fixture also checks that direct `install`, `enforce`, and `uninstall` calls
    without account authorization fail without changing its installed state. This checks
    the generated policy's gate; it does not exercise a weaker alternate account rule.
+   A separate Wasm gate (`scripts/test-pinned-account-authorization.sh`) builds the exact
+   recognized account from pinned public source and a generated transfer policy with a fixed
+   test signer. It checks real delegated Ed25519 authorization through the account's complete
+   `__check_auth` path, rejects a changed payload, commits counts across ledger advances, and
+   checks N+1 denial and rollback. Run the script before merging changes to this path; the
+   scheduled toolchain job also runs it and fails when a prerequisite or hash is unavailable.
+   The ordinary contracts suite explicitly ignores this test because it needs source-built Wasm.
+   This is one fixture and one account code hash. It does not establish general layer-2 coverage,
+   disposable target execution, or live preflight.
    The hand-written `differential.rs` checks both verdict and reason for its own cases. Extending
    exact-reason checks to every generated case remains future work. A local two-rule account test
    demonstrates that overlapping counted grants have independent rule-ID counters and can exceed
