@@ -5,11 +5,13 @@
 //! operation's host function and authorization entries, under `authMode=enforce`. It does
 //! not evaluate the envelope's signatures, fee, sequence number, or time bounds and other
 //! preconditions, and for an invocation it ignores the envelope's own Soroban footprint and
-//! resource limits. This adapter compares those declared limits with what the simulation
-//! used; nothing else in the envelope is checked against the result. A successful
-//! simulation is evidence about that invocation at the endpoint's reported ledger; it does
-//! not establish that an installed policy was selected, that a later ledger will behave the
-//! same way, or that a transaction was submitted.
+//! resource limits. This adapter checks the declared footprint against the simulated one and
+//! the declared disk-read and write bytes against the simulated use. The endpoint reports
+//! instructions and the resource fee only as padded estimates, so those are compared with
+//! the estimate as advice, never as a check. Nothing else in the envelope is compared with
+//! the result. A successful simulation is evidence about that invocation at the endpoint's
+//! reported ledger; it does not establish that an installed policy was selected, that a
+//! later ledger will behave the same way, or that a transaction was submitted.
 
 use crate::{
     ensure_base64_size, validate_simulation_envelope, verify_network, xdr_limits, RpcError,
@@ -30,7 +32,9 @@ use stellar_xdr::{
 #[serde(rename_all = "snake_case")]
 pub enum PreflightOutcome {
     /// The invocation succeeded at the endpoint's state. The envelope declares exactly the
-    /// simulated footprint, and its declared resource limits cover the simulated ones.
+    /// simulated footprint and at least the simulated disk-read and write bytes. Its
+    /// instructions and resource fee are not established by this outcome; see
+    /// [`PreflightObservation::below_endpoint_estimate`].
     SimulatedSuccess,
     /// The endpoint reported an error after reading its ledger. That covers an invocation or
     /// authorization failure and an error inside the endpoint's simulator alike; the text
@@ -49,9 +53,9 @@ pub enum PreflightOutcome {
     DeclaredResourcesInsufficient(Vec<DeclaredResource>),
 }
 
-/// A part of the envelope's declared `SorobanTransactionData` that is checked against the
-/// simulated one. An envelope without Soroban transaction data declares an empty footprint
-/// and zero limits.
+/// A part of the envelope's declared `SorobanTransactionData` that must match the simulated
+/// one. The endpoint reports each of these as used, without padding. An envelope without
+/// Soroban transaction data declares an empty footprint and zero limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeclaredResource {
@@ -64,9 +68,25 @@ pub enum DeclaredResource {
     /// network writes every existing read-write entry back and counts it against the
     /// declared write bytes, so an extra key can exceed a limit the simulation fit.
     ReadWriteFootprint,
-    Instructions,
+    /// The declared disk-read bytes are below the simulated use.
     DiskReadBytes,
+    /// The declared write bytes are below the simulated use.
     WriteBytes,
+}
+
+/// A declared value below the endpoint's own estimate for it. Advice only: it never changes
+/// the outcome, because the endpoint reports these padded rather than as used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimatedResource {
+    /// Below the endpoint's recommended instruction budget: the simulated use padded, by
+    /// default to the larger of 1.04 times the use and the use plus 50,000. A declaration
+    /// below it can still cover the use.
+    Instructions,
+    /// Below the endpoint's resource fee estimate, priced from the padded resources at its
+    /// reported ledger's rates with the refundable part raised. The network prices the
+    /// envelope's own declared resources at the rates when it applies it, so a fee below the
+    /// estimate can suffice and one above it can still fall short.
     ResourceFee,
 }
 
@@ -74,12 +94,13 @@ pub enum DeclaredResource {
 ///
 /// `envelope_xdr_sha256` identifies the input bytes, not everything that was evaluated: the
 /// endpoint simulated the source account, host function and authorization entries; this
-/// adapter compared the declared Soroban footprint and resource limits with the simulated
-/// ones. Signatures, the transaction fee, sequence number, and time bounds and other
+/// adapter compared the declared Soroban footprint and disk-read and write bytes with the
+/// simulated ones, and the declared instructions and resource fee with the endpoint's
+/// estimate. Signatures, the transaction fee, sequence number, and time bounds and other
 /// preconditions were not evaluated by either.
 ///
-/// It is built only by [`preflight_transaction`] and has no deserializer: the trust and
-/// mode labels are earned by the request this adapter made, never accepted from input.
+/// It has no deserializer, so no JSON path can produce one: the trust and mode labels are
+/// earned by the request this adapter made, never accepted from input.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PreflightObservation {
     /// SHA-256 of the canonical envelope XDR bytes, not a transaction hash.
@@ -87,6 +108,10 @@ pub struct PreflightObservation {
     pub network_id: String,
     pub reported_ledger: u32,
     pub outcome: PreflightOutcome,
+    /// Declared values below the endpoint's estimate, compared only for a simulated success
+    /// (`SimulatedSuccess` or `DeclaredResourcesInsufficient`) and empty otherwise. Advice,
+    /// not a check: it never changes `outcome`.
+    pub below_endpoint_estimate: Vec<EstimatedResource>,
     /// The request uses `authMode=enforce`; a record-mode result never reaches here.
     pub auth_mode: SimulationAuthMode,
     /// `rpc_reported`: the result is trusted only as far as the configured RPC endpoint.
@@ -112,8 +137,10 @@ pub enum SimulationAuthMode {
 /// error string is withheld because it can reflect confidential envelope contents.
 /// A success that needed archived entries restored, by preamble or by the endpoint's
 /// automatic restoration, is `RestorationRequired`, not a successful invocation. A
-/// success outside the envelope's declared footprint or resource limits is
-/// `DeclaredResourcesInsufficient`.
+/// success whose footprint the envelope does not declare exactly, or whose disk-read or
+/// write bytes exceed the declared limits, is `DeclaredResourcesInsufficient`. Declared
+/// instructions or a resource fee below the endpoint's estimate are reported in
+/// `below_endpoint_estimate` and do not change the outcome.
 pub fn preflight_transaction<T: RpcTransport>(
     transport: &T,
     network_passphrase: &str,
@@ -163,50 +190,26 @@ fn declared_transaction_data(envelope: &TransactionEnvelope) -> SorobanTransacti
 }
 
 /// Each dimension in which the declared data does not match the simulated data: a footprint
-/// list that is not exactly the simulated one, or a limit below the simulated one.
-fn declared_shortfall(
+/// list that is not exactly the simulated one, or a byte limit below the simulated use.
+fn declared_mismatches(
     declared: &SorobanTransactionData,
     simulated: &SorobanTransactionData,
 ) -> Vec<DeclaredResource> {
-    let mut short = Vec::new();
-    if !same_keys(
-        &declared.resources.footprint.read_only,
-        &simulated.resources.footprint.read_only,
-    ) {
-        short.push(DeclaredResource::ReadOnlyFootprint);
+    let (declared, used) = (&declared.resources, &simulated.resources);
+    let mut mismatched = Vec::new();
+    if !same_keys(&declared.footprint.read_only, &used.footprint.read_only) {
+        mismatched.push(DeclaredResource::ReadOnlyFootprint);
     }
-    if !same_keys(
-        &declared.resources.footprint.read_write,
-        &simulated.resources.footprint.read_write,
-    ) {
-        short.push(DeclaredResource::ReadWriteFootprint);
+    if !same_keys(&declared.footprint.read_write, &used.footprint.read_write) {
+        mismatched.push(DeclaredResource::ReadWriteFootprint);
     }
-    let (declared_limits, used) = (&declared.resources, &simulated.resources);
-    for (dimension, declared_limit, used) in [
-        (
-            DeclaredResource::Instructions,
-            declared_limits.instructions,
-            used.instructions,
-        ),
-        (
-            DeclaredResource::DiskReadBytes,
-            declared_limits.disk_read_bytes,
-            used.disk_read_bytes,
-        ),
-        (
-            DeclaredResource::WriteBytes,
-            declared_limits.write_bytes,
-            used.write_bytes,
-        ),
-    ] {
-        if declared_limit < used {
-            short.push(dimension);
-        }
+    if declared.disk_read_bytes < used.disk_read_bytes {
+        mismatched.push(DeclaredResource::DiskReadBytes);
     }
-    if declared.resource_fee < simulated.resource_fee {
-        short.push(DeclaredResource::ResourceFee);
+    if declared.write_bytes < used.write_bytes {
+        mismatched.push(DeclaredResource::WriteBytes);
     }
-    short
+    mismatched
 }
 
 /// Whether two footprint lists hold the same keys in any order. Repeats count, so a declared
@@ -217,6 +220,21 @@ fn same_keys(declared: &[LedgerKey], simulated: &[LedgerKey]) -> bool {
     declared.sort_unstable();
     simulated.sort_unstable();
     declared == simulated
+}
+
+/// Each declared value below the endpoint's padded estimate for it.
+fn below_endpoint_estimate(
+    declared: &SorobanTransactionData,
+    simulated: &SorobanTransactionData,
+) -> Vec<EstimatedResource> {
+    let mut below = Vec::new();
+    if declared.resources.instructions < simulated.resources.instructions {
+        below.push(EstimatedResource::Instructions);
+    }
+    if declared.resource_fee < simulated.resource_fee {
+        below.push(EstimatedResource::ResourceFee);
+    }
+    below
 }
 
 fn redact_simulation_error(error: RpcError) -> RpcError {
@@ -278,22 +296,23 @@ fn parse_preflight(
             RpcError::Malformed("preflight latestLedger cannot be zero".to_string())
         });
     }
-    let outcome = if has_error {
-        PreflightOutcome::SimulationFailed
+    let (outcome, below_endpoint_estimate) = if has_error {
+        (PreflightOutcome::SimulationFailed, Vec::new())
     } else if let Some(restore) = result.get("restorePreamble") {
         validate_restoration(restore)?;
-        PreflightOutcome::RestorationRequired
+        (PreflightOutcome::RestorationRequired, Vec::new())
     } else {
         let simulated = validate_success(result)?;
         if restores_archived_entries(&simulated)? {
-            PreflightOutcome::RestorationRequired
+            (PreflightOutcome::RestorationRequired, Vec::new())
         } else {
-            let short = declared_shortfall(declared, &simulated);
-            if short.is_empty() {
+            let mismatched = declared_mismatches(declared, &simulated);
+            let outcome = if mismatched.is_empty() {
                 PreflightOutcome::SimulatedSuccess
             } else {
-                PreflightOutcome::DeclaredResourcesInsufficient(short)
-            }
+                PreflightOutcome::DeclaredResourcesInsufficient(mismatched)
+            };
+            (outcome, below_endpoint_estimate(declared, &simulated))
         }
     };
     Ok(PreflightObservation {
@@ -301,6 +320,7 @@ fn parse_preflight(
         network_id,
         reported_ledger,
         outcome,
+        below_endpoint_estimate,
         auth_mode: SimulationAuthMode::Enforce,
         evidence_trust: TrustLevel::rpc_reported(),
         state_dependent: true,
@@ -510,6 +530,8 @@ mod tests {
         assert_eq!(serialized["auth_mode"], "enforce");
         assert_eq!(serialized["evidence_trust"], "rpc_reported");
         assert_eq!(serialized["outcome"], "simulated_success");
+        assert!(observation.below_endpoint_estimate.is_empty());
+        assert_eq!(serialized["below_endpoint_estimate"], json!([]));
         assert!(observation.state_dependent);
         assert_eq!(observation.reported_ledger, 4_200_101);
         assert!(!observation.writes_committed);
@@ -554,6 +576,7 @@ mod tests {
         }));
         let observation = preflight_transaction(&transport, NETWORK, &envelope()).unwrap();
         assert_eq!(observation.outcome, PreflightOutcome::SimulationFailed);
+        assert!(observation.below_endpoint_estimate.is_empty());
         let serialized = serde_json::to_string(&observation).unwrap();
         assert!(!serialized.contains("private invocation"));
         assert!(!serialized.contains("secret authorization"));
@@ -573,6 +596,7 @@ mod tests {
         let observation =
             preflight_transaction(&CannedTransport::new(result), NETWORK, &envelope()).unwrap();
         assert_eq!(observation.outcome, PreflightOutcome::RestorationRequired);
+        assert!(observation.below_endpoint_estimate.is_empty());
     }
 
     fn storage_key(id: u32) -> LedgerKey {
@@ -642,14 +666,20 @@ mod tests {
         data
     }
 
-    fn outcome_declaring(simulated: &SorobanTransactionData, envelope: &str) -> PreflightOutcome {
+    fn observation_declaring(
+        simulated: &SorobanTransactionData,
+        envelope: &str,
+    ) -> PreflightObservation {
         preflight_transaction(
             &CannedTransport::new(success_using(simulated)),
             NETWORK,
             envelope,
         )
         .unwrap()
-        .outcome
+    }
+
+    fn outcome_declaring(simulated: &SorobanTransactionData, envelope: &str) -> PreflightOutcome {
+        observation_declaring(simulated, envelope).outcome
     }
 
     fn keys(ids: &[u32]) -> VecM<LedgerKey> {
@@ -739,19 +769,19 @@ mod tests {
     }
 
     #[test]
-    fn declared_resources_are_compared_with_the_simulation_dimension_by_dimension() {
+    fn declared_byte_limits_must_cover_the_simulated_use() {
+        // The endpoint reports disk-read and write bytes as used, without padding, so a lower
+        // declaration exceeds its own limit at the simulated state.
         let simulated = realistic_usage();
+        let mut generous = simulated.clone();
+        generous.resources.disk_read_bytes += 1;
+        generous.resources.write_bytes += 1;
         assert_eq!(
-            outcome_declaring(&simulated, &envelope_declaring(&simulated)),
+            outcome_declaring(&simulated, &envelope_declaring(&generous)),
             PreflightOutcome::SimulatedSuccess
         );
-
         type Shrink = fn(&mut SorobanTransactionData);
-        let cases: [(Shrink, DeclaredResource); 4] = [
-            (
-                |data| data.resources.instructions -= 1,
-                DeclaredResource::Instructions,
-            ),
+        let cases: [(Shrink, DeclaredResource); 2] = [
             (
                 |data| data.resources.disk_read_bytes -= 1,
                 DeclaredResource::DiskReadBytes,
@@ -760,7 +790,6 @@ mod tests {
                 |data| data.resources.write_bytes -= 1,
                 DeclaredResource::WriteBytes,
             ),
-            (|data| data.resource_fee -= 1, DeclaredResource::ResourceFee),
         ];
         for (shrink, dimension) in cases {
             let mut declared = simulated.clone();
@@ -778,10 +807,8 @@ mod tests {
             PreflightOutcome::DeclaredResourcesInsufficient(vec![
                 DeclaredResource::ReadOnlyFootprint,
                 DeclaredResource::ReadWriteFootprint,
-                DeclaredResource::Instructions,
                 DeclaredResource::DiskReadBytes,
                 DeclaredResource::WriteBytes,
-                DeclaredResource::ResourceFee,
             ])
         );
         assert_eq!(
@@ -789,10 +816,64 @@ mod tests {
             PreflightOutcome::SimulatedSuccess
         );
         let mut short = simulated.clone();
-        short.resources.instructions -= 1;
+        short.resources.write_bytes -= 1;
         assert_eq!(
             outcome_declaring(&simulated, &fee_bump_declaring(&short)),
-            PreflightOutcome::DeclaredResourcesInsufficient(vec![DeclaredResource::Instructions])
+            PreflightOutcome::DeclaredResourcesInsufficient(vec![DeclaredResource::WriteBytes])
+        );
+    }
+
+    #[test]
+    fn instructions_and_fee_below_the_endpoint_estimate_do_not_decide_the_outcome() {
+        // stellar-rpc pads the instructions it reports (by default to the larger of 1.04x and
+        // x + 50,000) and prices the fee at its own ledger's rates with the refundable part
+        // raised 15%. An envelope below those figures can still have enough.
+        let simulated = realistic_usage();
+        assert!(
+            observation_declaring(&simulated, &envelope_declaring(&simulated))
+                .below_endpoint_estimate
+                .is_empty()
+        );
+        type Lower = fn(&mut SorobanTransactionData);
+        let cases: [(Lower, Vec<EstimatedResource>); 3] = [
+            (
+                |data| data.resources.instructions -= 1,
+                vec![EstimatedResource::Instructions],
+            ),
+            (
+                |data| data.resource_fee -= 1,
+                vec![EstimatedResource::ResourceFee],
+            ),
+            (
+                |data| {
+                    data.resources.instructions -= 1;
+                    data.resource_fee -= 1;
+                },
+                vec![
+                    EstimatedResource::Instructions,
+                    EstimatedResource::ResourceFee,
+                ],
+            ),
+        ];
+        for (lower, expected) in cases {
+            let mut declared = simulated.clone();
+            lower(&mut declared);
+            for envelope in [envelope_declaring(&declared), fee_bump_declaring(&declared)] {
+                let observation = observation_declaring(&simulated, &envelope);
+                assert_eq!(observation.outcome, PreflightOutcome::SimulatedSuccess);
+                assert_eq!(observation.below_endpoint_estimate, expected);
+            }
+        }
+
+        // Reported beside a hard mismatch too, and serialized by name.
+        let observation = observation_declaring(&simulated, &envelope());
+        assert!(matches!(
+            observation.outcome,
+            PreflightOutcome::DeclaredResourcesInsufficient(_)
+        ));
+        assert_eq!(
+            serde_json::to_value(&observation).unwrap()["below_endpoint_estimate"],
+            json!(["instructions", "resource_fee"])
         );
     }
 
