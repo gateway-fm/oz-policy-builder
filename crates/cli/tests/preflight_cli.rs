@@ -7,8 +7,8 @@ use std::process::Command;
 
 #[test]
 fn preflight_command_reports_the_same_bounded_evidence_as_rpc_acquisition() {
-    let (rpc_url, requests) = preflight_rpc::spawn();
     let envelope = preflight_rpc::envelope();
+    let (rpc_url, requests) = preflight_rpc::spawn(preflight_rpc::success(&envelope));
     let directory = tempfile::tempdir().expect("temporary envelope directory");
     let envelope_file = directory.path().join("authorization.xdr.base64");
     std::fs::write(&envelope_file, format!("{envelope}\n")).expect("write exact envelope");
@@ -27,6 +27,10 @@ fn preflight_command_reports_the_same_bounded_evidence_as_rpc_acquisition() {
     let result: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("CLI JSON output");
     assert_eq!(result["outcome"], "simulated_success");
+    assert_eq!(
+        result["insufficient_declared_resources"],
+        serde_json::json!([])
+    );
     assert_eq!(result["auth_mode"], "enforce");
     assert_eq!(result["evidence_trust"], "rpc_reported");
     assert_eq!(result["reported_ledger"], 4_104_380);

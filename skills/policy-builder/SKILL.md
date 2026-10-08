@@ -125,8 +125,12 @@ signer identities, spending limits, and policy composition visible in the propos
 5. If the user has an exact transaction envelope containing the intended authorization entries,
    `preflight_transaction` can simulate it on the user-selected RPC endpoint with authorization
    enforced. Treat the envelope as confidential and do not echo it. Its
-   `simulated_success`, `simulation_failed`, or `restoration_required` outcome is
-   evidence for that envelope at the endpoint-reported ledger. The server cannot establish that
+   `simulated_success`, `simulation_failed`, `restoration_required`, or
+   `declared_resources_insufficient` outcome is evidence for that envelope at the
+   endpoint-reported ledger. `declared_resources_insufficient` means the invocation succeeded
+   in simulation but the envelope declares less than it used, in each dimension listed in
+   `insufficient_declared_resources`, so the network would refuse it as written; the envelope
+   must be re-assembled, and it is not a success. The server cannot establish that
    the generated policy is installed or selected, or that the account authority surface is Safe.
    A successful simulation does not predict a later transaction's outcome. No writes are
    committed. Do not treat `record_simulation` as this check: it uses record mode to acquire

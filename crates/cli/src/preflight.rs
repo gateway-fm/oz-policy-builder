@@ -1,10 +1,7 @@
 //! CLI shell for a state-dependent RPC simulation of one exact transaction.
 
 use anyhow::{Context, Result};
-use ozpb_api_types::{PreflightTransactionOutcome, PreflightTransactionOutput};
-use ozpb_source_rpc::{
-    preflight_transaction, HttpTransport, PreflightObservation, PreflightOutcome,
-};
+use ozpb_source_rpc::{preflight_transaction, HttpTransport};
 
 use crate::print_json;
 use std::io::Read;
@@ -14,7 +11,7 @@ pub fn run(rpc_url: String, network_passphrase: String, envelope_file: PathBuf) 
     let envelope_xdr_base64 = read_envelope(&envelope_file)?;
     let transport = HttpTransport::new(rpc_url);
     let observation = preflight_transaction(&transport, &network_passphrase, &envelope_xdr_base64)?;
-    print_json(&to_wire(observation))
+    print_json(&ozpb_toolkit::preflight_transaction_output(observation))
 }
 
 fn read_envelope(path: &PathBuf) -> Result<String> {
@@ -39,25 +36,6 @@ fn read_envelope(path: &PathBuf) -> Result<String> {
         anyhow::bail!("E_RPC: preflight envelope file has extra line breaks");
     }
     Ok(text.to_string())
-}
-
-fn to_wire(observation: PreflightObservation) -> PreflightTransactionOutput {
-    PreflightTransactionOutput {
-        envelope_xdr_sha256: observation.envelope_xdr_sha256,
-        network_id: observation.network_id,
-        reported_ledger: observation.reported_ledger,
-        outcome: match observation.outcome {
-            PreflightOutcome::SimulatedSuccess => PreflightTransactionOutcome::SimulatedSuccess,
-            PreflightOutcome::SimulationFailed => PreflightTransactionOutcome::SimulationFailed,
-            PreflightOutcome::RestorationRequired => {
-                PreflightTransactionOutcome::RestorationRequired
-            }
-        },
-        auth_mode: observation.auth_mode,
-        evidence_trust: observation.evidence_trust,
-        state_dependent: observation.state_dependent,
-        writes_committed: observation.writes_committed,
-    }
 }
 
 #[cfg(test)]

@@ -4,10 +4,8 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
-use ozpb_api_types::{
-    PreflightTransactionInput, PreflightTransactionOutcome, PreflightTransactionOutput,
-};
-use ozpb_source_rpc::{HttpTransport, PreflightObservation, PreflightOutcome};
+use ozpb_api_types::{PreflightTransactionInput, PreflightTransactionOutput};
+use ozpb_source_rpc::HttpTransport;
 
 use crate::{internal_tool_err, rpc_tool_err, tool_err, PolicyBuilderServer};
 
@@ -20,6 +18,8 @@ impl PolicyBuilderServer {
         description = "Simulate one exact envelope, including any intended authorization \
                        entries, through Stellar RPC with authorization enforced. \
                        Returns the endpoint-reported outcome \
+                       (simulated_success, simulation_failed, restoration_required, or \
+                       declared_resources_insufficient with the under-declared resources) \
                        and ledger for that exact envelope. State-dependent; writes are \
                        discarded. Does not identify an installed policy or submit a transaction."
     )]
@@ -40,26 +40,9 @@ impl PolicyBuilderServer {
         .await
         .map_err(internal_tool_err)?
         .map_err(tool_err)?;
-        Ok(Json(to_wire(observation)))
-    }
-}
-
-fn to_wire(observation: PreflightObservation) -> PreflightTransactionOutput {
-    PreflightTransactionOutput {
-        envelope_xdr_sha256: observation.envelope_xdr_sha256,
-        network_id: observation.network_id,
-        reported_ledger: observation.reported_ledger,
-        outcome: match observation.outcome {
-            PreflightOutcome::SimulatedSuccess => PreflightTransactionOutcome::SimulatedSuccess,
-            PreflightOutcome::SimulationFailed => PreflightTransactionOutcome::SimulationFailed,
-            PreflightOutcome::RestorationRequired => {
-                PreflightTransactionOutcome::RestorationRequired
-            }
-        },
-        auth_mode: observation.auth_mode,
-        evidence_trust: observation.evidence_trust,
-        state_dependent: observation.state_dependent,
-        writes_committed: observation.writes_committed,
+        Ok(Json(ozpb_toolkit::preflight_transaction_output(
+            observation,
+        )))
     }
 }
 

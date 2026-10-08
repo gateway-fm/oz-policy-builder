@@ -7,31 +7,80 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use stellar_xdr::{
+    Limits, ReadXdr, SorobanTransactionData, TransactionEnvelope, TransactionExt, WriteXdr,
+};
 
 pub const NETWORK: &str = "Test SDF Network ; September 2015";
 
+/// The example invocation, assembled as a wallet would send it: declaring the Soroban
+/// transaction data that the captured simulation of it reported. The example bundle's own
+/// envelope declares none, which simulation would report as insufficient.
 pub fn envelope() -> String {
     let bundle: Value =
         serde_json::from_str(include_str!("../../docs/examples/import-bundle.json"))
             .expect("example bundle JSON");
-    bundle["envelope_xdr_base64"]
+    let example = bundle["envelope_xdr_base64"]
         .as_str()
-        .expect("example envelope")
-        .to_string()
+        .expect("example envelope");
+    let mut envelope =
+        TransactionEnvelope::from_xdr_base64(example, Limits::none()).expect("envelope XDR");
+    let TransactionEnvelope::Tx(v1) = &mut envelope else {
+        panic!("the example envelope is a v1 transaction");
+    };
+    let captured = captured_simulation()["transactionData"]
+        .as_str()
+        .map(|data| SorobanTransactionData::from_xdr_base64(data, Limits::none()))
+        .expect("captured transaction data")
+        .expect("transaction data XDR");
+    v1.tx.ext = TransactionExt::V1(captured);
+    envelope
+        .to_xdr_base64(Limits::none())
+        .expect("assembled envelope XDR")
 }
 
-/// Serve `getNetwork` and one `simulateTransaction`, returning both exact requests.
-pub fn spawn() -> (String, JoinHandle<Vec<Value>>) {
+fn captured_simulation() -> Value {
+    serde_json::from_str(include_str!(
+        "../../crates/source-rpc/tests/captured-testnet/simulateTransaction.json"
+    ))
+    .expect("captured simulation JSON")
+}
+
+/// The Soroban transaction data `envelope` declares.
+pub fn declared(envelope: &str) -> SorobanTransactionData {
+    match TransactionEnvelope::from_xdr_base64(envelope, Limits::none()).expect("envelope XDR") {
+        TransactionEnvelope::Tx(v1) => match v1.tx.ext {
+            TransactionExt::V1(data) => data,
+            TransactionExt::V0 => panic!("the envelope declares no Soroban data"),
+        },
+        _ => panic!("the envelope is not a v1 transaction"),
+    }
+}
+
+/// The captured testnet reply, reporting `simulated` as the transaction data it used.
+pub fn simulation_using(simulated: &SorobanTransactionData) -> Value {
+    let mut simulation = captured_simulation();
+    simulation["transactionData"] = json!(simulated
+        .to_xdr_base64(Limits::none())
+        .expect("transaction data XDR"));
+    simulation["minResourceFee"] = json!(simulated.resource_fee.to_string());
+    simulation
+}
+
+/// A successful simulation that used exactly what `envelope` declares.
+pub fn success(envelope: &str) -> Value {
+    simulation_using(&declared(envelope))
+}
+
+/// Serve `getNetwork` and one `simulateTransaction` answered with `simulation`, returning
+/// both exact requests.
+pub fn spawn(simulation: Value) -> (String, JoinHandle<Vec<Value>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind local RPC fixture");
     listener
         .set_nonblocking(true)
         .expect("nonblocking listener");
     let address = format!("http://{}", listener.local_addr().unwrap());
     let handle = thread::spawn(move || {
-        let simulation: Value = serde_json::from_str(include_str!(
-            "../../crates/source-rpc/tests/captured-testnet/simulateTransaction.json"
-        ))
-        .expect("captured simulation JSON");
         let mut requests = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(10);
         for _ in 0..2 {

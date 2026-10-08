@@ -51,8 +51,12 @@ reviewed policy would make a whole-composition verdict unsafe.
 
 `preflight_transaction` is a separate network read for an exact transaction envelope
 carrying the intended authorization entries. It uses RPC authorization enforcement and
-reports the endpoint's simulation outcome at its reported ledger. It does not establish
-that the generated policy is installed or selected, and it never commits writes.
+reports the endpoint's simulation outcome at its reported ledger: `simulated_success`,
+`simulation_failed`, `restoration_required`, or `declared_resources_insufficient`. The last
+means the invocation succeeded in simulation but the envelope declares a smaller footprint or
+lower resource limits than it used; `insufficient_declared_resources` names each such
+dimension, never the keys. It does not establish that the generated policy is installed or
+selected, and it never commits writes.
 
 ### CLI
 

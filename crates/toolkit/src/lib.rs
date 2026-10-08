@@ -32,6 +32,8 @@ pub use call_surface::{
 };
 #[allow(dead_code, reason = "awaiting a trusted complete authority reader")]
 mod install_intent;
+mod preflight;
+pub use preflight::preflight_transaction_output;
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire

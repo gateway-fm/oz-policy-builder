@@ -50,8 +50,8 @@ fn malformed_envelope_fails_before_an_rpc_request_with_a_structured_error() {
 
 #[test]
 fn successful_preflight_reports_only_exact_envelope_rpc_evidence() {
-    let (rpc_url, requests) = preflight_rpc::spawn();
     let envelope = preflight_rpc::envelope();
+    let (rpc_url, requests) = preflight_rpc::spawn(preflight_rpc::success(&envelope));
     let responses = run_session(&[
         initialize(),
         initialized(),
@@ -68,6 +68,11 @@ fn successful_preflight_reports_only_exact_envelope_rpc_evidence() {
     assert_ne!(call["result"]["isError"], true, "{call}");
     let output = &call["result"]["structuredContent"];
     assert_eq!(output["outcome"], "simulated_success", "{call}");
+    assert_eq!(
+        output["insufficient_declared_resources"],
+        serde_json::json!([]),
+        "{call}"
+    );
     assert_eq!(output["auth_mode"], "enforce", "{call}");
     assert_eq!(output["evidence_trust"], "rpc_reported", "{call}");
     assert_eq!(output["reported_ledger"], 4_104_380, "{call}");
