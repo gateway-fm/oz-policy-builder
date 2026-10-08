@@ -22,7 +22,10 @@
 //! that the shape is still current. `nightly-live.yml` re-runs the live path so drift shows up
 //! within a day rather than in a demo.
 
-use ozpb_source_rpc::{get_transaction, simulate_transaction, RpcError, RpcTransport};
+use ozpb_source_rpc::{
+    get_transaction, read_contract_data, simulate_transaction, ContractDataStatus, RpcError,
+    RpcTransport,
+};
 use std::cell::RefCell;
 use stellar_xdr::ReadXdr;
 
@@ -60,6 +63,45 @@ impl RpcTransport for Replay {
         self.calls.borrow_mut().push(method.to_string());
         Ok(captured(method))
     }
+}
+
+#[test]
+fn captured_contract_data_response_decodes_as_live_data() {
+    let transport = Replay::new();
+    let key = captured("getLedgerEntries")["entries"][0]["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let decoded =
+        stellar_xdr::LedgerKey::from_xdr_base64(&key, ozpb_source_rpc::xdr_limits()).unwrap();
+    let stellar_xdr::LedgerKey::ContractData(data) = decoded else {
+        panic!("captured key is not contract data");
+    };
+    let stellar_xdr::ScAddress::Contract(contract) = data.contract else {
+        panic!("captured key is not a contract address");
+    };
+    let address = format!("{}", stellar_strkey::Contract(contract.0 .0));
+    let result =
+        read_contract_data(&transport, NETWORK, &address, std::slice::from_ref(&key)).unwrap();
+    assert_eq!(
+        result.network_id,
+        ozpb_domain::NetworkId::from_passphrase(NETWORK)
+    );
+    assert_eq!(
+        result.reported_latest_ledger,
+        ozpb_domain::LedgerSeq(4_104_260)
+    );
+    assert!(matches!(
+        result.entries.get(&key),
+        Some(ContractDataStatus::Present {
+            value: stellar_xdr::ScVal::ContractInstance(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        *transport.calls.borrow(),
+        ["getNetwork", "getLedgerEntries"]
+    );
 }
 
 #[test]

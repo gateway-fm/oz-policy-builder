@@ -1,11 +1,22 @@
 //! Stellar RPC acquisition adapter (architecture §4.1, §4.11).
 //!
 //! Does the network I/O and produces immutable, trust-labeled [`EvidenceSnapshot`]s for
-//! the pure recorder. Executed transactions and record-mode simulations both come back
-//! as `rpc_reported` — trusted exactly as far as the configured endpoint is. The
-//! transport is split from the JSON handling so the parsing is unit-testable offline.
+//! the pure recorder, plus bounded contract-code and contract-data observations. Executed
+//! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
+//! configured endpoint is. The transport is split from JSON handling so parsing can be
+//! tested offline.
 
 #![forbid(unsafe_code)]
+
+mod account_entry_page;
+mod account_reconciliation;
+mod account_storage;
+mod contract_data;
+pub use account_storage::{
+    decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
+    ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
+};
+pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
@@ -20,6 +31,9 @@ use stellar_xdr::{
     LedgerKey, LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope,
     TransactionResult, TransactionResultResult, WriteXdr,
 };
+
+mod contract_code;
+pub use contract_code::{read_contract_wasm_hashes, ContractCodeRead};
 
 // Keep acquisition aligned with recorder-core's per-value bound. Accepted evidence must remain
 // small enough for the recorder's canonical 4 MiB hash preimage after decoding and summarizing.
@@ -73,6 +87,8 @@ pub fn xdr_limits() -> Limits {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
+    #[error("E_RPC: invalid request: {0}")]
+    InvalidRequest(String),
     #[error("E_RPC: transport error: {0}")]
     Transport(String),
     #[error("E_RPC: malformed response: {0}")]
@@ -106,6 +122,8 @@ pub enum RpcError {
     },
     #[error("E_RPC: recording evidence error: {0}")]
     Evidence(String),
+    #[error("E_RPC: contract code read: {0}")]
+    CodeRead(String),
 }
 
 /// A minimal JSON-RPC transport. The real client uses HTTP; tests inject a canned
@@ -1351,6 +1369,246 @@ mod tests {
                 })
             })
             .collect())
+    }
+
+    /// Contract-instance replies with distinct Wasm hashes, built from the same XDR shape as
+    /// the existing RPC fixtures. TTL metadata is added because a code read must refuse an
+    /// instance that is no longer live at the endpoint's reported ledger.
+    fn wasm_entries_for(params: &serde_json::Value) -> Result<Vec<serde_json::Value>, RpcError> {
+        let mut entries = ledger_entries_for(params)?;
+        for entry in &mut entries {
+            let encoded = entry["xdr"].as_str().unwrap();
+            let LedgerEntryData::ContractData(mut data) =
+                LedgerEntryData::from_xdr_base64(encoded, Limits::none()).unwrap()
+            else {
+                panic!("expected contract data");
+            };
+            let ScAddress::Contract(ContractId(Hash(contract_id))) = &data.contract else {
+                panic!("expected C-address");
+            };
+            data.val = ScVal::ContractInstance(ScContractInstance {
+                executable: ContractExecutable::Wasm(Hash([contract_id[0]; 32])),
+                storage: None,
+            });
+            entry["xdr"] = json!(LedgerEntryData::ContractData(data)
+                .to_xdr_base64(Limits::none())
+                .unwrap());
+            entry["liveUntilLedgerSeq"] = json!(OBSERVED_LEDGER + 100);
+        }
+        Ok(entries)
+    }
+
+    struct CodeReadTransport {
+        mutate: fn(Vec<serde_json::Value>) -> Vec<serde_json::Value>,
+        network_response: serde_json::Value,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl RpcTransport for CodeReadTransport {
+        fn call(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, RpcError> {
+            self.calls.borrow_mut().push(method.to_string());
+            match method {
+                "getNetwork" => Ok(self.network_response.clone()),
+                "getLedgerEntries" => Ok(json!({
+                    "entries": (self.mutate)(wasm_entries_for(&params)?),
+                    "latestLedger": OBSERVED_LEDGER,
+                })),
+                other => Err(RpcError::Rpc(format!("unexpected method {other}"))),
+            }
+        }
+    }
+
+    fn code_read_transport(
+        mutate: fn(Vec<serde_json::Value>) -> Vec<serde_json::Value>,
+    ) -> CodeReadTransport {
+        CodeReadTransport {
+            mutate,
+            network_response: network_response(),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn code_read_addresses() -> Vec<String> {
+        [1u8, 2]
+            .into_iter()
+            .map(|byte| format!("{}", stellar_strkey::Contract([byte; 32])))
+            .collect()
+    }
+
+    #[test]
+    fn code_read_rejects_bad_request_before_contacting_rpc() {
+        let transport = code_read_transport(std::convert::identity);
+        let error =
+            read_contract_wasm_hashes(&transport, NET, &["not-a-contract".into()]).unwrap_err();
+        assert!(matches!(error, RpcError::InvalidRequest(_)));
+        assert!(transport.calls.borrow().is_empty());
+    }
+
+    fn code_read_key(byte: u8) -> String {
+        LedgerKey::ContractData(LedgerKeyContractData {
+            contract: ScAddress::Contract(ContractId(Hash([byte; 32]))),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap()
+    }
+
+    #[test]
+    fn contract_code_read_accepts_exact_live_wasm_instances_in_one_reply() {
+        let transport = code_read_transport(|entries| entries);
+        let addresses = code_read_addresses();
+        let read = read_contract_wasm_hashes(&transport, NET, &addresses).unwrap();
+        assert_eq!(
+            read.network_id,
+            ozpb_domain::NetworkId::from_passphrase(NET)
+        );
+        assert_eq!(
+            read.reported_latest_ledger,
+            ozpb_domain::LedgerSeq(OBSERVED_LEDGER as u32)
+        );
+        assert_eq!(read.wasm_hashes.len(), 2);
+        for (index, address) in addresses.iter().enumerate() {
+            assert_eq!(
+                read.wasm_hashes[address],
+                ozpb_domain::Hash32([(index + 1) as u8; 32])
+            );
+        }
+        assert_eq!(
+            *transport.calls.borrow(),
+            vec!["getNetwork", "getLedgerEntries"],
+            "all code identities must come from one bounded RPC read"
+        );
+    }
+
+    #[test]
+    fn contract_code_read_refuses_missing_duplicate_and_unrequested_entries() {
+        let missing = code_read_transport(|mut entries| {
+            entries.pop();
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&missing, NET, &code_read_addresses()),
+            Err(RpcError::CodeRead(message)) if message.contains("omitted 1")
+        ));
+
+        let duplicate = code_read_transport(|mut entries| {
+            entries.push(entries[0].clone());
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&duplicate, NET, &code_read_addresses()),
+            Err(RpcError::Malformed(message)) if message.contains("duplicate key")
+        ));
+
+        let unrequested = code_read_transport(|mut entries| {
+            // A valid third contract-instance key, not malformed base64.
+            entries[0]["key"] = json!(code_read_key(99));
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&unrequested, NET, &code_read_addresses()),
+            Err(RpcError::Malformed(message)) if message.contains("unrequested key")
+        ));
+    }
+
+    #[test]
+    fn contract_code_read_refuses_mismatched_payload_and_ttl_metadata() {
+        let wrong_payload = code_read_transport(|mut entries| {
+            let other = entries[1]["xdr"].clone();
+            entries[0]["xdr"] = other;
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&wrong_payload, NET, &code_read_addresses()),
+            Err(RpcError::Malformed(message)) if message.contains("does not match its requested contract instance")
+        ));
+
+        let missing_ttl = code_read_transport(|mut entries| {
+            entries[0]
+                .as_object_mut()
+                .unwrap()
+                .remove("liveUntilLedgerSeq");
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&missing_ttl, NET, &code_read_addresses()),
+            Err(RpcError::Malformed(message)) if message.contains("no integer liveUntilLedgerSeq")
+        ));
+
+        let archived = code_read_transport(|mut entries| {
+            entries[0]["liveUntilLedgerSeq"] = json!(OBSERVED_LEDGER - 1);
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&archived, NET, &code_read_addresses()),
+            Err(RpcError::CodeRead(message)) if message.contains("not live at reported ledger")
+        ));
+
+        let future_write = code_read_transport(|mut entries| {
+            entries[0]["lastModifiedLedgerSeq"] = json!(OBSERVED_LEDGER + 1);
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&future_write, NET, &code_read_addresses()),
+            Err(RpcError::Malformed(message)) if message.contains("after the observed ledger")
+        ));
+
+        let asset = code_read_transport(|mut entries| {
+            let encoded = entries[0]["xdr"].as_str().unwrap();
+            let LedgerEntryData::ContractData(mut data) =
+                LedgerEntryData::from_xdr_base64(encoded, Limits::none()).unwrap()
+            else {
+                panic!("expected contract data");
+            };
+            data.val = ScVal::ContractInstance(ScContractInstance {
+                executable: ContractExecutable::StellarAsset,
+                storage: None,
+            });
+            entries[0]["xdr"] = json!(LedgerEntryData::ContractData(data)
+                .to_xdr_base64(Limits::none())
+                .unwrap());
+            entries
+        });
+        assert!(matches!(
+            read_contract_wasm_hashes(&asset, NET, &code_read_addresses()),
+            Err(RpcError::CodeRead(message)) if message.contains("does not run a Wasm executable")
+        ));
+    }
+
+    #[test]
+    fn contract_code_read_checks_network_and_single_request_budget() {
+        let transport = code_read_transport(|entries| entries);
+        let duplicate = vec![code_read_addresses()[0].clone(); 2];
+        assert!(read_contract_wasm_hashes(&transport, NET, &duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate"));
+        assert!(transport.calls.borrow().is_empty());
+
+        let too_many: Vec<String> = (0..=MAX_LEDGER_ENTRY_KEYS)
+            .map(|index| format!("{}", stellar_strkey::Contract([index as u8; 32])))
+            .collect();
+        assert!(read_contract_wasm_hashes(&transport, NET, &too_many)
+            .unwrap_err()
+            .to_string()
+            .contains("1..=200"));
+        assert!(transport.calls.borrow().is_empty());
+
+        let wrong_network = CodeReadTransport {
+            mutate: |entries| entries,
+            network_response: json!({"passphrase": "another network", "protocolVersion": MAX_SUPPORTED_PROTOCOL}),
+            calls: RefCell::new(Vec::new()),
+        };
+        assert!(matches!(
+            read_contract_wasm_hashes(&wrong_network, NET, &code_read_addresses()),
+            Err(RpcError::NetworkMismatch { .. })
+        ));
+        assert_eq!(*wrong_network.calls.borrow(), vec!["getNetwork"]);
     }
 
     /// Serves a valid transaction and a `getLedgerEntries` response built for the keys actually
