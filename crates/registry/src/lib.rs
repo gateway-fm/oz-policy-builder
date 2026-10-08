@@ -936,6 +936,8 @@ pub mod dev {
         Ok((snapshot_json, roots_json))
     }
 
+    /// Public half of [`dev_signing_key`]: development-only, because anyone can sign with
+    /// it. The operator account reader in `ozpb-source-rpc` refuses it outside testnet.
     pub fn dev_root_verifying_bytes() -> [u8; 32] {
         dev_signing_key().verifying_key().to_bytes()
     }

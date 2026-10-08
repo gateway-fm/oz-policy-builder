@@ -8,8 +8,9 @@ and transitive effects come from source review, not from export names.
 
 The signed version-2 development example commits to the exact reviewed method-table digest
 and bounded scan protocol for this account Wasm hash. It extends the original example root;
-its signing key is public development material, not production governance. The registry
-resolver checks the code-capability binding, but has no authority-verdict consumer. It does not
+its signing key is public development material, not production governance, and the
+operator account reader accepts that root only for testnet. The registry resolver checks the
+code-capability binding, but has no authority-verdict consumer. It does not
 establish the current rule set, administrator identity, policy-call effects, or a coherent ledger
 snapshot. A trusted reader and complete method-level analysis remain necessary before a live
 `Safe` authority verdict can be offered (§§4.8 and 4.10 of `architecture.md`).

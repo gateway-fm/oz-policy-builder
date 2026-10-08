@@ -46,7 +46,8 @@ The source-reviewed account method inventory and its limits are described in
    The signed version-2 development registry example binds the reviewed method-map digest and
    bounded scan protocol to the exact pinned account Wasm. Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
-   authority evidence.
+   authority evidence. The operator reader below refuses that root unless its pinned network
+   is testnet.
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,

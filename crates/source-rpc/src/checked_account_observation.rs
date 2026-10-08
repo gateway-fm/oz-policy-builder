@@ -14,9 +14,9 @@ use super::{
     RpcTransport, SignerIdentity,
 };
 use ozpb_call_surface_core::BoundPolicy;
-use ozpb_domain::{Hash32, NetworkId};
+use ozpb_domain::{Hash32, NetworkId, TESTNET_PASSPHRASE};
 use ozpb_registry::{
-    account_methods::AccountMethodInventory, Registry, RegistryCheckpoint, RegistryError,
+    account_methods::AccountMethodInventory, dev, Registry, RegistryCheckpoint, RegistryError,
     RootPolicy, SignedSnapshot,
 };
 use std::collections::BTreeSet;
@@ -79,6 +79,21 @@ impl OperatorAccountSource {
             return Err(CheckedAccountObservationError::Identity(
                 "operator source name and network passphrase must be nonempty",
             ));
+        }
+        // Anyone can recompute the development root's private key from its published seed, so
+        // a snapshot it signs carries no review authority. Only the testnet example may use it.
+        let development_root = dev::dev_root_verifying_bytes();
+        if config.network_passphrase != TESTNET_PASSPHRASE
+            && config
+                .registry_roots
+                .keys
+                .values()
+                .any(|key| *key == development_root)
+        {
+            return Err(RegistryError::RootPolicy(
+                "the public development registry root is accepted only on testnet".into(),
+            )
+            .into());
         }
         // Validate the signed snapshot and durable checkpoint before constructing a source.
         let _ = verified_registry(&config, unix_now()?)?;
@@ -281,10 +296,10 @@ fn check_scan(
 mod tests {
     use super::*;
     use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerRecord};
-    use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq};
+    use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq, MAINNET_PASSPHRASE};
     use ozpb_registry::{
-        account_methods, dev, sign_snapshot, snapshot_root, AccountArchivePolicy,
-        AccountSnapshotPolicy, BoundedNextIdCapability, RegistrySnapshot,
+        account_methods, sign_snapshot, snapshot_root, AccountArchivePolicy, AccountSnapshotPolicy,
+        BoundedNextIdCapability, RegistrySnapshot,
     };
     use std::collections::BTreeMap;
     use stellar_xdr::{
@@ -599,6 +614,36 @@ mod tests {
                 RegistryError::Expired { .. }
             ))
         ));
+    }
+
+    /// The development root's seed is public, so a snapshot it signs proves nothing about who
+    /// reviewed it. It may configure the reproducible testnet example and nothing else.
+    #[test]
+    fn public_development_root_is_refused_outside_testnet() {
+        let mainnet = || {
+            let mut config = config(signed_snapshot_with(|snapshot| {
+                snapshot.network_id = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
+            }));
+            config.network_passphrase = MAINNET_PASSPHRASE.into();
+            config
+        };
+        // The signature, network, and checkpoint are all consistent; only the root is wrong.
+        assert!(verified_registry(&mainnet(), NOW).is_ok());
+        assert!(matches!(
+            OperatorAccountSource::new(mainnet()),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::RootPolicy(_)
+            ))
+        ));
+
+        let mut also_governed = mainnet();
+        also_governed
+            .registry_roots
+            .keys
+            .insert("governance".into(), [3; 32]);
+        assert!(OperatorAccountSource::new(also_governed).is_err());
+
+        assert!(OperatorAccountSource::new(config(signed_snapshot())).is_ok());
     }
 
     #[test]
