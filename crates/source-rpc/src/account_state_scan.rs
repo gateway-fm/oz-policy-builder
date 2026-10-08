@@ -16,10 +16,17 @@ use super::{
     account_storage::{AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerRecord},
     contract_code::read_contract_wasm_hashes_with_witnesses,
     ledger_witness::{ordered_ledger_witness_digest, LedgerWitness},
-    RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
+    RpcError, RpcTransport, MAX_HTTP_RESPONSE_BYTES, MAX_LEDGER_ENTRY_KEYS,
 };
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Key and entry XDR bytes one attempt may retain for its digest. Each response is bounded
+/// on its own, but up to 128 batches could otherwise accumulate gigabytes. One maximal
+/// response's worth leaves room above the pinned schema's largest entries, about 11 MiB
+/// for 10,000 rules and 10,000 signer or policy entries; large policy instances can still
+/// exceed it, and the scan then fails closed as a budget error.
+const MAX_SCAN_WITNESS_BYTES: usize = MAX_HTTP_RESPONSE_BYTES;
 
 /// Operational ceilings for one inspection. Registry-backed verified mode would need
 /// signed, release-specific bounds; caller-chosen bounds here grant no authority.
@@ -226,7 +233,9 @@ fn scan_once<T: RpcTransport>(
         bounds,
     )?;
     let ledger = first.rpc_reported_latest_ledger;
-    let mut witnesses = first.witnesses.clone();
+    let mut witnesses = BTreeMap::new();
+    let mut witness_bytes = 0;
+    merge_witnesses(&mut witnesses, &mut witness_bytes, first.witnesses.clone())?;
     let status = first
         .entries
         .get(&AccountEntryKey::Instance)
@@ -276,7 +285,7 @@ fn scan_once<T: RpcTransport>(
             bounds,
         )?;
         same_ledger(ledger, page.rpc_reported_latest_ledger)?;
-        merge_witnesses(&mut witnesses, page.witnesses)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, page.witnesses)?;
         for (&key, status) in &page.entries {
             let AccountEntryKey::Rule(id) = key else {
                 return Err(AccountScanError::Incomplete("unexpected rule key".into()));
@@ -319,7 +328,7 @@ fn scan_once<T: RpcTransport>(
             bounds,
         )?;
         same_ledger(ledger, page.rpc_reported_latest_ledger)?;
-        merge_witnesses(&mut witnesses, page.witnesses)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, page.witnesses)?;
         for (&key, status) in &page.entries {
             let entry = match status {
                 AccountEntryStatus::Present { entry, .. } => entry,
@@ -381,7 +390,7 @@ fn scan_once<T: RpcTransport>(
                     other => AccountScanError::Rpc(other),
                 })?;
         same_ledger(ledger, read.reported_latest_ledger)?;
-        merge_witnesses(&mut witnesses, code_witnesses)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, code_witnesses)?;
         observed_code_hashes.extend(read.wasm_hashes);
     }
     if observed_code_hashes
@@ -428,13 +437,30 @@ fn scan_once<T: RpcTransport>(
     })
 }
 
+/// Add a page's witnesses, refusing a changed re-read of a key and counting each newly
+/// retained key and payload against [`MAX_SCAN_WITNESS_BYTES`].
 fn merge_witnesses(
     all: &mut BTreeMap<Vec<u8>, LedgerWitness>,
+    retained_bytes: &mut usize,
     next: BTreeMap<Vec<u8>, LedgerWitness>,
 ) -> Result<(), AccountScanError> {
     for (key, value) in next {
-        if all.get(&key).is_some_and(|previous| *previous != value) {
-            return Err(AccountScanError::SnapshotChanged);
+        match all.get(&key) {
+            Some(previous) if *previous != value => return Err(AccountScanError::SnapshotChanged),
+            Some(_) => continue,
+            None => {}
+        }
+        let payload = match &value {
+            LedgerWitness::Absent => 0,
+            LedgerWitness::Present { entry_data_xdr, .. } => entry_data_xdr.len(),
+        };
+        *retained_bytes = retained_bytes
+            .saturating_add(key.len())
+            .saturating_add(payload);
+        if *retained_bytes > MAX_SCAN_WITNESS_BYTES {
+            return Err(AccountScanError::Budget(
+                "retained entry bytes exceed bound",
+            ));
         }
         all.insert(key, value);
     }
@@ -509,7 +535,8 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use stellar_xdr::{
         ContractDataEntry, ContractExecutable, ContractId, ExtensionPoint, Hash, LedgerEntryData,
-        LedgerKey, ReadXdr, ScAddress, ScContractInstance, ScMapEntry, ScString, ScVal, WriteXdr,
+        LedgerKey, ReadXdr, ScAddress, ScBytes, ScContractInstance, ScMapEntry, ScString, ScVal,
+        WriteXdr,
     };
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
@@ -945,6 +972,56 @@ mod tests {
             ))
         ));
         assert_eq!(code.calls.get(), 3);
+    }
+
+    #[test]
+    fn retained_entry_bytes_are_bounded_across_batches() {
+        // Each candidate instance is well inside the per-value XDR bound and the targets fit
+        // one code-read batch; together they exceed what one scan may retain.
+        const PAYLOAD: usize = 400 * 1024;
+        let count = MAX_SCAN_WITNESS_BYTES / PAYLOAD + 1;
+        let first = 100;
+        let large = mock();
+        for index in 0..count {
+            let byte = first + u8::try_from(index).unwrap();
+            let storage = vec![ScMapEntry {
+                key: symbol("blob"),
+                val: ScVal::Bytes(ScBytes(vec![byte; PAYLOAD].try_into().unwrap())),
+            }];
+            large.values.borrow_mut().insert(
+                encoded(byte, AccountEntryKey::Instance),
+                (
+                    ScVal::ContractInstance(ScContractInstance {
+                        executable: ContractExecutable::Wasm(Hash([3; 32])),
+                        storage: Some(storage.try_into().unwrap()),
+                    }),
+                    20,
+                ),
+            );
+        }
+        let targets = (0..count)
+            .map(|index| address(first + u8::try_from(index).unwrap()))
+            .collect::<Vec<_>>();
+        let result = scan_account_state_with_targets(
+            &large,
+            NETWORK,
+            &address(7),
+            &targets,
+            AccountScanBounds {
+                max_attempts: 1,
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(AccountScanError::Budget(
+                    "retained entry bytes exceed bound"
+                ))
+            ),
+            "{result:?}"
+        );
+        assert_eq!(large.calls.get(), 4);
     }
 
     #[test]
