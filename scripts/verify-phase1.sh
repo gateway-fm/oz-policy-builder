@@ -38,6 +38,7 @@ echo "== 1b. publication, build-input and quoted-hash invariants =="
 bash scripts/check-publication-allowlist.sh
 bash scripts/check-build-input-pins.sh
 python3 scripts/check-quoted-hashes.py
+python3 scripts/test-check-wasm-exports.py
 
 # clippy also carries the hash-determinism gate: `clippy.toml` disallows `HashMap`/`HashSet`
 # (per-process iteration order) and floats (no faithful JSON form, absent from `ScVal`) so the

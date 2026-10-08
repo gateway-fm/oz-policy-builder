@@ -6,6 +6,9 @@ what was left out on purpose from what was overlooked.
 
 Section numbers refer to `docs/architecture.md`.
 
+The source-reviewed account method inventory and its limits are described in
+[`ACCOUNT-METHOD-INVENTORY.md`](ACCOUNT-METHOD-INVENTORY.md).
+
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
    reconciliation and transitive closure). The largest remaining gap to RFP #7:
    `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
@@ -25,6 +28,13 @@ Section numbers refer to `docs/architecture.md`.
    The RPC's reported ledger sequence is endpoint metadata, not proof of a coherent account-state
    snapshot. These pieces do not derive the complete rule set, resolve the history of omitted keys, or
    identify the administrator. Live endpoint behavior needs separate verification.
+
+   The toolkit has an internal install-intent draft that checks a spec, binding set, and
+   supplied authority artifact for identity and structural consistency, then derives typed
+   account arguments. It cannot authenticate the supplied `Safe` claim, prove a complete
+   exported-method inventory or transitive ledger reads, or establish freshness. It is not
+   exported through the CLI or MCP server; a trusted reader and complete method-level evidence
+   are required before that operation can be offered for wallet review.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
