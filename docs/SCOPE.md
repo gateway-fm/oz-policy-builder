@@ -74,9 +74,17 @@ The source-reviewed account method inventory and its limits are described in
    demonstrates that overlapping counted grants have independent rule-ID counters and can exceed
    one installation's cap in aggregate. Its rule setup uses mocked management authorization; it
    does not establish a safe reconfiguration flow, disposable target execution, or live preflight.
-   An internal reader can check a target instance against fetched Wasm bytes, but it does not
-   capture the target's storage or execute a disposable invocation. Its instance and code reads
-   carry separate endpoint-reported ledgers and are not an atomic snapshot.
+   An internal reader can check a target instance against fetched Wasm bytes. A separate
+   selected-key capture can acquire that instance, its matching code, and caller-specified
+   target storage keys in one final `getLedgerEntries` response, rejecting missing, archived,
+   or inconsistent entries. Its preliminary discovery reads carry separate endpoint-reported
+   ledgers; the final response is endpoint-reported evidence, not a historical snapshot. The
+   caller-selected keys do not establish all state an invocation can read. A narrow test runs
+   a small target Wasm fixture through `Env::from_ledger_snapshot` with these captured entries
+   and SDK test ledger defaults; a strict source rejects an uncaptured storage read. The RPC
+   capture does not supply a full ledger header or network configuration. The test does not
+   reconstruct the original call, authorize through the account and policy, or demonstrate a
+   stateful mutation suite.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
@@ -88,5 +96,6 @@ The source-reviewed account method inventory and its limits are described in
    the same transaction will succeed at a later ledger, or that any writes committed. The
    caller must supply signed authorization entries in the envelope where the invocation needs
    them. The source adapter does not return raw RPC error details that could echo confidential
-   envelope contents. Disposable execution against a complete, coherent captured target-state
-   fixture and a full policy-bound live preflight remain scheduled.
+   envelope contents. Disposable execution against a complete captured target-state fixture,
+   with an explicit ledger context and policy-bound authorization, and a full policy-bound live
+   preflight remain scheduled.
