@@ -3,6 +3,50 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The caller's transaction envelope, including any intended authorization entries,
+/// simulated with authorization enforced by the RPC endpoint.
+/// The envelope is the exact transaction being tested. `rpc_url` is subject to the
+/// server's operator allowlist in hosted mode; a local CLI or stdio server uses the
+/// caller's chosen endpoint. Simulation does not submit the transaction.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreflightTransactionInput {
+    pub rpc_url: String,
+    pub network_passphrase: String,
+    pub envelope_xdr_base64: String,
+}
+
+/// One RPC-reported simulation of the exact envelope. `simulated_success` means that
+/// this transaction simulated successfully at the reported ledger with authorization
+/// enforcement; it does not identify which policy was selected, predict a later ledger,
+/// or say that any writes were committed. A restoration preamble is reported separately.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreflightTransactionOutput {
+    /// SHA-256 of canonical envelope XDR bytes, not a transaction hash.
+    pub envelope_xdr_sha256: String,
+    pub network_id: String,
+    /// Ledger sequence as reported by the selected RPC endpoint.
+    pub reported_ledger: u32,
+    pub outcome: PreflightTransactionOutcome,
+    /// `enforce`, as opposed to recording authorization without enforcing it.
+    pub auth_mode: String,
+    /// `rpc_reported`; the endpoint supplies the simulation result.
+    pub evidence_trust: String,
+    /// Always true for a live RPC simulation.
+    pub state_dependent: bool,
+    /// Always false for a simulation.
+    pub writes_committed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightTransactionOutcome {
+    SimulatedSuccess,
+    SimulationFailed,
+    RestorationRequired,
+}
+
 /// Require a nullable wire field to be present: omission must not deserialize as an
 /// explicit `null` value. `#[schemars(required)]` keeps the JSON Schema aligned.
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -480,6 +524,10 @@ mod tests {
     #[test]
     fn the_wire_contract_carries_no_build_configuration() {
         for (dto, schema) in [
+            (
+                "PreflightTransactionInput",
+                schemars::schema_for!(PreflightTransactionInput),
+            ),
             ("VerifyInput", schemars::schema_for!(VerifyInput)),
             (
                 "CheckAgainstPolicyInput",
@@ -496,6 +544,9 @@ mod tests {
 
     #[test]
     fn every_policy_operations_dto_has_a_schema() {
+        let _ = schemars::schema_for!(PreflightTransactionInput);
+        let _ = schemars::schema_for!(PreflightTransactionOutput);
+        let _ = schemars::schema_for!(PreflightTransactionOutcome);
         let _ = schemars::schema_for!(ReferenceSuiteInput);
         let _ = schemars::schema_for!(ReferenceSuiteOutput);
         let _ = schemars::schema_for!(VerifyInput);
@@ -526,6 +577,27 @@ mod tests {
         let _ = schemars::schema_for!(InstallSigner);
         let _ = schemars::schema_for!(InstallPolicy);
         let _ = schemars::schema_for!(InstallPolicyParams);
+    }
+
+    #[test]
+    fn preflight_request_requires_the_exact_envelope_and_network() {
+        let input = serde_json::json!({
+            "rpc_url": "https://rpc.example",
+            "network_passphrase": "Test SDF Network ; September 2015",
+            "envelope_xdr_base64": "AAAA"
+        });
+        assert!(serde_json::from_value::<PreflightTransactionInput>(input.clone()).is_ok());
+        for field in ["rpc_url", "network_passphrase", "envelope_xdr_base64"] {
+            let mut absent = input.clone();
+            absent.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<PreflightTransactionInput>(absent).is_err(),
+                "missing {field} must fail"
+            );
+        }
+        let mut extra = input;
+        extra["auth_mode"] = serde_json::json!("record");
+        assert!(serde_json::from_value::<PreflightTransactionInput>(extra).is_err());
     }
 
     #[test]

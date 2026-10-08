@@ -66,7 +66,8 @@ hash and no signature.
 **Going further than one command is better done with the skill.** The flow needs decisions
 only you can make — how long the grant lives, a call cap, a spend limit, which signer.
 The skill asks for them and guides the available record, synthesize, reference, generate,
-and verify tools. It stops before deployment or installation (§4.7).
+and verify tools, with optional exact-envelope preflight. It stops before deployment or
+installation (§4.7).
 
 ### Two more things worth trying
 
@@ -81,15 +82,16 @@ Because they are what a reviewer will ask:
 ## 2. What each tool needs
 
 `evaluate_spec`, `reference_suite`, `synthesize_policy`, and `import_recording` run offline;
-network recording reads RPC, while generation and verification build Wasm. Knowing which is
-which saves a confusing failure.
+network recording and exact-envelope preflight read RPC, while generation and verification
+build Wasm. Knowing which is which saves a confusing failure.
 
 | Tool | Needs |
 |---|---|
 | `evaluate_spec` | nothing — pure and offline. The one to try first |
 | `import_recording` | nothing, but anything arriving this way is labelled `self_supplied`: a `trust` field in caller JSON is a claim, not a receipt |
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
-| `record_simulation` | the network, but no signature and no custody: it asks what an *unsigned* envelope would require. This is the path the demo script uses |
+| `record_simulation` | the network, but no signature and no custody: record mode asks what an *unsigned* envelope would require. This is the path the demo script uses |
+| `preflight_transaction` | the network and an exact envelope carrying its intended authorization entries; enforcement mode returns the endpoint-reported simulation outcome and ledger. It does not prove that a particular installed policy was selected, and writes are discarded |
 | `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap. Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
 | `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |

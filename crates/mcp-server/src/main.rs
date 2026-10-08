@@ -22,6 +22,7 @@ use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod preflight;
 mod verification;
 
 #[derive(Clone)]
@@ -91,7 +92,9 @@ impl PolicyBuilderServer {
         build_config: ozpb_toolkit::BuildConfig,
     ) -> Self {
         Self {
-            tool_router: Self::tool_router() + Self::verification_tool_router(),
+            tool_router: Self::tool_router()
+                + Self::verification_tool_router()
+                + Self::preflight_tool_router(),
             registry_trust,
             rpc_policy,
             build_config,

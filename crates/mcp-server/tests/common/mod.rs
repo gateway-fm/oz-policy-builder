@@ -23,6 +23,9 @@ pub const MVP_TOOLS: &[&str] = &[
 /// Layer-1 reference evidence and generated-artifact verification tools.
 pub const VERIFICATION_TOOLS: &[&str] = &["reference_suite", "verify"];
 
+/// Exact-envelope network simulation, separate from the complete dry-run.
+pub const PREFLIGHT_TOOLS: &[&str] = &["preflight_transaction"];
+
 /// Drive the server over stdio with a batch of newline-delimited JSON-RPC requests,
 /// close stdin (which ends the transport and exits the server), and return the parsed
 /// responses keyed by id.
