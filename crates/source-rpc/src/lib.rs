@@ -6,7 +6,9 @@
 //! transactions and record-mode simulations both come back as `rpc_reported` — trusted as far as the
 //! configured endpoint is. The transport is split from JSON handling so parsing can be
 //! tested offline. The HTTP transport is the default `http` feature; a caller that supplies
-//! its own [`RpcTransport`] can build without it and without the HTTP and TLS stack.
+//! its own [`RpcTransport`] can build without it and without the HTTP and TLS stack. The
+//! registry-checked operator account source reads through that transport, so it exists
+//! only with the feature.
 
 #![forbid(unsafe_code)]
 
@@ -15,6 +17,7 @@ mod account_reconciliation;
 mod account_state_projection;
 mod account_state_scan;
 mod account_storage;
+#[cfg(feature = "http")]
 mod checked_account_observation;
 mod contract_data;
 mod footprint_capture;
@@ -31,6 +34,7 @@ pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
 };
+#[cfg(feature = "http")]
 pub use checked_account_observation::{
     CheckedAccountObservation, CheckedAccountObservationError, OperatorAccountSource,
     OperatorAccountSourceConfig, ReviewedPolicyBinding,
