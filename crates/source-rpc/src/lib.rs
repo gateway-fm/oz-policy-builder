@@ -36,7 +36,7 @@ pub use checked_account_observation::{
 };
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 pub use footprint_capture::{
-    read_invocation_footprint, CapturedFootprintEntry, FootprintCaptureError,
+    read_invocation_footprint, CapturedFootprintEntry, CapturedInvocation, FootprintCaptureError,
     InvocationFootprintCapture,
 };
 pub use preflight::{preflight_transaction, PreflightObservation, PreflightOutcome};
