@@ -147,10 +147,11 @@ pub fn read_invocation_footprint<T: RpcTransport>(
                         )
                     })?
                     .to_string();
-                if function_name.is_empty()
-                    || !function_name
-                        .bytes()
-                        .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+                // The host symbol grammar: `[a-zA-Z0-9_]`, empty allowed. The XDR type already
+                // bounds the length at `SCSYMBOL_LIMIT`.
+                if !function_name
+                    .bytes()
+                    .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
                 {
                     return Err(FootprintCaptureError::InvalidFootprint(
                         "InvokeContract function name is not a valid symbol".to_string(),
@@ -610,6 +611,33 @@ mod tests {
             Err(FootprintCaptureError::InvalidFootprint(message)) if message.contains("valid symbol")
         ));
         assert!(rpc.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn captures_an_empty_function_name_the_sdk_can_reconstruct() {
+        // The host's symbol grammar admits the empty symbol, and `Symbol::new(env, "")` builds it,
+        // so the capture must carry it rather than refuse a representable invocation.
+        let (encoded, rpc) = fixture();
+        let mut envelope = TransactionEnvelope::from_xdr_base64(&encoded, xdr_limits()).unwrap();
+        let TransactionEnvelope::Tx(v1) = &mut envelope else {
+            panic!("ordinary transaction")
+        };
+        let mut operations: Vec<_> = v1.tx.operations.iter().cloned().collect();
+        let stellar_xdr::OperationBody::InvokeHostFunction(op) = &mut operations[0].body else {
+            panic!("invoke operation")
+        };
+        let stellar_xdr::HostFunction::InvokeContract(call) = &mut op.host_function else {
+            panic!("invoke contract")
+        };
+        call.function_name = Vec::new().try_into().unwrap();
+        v1.tx.operations = operations.try_into().unwrap();
+        let encoded = envelope.to_xdr_base64(xdr_limits()).unwrap();
+        let capture = read_invocation_footprint(&rpc, NETWORK, &encoded).unwrap();
+        let call = capture
+            .invocation
+            .as_ref()
+            .expect("fixture invokes a contract");
+        assert_eq!(call.function_name, "");
     }
 
     #[test]
