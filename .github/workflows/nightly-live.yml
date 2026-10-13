@@ -221,7 +221,8 @@ jobs:
 
       # A red job here has three plausible causes, in order of likelihood:
       #   1. our acquisition layer no longer matches what the RPC returns;
-      #   2. testnet moved protocol version ahead of the pinned stellar-xdr;
+      #   2. testnet moved to a protocol above this build's ceiling (`E_RPC: unsupported
+      #      protocol`; `MAX_SUPPORTED_PROTOCOL` in crates/source-rpc);
       #   3. the public endpoint is down, which is not our bug but still blocks the demo.
       # Whichever it is, the answer is to look before the next demo, not to disable the job.
 
