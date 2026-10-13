@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(*wrong_network.calls.borrow(), ["getNetwork"]);
 
         let mut newer_protocol = mock(json!({"latestLedger": 10, "entries": [entry(1)]}));
-        newer_protocol.network["protocolVersion"] = json!(29);
+        newer_protocol.network["protocolVersion"] = json!(crate::MAX_SUPPORTED_PROTOCOL + 1);
         let error = read(&newer_protocol, vec![key(1)]).unwrap_err();
         assert!(matches!(error, RpcError::UnsupportedProtocol { .. }));
         assert_eq!(*newer_protocol.calls.borrow(), ["getNetwork"]);
