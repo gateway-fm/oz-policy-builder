@@ -47,6 +47,9 @@ with open(dest, "w", encoding="utf-8") as file:
     json.dump(spec, file, separators=(",", ":"))
 PY
 
+# The generated crate builds offline from the committed generated-contract lockfile, so a
+# fresh machine (or CI runner) needs those exact dependencies in the cargo cache first.
+( cd contracts/golden-transfer-policy && cargo fetch --locked )
 cargo run --locked --quiet -p ozpb-cli -- generate \
     --spec "$work/signable-spec.json" --rule 0 --out "$work/generated-policy"
 
