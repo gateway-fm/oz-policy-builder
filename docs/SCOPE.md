@@ -106,7 +106,10 @@ The source-reviewed account method inventory and its limits are described in
    the generated policy's gate; it does not exercise a weaker alternate account rule.
    A separate Wasm gate (`scripts/test-pinned-account-authorization.sh`) builds the exact
    recognized account from pinned public source and a generated transfer policy with a fixed
-   test signer. It checks real delegated Ed25519 authorization through the account's complete
+   test signer. The account reproduces byte-for-byte only on an Apple Silicon build host
+   ([rust-lang/cargo#8140](https://github.com/rust-lang/cargo/issues/8140)); elsewhere it differs
+   only in function order and the gate fails, so the scheduled job runs on macOS arm64. It
+   checks real delegated Ed25519 authorization through the account's complete
    `__check_auth` path and rejects a changed payload. Entries that name the requested digest but
    carry a signature over another digest, a flipped signature bit, or another key are refused
    by account authentication, not invocation matching. It also commits counts across ledger
