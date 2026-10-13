@@ -3,8 +3,9 @@
 The registry has a source-reviewed candidate for the pinned OpenZeppelin multisig example's
 17 methods, including wrapper entrypoints outside the `SmartAccount` trait. An exact-hash
 copy of the pinned Wasm has 17 matching function exports. `scripts/verify-pinned-upstream.sh`
-reproduces that artifact and checks the names. The account authorization guards and direct
-and transitive effects come from source review, not from export names.
+reproduces that artifact, byte-for-byte on an Apple Silicon host only (see
+`docs/TRANCHE-1-VERIFICATION.md` §3), and checks the names. The account authorization guards
+and direct and transitive effects come from source review, not from export names.
 
 The signed version-2 development example commits to the exact reviewed method-table digest
 and bounded scan protocol for this account Wasm hash. It extends the original example root;
