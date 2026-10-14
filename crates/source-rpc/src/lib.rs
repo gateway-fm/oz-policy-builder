@@ -10,8 +10,18 @@
 
 mod account_entry_page;
 mod account_reconciliation;
+mod account_state_projection;
+mod account_state_scan;
 mod account_storage;
 mod contract_data;
+mod ledger_witness;
+pub use account_state_projection::{
+    project_account_state, AccountProjectionError, AccountStateProjection, AdminRuleCandidate,
+};
+pub use account_state_scan::{
+    scan_account_state, scan_account_state_with_targets, AccountScanBounds, AccountScanError,
+    AccountStateScan,
+};
 pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
     ContextType, InstanceCounters, PolicyRecord, SignerIdentity, SignerRecord,
@@ -127,6 +137,10 @@ pub enum RpcError {
     Evidence(String),
     #[error("E_RPC: contract code read: {0}")]
     CodeRead(String),
+    /// A returned account entry matched its requested key but does not decode against the
+    /// pinned storage schema. The account scanner reports it as incomplete account state.
+    #[error("E_RPC: undecodable account storage: {0}")]
+    UndecodableAccountStorage(String),
 }
 
 /// A minimal JSON-RPC transport. The real client uses HTTP; tests inject a canned

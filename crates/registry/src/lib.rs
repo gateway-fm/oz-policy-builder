@@ -89,7 +89,50 @@ pub struct AccountCapability {
     pub rule_enumeration: String,
     /// Release-specific management-ID evidence strategy (Decision D3).
     pub management_evidence: String,
+    /// Optional signed operational contract for bounded account-state reads. Older
+    /// snapshots remain parseable but cannot satisfy an authority-capability request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounded_next_id: Option<BoundedNextIdCapability>,
+    /// Signed commitment to the complete locally reviewed method map for this exact
+    /// account Wasm hash. The map itself is compiled from source review and checked by
+    /// `resolve_account_authority`; a hash claim alone grants no capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_inventory_digest: Option<Hash32>,
     pub review_reference: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundedNextIdCapability {
+    pub schema_version: u32,
+    pub max_scan_ids: u32,
+    pub max_rpc_batches: u32,
+    pub max_transitive_entries: u32,
+    pub max_attempts: u32,
+    pub archive_policy: AccountArchivePolicy,
+    pub snapshot_policy: AccountSnapshotPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountArchivePolicy {
+    RejectUnresolved,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountSnapshotPolicy {
+    /// Require matching endpoint ledger metadata across batches and a matching account
+    /// instance on a final read. The endpoint remains the trust boundary.
+    SameLedgerAndInstance,
+}
+
+/// Signed scan bounds and an exact-hash source-reviewed method table. This still says
+/// nothing about the live account's rule state or the wallet's intended administrator.
+#[derive(Clone, Debug)]
+pub struct ResolvedAccountAuthority {
+    pub scan: BoundedNextIdCapability,
+    pub methods: account_methods::AccountMethodInventory,
 }
 
 /// Registry value for management-rule identity backed by matching return and event IDs.
@@ -224,6 +267,15 @@ pub enum RegistryError {
     UnknownPolicy(String),
     #[error("E_INCOMPATIBLE_ACCOUNT: no recognized account entry for wasm hash {0}")]
     UnknownAccount(String),
+    #[error("E_INCOMPATIBLE_ACCOUNT: authority capability for account wasm {0} is incomplete or disagrees with the reviewed implementation")]
+    AccountAuthorityUnsupported(String),
+    /// The signed entry names a rule-enumeration strategy the account-state model cannot
+    /// execute (§4.8). Distinct from an incomplete capability: the entry may be accurate.
+    #[error(
+        "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED: account wasm {wasm_hash} declares rule \
+         enumeration '{method}'; this checker supports only bounded_next_id"
+    )]
+    AccountRuleEnumerationUnsupported { wasm_hash: String, method: String },
     #[error("E_UNREGISTERED_VERIFIER: no trusted verifier entry for wasm hash {0}")]
     UnknownVerifier(String),
     #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
@@ -640,6 +692,45 @@ impl Registry {
             .ok_or_else(|| RegistryError::UnknownAccount(wasm_hash.to_hex()))
     }
 
+    /// Resolve authority metadata only when the signed account entry commits to the
+    /// supported scan protocol and the exact source-reviewed method inventory. This
+    /// is a code-capability check, not an observation of account state.
+    pub fn resolve_account_authority(
+        &self,
+        wasm_hash: &Hash32,
+    ) -> Result<ResolvedAccountAuthority, RegistryError> {
+        let capability = self.resolve_account(wasm_hash)?;
+        let unsupported = || RegistryError::AccountAuthorityUnsupported(wasm_hash.to_hex());
+        if capability.rule_enumeration != "bounded_next_id" {
+            return Err(RegistryError::AccountRuleEnumerationUnsupported {
+                wasm_hash: wasm_hash.to_hex(),
+                method: capability.rule_enumeration.clone(),
+            });
+        }
+        let scan = capability.bounded_next_id.clone().ok_or_else(unsupported)?;
+        if scan.schema_version != 1
+            || !(1..=10_000).contains(&scan.max_scan_ids)
+            || !(1..=128).contains(&scan.max_rpc_batches)
+            || !(1..=10_000).contains(&scan.max_transitive_entries)
+            || !(1..=3).contains(&scan.max_attempts)
+        {
+            return Err(unsupported());
+        }
+        let claimed = capability.method_inventory_digest.ok_or_else(unsupported)?;
+        // The compiled table was reviewed for one exact build. A signed entry under any
+        // other hash cannot borrow it, even when it commits to the same digest.
+        if *wasm_hash != pinned_upstream::OZ_SMART_ACCOUNT_WASM {
+            return Err(unsupported());
+        }
+        let methods = account_methods::source_reviewed_oz_multisig_candidate();
+        let actual = ozpb_domain::canonical_hash(domains::ACCOUNT_METHOD_INVENTORY, &methods)
+            .map_err(|error| RegistryError::Internal(error.to_string()))?;
+        if actual != claimed {
+            return Err(unsupported());
+        }
+        Ok(ResolvedAccountAuthority { scan, methods })
+    }
+
     pub fn resolve_verifier(
         &self,
         wasm_hash: &Hash32,
@@ -887,6 +978,8 @@ pub mod dev {
                 rule_enumeration: "bounded_next_id".to_string(),
                 management_evidence:
                     MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE.to_string(),
+                bounded_next_id: None,
+                method_inventory_digest: None,
                 review_reference: "OpenZeppelin/stellar-contracts examples/multisig-smart-account/account @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
                     .to_string(),
             },
@@ -1033,6 +1126,205 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::with_pinned_root(&dev::dev_root_verifying_bytes()).unwrap()
+    }
+
+    fn pinned_test_registry() -> Registry {
+        Registry::with_pinned_roots_for_network_at_version(
+            RootPolicy {
+                threshold: 1,
+                keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+            },
+            network(),
+            1,
+        )
+        .unwrap()
+    }
+
+    fn signed_authority_snapshot() -> SignedSnapshot {
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        let account = snapshot
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap();
+        account.bounded_next_id = Some(BoundedNextIdCapability {
+            schema_version: 1,
+            max_scan_ids: 1_000,
+            max_rpc_batches: 16,
+            max_transitive_entries: 1_000,
+            max_attempts: 2,
+            archive_policy: AccountArchivePolicy::RejectUnresolved,
+            snapshot_policy: AccountSnapshotPolicy::SameLedgerAndInstance,
+        });
+        let methods = account_methods::source_reviewed_oz_multisig_candidate();
+        account.method_inventory_digest =
+            Some(ozpb_domain::canonical_hash(domains::ACCOUNT_METHOD_INVENTORY, &methods).unwrap());
+        sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
+    }
+
+    #[test]
+    fn signed_account_authority_requires_exact_method_and_scan_bindings() {
+        let legacy: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        let mut registry = pinned_test_registry();
+        registry.load_at(&legacy, 100).unwrap();
+        assert!(matches!(
+            registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
+
+        let signed = signed_authority_snapshot();
+        let mut registry = pinned_test_registry();
+        registry.load_at(&signed, 100).unwrap();
+        let resolved = registry
+            .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
+            .unwrap();
+        assert_eq!(resolved.methods.methods.len(), 17);
+        assert_eq!(resolved.scan.max_scan_ids, 1_000);
+        assert!(matches!(
+            registry.resolve_account_authority(&Hash32([99; 32])),
+            Err(RegistryError::UnknownAccount(_))
+        ));
+
+        let mut tampered = signed.clone();
+        tampered
+            .snapshot
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap()
+            .method_inventory_digest = Some(Hash32([0; 32]));
+        assert_eq!(
+            pinned_test_registry().load_at(&tampered, 100),
+            Err(RegistryError::Signature)
+        );
+
+        let mut tampered = signed.clone();
+        tampered
+            .snapshot
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap()
+            .bounded_next_id
+            .as_mut()
+            .unwrap()
+            .max_scan_ids = 9_999;
+        assert_eq!(
+            pinned_test_registry().load_at(&tampered, 100),
+            Err(RegistryError::Signature)
+        );
+
+        let mut wrong = signed.snapshot.clone();
+        wrong
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap()
+            .method_inventory_digest = Some(Hash32([0; 32]));
+        let signed_wrong = sign_snapshot(&dev::dev_signing_key(), wrong).unwrap();
+        let mut registry = pinned_test_registry();
+        registry.load_at(&signed_wrong, 100).unwrap();
+        assert!(matches!(
+            registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
+
+        let mut wrong_bounds = signed.snapshot.clone();
+        wrong_bounds
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap()
+            .bounded_next_id
+            .as_mut()
+            .unwrap()
+            .max_scan_ids = 10_001;
+        let signed_wrong_bounds = sign_snapshot(&dev::dev_signing_key(), wrong_bounds).unwrap();
+        let mut registry = pinned_test_registry();
+        registry.load_at(&signed_wrong_bounds, 100).unwrap();
+        assert!(matches!(
+            registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
+
+        // Each entry below is governance-signed, so only the resolver's own checks can
+        // refuse it. The unedited copy under the pinned hash is the passing control.
+        let resolve_signed = |hash: Hash32, edit: &dyn Fn(&mut AccountCapability)| {
+            let mut snapshot = signed.snapshot.clone();
+            let mut entry =
+                snapshot.accounts[&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex()].clone();
+            edit(&mut entry);
+            snapshot.accounts.insert(hash.to_hex(), entry);
+            let mut registry = pinned_test_registry();
+            registry
+                .load_at(
+                    &sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap(),
+                    100,
+                )
+                .unwrap();
+            registry.resolve_account_authority(&hash)
+        };
+        let pinned = pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+        assert!(resolve_signed(pinned, &|_| {}).is_ok());
+        // The method table was reviewed for one build. Another registered hash with the
+        // same signed fields and digest has no reviewed methods of its own.
+        assert!(matches!(
+            resolve_signed(Hash32([98; 32]), &|_| {}),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
+        type Edit = fn(&mut AccountCapability);
+        let edits: [(&str, Edit); 8] = [
+            ("schema version 2", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().schema_version = 2
+            }),
+            ("zero scan IDs", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_scan_ids = 0
+            }),
+            ("zero attempts", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_attempts = 0
+            }),
+            ("four attempts", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_attempts = 4
+            }),
+            ("zero batches", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 0
+            }),
+            ("129 batches", |entry| {
+                entry.bounded_next_id.as_mut().unwrap().max_rpc_batches = 129
+            }),
+            ("zero transitive entries", |entry| {
+                entry
+                    .bounded_next_id
+                    .as_mut()
+                    .unwrap()
+                    .max_transitive_entries = 0
+            }),
+            ("10001 transitive entries", |entry| {
+                entry
+                    .bounded_next_id
+                    .as_mut()
+                    .unwrap()
+                    .max_transitive_entries = 10_001
+            }),
+        ];
+        for (case, edit) in edits {
+            assert!(
+                matches!(
+                    resolve_signed(pinned, &edit),
+                    Err(RegistryError::AccountAuthorityUnsupported(_))
+                ),
+                "{case}"
+            );
+        }
+        // §4.8: a strategy this checker does not implement has its own refusal, distinct
+        // from an incomplete or mismatched capability.
+        for method in ["onchain_list", "verified_event_index", "none"] {
+            assert!(
+                matches!(
+                    resolve_signed(pinned, &|entry| entry.rule_enumeration = method.into()),
+                    Err(RegistryError::AccountRuleEnumerationUnsupported { method: found, .. })
+                        if found == method
+                ),
+                "{method}"
+            );
+        }
     }
 
     #[test]
@@ -1643,6 +1935,8 @@ mod tests {
                             release: "collision".to_string(),
                             rule_enumeration: "none".to_string(),
                             management_evidence: "none".to_string(),
+                            bounded_next_id: None,
+                            method_inventory_digest: None,
                             review_reference: "collision".to_string(),
                         },
                     );

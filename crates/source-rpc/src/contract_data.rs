@@ -59,6 +59,18 @@ pub fn read_contract_data<T: RpcTransport>(
     contract_id: &str,
     key_xdr_base64: &[String],
 ) -> Result<ContractDataRead, RpcError> {
+    read_contract_data_with_payloads(transport, network_passphrase, contract_id, key_xdr_base64)
+        .map(|(read, _)| read)
+}
+
+/// Retain validated full entry payloads for the account scanner without changing the
+/// public raw-read result shape. Omitted keys have no payload.
+pub(crate) fn read_contract_data_with_payloads<T: RpcTransport>(
+    transport: &T,
+    network_passphrase: &str,
+    contract_id: &str,
+    key_xdr_base64: &[String],
+) -> Result<(ContractDataRead, BTreeMap<String, Vec<u8>>), RpcError> {
     if key_xdr_base64.is_empty() || key_xdr_base64.len() > MAX_LEDGER_ENTRY_KEYS {
         return Err(RpcError::InvalidRequest(format!(
             "contract-data read requires 1–{MAX_LEDGER_ENTRY_KEYS} keys"
@@ -128,7 +140,7 @@ fn parse_contract_data(
     result: &serde_json::Value,
     network_id: NetworkId,
     requested: BTreeMap<String, LedgerKeyContractData>,
-) -> Result<ContractDataRead, RpcError> {
+) -> Result<(ContractDataRead, BTreeMap<String, Vec<u8>>), RpcError> {
     let latest: u32 = result
         .get("latestLedger")
         .and_then(serde_json::Value::as_u64)
@@ -148,6 +160,7 @@ fn parse_contract_data(
         .keys()
         .map(|key| (key.clone(), ContractDataStatus::Absent))
         .collect::<BTreeMap<_, _>>();
+    let mut entry_payloads = BTreeMap::new();
     for (index, entry) in entries.iter().enumerate() {
         let key = entry
             .get("key")
@@ -191,6 +204,9 @@ fn parse_contract_data(
                 "getLedgerEntries entry {index} payload does not match its requested key"
             )));
         }
+        let payload_xdr = LedgerEntryData::ContractData(data.clone())
+            .to_xdr(xdr_limits())
+            .map_err(|error| RpcError::Malformed(format!("entry {index} payload XDR: {error}")))?;
         let last_modified = ledger_field(entry, index, "lastModifiedLedgerSeq")?;
         let live_until = ledger_field(entry, index, "liveUntilLedgerSeq")?;
         if last_modified > latest {
@@ -211,12 +227,16 @@ fn parse_contract_data(
             }
         };
         observed.insert(key.to_string(), status);
+        entry_payloads.insert(key.to_string(), payload_xdr);
     }
-    Ok(ContractDataRead {
-        network_id,
-        reported_latest_ledger: LedgerSeq(latest),
-        entries: observed,
-    })
+    Ok((
+        ContractDataRead {
+            network_id,
+            reported_latest_ledger: LedgerSeq(latest),
+            entries: observed,
+        },
+        entry_payloads,
+    ))
 }
 
 fn ledger_field(entry: &serde_json::Value, index: usize, field: &str) -> Result<u32, RpcError> {

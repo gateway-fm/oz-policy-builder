@@ -1,7 +1,8 @@
 # Canonical hashing
 
-Every hash this toolkit publishes is taken over an `ScVal` encoded as XDR. This document is the
-specification an independent implementation follows to reproduce one.
+Every hash this toolkit publishes is taken over an `ScVal` encoded as XDR, except the account
+ledger witness and the plain SHA-256 values, which have their own sections below. This document
+is the specification an independent implementation follows to reproduce one.
 
 It exists because a hash is only evidence if someone other than its author can recompute it. The
 previous scheme hashed `serde_json` output, whose byte layout was defined by nothing but this
@@ -56,6 +57,9 @@ two as separate and so does this.
 | `ozpb:v1:policy-binding-set` | a policy binding set |
 | `ozpb:v1:policy-check-request` | the complete typed `CheckAgainstPolicyInput` |
 | `ozpb:v1:account-state` | the enumerated account rule-set a verdict was computed over |
+| `ozpb:v1:account-ledger-witness` | the raw entries one account scan read; its own byte layout, below |
+| `ozpb:v1:account-method-inventory` | the source-reviewed method table for one exact account Wasm hash |
+| `ozpb:v1:account-admin-candidate` | one observed, structurally eligible management rule |
 | `ozpb:v1:generated-source` | a generated crate's source files, lockfile excluded |
 | `ozpb:v1:generated-crate-files` | a generated crate's complete emitted file set |
 | `ozpb:v1:surface-verdict` | reserved; the verdict is not hashed yet |
@@ -67,6 +71,31 @@ The policy-check request hash covers the deserialized input, including its speci
 set, signed registry snapshot, account and network identities, both rule selectors, configured RPC
 source, ordered candidate signers, and proposed invocation. The permit/deny evidence records this
 hash as `request_hash` so a consumer can compare it with the request it sent.
+
+The account method inventory hash covers `AccountMethodInventory`
+(`crates/registry/src/account_methods.rs`) by the ordinary rules. A signed account entry commits
+to it as `method_inventory_digest`; `reviewed_table_digest_is_a_known_answer` pins the value of
+the current reviewed table.
+
+The account admin-candidate fingerprint identifies one eligible management rule as a scan
+observed it. Its preimage is a named struct, so a `Map` keyed by these field `Symbol`s:
+
+```text
+network_id       String(lowercase hex of the 32-byte network ID)
+account_address  String(account C-strkey)
+rule_id          U32(rule ID)
+scope            Vec [ Symbol("default") ]  |  Vec [ Symbol("call_account") ]
+valid_until      Vec []  |  Vec [ U32(ledger) ]
+signer_entries   Vec [ Vec [ U32(signer ID), String(delegated G- or C-strkey) ], … ]  ascending by ID
+```
+
+`network_id` is a `NetworkId`, a newtype over `Hash32`, and `Hash32` serializes as its 64
+lowercase hex characters. A delegated signer is an account (G-) or contract (C-) address, written
+as its canonical strkey. `scope` is `default` for a `Default` rule and `call_account` for a
+`CallContract` rule naming the account itself. The rule's display name is not committed.
+`admin_fingerprint_is_the_documented_canonical_structure` in
+`crates/source-rpc/src/account_state_projection.rs` builds this `ScVal` by hand and pins two
+known answers.
 
 ## The encoding
 
@@ -154,6 +183,36 @@ schema admits addresses without one, and a hash that fails on input the schema a
 failure to a caller who then has to compare two `Result`s. A strkey is a checksummed canonical
 encoding of exactly one address, so carrying it as a string conflates nothing.
 
+## Account ledger witness
+
+`ozpb:v1:account-ledger-witness` is not an `ScVal` preimage. A scan's witness set holds the raw
+entry XDR of every rule, signer, policy, and contract instance it read, which can exceed
+`MAX_CANONICAL_PREIMAGE_BYTES` (4 MiB), so the digest is streamed over a length-delimited byte
+layout instead. The domain is an outer prefix ended by a zero byte, and the canonicalization
+version is not part of it; the `v1` in the domain is the only version this layout carries.
+
+```text
+SHA-256(
+    "ozpb:v1:account-ledger-witness" || 0x00
+ || network ID                        32 bytes
+ || account contract ID               32 bytes, parsed from the C-address
+ || reported ledger                   u32
+ || entry count                       u32
+ || for each entry, ascending by key bytes:
+        key length u32 || key                      canonical XDR LedgerKey
+     || 0x00                                       a requested key the endpoint omitted
+      | 0x01 || payload length u32 || payload      canonical XDR LedgerEntryData
+             || lastModifiedLedgerSeq u32 || liveUntilLedgerSeq u32
+)
+```
+
+Every integer is big-endian. A key read twice in one scan appears once and must carry identical
+bytes and metadata both times, or the scan fails; an archived entry never reaches the digest,
+because the scan refuses it first. The ledger is the endpoint's reported `latestLedger`, so the
+digest identifies the responses a scan used; it is not a ledger-state proof.
+`digest_is_the_documented_byte_layout` in `crates/source-rpc/src/ledger_witness.rs` pins a value
+recomputed from this layout outside the crate.
+
 ## Hashes that are deliberately not domain-separated
 
 Two values in a build manifest are plain SHA-256 over raw bytes.
@@ -167,6 +226,11 @@ nothing on chain.
 wrapping it would cost that affordance.
 
 ## Reproducing a hash
+
+These steps apply to the canonical `ScVal` hashes only. The account ledger witness follows its
+own byte layout above, and `wasm_hash` and `lockfile_hash` are plain SHA-256 over raw bytes.
+For the types under "Types that are built as `ScVal` directly", build the value as that section
+describes instead of steps 1–2, then wrap and hash it as in steps 3–4.
 
 1. Take the structure's JSON as this toolkit emits it.
 2. Map it to an `ScVal` by the table above, using the serialized field names.

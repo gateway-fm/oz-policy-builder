@@ -4,8 +4,9 @@
 //! constructor, authorization hook, batch signer helper, arbitrary execution entrypoint,
 //! and upgrade method. This source-reviewed candidate is associated with
 //! `OZ_SMART_ACCOUNT_WASM`. The export names match the exact pinned Wasm; guards and effects
-//! come from source review. This module is separate from the signed snapshot and cannot
-//! establish a complete management surface. No live account or rule state is inferred.
+//! come from source review. A signed snapshot can commit to this exact table's digest,
+//! but the table alone cannot establish a complete management surface. No live account
+//! or rule state is inferred.
 
 use ozpb_domain::{pinned_upstream, Hash32};
 use serde::{Deserialize, Serialize};
@@ -224,6 +225,21 @@ pub fn validate_source_reviewed_candidate(
 mod tests {
     use super::*;
     use ozpb_domain::sha256;
+
+    #[test]
+    fn reviewed_table_digest_is_a_known_answer() {
+        // Signed account entries commit to this value. A change to the reviewed table or
+        // to its canonical encoding must move it deliberately, with every such snapshot.
+        assert_eq!(
+            ozpb_domain::canonical_hash(
+                ozpb_domain::domains::ACCOUNT_METHOD_INVENTORY,
+                &source_reviewed_oz_multisig_candidate()
+            )
+            .unwrap()
+            .to_hex(),
+            "f92b2de15b78b73f316846f588daa313f730f7c061240e6a1bbd8568ebe8c5c7"
+        );
+    }
 
     #[test]
     fn wrapper_methods_and_transitive_calls_are_in_the_source_review() {
