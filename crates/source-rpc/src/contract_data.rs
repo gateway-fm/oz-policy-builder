@@ -129,10 +129,12 @@ pub(crate) fn read_contract_data_with_payloads<T: RpcTransport>(
     verify_network(transport, network_passphrase)?;
     let network_id = NetworkId::from_passphrase(network_passphrase);
     let keys: Vec<&String> = requested.keys().collect();
-    let result = transport.call(
-        "getLedgerEntries",
-        json!({ "keys": keys, "xdrFormat": "base64" }),
-    )?;
+    let result = transport
+        .call(
+            "getLedgerEntries",
+            json!({ "keys": keys, "xdrFormat": "base64" }),
+        )
+        .map_err(super::redact_ledger_request_error)?;
     parse_contract_data(&result, network_id, requested)
 }
 

@@ -233,9 +233,15 @@ Deliberately not part of `verify-phase1/2`: it clones and does a cold build of u
 workspace, which takes minutes. Run it when the pins change, when bumping the upstream tag, or
 when reviewing the trust anchors.
 
-Two things to know. **The hash depends on the compiler** — upstream's `rust-toolchain.toml`
+Three things to know. **The hash depends on the compiler** — upstream's `rust-toolchain.toml`
 says `channel = "stable"`, which floats, so the script forces this repository's pinned rustc;
 building with another one legitimately yields a different hash from identical source.
+**The account hash also depends on the build host** — it reproduces byte-for-byte only on Apple
+Silicon (`aarch64-apple-darwin`). Elsewhere the account Wasm differs only in function order,
+because Cargo hashes the build host into symbol names that rustc orders functions by
+([rust-lang/cargo#8140](https://github.com/rust-lang/cargo/issues/8140), fix pending in
+[rust-lang/cargo#17522](https://github.com/rust-lang/cargo/pull/17522)); the other two pins
+reproduce on every host tested.
 **Upstream publishes no wasm** — releases carry no assets and no deployed instance is blessed,
 so these are our reproducible builds of their source, and the registry entries say exactly
 that rather than claiming an upstream-signed artifact.

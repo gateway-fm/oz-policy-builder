@@ -13,7 +13,9 @@ use super::{
     account_reconciliation::{
         check_supplied_account_entries, ReconciliationBounds, ReconciliationError,
     },
-    account_storage::{AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerRecord},
+    account_storage::{
+        AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerIdentity, SignerRecord,
+    },
     contract_code::read_contract_wasm_hashes_with_witnesses,
     ledger_witness::{ordered_ledger_witness_digest, LedgerWitness},
     RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
@@ -70,8 +72,9 @@ pub struct AccountStateScan {
     pub rules: BTreeMap<u32, ContextRuleRecord>,
     pub signers: BTreeMap<u32, SignerRecord>,
     pub policies: BTreeMap<u32, PolicyRecord>,
-    /// Includes every installed policy and each extra contract requested by the caller.
-    /// Each instance was live when its individual response was read.
+    /// Includes every installed policy, every contract verifier named by an external
+    /// signer, and each extra contract requested by the caller. Each instance was live
+    /// when its individual response was read.
     pub observed_code_hashes: BTreeMap<String, Hash32>,
     /// SHA-256 over canonical XDR keys and values, TTL metadata, and requested absences.
     /// This identifies the validated entry payloads and ledger metadata used by the scan;
@@ -374,9 +377,18 @@ fn scan_once<T: RpcTransport>(
     for policy in policies.values() {
         addresses.insert(policy.address.clone());
     }
+    // A verifier decides which signatures an external signer accepts, so its code belongs
+    // to the account's authority closure. A non-contract verifier has no code to observe.
+    for signer in signers.values() {
+        if let SignerIdentity::External { verifier, .. } = &signer.signer {
+            if verifier.parse::<stellar_strkey::Contract>().is_ok() {
+                addresses.insert(verifier.clone());
+            }
+        }
+    }
     if addresses.len() > bounds.max_transitive_entries {
         return Err(AccountScanError::Budget(
-            "policy code closure exceeds bound",
+            "policy and verifier code closure exceeds bound",
         ));
     }
     let addresses = addresses.into_iter().collect::<Vec<_>>();
@@ -387,7 +399,7 @@ fn scan_once<T: RpcTransport>(
             read_contract_wasm_hashes_with_witnesses(transport, network_passphrase, chunk)
                 .map_err(|error| match error {
                     RpcError::CodeRead(detail) => AccountScanError::Incomplete(format!(
-                        "installed or candidate policy code is unavailable: {detail}"
+                        "installed policy, verifier, or candidate code is unavailable: {detail}"
                     )),
                     other => AccountScanError::Rpc(other),
                 })?;
@@ -970,7 +982,7 @@ mod tests {
                 bounds(1_000, 2)
             ),
             Err(AccountScanError::Budget(
-                "policy code closure exceeds bound"
+                "policy and verifier code closure exceeds bound"
             ))
         ));
         assert_eq!(code.calls.get(), 3);
@@ -1192,6 +1204,48 @@ mod tests {
         let scan = inspect(&mock).unwrap();
         assert_eq!(scan.policies.len(), 1);
         assert_eq!(scan.observed_code_hashes[&address(8)], Hash32([3; 32]));
+    }
+
+    #[test]
+    fn external_signer_verifier_code_is_observed_with_policy_code() {
+        let mock = mock();
+        mock.values.borrow_mut().insert(
+            encoded(7, AccountEntryKey::Signer(2)),
+            (
+                map(vec![
+                    ("count", ScVal::U32(1)),
+                    (
+                        "signer",
+                        vector(vec![
+                            symbol("External"),
+                            ScVal::Address(ScAddress::Contract(ContractId(Hash([5; 32])))),
+                            ScVal::Bytes(vec![1; 32].try_into().unwrap()),
+                        ]),
+                    ),
+                ]),
+                20,
+            ),
+        );
+        // A verifier decides which signatures the account accepts; without its code the
+        // scan cannot say what the signer is, so an omitted instance fails closed.
+        assert!(matches!(
+            inspect(&mock),
+            Err(AccountScanError::Incomplete(_))
+        ));
+
+        mock.values.borrow_mut().insert(
+            encoded(5, AccountEntryKey::Instance),
+            (
+                ScVal::ContractInstance(ScContractInstance {
+                    executable: ContractExecutable::Wasm(Hash([6; 32])),
+                    storage: None,
+                }),
+                20,
+            ),
+        );
+        let scan = inspect(&mock).unwrap();
+        assert_eq!(scan.observed_code_hashes[&address(5)], Hash32([6; 32]));
+        assert_eq!(scan.rpc_batches, 5);
     }
 
     #[test]

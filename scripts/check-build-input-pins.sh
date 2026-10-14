@@ -55,7 +55,7 @@ case "$PINNED_CLI" in
         echo "  $WORKFLOW  STELLAR_CLI_VERSION = $PINNED_CLI"
         echo "  crates/domain provenance                Stellar CLI = $RECORDED_CLI"
         echo "  a CLI bump changes every wasm hash, because cliver is inside the hashed bytes, so"
-        echo "  it means re-deriving the recorded hashes — and re-pinning STELLAR_CLI_SHA256 too"
+        echo "  it means re-deriving the recorded hashes — and re-pinning the STELLAR_CLI_SHA256* checksums too"
         fail=1
         ;;
 esac
