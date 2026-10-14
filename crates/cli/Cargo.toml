@@ -17,7 +17,7 @@ ozpb-registry = { workspace = true }
 ozpb-toolkit = { workspace = true }
 ozpb-api-types = { workspace = true }
 ozpb-recorder-core = { workspace = true }
-ozpb-source-rpc = { workspace = true }
+ozpb-source-rpc = { workspace = true, features = ["http"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,3 +26,11 @@ anyhow = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The shared RPC responder derives its simulation replies from the envelope under test.
+stellar-xdr = { workspace = true }
+
+[package.metadata.cargo-machete]
+# The shared preflight RPC responder, `tests/support/preflight_rpc.rs` at the repository root,
+# is compiled into this crate's tests through `#[path]`, outside the directory cargo-machete
+# scans. The MCP server's own unit tests use the crate directly, so it needs no entry.
+ignored = ["stellar-xdr"]

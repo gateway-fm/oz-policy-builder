@@ -1,9 +1,9 @@
 //! rmcp stdio MCP server (architecture §4.6, §4.11).
 //!
-//! A thin shell: every `#[tool]` is a wrapper over `ozpb_toolkit`, with types from
-//! `ozpb_api_types` so input/output JSON Schemas are generated from the same structs the
-//! core consumes. No domain logic lives here. Tools are stateless; annotations mark the
-//! read/pure/mutating nature per §4.6 (record_* touch the network; the rest are pure).
+//! A thin shell over `ozpb_toolkit` for policy operations and `ozpb_source_rpc` for
+//! network observations, with wire types from `ozpb_api_types`. Recording and exact-envelope
+//! preflight read the selected RPC endpoint; generation and verification may build Wasm.
+//! No domain logic or transaction submission lives here.
 //!
 //! Deployment and signing are deliberately NOT capabilities of this server.
 
@@ -22,6 +22,7 @@ use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod preflight;
 mod verification;
 
 #[derive(Clone)]
@@ -91,7 +92,9 @@ impl PolicyBuilderServer {
         build_config: ozpb_toolkit::BuildConfig,
     ) -> Self {
         Self {
-            tool_router: Self::tool_router() + Self::verification_tool_router(),
+            tool_router: Self::tool_router()
+                + Self::verification_tool_router()
+                + Self::preflight_tool_router(),
             registry_trust,
             rpc_policy,
             build_config,
@@ -131,6 +134,11 @@ fn rpc_tool_err(error: ozpb_source_rpc::RpcError) -> ToolError {
         ozpb_source_rpc::RpcError::NotFound(_) => ozpb_api_types::ErrorCode::ETxNotFound,
         ozpb_source_rpc::RpcError::NetworkMismatch { .. } => {
             ozpb_api_types::ErrorCode::ENetworkMismatch
+        }
+        ozpb_source_rpc::RpcError::EnvelopeTooLarge(_) => ozpb_api_types::ErrorCode::EResourceLimit,
+        ozpb_source_rpc::RpcError::EnvelopeParse(_) => ozpb_api_types::ErrorCode::EEnvelopeParse,
+        ozpb_source_rpc::RpcError::UnsupportedEnvelope(_) => {
+            ozpb_api_types::ErrorCode::EUnsupportedEnvelope
         }
         _ => ozpb_api_types::ErrorCode::ERpc,
     };
@@ -298,10 +306,14 @@ impl ServerHandler for PolicyBuilderServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "OZ Accounts Policy Builder. Record a Stellar transaction, synthesize a \
              minimum-permission OpenZeppelin smart-account policy, evaluate it, run the layer-1 \
-             reference suite, generate reviewable Rust, and verify generated artifacts offline. \
-             Deterministic and fail-closed: this server never \
-             deploys, signs, or holds keys — code-first, deploy-second. Widening a grant \
-             beyond exactly what was observed requires explicit user decisions.",
+             reference suite, generate reviewable Rust, verify generated artifacts offline, and \
+             optionally simulate one exact envelope with preflight_transaction. Pure tools are \
+             deterministic; record_transaction, record_simulation and preflight_transaction \
+             read Stellar RPC, and their results depend on ledger state. Fail-closed: this \
+             server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
+             Signed authorization entries given to preflight_transaction stay live \
+             authorizations until they expire. Widening a grant beyond exactly what was \
+             observed requires explicit user decisions.",
         )
     }
 }

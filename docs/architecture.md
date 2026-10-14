@@ -698,6 +698,7 @@ endpoint; API role + isolated sandbox-worker role, §3).
 |---|---|---|
 | `record_transaction` | network read | tx hash (+ network) → RecordingBundle (`rpc_reported`) |
 | `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`) |
+| `preflight_transaction` | network read, state-dependent; **confidential input**, and signed entries in it are live authorizations | exact envelope with its intended authorization entries → one RPC `authMode: enforce` simulation: outcome, endpoint-reported ledger, each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and, as advice only, declared instructions or fee below the endpoint's padded estimate. Not a policy, installation, or authority verdict, and never submits; a hosted server refuses envelopes carrying signatures |
 | `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied` when the bundle's transaction result XDR backs its claimed outcome, `incomplete` without it — synthesis refuses the latter; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
 | `synthesize_policy` | pure | bundle(s) + user decisions → PolicySpec + per-constraint rationale + open questions |
 | `evaluate_spec` | pure | PolicySpec + candidate invocation → reference-evaluator verdict for the generated scope; `indeterminate` if an attached reviewed policy is unmodelled |
@@ -1031,7 +1032,9 @@ back or equivocate on is not a root.
   and revocation response. PolicySpec and InstallationRecord bind every external signer to
   its verifier entry. Unknown verifier implementations **fail verified mode**. For
   `Signer::Delegated` C-account signers, the nested-account trust assumption is stated
-  explicitly, with optional recursive account recognition.
+  explicitly, with optional recursive account recognition. Recursive recognition is deferred:
+  until it exists, the checked account reader refuses a C-address delegated signer
+  (`E_INCOMPLETE_ACCOUNT_STATE`) rather than accept it under an unexamined nested account.
 
 **Two verification paths — reviewed vs generated (they are different problems):** a static
 registry keyed by exact wasm hash cannot pre-recognize per-grant generated wasm that does

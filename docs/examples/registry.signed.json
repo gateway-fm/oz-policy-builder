@@ -1,9 +1,9 @@
 {
   "snapshot": {
     "schema": "registry/v1",
-    "version": 1,
-    "log_index": 1,
-    "previous_root": null,
+    "version": 2,
+    "log_index": 2,
+    "previous_root": "2957b9b07f55b960a58711c1935cb341dc5fe0b3f568b9bce85bbebfb9af0807",
     "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
     "valid_from_unix": -9223372036854775808,
     "expires_at_unix": 9223372036854775807,
@@ -25,6 +25,16 @@
         "release": "stellar-accounts@0.7.x",
         "rule_enumeration": "bounded_next_id",
         "management_evidence": "return_value_and_events_must_agree",
+        "bounded_next_id": {
+          "schema_version": 1,
+          "max_scan_ids": 1000,
+          "max_rpc_batches": 16,
+          "max_transitive_entries": 1000,
+          "max_attempts": 2,
+          "archive_policy": "reject_unresolved",
+          "snapshot_policy": "same_ledger_and_instance"
+        },
+        "method_inventory_digest": "f92b2de15b78b73f316846f588daa313f730f7c061240e6a1bbd8568ebe8c5c7",
         "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/account @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
       }
     },
@@ -59,6 +69,6 @@
     "revocations": {}
   },
   "signatures": {
-    "legacy": "455f063f6a61148f0db222f41e0f6049c578be9d69d35bd50c23872dd7c96924e400ae9cfb64b9298525b11144e1e04862909c01961b5df29be9084032f29309"
+    "legacy": "9474145640529e406a175df8e71b7a3eaaef4f324a2505fd0c74c276a225edc50fd663769337657e9528430fb982928d74c5acc6108560204dbe7e1f6f5a9609"
   }
 }

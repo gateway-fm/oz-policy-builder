@@ -23,6 +23,9 @@ ozpb-call-surface-core = { workspace = true }
 # recording that admits it cannot be separated by a caller; the examples drift gate also
 # serializes the format rather than hand-writing the committed bytes a reader runs.
 ozpb-source-bundle = { workspace = true }
+# Preflight observation types only. The shells run the simulation; this facade maps the
+# observation onto the wire contract, as it does a recording, and never reaches a network.
+ozpb-source-rpc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }

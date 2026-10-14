@@ -1189,6 +1189,7 @@ dependencies = [
  "ozpb-toolkit",
  "serde",
  "serde_json",
+ "stellar-xdr",
  "tempfile",
 ]
 
@@ -1263,6 +1264,7 @@ dependencies = [
  "ozpb-toolkit",
  "rmcp",
  "serde_json",
+ "stellar-xdr",
  "tokio",
  "tokio-util",
  "url",
@@ -1323,6 +1325,7 @@ dependencies = [
  "ozpb-call-surface-core",
  "ozpb-domain",
  "ozpb-recorder-core",
+ "ozpb-registry",
  "serde",
  "serde_json",
  "sha2",
@@ -1364,6 +1367,7 @@ dependencies = [
  "ozpb-recorder-core",
  "ozpb-registry",
  "ozpb-source-bundle",
+ "ozpb-source-rpc",
  "ozpb-synthesizer",
  "serde",
  "serde_json",

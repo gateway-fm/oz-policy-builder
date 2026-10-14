@@ -1026,6 +1026,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "ozpb-authorized-target-fixture"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "ozpb-call-surface-core"
+version = "0.1.0"
+dependencies = [
+ "ozpb-domain",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "ozpb-codegen"
 version = "0.1.0"
 dependencies = [
@@ -1042,17 +1058,25 @@ dependencies = [
 name = "ozpb-differential"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "generated-soroswap-swap-r0",
  "generated-sub-transfer-r0",
+ "hex",
  "ozpb-codegen",
  "ozpb-domain",
  "ozpb-evaluator",
  "ozpb-harness",
  "ozpb-policy-spec",
+ "ozpb-recorder-core",
+ "ozpb-source-rpc",
  "ozpb-synthesizer",
+ "serde_json",
+ "sha2",
+ "soroban-ledger-snapshot",
  "soroban-sdk",
  "stellar-accounts",
  "stellar-strkey 0.0.18",
+ "stellar-xdr 28.0.0",
 ]
 
 [[package]]
@@ -1107,6 +1131,36 @@ version = "0.1.0"
 dependencies = [
  "ozpb-domain",
  "serde",
+ "stellar-strkey 0.0.18",
+ "stellar-xdr 28.0.0",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "ozpb-registry"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "ozpb-domain",
+ "ozpb-policy-spec",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "ozpb-source-rpc"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "ozpb-call-surface-core",
+ "ozpb-domain",
+ "ozpb-recorder-core",
+ "ozpb-registry",
+ "serde",
+ "serde_json",
+ "sha2",
  "stellar-strkey 0.0.18",
  "stellar-xdr 28.0.0",
  "thiserror 2.0.19",

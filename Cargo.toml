@@ -70,7 +70,9 @@ ozpb-evaluator = { path = "crates/evaluator" }
 ozpb-synthesizer = { path = "crates/synthesizer" }
 ozpb-recorder-core = { path = "crates/recorder-core" }
 ozpb-source-bundle = { path = "crates/source-bundle" }
-ozpb-source-rpc = { path = "crates/source-rpc" }
+# The HTTP transport is requested by the binaries that reach a network, not by every user of
+# the observation types.
+ozpb-source-rpc = { path = "crates/source-rpc", default-features = false }
 ozpb-registry = { path = "crates/registry" }
 ozpb-codegen = { path = "crates/codegen" }
 ozpb-build-runner = { path = "crates/build-runner" }

@@ -33,6 +33,8 @@ itself unchecked proves that two files agree and nothing more:
     the values most likely to be left behind. Every `.rs` file, not the crate root alone:
     since the split into a root and a `contract.rs`, the root is a header and a `pub mod`
     declaration, and its digest no longer moves when the policy's behaviour does.
+  * the SHA-256 of each committed differential-test Wasm fixture. This checks that a
+    document still names the bytes the tests use; it does not establish who built them.
 Deliberately NOT authoritative: a committed `build-manifest.json`. No gate regenerates or
 validates one — re-derivation is operator-invoked where it exists at all — so a stale or
 hand-edited manifest would make an equally stale document pass, which is the failure this
@@ -62,9 +64,10 @@ WHAT THIS DELIBERATELY DOES NOT COVER, so that a pass is not read as more than i
   * Captured network responses (crates/source-rpc/tests/captured-testnet/). They record
     what the RPC said, not what this repository computes.
   * JSON fixtures as subjects. They are the reference, not the thing being checked.
-  * Wasm hashes. Reproducing one needs the pinned rustc AND the pinned stellar-cli, so
-    only the nightly wasm workflow can adjudicate them; offline they can be recorded as
-    exempt but never verified.
+  * Source-built Wasm hashes. Reproducing one needs the pinned rustc AND the pinned
+    stellar-cli, so only the nightly wasm workflow can adjudicate them; offline they can
+    be recorded as exempt but never verified. The committed test fixtures above are
+    checked by hashing their present bytes, not by reproducing their source builds.
   * Hex runs shorter than 8 characters, and truncations not marked with an ellipsis.
     A bare 7-hex token is a git short SHA far more often than a hash.
 
@@ -233,6 +236,9 @@ def generated_crate_hashes(paths: list[str]) -> set[str]:
 
 def authoritative(paths: list[str]) -> set[str]:
     found = pinned_upstream_hashes() | generated_crate_hashes(paths)
+    for path in paths:
+        if pathlib.PurePath(path).match("contracts/differential/tests/fixtures/*.wasm"):
+            found.add(hashlib.sha256((REPO / path).read_bytes()).hexdigest())
     fixtures = [
         p
         for p in paths
