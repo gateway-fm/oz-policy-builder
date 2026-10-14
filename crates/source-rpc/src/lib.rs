@@ -86,19 +86,25 @@ const MAX_ERROR_BODY_EXCERPT_BYTES: usize = 200;
 /// this (its bound is one per contract an authorization can reach), so the requests are batched
 /// to fit rather than the recorder's bound being lowered to one RPC method's page size.
 const MAX_LEDGER_ENTRY_KEYS: usize = 200;
-/// The newest Stellar protocol this build can be trusted to decode: the major version of the
-/// `stellar-xdr` release it is pinned to. A network on a newer protocol can emit XDR shapes this
-/// reader does not know, and the failure mode that matters is not the decode error — it is the
-/// newer shape that still decodes into something subtly different. The alternative to a ceiling
-/// is discovering that in a recording.
+/// The newest Stellar protocol this build can be trusted to decode: the newest protocol whose XDR
+/// is exactly the XDR compiled into the pinned `stellar-xdr` release. A network on a newer
+/// protocol can emit XDR shapes this reader does not know, and the failure mode that matters is
+/// not the decode error — it is the newer shape that still decodes into something subtly
+/// different. The alternative to a ceiling is discovering that in a recording.
+///
+/// Usually that protocol is the crate's major version, but not always. Protocol 29 changed no
+/// XDR: stellar-core v29.0.0 builds against the same `stellar/stellar-xdr` commit as v28.0.x,
+/// which is the commit `stellar-xdr` 28 compiles, so this build decodes protocol 29 as it is.
 ///
 /// There is deliberately no floor. `getNetwork` reports the protocol the endpoint is on now,
 /// which bounds what it can newly produce; it says nothing about the protocol of an old
 /// transaction whose stored XDR is what a `getTransaction` actually returns, so a floor checked
 /// against this field would be a claim about the wrong thing.
 ///
-/// Raising this is an upgrade decision: bump `stellar-xdr`, then this — a test holds the two
-/// together.
+/// Raising this is an upgrade decision: record the new protocol's XDR commit in the test table
+/// beside `the_protocol_ceiling_is_the_newest_protocol_on_the_pinned_xdr`; if it differs from
+/// the commit the pinned crate compiles, bump `stellar-xdr` to the release that carries it. The
+/// test fails until the ceiling, the table and the crate agree.
 ///
 /// This gates acquisition. Whether the acquisition protocol should also be *recorded* is not
 /// settled here and is not settled by §4.1: that section rules out a per-transaction
@@ -109,7 +115,7 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// argument does not reach — and the risk table still promises protocol and XDR versions per
 /// bundle (`docs/architecture.md:1448`), so that promise is outstanding rather than withdrawn
 /// by this gate.
-const MAX_SUPPORTED_PROTOCOL: u32 = 28;
+const MAX_SUPPORTED_PROTOCOL: u32 = 29;
 
 mod target_wasm;
 pub use target_wasm::{read_target_capture, CapturedTargetEntry, TargetCapture, TargetWasmError};
@@ -2300,21 +2306,45 @@ mod tests {
         }
     }
 
-    /// The protocol ceiling is the major version of the pinned `stellar-xdr`, not a number
-    /// somebody chose. If the dependency moves and this constant does not, the two disagree
-    /// about what this crate can decode and this test says so.
+    /// Protocols and the `stellar/stellar-xdr` commit stellar-core built each one against: the
+    /// `src/protocol-curr/xdr` submodule at the release tag. Recorded by hand because no crate
+    /// carries this mapping, so each row names where it was read.
+    const PROTOCOL_XDR_COMMITS: &[(u32, &str)] = &[
+        // stellar-core v28.0.0 and v28.0.1; stellar-xdr tag `v28.0`.
+        (28, "9c9c145953e80990d6ff1ae3a6a973a0ce6d0694"),
+        // stellar-core v29.0.0: the same commit. Protocol 29 changed no XDR.
+        (29, "9c9c145953e80990d6ff1ae3a6a973a0ce6d0694"),
+    ];
+
+    /// The protocol ceiling is not a number somebody chose: it is the newest protocol whose XDR
+    /// is the XDR compiled into the pinned `stellar-xdr`. That is usually the crate's major
+    /// version, but a protocol that changes no XDR raises it without a crate bump. If the
+    /// ceiling, the recorded commits and the dependency disagree, this test says which.
     #[test]
-    fn the_protocol_ceiling_is_the_pinned_xdr_major_version() {
-        let pinned: u32 = stellar_xdr::VERSION
-            .pkg
-            .split('.')
-            .next()
-            .expect("a semver package version")
-            .parse()
-            .expect("a numeric major version");
+    fn the_protocol_ceiling_is_the_newest_protocol_on_the_pinned_xdr() {
+        let (newest, newest_xdr) = *PROTOCOL_XDR_COMMITS
+            .iter()
+            .max_by_key(|(protocol, _)| *protocol)
+            .expect("at least one protocol is recorded");
         assert_eq!(
-            MAX_SUPPORTED_PROTOCOL, pinned,
-            "the supported protocol ceiling and the pinned stellar-xdr major must move together"
+            MAX_SUPPORTED_PROTOCOL, newest,
+            "the ceiling must be the newest protocol recorded with its XDR commit"
+        );
+        let compiled = stellar_xdr::VERSION.xdr.trim();
+        assert_eq!(
+            newest_xdr,
+            compiled,
+            "protocol {newest} runs on stellar-xdr {newest_xdr}, but the pinned crate {} compiles \
+             {compiled}: the ceiling would accept XDR this build does not decode",
+            stellar_xdr::VERSION.pkg
+        );
+        // The crate also carries the next protocol's definitions behind features. Turned on —
+        // by any crate in the graph, through feature unification — they would decode shapes no
+        // recorded protocol has.
+        assert!(
+            stellar_xdr::VERSION.features.is_empty(),
+            "stellar-xdr is built with unreleased XDR features {:?}",
+            stellar_xdr::VERSION.features
         );
     }
 
