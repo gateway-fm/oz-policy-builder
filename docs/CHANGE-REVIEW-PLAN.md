@@ -97,7 +97,13 @@ For Rust changes run `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`.
 Run the `contracts` differential tests, Clippy, and formatting when that workspace changes
 **or** when host-side dependencies of its generated/differential tests change, including
-`harness`, `evaluator`, `policy-spec`, and `codegen`. Run `bash scripts/check-dep-rules.sh`
+`harness`, `evaluator`, `policy-spec`, and `codegen`. Run
+`bash scripts/test-pinned-account-authorization.sh` (network, several minutes) when a change can
+alter the generated policy Wasm or the account authorization path: codegen or its templates,
+`policy-spec` normalization, the build runner or pinned build inputs, the example spec, the
+pinned account, or `contracts/differential/tests/account_wasm_auth.rs`. That test pins the
+generated Wasm hash; the nightly job runs it only after merge.
+Run `bash scripts/check-dep-rules.sh`
 for crate-edge changes and the relevant part of `scripts/verify-phase1.sh` for changed
 first-milestone guarantees.
 If a local gate cannot run, record the exact reason and use CI evidence before merge.

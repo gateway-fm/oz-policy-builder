@@ -122,6 +122,34 @@ signer identities, spending limits, and policy composition visible in the propos
    limits, and current-network preflight as separate dimensions. A `matches` result describes
    reproduction; it does not establish live readiness or policy coverage beyond what the
    report names.
+5. If the user has an exact transaction envelope containing the intended authorization entries,
+   `preflight_transaction` can simulate it on the user-selected RPC endpoint with authorization
+   enforced. Before calling it, tell the user that signed authorization entries are live
+   authorizations, not test data: a Soroban authorization signature covers the network, the
+   entry's nonce, its `signatureExpirationLedger` and the invocation, not the transaction that
+   carries it, so anyone who sees the envelope can submit the entry until it expires, and
+   simulation does not consume the nonce. The envelope reaches the RPC endpoint and this
+   conversation. Recommend testnet or a short `signatureExpirationLedger`, a trusted RPC
+   endpoint, and the CLI or a local stdio server; a hosted server refuses signed envelopes
+   with `E_UNSUPPORTED_ENVELOPE`. Never ask the user to paste a signed envelope into the
+   conversation without saying this first. Treat the envelope as confidential and do not echo
+   it. Its
+   `simulated_success`, `simulation_failed`, `restoration_required`, or
+   `declared_resources_insufficient` outcome is evidence for that envelope at the
+   endpoint-reported ledger. `declared_resources_insufficient` means the invocation succeeded
+   in simulation but the envelope does not declare what it used, in each dimension listed in
+   `insufficient_declared_resources`: a footprint list that is not exactly the simulated one,
+   or disk-read or write bytes below the use. The simulation then does not show that the
+   envelope can succeed; it must be re-assembled, and it is not a success. A non-empty
+   `below_endpoint_estimate` is advice, not a failure: the declared instructions or resource
+   fee are below the endpoint's padded estimate. Tell the user, and do not present
+   `simulated_success` as proof that the declared instructions and fee suffice. The server
+   cannot establish that
+   the generated policy is installed or selected, or that the account authority surface is Safe.
+   A successful simulation does not predict a later transaction's outcome. No writes are
+   committed, and the tool never submits the envelope, but neither makes the signed entries in
+   it harmless. Do not treat `record_simulation` as this check: it uses record mode to acquire
+   proposed behavior, not enforcement mode.
 
 ## Hand off
 

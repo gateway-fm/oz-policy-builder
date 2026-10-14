@@ -49,6 +49,45 @@ scheduled operations, not CLI or MCP commands. `reference_suite` is layer-1 evid
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
 
+`preflight_transaction` is a separate network read for an exact transaction envelope
+carrying the intended authorization entries. It uses RPC authorization enforcement and
+reports the endpoint's simulation outcome at its reported ledger: `simulated_success`,
+`simulation_failed`, `restoration_required`, or `declared_resources_insufficient`. The last
+means the invocation succeeded in simulation but the envelope does not declare what it used:
+`insufficient_declared_resources` names each declared footprint list that is not exactly the
+simulated one (a key missing, extra, or repeated) and each disk-read or write limit below the
+simulated use, never the keys. The endpoint reports instructions and the resource fee only as
+padded estimates, so `below_endpoint_estimate` lists a declared value below either estimate as
+advice beside `simulated_success` or `declared_resources_insufficient`; it never changes the
+outcome, and `simulated_success` does not establish that the declared instructions and fee
+suffice. It does not establish that the generated policy is installed or selected, and it
+never commits writes.
+
+That does not make preflight consequence-free. Enforcement-mode simulation of a smart account
+needs signed `Address`-credential authorization entries, and a Soroban authorization signature
+covers the network ID, the entry's nonce, its `signatureExpirationLedger` and the authorized
+invocation, not the transaction or its source account. Anyone who holds a signed entry can put
+it in a transaction of their own and submit it until it expires, and simulation does not
+consume the nonce. The envelope reaches the RPC endpoint and, through MCP, the agent's
+transcript. Prefer testnet, or sign with a short `signatureExpirationLedger`, and run
+preflight from the CLI or a local stdio server against an RPC endpoint you trust. A hosted
+(`--http`) server refuses any envelope carrying transaction signatures or signed authorization
+entries with `E_UNSUPPORTED_ENVELOPE`, because the hosted service must never hold material
+that can authorize on a user's account (architecture §6.2, §6.5).
+
+An envelope refused before any request carries an input
+code in both shells: `E_RESOURCE_LIMIT` over the XDR size bound, `E_ENVELOPE_PARSE` when it
+is not one unbroken base64 string of transaction XDR, and `E_UNSUPPORTED_ENVELOPE` for a shape
+simulation does not take (not exactly one `InvokeHostFunction` operation, or a memo). `E_RPC`
+is left for the endpoint and its transport. Whitespace anywhere in the envelope is refused
+rather than skipped; the CLI removes only the envelope file's final line ending. The endpoint
+receives the canonical base64 of the bytes `envelope_xdr_sha256` hashes.
+
+Every reported outcome is a completed observation, not a command failure: the CLI exits 0 for
+`simulation_failed`, `restoration_required` and `declared_resources_insufficient` as well as
+for `simulated_success`, and the MCP tool returns them as results. A script must read
+`outcome`; a zero exit status says only that the endpoint answered.
+
 ### CLI
 
 ```bash
@@ -86,6 +125,16 @@ ozpb generate --spec spec.json --rule 0 --out ./generated
 ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
+
+# Optional: simulate an exact envelope with its intended authorization entries.
+# Read it from a file so the base64 and signatures stay out of shell history/process arguments.
+# Signed entries are live authorizations until their signatureExpirationLedger: prefer testnet
+# or a short expiration, and an RPC endpoint you trust. This never submits the envelope, and
+# it reports endpoint state at one ledger, not an installed-policy or Safe verdict.
+# It exits 0 for every reported outcome, simulation_failed included: check `outcome`.
+ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
+  --rpc-url https://rpc.testnet.stellar.gateway.fm \
+  --network "Test SDF Network ; September 2015"
 
 ```
 
@@ -184,9 +233,15 @@ Deliberately not part of `verify-phase1/2`: it clones and does a cold build of u
 workspace, which takes minutes. Run it when the pins change, when bumping the upstream tag, or
 when reviewing the trust anchors.
 
-Two things to know. **The hash depends on the compiler** — upstream's `rust-toolchain.toml`
+Three things to know. **The hash depends on the compiler** — upstream's `rust-toolchain.toml`
 says `channel = "stable"`, which floats, so the script forces this repository's pinned rustc;
 building with another one legitimately yields a different hash from identical source.
+**The account hash also depends on the build host** — it reproduces byte-for-byte only on Apple
+Silicon (`aarch64-apple-darwin`). Elsewhere the account Wasm differs only in function order,
+because Cargo hashes the build host into symbol names that rustc orders functions by
+([rust-lang/cargo#8140](https://github.com/rust-lang/cargo/issues/8140), fix pending in
+[rust-lang/cargo#17522](https://github.com/rust-lang/cargo/pull/17522)); the other two pins
+reproduce on every host tested.
 **Upstream publishes no wasm** — releases carry no assets and no deployed instance is blessed,
 so these are our reproducible builds of their source, and the registry entries say exactly
 that rather than claiming an upstream-signed artifact.
@@ -213,6 +268,8 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   `synthesize_policy`, `evaluate_spec`, `generate_code`.
 - **Available reference and verification tools** — `reference_suite` (layer 1 only) and
   `verify` (artifact reproduction with separately labeled limits).
+- **Exact-envelope network evidence** — `preflight_transaction` reports one
+  authorization-enforcing RPC simulation; it does not identify an installed policy.
 - **Scheduled, not exposed** — `dry_run`, `check_against_policy`,
   `check_policy_call_surface`, `prepare_install_intent`. The full dry-run harness, live
   authority-surface check, and install intent need their own evidence before exposure.
@@ -283,7 +340,7 @@ the tests guide you (TDD: add the failing test first):
    Soroban environment. The committed Soroswap policy is a second generated example; its
    complete file set must match regeneration, and it builds as a standalone crate. Add
    explicit evaluator/contract cases for new constraints. End-to-end account
-   integration and live preflight remain separate work.
+   integration and policy-aware live preflight remain separate work.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove
