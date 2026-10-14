@@ -18,8 +18,9 @@
 #   * the same source produces byte-identical wasm across two clean builds (§6.3);
 #   * the boundary-shape and golden E2E build tests that are `#[ignore]`d elsewhere because
 #     they need the toolchain;
-#   * the pinned account's full authorization path through a generated policy Wasm, in its
-#     own job so that its result and the live testnet step's are reported independently.
+#   * the pinned account's full authorization path through a generated policy Wasm, and one
+#     signed candidate call into a source-built target fixture, in their own job so that its
+#     result and the live testnet step's are reported independently.
 # Generated code *compiling* is already covered in ci.yml: the `contracts` job builds the
 # golden policy crate as a dev-dependency of the differential suite.
 name: nightly live
@@ -235,10 +236,12 @@ jobs:
   # the live testnet step, and that step's own failures would mask a regression here. The gate
   # compiles the reviewed upstream account source at the recorded tag, checks its exact code
   # hash, then invokes a generated policy Wasm through the full account `__check_auth` path
-  # with a signed delegated authorization. It needs the pinned toolchain and the network to
-  # clone public sources, and no secrets.
+  # with a signed delegated authorization. It also builds a source-defined target Wasm and
+  # checks one signed, synthetic candidate transfer against exact fixture target keys. It fails
+  # if any of the three Wasm artifacts cannot be built or differs. It needs the pinned
+  # toolchain and the network to clone public sources, and no secrets.
   pinned-account-authorization:
-    name: pinned account authorization (source-built account + generated policy)
+    name: pinned account authorization (source-built account + generated policy + target fixture)
     # macOS arm64, because the account pin reproduces byte-for-byte only from an
     # aarch64-apple-darwin build host. Cargo hashes the build host into the `-C metadata` of host
     # units (proc-macros, build scripts), that metadata reaches the account's symbol names, and
@@ -322,9 +325,9 @@ jobs:
           }
           echo "stellar resolves to $resolved ($line)"
 
-      # Only the differential test build is cached. The account and policy Wasm are rebuilt
-      # from source in temporary directories on every run, and their hashes are asserted. The key
-      # names the architecture as well as the OS, since the build host is a build input here.
+      # Only the differential test build is cached. The account, policy and target Wasm are
+      # rebuilt from source on every run, and their hashes are asserted. The key names the
+      # architecture as well as the OS, since the build host is a build input here.
       - name: cache the contracts test build directory
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -333,5 +336,5 @@ jobs:
           restore-keys: |
             pinned-account-auth-${{ runner.os }}-${{ runner.arch }}-cli${{ env.STELLAR_CLI_VERSION }}-
 
-      - name: pinned account authorization and committed-state limit
+      - name: pinned account authorization and signed target fixture
         run: bash scripts/test-pinned-account-authorization.sh
