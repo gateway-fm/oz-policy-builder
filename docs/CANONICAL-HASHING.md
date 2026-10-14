@@ -1,8 +1,8 @@
 # Canonical hashing
 
-Every hash this toolkit publishes is taken over an `ScVal` encoded as XDR, except the few listed
-at the end with the reason for each. This document is the specification an independent
-implementation follows to reproduce one.
+Every hash this toolkit publishes is taken over an `ScVal` encoded as XDR, except the account
+ledger witness and the plain SHA-256 values, which have their own sections below. This document
+is the specification an independent implementation follows to reproduce one.
 
 It exists because a hash is only evidence if someone other than its author can recompute it. The
 previous scheme hashed `serde_json` output, whose byte layout was defined by nothing but this
@@ -226,6 +226,11 @@ nothing on chain.
 wrapping it would cost that affordance.
 
 ## Reproducing a hash
+
+These steps apply to the canonical `ScVal` hashes only. The account ledger witness follows its
+own byte layout above, and `wasm_hash` and `lockfile_hash` are plain SHA-256 over raw bytes.
+For the types under "Types that are built as `ScVal` directly", build the value as that section
+describes instead of steps 1–2, then wrap and hash it as in steps 3–4.
 
 1. Take the structure's JSON as this toolkit emits it.
 2. Map it to an `ScVal` by the table above, using the serialized field names.
