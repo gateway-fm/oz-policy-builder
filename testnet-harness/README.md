@@ -214,8 +214,8 @@ when the WebAuthn verifier contract raised it.
 - **By default `run.sh` skips the authority check.** It installs only into the account it
   deployed a moment earlier, whose administrator it knows by construction. That is not evidence
   about anyone else's account. The opt-in wallet decision on the check
-  ([`OZPB_HARNESS_AUTHORITY_CHECK=cli`](#the-wallet-decision-on-the-authority-check)) has only
-  run against fixtures: the `ozpb` commands it calls are not on this tree.
+  ([`OZPB_HARNESS_AUTHORITY_CHECK=cli`](#the-wallet-decision-on-the-authority-check)) needs an
+  `ozpb` with commands this tree does not have yet.
 - **No wallet product signs.** With the default owner, a script holding an ed25519 key signs.
   With `OZPB_HARNESS_OWNER=passkey`, the account has a passkey wallet's shape: rule 0 is one
   `External` WebAuthn signer. The passkey signs the recorded transfer and the install, and the
@@ -285,7 +285,9 @@ bash testnet-harness/run.sh
   the spec is resolved against it. For the development snapshot, recognition rests on a public
   development root, which is testnet only.
 - **The policy binding.** It carries the policy's build manifest unmodified, and its deploy
-  transaction as `resolution_reference`. The check rebuilds the policy offline to recognize it.
+  transaction as `resolution_reference`. The signed snapshot goes into the request byte for byte.
+  Parsing it in JavaScript would turn its 64-bit integers into different numbers, and the check
+  would refuse it. The check rebuilds the policy offline to recognize it.
   Run it with the same stellar-cli and the same warm build cache as `ozpb generate`
   (`OZPB_STELLAR_BINARY`, `OZPB_BUILD_CACHE_DIR`), or the rebuild cannot match.
 - **The trust file.** `trust.json` is
@@ -302,11 +304,16 @@ bash testnet-harness/run.sh
   None of this shows that a human approved the install, or that an agent with the same access
   could not approve itself. That claim needs a real wallet's protected approval screen.
   `run.json` records the decision under that label, with the exact operator-trusted identities.
-- It has not run against the real check. `ozpb check-policy-call-surface` and
-  `ozpb prepare-install-intent` are on another branch, not on this tree. The tests drive the
-  decision with fixtures hand-written from the check's output types and contract, not captured
-  from the tool. They drive the CLI seam with a fake `ozpb` that prints the documented error
-  format. Nothing here has run on testnet through this path.
+- It ran on testnet once per path, on 2026-10-15. Both runs used a passkey owner and an `ozpb`
+  built from the branch that has the check, because `ozpb check-policy-call-surface` and
+  `ozpb prepare-install-intent` are not on this tree. One run was accepted: the intent, the
+  decision, the screen, the re-check and the install all ran, and then the delegate's permit and
+  denials. The other was refused: a second owner rule for an account the wallet does not trust,
+  and no `--trust`. Nothing was signed in that run. The second owner was added by a one-off
+  script that is not in this tree. Neither run used `--confirm tty` or `--trust`, and no tool-side
+  refusal happened on testnet. The tests drive the decision with fixtures hand-written from the
+  check's output types and contract, not captured from the tool. They drive the CLI seam with a
+  fake `ozpb` that prints the documented error format.
 - Several cases are the check's to catch, and they reach the wallet only as refusals:
   - a signerless permissive policy on the target;
   - the agent added as a classic account's signer;
@@ -349,10 +356,10 @@ and what does not.
     secrets between steps.
 - **install.**
   - Runs: `add_context_rule` on testnet, after which the policy enforces.
-  - Tested offline only: the wallet decision on the install intent and the authority check. It
-    runs against fixtures in the check's output shape, with a fake check runner. The real
-    `ozpb prepare-install-intent` and `ozpb check-policy-call-surface` are not on this tree, so
-    it has not run against them or on testnet.
+  - Runs, opt-in, with an `ozpb` from the branch that has the authority check: the wallet decision
+    on the install intent and the check. It ran on testnet once accepted and once refused, both
+    with a passkey owner ([details](#the-wallet-decision-on-the-authority-check)). Neither the
+    intent nor the check is on this tree yet.
 - **with a wallet.**
   - Runs: pollywallet's own wallet creation, driven headless in its real UI (`browser/`).
   - Closest that runs, with no wallet product involved: an account of pollywallet's shape, created

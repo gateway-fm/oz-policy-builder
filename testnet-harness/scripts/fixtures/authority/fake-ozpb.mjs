@@ -10,7 +10,9 @@ const argv = process.argv.slice(2);
 const mode = process.env.FAKE_OZPB_MODE;
 const fixture = JSON.parse(readFileSync(process.env.FAKE_OZPB_FIXTURE, 'utf8'));
 const requestPath = argv[argv.indexOf('--request') + 1];
-const request = JSON.parse(readFileSync(requestPath, 'utf8'));
+// The request file's bytes, as the tool would read them: echoed as text, not re-serialized.
+const requestText = readFileSync(requestPath, 'utf8');
+JSON.parse(requestText);
 
 const fail = (status, text) => {
   process.stderr.write(text);
@@ -35,7 +37,7 @@ if (mode === 'garbage') {
   process.exit(0);
 }
 if (argv[0] === 'prepare-install-intent') {
-  fixture.next_steps = [JSON.stringify(argv), JSON.stringify(request)];
+  fixture.next_steps = [JSON.stringify(argv), requestText];
   process.stdout.write(JSON.stringify(fixture));
 } else {
   process.stdout.write(JSON.stringify(fixture.authority));

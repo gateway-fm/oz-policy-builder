@@ -25,8 +25,8 @@
 // `ozpb generate` (`OZPB_STELLAR_BINARY`, `OZPB_BUILD_CACHE_DIR`), because it rebuilds the policy
 // to recognize it. The trust is operator-supplied test configuration (the owner key this run
 // created, plus `--trust`); `--confirm tty` is a terminal prompt and `--confirm operator` is no
-// prompt at all: neither shows that a human approved. This path has run only against fixtures,
-// not against the real `ozpb` commands or on testnet.
+// prompt at all: neither shows that a human approved. It needs an `ozpb` built from the branch
+// that has the check commands (`OZPB_BIN`); README records the testnet runs it has had.
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -36,6 +36,7 @@ import { Address, Operation, scValToNative, xdr } from '@stellar/stellar-sdk';
 
 import { approveInstall, signedRuleArgs } from './approve-install.mjs';
 import { cliCheckRunner } from './check-runner.mjs';
+import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { addContextRuleArgs, contractCall, entryAddress, signForSmartAccount } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
 import { TRUST_OPERATOR, checkRequest, walletTrust } from './wallet-decision.mjs';
@@ -49,7 +50,8 @@ const ADMIN_RULE = 0;
 const opts = args();
 const runPath = join(opts['run-dir'], 'run.json');
 const run = readJson(runPath);
-const spec = readJson(run.spec);
+// Read exactly: with --authority-check the spec and manifest are passed on to the check.
+const spec = parseJsonExact(readFileSync(run.spec, 'utf8'));
 const wasm = readFileSync(opts.wasm);
 const payer = loadKey('payer');
 const owner = await ownerSigner(run);
@@ -96,7 +98,8 @@ if (authorityCheck) {
         timeoutSecs: process.env.OZPB_BUILD_TIMEOUT_SECS,
       },
     }),
-    signedRegistrySnapshot: readJson(env('OZPB_SIGNED_REGISTRY_SNAPSHOT')),
+    // Raw: the signed snapshot carries integers JavaScript numbers cannot hold exactly.
+    signedRegistrySnapshot: new RawJson(readFileSync(env('OZPB_SIGNED_REGISTRY_SNAPSHOT'), 'utf8')),
     rpcSource: process.env.OZPB_RPC_SOURCE ?? 'testnet',
     trust: walletTrust({ own, operator }),
     operator,
@@ -141,7 +144,7 @@ const signers = rule.authorization.signers.map((s) => {
 // BuildManifest beside it; its spec hash is canonical and not recomputed here, but the wasm hash,
 // rule index and registry snapshot are checked so a stray --wasm cannot be installed silently.
 const wasmHash = createHash('sha256').update(wasm).digest('hex');
-const manifest = readJson(join(dirname(opts.wasm), 'build-manifest.json'));
+const manifest = parseJsonExact(readFileSync(join(dirname(opts.wasm), 'build-manifest.json'), 'utf8'));
 if (manifest.wasm_hash !== wasmHash || manifest.rule_index !== 0 || manifest.registry_snapshot !== spec.registry_snapshot) {
   throw new Error('the wasm is not the one build-manifest.json beside it records for rule 0 of this spec');
 }

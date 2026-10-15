@@ -19,6 +19,7 @@ import {
   TRUST_OPERATOR, TRUST_OWN, checkRequest, confirmationScreen, decide, identityKey, intentMismatches, recheck,
   walletTrust,
 } from './wallet-decision.mjs';
+import { RawJson } from './raw-json.mjs';
 
 const FIXTURE = JSON.parse(readFileSync(new URL('./fixtures/authority/intent-passkey-owner.json', import.meta.url), 'utf8'));
 const intent = () => structuredClone(FIXTURE);
@@ -373,7 +374,7 @@ test('the check request binds the generated policy by its own build manifest', (
   const spec = { name: 'native-sub', network_id: EXPECT.networkId, registry_snapshot: 'a0'.repeat(32), smart_account: { address: EXPECT.account } };
   const req = checkRequest({
     spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'deploy tx ab12',
-    signedRegistrySnapshot: { signed: true }, rpcSource: 'testnet',
+    signedRegistrySnapshot: new RawJson('{"signed": true}'), rpcSource: 'testnet',
   });
   assert.deepEqual(Object.keys(req).sort(),
     ['account_address', 'binding_set', 'network_id', 'rpc_source', 'rule_index', 'signed_registry_snapshot', 'spec']);
@@ -389,7 +390,14 @@ test('the check request binds the generated policy by its own build manifest', (
   assert.equal(req.account_address, EXPECT.account);
   assert.equal(req.spec, spec, 'the spec goes as it is, unchanged after generate');
   assert.equal(req.binding_set.bindings[0].recognition.build_manifest, manifest, 'the manifest goes unmodified');
-  const base = { spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'ref', signedRegistrySnapshot: {}, rpcSource: 'testnet' };
+  const base = { spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'ref', signedRegistrySnapshot: new RawJson('{}'), rpcSource: 'testnet' };
+  // The snapshot must arrive as raw JSON, and nothing re-serialized may carry a number JSON
+  // cannot hold exactly.
+  assert.throws(() => checkRequest({ ...base, signedRegistrySnapshot: {} }), /raw JSON/);
+  assert.throws(() => checkRequest({ ...base, spec: { ...spec, big: 2 ** 60 } }), /exactly/);
+  assert.throws(() => checkRequest({ ...base, manifest: { ...manifest, wasm_size: 2 ** 60 } }), /exactly/);
+  assert.throws(() => checkRequest({ ...base, spec: { ...spec, rules: [{ state: [{ max_calls: 2 ** 60 }] }] } }), /exactly/);
+  assert.throws(() => checkRequest({ ...base, spec: { ...spec, x: Infinity } }), /exactly/);
   assert.throws(() => checkRequest({ ...base, ruleIndex: 1 }), /rule/);
   assert.throws(() => checkRequest({ ...base, resolutionReference: '  ' }), /resolution reference/);
   // The tool refuses a zero registry root (E_POLICY_BINDING_INVALID); say so before asking it.

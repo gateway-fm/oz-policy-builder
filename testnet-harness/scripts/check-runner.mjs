@@ -21,6 +21,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { requestText } from './raw-json.mjs';
+
 export class ToolError extends Error {
   constructor(code, message, details = []) {
     super(message);
@@ -65,7 +67,7 @@ export function cliCheckRunner({ command, registryRoots, registryMinVersion, rpc
     const dir = mkdtempSync(join(tmpdir(), 'ozpb-check-'));
     try {
       const path = join(dir, 'request.json');
-      writeFileSync(path, JSON.stringify(request), { mode: 0o600 });
+      writeFileSync(path, requestText(request), { mode: 0o600 });
       const { status, stdout, stderr } = await run([
         ...command, subcommand, '--request', path, '--registry-roots', registryRoots,
         '--registry-min-version', String(registryMinVersion), '--rpc-sources', rpcSources, ...buildFlags,

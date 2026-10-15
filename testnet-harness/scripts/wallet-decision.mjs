@@ -21,6 +21,8 @@
 // approval UI is what that claim needs.
 import { StrKey } from '@stellar/stellar-sdk';
 
+import { RawJson } from './raw-json.mjs';
+
 export const TRUST_OWN = 'own key';
 export const TRUST_OPERATOR = 'operator-supplied test configuration';
 
@@ -310,6 +312,14 @@ export function confirmationScreen({ check, decision }) {
   return lines.join('\n');
 }
 
+/** Throw if `value` holds a number JSON.stringify would not write back exactly. */
+function assertExactNumbers(value, what) {
+  if (typeof value === 'number' && (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
+    throw new Error(`${what} holds ${value}, a number this harness cannot pass on exactly`);
+  }
+  if (value && typeof value === 'object') for (const v of Object.values(value)) assertExactNumbers(v, what);
+}
+
 /**
  * The `CheckPolicyCallSurfaceInput` (= `PrepareInstallIntentInput`) for one generated policy,
  * bound by its own build manifest. Everything the tool would refuse with
@@ -320,9 +330,14 @@ export function confirmationScreen({ check, decision }) {
  *   - the spec must be the one the manifest was generated from (same root and rule), sent as is;
  *   - the manifest goes unmodified, with its canonical `spec_hash`, not recomputed here;
  *   - each binding carries a non-empty `resolution_reference` (here, the policy's deploy tx);
- *   - account and network are the spec's own.
+ *   - account and network are the spec's own;
+ *   - the signed snapshot goes as raw JSON, byte for byte, and nothing else re-serialized here
+ *     may hold a number JavaScript cannot represent exactly.
  */
 export function checkRequest({ spec, ruleIndex, manifest, policyAddress, resolutionReference, signedRegistrySnapshot, rpcSource }) {
+  if (!(signedRegistrySnapshot instanceof RawJson)) throw new Error('the signed registry snapshot must be passed as raw JSON (RawJson)');
+  assertExactNumbers(spec, 'the spec');
+  assertExactNumbers(manifest, 'the build manifest');
   if (manifest.rule_index !== ruleIndex) throw new Error(`the manifest is for rule ${manifest.rule_index}, not rule ${ruleIndex}`);
   if (!isHash(manifest.spec_hash) || !isHash(manifest.wasm_hash)) throw new Error('the manifest lacks a lowercase spec or wasm hash');
   if (!isHash(spec.registry_snapshot) || /^0+$/.test(spec.registry_snapshot)) {

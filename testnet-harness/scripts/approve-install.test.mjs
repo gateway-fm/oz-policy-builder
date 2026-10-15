@@ -11,8 +11,9 @@ import { fileURLToPath } from 'node:url';
 
 import { approveInstall, signedRuleArgs } from './approve-install.mjs';
 import { ToolError, cliCheckRunner } from './check-runner.mjs';
+import { RawJson, parseJsonExact, requestText } from './raw-json.mjs';
 import { addContextRuleArgs } from './lib.mjs';
-import { TRUST_OPERATOR, walletTrust } from './wallet-decision.mjs';
+import { TRUST_OPERATOR, checkRequest, walletTrust } from './wallet-decision.mjs';
 
 const FIXTURE_PATH = fileURLToPath(new URL('./fixtures/authority/intent-passkey-owner.json', import.meta.url));
 const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
@@ -174,6 +175,43 @@ test('the CLI runner passes the request by file with the operator\'s configurati
   assert.deepEqual(request, REQUEST);
   const checked = await cli('ok').checkPolicyCallSurface(REQUEST);
   assert.equal(checked.verdict.authority_commitment, FIXTURE.authority.verdict.authority_commitment);
+});
+
+test('the signed registry snapshot reaches the tool byte for byte, large integers included', async () => {
+  // Found on testnet: JSON.parse turned the snapshot's i64::MAX into 9223372036854776000, and the
+  // tool refused the snapshot (E_REGISTRY_SIGNATURE). The snapshot is passed as raw JSON, through
+  // the same path install.mjs uses: file text → RawJson → checkRequest → the request file.
+  const snapshotText = '{\n  "snapshot": {\n    "not_before_unix": -9223372036854775808,\n    "valid_until_unix": 9223372036854775807,\n    "version": 3\n  },\n  "signatures": []\n}\n';
+  const manifest = { spec_hash: '11'.repeat(32), wasm_hash: '99'.repeat(32), rule_index: 0, registry_snapshot: 'a0'.repeat(32) };
+  const spec = { name: 'native-sub', network_id: EXPECT.networkId, registry_snapshot: 'a0'.repeat(32), smart_account: { address: EXPECT.account } };
+  const request = checkRequest({
+    spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'deploy tx',
+    signedRegistrySnapshot: new RawJson(snapshotText), rpcSource: 'testnet',
+  });
+  const [, sent] = (await cli('ok').prepareInstallIntent(request)).next_steps;
+  const { signed_registry_snapshot: _raw, ...rest } = request;
+  const expected = `${JSON.stringify(rest).slice(0, -1)},"signed_registry_snapshot":${snapshotText.trim()}}`;
+  assert.equal(sent.length, expected.length);
+  // Key order is the request's own; compare the parts rather than rely on it.
+  assert.ok(sent.includes(`"signed_registry_snapshot":${snapshotText.trim()}`), 'the snapshot is spliced in verbatim');
+  assert.deepEqual(JSON.parse(sent.replace(snapshotText.trim(), '{}')), { ...rest, signed_registry_snapshot: {} });
+  assert.throws(() => new RawJson('[1, 2]'), /object/);
+  assert.throws(() => new RawJson('{"a": '), /JSON/);
+  assert.throws(() => new RawJson('\uFEFF{}'), /byte order mark/);
+  // Anything that is not the request splice cannot serialize it by accident.
+  assert.throws(() => JSON.stringify({ x: new RawJson('{}') }), /requestText/);
+});
+
+test('a string that looks like a splice placeholder cannot corrupt the request', () => {
+  const text = requestText({ note: 'x"ozpb-raw-0', other: new RawJson('{"a":1}') });
+  assert.deepEqual(JSON.parse(text), { note: 'x"ozpb-raw-0', other: { a: 1 } });
+});
+
+test('spec and manifest files are read exactly, or not at all', () => {
+  assert.deepEqual(parseJsonExact('{"a": 5230374, "b": "x", "c": [1.5, -0, 9007199254740991]}'), { a: 5230374, b: 'x', c: [1.5, -0, 9007199254740991] });
+  assert.throws(() => parseJsonExact('{"a": 9223372036854775807}'), /exactly/);
+  assert.throws(() => parseJsonExact('{"a": 4503599627370497.5}'), /exactly/);
+  assert.throws(() => parseJsonExact('{"a": [{"b": 1e400}]}'), /exactly/);
 });
 
 test('the CLI runner passes the build settings the check needs to reproduce the policy', async () => {
