@@ -43,3 +43,50 @@ nothing here converts it. An
 on-chain passkey signer would be an `External` signer behind a WebAuthn verifier contract, and
 this tree refuses `External` signers in a PolicySpec. The on-chain install and enforcement in
 `../README.md` use a `Delegated` ed25519 signer.
+
+## `recon.mjs` and `drive-pollywallet.mjs`: a real passkey wallet
+
+[pollywallet](https://github.com/kalepail/pollywallet) is a passkey smart-wallet demo on Stellar
+testnet. Both scripts take a URL as their argument, or from `POLLYWALLET_URL`. The default is a
+local `pnpm dev` on `:3000`. pollywallet's own README notes two things:
+
+- A local server needs an OpenZeppelin Channels API key for its deploy, fund and transfer flows.
+- A live demo runs at `https://pollywallet.sdf-ecosystem.workers.dev`.
+
+```
+OZPB_BROWSER_CHANNEL=chrome node recon.mjs <url>             # read-only: title, controls, out/recon.png
+OZPB_BROWSER_CHANNEL=chrome node drive-pollywallet.mjs <url>
+```
+
+- **`recon.mjs`** touches nothing. Run it first: a deployed demo can change without notice, and
+  recon shows whether the control the driver clicks is still there.
+- **`drive-pollywallet.mjs`** clicks pollywallet's own "Create Smart Wallet" button with the
+  virtual authenticator attached.
+  - pollywallet's code makes the WebAuthn call, so a resident credential appearing on the
+    authenticator shows that its real passkey registration ran under automation. Exit status 0
+    means exactly that.
+  - Whether a wallet then exists is up to pollywallet's backend. The script reports it
+    separately, counting only a contract address that was not on the page before the click.
+  - Each run that gets that far deploys a testnet contract through that server's relayer. The
+    contract's only signer is a passkey that is gone when the browser closes. Run it by hand;
+    never loop it, and never put it in CI against someone else's deployment.
+
+**What a run showed** on 2026-10-15, against the live demo with headless Chrome 155 (the script
+was run twice; the second run used the version committed here):
+
+- Each run registered one resident credential.
+- Each run ended on "Wallet created!" with a new contract address.
+- Testnet reports each contract as an OpenZeppelin-shaped smart account (`__check_auth`,
+  `add_context_rule`, `execute`). Its rule 0 has a single `External` signer: a verifier
+  contract, plus 97 bytes of key data that begin with an uncompressed P-256 point.
+- [`media/pollywallet-wallet-created.png`](media/pollywallet-wallet-created.png) is the
+  screenshot from the second run.
+
+**What it does not show.**
+
+- Nothing here installed a policy into a pollywallet account, and the toolkit could not do so
+  yet. The account's code hash is not the account wasm pinned in
+  `ozpb_domain::pinned_upstream`, so the signed registry would refuse to recognize it
+  (`E_INCOMPATIBLE_ACCOUNT`). Its signer is `External`, which this tree's PolicySpec refuses.
+- Getting there needs two things: pollywallet's account wasm reviewed and pinned, and External
+  signers supported end to end.
