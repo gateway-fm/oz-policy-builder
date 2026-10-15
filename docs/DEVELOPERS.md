@@ -93,6 +93,31 @@ The install-intent design in §4.8 requires exact installed bindings and a trust
 authority-surface verdict. No CLI command produces that verdict or intent yet; assembly,
 signing, and submission remain wallet-owned.
 
+### Reference-suite coverage gate
+
+`all_agree` covers the generated policy's modeled semantics. It does not establish the
+behavior of a composed reviewed policy. CI checks the subscription example's report against
+an exact list of acknowledged layer-1 gaps:
+
+```bash
+python3 scripts/check-unmodeled-acknowledged.py --run \
+  scripts/layer1-unmodeled-acknowledged.txt subscription=docs/examples/subscription-spec.json
+```
+
+The command runs and checks every declared `label=spec-path` pair; producer failures stop it.
+It reads each input spec to require the complete rule-index set and the exact number of each
+reviewed-policy kind in the evidence. Spec and acknowledgement paths both resolve from the
+caller's working directory; Cargo runs in the repository workspace.
+It reconciles summary fields, coverage counts, and policy gaps against the detailed evidence.
+Each declared rule needs an original permit and a denial control, and every required class
+needs an outcome for that rule. New gaps, stale acknowledgements, or entries naming an
+undeclared spec fail. Repeated policy kinds require one acknowledgement per instance.
+Permit-only classes remain visible as limitations. An acknowledgement records what layer 1
+does not test; it never waives a disagreement or proves the reviewed policy's on-chain behavior.
+Add examples to the same invocation so no declared example can go unchecked. The stdin and
+`--known-specs` modes are lower-level inspection helpers, not a complete gate. The checker
+validates local report consistency, not imported evidence authenticity.
+
 ### Build configuration (operator-side)
 
 `generate` and `verify` compile the policy and accept the same build flags (each with an
