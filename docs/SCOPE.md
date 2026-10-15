@@ -23,8 +23,7 @@ The source-reviewed account method inventory and its limits are described in
    listed identities are the user's, or trusted by the user, is decided by the wallet that
    holds the owner key, which recomputes the result itself (Decision D7). Rules for other
    contracts are listed as not analysed. The bounded reader described below still needs live
-   network verification, and must also read each relevant classic account, before its
-   observations can support that list.
+   network verification before its observations can support that list.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes live entries, returned archived entries, and omitted keys. A pure
@@ -36,7 +35,10 @@ The source-reviewed account method inventory and its limits are described in
    A bounded account scanner now derives pinned keys, reads every rule slot through `NextId`,
    follows the signer/policy closure, checks reference counts and `Count`, observes the code at
    every installed policy address and at each contract verifier named by an external signer,
-   and re-reads the account instance. It retries a changed
+   reads the classic account entry (master weight, thresholds, extra signers) of every `G…`
+   signer in the closure and of each classic account the caller names, and re-reads the
+   account instance; the classic reads count against the same signed batch budget. It retries
+   a changed
    endpoint ledger or instance as a whole. Returned archived or undecodable entries, missing
    referenced entries, and a count mismatch fail closed as incomplete account state; exceeded
    scan bounds, including a fixed 24 MiB ceiling on the entry XDR one scan retains, fail closed
@@ -46,14 +48,17 @@ The source-reviewed account method inventory and its limits are described in
    only when the stored count reconciles. The scan does not identify the wallet's intended
    administrator or establish complete reviewed method evidence. The scanner hashes the ordered
    XDR keys and values, TTL metadata, and requested absences, including inspected policy and
-   verifier instances. This digest identifies endpoint responses, not an authenticated ledger
-   snapshot.
+   verifier instances and classic account entries (whose balances and sequence numbers move it
+   on every payment: it is evidence, not the authority commitment). This digest identifies
+   endpoint responses, not an authenticated ledger snapshot. Reading every classic signer in
+   the closure, out-of-scope and expired rules included, keeps the read simple and archive-safe
+   at the cost of batches: an account with many unrelated classic signers can exhaust the
+   signed batch budget and fail closed.
    A structural adapter maps the completed scan into the pure authority model, requires
-   observed code for every installed policy, and lists eligible policy-free management rules
-   with observed fingerprints. Its output keeps the raw XDR/TTL digest separate from the
-   decoded core-state digest: changing a TTL or an unmodeled instance field can change the
-   former without changing the latter. These are candidates; the adapter does not choose
-   an administrator or turn endpoint data into a trusted verdict.
+   observed code for every installed policy, and carries the classic account entries. Its
+   output keeps the raw XDR/TTL digest separate from the decoded core-state digest: changing a
+   TTL or an unmodeled instance field can change the former without changing the latter. The
+   adapter decides nothing about authority.
    The signed version-2 development registry example binds the reviewed method-map digest and
    bounded scan protocol to the exact pinned account Wasm. Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
@@ -62,11 +67,14 @@ The source-reviewed account method inventory and its limits are described in
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
-   and compares the account, installed policies, external-signer verifiers, and selected policy
-   bindings with code hashes observed by the bounded scanner. Unknown, revoked, or changed
-   implementations are refused; a verifier is recognized only by its code at the observed
-   ledger. A contract-address delegated signer is refused: the reader does not inspect a nested
-   account's own rules, so it cannot say who that signer is.
+   and compares the account and the selected policy bindings with code hashes observed by the
+   bounded scanner. It judges nothing else: an unknown policy, an unrecognized verifier or a
+   contract-address signer anywhere on the account is reported as observed, and the pure check
+   refuses it where it can change the account, a bound policy or the target. Refusing one
+   anywhere would refuse every check on an account that has one on an unrelated rule.
+   Recognizing a binding (a reviewed registry entry, or a generated artifact rebuilt from its
+   spec) is the toolkit's, from the binding set itself; the reader checks only that the
+   address runs the expected code.
    The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
    calls and re-reading the instance do not authenticate a coherent ledger snapshot. A registry
    signature covers implementation capabilities, not live ledger state, and nothing a client

@@ -1072,8 +1072,10 @@ back or equivocate on is not a root.
   its verifier entry. Unknown verifier implementations **fail verified mode**. For
   `Signer::Delegated` C-account signers, the nested-account trust assumption is stated
   explicitly, with optional recursive account recognition. Recursive recognition is deferred:
-  until it exists, the checked account reader refuses a C-address delegated signer
-  (`E_INCOMPLETE_ACCOUNT_STATE`) rather than accept it under an unexamined nested account.
+  until it exists, the authority check refuses a C-address delegated signer on any rule that
+  can change the account, reach a bound policy or call the target (`E_UNSUPPORTED_AUTHORITY`,
+  `contract_signer`) rather than accept it under an unexamined nested account; the reader
+  reports one elsewhere as observed.
 
 **Two verification paths — reviewed vs generated (they are different problems):** a static
 registry keyed by exact wasm hash cannot pre-recognize per-grant generated wasm that does

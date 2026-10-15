@@ -435,7 +435,8 @@ pub struct AuthorityState {
     /// Hash over the ordered enumerated state (rules + transitive closure, with every
     /// installed policy's observed code hash).
     pub ordered_state_digest: Hash32,
-    /// The signing configuration of every classic account read with the account.
+    /// The signing configuration of every classic account the answer consulted: the new
+    /// rule's own `G…` signers and those of in-scope rules.
     pub classic_accounts: BTreeMap<String, ClassicAccount>,
 }
 
@@ -685,6 +686,13 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             continue;
         };
 
+        // Every classic account an in-scope rule names is part of what decides the answer.
+        for key in &signers {
+            if let StoredSignerKey::Delegated { address } = key {
+                answer.classic_used.insert(address.clone());
+            }
+        }
+
         let on_target = matches!(reach, Reach::Target { .. });
         if on_target {
             // On the new rule's own target a policy-bearing rule always defeats the new
@@ -745,9 +753,21 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             .map(|p| p.address.clone())
             .collect(),
     };
+    // Only the classic accounts the answer consulted are committed: a reader that fetched
+    // more (every classic signer in the closure, say) must not make two equal answers differ.
+    for key in &input.grant.signers {
+        if let StoredSignerKey::Delegated { address } = key {
+            answer.classic_used.insert(address.clone());
+        }
+    }
     let authority_state = AuthorityState {
         ordered_state_digest,
-        classic_accounts: input.classic_accounts.clone(),
+        classic_accounts: input
+            .classic_accounts
+            .iter()
+            .filter(|(address, _)| answer.classic_used.contains(*address))
+            .map(|(address, entry)| (address.clone(), entry.clone()))
+            .collect(),
     };
     let authority_commitment = ozpb_domain::canonical_hash(
         domains::SURFACE_VERDICT,
@@ -797,6 +817,7 @@ struct Answer {
     unresolved: Vec<Finding>,
     coverage_exclusions: Vec<ExcludedRule>,
     notes: Notes,
+    classic_used: BTreeSet<String>,
 }
 
 impl Answer {

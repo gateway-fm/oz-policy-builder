@@ -1055,6 +1055,40 @@ fn commitment_survives_a_later_ledger_and_moves_with_state_and_intent() {
         commitment(&input(&upgraded))
     );
 
+    // A classic account the answer never consulted (a reader fetched more than it needed)
+    // does not move it.
+    let mut fetched_more = input(&st);
+    fetched_more
+        .classic_accounts
+        .insert(classic(0x77), ClassicAccount::NotFound);
+    assert_eq!(commitment(&fetched_more), first.authority_commitment);
+
+    // Nor does a change to the classic account of a signer outside the scope, or on an
+    // expired rule.
+    let with_others = StateBuilder::new()
+        .owner_rule(vec![delegated(OWNER)])
+        .rule(
+            call(other_contract()),
+            None,
+            vec![delegated(STRANGER)],
+            vec![],
+        )
+        .rule(
+            StoredContextType::Default,
+            Some(LEDGER - 1),
+            vec![delegated(OWNER_2)],
+            vec![],
+        )
+        .build();
+    let base = commitment(&input(&with_others));
+    for byte in [STRANGER, OWNER_2] {
+        let mut changed = input(&with_others);
+        changed
+            .classic_accounts
+            .insert(classic(byte), ClassicAccount::NotFound);
+        assert_eq!(commitment(&changed), base);
+    }
+
     // A classic signer configuration change that leaves the owner resolvable.
     let mut reweighted = input(&st);
     reweighted.classic_accounts.insert(

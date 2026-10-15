@@ -1,34 +1,23 @@
 //! Structural projection of a bounded account scan into the pure authority model.
 //!
 //! A scan remains endpoint-reported and caller-constructible. This module neither
-//! authenticates a coherent ledger snapshot nor designates the wallet's administrator.
-//! Its fingerprints identify observed eligible rules so a future trusted wallet binding
-//! can compare its own intended identity with the scanned state.
+//! authenticates a coherent ledger snapshot nor decides anything about authority: it maps the
+//! scan's rules, signers, installed policies (with their observed code) and classic account
+//! entries into the inputs the pure check reads.
 
 use super::{
     account_reconciliation::{check_supplied_account_entries, ReconciliationBounds},
     AccountStateScan, ContextType, InstanceCounters, SignerIdentity,
 };
 use ozpb_call_surface_core::{
-    AccountState, StoredContextType, StoredPolicy, StoredRule, StoredSigner, StoredSignerKey,
+    AccountState, ClassicAccount, StoredContextType, StoredPolicy, StoredRule, StoredSigner,
+    StoredSignerKey,
 };
 use ozpb_domain::{canonical_hash, domains, Hash32, LedgerSeq, NetworkId};
-use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// A rule that could be designated by separately authenticated wallet intent.
-/// Eligibility is only structural: active, management-capable, policy-free, and backed
-/// by nonexternal signers. It grants no authority verdict on its own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AdminRuleCandidate {
-    pub rule_id: u32,
-    pub observed_fingerprint: Hash32,
-    /// (Signer storage ID, canonical delegated address), ordered by ID.
-    pub delegated_signers: Vec<(u32, String)>,
-}
-
-/// Checked mapping of one scan into the pure model, without an administrator choice.
-/// The source scan's provenance and ledger limitations remain in force.
+/// Checked mapping of one scan into the pure model. The source scan's provenance and ledger
+/// limitations remain in force.
 #[derive(Clone, Debug)]
 pub struct AccountStateProjection {
     pub network_id: NetworkId,
@@ -38,32 +27,14 @@ pub struct AccountStateProjection {
     /// Hash of validated raw entry payloads, keys, TTL metadata, and requested absences.
     /// This is an endpoint-observation identity, not a cryptographic ledger proof.
     pub raw_ordered_entry_digest: Hash32,
-    /// Canonical hash of the decoded `AccountState` model. TTLs and unmodeled storage
-    /// fields are absent here, so it must never replace `raw_ordered_entry_digest`.
+    /// Canonical hash of the decoded `AccountState` model. TTLs, unmodeled storage fields and
+    /// classic account entries are absent here, so it must never replace
+    /// `raw_ordered_entry_digest`, and it is not the authority identity (the check's
+    /// `authority_commitment` is).
     pub decoded_state_digest: Hash32,
     pub account_state: AccountState,
-    pub admin_candidates: Vec<AdminRuleCandidate>,
-}
-
-/// Canonical preimage of [`AdminRuleCandidate::observed_fingerprint`] under
-/// `ozpb:v1:account-admin-candidate`; `docs/CANONICAL-HASHING.md` specifies its encoding.
-#[derive(Serialize)]
-struct AdminCandidatePreimage<'a> {
-    network_id: NetworkId,
-    account_address: &'a str,
-    rule_id: u32,
-    scope: AdminCandidateScope,
-    valid_until: Option<u32>,
-    /// (Signer storage ID, canonical delegated address), ordered by ID.
-    signer_entries: &'a [(u32, String)],
-}
-
-/// The management surface a candidate rule reaches: every call, or calls to the account.
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum AdminCandidateScope {
-    Default,
-    CallAccount,
+    /// Classic account signing configurations read with the account, as the check needs them.
+    pub classic_accounts: BTreeMap<String, ClassicAccount>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,7 +50,7 @@ pub enum AccountProjectionError {
 }
 
 /// Reconcile a scan again at the model boundary and attach observed code to every
-/// installed policy. The result is data for a later authenticated check, never `Safe`.
+/// installed policy. The result is data for the authority check, never an answer.
 pub fn project_account_state(
     scan: &AccountStateScan,
 ) -> Result<AccountStateProjection, AccountProjectionError> {
@@ -195,56 +166,6 @@ pub fn project_account_state(
         })
         .collect::<Result<BTreeMap<_, _>, AccountProjectionError>>()?;
 
-    let mut admin_candidates = Vec::new();
-    for (&id, rule) in &scan.rules {
-        if rule
-            .valid_until
-            .is_some_and(|until| scan.reported_latest_ledger.0 > until)
-            || !rule.policy_ids.is_empty()
-            || rule.signer_ids.is_empty()
-        {
-            continue;
-        }
-        let scope = match &rule.context_type {
-            ContextType::Default => AdminCandidateScope::Default,
-            ContextType::CallContract(address) if address == &scan.account_address => {
-                AdminCandidateScope::CallAccount
-            }
-            _ => continue,
-        };
-        let mut signer_entries = Vec::new();
-        for signer_id in &rule.signer_ids {
-            let Some(signer) = scan.signers.get(signer_id) else {
-                // Reconciliation above requires this entry; retain a hard failure if
-                // the model and that invariant ever drift apart.
-                return Err(AccountProjectionError::Identity("missing candidate signer"));
-            };
-            let SignerIdentity::Delegated(address) = &signer.signer else {
-                signer_entries.clear();
-                break;
-            };
-            signer_entries.push((*signer_id, address.clone()));
-        }
-        if signer_entries.is_empty() {
-            continue;
-        }
-        signer_entries.sort_by_key(|(id, _)| *id);
-        let preimage = AdminCandidatePreimage {
-            network_id: scan.network_id,
-            account_address: &scan.account_address,
-            rule_id: id,
-            scope,
-            valid_until: rule.valid_until,
-            signer_entries: &signer_entries,
-        };
-        let observed_fingerprint = canonical_hash(domains::ACCOUNT_ADMIN_CANDIDATE, &preimage)
-            .map_err(|error| AccountProjectionError::Digest(error.to_string()))?;
-        admin_candidates.push(AdminRuleCandidate {
-            rule_id: id,
-            observed_fingerprint,
-            delegated_signers: signer_entries,
-        });
-    }
     let account_state = AccountState {
         next_id: scan.next_id,
         // The core's historical field name means the stored nonremoved Count,
@@ -264,7 +185,7 @@ pub fn project_account_state(
         raw_ordered_entry_digest: scan.ordered_entry_digest,
         decoded_state_digest,
         account_state,
-        admin_candidates,
+        classic_accounts: scan.classic_accounts.clone(),
     })
 }
 
@@ -272,11 +193,14 @@ pub fn project_account_state(
 mod tests {
     use super::*;
     use crate::{ContextRuleRecord, PolicyRecord, SignerRecord};
-    use ozpb_domain::{canonical_hash_of, LedgerSeq, NetworkId};
-    use stellar_xdr::{ScMap, ScMapEntry, ScString, ScSymbol, ScVal};
+    use ozpb_domain::{LedgerSeq, NetworkId};
 
     fn address(byte: u8) -> String {
         format!("{}", stellar_strkey::Contract([byte; 32]))
+    }
+
+    fn classic(byte: u8) -> String {
+        format!("{}", stellar_strkey::ed25519::PublicKey([byte; 32]))
     }
 
     fn scan() -> AccountStateScan {
@@ -328,6 +252,7 @@ mod tests {
                 },
             )]),
             observed_code_hashes: BTreeMap::from([(address(13), Hash32([14; 32]))]),
+            classic_accounts: BTreeMap::new(),
             ordered_entry_digest: Hash32([20; 32]),
             rpc_batches: 4,
             attempts: 1,
@@ -335,8 +260,10 @@ mod tests {
     }
 
     #[test]
-    fn projection_preserves_closure_and_lists_observed_candidates() {
-        let scan = scan();
+    fn projection_preserves_closure_code_and_classic_accounts() {
+        let mut scan = scan();
+        scan.classic_accounts
+            .insert(classic(12), ClassicAccount::NotFound);
         let projection = project_account_state(&scan).unwrap();
         assert_eq!(projection.network_id, scan.network_id);
         assert_eq!(projection.account_address, scan.account_address);
@@ -354,122 +281,7 @@ mod tests {
             projection.account_state.policies[&11].observed_wasm_hash,
             Hash32([14; 32]).to_hex()
         );
-        assert_eq!(projection.admin_candidates.len(), 1);
-        assert_eq!(projection.admin_candidates[0].rule_id, 0);
-        assert_eq!(
-            projection.admin_candidates[0].delegated_signers,
-            vec![(10, address(12))]
-        );
-
-        let mut renamed = scan.clone();
-        renamed.rules.get_mut(&0).unwrap().name = "display only".into();
-        assert_eq!(
-            projection.admin_candidates[0].observed_fingerprint,
-            project_account_state(&renamed).unwrap().admin_candidates[0].observed_fingerprint
-        );
-        let mut other_network = scan.clone();
-        other_network.network_id = NetworkId(Hash32([4; 32]));
-        assert_ne!(
-            projection.admin_candidates[0].observed_fingerprint,
-            project_account_state(&other_network)
-                .unwrap()
-                .admin_candidates[0]
-                .observed_fingerprint
-        );
-        let mut other_account = scan.clone();
-        other_account.account_address = address(6);
-        assert_ne!(
-            projection.admin_candidates[0].observed_fingerprint,
-            project_account_state(&other_account)
-                .unwrap()
-                .admin_candidates[0]
-                .observed_fingerprint
-        );
-        let mut reused_address = scan.clone();
-        reused_address.rules.get_mut(&0).unwrap().signer_ids = vec![20];
-        let signer = reused_address.signers.get_mut(&10).unwrap();
-        signer.reference_count = 1;
-        let identity = signer.signer.clone();
-        reused_address.signers.insert(
-            20,
-            SignerRecord {
-                id: 20,
-                signer: identity,
-                reference_count: 1,
-            },
-        );
-        assert_ne!(
-            projection.admin_candidates[0].observed_fingerprint,
-            project_account_state(&reused_address)
-                .unwrap()
-                .admin_candidates[0]
-                .observed_fingerprint
-        );
-
-        let mut changed = scan;
-        changed.rules.get_mut(&0).unwrap().valid_until = Some(20);
-        assert_ne!(
-            projection.admin_candidates[0].observed_fingerprint,
-            project_account_state(&changed).unwrap().admin_candidates[0].observed_fingerprint
-        );
-    }
-
-    #[test]
-    fn admin_fingerprint_is_the_documented_canonical_structure() {
-        let string = |value: &str| ScVal::String(ScString(value.try_into().unwrap()));
-        let symbol = |value: &str| ScVal::Symbol(ScSymbol(value.try_into().unwrap()));
-        let vector = |items: Vec<ScVal>| ScVal::Vec(Some(items.try_into().unwrap()));
-        let mut call_account = scan();
-        let rule = call_account.rules.get_mut(&0).unwrap();
-        rule.context_type = ContextType::CallContract(address(7));
-        rule.valid_until = Some(20);
-        for (scan, scope, valid_until, known_answer) in [
-            (
-                scan(),
-                "default",
-                vector(vec![]),
-                "716d79e7fed5973eb96adc5871b90cb1bc64ad2b4381e46ea197b1a5bab5765f",
-            ),
-            (
-                call_account,
-                "call_account",
-                vector(vec![ScVal::U32(20)]),
-                "be95557e3520d6fb56be1f8f240209adf239dd02f0cec04900e6aa099e71703a",
-            ),
-        ] {
-            // Assembled from the documented rules: a named struct is a Map keyed by field
-            // Symbols, a unit variant is Vec [Symbol], and an Option is a zero- or
-            // one-element Vec. The known answers were also recomputed outside this crate.
-            let body = ScVal::Map(Some(
-                ScMap::sorted_from_entries(
-                    [
-                        ("account_address", string(&address(7))),
-                        ("network_id", string(&Hash32([3; 32]).to_hex())),
-                        ("rule_id", ScVal::U32(0)),
-                        ("scope", vector(vec![symbol(scope)])),
-                        (
-                            "signer_entries",
-                            vector(vec![vector(vec![ScVal::U32(10), string(&address(12))])]),
-                        ),
-                        ("valid_until", valid_until),
-                    ]
-                    .into_iter()
-                    .map(|(key, val)| ScMapEntry {
-                        key: symbol(key),
-                        val,
-                    }),
-                )
-                .unwrap(),
-            ));
-            let fingerprint =
-                project_account_state(&scan).unwrap().admin_candidates[0].observed_fingerprint;
-            assert_eq!(
-                fingerprint,
-                canonical_hash_of(domains::ACCOUNT_ADMIN_CANDIDATE, body).unwrap(),
-                "{scope}"
-            );
-            assert_eq!(fingerprint.to_hex(), known_answer, "{scope}");
-        }
+        assert_eq!(projection.classic_accounts, scan.classic_accounts);
     }
 
     #[test]
@@ -516,31 +328,5 @@ mod tests {
             project_account_state(&forged_rule),
             Err(AccountProjectionError::Closure(message)) if message.contains("outside 0..NextId")
         ));
-    }
-
-    #[test]
-    fn ambiguous_or_external_management_rules_are_not_designated() {
-        let mut ambiguous = scan();
-        ambiguous.rules.get_mut(&2).unwrap().context_type = ContextType::Default;
-        ambiguous.rules.get_mut(&2).unwrap().policy_ids.clear();
-        ambiguous.policies.clear();
-        let candidates = project_account_state(&ambiguous).unwrap().admin_candidates;
-        assert_eq!(
-            candidates
-                .iter()
-                .map(|candidate| candidate.rule_id)
-                .collect::<Vec<_>>(),
-            vec![0, 2]
-        );
-
-        let mut external = scan();
-        external.signers.get_mut(&10).unwrap().signer = SignerIdentity::External {
-            verifier: address(15),
-            key: vec![1, 2],
-        };
-        assert!(project_account_state(&external)
-            .unwrap()
-            .admin_candidates
-            .is_empty());
     }
 }
