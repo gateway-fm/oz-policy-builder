@@ -75,7 +75,9 @@ entries for unchecked specs fail the gate. The focused gate uses one `--run` inv
 kinds require one acknowledgement per instance. Permit-only classes are printed as limitations.
 See [scope item 3](SCOPE.md) for the reviewed-policy Wasm boundary.
 
-To retain the complete subscription report for inspection:
+To retain the complete subscription report, use this inspection helper. It checks report
+consistency and acknowledgements but skips the input-spec checks. Run the focused checks
+above for the complete gate:
 
 ```bash
 set -o pipefail
