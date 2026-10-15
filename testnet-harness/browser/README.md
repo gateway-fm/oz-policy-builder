@@ -8,7 +8,7 @@ would use the same technique.
 ```
 cd testnet-harness/browser
 npm ci
-npm test                                     # offline: the assertion verifier
+npm test                                     # offline: the assertion verifier, passkey.mjs's DEBUG guard
 OZPB_BROWSER_CHANNEL=chrome node webauthn.mjs
 ```
 
@@ -36,13 +36,29 @@ hold:
 The script exits 0 only if all of them hold. It does not verify the registration's
 attestation, nor `tokenBinding` or `crossOrigin`.
 
-**What this does not show.** The challenge is the size and role of a smart account's
-`auth_digest`, but nothing binds it to a transaction, and no contract verifies the signature.
-A contract would also need it as 64-byte r‖s rather than the DER that WebAuthn returns, and
-nothing here converts it. An
-on-chain passkey signer would be an `External` signer behind a WebAuthn verifier contract, and
-this tree refuses `External` signers in a PolicySpec. The on-chain install and enforcement in
-`../README.md` use a `Delegated` ed25519 signer.
+**What this does not show.** The challenge here is random: nothing binds it to a transaction,
+and no contract verifies the signature. The on-chain version is `passkey.mjs`, below.
+
+## `passkey.mjs`: the testnet harness's passkey owner
+
+`../run.sh` with `OZPB_HARNESS_OWNER=passkey` uses the same page (`app.html`), virtual
+authenticator (`authenticator.mjs`) and assertion check (`assertion.mjs`) for a smart account's
+owner. It is not run by hand. `../scripts/setup.mjs` calls `createPasskey()`,
+and every later owner signature goes through `signChallenge()`:
+
+- The challenge is the account's 32-byte `auth_digest` for one authorization entry.
+- The assertion is checked with `assertion.mjs` before it is used.
+- `../scripts/owner.mjs` converts the DER signature to the low-s r ‖ s the verifier contract
+  takes.
+- The OpenZeppelin WebAuthn verifier then checks it on chain.
+
+The harness runs as separate scripts, and a virtual authenticator dies with its browser. So the
+credential, private key included, is exported through the DevTools Protocol after creation and
+imported into a fresh virtual authenticator for each signature. It is kept with the run's other
+throwaway secrets, never printed, never in `out/` or the run directory. That is the one way this
+differs from a device, whose key never leaves it: here the authenticator signs with a key the
+harness holds. Playwright's `pw:protocol` and `pw:channel` debug logs would print that key, so
+`passkey.mjs` refuses to run when `DEBUG` could enable them.
 
 ## `recon.mjs` and `drive-pollywallet.mjs`: a real passkey wallet
 
@@ -87,6 +103,10 @@ was run twice; the second run used the version committed here):
 - Nothing here installed a policy into a pollywallet account, and the toolkit could not do so
   yet. The account's code hash is not the account wasm pinned in
   `ozpb_domain::pinned_upstream`, so the signed registry would refuse to recognize it
-  (`E_INCOMPATIBLE_ACCOUNT`). Its signer is `External`, which this tree's PolicySpec refuses.
-- Getting there needs two things: pollywallet's account wasm reviewed and pinned, and External
-  signers supported end to end.
+  (`E_INCOMPATIBLE_ACCOUNT`). Its contract metadata shows a different soroban-sdk and stellar-cli
+  from our pinned inputs, and so does its verifier's.
+- What the testnet harness does instead: with `OZPB_HARNESS_OWNER=passkey` it creates an account
+  of the same shape, a single passkey `External` signer on rule 0 with the same key-data layout,
+  on the pinned account and the pinned OpenZeppelin WebAuthn verifier. It then installs a
+  generated policy into it, with the passkey signing (`../README.md`). pollywallet's own UI cannot
+  create that account: it deploys its own wasm through its own relayer.

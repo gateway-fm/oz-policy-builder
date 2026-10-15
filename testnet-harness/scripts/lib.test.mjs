@@ -6,15 +6,16 @@
 //   node --test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, sign as nodeSign, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { Address, Keypair, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 
 import {
   ruleIdsXdr, authDigest, delegatedSigner, authPayload, i128, callContractRule, optionU32,
   checkAuthInvocation, contractCall, signForSmartAccount, policyDenial,
+  externalSigner, passkeyKeyData, p256PublicKeyRaw, derToLowS, webAuthnSigData,
 } from './lib.mjs';
-import { PINNED_ACCOUNT_WASM } from './rpc.mjs';
+import { PINNED_ACCOUNT_WASM, PINNED_WEBAUTHN_VERIFIER_WASM } from './rpc.mjs';
 
 const bytesOf = (b) => Buffer.from(b?.value ?? b); // SDK 17 wraps ScVal bytes in `ScBytes { value }`
 const hex = (b) => bytesOf(b).toString('hex');
@@ -253,4 +254,175 @@ test('a denial counts only when the policy itself raised the code inside the acc
   assert.equal(policyDenial('HostError: Error(Budget, ExceededLimit)', ACCOUNT, POLICY), null);
   // The account's failure must carry the code the policy raised.
   assert.equal(policyDenial(REAL_DENIAL.replace(`${ACCOUNT}, Error(Contract, #6)]`, `${ACCOUNT}, Error(Contract, #7)]`), ACCOUNT, POLICY), null);
+});
+
+// --- External signers: a passkey behind the OpenZeppelin WebAuthn verifier ------------------------
+//
+// stellar-accounts 0.7.2 hands an External signer's proof to `verifier.verify(auth_digest,
+// key_data, sig_data)`. The WebAuthn verifier reads `key_data` as a 65-byte uncompressed P-256 key
+// followed by the credential id, and `sig_data` as the XDR of `WebAuthnSigData`.
+
+const P256_N = BigInt('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551');
+const p256 = () => generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+const rawOf = (publicKey) => {
+  const jwk = publicKey.export({ format: 'jwk' });
+  return Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]);
+};
+// DER for ECDSA-Sig-Value { r INTEGER, s INTEGER }, written from X.690 by hand.
+const derInt = (v) => {
+  let b = Buffer.from(v.toString(16).padStart(2, '0').replace(/^(.(..)*)$/, '0$1'), 'hex');
+  if (b[0] & 0x80) b = Buffer.concat([Buffer.from([0]), b]);
+  return Buffer.concat([Buffer.from([0x02, b.length]), b]);
+};
+const der = (r, s) => {
+  const body = Buffer.concat([derInt(r), derInt(s)]);
+  return Buffer.concat([Buffer.from([0x30, body.length]), body]);
+};
+const be32 = (v) => Buffer.from(v.toString(16).padStart(64, '0'), 'hex');
+
+// Signer::External(Address, Bytes): Vec[Symbol("External"), Address, Bytes].
+test('Signer::External encodes as a three-element vector', () => {
+  const verifier = StrKey.encodeContract(Buffer.alloc(32, 0x71));
+  const keyData = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 0x72), Buffer.from('cred')]);
+  assert.equal(
+    hex(externalSigner(verifier, keyData).toXDR()),
+    hex(X.scVec([X.scSymbol('External'), X.scAddress(verifier), X.scBytes(keyData)])),
+  );
+});
+
+test('passkey key data is the uncompressed P-256 key followed by the credential id', () => {
+  const key = rawOf(p256().publicKey);
+  const credentialId = Buffer.from('a credential id');
+  assert.equal(hex(passkeyKeyData(key, credentialId)), hex(Buffer.concat([key, credentialId])));
+  // The verifier reads exactly bytes 0..65 as the key: anything else would verify against the
+  // wrong key or not at all.
+  assert.throws(() => passkeyKeyData(key.subarray(1), credentialId), /65-byte/);
+  assert.throws(() => passkeyKeyData(Buffer.concat([Buffer.from([2]), key.subarray(1)]), credentialId), /uncompressed/);
+  assert.throws(() => passkeyKeyData(key, Buffer.alloc(0)), /credential id/);
+});
+
+test('the P-256 public key comes out of the SPKI WebAuthn returns as 04 ‖ X ‖ Y', () => {
+  const { publicKey } = p256();
+  const spki = publicKey.export({ format: 'der', type: 'spki' });
+  assert.equal(hex(p256PublicKeyRaw(spki)), hex(rawOf(publicKey)));
+  const ed = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' });
+  assert.throws(() => p256PublicKeyRaw(ed), /P-256/);
+});
+
+test('a DER signature becomes 64-byte r ‖ s with s in the lower half of the order', () => {
+  const { publicKey, privateKey } = p256();
+  const message = Buffer.from('authenticatorData ‖ sha256(clientDataJSON)');
+  for (let i = 0; i < 8; i += 1) {
+    const sig = nodeSign('sha256', message, { key: privateKey, dsaEncoding: 'der' });
+    const raw = derToLowS(sig);
+    assert.equal(raw.length, 64);
+    assert.ok(BigInt(`0x${hex(raw.subarray(32))}`) <= P256_N / 2n, 'low-S');
+    assert.ok(verify('sha256', message, { key: publicKey, dsaEncoding: 'ieee-p1363' }, raw), 'still verifies');
+  }
+});
+
+test('a high-S signature is folded to n - s, and short integers are left-padded', () => {
+  const r = 5n;
+  const lowS = 7n;
+  assert.equal(hex(derToLowS(der(r, lowS))), hex(Buffer.concat([be32(r), be32(lowS)])));
+  assert.equal(hex(derToLowS(der(r, P256_N - lowS))), hex(Buffer.concat([be32(r), be32(lowS)])));
+  // A 32-byte value with its top bit set is a 33-byte DER INTEGER with a leading zero.
+  const big = (1n << 255n) + 3n;
+  assert.equal(der(big, lowS)[3], 33);
+  assert.equal(hex(derToLowS(der(big, lowS))), hex(Buffer.concat([be32(big), be32(lowS)])));
+  // And a real one: both halves of the pair verify, only the low one is what we send.
+  const { publicKey, privateKey } = p256();
+  const message = Buffer.from('m');
+  const sig = nodeSign('sha256', message, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+  const [rr, ss] = [BigInt(`0x${hex(sig.subarray(0, 32))}`), BigInt(`0x${hex(sig.subarray(32))}`)];
+  const high = ss > P256_N / 2n ? ss : P256_N - ss;
+  const folded = derToLowS(der(rr, high));
+  assert.equal(hex(folded.subarray(32)), hex(be32(P256_N - high)));
+  assert.ok(verify('sha256', message, { key: publicKey, dsaEncoding: 'ieee-p1363' }, folded));
+});
+
+test('malformed DER signatures are refused rather than truncated', () => {
+  const good = der(5n, 7n);
+  assert.throws(() => derToLowS(Buffer.concat([good, Buffer.from([0])])), /DER/);
+  assert.throws(() => derToLowS(Buffer.from([0x31, ...good.subarray(1)])), /DER/);
+  assert.throws(() => derToLowS(der(0n, 7n)), /range/);
+  assert.throws(() => derToLowS(der(5n, P256_N)), /range/);
+  assert.throws(() => derToLowS(der(1n << 256n, 7n)), /range|DER/);
+  // A negative INTEGER (top bit set, no leading zero), a non-minimal leading zero, and a
+  // long-form sequence length: valid BER at best, not the DER WebAuthn specifies.
+  assert.throws(() => derToLowS(Buffer.from('3006020180020107', 'hex')), /DER/);
+  assert.throws(() => derToLowS(Buffer.from('300702020005020107', 'hex')), /DER/);
+  assert.throws(() => derToLowS(Buffer.from('30810602010502010700', 'hex').subarray(0, 9)), /DER/);
+});
+
+// WebAuthnSigData { signature: BytesN<64>, authenticator_data: Bytes, client_data: Bytes } is a
+// contracttype struct: an ScMap keyed by field-name symbols in ascending order.
+test('WebAuthnSigData is the XDR of a struct map with fields in symbol order', () => {
+  const authenticatorData = Buffer.alloc(37, 0x05);
+  const clientDataJSON = Buffer.from('{"type":"webauthn.get","challenge":"x"}');
+  const signature = Buffer.alloc(64, 0x09);
+  assert.equal(
+    hex(webAuthnSigData({ authenticatorData, clientDataJSON, signature })),
+    hex(X.scMap([
+      [X.scSymbol('authenticator_data'), X.scBytes(authenticatorData)],
+      [X.scSymbol('client_data'), X.scBytes(clientDataJSON)],
+      [X.scSymbol('signature'), X.scBytes(signature)],
+    ])),
+  );
+  assert.throws(() => webAuthnSigData({ authenticatorData, clientDataJSON, signature: Buffer.alloc(70) }), /64/);
+});
+
+test('AuthPayload for an External signer carries the verifier proof as the signer\'s bytes', () => {
+  const verifier = StrKey.encodeContract(Buffer.alloc(32, 0x73));
+  const keyData = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 0x74), Buffer.from('id')]);
+  const proof = Buffer.from('sig data xdr');
+  const expected = X.scMap([
+    [X.scSymbol('context_rule_ids'), X.scVec([Buffer.concat([X.u32(3), X.u32(0)])])],
+    [X.scSymbol('signers'), X.scMap([[X.scVec([X.scSymbol('External'), X.scAddress(verifier), X.scBytes(keyData)]), X.scBytes(proof)]])],
+  ]);
+  assert.equal(hex(authPayload([{ signer: externalSigner(verifier, keyData), proof }], [0]).toXDR()), hex(expected));
+});
+
+test('signing with an External signer: one entry, and the passkey signs exactly the account digest', async () => {
+  const account = StrKey.encodeContract(Buffer.alloc(32, 0x68));
+  const verifier = StrKey.encodeContract(Buffer.alloc(32, 0x69));
+  const keyData = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 0x6a), Buffer.from('id')]);
+  const until = 654321;
+  const asked = [];
+  const passkey = { verifier, keyData, sign: async (digest) => { asked.push(Buffer.from(digest)); return Buffer.from('proof'); } };
+
+  const { accountEntry, delegateEntry, digest } = await signForSmartAccount({
+    entry: recordedAccountEntry(account), expect: transferTo(account), signer: passkey, ruleIds: [0],
+    validUntilLedger: until, networkPassphrase: Networks.TESTNET,
+  });
+
+  assert.equal(delegateEntry, null, 'an External signer is verified by its verifier, not by a second entry');
+  const accountPreimage = X.authPreimage(Networks.TESTNET, 42n, until,
+    X.invocation(TOKEN, 'transfer', [X.scAddress(account), X.scI128(1n)]));
+  assert.equal(hex(digest), hex(authDigest(sha256(accountPreimage), [0])));
+  assert.deepEqual(asked.map(hex), [hex(digest)]);
+  const creds = accountEntry.credentials.address;
+  assert.equal(creds.signatureExpirationLedger, until);
+  assert.equal(hex(creds.signature.toXDR()),
+    hex(authPayload([{ signer: externalSigner(verifier, keyData), proof: Buffer.from('proof') }], [0]).toXDR()));
+});
+
+test('an External signer is not asked to sign a recorded invocation that is not the intended call', async () => {
+  const account = StrKey.encodeContract(Buffer.alloc(32, 0x6b));
+  let asked = 0;
+  const passkey = { verifier: account, keyData: Buffer.alloc(66, 4), sign: async () => { asked += 1; return Buffer.alloc(0); } };
+  await assert.rejects(
+    signForSmartAccount({
+      entry: recordedAccountEntry(account, transferTo(account, 2n)), expect: transferTo(account, 1n), signer: passkey,
+      ruleIds: [0], validUntilLedger: 1, networkPassphrase: Networks.TESTNET,
+    }),
+    /not the intended call/,
+  );
+  assert.equal(asked, 0);
+});
+
+test('the pinned WebAuthn verifier hash is the one the README quotes', () => {
+  assert.match(PINNED_WEBAUTHN_VERIFIER_WASM, /^[0-9a-f]{64}$/);
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.ok(readme.includes(PINNED_WEBAUTHN_VERIFIER_WASM), 'README does not quote the pinned verifier hash');
 });

@@ -8,6 +8,8 @@
 #   bash testnet-harness/run.sh
 #   OZPB_BIN=target/debug/ozpb bash testnet-harness/run.sh    # use a built CLI instead of cargo run
 #   OZPB_HARNESS_OUT=/tmp/run bash testnet-harness/run.sh     # choose where the artifacts land
+#   OZPB_HARNESS_OWNER=passkey OZPB_BROWSER_CHANNEL=chrome bash testnet-harness/run.sh
+#                                   # the account's owner is a headless passkey, not an ed25519 key
 #
 # Everything the run produces is kept under `testnet-harness/runs/<UTC timestamp>-<pid>/` (gitignored):
 # run.json (every address and transaction hash), the import bundle, the recording, the spec, the
@@ -21,6 +23,9 @@ HARNESS="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HARNESS/.." && pwd)"
 SCRIPTS="$HARNESS/scripts"
 cd "$ROOT"
+
+OWNER="${OZPB_HARNESS_OWNER:-ed25519}"
+case "$OWNER" in ed25519|passkey) ;; *) echo "OZPB_HARNESS_OWNER is ed25519 or passkey, not $OWNER"; exit 1 ;; esac
 
 for tool in node npm stellar cargo; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required"; exit 1; }
@@ -45,9 +50,12 @@ export OZPB_HARNESS_SECRETS="$SECRETS/keys.json"
 
 # Always, so node_modules is exactly the lockfile rather than whatever an earlier install left.
 npm ci --prefix "$SCRIPTS" --no-audit --no-fund --silent
+# A passkey owner signs in headless Chromium (Playwright). OZPB_BROWSER_CHANNEL=chrome uses an
+# installed Google Chrome; without it, Playwright's own build must have been installed once.
+if [ "$OWNER" = passkey ]; then npm ci --prefix "$HARNESS/browser" --no-audit --no-fund --silent; fi
 
-say "1. setup: throwaway keys, the pinned OpenZeppelin account"
-node "$SCRIPTS/setup.mjs" --run-dir "$RUN"
+say "1. setup: throwaway keys, the pinned OpenZeppelin account (owner: $OWNER)"
+node "$SCRIPTS/setup.mjs" --run-dir "$RUN" --owner "$OWNER" ${OZPB_HARNESS_VERIFIER:+--verifier "$OZPB_HARNESS_VERIFIER"}
 AMOUNT="$(field amount)"
 RECIPIENT="$(field recipient)"
 OTHER="$(field payer)"   # a funded account, so a wrong-recipient transfer cannot fail for lack of one
@@ -58,6 +66,12 @@ say "2. record: the owner moves funds out of the account, then ozpb imports the 
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --signer owner --rule 0 \
     --amount "$AMOUNT" --to "$RECIPIENT" --expect permit --bundle "$RUN/import-bundle.json"
 ozpb import --bundle "$RUN/import-bundle.json" > "$RUN/recording.json"
+if [ "$OWNER" = passkey ]; then
+    # Negative control: the same transfer, the passkey signing random bytes instead of the account's
+    # digest. The WebAuthn verifier must refuse it with its own ChallengeInvalid (#3114).
+    node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --signer owner --rule 0 --wrong-challenge yes \
+        --amount "$AMOUNT" --to "$RECIPIENT" --expect deny:3114
+fi
 
 say "3. spec: the template, filled from the recording (synthesis cannot run here; see README)"
 node "$SCRIPTS/write-spec.mjs" --run-dir "$RUN"
@@ -72,7 +86,7 @@ shopt -s nullglob
 WASMS=("$RUN"/policy/*.wasm)
 [ "${#WASMS[@]}" -eq 1 ] || { echo "expected one wasm in $RUN/policy, found ${#WASMS[@]}"; exit 1; }
 
-say "5. install: deploy the policy, add_context_rule signed by the owner"
+say "5. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}"
 
 say "6. permit exactly the recorded transfer, once; deny the rest"
@@ -82,6 +96,6 @@ node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$OTHER" --e
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect deny:7
 
 say "done"
-echo "  account  https://stellar.expert/explorer/testnet/contract/$(field account)"
+echo "  account  https://stellar.expert/explorer/testnet/contract/$(field account)  (owner: $OWNER)"
 echo "  policy   https://stellar.expert/explorer/testnet/contract/$(field policy)"
 echo "  run      $RUN/run.json"

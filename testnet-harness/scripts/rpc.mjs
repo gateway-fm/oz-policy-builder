@@ -1,9 +1,9 @@
 // Network side of the harness: one RPC client, Friendbot, and a submit loop that refuses to sign
 // what simulation rejected. Everything here talks to the live network; nothing here holds a key
 // longer than the call that signs with it.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import {
-  Address, Asset, Keypair, Networks, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
+  Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
 } from '@stellar/stellar-sdk';
 
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
@@ -14,6 +14,14 @@ export const RPC_ORIGIN = new URL(RPC_URL).origin;
 
 /** The pinned OpenZeppelin account example, `ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM`. */
 export const PINNED_ACCOUNT_WASM = 'a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289';
+
+/**
+ * OpenZeppelin's WebAuthn verifier example (`examples/multisig-smart-account/webauthn-verifier`),
+ * built from the same tag, commit and toolchain as the pins in `ozpb_domain::pinned_upstream`.
+ * Pinned here for the harness only; the registry does not recognize it yet. The README says how
+ * to reproduce it.
+ */
+export const PINNED_WEBAUTHN_VERIFIER_WASM = 'e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76';
 
 /** The native-XLM Stellar Asset Contract: derived, never deployed. */
 export const NATIVE_SAC = Asset.native().contractId(NETWORK_PASSPHRASE);
@@ -91,6 +99,17 @@ export async function recordAuth(payer, operation, stage) {
   return sim.result?.auth ?? [];
 }
 
+/** Simulate a read-only call and return its value as an ScVal. Nothing is signed or sent. */
+export async function viewCall(payer, contract, fn, fnArgs = []) {
+  const source = await server.getAccount(payer.publicKey());
+  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
+    .setTimeout(60).build();
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
+  return sim.result.retval;
+}
+
 /** The wasm hash a contract instance runs, as the network reports it. */
 export async function contractCodeHash(contractId) {
   const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
@@ -114,7 +133,8 @@ export const contractIdOf = (scv) => {
 // --- run state ---------------------------------------------------------------------------------
 //
 // Two files, and the split is the point. `run.json` holds public addresses and transaction hashes
-// and lives in the run directory, which is meant to be read. The secret seeds live in the file
+// and lives in the run directory, which is meant to be read. The secrets — the seeds, and with a
+// passkey owner the virtual authenticator's exported credential — live in the file
 // `OZPB_HARNESS_SECRETS` names, which `run.sh` puts in a temp directory it deletes on exit; they
 // are never printed.
 
@@ -137,16 +157,44 @@ export function writeSecrets(secrets) {
   writeFileSync(secretsPath(), JSON.stringify(secrets), { mode: 0o600, flag: 'wx' });
 }
 
-export function loadKey(name) {
-  let secrets;
+function readSecrets() {
   try {
-    secrets = JSON.parse(readFileSync(secretsPath(), 'utf8'));
+    return JSON.parse(readFileSync(secretsPath(), 'utf8'));
   } catch {
     // Deliberately not the parser's message: it can quote the file's contents, which are seeds.
     throw new Error('the secrets file is unreadable or not JSON');
   }
-  if (!secrets[name]) throw new Error(`no ${name} key in the secrets file`);
-  return Keypair.fromSecret(secrets[name]);
+}
+
+/**
+ * Replace one entry of the secrets file this run created (`writeSecrets` made it). Used to keep a
+ * passkey's advancing sign count. Written beside it and renamed over it, so an interrupted write
+ * cannot lose the seeds the file also holds.
+ */
+export function updateSecret(name, value) {
+  const secrets = readSecrets();
+  if (!(name in secrets)) throw new Error(`no ${name} entry in the secrets file to update`);
+  secrets[name] = value;
+  const path = secretsPath();
+  const next = `${path}.next`;
+  try {
+    writeFileSync(next, JSON.stringify(secrets), { mode: 0o600, flag: 'wx' });
+    renameSync(next, path);
+  } catch (e) {
+    rmSync(next, { force: true });
+    throw e;
+  }
+}
+
+/** A secret entry as stored, for the ones that are not seeds. */
+export function loadSecret(name) {
+  const secrets = readSecrets();
+  if (!secrets[name]) throw new Error(`no ${name} entry in the secrets file`);
+  return secrets[name];
+}
+
+export function loadKey(name) {
+  return Keypair.fromSecret(loadSecret(name));
 }
 
 /** Parse `--name value` pairs; positional arguments are not used, and a value may not be a flag. */

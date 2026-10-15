@@ -6,8 +6,9 @@
 // The rule is built from the spec the policy was generated from, not from arguments: its target,
 // expiry and signer set are the ones compiled into the policy, which refuses (`SignerSetDiverged`)
 // if the live rule's signers ever differ from them. The owner signs through rule 0, the Default
-// rule the constructor created; the account's `add_context_rule` then calls the policy's
-// `install`, so a policy that refuses installation fails this transaction.
+// rule the constructor created: an ed25519 key, or a passkey signing in a headless browser
+// (`owner.mjs`). The account's `add_context_rule` then calls the policy's `install`, so a policy
+// that refuses installation fails this transaction.
 //
 // What this does NOT do: `prepare_install_intent` and the authority-surface check
 // (`docs/SCOPE.md` §1) are not exported for wallet use on this tree, so nothing here establishes
@@ -16,14 +17,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import {
-  Address, Operation, TransactionBuilder, nativeToScVal, rpc, scValToNative, xdr,
-} from '@stellar/stellar-sdk';
+import { Address, Operation, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk';
 
 import { callContractRule, contractCall, delegatedSigner, entryAddress, optionU32, signForSmartAccount } from './lib.mjs';
+import { ownerSigner } from './owner.mjs';
 import {
   NETWORK_PASSPHRASE, args, assertTestnet, contractCodeHash, contractIdOf, latestLedger, loadKey, log,
-  readJson, recordAuth, server, submit, writeJson,
+  readJson, recordAuth, submit, viewCall, writeJson,
 } from './rpc.mjs';
 
 const ADMIN_RULE = 0;
@@ -34,7 +34,7 @@ const run = readJson(runPath);
 const spec = readJson(run.spec);
 const wasm = readFileSync(opts.wasm);
 const payer = loadKey('payer');
-const owner = loadKey('owner');
+const owner = await ownerSigner(run);
 
 if (spec.rules.length !== 1) throw new Error('the harness installs single-rule specs');
 const rule = spec.rules[0];
@@ -92,7 +92,7 @@ const { accountEntry, delegateEntry } = await signForSmartAccount({
   entry: own[0], expect: contractCall(run.account, 'add_context_rule', ruleArgs), signer: owner, ruleIds: [ADMIN_RULE],
   validUntilLedger: (await latestLedger()) + 100, networkPassphrase: NETWORK_PASSPHRASE,
 });
-const installed = await submit(payer, addRule([accountEntry, delegateEntry]), { stage: 'add_context_rule' });
+const installed = await submit(payer, addRule([accountEntry, delegateEntry].filter(Boolean)), { stage: 'add_context_rule' });
 const contextRule = scValToNative(installed.returnValue);
 const ruleId = Number(contextRule.id);
 log(`installed rule ${ruleId} "${contextRule.name}" → policy ${policy}  (tx ${installed.hash})`);
@@ -100,15 +100,7 @@ log(`installed rule ${ruleId} "${contextRule.name}" → policy ${policy}  (tx ${
 // --- read it back --------------------------------------------------------------------------------
 // From the policy's side, not just the account's: `is_installed` is true only if the policy's own
 // `install` ran for this (account, rule).
-async function view(contract, fn, fnArgs) {
-  const source = await server.getAccount(payer.publicKey());
-  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
-    .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
-    .setTimeout(60).build();
-  const sim = await server.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(sim)) throw new Error(`${fn}: ${sim.error.split('\n')[0]}`);
-  return scValToNative(sim.result.retval);
-}
+const view = async (contract, fn, fnArgs) => scValToNative(await viewCall(payer, contract, fn, fnArgs));
 const isInstalled = await view(policy, 'is_installed', [xdr.ScVal.scvU32(ruleId), new Address(run.account).toScVal()]);
 const remaining = await view(policy, 'remaining_calls', [xdr.ScVal.scvU32(ruleId), new Address(run.account).toScVal()]);
 if (isInstalled !== true) throw new Error('policy does not report itself installed');

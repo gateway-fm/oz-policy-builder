@@ -13,8 +13,9 @@
 <body>
 <h1>OZ Policy Builder: passkey signing</h1>
 <p>Creates a secp256r1 (ES256) passkey and signs a 32-byte challenge with it.
-The challenge is the size and role of an account's <code>auth_digest</code>; it is not bound to any
-transaction.</p>
+The script driving the page chooses the challenge: <code>webauthn.mjs</code> a random one, the
+testnet harness a smart account's <code>auth_digest</code> (or, for its negative control, random
+bytes in its place).</p>
 <button id="create">1. Create passkey</button>
 <label for="challenge">Challenge (64 hex characters)</label>
 <input id="challenge" autocomplete="off" spellcheck="false">
@@ -36,7 +37,7 @@ document.getElementById('create').onclick = async () => {
     const cred = await navigator.credentials.create({ publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rp: { name: 'ozpb', id: 'localhost' },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'delegate', displayName: 'delegate' },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'owner', displayName: 'owner' },
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }], // ES256: secp256r1, the curve Soroban verifies
       authenticatorSelection: { userVerification: 'required', residentKey: 'required' },
       timeout: 20000,
