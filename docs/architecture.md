@@ -706,7 +706,7 @@ endpoint; API role + isolated sandbox-worker role, §3).
 | `dry_run` | layered (see §4.5) | offline layers deterministic; live preflight = network read; any testnet deploy/submit mode = **mutating, explicitly gated** |
 | `verify` | mixed, reported separately | source reproduction · wasm reproduction · spec conformance · offline behavioral conformance (each deterministic) · current-network preflight (state-dependent) |
 | `check_against_policy` | network read, state-dependent, **recognition-scoped** | proposed invocation vs an *installed* policy → predicted permit/deny — only for implementations recognized via a static reviewed-registry entry **or a fully verified generated-artifact attestation** (§4.10). Anything else returns `unsupported`, never a guess. Responses identify the ledger anchor, exact storage entries and configuration read, restore status, and the race window; a live preflight remains the strongest state-dependent evidence, not a durable verdict |
-| `check_policy_call_surface` | network read, state-dependent | account + exact `PolicyBindingSet` + the spec rule to install → **authority list** (§4.8) for a stated scope (the target, the account's management surface, the bound policies): who can change the account or reset the policies, each with exactly who must sign, plus named `refusals`, `unresolved` evidence gaps and coverage exclusions — an observation at exactly one ledger with an `authority_commitment` over state and intent. Never a "safe" verdict and advisory over MCP: the key-holding wallet recomputes it and decides (Decision D7) |
+| `check_policy_call_surface` | network read, state-dependent | account + exact `PolicyBindingSet` + the spec rule to install + an operator-configured `rpc_source` name (never a URL) → **authority list** (§4.8) for a stated scope (the target, the account's management surface, the bound policies): who can change the account or reset the policies, each with exactly who must sign, plus named `refusals`, `unresolved` evidence gaps and coverage exclusions — an observation at exactly one ledger with an `authority_commitment` over state and intent. Never a "safe" verdict and advisory over MCP: the key-holding wallet recomputes it and decides (Decision D7) |
 | `prepare_install_intent` | pure | PolicySpec + account record + completed `PolicyBindingSet` + an authority-list artifact with no refusal or unresolved item (it validates artifact consistency; *currency* comes from re-running the scanner before signing) → install operations and parameters |
 | `assemble_install_transaction` | network read | intent → unsigned XDR with current sequence, fees, ledger bounds, and restoration preamble handling; **the wallet independently re-validates and re-simulates the returned XDR before requesting any signature** (§4.8) |
 
@@ -762,8 +762,9 @@ policy."*
 - **Current stopping point:** deployment and signing are not MCP capabilities (§4.6). The
   skill shows the generated Rust, layer-1 reference report, verification dimensions, and a
   plain-English account of the grant and its unconstrained parts (§6.1). It stops before
-  installation. A complete dry run, live authority-surface check, and wallet review are
-  prerequisites for a future install handoff; the current skill does not claim they ran.
+  installation. It may relay the advisory `check_policy_call_surface` answer, but never calls
+  an account safe; a complete dry run and the wallet's own authority check and review are
+  prerequisites for a future install handoff, and the skill does not claim they ran.
 - **Future install handoff:** keep it human-invoked (`disable-model-invocation` on the install
   sub-skill), require per-call user interaction for wallet-adjacent tools, and show the full
   dry-run report and live call-surface result before explicit confirmation. The agent must

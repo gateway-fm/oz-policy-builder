@@ -481,9 +481,15 @@ mod tests {
                         signer_ids: vec![0],
                         policy_ids: vec![0],
                     },
+                    source: "testnet".into(),
+                    evidence_trust: "rpc_reported".into(),
+                    raw_ordered_entry_digest: "33".repeat(32),
+                    rpc_batches: 4,
+                    attempts: 1,
                 },
                 authority_commitment: "22".repeat(32),
             },
+            summary: String::new(),
         };
         PrepareInstallIntentInput {
             spec: spec_json,

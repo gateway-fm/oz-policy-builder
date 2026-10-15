@@ -26,14 +26,8 @@ fn verification_tools_are_listed_with_schemas() {
         );
     }
     // These names carry stronger claims than the available evidence. A layer-1
-    // reference run is not a full dry run, and the current account reader cannot
-    // authenticate a complete authority verdict or installation readiness.
-    for unavailable in [
-        "dry_run",
-        "check_against_policy",
-        "check_policy_call_surface",
-        "prepare_install_intent",
-    ] {
+    // reference run is not a full dry run, and installation readiness is the wallet's.
+    for unavailable in ["dry_run", "check_against_policy", "prepare_install_intent"] {
         assert!(
             tools.iter().all(|tool| tool["name"] != unavailable),
             "{unavailable} must not be advertised without its trusted evidence"

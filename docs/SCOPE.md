@@ -22,8 +22,13 @@ The source-reviewed account method inventory and its limits are described in
    unrecognized external signers, classic multisig, a missing classic account). Whether the
    listed identities are the user's, or trusted by the user, is decided by the wallet that
    holds the owner key, which recomputes the result itself (Decision D7). Rules for other
-   contracts are listed as not analysed. The bounded reader described below still needs live
-   network verification before its observations can support that list.
+   contracts are listed as not analysed. The live operation is exposed as
+   `ozpb check-policy-call-surface` and the MCP tool `check_policy_call_surface`: it validates
+   the request against the pinned registry trust (rebuilding generated bindings) before it
+   reads anything, reads through an operator-named RPC source (never a request URL), and
+   returns the structured answer with a plain-words `summary`. Over MCP it is advisory; it has
+   not yet been run against a live testnet account in this repository's tests, which use
+   constructed scans and refuse-before-read paths.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes live entries, returned archived entries, and omitted keys. A pure

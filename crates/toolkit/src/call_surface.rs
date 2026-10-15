@@ -71,6 +71,29 @@ pub fn check_observed_call_surface_with_build_config(
     registry_trust: &RegistryTrust,
     build_config: &ozpb_build_runner::BuildConfig,
 ) -> Result<ObservedCallSurfaceCheck, ToolError> {
+    let prepared = prepare_call_surface_check(input, registry_trust, build_config)?;
+    check_prepared(input, &prepared, observation)
+}
+
+/// Everything about a request that does not depend on the ledger read: the validated spec,
+/// the signed registry loaded under the pinned trust, the account capability, the bindings
+/// recognized (generated ones rebuilt, once) and the grant. A live check prepares this before
+/// it reads anything, so a request that cannot be answered costs no read and no build after it.
+pub(crate) struct PreparedCallSurfaceCheck {
+    pub(crate) spec: ValidatedSpec,
+    pub(crate) registry: Registry,
+    pub(crate) loaded_root: Hash32,
+    enumeration: Enumeration,
+    binding_set_hash: Hash32,
+    bound_recognition: BTreeMap<String, VerifiedPolicy>,
+    pub(crate) grant: Grant,
+}
+
+pub(crate) fn prepare_call_surface_check(
+    input: &CheckPolicyCallSurfaceInput,
+    registry_trust: &RegistryTrust,
+    build_config: &ozpb_build_runner::BuildConfig,
+) -> Result<PreparedCallSurfaceCheck, ToolError> {
     let spec: PolicySpec = from_value(&input.spec)?;
     let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
     if input.account_address != validated.spec().smart_account.address {
@@ -87,6 +110,52 @@ pub fn check_observed_call_surface_with_build_config(
             "rule_index is out of range",
         ));
     }
+    let signed: SignedSnapshot = serde_json::from_value(input.signed_registry_snapshot.clone())
+        .map_err(|error| {
+            ToolError::new(
+                EC::ERegistrySignature,
+                format!("malformed signed registry snapshot: {error}"),
+            )
+        })?;
+    let mut registry = registry_for(registry_trust, validated.spec().network_id)?;
+    let loaded_root = registry.load(&signed).map_err(map_registry_err)?;
+    if loaded_root != validated.spec().registry_snapshot {
+        return Err(binding_error(
+            "signed registry root does not match the PolicySpec registry snapshot",
+        ));
+    }
+    let account = registry
+        .resolve_account(&validated.spec().smart_account.observed_code_hash)
+        .map_err(map_registry_err)?;
+    if account.management_evidence != MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE {
+        return Err(ToolError::new(
+            EC::EIncompatibleAccount,
+            "account management-rule evidence strategy is not supported by this checker",
+        ));
+    }
+    let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
+    let (binding_set_hash, bound_recognition) =
+        validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
+    let grant = grant_for(&validated, input.rule_index, &input.binding_set)?;
+    Ok(PreparedCallSurfaceCheck {
+        spec: validated,
+        registry,
+        loaded_root,
+        enumeration,
+        binding_set_hash,
+        bound_recognition,
+        grant,
+    })
+}
+
+/// Run the core over one observation for a prepared request.
+pub(crate) fn check_prepared(
+    input: &CheckPolicyCallSurfaceInput,
+    prepared: &PreparedCallSurfaceCheck,
+    observation: &CallSurfaceObservation,
+) -> Result<ObservedCallSurfaceCheck, ToolError> {
+    let validated = &prepared.spec;
+    let registry = &prepared.registry;
     if observation.network_id != input.network_id
         || observation.account_address != input.account_address
     {
@@ -107,41 +176,17 @@ pub fn check_observed_call_surface_with_build_config(
             "trusted observation account code hash does not match the PolicySpec",
         ));
     }
-
-    let signed: SignedSnapshot = serde_json::from_value(input.signed_registry_snapshot.clone())
-        .map_err(|error| {
-            ToolError::new(
-                EC::ERegistrySignature,
-                format!("malformed signed registry snapshot: {error}"),
-            )
-        })?;
-    let mut registry = registry_for(registry_trust, validated.spec().network_id)?;
-    let loaded_root = registry.load(&signed).map_err(map_registry_err)?;
-    if loaded_root != validated.spec().registry_snapshot {
-        return Err(binding_error(
-            "signed registry root does not match the PolicySpec registry snapshot",
-        ));
-    }
-    let account = registry
-        .resolve_account(&observed_account_hash)
-        .map_err(map_registry_err)?;
-    if account.management_evidence != MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE {
-        return Err(ToolError::new(
-            EC::EIncompatibleAccount,
-            "account management-rule evidence strategy is not supported by this checker",
-        ));
-    }
     if observation.observed_ledger == 0 {
         return Err(ToolError::new(
             EC::EIncompleteAccountState,
             "trusted observation has no ledger anchor",
         ));
     }
-    let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
-
-    let (binding_set_hash, mut recognized_policies) =
-        validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
-    let grant = grant_for(&validated, input.rule_index, &input.binding_set)?;
+    let binding_set_hash = prepared.binding_set_hash;
+    let mut recognized_policies = prepared.bound_recognition.clone();
+    let grant = prepared.grant.clone();
+    let loaded_root = prepared.loaded_root;
+    let enumeration = prepared.enumeration;
     let observed_by_address: BTreeMap<&str, &str> = observation
         .bound_policies
         .iter()
@@ -293,7 +338,7 @@ fn signer_semantics(kind: &str) -> PolicySignerSemantics {
 /// The rule being installed, from the hashed spec: its target, its signers (the restricted
 /// keys), and whether it keeps state. A reviewed policy is counted as stateful: the only
 /// reviewed kind, OZ's spending limit, keeps a window per rule.
-fn grant_for(
+pub(crate) fn grant_for(
     spec: &ValidatedSpec,
     rule_index: usize,
     binding_set: &PolicyBindingSet,
@@ -385,10 +430,25 @@ fn record_observed_code<'a>(
     Ok(())
 }
 
-fn registry_for(
+pub(crate) fn registry_for(
     trust: &RegistryTrust,
     network: ozpb_domain::NetworkId,
 ) -> Result<Registry, ToolError> {
+    // Anyone can recompute the development root's private key from its published seed, so a
+    // snapshot it signs carries no review authority: an agent could sign one recognizing its
+    // own verifier as an owner verifier. Only the testnet example may use it.
+    let development_root = ozpb_registry::dev::dev_root_verifying_bytes();
+    if network != ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
+        && trust
+            .root_policy
+            .keys
+            .values()
+            .any(|key| *key == development_root)
+    {
+        return Err(map_registry_err(ozpb_registry::RegistryError::RootPolicy(
+            "the public development registry root is accepted only on testnet".into(),
+        )));
+    }
     match trust.checkpoint.clone() {
         Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
             trust.root_policy.clone(),
@@ -1091,7 +1151,12 @@ mod tests {
                 "rule_ids": [0, 1, 2, 3],
                 "signer_ids": [0, 1],
                 "policy_ids": [0]
-            }
+            },
+            "source": "testnet",
+            "evidence_trust": "rpc_reported",
+            "raw_ordered_entry_digest": "raw",
+            "rpc_batches": 5,
+            "attempts": 1
         });
         let decoded: ozpb_api_types::PolicyCallSurfaceVerdict =
             serde_json::from_value(wire.clone()).unwrap();
@@ -1146,7 +1211,9 @@ mod tests {
             "enumeration_evidence": {
                 "method": "bounded_next_id", "next_id": 2, "active_count": 2,
                 "rule_ids": [0, 1], "signer_ids": [0, 1], "policy_ids": [0]
-            }
+            },
+            "source": "testnet", "evidence_trust": "rpc_reported",
+            "raw_ordered_entry_digest": "raw", "rpc_batches": 5, "attempts": 1
         });
         let decoded: ozpb_api_types::PolicyCallSurfaceVerdict =
             serde_json::from_value(wire.clone()).unwrap();

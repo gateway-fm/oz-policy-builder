@@ -10,11 +10,12 @@ and direct and transitive effects come from source review, not from export names
 The signed development example (version 2 onward) commits to the exact reviewed method-table digest
 and bounded scan protocol for this account Wasm hash. It extends the original example root;
 its signing key is public development material, not production governance, and the
-operator account reader accepts that root only for testnet. The registry resolver checks the
-code-capability binding, but has no authority-verdict consumer. It does not
-establish the current rule set, administrator identity, policy-call effects, or a coherent ledger
-snapshot. A trusted reader and complete method-level analysis remain necessary before a live
-`Safe` authority verdict can be offered (§§4.8 and 4.10 of `architecture.md`).
+operator account reader accepts that root only for testnet. The live authority check uses the
+signed scan protocol to bound its read; it does not use the method table to decide anything,
+because it treats every method of the account as reachable by any rule that matches the
+account's address. The table records which methods exist so that assumption can be reviewed.
+Nothing here establishes the current rule set or a coherent ledger snapshot, and nothing says
+an account is safe (§§4.8 and 4.10 of `architecture.md`, Decision D7).
 
 `AccountMethodInventory` is constructed in Rust and can be serialized. JSON deserialization
 is intentionally unavailable until duplicate method keys can be rejected explicitly.

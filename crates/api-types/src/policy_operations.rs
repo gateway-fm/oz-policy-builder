@@ -419,6 +419,9 @@ pub struct CheckPolicyCallSurfaceOutput {
     /// Root of the verified signed snapshot used to recognize account and policy code.
     pub registry_snapshot_root: String,
     pub verdict: PolicyCallSurfaceVerdict,
+    /// The verdict in plain words, for a person: scope, refusals first, who can change the
+    /// account, what was not checked. Derived from `verdict`; never says "safe".
+    pub summary: String,
 }
 
 /// Who could change the account, reset the bound policies, or call the new rule's target, at
@@ -648,12 +651,22 @@ pub struct PolicyAuthorityState {
     pub verifiers: std::collections::BTreeMap<String, PolicyVerifierObservation>,
 }
 
-/// How the state was acquired. Recorded, never compared: ledger numbers and TTLs move without
-/// any change in authority.
+/// How the state was acquired. Not part of the approval commitment — ledger numbers, TTLs and
+/// endpoint metadata move without any change in authority — but every read was validated
+/// against it (one reported ledger, requested keys only, complete reconciliation).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyAuthorityEvidence {
     pub enumeration_evidence: PolicyRuleEnumerationEvidence,
+    /// The operator's name for the RPC source; never its URL.
+    pub source: String,
+    /// `rpc_reported`: as trustworthy as the configured endpoint, no ledger proof.
+    pub evidence_trust: String,
+    /// Digest of every raw entry the read used (keys, values, TTLs, absences); it moves with
+    /// every payment by a classic signer, which is why it is evidence and not the commitment.
+    pub raw_ordered_entry_digest: String,
+    pub rpc_batches: u32,
+    pub attempts: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1150,10 +1163,16 @@ mod tests {
                         "rule_ids": [1, 2, 3, 4],
                         "signer_ids": [0],
                         "policy_ids": [0]
-                    }
+                    },
+                    "source": "testnet",
+                    "evidence_trust": "rpc_reported",
+                    "raw_ordered_entry_digest": "raw-digest",
+                    "rpc_batches": 5,
+                    "attempts": 1
                 },
                 "authority_commitment": "authority-commitment"
-            }
+            },
+            "summary": "plain words"
         });
         assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(complete.clone()).is_ok());
         for field in [
@@ -1161,6 +1180,7 @@ mod tests {
             "binding_set_hash",
             "registry_snapshot_root",
             "verdict",
+            "summary",
         ] {
             let mut incomplete = complete.clone();
             incomplete.as_object_mut().unwrap().remove(field);

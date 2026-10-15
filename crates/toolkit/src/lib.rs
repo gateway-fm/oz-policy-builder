@@ -26,9 +26,16 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod authority_text;
+pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{
     check_observed_call_surface_with_build_config, CallSurfaceObservation, ObservedCallSurfaceCheck,
+};
+mod call_surface_live;
+pub use call_surface_live::{
+    finish_call_surface_check, plan_call_surface_read, resolve_rpc_source, rpc_sources_from_json,
+    scan_tool_error, CallSurfaceReadPlan, RpcSource,
 };
 #[allow(dead_code, reason = "awaiting a trusted complete authority reader")]
 mod install_intent;

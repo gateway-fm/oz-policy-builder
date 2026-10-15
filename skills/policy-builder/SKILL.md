@@ -145,17 +145,37 @@ signer identities, spending limits, and policy composition visible in the propos
    fee are below the endpoint's padded estimate. Tell the user, and do not present
    `simulated_success` as proof that the declared instructions and fee suffice. The server
    cannot establish that
-   the generated policy is installed or selected, or that the account authority surface is Safe.
+   the generated policy is installed or selected, or that installing it is safe.
    A successful simulation does not predict a later transaction's outcome. No writes are
    committed, and the tool never submits the envelope, but neither makes the signed entries in
    it harmless. Do not treat `record_simulation` as this check: it uses record mode to acquire
    proposed behavior, not enforcement mode.
 
+## Who can change the account
+
+Once the policies are deployed and bound, `check_policy_call_surface` can read, through an RPC
+source the server's operator configured (ask the user which source name; never supply a URL),
+who can change the account or reset those policies for the rule to be installed. Relay its
+`summary` and the structured lists faithfully:
+
+- `refusals`: the install must not proceed; explain each reason and its remediation. Nobody's
+  approval overrides one.
+- `unresolved`: evidence is missing; the answer is incomplete until a re-read succeeds.
+- `authority_list`: every rule that can remove or change the new limit, with exactly who must
+  sign. Do not decide whether those identities are the user's or trusted — you cannot know, and
+  an identity marked as the agent's own key is never an owner.
+- `notes` and `coverage_exclusions`: what the agent can already do elsewhere, who else can call
+  the target, expired rules, and rules for other contracts that were not analysed.
+
+Never call the account or the install safe, even when nothing was refused. The result is
+advisory: the user's wallet, which holds the owner key, must recompute it against its own RPC,
+match every listed rule against the user's keys and trusted identities, and ask the user.
+
 ## Hand off
 
 Summarize exactly what the grant permits, what it does not constrain, the signer and expiry
 choices, the evidence trust level, and the limits of the checks that ran. Generated code is a
-review artifact, not an installed permission. The current MCP server does not provide a
-complete live account authority check or a wallet installation flow. Tell the user that a
-trusted live check, wallet review, and their own signature are required before installation.
-Do not deploy, sign, submit, or ask for secret keys.
+review artifact, not an installed permission. The MCP server does not provide a wallet
+installation flow. Tell the user that their wallet's own authority check and review, and their
+own signature, are required before installation. Do not deploy, sign, submit, or ask for secret
+keys.

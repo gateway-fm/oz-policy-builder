@@ -26,6 +26,9 @@ pub const VERIFICATION_TOOLS: &[&str] = &["reference_suite", "verify"];
 /// Exact-envelope network simulation, separate from the complete dry-run.
 pub const PREFLIGHT_TOOLS: &[&str] = &["preflight_transaction"];
 
+/// Advisory account-authority reads through operator-configured RPC sources.
+pub const AUTHORITY_TOOLS: &[&str] = &["check_policy_call_surface"];
+
 /// Drive the server over stdio with a batch of newline-delimited JSON-RPC requests,
 /// close stdin (which ends the transport and exits the server), and return the parsed
 /// responses keyed by id.

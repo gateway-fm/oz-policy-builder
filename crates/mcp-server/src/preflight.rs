@@ -85,8 +85,12 @@ mod tests {
     async fn hosted_preflight_rejects_an_endpoint_outside_the_allowlist() {
         let policy = RpcEndpointPolicy::from_csv("https://rpc.allowed.example")
             .expect("valid operator allowlist");
-        let server =
-            PolicyBuilderServer::new(None, Some(policy), ozpb_toolkit::BuildConfig::default());
+        let server = PolicyBuilderServer::new(
+            None,
+            Some(policy),
+            Default::default(),
+            ozpb_toolkit::BuildConfig::default(),
+        );
         let error = server
             .preflight_transaction(Parameters(PreflightTransactionInput {
                 rpc_url: "https://rpc.unapproved.example".to_string(),
@@ -142,8 +146,12 @@ mod tests {
     async fn hosted_preflight_refuses_signed_material_before_any_request() {
         let policy = RpcEndpointPolicy::from_csv("https://rpc.allowed.example")
             .expect("valid operator allowlist");
-        let server =
-            PolicyBuilderServer::new(None, Some(policy), ozpb_toolkit::BuildConfig::default());
+        let server = PolicyBuilderServer::new(
+            None,
+            Some(policy),
+            Default::default(),
+            ozpb_toolkit::BuildConfig::default(),
+        );
         let result = server
             .preflight_transaction(Parameters(PreflightTransactionInput {
                 rpc_url: "https://rpc.allowed.example".to_string(),
