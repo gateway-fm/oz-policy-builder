@@ -165,7 +165,11 @@ whose callers should not have to carry a signed document around;
 `docs/examples/` holds runnable inputs, some of which feed a later walkthrough rather than
 the Tranche-1 demo. `bash scripts/verify-phase1.sh` is the strict first-milestone release
 gate; `bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
-`verify-phase2.sh` belongs to Tranche 2.
+`bash scripts/verify-phase2.sh` extends the release gate with focused Tranche 2 evidence checks
+and a Soroswap Wasm build; `--offline` explicitly omits the release-only checks. For a shorter
+run, `bash scripts/check-phase2-evidence.sh` checks the named reference, MCP, and partial layer-2
+cases. None of these commands establishes full Tranche 2 acceptance: the
+[Tranche 2 guide](TRANCHE-2-VERIFICATION.md) lists the separate live evidence requirements.
 
 ### Demonstrating the Tranche-1 outcome
 
