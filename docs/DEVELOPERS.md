@@ -93,6 +93,27 @@ The install-intent design in §4.8 requires exact installed bindings and a trust
 authority-surface verdict. No CLI command produces that verdict or intent yet; assembly,
 signing, and submission remain wallet-owned.
 
+### Reference-suite coverage gate
+
+`all_agree` covers the generated policy's modeled semantics. It does not establish the
+behavior of a composed reviewed policy. CI checks the subscription example's report against
+an exact list of acknowledged layer-1 gaps:
+
+```bash
+python3 scripts/check-unmodeled-acknowledged.py --known-specs \
+  scripts/layer1-unmodeled-acknowledged.txt subscription
+set -o pipefail
+cargo run --locked -q -p ozpb-cli -- reference-suite --spec docs/examples/subscription-spec.json \
+  | python3 scripts/check-unmodeled-acknowledged.py subscription scripts/layer1-unmodeled-acknowledged.txt
+```
+
+The check rejects disagreeing or empty reports, missing required boundary classes, new gaps,
+stale acknowledgements, and entries naming an unchecked spec. Permit-only classes remain
+visible as limitations. An acknowledgement records what layer 1 does not test; it never
+waives a disagreement or proves the reviewed policy's on-chain behavior. When adding a checked
+example, add it to the `--known-specs` call and run its report through the checker in the same
+change. The checker validates local report consistency, not imported evidence authenticity.
+
 ### Build configuration (operator-side)
 
 `generate` and `verify` compile the policy and accept the same build flags (each with an

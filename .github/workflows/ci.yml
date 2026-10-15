@@ -85,6 +85,14 @@ jobs:
         run: bash scripts/test-check-dep-rules.sh
       - name: test
         run: cargo test --workspace
+      - name: reference coverage gate (passing controls and refusal cases)
+        run: python3 scripts/test-check-unmodeled-acknowledged.py
+      - name: subscription reference evidence and acknowledged modeling gaps
+        run: |
+          python3 scripts/check-unmodeled-acknowledged.py --known-specs \
+            scripts/layer1-unmodeled-acknowledged.txt subscription
+          cargo run --locked -q -p ozpb-cli -- reference-suite --spec docs/examples/subscription-spec.json \
+            | python3 scripts/check-unmodeled-acknowledged.py subscription scripts/layer1-unmodeled-acknowledged.txt
       # Source determinism, asserted without a toolchain. This previously shelled out to
       # `ozpb generate`, which compiles the policy and therefore needs the stellar CLI that
       # this runner does not have — so the step failed on every push while proving nothing.

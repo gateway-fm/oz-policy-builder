@@ -1,0 +1,12 @@
+# Reviewed-policy semantics outside the reference evaluator's layer-1 model.
+# Format: <checked-spec-name>|<entry exactly as reference-suite reports it>
+#
+# Each entry is a limitation, not a waiver of a failing case or missing boundary
+# class. New gaps and stale entries fail the gate. An entry may name only a spec
+# the gate actually runs. Review changes together with the corresponding report.
+#
+# The subscription fixture composes the generated policy with OZ spending_limit.
+# Layer 1 models the generated scope/signer/count checks, but not the reviewed
+# policy's stateful spending cap or period. Acknowledgement does not establish
+# on-chain composition coverage; see docs/SCOPE.md, item 3.
+subscription|rule[0]: oz:spending_limit
