@@ -143,3 +143,41 @@ The same number from another contract does not count. The native SAC's #6, for e
   would need an `External` WebAuthn signer, and spec validation refuses External signers on this
   tree. [`browser/`](browser/README.md) drives the passkey side headless, but separately: nothing
   connects it to this install.
+
+## Against RFP 7
+
+RFP 7 asks for wallet integration with at least one Stellar smart-account wallet, end to end:
+record → generate → simulate → sign → install. For each link: what runs in this directory today,
+and what does not.
+
+- **record.**
+  - Runs, offline only: a transfer the account really executed, decoded by `ozpb import`, with
+    `self_supplied` trust.
+  - Does not run: the live RPC recorder (`ozpb record`, `ozpb simulate`). It refuses
+    protocol-29 testnet on this tree.
+- **generate.**
+  - Runs: codegen (`ozpb generate`).
+  - Does not run: synthesis. `write-spec.mjs` fills the template by hand and checks the call
+    constraints against the recording; no registry resolution happens.
+- **simulate.**
+  - Runs: every transaction that carries the account's authorization is simulated in enforcing
+    mode, with the signed entries, before the transaction is signed. Every denial is observed
+    there.
+  - Not run on the generated policy here: the offline dry-run harness (`crates/harness`) and
+    `ozpb evaluate`.
+- **sign.** Runs, in two separate places that are not connected:
+  - On chain, a script holding an ed25519 key signs as a `Delegated` signer. It first checks that
+    the RPC asked for exactly the intended call.
+  - Off chain, a headless passkey signs a challenge, and no contract verifies it
+    (`browser/webauthn.mjs`).
+- **install.**
+  - Runs: `add_context_rule` on testnet, after which the policy enforces.
+  - Does not run: the install-intent and authority-surface checks.
+- **with a wallet.**
+  - Runs: pollywallet's passkey wallet creation, driven headless (`browser/`).
+  - Does not run: installing into a pollywallet account. Its account wasm is not pinned, and its
+    signer is `External`.
+
+The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<pid>/` unless
+`OZPB_HARNESS_OUT` says otherwise). Every transaction hash in it can be looked up at
+`https://stellar.expert/explorer/testnet/tx/<hash>` until the next testnet reset.
