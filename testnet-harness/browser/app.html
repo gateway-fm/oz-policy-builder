@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Passkey signing (headless)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+  button { font-size: 1rem; padding: .5rem 1rem; margin: .3rem .3rem .3rem 0; }
+  input { font-family: ui-monospace, monospace; width: 100%; box-sizing: border-box; padding: .4rem; }
+  pre { background: #111; color: #9f9; padding: 1rem; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>OZ Policy Builder: passkey signing</h1>
+<p>Creates a secp256r1 (ES256) passkey and signs a 32-byte challenge with it.
+The challenge is the size and role of an account's <code>auth_digest</code>; it is not bound to any
+transaction.</p>
+<button id="create">1. Create passkey</button>
+<label for="challenge">Challenge (64 hex characters)</label>
+<input id="challenge" autocomplete="off" spellcheck="false">
+<button id="sign">2. Sign challenge</button>
+<pre id="out">idle</pre>
+<script>
+// Everything the driver reads back is on `window.__passkey`, as base64url, so it can be verified
+// outside the browser. The page itself verifies nothing: a page saying "signed" is not evidence.
+const out = document.getElementById('out');
+const show = (value) => { out.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2); };
+const b64url = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer)))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const fromHex = (hex) => Uint8Array.from(hex.match(/../g).map((h) => parseInt(h, 16)));
+window.__passkey = {};
+
+document.getElementById('create').onclick = async () => {
+  try {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: 'ozpb', id: 'localhost' },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'delegate', displayName: 'delegate' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }], // ES256: secp256r1, the curve Soroban verifies
+      authenticatorSelection: { userVerification: 'required', residentKey: 'required' },
+      timeout: 20000,
+    } });
+    window.__passkey.created = {
+      credentialId: cred.id,
+      algorithm: cred.response.getPublicKeyAlgorithm(),
+      publicKeySpki: b64url(cred.response.getPublicKey()),
+    };
+    show({ step: 'created', ...window.__passkey.created });
+  } catch (e) {
+    window.__passkey.error = `create: ${e.name}: ${e.message}`;
+    show(window.__passkey.error);
+  }
+};
+
+document.getElementById('sign').onclick = async () => {
+  try {
+    const hex = document.getElementById('challenge').value.trim();
+    if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('challenge must be 64 lowercase hex characters');
+    const created = window.__passkey.created;
+    const assertion = await navigator.credentials.get({ publicKey: {
+      challenge: fromHex(hex),
+      rpId: 'localhost',
+      userVerification: 'required',
+      allowCredentials: created ? [{ type: 'public-key', id: fromB64url(created.credentialId) }] : [],
+      timeout: 20000,
+    } });
+    window.__passkey.signed = {
+      credentialId: assertion.id,
+      authenticatorData: b64url(assertion.response.authenticatorData),
+      clientDataJSON: b64url(assertion.response.clientDataJSON),
+      signature: b64url(assertion.response.signature),
+    };
+    show({ step: 'signed', credentialId: assertion.id,
+      clientDataJSON: new TextDecoder().decode(assertion.response.clientDataJSON) });
+  } catch (e) {
+    window.__passkey.error = `sign: ${e.name}: ${e.message}`;
+    show(window.__passkey.error);
+  }
+};
+</script>
+</body>
+</html>

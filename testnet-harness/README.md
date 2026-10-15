@@ -141,4 +141,5 @@ The same number from another contract does not count. The native SAC's #6, for e
   safe.
 - **No wallet product signs.** The signer is a script holding an ed25519 key. A passkey wallet
   would need an `External` WebAuthn signer, and spec validation refuses External signers on this
-  tree.
+  tree. [`browser/`](browser/README.md) drives the passkey side headless, but separately: nothing
+  connects it to this install.
