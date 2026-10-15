@@ -44,7 +44,8 @@ pub use preflight::preflight_transaction_output;
 /// default-config convenience wrapper — every one of them takes an explicit `&BuildConfig`, so
 /// a caller cannot silently bypass operator configuration by picking the shorter name.
 pub use ozpb_build_runner::{
-    BuildConfig, ENV_BUILD_CACHE_DIR, ENV_BUILD_JOBS, ENV_BUILD_TIMEOUT_SECS, ENV_STELLAR_BINARY,
+    BuildConfig, BuildSlots, ENV_BUILD_CACHE_DIR, ENV_BUILD_JOBS, ENV_BUILD_TIMEOUT_SECS,
+    ENV_STELLAR_BINARY,
 };
 
 /// The two names a shell needs to read an import document itself, re-exported for the same
@@ -733,6 +734,7 @@ fn map_build_err(error: ozpb_build_runner::BuildError) -> ToolError {
         ozpb_build_runner::BuildError::ResourceLimit(_) => EC::EBuildResourceLimit,
         // Operator faults (unusable builder path, unusable cache) are not the caller's spec.
         ozpb_build_runner::BuildError::Unavailable(_) => EC::EBuildUnavailable,
+        ozpb_build_runner::BuildError::Busy => EC::EBuildBusy,
         ozpb_build_runner::BuildError::Input(_)
         | ozpb_build_runner::BuildError::Failed(_)
         | ozpb_build_runner::BuildError::Internal(_) => EC::EBuildFailed,
@@ -809,6 +811,8 @@ mod tests {
                 BuildError::Failed("compile error".to_string()),
                 EC::EBuildFailed,
             ),
+            // Transient, unlike every other build error, so it has a code a caller can retry on.
+            (BuildError::Busy, EC::EBuildBusy),
         ] {
             assert_eq!(map_build_err(error.clone()).code, expected, "{error}");
         }

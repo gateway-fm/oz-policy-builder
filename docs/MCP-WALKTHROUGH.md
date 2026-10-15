@@ -194,8 +194,9 @@ Error: OZPB_HTTP_BEARER_TOKEN is required for HTTP mode
 ```
 
 That refusal is the feature. HTTP mode also requires `OZPB_RPC_ALLOWLIST`, binds localhost
-only, and applies bearer auth, a request-size bound and a rate limit. `docs/DEVELOPERS.md`
-has the full set, and what is still owed before anything resembling multi-tenant hosting.
+only, and applies bearer auth, a request quota, a request-size bound and a limit on concurrent
+builds. `docs/DEVELOPERS.md` has the full set, and what is still owed before anything
+resembling multi-tenant hosting.
 This is the shape a hosted deployment would take; it is not what this milestone deploys, and
 it is not how to run it locally.
 

@@ -1255,6 +1255,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "http-body-util",
  "ozpb-api-types",
  "ozpb-domain",
  "ozpb-recorder-core",
@@ -1267,6 +1268,7 @@ dependencies = [
  "stellar-xdr",
  "tokio",
  "tokio-util",
+ "tower",
  "url",
 ]
 

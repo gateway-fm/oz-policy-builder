@@ -157,6 +157,66 @@ pub struct BuildConfig {
     /// Which builder to use. Defaults to the real `Local` subprocess build. Deliberately
     /// **not** reachable from operator configuration: `Stub` emits unattestable wasm.
     pub builder: Builder,
+    /// How many builds may run at once through every clone of this configuration. `None`, the
+    /// default, leaves it unbounded: the CLI runs one build per process, and a stdio server
+    /// serves one caller. A hosted server sets it, because each of its sessions holds a clone.
+    pub slots: Option<BuildSlots>,
+}
+
+/// A fail-fast bound on concurrent builds. Clones share one count, so every holder of a cloned
+/// [`BuildConfig`] draws from the same slots.
+#[derive(Clone, Debug)]
+pub struct BuildSlots {
+    limit: u32,
+    in_use: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// One taken slot, released when dropped.
+#[derive(Debug)]
+pub struct BuildSlot {
+    in_use: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl BuildSlots {
+    /// `limit` builds at once. Zero would refuse every build, so it is refused instead.
+    pub fn new(limit: u32) -> Result<Self, BuildError> {
+        if limit == 0 {
+            return Err(BuildError::Input(
+                "concurrent build limit must be positive".to_string(),
+            ));
+        }
+        Ok(Self {
+            limit,
+            in_use: std::sync::Arc::default(),
+        })
+    }
+
+    /// Take a slot if one is free. Never waits: a caller queued behind a running build would
+    /// spend its own timeout on cargo's build-directory lock.
+    pub fn try_take(&self) -> Option<BuildSlot> {
+        use std::sync::atomic::Ordering;
+        self.in_use
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < self.limit).then_some(taken + 1)
+            })
+            .ok()
+            .map(|_| BuildSlot {
+                in_use: self.in_use.clone(),
+            })
+    }
+
+    /// Slots not currently taken.
+    pub fn available(&self) -> u32 {
+        self.limit
+            .saturating_sub(self.in_use.load(std::sync::atomic::Ordering::Acquire))
+    }
+}
+
+impl Drop for BuildSlot {
+    fn drop(&mut self) {
+        self.in_use
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 impl Default for BuildConfig {
@@ -170,6 +230,7 @@ impl Default for BuildConfig {
             target_dir: None,
             jobs: default_jobs(),
             builder: Builder::Local,
+            slots: None,
         }
     }
 }
@@ -378,6 +439,10 @@ pub enum BuildError {
     /// are not the ones it reports is nothing the caller's spec can fix.
     #[error("E_BUILD_UNAVAILABLE: {0}")]
     Unavailable(String),
+    /// Every build slot is taken. Retryable by design: the same request can succeed once a
+    /// running build finishes.
+    #[error("E_BUILD_BUSY: every build slot on this server is in use; retry when a running build finishes")]
+    Busy,
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -736,12 +801,19 @@ fn reconcile_declared_toolchain(
 
 /// Build a generated crate into a manifest-bound artifact using the configured [`Builder`].
 /// Production and the end-to-end test use [`Builder::Local`]; hermetic tests use
-/// [`Builder::Stub`]. All non-test callers should route through here rather than calling
-/// [`build_local`] directly, so the builder is a single injectable seam.
+/// [`Builder::Stub`]. Every caller routes through here — `build_local` is private — so the
+/// builder is a single injectable seam and no build runs outside [`BuildConfig::slots`].
 pub fn build(
     request: &BuildRequest<'_>,
     config: &BuildConfig,
 ) -> Result<BuildArtifact, BuildError> {
+    // Taken before anything else and held for the whole build. This runs on the caller's
+    // thread, so the slot outlives whatever asked for the build: a server that answered the
+    // request with a stream, or a client that disconnected, cannot release it early.
+    let _slot = match &config.slots {
+        Some(slots) => Some(slots.try_take().ok_or(BuildError::Busy)?),
+        None => None,
+    };
     match config.builder {
         Builder::Local => build_local(request, config),
         Builder::Stub => build_stub(request),
@@ -778,7 +850,7 @@ fn build_stub(request: &BuildRequest<'_>) -> Result<BuildArtifact, BuildError> {
 /// process receives no request-selected command or arguments; the output is bounded and
 /// cryptographically bound into the returned manifest. `local-unattested` is deliberately
 /// honest: trust requires local reproduction or a separately trusted build attestation.
-pub fn build_local(
+fn build_local(
     request: &BuildRequest<'_>,
     config: &BuildConfig,
 ) -> Result<BuildArtifact, BuildError> {
@@ -1844,6 +1916,123 @@ mod tests {
             "the stub's placeholder wasm was attested as a real build: the exemption is keyed on \
              the builder name, so it must not survive that name changing"
         );
+    }
+
+    /// A stub build under `slots`, so the bound is exercised without a toolchain.
+    fn build_with_slots(slots: &BuildSlots) -> Result<BuildArtifact, BuildError> {
+        let pins = Pins::default();
+        let crate_files = generated("source");
+        let request = BuildRequest {
+            generated: &crate_files,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        let config = BuildConfig {
+            builder: Builder::Stub,
+            slots: Some(slots.clone()),
+            ..BuildConfig::default()
+        };
+        build(&request, &config)
+    }
+
+    #[test]
+    fn a_build_is_refused_as_busy_while_every_slot_is_taken() {
+        let slots = BuildSlots::new(1).expect("one slot");
+        let running = slots.try_take().expect("a free slot");
+        assert!(
+            matches!(build_with_slots(&slots), Err(BuildError::Busy)),
+            "a build ran with every slot taken"
+        );
+        drop(running);
+        build_with_slots(&slots).expect("a free slot admits the build");
+        assert_eq!(slots.available(), 1, "a finished build gives its slot back");
+    }
+
+    /// The slot is held while the builder runs, not just checked on the way in. The builder is
+    /// a script that marks that it started and then waits, so the slot is observed while a real
+    /// subprocess build is in progress, after any early release would already have happened.
+    #[test]
+    #[cfg(unix)]
+    fn a_running_build_holds_its_slot_until_the_builder_exits() {
+        let _guard = serialized();
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let script = fixture_script(
+            dir.path(),
+            &format!(": > {}\n/bin/sleep 2\nexit 1", started.display()),
+        );
+        let slots = BuildSlots::new(1).expect("one slot");
+        let config = BuildConfig {
+            stellar_binary: script,
+            target_dir: Some(dir.path().join("cache")),
+            slots: Some(slots.clone()),
+            ..BuildConfig::default()
+        };
+        let builder = std::thread::spawn(move || {
+            let pins = Pins::default();
+            let crate_files = generated("source");
+            let request = BuildRequest {
+                generated: &crate_files,
+                spec_hash: sha256(b"spec"),
+                registry_snapshot: sha256(b"registry"),
+                rule_index: 0,
+                template_family: "policy-templates/scope@1",
+                pins: &pins,
+            };
+            build(&request, &config)
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !started.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake builder never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            slots.available(),
+            0,
+            "the slot was released while the builder was still running"
+        );
+        let result = builder.join().expect("build thread");
+        assert!(
+            matches!(result, Err(BuildError::Failed(_))),
+            "the fake builder exits 1: {result:?}"
+        );
+        assert_eq!(
+            slots.available(),
+            1,
+            "the slot came back when the build ended"
+        );
+    }
+
+    #[test]
+    fn clones_of_a_configuration_share_one_set_of_slots() {
+        let config = BuildConfig {
+            slots: Some(BuildSlots::new(1).expect("one slot")),
+            ..BuildConfig::default()
+        };
+        let session = config.clone();
+        let taken = config.slots.as_ref().and_then(BuildSlots::try_take);
+        assert!(taken.is_some());
+        assert!(
+            session
+                .slots
+                .as_ref()
+                .and_then(BuildSlots::try_take)
+                .is_none(),
+            "a clone had its own slots, so a per-session limit would be no limit"
+        );
+        drop(taken);
+        assert_eq!(session.slots.as_ref().map(BuildSlots::available), Some(1));
+    }
+
+    #[test]
+    fn a_zero_slot_limit_is_refused() {
+        assert!(matches!(BuildSlots::new(0), Err(BuildError::Input(_))));
     }
 
     #[test]
