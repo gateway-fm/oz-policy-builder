@@ -177,6 +177,37 @@ export function optionU32(value) {
   return value === null || value === undefined ? xdr.ScVal.scvVoid() : xdr.ScVal.scvU32(value);
 }
 
+/**
+ * The five arguments of `add_context_rule(context_type, name, valid_until, signers, policies)` for
+ * a `CallContract` rule, from one description: `{ context, name, validUntil, signers, policies }`,
+ * with signers as `{ kind: 'delegated', address }` or `{ kind: 'external', verifier, key_hex }`
+ * and policies as `{ address, install_params }` (the install intent's own shapes). The spec path
+ * and the install-intent path both go through here, so their results compare as bytes.
+ *
+ * `policies` is a `Map<Address, Val>` of install parameters. Only the generated policy's is
+ * encoded: its `AccountParams` is a `u32` it ignores, so `0`. At most one policy: the host wants
+ * map keys in its own order, and this harness never installs two.
+ */
+export function addContextRuleArgs({ context, name, validUntil, signers, policies }) {
+  if (policies.length > 1) throw new Error(`at most one policy is supported, got ${policies.length}`);
+  const signer = (s) => {
+    if (s.kind === 'delegated') return delegatedSigner(s.address);
+    if (s.kind === 'external') return externalSigner(s.verifier, Buffer.from(s.key_hex, 'hex'));
+    throw new Error(`unknown signer kind ${s.kind}`);
+  };
+  const param = (p) => {
+    if (p.install_params?.kind !== 'generated') throw new Error(`install parameters ${p.install_params?.kind} are not encoded here`);
+    return new xdr.ScMapEntry({ key: new Address(p.address).toScVal(), val: xdr.ScVal.scvU32(0) });
+  };
+  return [
+    callContractRule(context),
+    xdr.ScVal.scvString(name),
+    optionU32(validUntil),
+    xdr.ScVal.scvVec(signers.map(signer)),
+    xdr.ScVal.scvMap(policies.map(param)),
+  ];
+}
+
 /** A contract call as an authorization tree node with no sub-invocations. */
 export function contractCall(contract, functionName, args) {
   return new xdr.SorobanAuthorizedInvocation({

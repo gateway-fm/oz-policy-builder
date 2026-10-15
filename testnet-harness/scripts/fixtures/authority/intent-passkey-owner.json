@@ -1,0 +1,87 @@
+{
+  "operation": "add_context_rule",
+  "account_contract": "CCQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2CNSG",
+  "context_contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "rule_name": "native-sub",
+  "valid_until_ledger": 140000,
+  "delegate_signers": [{"kind": "delegated", "address": "GDKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNINJE"}],
+  "policies": [{"policy_index": 0, "address": "CDB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4G2F3",
+                "install_params": {"kind": "generated"}}],
+  "next_steps": [
+    "Check that these arguments equal `authority.verdict.grant` and the grant the wallet's own re-run of the check reports; any difference means do not sign",
+    "Advisory: the wallet that holds the owner key must re-run this check against its own RPC, match every rule in `authority.verdict.authority_list` to its own keys or identities its user trusts, and re-read immediately before signing; the authority_commitment must not change",
+    "The wallet assembles, simulates and signs the transaction; this intent does not assemble or submit one"
+  ],
+  "authority": {
+    "spec_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "binding_set_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+    "registry_snapshot_root": "3333333333333333333333333333333333333333333333333333333333333333",
+    "summary": "Account CCQ2…CNSG — read at ledger 123456.\nWho can change the account or the bound policy: rule 0 (any call) needs a WebAuthn passkey 0424d979….\n",
+    "verdict": {
+      "observed_ledger": 123456,
+      "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+      "account_address": "CCQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2CNSG",
+      "account_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
+      "spec_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "binding_set_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "bound_policy_addresses": ["CDB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4G2F3"],
+      "grant": {
+        "rule_index": 0,
+        "target": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "stateful": true,
+        "signers": [{"kind": "delegated", "address": "GDKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNINJE"}],
+        "name": "native-sub",
+        "valid_until": 140000,
+        "policies": [{"address": "CDB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4G2F3",
+                      "install_params": {"kind": "generated"}}]
+      },
+      "scope": {
+        "targets": ["CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"],
+        "account": "CCQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2CNSG",
+        "bound_policies": ["CDB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4HQ6DYPB4G2F3"]
+      },
+      "authority_list": [{
+        "rule_id": 0,
+        "reach": {"kind": "any_call"},
+        "valid_until": null,
+        "requirement": {"kind": "all_of", "signers": [{
+          "kind": "external",
+          "verifier": "CCZLFMVSWKZLFMVSWKZLFMVSWKZLFMVSWKZLFMVSWKZLFMVSWKZLEB3K",
+          "verifier_code_hash": "e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76",
+          "scheme": "webauthn_p256",
+          "public_key": "0424d9798a8134967c89cca49c35c63f003309a50367630804dcc37efdbb2d675896928c0862ee7ae933e30ae2793e3af41bd9ecfde8e0d21ed70ee455eb707ae3",
+          "aliases_restricted_key": false
+        }]}
+      }],
+      "refusals": [],
+      "unresolved": [],
+      "coverage_exclusions": [],
+      "notes": {"restricted_key_rules": [], "target_rules": [], "expired_rules": []},
+      "authority_state": {
+        "ordered_state_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "classic_accounts": {
+          "GDKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNJVGU2TKNINJE": {
+            "state": "found", "master_weight": 1, "low_threshold": 0,
+            "medium_threshold": 0, "high_threshold": 0, "signers": []
+          }
+        },
+        "verifiers": {
+          "CCZLFMVSWKZLFMVSWKZLFMVSWKZLFMVSWKZLFMVSWKZLFMVSWKZLEB3K": {
+            "code_hash": "e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76",
+            "scheme": "webauthn_p256"
+          }
+        }
+      },
+      "evidence": {
+        "enumeration_evidence": {"method": "bounded_next_id", "next_id": 1, "active_count": 1,
+                                 "rule_ids": [0], "signer_ids": [0], "policy_ids": []},
+        "source": "testnet",
+        "evidence_trust": "rpc_reported",
+        "raw_ordered_entry_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+        "rpc_batches": 5,
+        "attempts": 1
+      },
+      "authority_commitment": "6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  }
+}

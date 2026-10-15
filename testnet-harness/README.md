@@ -211,11 +211,11 @@ when the WebAuthn verifier contract raised it.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.
-- **The install skips the safety check.** It does not go through `prepare_install_intent` or the
-  authority-surface check. Neither is exported for wallet use on this tree (`docs/SCOPE.md` §1).
-  The harness installs only into the account it deployed a moment earlier, whose administrator
-  it knows by construction. That is not evidence that installing into someone else's account is
-  safe.
+- **By default `run.sh` skips the authority check.** It installs only into the account it
+  deployed a moment earlier, whose administrator it knows by construction. That is not evidence
+  about anyone else's account. The opt-in wallet decision on the check
+  ([`OZPB_HARNESS_AUTHORITY_CHECK=cli`](#the-wallet-decision-on-the-authority-check)) has only
+  run against fixtures: the `ozpb` commands it calls are not on this tree.
 - **No wallet product signs.** With the default owner, a script holding an ed25519 key signs.
   With `OZPB_HARNESS_OWNER=passkey`, the account has a passkey wallet's shape: rule 0 is one
   `External` WebAuthn signer. The passkey signs the recorded transfer and the install, and the
@@ -225,6 +225,98 @@ when the WebAuthn verifier contract raised it.
 - **The PolicySpec still has no External signers.** The grant's signer is the delegate, an
   ed25519 `Delegated` signer, in both runs. Spec validation refuses External signers on this tree,
   so a passkey can own the account but cannot be the grantee.
+
+## The wallet decision on the authority check
+
+The authority check (`ozpb check-policy-call-surface`) reads who can change the account, or the
+policy being installed, and lists them. It refuses what it can rule out on its own. It never says
+the install is safe: the wallet that holds the owner key decides. `scripts/wallet-decision.mjs` is
+that decision, and `scripts/approve-install.mjs` runs it:
+
+1. Ask `ozpb prepare-install-intent` for the `add_context_rule` arguments. The tool runs the check
+   itself and answers only when nothing is refused or unresolved. A refusal or any other error is
+   a refusal here too, and its findings are shown.
+2. Require the intent's arguments to be exactly the grant the check covered. The answer must be
+   about this account, network, target, bound policy, spec rule, spec hash and registry root, and
+   its scope must be exactly that target, account and policy.
+3. Accept only when all of these hold:
+   - the check refused nothing and left nothing unresolved;
+   - the grant does not target the account itself or its own policy, and has not expired at the
+     ledger the answer was read;
+   - every rule that can change the account or the bound policy needs at least one trusted
+     signer.
+4. Show the confirmation screen and ask.
+5. Just before signing, run the check again (a fresh read). Require the same
+   `authority_commitment`, a ledger no older than the first read, and the fresh answer accepted
+   under step 3. Expiry is outside the commitment, so it is judged again at the fresh ledger.
+   As the intent itself instructs, its arguments must also equal the grant the fresh answer
+   reports.
+
+Trusted means the run's own owner key plus any identity in `--trust`. Identities are compared by
+scheme and key. The verifier address does not count, and an ed25519 key behind a verifier is the
+same identity as the classic account with that key. Some identities never count, even when
+listed:
+
+- one the check marks as aliasing the restricted key, in any rule;
+- one that shares key material with the grant's own signer. The wallet uses the check's test
+  (equal bytes, or equal first 32 bytes).
+
+Two choices go beyond the check's contract. An empty authority list is refused, where the
+contract would accept it vacuously. Arguments are signed only if they equal, byte for byte, the
+rule `install.mjs` builds from the spec.
+
+```
+OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_BIN=<ozpb with the check commands> \
+OZPB_REGISTRY_SNAPSHOT_ROOT=<root of the signed snapshot> OZPB_SIGNED_REGISTRY_SNAPSHOT=registry.signed.json \
+OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=3 OZPB_RPC_SOURCES_FILE=sources.json \
+[OZPB_RPC_SOURCE=testnet] [OZPB_HARNESS_CONFIRM=tty|operator] [OZPB_HARNESS_TRUST=trust.json] \
+bash testnet-harness/run.sh
+```
+
+- **The binary.** `OZPB_BIN` must be an `ozpb` built from a tree that has
+  `check-policy-call-surface` and `prepare-install-intent`, which this tree does not. `run.sh` uses
+  the same binary for `ozpb generate`, so the check's rebuild of the policy can match.
+  `OZPB_RPC_SOURCE` names the entry in the sources file, `testnet` by default. `run.sh` checks all
+  of these before setup starts.
+
+- **The registry root.** `write-spec.mjs --registry-root` writes the root into the spec before
+  `ozpb generate`. The check refuses a spec whose `registry_snapshot` is not the root of the
+  signed snapshot it is given, and a zero root. That names the registry the check uses; nothing in
+  the spec is resolved against it. For the development snapshot, recognition rests on a public
+  development root, which is testnet only.
+- **The policy binding.** It carries the policy's build manifest unmodified, and its deploy
+  transaction as `resolution_reference`. The check rebuilds the policy offline to recognize it.
+  Run it with the same stellar-cli and the same warm build cache as `ozpb generate`
+  (`OZPB_STELLAR_BINARY`, `OZPB_BUILD_CACHE_DIR`), or the rebuild cannot match.
+- **The trust file.** `trust.json` is
+  `{"operator": [{"classic_account": "G…"}, {"scheme": "webauthn_p256", "public_key": "04…"}]}`.
+- **The error format.** `scripts/check-runner.mjs` reads the error code only from the first line
+  of stderr (`Error: E_CODE: …`). Each `  - …` line after it is one finding. Any other non-zero
+  exit counts as a refusal: an unreadable file, a usage error, a crash.
+
+**What this does not show.**
+
+- The trust is **operator-supplied test configuration**. `--trust`, the run's own key and
+  `--confirm operator` all come from whoever runs the script, and `--confirm operator` is no
+  prompt at all. `--confirm tty` is a terminal prompt, and anyone with that terminal can answer it.
+  None of this shows that a human approved the install, or that an agent with the same access
+  could not approve itself. That claim needs a real wallet's protected approval screen.
+  `run.json` records the decision under that label, with the exact operator-trusted identities.
+- It has not run against the real check. `ozpb check-policy-call-surface` and
+  `ozpb prepare-install-intent` are on another branch, not on this tree. The tests drive the
+  decision with fixtures hand-written from the check's output types and contract, not captured
+  from the tool. They drive the CLI seam with a fake `ozpb` that prints the documented error
+  format. Nothing here has run on testnet through this path.
+- Several cases are the check's to catch, and they reach the wallet only as refusals:
+  - a signerless permissive policy on the target;
+  - the agent added as a classic account's signer;
+  - a missing or zero-weight classic account.
+
+  An owner-only rule scoped to the bound policy is not a refusal. The check lists it, and the
+  wallet must trust its owner like any other.
+- What the check itself does not cover: the RPC endpoint is trusted, with no ledger proof.
+  Classic accounts must be master-key only. Threshold and policy-guarded owner rules and nested
+  accounts are refused, not analysed. Rules for other contracts are listed as not analysed.
 
 ## Against RFP 7
 
@@ -257,7 +349,10 @@ and what does not.
     secrets between steps.
 - **install.**
   - Runs: `add_context_rule` on testnet, after which the policy enforces.
-  - Does not run: the install-intent and authority-surface checks.
+  - Tested offline only: the wallet decision on the install intent and the authority check. It
+    runs against fixtures in the check's output shape, with a fake check runner. The real
+    `ozpb prepare-install-intent` and `ozpb check-policy-call-surface` are not on this tree, so
+    it has not run against them or on testnet.
 - **with a wallet.**
   - Runs: pollywallet's own wallet creation, driven headless in its real UI (`browser/`).
   - Closest that runs, with no wallet product involved: an account of pollywallet's shape, created

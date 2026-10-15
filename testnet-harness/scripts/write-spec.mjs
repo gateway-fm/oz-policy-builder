@@ -1,7 +1,8 @@
 // Write this run's PolicySpec: the committed template, filled from the recording `ozpb import`
 // made of the run's executed transfer.
 //
-//   node write-spec.mjs --run-dir <dir>      (reads run.json and recording.json, writes spec.json)
+//   node write-spec.mjs --run-dir <dir> [--registry-root <hex>]
+//                                            (reads run.json and recording.json, writes spec.json)
 //
 // This is the step `ozpb synthesize` exists to do, done by hand, and the reason is not a
 // shortcut. On this tree synthesis cannot run against testnet at all: the RPC recorder refuses
@@ -23,6 +24,12 @@
 // from the network and checked against the pin. What synthesis would have resolved from the
 // signed registry is left visibly unresolved (`registry_snapshot` all zeroes,
 // `registry_resolution` saying so).
+//
+// `--registry-root` is for the authority check (`install.mjs --authority-check`), which refuses a
+// spec whose `registry_snapshot` is not the root of the signed snapshot it is given. The root is
+// written in before `ozpb generate`, because the spec hash and the build manifest cover it. That
+// names the registry the check will use; it resolves nothing in the spec against it, and
+// `registry_resolution` says so.
 import { join } from 'node:path';
 
 import { args, log, readJson, writeJson } from './rpc.mjs';
@@ -34,6 +41,10 @@ const VALID_FOR_LEDGERS = 17_280;
 
 const opts = args();
 const runDir = opts['run-dir'];
+const registryRoot = opts['registry-root'];
+if (registryRoot !== undefined && (!/^[0-9a-f]{64}$/.test(registryRoot) || /^0+$/.test(registryRoot))) {
+  throw new Error('--registry-root must be a signed registry root: 64 lowercase hex digits, not zero');
+}
 const run = readJson(join(runDir, 'run.json'));
 const recording = readJson(join(runDir, 'recording.json'));
 const bundle = recording.bundle;
@@ -101,10 +112,18 @@ fill('justified_by', allowed.justified_by, 0, 'recordings[0]/auth[0]/root', `rec
 fill('evidence hash', spec.evidence.recordings[0], 'hash', ZERO, recording.recording_hash);
 fill('evidence trust', spec.evidence.recordings[0], 'trust', 'incomplete', recording.trust);
 same(spec.registry_snapshot, ZERO, 'template registry_snapshot');
+if (registryRoot !== undefined) {
+  fill('registry_snapshot', spec, 'registry_snapshot', ZERO, registryRoot);
+  fill('smart_account.registry_resolution', spec.smart_account, 'registry_resolution',
+    'not resolved: hand-written testnet-harness template, not a synthesis output',
+    'not resolved: hand-written testnet-harness template, not a synthesis output; registry_snapshot '
+      + 'names the signed registry the authority check is given, and nothing here was resolved against it');
+}
 
 writeJson(join(runDir, 'spec.json'), spec);
 run.valid_until_ledger = rule.valid_until.ledger;
 run.spec = join(runDir, 'spec.json');
+if (registryRoot !== undefined) run.registry_root = registryRoot;
 writeJson(join(runDir, 'run.json'), run);
 log(`spec      ${run.spec}`);
 log(`          justified by recording ${recording.recording_hash} (${recording.trust}), auth[${at}]`);

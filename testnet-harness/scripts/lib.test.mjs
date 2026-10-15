@@ -13,7 +13,7 @@ import { Address, Keypair, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import {
   ruleIdsXdr, authDigest, delegatedSigner, authPayload, i128, callContractRule, optionU32,
   checkAuthInvocation, contractCall, signForSmartAccount, policyDenial,
-  externalSigner, passkeyKeyData, p256PublicKeyRaw, derToLowS, webAuthnSigData,
+  externalSigner, passkeyKeyData, p256PublicKeyRaw, derToLowS, webAuthnSigData, addContextRuleArgs,
 } from './lib.mjs';
 import { PINNED_ACCOUNT_WASM, PINNED_WEBAUTHN_VERIFIER_WASM } from './rpc.mjs';
 
@@ -425,4 +425,37 @@ test('the pinned WebAuthn verifier hash is the one the README quotes', () => {
   assert.match(PINNED_WEBAUTHN_VERIFIER_WASM, /^[0-9a-f]{64}$/);
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   assert.ok(readme.includes(PINNED_WEBAUTHN_VERIFIER_WASM), 'README does not quote the pinned verifier hash');
+});
+
+// add_context_rule(context_type, name, valid_until, signers, policies), from one description that
+// both the spec path and the install-intent path produce, so the two can be compared as bytes.
+test('add_context_rule arguments, written out from the contract signature', () => {
+  const sac = StrKey.encodeContract(Buffer.alloc(32, 0x81));
+  const policy = StrKey.encodeContract(Buffer.alloc(32, 0x82));
+  const verifier = StrKey.encodeContract(Buffer.alloc(32, 0x83));
+  const g = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 0x84));
+  const keyHex = `04${'85'.repeat(64)}${'86'.repeat(16)}`;
+  const args = addContextRuleArgs({
+    context: sac, name: 'cap', validUntil: 9,
+    signers: [{ kind: 'delegated', address: g }, { kind: 'external', verifier, key_hex: keyHex }],
+    policies: [{ address: policy, install_params: { kind: 'generated' } }],
+  });
+  assert.deepEqual(args.map((a) => hex(a.toXDR())), [
+    hex(X.scVec([X.scSymbol('CallContract'), X.scAddress(sac)])),
+    hex(Buffer.concat([X.u32(14), X.opaque(Buffer.from('cap'))])),          // SCV_STRING
+    hex(Buffer.concat([X.u32(3), X.u32(9)])),
+    hex(X.scVec([
+      X.scVec([X.scSymbol('Delegated'), X.scAddress(g)]),
+      X.scVec([X.scSymbol('External'), X.scAddress(verifier), X.scBytes(Buffer.from(keyHex, 'hex'))]),
+    ])),
+    hex(X.scMap([[X.scAddress(policy), Buffer.concat([X.u32(3), X.u32(0)])]])),
+  ]);
+  assert.equal(hex(addContextRuleArgs({ context: sac, name: 'cap', validUntil: null, signers: [], policies: [] })[2].toXDR()), '00000001');
+  // Only the generated policy's install parameter is encoded here.
+  assert.throws(() => addContextRuleArgs({
+    context: sac, name: 'cap', validUntil: null, signers: [],
+    policies: [{ address: policy, install_params: { kind: 'spending_limit', spending_limit: '1', period_ledgers: 1 } }],
+  }), /spending_limit/);
+  const generated = { address: policy, install_params: { kind: 'generated' } };
+  assert.throws(() => addContextRuleArgs({ context: sac, name: 'cap', validUntil: null, signers: [], policies: [generated, generated] }), /at most one/);
 });

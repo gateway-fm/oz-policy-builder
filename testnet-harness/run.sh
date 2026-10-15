@@ -10,6 +10,9 @@
 #   OZPB_HARNESS_OUT=/tmp/run bash testnet-harness/run.sh     # choose where the artifacts land
 #   OZPB_HARNESS_OWNER=passkey OZPB_BROWSER_CHANNEL=chrome bash testnet-harness/run.sh
 #                                   # the account's owner is a headless passkey, not an ed25519 key
+#   OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_REGISTRY_SNAPSHOT_ROOT=<hex> … bash testnet-harness/run.sh
+#                                   # install through the wallet decision on the authority check
+#                                   # (README: "The wallet decision on the authority check")
 #
 # Everything the run produces is kept under `testnet-harness/runs/<UTC timestamp>-<pid>/` (gitignored):
 # run.json (every address and transaction hash), the import bundle, the recording, the spec, the
@@ -26,6 +29,28 @@ cd "$ROOT"
 
 OWNER="${OZPB_HARNESS_OWNER:-ed25519}"
 case "$OWNER" in ed25519|passkey) ;; *) echo "OZPB_HARNESS_OWNER is ed25519 or passkey, not $OWNER"; exit 1 ;; esac
+# Optional: install through the wallet decision on the authority check. The spec then names the
+# signed registry root, and install.mjs takes the check's settings from the environment.
+SPEC_ARGS=()
+INSTALL_ARGS=()
+case "${OZPB_HARNESS_AUTHORITY_CHECK:-}" in
+    '') ;;
+    cli)
+        # Checked now, not at step 5 after setup, record and generate have spent their time.
+        for var in OZPB_REGISTRY_SNAPSHOT_ROOT OZPB_BIN OZPB_SIGNED_REGISTRY_SNAPSHOT OZPB_REGISTRY_ROOTS_FILE \
+            OZPB_REGISTRY_MIN_VERSION OZPB_RPC_SOURCES_FILE; do
+            [ -n "${!var:-}" ] || { echo "OZPB_HARNESS_AUTHORITY_CHECK=cli needs $var"; exit 1; }
+        done
+        case "${OZPB_HARNESS_CONFIRM:-tty}" in tty|operator) ;; *) echo "OZPB_HARNESS_CONFIRM is tty or operator"; exit 1 ;; esac
+        if [ "${OZPB_HARNESS_CONFIRM:-tty}" = tty ] && ! ( : < /dev/tty ) 2>/dev/null; then
+            echo "OZPB_HARNESS_CONFIRM=tty needs a controlling terminal"; exit 1
+        fi
+        SPEC_ARGS=(--registry-root "$OZPB_REGISTRY_SNAPSHOT_ROOT")
+        INSTALL_ARGS=(--authority-check cli --confirm "${OZPB_HARNESS_CONFIRM:-tty}")
+        if [ -n "${OZPB_HARNESS_TRUST:-}" ]; then INSTALL_ARGS+=(--trust "$OZPB_HARNESS_TRUST"); fi
+        ;;
+    *) echo "OZPB_HARNESS_AUTHORITY_CHECK is cli or unset, not $OZPB_HARNESS_AUTHORITY_CHECK"; exit 1 ;;
+esac
 
 for tool in node npm stellar cargo; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required"; exit 1; }
@@ -74,7 +99,7 @@ if [ "$OWNER" = passkey ]; then
 fi
 
 say "3. spec: the template, filled from the recording (synthesis cannot run here; see README)"
-node "$SCRIPTS/write-spec.mjs" --run-dir "$RUN"
+node "$SCRIPTS/write-spec.mjs" --run-dir "$RUN" ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"}
 
 say "4. generate: the policy crate and its wasm"
 # The generated crate builds offline against the same locked dependencies as the committed
@@ -87,7 +112,7 @@ WASMS=("$RUN"/policy/*.wasm)
 [ "${#WASMS[@]}" -eq 1 ] || { echo "expected one wasm in $RUN/policy, found ${#WASMS[@]}"; exit 1; }
 
 say "5. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
-node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}"
+node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 
 say "6. permit exactly the recorded transfer, once; deny the rest"
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect permit
