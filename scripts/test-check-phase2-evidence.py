@@ -48,7 +48,9 @@ if os.environ.get("FAIL_MATCH") and os.environ["FAIL_MATCH"] in arguments:
 if "reference-suite" in sys.argv:
     print(Path("report.json").read_text())
     sys.exit(int(os.environ.get("REPORT_EXIT", "0")))
-count = 0 if os.environ.get("EMPTY_MATCH") and os.environ["EMPTY_MATCH"] in arguments else 1
+count = 0 if sys.argv[-2:] != ["--", "--exact"] else 1
+if os.environ.get("EMPTY_MATCH") and os.environ["EMPTY_MATCH"] in arguments:
+    count = 0
 print(f"test result: ok. {count} passed; 0 failed; 0 ignored; 10 filtered out;")
 ''')
         self.tool("stellar", '''
@@ -64,6 +66,13 @@ if mode != "missing":
 ''')
         for name in ["cargo-deny", "cargo-machete"]:
             self.tool(name, "pass\n")
+        # The real checker reads the rule/policy projection; the fake Cargo process
+        # isolates these shell tests from the CLI's separate full-spec validation.
+        spec = self.root / "docs/examples/subscription-spec.json"
+        spec.parent.mkdir(parents=True)
+        spec.write_text(json.dumps({"rules": [{"policies": [
+            {"reviewed": {"kind": "oz:spending_limit"}}, {"generated": {}},
+        ]}]}), encoding="utf-8")
         (self.root / "report.json").write_text(json.dumps({
             "all_agree": True, "total": 2, "disagreements": 0,
             "missing_classes": [], "permit_only_classes": [],
@@ -88,6 +97,7 @@ if mode != "missing":
         path.chmod(0o755)
 
     def run_gate(self, script="check-phase2-evidence.sh", arguments=(), **changes):
+        (self.root / "calls.log").unlink(missing_ok=True)
         environment = os.environ.copy()
         for key in ["PHASE1_EXIT", "FAIL_MATCH", "EMPTY_MATCH", "REPORT_EXIT", "WASM_BEHAVIOR"]:
             environment.pop(key, None)
@@ -99,6 +109,14 @@ if mode != "missing":
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(message, result.stderr)
         self.assertNotIn("PHASE 2 CHECKS PASSED", result.stdout)
+
+    def assert_wrapper_runs_evidence(self, result):
+        self.assertIn("FOCUSED PHASE 2 CHECKS PASSED (all)", result.stdout)
+        calls = (self.root / "calls.log").read_text().splitlines()
+        self.assertTrue(calls[0].startswith("phase1 "), calls)
+        for group in ["reference-suite", "-p ozpb-harness", "--test mcp_stdio_verification",
+                      "--test generated_suite", "--test swap_generated_suite"]:
+            self.assertTrue(any(group in call for call in calls[1:]), f"missing focused check: {group}")
 
     def test_each_mode_runs_only_its_named_evidence(self):
         for mode, host, contracts in [((), True, True), (("--host-only",), True, False),
@@ -117,7 +135,7 @@ if mode != "missing":
 
     def test_cargo_failure_is_not_hidden_by_successful_output_checks(self):
         self.assert_failure(self.run_gate(FAIL_MATCH="generated_deny_suite"), "EVIDENCE CHECK FAILED")
-        # Even valid JSON cannot hide a nonzero producer exit on the report pipeline.
+        # Even valid JSON cannot hide a nonzero producer exit from the runner.
         self.assert_failure(self.run_gate(REPORT_EXIT="9"))
 
     def test_malformed_reference_report_stops_the_gate(self):
@@ -144,10 +162,18 @@ if mode != "missing":
         self.assertIn("W3 Wasm build not run", result.stdout)
         self.assertIn("not full Tranche 2 acceptance", result.stdout)
         self.assertIn("phase1 --offline", (self.root / "calls.log").read_text())
+        self.assert_wrapper_runs_evidence(result)
 
     def test_phase1_failure_stops_before_focused_checks(self):
         self.assert_failure(self.run_gate("verify-phase2.sh", PHASE1_EXIT="4"))
         self.assertNotIn("cargo", (self.root / "calls.log").read_text())
+
+    def test_both_wrapper_modes_propagate_focused_check_failures(self):
+        for arguments in [(), ("--offline",)]:
+            for group in ["verification_tools_are_listed", "generated_deny_suite"]:
+                with self.subTest(arguments=arguments, group=group):
+                    self.assert_failure(self.run_gate("verify-phase2.sh", arguments, FAIL_MATCH=group),
+                                        "EVIDENCE CHECK FAILED")
 
     def test_release_requires_a_successful_build_and_fresh_wasm_output(self):
         for mode in ["fail", "missing", "invalid"]:
@@ -159,6 +185,7 @@ if mode != "missing":
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("AUTOMATED PHASE 2 CHECKS PASSED (release mode)", result.stdout)
         self.assertIn("not full Tranche 2 acceptance", result.stdout)
+        self.assert_wrapper_runs_evidence(result)
 
 
 if __name__ == "__main__":

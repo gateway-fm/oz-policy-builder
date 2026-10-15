@@ -54,8 +54,8 @@ if [ "$MODE" != contracts ]; then
 fi
 
 if [ "$MODE" != host ]; then
-    echo "== partial layer 2: compiled fixtures, account invocation, and committed state =="
-    echo "   Management setup and delegated authentication are mocked in these tests."
+    echo "== partial layer 2: natively compiled Rust registered with test accounts =="
+    echo "   Generated Wasm is not executed; management setup and delegated authentication are mocked."
     for name in generated_deny_suite_agrees_with_the_real_contract \
                 generated_golden_denials_preserve_the_expected_reason \
                 generated_suite_commits_permits_and_rolls_back_a_later_denial \

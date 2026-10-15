@@ -53,22 +53,26 @@ run the complete release command or the additional Stellar CLI build.
 
 | Check | Evidence and limits |
 | --- | --- |
-| Subscription CLI reference suite | Labeled layer-1 outcomes, a passing original and denial controls, agreement, and no missing required boundary classes. Exact acknowledgements expose reviewed-policy semantics outside the evaluator's model. |
+| Subscription CLI reference suite | Labeled layer-1 outcomes, an original permit and denial controls per declared rule, agreement, and no missing required boundary classes. Summary counts, coverage, and policy gaps must match detailed evidence. Exact acknowledgements preserve repeated policy instances. |
 | W1 Blend, W2 subscription, W3 Soroswap harness fixtures | Reference-evaluator agreement on the committed Rust fixtures. W3 includes amount boundaries and a caller-chosen deadline. These tests are not live protocol walkthroughs. |
-| Golden generated suite | Partial layer 2: generated mutations through the registered account and compiled policy, plus exact reasons for selected unambiguous denials. |
+| Golden generated suite | Partial layer 2: generated mutations through a test account and natively registered Rust policy, plus exact reasons for selected unambiguous denials. |
 | Golden stateful cases | Permits commit counters; a later denial rolls back state, including an earlier policy's counter. An overlapping-rule test demonstrates aggregate authority across independent counters, not safe reconfiguration. |
-| Soroswap generated suite | Partial layer 2: account/policy permit and denial behavior for bounds, route, recipient, and deadline mutations. |
+| Soroswap generated suite | Partial layer 2: test-account/native-policy permit and denial behavior for bounds, route, recipient, and deadline mutations. |
 | MCP stdio verification tests | Named verification tools have schemas, the reference operation returns evidence, and malformed specs retain structured errors. This does not test a hosted endpoint or successful real-builder verification over MCP. |
 
-The partial layer-2 tests use compiled Rust contracts in the local Soroban host. Management
-setup and delegated-signer authentication are mocked. They do not demonstrate a delegate's
-digest-bound signature, execution of captured target contracts, live preflight, or a complete
-four-layer dry-run. The separate Soroswap Wasm build establishes compilation only.
+The partial layer-2 tests register natively compiled Rust in the local Soroban test host with
+test accounts (`HarnessAccount` and `SwapAccount`). They do not execute the generated Wasm
+artifact. Management setup and delegated-signer authentication are mocked. These tests do not
+demonstrate a delegate's digest-bound signature, execution of captured target contracts,
+live preflight, or a complete four-layer dry-run. The separate Soroswap Wasm build establishes
+compilation only; its artifact is not executed by these tests.
 
 The subscription acknowledgement names `oz:spending_limit`: layer 1 does not model its
 stateful cap or period. An acknowledgement never waives a disagreement or missing boundary
 class and never establishes on-chain composition coverage. New gaps, stale entries, and
-entries for unchecked specs fail the gate. Permit-only classes are printed as limitations.
+entries for unchecked specs fail the gate. The focused gate uses one `--run` invocation with
+`label=spec-path` pairs, so every declared example must actually run and pass. Repeated policy
+kinds require one acknowledgement per instance. Permit-only classes are printed as limitations.
 See [scope item 3](SCOPE.md) for the reviewed-policy Wasm boundary.
 
 To retain the complete subscription report for inspection:
@@ -91,10 +95,14 @@ and the authority check, signing an install with a passkey, and revoking it. Rev
 operations at the actual delivered revision; this guide does not assert that they are all
 available in the current CLI or MCP surface.
 
+The table highlights review areas; architecture §10 is the authoritative, complete acceptance
+scope. Passing the automated subset above does not waive any of its requirements.
+
 | Area | Separate evidence to review |
 | --- | --- |
-| Full harness | Each executed layer and its omissions; digest-bound authentication; target execution using captured Wasm and state; current live preflight, with state and ledger anchors. |
-| Authority and installation | Complete, fresh account and policy observations; intended wallet owner binding; proposed bindings and intent identities; successful and refused paths. A fixture or supplied `Safe` field cannot establish live authority. |
+| Full harness | Each executed layer and its omissions; generated Wasm through complete account authentication; state-invariant tests and the adversarial direct-call suite; target execution using captured Wasm and state; current live preflight, with state and ledger anchors. |
+| Authority and installation | Complete, fresh account and policy observations; intended wallet owner binding; proposed bindings and intent identities; successful and refused paths. A fixture or caller-supplied verdict cannot establish live authority. |
+| Tool deliverables | The `dry_run`, `verify`, `check_against_policy`, `prepare_install_intent`, `assemble_install_transaction`, and `import_recording` operations, with their required evidence and refusal behavior through the supported shells. |
 | Wallet | Consent and signature authorization, deploy/install separation, confirmed installation records, reconfiguration and overlap handling, revocation, and post-install monitoring. |
 | W1/W2/W3 walkthroughs | The actual Blend, SEP-41, and Soroswap paths with code-hash-bound adapters; positive cases and relevant denials. Local reference fixtures alone do not satisfy this requirement. |
 | Agent workflow | Clarification of ambiguous constraints, exact permission review, and the confirmation step before deployment. The installed skill's text alone is not an executed workflow. |
