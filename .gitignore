@@ -10,6 +10,8 @@ node_modules/
 
 # Testnet-harness runtime secrets/config (generated locally; never commit).
 *.secret
+# Testnet-harness run directories: per-run evidence, not source.
+testnet-harness/runs/
 
 # Agent worktrees live inside the repository and are nested git checkouts; without this
 # a `git add -A` commits them as embedded repositories.

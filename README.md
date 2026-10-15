@@ -7,8 +7,10 @@ transaction you already performed (on-chain by hash, or locally simulated) and t
 synthesizes a context rule plus a small, validated composition of policies that permits
 exactly what you approved — and denies everything else it can observe. Output is
 human-readable Rust implementing the OpenZeppelin `Policy` trait, produced by a
-deterministic, auditable pipeline. **Code-first, deploy-second:** nothing is ever deployed
-automatically.
+deterministic, auditable pipeline. **Code-first, deploy-second:** the toolkit itself never
+deploys anything. Two scripts do: `scripts/demo-tranche1.sh` and the Tranche 2
+[testnet harness](testnet-harness/README.md). Both deploy only to testnet, with throwaway keys,
+and only when you run them.
 
 The full technical architecture (v0.8) lives in `docs/architecture.md`. The Tranche 1
 release surface is the core pipeline — recorder → PolicySpec → synthesizer → codegen —
@@ -91,6 +93,7 @@ crates/
   cli               human-oriented shell over the same library
 contracts/          separate cargo workspace: golden generated policy + soroban tests
 scripts/            dependency-rule check, determinism check
+testnet-harness/    Tranche 2: install a generated policy into an OZ account on testnet (node)
 ```
 
 The security-critical cores have unit, property, differential, and real-toolchain
