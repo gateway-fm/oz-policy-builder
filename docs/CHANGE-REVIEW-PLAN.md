@@ -74,15 +74,24 @@ Reports state what was committed, mocked, captured, or observed live.
 **Authority-surface check.** The trusted reader acquires one coherent ledger snapshot,
 binds the observed account and network to the request, reconciles the active count and
 complete rule/transitive closure, and checks observed code hashes against verified registry
-entries. It derives the designated administrator rather than accepting one from the client.
-Examine both direct policy calls and account-management
-calls, including every exported security-relevant method. Missing method inventory,
-unrecognized code, mixed ledgers, archive uncertainty, or exceeded scan bounds cannot yield
-a public `Safe` verdict. A pure core result is not a complete live wire verdict (§4.8).
+entries. Nothing about who owns the account comes from the client: the check derives, for a
+stated scope (target, management surface, bound policies), every live rule that can change the
+account or reset a bound policy, and never says "safe" — the wallet that holds the owner key
+recomputes and decides (Decision D7). Check that the refusals work on key material (the agent's
+key behind a verifier is still the agent's key), that accepted forms are surface-specific (no
+policy on an account-reaching rule; a policy-bearing rule on the target counts whoever it names,
+even nobody), that a classic-account signer is described only from its own existing account
+entry, that a rule which cannot be described exactly is refused by name rather than skipped,
+that rules for other contracts are listed as exclusions, and that the commitment moves with
+every input that decides the answer and with the exact install intent, and not with ledger or
+TTL changes. Missing method
+inventory, unrecognized code, mixed ledgers, archive uncertainty, or exceeded scan bounds
+cannot yield a list. A pure core result is not a complete live wire result (§4.8).
 
-**Install intent.** Require an exact spec/binding match and a complete `Safe` authority
-verdict for the same account, network, code, bindings, and observation. Reject stale or
-internally inconsistent artifacts. The result is an intent for wallet review, not an
+**Install intent.** Require an exact spec/binding match and an authority result with no
+refusal and nothing unresolved for the same account, network, code, bindings, spec rule and
+observation. Reject stale
+or internally inconsistent artifacts. The result is an intent for wallet review, not an
 authorization to sign or submit. A fresh surface check is required immediately before
 signing; a time window is retry policy, not a safety guarantee (§4.8).
 

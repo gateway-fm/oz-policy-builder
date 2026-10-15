@@ -503,8 +503,8 @@ interpreter needs auditing. Consequences, embraced explicitly:
   deployment. Rule names, account addresses, rationale, and evidence links do not affect
   bytes. The normalized-input hash is the pre-build identity that ties a PolicySpec to the
   eventual wasm via the BuildManifest attestation (§4.10).
-- **No setters, no upgrade entry point.** Reconfiguration is remove-and-reinstall under the
-  account's strong administrative rule (§4.8). (Runtime setters guarded only by
+- **No setters, no upgrade entry point.** Reconfiguration is remove-and-reinstall under one
+  of the account's owner rules (§4.8). (Runtime setters guarded only by
   `smart_account.require_auth()` are a configuration-downgrade path: a weak session rule
   covering the policy contract's address could authorize them — the same reasoning that
   motivates the call-surface check in §4.8.) `install_params` carry only non-security
@@ -706,8 +706,8 @@ endpoint; API role + isolated sandbox-worker role, §3).
 | `dry_run` | layered (see §4.5) | offline layers deterministic; live preflight = network read; any testnet deploy/submit mode = **mutating, explicitly gated** |
 | `verify` | mixed, reported separately | source reproduction · wasm reproduction · spec conformance · offline behavioral conformance (each deterministic) · current-network preflight (state-dependent) |
 | `check_against_policy` | network read, state-dependent, **recognition-scoped** | proposed invocation vs an *installed* policy → predicted permit/deny — only for implementations recognized via a static reviewed-registry entry **or a fully verified generated-artifact attestation** (§4.10). Anything else returns `unsupported`, never a guess. Responses identify the ledger anchor, exact storage entries and configuration read, restore status, and the race window; a live preflight remains the strongest state-dependent evidence, not a durable verdict |
-| `check_policy_call_surface` | network read, state-dependent | account + exact `PolicyBindingSet` → **authority-surface verdict** (§4.8) over both the policy and account-management surfaces: an observation at exactly one ledger, with enumeration + dominance evidence |
-| `prepare_install_intent` | pure | PolicySpec + account record + completed `PolicyBindingSet` + an authority-surface verdict artifact (it validates artifact consistency; *currency* comes from re-running the scanner before signing) → install operations and parameters |
+| `check_policy_call_surface` | network read, state-dependent | account + exact `PolicyBindingSet` + the spec rule to install → **authority list** (§4.8) for a stated scope (the target, the account's management surface, the bound policies): who can change the account or reset the policies, each with exactly who must sign, plus named `refusals`, `unresolved` evidence gaps and coverage exclusions — an observation at exactly one ledger with an `authority_commitment` over state and intent. Never a "safe" verdict and advisory over MCP: the key-holding wallet recomputes it and decides (Decision D7) |
+| `prepare_install_intent` | pure | PolicySpec + account record + completed `PolicyBindingSet` + an authority-list artifact with no refusal or unresolved item (it validates artifact consistency; *currency* comes from re-running the scanner before signing) → install operations and parameters |
 | `assemble_install_transaction` | network read | intent → unsigned XDR with current sequence, fees, ledger bounds, and restoration preamble handling; **the wallet independently re-validates and re-simulates the returned XDR before requesting any signature** (§4.8) |
 
 Design rules:
@@ -863,7 +863,7 @@ verification steps that make it trustworthy:**
      2. fetch `ContextRuleData(0..next_id)` in batches, then the **transitive storage
         closure** of every live rule — the referenced `SignerData(id)` / `PolicyData(id)`
         entries (a `ContextRuleEntry` stores IDs, not values: the policy addresses,
-        signers, and verifiers the dominance algebra needs live in those separate,
+        signers, and verifiers the authority list needs live in those separate,
         independently archivable entries) plus any release-specific lookup data;
      3. **reconcile, fail closed on any deficit:** decoded live rule entries must equal
         `Count` at one coherent snapshot, and every referenced transitive entry must be
@@ -883,7 +883,7 @@ verification steps that make it trustworthy:**
      5. **resource bounds:** if `next_id`, batch count, or closure size exceeds the
         declared bounds, return `E_SCAN_BUDGET_EXCEEDED` — a specific unsupported
         outcome, never a partial result.
-     The verified claim is explicitly **"safe at observed ledger L"**: another authorized
+     The claim is explicitly **"these were the rules at observed ledger L"**: another authorized
      management transaction can still change rules between the scan and install finality —
      that TOCTOU window is a stated trust boundary, narrowed by re-scanning immediately
      before signing, not eliminated. Upstream proposals to OZ, stated precisely: an
@@ -891,30 +891,69 @@ verification steps that make it trustworthy:**
      mechanism that structurally closes the scan-to-install race is an account method
      that checks an expected rules-version **in the same state transition** as the
      management call.
-   - **Dominance is decided conservatively, not generally** — comparing arbitrary rule
-     strength is undecidable. The check: (1) fingerprints the one designated
-     administrative rule authorized for management; (2) for every other non-expired rule
-     on **either surface**, proves via the registries' closed, **method-level capability
-     algebra** that it denies every exported security-relevant method of that surface
-     (the policy registry lists policy methods per reviewed hash; the account registry
-     lists management methods per exact account wasm); (3) accepts an alternate admin
-     rule only where a registered, parameter-aware implication function proves it
-     equivalent to or stronger than the designated one; (4) rejects custom, unknown, or
-     state-dependent comparisons outright.
-   - **On failure, verified mode rejects** (`E_UNSAFE_CALL_SURFACE` for the policy
-     surface, `E_UNSAFE_MANAGEMENT_SURFACE` for the management surface) with guided
-     remediation — identify the exact conflicting rule, explain what it can authorize,
-     strengthen or remove it, re-run — and no override exists on either surface
-     (Decision D4, §13). The verdict is an **observation at exactly one ledger**:
-     `{ observed_ledger, account_code_hash, ordered_state_digest, enumeration_evidence,
-     dominance_evidence, result }`, recorded in the InstallationRecord. Any freshness
-     window is wallet retry policy, never a security-validity interval — without an
-     on-chain rules-version precondition the toolkit cannot know that no unobserved
-     mutation happened inside a nominal window, so the scanner re-runs immediately before
-     signing/submission. Post-install monitoring alerts and offers the emergency-removal
-     flow if a later check fails.
-6. **Installation — the step authorized by the user's account.** The wallet resolves the
-   account's **strong administrative rule**, simulates the complete install (restoration
+   - **An authority list for a stated scope, not a dominance verdict** (Decision D7).
+     Comparing arbitrary rule strength is undecidable, and the one fact that settles safety —
+     whether the listed identities are the user's, or trusted by the user — is known only to
+     the wallet holding the owner key. So the check answers, from the ledger and for exactly
+     this scope — the new rule's target(s), the account's management surface (`Default`,
+     `CallContract(account)`) and the bound policies — *who can change the account, reset
+     these policies, or call the target outside the new limit*. Live rules for other
+     contracts are listed by id as **coverage exclusions** ("not analysed"); the check never
+     claims "nothing else" account-wide. Nothing about ownership is accepted from the caller.
+   - **Accepted forms are surface-specific.** A rule that can change the account or reach a
+     bound policy is described only when it is policy-free: every signer must sign (OZ
+     `storage.rs`), so its requirement is `all_of` over resolved identities. A policy on such
+     a rule — a k-of-n threshold, guarded recovery, anything — is refused: the account skips
+     its own signer check for a rule with policies, lets the submitter choose that rule and
+     hands the policies whatever signers authenticated, possibly none. A rule on the target may
+     carry policies whose signer semantics are established (a recognized registry policy; a
+     generated policy only once its own artifact is reproduced, which Tranche 2 does not do, so
+     it is refused) and is then described by those semantics, never projected to `all_of`
+     from its stored signer list. Such rules — who else can call the target — are shown, not
+     decided on: their access is their own, not a way around the agent's limit. A rule in
+     several sets gets the stricter, protected-surface treatment.
+   - **Identities.** A `Delegated(G…)` signer authorizes through the classic account's own
+     signers and medium threshold, so the reader fetches every such account entry (the new
+     rule's own signers included, without exemption) in the same capture: it is one identity —
+     its master ed25519 key — only when the entry exists, names no other signer, and the master
+     weight is above zero and meets the medium threshold. A missing account cannot authenticate
+     now (the host fails to load it) and is refused; other shapes are classic multisig and
+     refused. A contract signer (nested account) and an external signer whose verifier is not
+     recognized, immutable and stateless are refused.
+   - **Three blocking parts.** `authority_list` (above); `refusals` — unconditional inside the
+     scope, computed on key material so the restricted key is recognized as a classic account
+     and as raw key bytes behind a verifier (sharing the first 32 bytes, so a credential-id
+     suffix does not hide it); a restricted key behind an unrecognized verifier is refused: `E_DELEGATE_HAS_AUTHORITY` (an account- or policy-reaching rule
+     usable by restricted keys alone), `E_DELEGATE_GRANT_OVERLAP` (another rule gives the
+     restricted key a path to the target next to a stateful limit, or a rule on the target
+     carries a policy this check cannot read, whoever it names, even nobody),
+     `E_UNSAFE_CALL_SURFACE` / `E_UNSAFE_MANAGEMENT_SURFACE` (the new rule targets a bound
+     policy, a policy, verifier or contract signer the account already uses, or the account),
+     and `E_UNSUPPORTED_AUTHORITY` (an in-scope rule in a shape refused above, by name); and
+     `unresolved` — evidence gaps inside the scope, such as a classic account that was not read.
+     None is ever skipped. Notes that block nothing: the restricted key's rules anywhere (what
+     the agent can already do), other rules on the target (who else can call it), and expired
+     rules (reviving one needs a management rule).
+   - **The result is an observation at exactly one ledger and never says "safe"**:
+     `{ observed_ledger, grant, scope, authority_list, refusals, unresolved,
+     coverage_exclusions, notes, authority_state, evidence, authority_commitment }`. Over MCP it
+     is advisory. The wallet recomputes it itself against its own RPC and accepts only when
+     `refusals` and `unresolved` are both empty and every `authority_list` entry `all_of(S)` has
+     `S ∩ trusted ≠ ∅`, where trusted is its own keys plus identities its human trusts through
+     the wallet's protected UI, never one marked as aliasing a restricted key. Trust never
+     overrides a refusal (Decision D4). `evidence` (ledgers, TTLs, acquisition metadata) is
+     recorded and used to validate the acquisition, never compared. The
+     `authority_commitment` hashes the authority-relevant state (account and policy code,
+     rules, resolved identities, classic signer configurations) and the exact intent (network,
+     account, spec, bindings, rule index, the exact `add_context_rule` arguments); the human's
+     approval binds to it, and the re-read immediately before signing recomputes it at the new
+     ledger — re-evaluating expiry, liveness and recognition — so any difference needs approval
+     again. A freshness window is retry policy, never a security-validity interval: without an
+     on-chain rules-version precondition the toolkit cannot know that no unobserved mutation
+     happened in between. The result is recorded in the InstallationRecord. Post-install
+     monitoring alerts and offers the emergency-removal flow if a later check fails.
+6. **Installation — the step authorized by the user's account.** The wallet signs with an
+   **owner rule it matched against its own key** in the authority list, simulates the complete install (restoration
    preambles handled), and the user signs **one transaction** —
    `add_context_rule(CallContract(target), name, valid_until, delegate signers,
    { policy → install info })` — with their passkey over the digest-bound payload, submitted
@@ -1001,7 +1040,7 @@ back or equivocate on is not a root.
   whatever signer requirement its reviewed source implements — no more. **An address,
   package version, or claimed kind is never sufficient.** Entries also list each
   implementation's **exported security-relevant methods with a method-level authorization
-  model** — the input to the call-surface dominance algebra (§4.8) — and, for reviewed OZ
+  model** — the input to the call-surface check (§4.8) — and, for reviewed OZ
   policy utilities, register the exact deployed wrapper-contract wasm and chosen instance
   addresses, not just the library module or package version.
 - **Account capability registry — keyed by `(network ID, account wasm hash)`.** Entry:
@@ -1098,7 +1137,7 @@ crates/
   build-runner      # sandboxed `stellar contract build` orchestration (worker role)
   registry          # snapshot loading, signature/rollback verification, capability queries
   call-surface-core # pure: rule-set decoding, transitive closure, Count reconciliation,
-                    # dominance algebra, verdict construction over an EvidenceSnapshot
+                    # authority list + automatic findings over an EvidenceSnapshot
                     # (the scan/acquisition side lives in a shell adapter)
   harness           # 4-layer evidence runner over soroban-sdk testutils + acquisition
                     # adapters
@@ -1426,7 +1465,7 @@ unverifiable claim about development chronology or every possible rejection path
   account-address rule restored and used for management in the same invocation;
   expired/restored/archived rules; rule-ID holes; a recognized wrapper with a custom
   management/upgrade method; unknown management-method semantics failing unsupported;
-  management methods beyond the three trait functions; dominance-rejection cases);
+  management methods beyond the three trait functions; authority-finding cases);
   **reconfiguration overlap tests** exercising both rule IDs and asserting aggregate
   capability.
 - **Registries:** signature verification, unknown-hash fail-closed behavior, rollback and
@@ -1511,7 +1550,7 @@ zero-signer denial and strict-mode signer-mutation denial. This is not a full sm
 **Phase 2 — Testnet (prove & integrate).** Full four-layer harness with constraint-derived
 deny generation, differential testing, committed-state `__check_auth` integration,
 state-invariant tests, the adversarial direct-call suite, and overlap aggregate tests;
-**`check_policy_call_surface`** (exhaustive enumeration + conservative dominance) with
+**`check_policy_call_surface`** (exhaustive enumeration + authority list + automatic findings) with
 `PolicyBindingSet` resolution ordered before it in the wallet flow and preflight; `dry_run`
 / `verify` / `check_against_policy` (recognition-scoped) / `prepare_install_intent` /
 `assemble_install_transaction` / `import_recording` tools; Claude skill with clarification +
@@ -1547,9 +1586,10 @@ audit report + remediation log.
   direct policy calls and the account's own management methods — using enumeration that is
   **archive-safe** (`Count`-reconciled, failing closed on any completeness deficit),
   **transitive** (signer/policy/verifier closure), **snapshot-coherent**, and **within
-  declared resource bounds**, over the exact `PolicyBindingSet` addresses, with the
-  conservative method-level dominance algebra; the verdict is an observation at exactly
-  one ledger (freshness is retry policy, never a security interval); post-install rule
+  declared resource bounds**, over the exact `PolicyBindingSet` addresses, with every relevant
+  rule described exactly, no refusal, nothing unresolved, and every listed identity matched
+  by the wallet against its own key or explicitly trusted by its human; the result is an
+  observation at exactly one ledger (freshness is retry policy, never a security interval); post-install rule
   changes and restorations trigger alerts (detection only — never part of the completeness
   argument); the adversarial direct-call and management-bypass suites pass.
 - Synthesis is exact-by-default and never infers numeric direction from XDR type alone.
@@ -1717,6 +1757,30 @@ rather than a silent gap — the alternatives (waiting for an upstream interface
 an indexer) either delay the product or weaken the trust model. The upstream proposals
 (`get_context_rule_ids`, an on-chain rules-version precondition) remain the cleaner
 long-term fix.
+
+**D7 — The check lists who can change the account; only the key-holding wallet says
+"safe".** Supersedes D4's single-administrator assumption and §4.8's earlier dominance design
+("fingerprint the one designated administrative rule; accept an alternate only where a
+registered implication function proves it equivalent or stronger"). That design flagged every
+ordinary multi-owner account as unsafe — one rule per owner, an owner plus a recovery key —
+and could not say why a designated rule was the right one: nothing in the ledger says which
+keys are the user's. The check now derives, at one ledger, every live rule that can change the
+account, reach the bound policies or call the target, describes each exactly (who must sign —
+including the classic account behind a `G…` signer), and refuses automatically only on what
+needs no knowledge of the user: the restricted key already having power (computed on key
+material, so a key behind a verifier is still that key), another way to the target around a
+stateful limit, a new rule aimed at the account or something it trusts, and — as `unresolved`
+— any relevant rule it cannot describe. **Why this way:** "are these owners mine, or people I
+trust?" is a fact only the process holding the owner key and its human can establish, so the
+tool — reachable over MCP by the very agent being restricted — must never certify it; an agent
+that could obtain a "safe" from a tool could certify itself. The wallet (in Tranche 2, our
+testnet harness) recomputes the list itself, matches it with its own key and the identities its
+human trusts, and recomputes the commitment before signing. The claim is scoped — the target,
+the account's management surface and the bound policies — and never account-wide. D4 stands
+where it applies: a refusal has no override. Not supported in Tranche 2, each refused by name:
+k-of-n threshold owners, policy-guarded recovery rules, any policy on a rule that can change the
+account, contract-address (nested-account) signers, classic multisig, missing classic accounts,
+and any dominance or implication algebra.
 
 ---
 

@@ -10,12 +10,21 @@ The source-reviewed account method inventory and its limits are described in
 [`ACCOUNT-METHOD-INVENTORY.md`](ACCOUNT-METHOD-INVENTORY.md).
 
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
-   reconciliation and transitive closure). The largest remaining gap to RFP #7:
-   `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
-   implemented and tested over supplied `bounded_next_id` observations, but it rejects
-   policy-bearing administrative rules until signer enforcement can be proven. The bounded
-   reader described below still needs live network verification before its observations
-   can support an authority verdict.
+   reconciliation and transitive closure). The largest remaining gap to RFP #7. The pure
+   core is implemented and tested over supplied `bounded_next_id` observations. It never
+   says an account is safe, and its claim is scoped to the new rule's target, the account's
+   management surface and the bound policies. It lists every live rule that can change the
+   account or reset a bound policy, each with exactly who must sign, and refuses
+   automatically when the new rule's own key could already do either alone, when another rule
+   on the target gets around a stateful limit, when the new rule aims at the account or
+   something it trusts, or when an in-scope rule has a shape this version does not support
+   (any policy on an account-reaching rule, k-of-n, guarded recovery, contract signers,
+   unrecognized external signers, classic multisig, a missing classic account). Whether the
+   listed identities are the user's, or trusted by the user, is decided by the wallet that
+   holds the owner key, which recomputes the result itself (Decision D7). Rules for other
+   contracts are listed as not analysed. The bounded reader described below still needs live
+   network verification, and must also read each relevant classic account, before its
+   observations can support that list.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes live entries, returned archived entries, and omitted keys. A pure
@@ -59,17 +68,16 @@ The source-reviewed account method inventory and its limits are described in
    ledger. A contract-address delegated signer is refused: the reader does not inspect a nested
    account's own rules, so it cannot say who that signer is.
    The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
-   calls and re-reading the instance do not authenticate a coherent ledger snapshot. There is
-   no wallet-authenticated binding to the intended administrator. A registry signature covers
-   implementation capabilities, not live ledger state; a client-provided fingerprint cannot
-   establish wallet intent. The missing assurances are required before a public authority verdict.
+   calls and re-reading the instance do not authenticate a coherent ledger snapshot. A registry
+   signature covers implementation capabilities, not live ledger state, and nothing a client
+   sends can say who owns the account: owner matching stays with the key-holding wallet. The
+   missing assurances are required before a public authority list.
 
    The toolkit has an internal install-intent draft that checks a spec, binding set, and
    supplied authority artifact for identity and structural consistency, then derives typed
-   account arguments. It cannot authenticate the supplied `Safe` claim, prove a complete
-   exported-method inventory or transitive ledger reads, or establish freshness. It is not
-   exported through the CLI or MCP server; a trusted reader and complete method-level evidence
-   are required before that operation can be offered for wallet review.
+   account arguments. It cannot authenticate the supplied authority list or its ledger reads,
+   or establish freshness. It is not exported through the CLI or MCP server; it has to run the
+   live check itself before it can be offered for wallet review.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,

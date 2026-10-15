@@ -56,16 +56,29 @@ two as separate and so does this.
 | `ozpb:v1:build-manifest` | a build manifest |
 | `ozpb:v1:policy-binding-set` | a policy binding set |
 | `ozpb:v1:policy-check-request` | the complete typed `CheckAgainstPolicyInput` |
-| `ozpb:v1:account-state` | the enumerated account rule-set a verdict was computed over |
+| `ozpb:v1:account-state` | the enumerated account rule-set an authority result was computed over |
 | `ozpb:v1:account-ledger-witness` | the raw entries one account scan read; its own byte layout, below |
 | `ozpb:v1:account-method-inventory` | the source-reviewed method table for one exact account Wasm hash |
 | `ozpb:v1:account-admin-candidate` | one observed, structurally eligible management rule |
 | `ozpb:v1:generated-source` | a generated crate's source files, lockfile excluded |
 | `ozpb:v1:generated-crate-files` | a generated crate's complete emitted file set |
-| `ozpb:v1:surface-verdict` | reserved; the verdict is not hashed yet |
+| `ozpb:v1:surface-verdict` | the `authority_commitment`: authority-relevant state plus exact intent |
 
 One structure, one domain. A domain used for two structures forfeits exactly the separation the
 scheme exists to provide.
+
+The authority commitment covers (as one canonical map, so the order is the encoding's, not this
+list's): the network ID, the account address and observed
+account code hash, the spec hash, the binding-set hash, every bound policy address with its
+observed code hash, the grant (spec rule index, target, whether it keeps state, its signers as
+the account stores them, and the rest of the exact `add_context_rule` arguments: name,
+`valid_until`, each policy address with its install parameters), the scope, the authority list,
+the refusals, the unresolved items, the coverage exclusions, the notes, and the authority state
+(the `account-state` digest and the signing configuration of every classic account read). The
+observed ledger and the acquisition evidence (TTLs, ledger metadata) are deliberately absent: a
+re-read immediately before signing reproduces the commitment exactly when nothing that decides
+the answer has moved, whichever ledger it lands on. It identifies a result; it does not
+authenticate one.
 
 The policy-check request hash covers the deserialized input, including its specification, binding
 set, signed registry snapshot, account and network identities, both rule selectors, configured RPC

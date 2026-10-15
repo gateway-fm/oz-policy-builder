@@ -392,12 +392,17 @@ pub enum PolicyRecognition {
 
 /// Network-read operation. The trusted acquisition shell resolves `rpc_source` from configured
 /// endpoints for `network_id`, validates both against the spec and binding set, and acquires
-/// the account code, rule state, policy code, admin-rule identity and ledger anchor itself.
-/// Clients cannot supply those observations or choose which rule is exempted as admin.
+/// the account code, rule state, policy and verifier code and ledger anchor itself. Clients
+/// cannot supply those observations, and nothing about who owns the account is accepted from
+/// them: the authority list is derived from the ledger (Decision D7).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CheckPolicyCallSurfaceInput {
     pub spec: serde_json::Value,
+    /// The spec rule about to be installed. Its signers are the restricted keys the findings
+    /// look for, and its target is the contract they may call. An index into the hashed
+    /// spec, not a separate claim.
+    pub rule_index: usize,
     pub binding_set: PolicyBindingSet,
     pub signed_registry_snapshot: serde_json::Value,
     pub account_address: String,
@@ -416,23 +421,227 @@ pub struct CheckPolicyCallSurfaceOutput {
     pub verdict: PolicyCallSurfaceVerdict,
 }
 
-/// A complete authority-surface observation at one ledger. The trusted reader must
-/// reconcile the enumeration and its transitive closure before constructing this value;
-/// the preparer must compare the identities and require a safe result.
+/// Who could change the account, reset the bound policies, or call the new rule's target, at
+/// one observed ledger, for the stated `scope` only. Never a safety verdict, and advisory to
+/// whoever receives it over MCP: the wallet that holds the owner key recomputes it against its
+/// own RPC and accepts only when `refusals` and `unresolved` are both empty and every
+/// `authority_list` entry names at least one identity it trusts (its own keys, or identities
+/// trusted through its protected UI, never one marked `aliases_restricted_key`) (Decision D7).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyCallSurfaceVerdict {
+    /// Not part of the commitment.
     pub observed_ledger: u32,
     pub network_id: String,
     pub account_address: String,
     pub account_code_hash: String,
+    pub spec_hash: String,
     pub binding_set_hash: String,
     pub bound_policy_addresses: Vec<String>,
-    /// Canonical hash of the ordered account rules and transitive storage entries.
+    /// The spec rule the answer is about, with its exact `add_context_rule` arguments.
+    pub grant: PolicyGrant,
+    /// What the answer covers: the target(s), the account's management surface and the bound
+    /// policies. Never an account-wide "nothing else".
+    pub scope: PolicyAuthorityScope,
+    /// Every live rule that can change the account or reach a bound policy, as policy-free
+    /// `all_of` requirements over resolved identities, in rule order.
+    pub authority_list: Vec<PolicyAuthorityEntry>,
+    /// Unconditional refusals inside the scope. Trust never overrides one.
+    pub refusals: Vec<PolicySurfaceFinding>,
+    /// Evidence gaps inside the scope. Any entry blocks acceptance.
+    pub unresolved: Vec<PolicySurfaceFinding>,
+    /// Live rules for other contracts: not analysed.
+    pub coverage_exclusions: Vec<PolicyExcludedRule>,
+    /// Information for the screen; none of it blocks.
+    pub notes: PolicyAuthorityNotes,
+    /// The authority-relevant state behind the answer (committed).
+    pub authority_state: PolicyAuthorityState,
+    /// How the state was acquired (recorded, never compared).
+    pub evidence: PolicyAuthorityEvidence,
+    /// Hash of the authority-relevant state and the exact intent: everything above except
+    /// `observed_ledger` and `evidence`. Approval binds to it; the pre-signing re-read
+    /// recomputes it. It identifies a result and authenticates nothing.
+    pub authority_commitment: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyAuthorityScope {
+    pub targets: Vec<String>,
+    pub account: String,
+    pub bound_policies: Vec<String>,
+}
+
+/// The rule being installed, as the check read it from the hashed spec.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyGrant {
+    pub rule_index: u32,
+    /// The contract the new `CallContract` rule targets.
+    pub target: String,
+    /// The rule keeps state between calls (a counter or a spending window).
+    pub stateful: bool,
+    /// The new rule's signers: the restricted keys the refusals look for.
+    pub signers: Vec<PolicySignerKey>,
+    pub name: String,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required)]
+    pub valid_until: Option<u32>,
+    /// The new rule's `policies` map, in spec order.
+    pub policies: Vec<PolicyGrantPolicy>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyGrantPolicy {
+    pub address: String,
+    pub install_params: InstallPolicyParams,
+}
+
+/// A signer exactly as the account stores it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicySignerKey {
+    Delegated { address: String },
+    External { verifier: String, key_hex: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyAuthorityEntry {
+    pub rule_id: u32,
+    pub reach: PolicyReach,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required)]
+    pub valid_until: Option<u32>,
+    pub requirement: PolicyRequirement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyReach {
+    /// A `Default` rule: every call the account authorizes, management included.
+    AnyCall,
+    /// `CallContract(account)`: the account's own management methods.
+    AccountCalls,
+    /// `CallContract(bound policy)`: that policy's install/uninstall, which resets its state.
+    Policy { address: String },
+    /// `CallContract(target)`: a second way to call the new rule's target.
+    Target { address: String },
+}
+
+/// Who must sign for the rule to authorize anything.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyRequirement {
+    /// A policy-free rule: every one of these must sign.
+    AllOf { signers: Vec<PolicyIdentity> },
+    /// Every policy is recognized as demanding at least one of the rule's own signers: any
+    /// one of these, within those policies' further limits.
+    AnyOf {
+        signers: Vec<PolicyIdentity>,
+        policies: Vec<String>,
+    },
+}
+
+/// A required identity with what a wallet compares against its own keys. One marked
+/// `aliases_restricted_key` must never be counted as an owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyIdentity {
+    /// An existing classic Stellar account controlled by its master key alone.
+    ClassicAccount {
+        address: String,
+        ed25519_public_key: String,
+        aliases_restricted_key: bool,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyAuthorityNotes {
+    /// Every live rule, in any context, naming one of the restricted keys.
+    pub restricted_key_rules: Vec<PolicyRestrictedKeyRule>,
+    /// Other rules on the target the agent cannot use alone: who else can call it.
+    pub target_rules: Vec<PolicyAuthorityEntry>,
+    /// Expired rules that would reach a protected surface or the target if revived.
+    pub expired_rules: Vec<PolicyExpiredRule>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyRestrictedKeyRule {
+    pub rule_id: u32,
+    pub context: PolicyRuleContext,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required)]
+    pub valid_until: Option<u32>,
+    /// The restricted keys can use the rule without anyone else.
+    pub usable_alone: bool,
+    pub policy_addresses: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyExcludedRule {
+    pub rule_id: u32,
+    pub context: PolicyRuleContext,
+    pub policy_addresses: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyExpiredRule {
+    pub rule_id: u32,
+    pub context: PolicyRuleContext,
+    pub valid_until: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyRuleContext {
+    Default,
+    CallContract { address: String },
+    CreateContract { wasm_hash: String },
+}
+
+/// The authority-relevant state behind the answer; part of the commitment.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyAuthorityState {
+    /// Canonical hash of the ordered account rules and transitive storage entries, with every
+    /// installed policy's observed code hash. TTLs are not in it.
     pub ordered_state_digest: String,
+    /// Signing configuration of every classic account read with the smart account.
+    pub classic_accounts: std::collections::BTreeMap<String, PolicyClassicAccount>,
+}
+
+/// How the state was acquired. Recorded, never compared: ledger numbers and TTLs move without
+/// any change in authority.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyAuthorityEvidence {
     pub enumeration_evidence: PolicyRuleEnumerationEvidence,
-    pub dominance_evidence: PolicyDominanceEvidence,
-    pub result: PolicyCallSurfaceResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PolicyClassicAccount {
+    NotFound,
+    Found {
+        master_weight: u8,
+        low_threshold: u8,
+        medium_threshold: u8,
+        high_threshold: u8,
+        signers: Vec<PolicyClassicSigner>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyClassicSigner {
+    pub key: String,
+    pub weight: u32,
 }
 
 /// Only complete enumeration strategies can produce a verdict. The reader must verify
@@ -455,46 +664,37 @@ pub enum PolicyRuleEnumerationEvidence {
     },
 }
 
-/// The designated administrator and the rules and methods considered on both surfaces.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PolicyDominanceEvidence {
-    pub designated_admin_rule_id: u32,
-    pub admin_rule_fingerprint: String,
-    pub assessed_rule_ids: Vec<u32>,
-    pub protected_methods: Vec<PolicyProtectedMethod>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PolicyProtectedMethod {
-    pub surface: PolicyProtectedSurface,
-    pub contract_address: String,
-    pub function: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PolicyProtectedSurface {
-    DirectPolicy,
-    AccountManagement,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum PolicyCallSurfaceResult {
-    Safe,
-    Unsafe { findings: Vec<PolicySurfaceFinding> },
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicySurfaceFinding {
-    pub surface: PolicyProtectedSurface,
-    pub offending_rule_id: u32,
-    pub code: String,
+    pub code: crate::ErrorCode,
+    /// Absent when the finding is about the new rule itself.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required)]
+    pub rule_id: Option<u32>,
+    /// Which shape this version refuses, on `E_UNSUPPORTED_AUTHORITY`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<PolicyUnsupportedReason>,
     pub reason: String,
     pub remediation: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyUnsupportedReason {
+    /// A policy decides who may act: any policy on a rule that can change the account or reach
+    /// a bound policy (a k-of-n threshold, a guarded recovery rule), or an unreadable one.
+    PolicyGuarded,
+    /// A contract signer (nested smart account).
+    ContractSigner,
+    /// An external signer whose verifier is not recognized.
+    ExternalSigner,
+    UnrecognizedSigner,
+    /// A classic account with other signers or thresholds the master key cannot meet.
+    ClassicMultisig,
+    /// A classic account that does not exist, so cannot authenticate now.
+    ClassicAccountMissing,
+    EmptyRule,
 }
 
 // --- prepare_install_intent ------------------------------------------------------------
@@ -633,10 +833,13 @@ mod tests {
         let _ = schemars::schema_for!(CheckPolicyCallSurfaceOutput);
         let _ = schemars::schema_for!(PolicyCallSurfaceVerdict);
         let _ = schemars::schema_for!(PolicyRuleEnumerationEvidence);
-        let _ = schemars::schema_for!(PolicyDominanceEvidence);
-        let _ = schemars::schema_for!(PolicyProtectedMethod);
-        let _ = schemars::schema_for!(PolicyProtectedSurface);
-        let _ = schemars::schema_for!(PolicyCallSurfaceResult);
+        let _ = schemars::schema_for!(PolicyGrant);
+        let _ = schemars::schema_for!(PolicyAuthorityEntry);
+        let _ = schemars::schema_for!(PolicyAuthorityNotes);
+        let _ = schemars::schema_for!(PolicyAuthorityEvidence);
+        let _ = schemars::schema_for!(PolicyAuthorityState);
+        let _ = schemars::schema_for!(PolicyAuthorityScope);
+        let _ = schemars::schema_for!(PolicyExpiredRule);
         let _ = schemars::schema_for!(PolicySurfaceFinding);
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
         let _ = schemars::schema_for!(PrepareInstallIntentOutput);
@@ -773,6 +976,7 @@ mod tests {
     fn callers_cannot_supply_live_account_observations() {
         let mut request = serde_json::json!({
             "spec": {},
+            "rule_index": 0,
             "binding_set": {
                 "schema": POLICY_BINDING_SET_SCHEMA,
                 "spec_hash": "spec",
@@ -785,11 +989,14 @@ mod tests {
             "rpc_source": "configured-testnet"
         });
         assert!(serde_json::from_value::<CheckPolicyCallSurfaceInput>(request.clone()).is_ok());
+        // Nothing about who owns the account is accepted from the caller either (D7).
         for field in [
             "account_state",
             "account_code_hash",
             "admin_rule_id",
             "observed_ledger",
+            "expected_owners",
+            "authority",
         ] {
             request[field] = serde_json::json!(0);
             let error = serde_json::from_value::<CheckPolicyCallSurfaceInput>(request.clone())
@@ -811,26 +1018,95 @@ mod tests {
                 "account_address": "CACCOUNT",
                 "account_code_hash": "code",
                 "binding_set_hash": "binding",
+                "spec_hash": "spec",
                 "bound_policy_addresses": ["CPOLICY"],
-                "ordered_state_digest": "state-digest",
-                "enumeration_evidence": {
-                    "method": "bounded_next_id",
-                    "next_id": 2,
-                    "active_count": 1,
-                    "rule_ids": [1],
-                    "signer_ids": [0],
-                    "policy_ids": [0]
+                "grant": {
+                    "rule_index": 0,
+                    "target": "CTARGET",
+                    "stateful": true,
+                    "signers": [{"kind": "delegated", "address": "GAGENT"}],
+                    "name": "transfer-cap",
+                    "valid_until": 1000,
+                    "policies": [{
+                        "address": "CPOLICY",
+                        "install_params": {"kind": "generated"}
+                    }]
                 },
-                "dominance_evidence": {
-                    "designated_admin_rule_id": 1,
-                    "admin_rule_fingerprint": "admin-fingerprint",
-                    "assessed_rule_ids": [1],
-                    "protected_methods": [
-                        {"surface": "direct_policy", "contract_address": "CPOLICY", "function": "install"},
-                        {"surface": "account_management", "contract_address": "CACCOUNT", "function": "add_context_rule"}
-                    ]
+                "scope": {
+                    "targets": ["CTARGET"],
+                    "account": "CACCOUNT",
+                    "bound_policies": ["CPOLICY"]
                 },
-                "result": "safe"
+                "authority_list": [{
+                    "rule_id": 1,
+                    "reach": {"kind": "any_call"},
+                    "valid_until": null,
+                    "requirement": {
+                        "kind": "all_of",
+                        "signers": [{
+                            "kind": "classic_account",
+                            "address": "GOWNER",
+                            "ed25519_public_key": "owner-key",
+                            "aliases_restricted_key": false
+                        }]
+                    }
+                }],
+                "refusals": [],
+                "unresolved": [],
+                "coverage_exclusions": [{
+                    "rule_id": 2,
+                    "context": {"call_contract": {"address": "COTHER"}},
+                    "policy_addresses": []
+                }],
+                "notes": {
+                    "restricted_key_rules": [{
+                        "rule_id": 2,
+                        "context": {"call_contract": {"address": "COTHER"}},
+                        "valid_until": 500,
+                        "usable_alone": true,
+                        "policy_addresses": []
+                    }],
+                    "target_rules": [{
+                        "rule_id": 4,
+                        "reach": {"kind": "target", "address": "CTARGET"},
+                        "valid_until": 900,
+                        "requirement": {
+                            "kind": "any_of",
+                            "signers": [],
+                            "policies": ["CLIMIT"]
+                        }
+                    }],
+                    "expired_rules": [{
+                        "rule_id": 3,
+                        "context": "default",
+                        "valid_until": 50
+                    }]
+                },
+                "authority_state": {
+                    "ordered_state_digest": "state-digest",
+                    "classic_accounts": {
+                        "GOWNER": {
+                            "state": "found",
+                            "master_weight": 1,
+                            "low_threshold": 0,
+                            "medium_threshold": 1,
+                            "high_threshold": 1,
+                            "signers": []
+                        },
+                        "GMISSING": {"state": "not_found"}
+                    }
+                },
+                "evidence": {
+                    "enumeration_evidence": {
+                        "method": "bounded_next_id",
+                        "next_id": 5,
+                        "active_count": 4,
+                        "rule_ids": [1, 2, 3, 4],
+                        "signer_ids": [0],
+                        "policy_ids": [0]
+                    }
+                },
+                "authority_commitment": "authority-commitment"
             }
         });
         assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(complete.clone()).is_ok());
@@ -849,36 +1125,58 @@ mod tests {
             "network_id",
             "account_address",
             "account_code_hash",
+            "spec_hash",
             "binding_set_hash",
-            "ordered_state_digest",
-            "enumeration_evidence",
-            "dominance_evidence",
-            "result",
+            "grant",
+            "scope",
+            "authority_list",
+            "refusals",
+            "unresolved",
+            "coverage_exclusions",
+            "notes",
+            "authority_state",
+            "evidence",
+            "authority_commitment",
         ] {
             let mut incomplete = complete.clone();
             incomplete["verdict"].as_object_mut().unwrap().remove(field);
-            assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete).is_err());
+            assert!(
+                serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete).is_err(),
+                "{field}"
+            );
         }
         let mut null_verdict = complete.clone();
         null_verdict["verdict"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(null_verdict).is_err());
         let mut unsupported_scan = complete.clone();
-        unsupported_scan["verdict"]["enumeration_evidence"]["method"] = serde_json::json!("none");
+        unsupported_scan["verdict"]["evidence"]["enumeration_evidence"]["method"] =
+            serde_json::json!("none");
         assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(unsupported_scan).is_err());
-        let mut incomplete_scan = complete.clone();
-        incomplete_scan["verdict"]["enumeration_evidence"]
+        // There is no verdict field to claim "safe" in, and an omitted expiry is not "never".
+        let mut claimed_safe = complete.clone();
+        claimed_safe["verdict"]["result"] = serde_json::json!("safe");
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(claimed_safe).is_err());
+        let mut omitted_expiry = complete.clone();
+        omitted_expiry["verdict"]["authority_list"][0]
             .as_object_mut()
             .unwrap()
-            .remove("active_count");
-        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete_scan).is_err());
-        let mut incomplete_dominance = complete;
-        incomplete_dominance["verdict"]["dominance_evidence"]
-            .as_object_mut()
-            .unwrap()
-            .remove("protected_methods");
-        assert!(
-            serde_json::from_value::<CheckPolicyCallSurfaceOutput>(incomplete_dominance).is_err()
-        );
+            .remove("valid_until");
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(omitted_expiry).is_err());
+        let mut refused = complete;
+        refused["verdict"]["refusals"] = serde_json::json!([{
+            "code": "E_DELEGATE_HAS_AUTHORITY",
+            "rule_id": 4,
+            "reason": "rule 4 lets the agent act alone",
+            "remediation": "remove the agent from rule 4"
+        }]);
+        refused["verdict"]["unresolved"] = serde_json::json!([{
+            "code": "E_UNSUPPORTED_AUTHORITY",
+            "rule_id": 5,
+            "unsupported": "classic_account_missing",
+            "reason": "classic account has other signers",
+            "remediation": "replace rule 5"
+        }]);
+        assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(refused).is_ok());
     }
 
     fn policy_check_request_wire() -> serde_json::Value {

@@ -63,10 +63,9 @@ pub mod domains {
     /// domain because it hashes a different structure than [`GENERATED_SOURCE`] — reusing that
     /// one because the two look similar is how a domain comes to mean two things.
     pub const GENERATED_CRATE_FILES: &str = "ozpb:v1:generated-crate-files";
-    /// Reserved for the verdict itself. Deliberately unused: the verdict is not hashed yet.
-    /// Architecture §4.8 records it inside an `InstallationRecord`, and §6.3 chains those onto
-    /// the artifact provenance — so that is where this domain will be spent. Reaching for it to
-    /// hash anything else would put two structures under one domain, which is the collision the
+    /// The `authority_commitment`: authority-relevant state plus the exact install intent, the
+    /// value a wallet's approval binds to and its pre-signing re-read recomputes (§4.8, D7). Reaching for it to hash
+    /// anything else would put two structures under one domain, which is the collision the
     /// separation exists to prevent.
     pub const SURFACE_VERDICT: &str = "ozpb:v1:surface-verdict";
 

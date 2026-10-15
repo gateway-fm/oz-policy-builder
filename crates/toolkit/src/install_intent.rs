@@ -1,17 +1,16 @@
 //! Internal consistency checks for an install-intent draft.
 //!
-//! A `PrepareInstallIntentInput` is caller-controlled, including its claimed `Safe`
-//! authority artifact. These checks catch contradictions and derive exact typed account
-//! arguments, but they cannot authenticate ledger acquisition, prove a complete exported-
-//! method inventory, or establish freshness. Keep this operation internal until a trusted
-//! reader can provide the complete method-level authority evidence.
+//! A `PrepareInstallIntentInput` is caller-controlled, including its claimed authority
+//! artifact. These checks catch contradictions and derive exact typed account arguments, but
+//! they cannot authenticate ledger acquisition or establish freshness. Keep this operation
+//! internal until it runs the live authority check itself.
 
 use super::{from_value, spec_error};
 use ozpb_api_types::{
     ErrorCode as EC, InstallOperation, InstallPolicy, InstallPolicyParams, InstallSigner,
-    PolicyBindingSet, PolicyCallSurfaceResult, PolicyProtectedSurface, PolicyRecognition,
-    PolicyRuleEnumerationEvidence, PrepareInstallIntentInput, PrepareInstallIntentOutput,
-    ToolError, POLICY_BINDING_SET_SCHEMA,
+    PolicyBindingSet, PolicyGrant, PolicyRecognition, PolicyRuleEnumerationEvidence,
+    PolicySignerKey, PrepareInstallIntentInput, PrepareInstallIntentOutput, ToolError,
+    POLICY_BINDING_SET_SCHEMA,
 };
 use ozpb_build_runner::{BuildManifest, BUILD_MANIFEST_SCHEMA};
 use ozpb_domain::{domains, Hash32};
@@ -21,9 +20,8 @@ use std::collections::BTreeSet;
 /// Construct an untrusted draft only after its submitted fields agree with each other.
 ///
 /// Acceptance here means consistency, not a verified authority check. In particular, the
-/// `Safe` value and method list are still supplied by the caller, and this function is not
-/// exported from the toolkit. A later trusted acquisition path must establish them before
-/// any intent is offered for wallet review.
+/// authority list and its outcome are still supplied by the caller, and this function is not
+/// exported from the toolkit.
 pub(super) fn draft_install_intent(
     input: &PrepareInstallIntentInput,
 ) -> Result<PrepareInstallIntentOutput, ToolError> {
@@ -105,7 +103,7 @@ pub(super) fn draft_install_intent(
         })
         .collect();
 
-    Ok(PrepareInstallIntentOutput {
+    let output = PrepareInstallIntentOutput {
         operation: InstallOperation::AddContextRule,
         account_contract: validated.spec().smart_account.address.clone(),
         context_contract: rule.context.contract.clone(),
@@ -114,14 +112,60 @@ pub(super) fn draft_install_intent(
         delegate_signers,
         policies,
         next_steps: vec![
-            "A trusted reader must establish complete method-level authority evidence and \
-             recheck it immediately before wallet signing; this draft does not prove safety"
+            "A trusted reader must derive the authority list and re-read it immediately \
+             before wallet signing, and the wallet must recognize every listed management \
+             rule as its own; this draft does not establish either"
                 .to_string(),
             "The wallet reviews, assembles and signs the transaction; this draft does not \
              assemble or submit one"
                 .to_string(),
         ],
-    })
+    };
+    // The authority answer must be about exactly these arguments, not merely the same rule
+    // index: its commitment binds what will be signed.
+    if !grant_matches(&input.call_surface_check.verdict.grant, &output) {
+        return Err(unsafe_artifact(
+            "authority artifact is about different install arguments",
+        ));
+    }
+    Ok(output)
+}
+
+fn grant_matches(grant: &PolicyGrant, output: &PrepareInstallIntentOutput) -> bool {
+    let signers_match = grant.signers.len() == output.delegate_signers.len()
+        && grant
+            .signers
+            .iter()
+            .zip(&output.delegate_signers)
+            .all(|pair| match pair {
+                (
+                    PolicySignerKey::Delegated { address },
+                    InstallSigner::Delegated { address: a },
+                ) => address == a,
+                (
+                    PolicySignerKey::External { verifier, key_hex },
+                    InstallSigner::External {
+                        verifier: v,
+                        key_hex: k,
+                    },
+                ) => verifier == v && key_hex == k,
+                _ => false,
+            });
+    let policies_match = grant.policies.len() == output.policies.len()
+        && grant
+            .policies
+            .iter()
+            .zip(&output.policies)
+            .all(|(granted, installed)| {
+                granted.address == installed.address
+                    && serde_json::to_value(&granted.install_params).ok()
+                        == serde_json::to_value(&installed.install_params).ok()
+            });
+    grant.target == output.context_contract
+        && grant.name == output.rule_name
+        && grant.valid_until == output.valid_until_ledger
+        && signers_match
+        && policies_match
 }
 
 fn validate_binding_shape(
@@ -237,13 +281,21 @@ fn validate_artifact_consistency(
             "authority artifact identity differs from the request",
         ));
     }
-    if !matches!(&verdict.result, PolicyCallSurfaceResult::Safe) {
+    if verdict.spec_hash != spec.hash().to_hex()
+        || verdict.grant.rule_index as usize != input.rule_index
+    {
         return Err(unsafe_artifact(
-            "authority artifact does not claim a Safe result",
+            "authority artifact is about a different spec rule",
+        ));
+    }
+    if !verdict.refusals.is_empty() || !verdict.unresolved.is_empty() {
+        return Err(unsafe_artifact(
+            "authority artifact carries refusals or unresolved rules, not a list to confirm",
         ));
     }
     if verdict.observed_ledger == 0
-        || canonical_hash(&verdict.ordered_state_digest).is_none()
+        || canonical_hash(&verdict.authority_state.ordered_state_digest).is_none()
+        || canonical_hash(&verdict.authority_commitment).is_none()
         || spec.spec().rules[input.rule_index]
             .valid_until
             .as_ref()
@@ -254,7 +306,7 @@ fn validate_artifact_consistency(
         ));
     }
     let (next_id, active_count, rule_ids, signer_ids, policy_ids) =
-        match &verdict.enumeration_evidence {
+        match &verdict.evidence.enumeration_evidence {
             PolicyRuleEnumerationEvidence::BoundedNextId {
                 next_id,
                 active_count,
@@ -279,90 +331,13 @@ fn validate_artifact_consistency(
             "authority enumeration is internally incomplete",
         ));
     }
-    let dominance = &verdict.dominance_evidence;
-    if !rule_ids.contains(&dominance.designated_admin_rule_id)
-        || canonical_hash(&dominance.admin_rule_fingerprint).is_none()
-        || dominance.assessed_rule_ids
-            != rule_ids
-                .iter()
-                .copied()
-                .filter(|id| *id != dominance.designated_admin_rule_id)
-                .collect::<Vec<_>>()
-    {
-        return Err(unsafe_artifact(
-            "authority dominance omits an enumerated rule",
-        ));
-    }
-    let policy_addresses: BTreeSet<&str> = input
-        .binding_set
-        .bindings
+    if verdict
+        .authority_list
         .iter()
-        .map(|binding| binding.contract_address.as_str())
-        .collect();
-    let account = spec.spec().smart_account.address.as_str();
-    let mut methods = BTreeSet::new();
-    let mut covered_policies = BTreeSet::new();
-    let mut covered_management = BTreeSet::new();
-    for method in &dominance.protected_methods {
-        let surface = match &method.surface {
-            PolicyProtectedSurface::DirectPolicy => 0,
-            PolicyProtectedSurface::AccountManagement => 1,
-        };
-        if method.function.trim().is_empty()
-            || !methods.insert((
-                surface,
-                method.contract_address.as_str(),
-                method.function.as_str(),
-            ))
-        {
-            return Err(unsafe_artifact(
-                "protected method entry is empty or duplicated",
-            ));
-        }
-        match &method.surface {
-            PolicyProtectedSurface::DirectPolicy
-                if policy_addresses.contains(method.contract_address.as_str()) =>
-            {
-                covered_policies.insert(method.contract_address.as_str());
-            }
-            PolicyProtectedSurface::AccountManagement if method.contract_address == account => {
-                covered_management.insert(method.function.as_str());
-            }
-            _ => {
-                return Err(unsafe_artifact(
-                    "protected method names an unrelated surface",
-                ))
-            }
-        }
-    }
-    // These known methods are a floor, not a claim that the caller-supplied list is
-    // complete. The trusted reader must still establish the full binary surface.
-    const POLICY_METHODS: [&str; 3] = ["install", "enforce", "uninstall"];
-    const ACCOUNT_METHODS: [&str; 11] = [
-        "add_context_rule",
-        "update_context_rule_name",
-        "update_context_rule_valid_until",
-        "remove_context_rule",
-        "add_signer",
-        "remove_signer",
-        "add_policy",
-        "remove_policy",
-        "batch_add_signer",
-        "execute",
-        "upgrade",
-    ];
-    if covered_policies != policy_addresses
-        || policy_addresses.iter().any(|address| {
-            POLICY_METHODS
-                .iter()
-                .any(|name| !methods.contains(&(0, *address, *name)))
-        })
-        || ACCOUNT_METHODS
-            .iter()
-            .any(|name| !covered_management.contains(name))
+        .any(|rule| !rule_ids.contains(&rule.rule_id))
     {
         return Err(unsafe_artifact(
-            "protected method list omits a known method or required surface",
+            "authority list names a rule the enumeration does not contain",
         ));
     }
     Ok(())
@@ -392,8 +367,10 @@ mod tests {
     use crate::generate_code_with_build_config;
     use crate::test_support::{build_config, wire_spec};
     use ozpb_api_types::{
-        CheckPolicyCallSurfaceOutput, GenerateCodeInput, PolicyBinding, PolicyCallSurfaceVerdict,
-        PolicyDominanceEvidence, PolicyProtectedMethod, PolicyRuleEnumerationEvidence,
+        CheckPolicyCallSurfaceOutput, GenerateCodeInput, PolicyAuthorityEntry,
+        PolicyAuthorityEvidence, PolicyAuthorityNotes, PolicyAuthorityScope, PolicyAuthorityState,
+        PolicyBinding, PolicyCallSurfaceVerdict, PolicyGrantPolicy, PolicyIdentity, PolicyReach,
+        PolicyRequirement, PolicyRuleEnumerationEvidence, PolicySurfaceFinding,
     };
 
     fn address(byte: u8) -> String {
@@ -401,7 +378,7 @@ mod tests {
     }
 
     /// The artifact here is synthetic. Its acceptance proves only the consistency
-    /// checks, never that its `Safe` claim or method inventory was observed.
+    /// checks, never that its authority list was observed.
     fn fixture(no_expiry: bool) -> PrepareInstallIntentInput {
         let mut raw = wire_spec().spec().clone();
         if no_expiry {
@@ -464,52 +441,47 @@ mod tests {
                     .iter()
                     .map(|binding| binding.contract_address.clone())
                     .collect(),
-                ordered_state_digest: "11".repeat(32),
-                enumeration_evidence: PolicyRuleEnumerationEvidence::BoundedNextId {
-                    next_id: 2,
-                    active_count: 2,
-                    rule_ids: vec![0, 1],
-                    signer_ids: vec![0],
-                    policy_ids: vec![0],
+                spec_hash: spec.hash().to_hex(),
+                grant: fixture_grant(&spec),
+                scope: PolicyAuthorityScope {
+                    targets: vec![spec.spec().rules[0].context.contract.clone()],
+                    account: account.clone(),
+                    bound_policies: vec![address(40), address(41)],
                 },
-                dominance_evidence: PolicyDominanceEvidence {
-                    designated_admin_rule_id: 0,
-                    admin_rule_fingerprint: "22".repeat(32),
-                    assessed_rule_ids: vec![1],
-                    protected_methods: [address(40), address(41)]
-                        .into_iter()
-                        .flat_map(|contract_address| {
-                            ["install", "enforce", "uninstall"].map(|function| {
-                                PolicyProtectedMethod {
-                                    surface: PolicyProtectedSurface::DirectPolicy,
-                                    contract_address: contract_address.clone(),
-                                    function: function.to_string(),
-                                }
-                            })
-                        })
-                        .chain(
-                            [
-                                "add_context_rule",
-                                "update_context_rule_name",
-                                "update_context_rule_valid_until",
-                                "remove_context_rule",
-                                "add_signer",
-                                "remove_signer",
-                                "add_policy",
-                                "remove_policy",
-                                "batch_add_signer",
-                                "execute",
-                                "upgrade",
-                            ]
-                            .map(|function| PolicyProtectedMethod {
-                                surface: PolicyProtectedSurface::AccountManagement,
-                                contract_address: account.clone(),
-                                function: function.to_string(),
-                            }),
-                        )
-                        .collect(),
+                authority_list: vec![PolicyAuthorityEntry {
+                    rule_id: 0,
+                    reach: PolicyReach::AnyCall,
+                    valid_until: None,
+                    requirement: PolicyRequirement::AllOf {
+                        signers: vec![PolicyIdentity::ClassicAccount {
+                            address: format!("{}", stellar_strkey::ed25519::PublicKey([9; 32])),
+                            ed25519_public_key: "09".repeat(32),
+                            aliases_restricted_key: false,
+                        }],
+                    },
+                }],
+                refusals: vec![],
+                unresolved: vec![],
+                coverage_exclusions: vec![],
+                notes: PolicyAuthorityNotes {
+                    restricted_key_rules: vec![],
+                    target_rules: vec![],
+                    expired_rules: vec![],
                 },
-                result: PolicyCallSurfaceResult::Safe,
+                authority_state: PolicyAuthorityState {
+                    ordered_state_digest: "11".repeat(32),
+                    classic_accounts: Default::default(),
+                },
+                evidence: PolicyAuthorityEvidence {
+                    enumeration_evidence: PolicyRuleEnumerationEvidence::BoundedNextId {
+                        next_id: 2,
+                        active_count: 2,
+                        rule_ids: vec![0, 1],
+                        signer_ids: vec![0],
+                        policy_ids: vec![0],
+                    },
+                },
+                authority_commitment: "22".repeat(32),
             },
         };
         PrepareInstallIntentInput {
@@ -518,6 +490,83 @@ mod tests {
             binding_set: bindings,
             call_surface_check: check,
         }
+    }
+
+    /// The grant the check would report for rule 0 of this spec, bound as in the fixture.
+    fn fixture_grant(spec: &ValidatedSpec) -> PolicyGrant {
+        let rule = &spec.spec().rules[0];
+        PolicyGrant {
+            rule_index: 0,
+            target: rule.context.contract.clone(),
+            stateful: true,
+            signers: rule
+                .authorization
+                .signers
+                .iter()
+                .map(|signer| match signer {
+                    SignerSpec::Delegated { address } => PolicySignerKey::Delegated {
+                        address: address.clone(),
+                    },
+                    SignerSpec::External {
+                        verifier, key_hex, ..
+                    } => PolicySignerKey::External {
+                        verifier: verifier.clone(),
+                        key_hex: key_hex.clone(),
+                    },
+                })
+                .collect(),
+            name: spec.spec().name.clone(),
+            valid_until: rule.valid_until.as_ref().map(|until| until.ledger.0),
+            policies: rule
+                .policies
+                .iter()
+                .enumerate()
+                .map(|(index, policy)| PolicyGrantPolicy {
+                    address: address(40 + index as u8),
+                    install_params: match policy {
+                        PolicyRef::Generated { .. } => InstallPolicyParams::Generated,
+                        PolicyRef::Reviewed {
+                            params:
+                                ReviewedParams::SpendingLimit {
+                                    limit,
+                                    period_ledgers,
+                                },
+                            ..
+                        } => InstallPolicyParams::SpendingLimit {
+                            spending_limit: limit.clone(),
+                            period_ledgers: *period_ledgers,
+                        },
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_authority_answer_must_be_about_these_exact_arguments() {
+        let base = fixture(false);
+        assert!(draft_install_intent(&base).is_ok());
+        let edits: [fn(&mut PolicyGrant); 5] = [
+            |grant| grant.target = address(77),
+            |grant| grant.name = "another rule".into(),
+            |grant| grant.valid_until = Some(1),
+            |grant| grant.signers.clear(),
+            |grant| grant.policies[0].address = address(78),
+        ];
+        for edit in edits {
+            rejected_with_message(
+                base.clone(),
+                |input| edit(&mut input.call_surface_check.verdict.grant),
+                EC::EUnsafeCallSurface,
+                "different install arguments",
+            );
+        }
+        rejected_with_message(
+            base,
+            |input| input.call_surface_check.verdict.spec_hash = "00".repeat(32),
+            EC::EUnsafeCallSurface,
+            "different spec rule",
+        );
     }
 
     fn rejected(
@@ -594,36 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn minimum_known_method_coverage_is_required_for_every_surface() {
-        let base = fixture(false);
-        let methods = &base
-            .call_surface_check
-            .verdict
-            .dominance_evidence
-            .protected_methods;
-        for method in methods {
-            rejected_with_message(
-                base.clone(),
-                |input| {
-                    input
-                        .call_surface_check
-                        .verdict
-                        .dominance_evidence
-                        .protected_methods
-                        .retain(|entry| {
-                            std::mem::discriminant(&entry.surface)
-                                != std::mem::discriminant(&method.surface)
-                                || entry.contract_address != method.contract_address
-                                || entry.function != method.function
-                        });
-                },
-                EC::EUnsafeCallSurface,
-                "omits a known method",
-            );
-        }
-    }
-
-    #[test]
     fn binding_structure_and_each_manifest_identity_field_are_checked() {
         let base = fixture(false);
         rejected_with_message(
@@ -691,15 +710,24 @@ mod tests {
         let base = fixture(false);
         rejected_with_message(
             base.clone(),
-            |input| input.call_surface_check.verdict.ordered_state_digest = "not-hex".into(),
+            |input| {
+                input
+                    .call_surface_check
+                    .verdict
+                    .authority_state
+                    .ordered_state_digest = "not-hex".into()
+            },
             EC::EUnsafeCallSurface,
             "unanchored",
         );
         rejected_with_message(
             base.clone(),
             |input| {
-                let PolicyRuleEnumerationEvidence::BoundedNextId { next_id, .. } =
-                    &mut input.call_surface_check.verdict.enumeration_evidence
+                let PolicyRuleEnumerationEvidence::BoundedNextId { next_id, .. } = &mut input
+                    .call_surface_check
+                    .verdict
+                    .evidence
+                    .enumeration_evidence
                 else {
                     panic!("bounded")
                 };
@@ -717,7 +745,11 @@ mod tests {
                         signer_ids,
                         policy_ids,
                         ..
-                    } = &mut input.call_surface_check.verdict.enumeration_evidence
+                    } = &mut input
+                        .call_surface_check
+                        .verdict
+                        .evidence
+                        .enumeration_evidence
                     else {
                         panic!("bounded")
                     };
@@ -733,86 +765,21 @@ mod tests {
         }
         rejected_with_message(
             base.clone(),
-            |input| {
-                input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .designated_admin_rule_id = 9
-            },
+            |input| input.call_surface_check.verdict.grant.rule_index = 1,
             EC::EUnsafeCallSurface,
-            "dominance omits",
+            "different spec rule",
         );
         rejected_with_message(
             base.clone(),
-            |input| {
-                input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .admin_rule_fingerprint = "bad".into()
-            },
+            |input| input.call_surface_check.verdict.authority_commitment = "bad".into(),
             EC::EUnsafeCallSurface,
-            "dominance omits",
-        );
-        rejected_with_message(
-            base.clone(),
-            |input| {
-                input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .protected_methods[0]
-                    .function
-                    .clear()
-            },
-            EC::EUnsafeCallSurface,
-            "empty or duplicated",
-        );
-        rejected_with_message(
-            base.clone(),
-            |input| {
-                let first = input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .protected_methods[0]
-                    .clone();
-                input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .protected_methods
-                    .push(first);
-            },
-            EC::EUnsafeCallSurface,
-            "empty or duplicated",
-        );
-        rejected_with_message(
-            base.clone(),
-            |input| {
-                input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .protected_methods[0]
-                    .contract_address = address(99)
-            },
-            EC::EUnsafeCallSurface,
-            "unrelated surface",
+            "unanchored",
         );
         rejected_with_message(
             base,
-            |input| {
-                input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .protected_methods
-                    .retain(|method| method.contract_address != address(41));
-            },
+            |input| input.call_surface_check.verdict.authority_list[0].rule_id = 9,
             EC::EUnsafeCallSurface,
-            "omits a known method",
+            "does not contain",
         );
     }
 
@@ -1013,8 +980,17 @@ mod tests {
         rejected(
             base.clone(),
             |input| {
-                input.call_surface_check.verdict.result =
-                    PolicyCallSurfaceResult::Unsafe { findings: vec![] }
+                input
+                    .call_surface_check
+                    .verdict
+                    .unresolved
+                    .push(PolicySurfaceFinding {
+                        code: EC::EUnsupportedAuthority,
+                        rule_id: Some(0),
+                        unsupported: None,
+                        reason: "unreadable".into(),
+                        remediation: "replace it".into(),
+                    })
             },
             EC::EUnsafeCallSurface,
         );
@@ -1026,32 +1002,11 @@ mod tests {
         rejected(
             base.clone(),
             |input| {
-                input
+                let PolicyRuleEnumerationEvidence::BoundedNextId { active_count, .. } = &mut input
                     .call_surface_check
                     .verdict
-                    .dominance_evidence
-                    .assessed_rule_ids
-                    .clear()
-            },
-            EC::EUnsafeCallSurface,
-        );
-        rejected(
-            base.clone(),
-            |input| {
-                let _ = input
-                    .call_surface_check
-                    .verdict
-                    .dominance_evidence
-                    .protected_methods
-                    .pop();
-            },
-            EC::EUnsafeCallSurface,
-        );
-        rejected(
-            base.clone(),
-            |input| {
-                let PolicyRuleEnumerationEvidence::BoundedNextId { active_count, .. } =
-                    &mut input.call_surface_check.verdict.enumeration_evidence
+                    .evidence
+                    .enumeration_evidence
                 else {
                     panic!("bounded")
                 };
@@ -1062,13 +1017,16 @@ mod tests {
         rejected(
             base.clone(),
             |input| {
-                input.call_surface_check.verdict.enumeration_evidence =
-                    PolicyRuleEnumerationEvidence::OnchainList {
-                        active_count: 2,
-                        rule_ids: vec![0, 1],
-                        signer_ids: vec![0],
-                        policy_ids: vec![0],
-                    }
+                input
+                    .call_surface_check
+                    .verdict
+                    .evidence
+                    .enumeration_evidence = PolicyRuleEnumerationEvidence::OnchainList {
+                    active_count: 2,
+                    rule_ids: vec![0, 1],
+                    signer_ids: vec![0],
+                    policy_ids: vec![0],
+                }
             },
             EC::EAccountRuleEnumerationUnsupported,
         );
