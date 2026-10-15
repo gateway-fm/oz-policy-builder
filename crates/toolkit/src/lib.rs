@@ -37,8 +37,8 @@ pub use call_surface_live::{
     finish_call_surface_check, plan_call_surface_read, resolve_rpc_source, rpc_sources_from_json,
     scan_tool_error, CallSurfaceReadPlan, RpcSource,
 };
-#[allow(dead_code, reason = "awaiting a trusted complete authority reader")]
 mod install_intent;
+pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod preflight;
 pub use preflight::preflight_transaction_output;
 

@@ -42,6 +42,13 @@ pub struct CallSurfaceReadPlan {
     prepared: PreparedCallSurfaceCheck,
 }
 
+impl CallSurfaceReadPlan {
+    /// The contract the new rule targets, from the validated spec.
+    pub fn grant_target(&self) -> &str {
+        &self.prepared.grant.target
+    }
+}
+
 /// Validate the request against the pinned trust and say what to read.
 pub fn plan_call_surface_read(
     input: &CheckPolicyCallSurfaceInput,
@@ -281,7 +288,7 @@ pub fn scan_tool_error(error: &ozpb_source_rpc::AccountScanError) -> ToolError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::test_support::{build_config, registry_trust, wire_spec};
     use crate::{generate_code_with_build_config, GenerateCodeInput};
@@ -313,7 +320,7 @@ mod tests {
 
     /// A request against the version-3 signed example (which binds the account's scan bounds
     /// and recognizes the owner verifiers), and a scan of an account owned by one classic key.
-    fn fixture() -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
+    pub(crate) fn fixture() -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
         let network = NetworkId::from_passphrase(TESTNET_PASSPHRASE);
         let signed = ozpb_registry::sign_snapshot(
             &ozpb_registry::dev::dev_signing_key(),

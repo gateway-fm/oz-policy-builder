@@ -534,6 +534,11 @@ fn validate_bindings(
                 "PolicyBindingSet has a duplicate contract address",
             ));
         }
+        if binding.contract_address == spec.spec().smart_account.address {
+            return Err(binding_error(
+                "policy binding cannot use the smart account address",
+            ));
+        }
         if binding.resolution_reference.trim().is_empty() {
             return Err(binding_error(
                 "policy binding resolution reference is empty",
@@ -1013,9 +1018,13 @@ mod tests {
             .unwrap()
             .address = observation.account_address.clone();
 
+        // A binding at the account's own address is refused as a binding, before any
+        // observation is compared.
         let error = check(&request, &observation).unwrap_err();
-        assert_eq!(error.code, EC::EIncompleteAccountState);
-        assert!(error.message.contains("conflicting code hashes"));
+        assert_eq!(error.code, EC::EPolicyBindingInvalid);
+        assert!(error
+            .message
+            .contains("cannot use the smart account address"));
 
         let (request, mut observation) = fixture();
         observation.account_state.policies.insert(

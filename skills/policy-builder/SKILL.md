@@ -171,6 +171,11 @@ Never call the account or the install safe, even when nothing was refused. The r
 advisory: the user's wallet, which holds the owner key, must recompute it against its own RPC,
 match every listed rule against the user's keys and trusted identities, and ask the user.
 
+`prepare_install_intent` takes the same request, runs that check itself, and returns the exact
+`add_context_rule` arguments only when nothing is refused and nothing is unresolved. Show them
+with the authority answer and hand them to the user's wallet; never assemble, sign or submit,
+and never present them as approval to install.
+
 ## Hand off
 
 Summarize exactly what the grant permits, what it does not constrain, the signer and expiry

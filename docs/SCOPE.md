@@ -92,11 +92,13 @@ The source-reviewed account method inventory and its limits are described in
    sends can say who owns the account: owner matching stays with the key-holding wallet. The
    missing assurances are required before a public authority list.
 
-   The toolkit has an internal install-intent draft that checks a spec, binding set, and
-   supplied authority artifact for identity and structural consistency, then derives typed
-   account arguments. It cannot authenticate the supplied authority list or its ledger reads,
-   or establish freshness. It is not exported through the CLI or MCP server; it has to run the
-   live check itself before it can be offered for wallet review.
+   The install intent (`ozpb prepare-install-intent`, MCP `prepare_install_intent`) runs that
+   live check itself — there is no caller-supplied verdict — and, only when it returns no
+   refusal and nothing unresolved, returns the exact `add_context_rule` arguments derived from
+   the grant the answer's commitment covers, with the answer attached. A new rule aimed at the
+   account or one of its own policies, or one already expired at the read ledger, is refused
+   before any read or after it respectively. Freshness is the wallet's: it re-reads and
+   compares the commitment immediately before signing.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,

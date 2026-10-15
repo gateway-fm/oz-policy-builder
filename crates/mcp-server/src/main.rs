@@ -324,10 +324,12 @@ impl ServerHandler for PolicyBuilderServer {
              optionally simulate one exact envelope with preflight_transaction. Once the \
              policies are deployed and bound, check_policy_call_surface reads, through an \
              operator-configured source, who can change the account or reset them; it is \
-             advisory and never says an account is safe — the user's wallet decides. Pure \
-             tools are deterministic; record_transaction, record_simulation, \
-             preflight_transaction and check_policy_call_surface read Stellar RPC, and their \
-             results depend on ledger state. Fail-closed: this \
+             advisory and never says an account is safe — the user's wallet decides. \
+             prepare_install_intent runs that check itself and returns the exact \
+             add_context_rule arguments only when nothing is refused and nothing is \
+             unresolved. Pure tools are deterministic; record_transaction, record_simulation, \
+             preflight_transaction, check_policy_call_surface and prepare_install_intent read \
+             Stellar RPC, and their results depend on ledger state. Fail-closed: this \
              server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
              Signed authorization entries given to preflight_transaction stay live \
              authorizations until they expire. Widening a grant beyond exactly what was \

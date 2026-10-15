@@ -7,6 +7,10 @@ const TESTNET: &str = "Test SDF Network ; September 2015";
 const MAINNET: &str = "Public Global Stellar Network ; September 2015";
 
 fn run(rpc_source: &str, sources: serde_json::Value) -> Output {
+    run_command("check-policy-call-surface", rpc_source, sources)
+}
+
+fn run_command(command: &str, rpc_source: &str, sources: serde_json::Value) -> Output {
     let directory = tempfile::tempdir().expect("temporary directory");
     let root = env!("CARGO_MANIFEST_DIR");
     let spec: serde_json::Value = serde_json::from_str(
@@ -29,7 +33,7 @@ fn run(rpc_source: &str, sources: serde_json::Value) -> Output {
     let sources_file = directory.path().join("sources.json");
     std::fs::write(&sources_file, sources.to_string()).unwrap();
     Command::new(env!("CARGO_BIN_EXE_ozpb"))
-        .arg("check-policy-call-surface")
+        .arg(command)
         .arg("--request")
         .arg(&request_file)
         .arg("--registry-roots")
@@ -53,6 +57,18 @@ fn an_unconfigured_source_is_refused_before_any_read() {
         stderr.contains("E_RPC") && stderr.contains("anywhere"),
         "{stderr}"
     );
+}
+
+#[test]
+fn the_install_intent_refuses_an_unconfigured_source_before_any_read() {
+    let output = run_command(
+        "prepare-install-intent",
+        "anywhere",
+        serde_json::json!({"testnet": {"rpc_url": "https://rpc.invalid", "network_passphrase": TESTNET}}),
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("E_RPC"), "{stderr}");
 }
 
 #[test]

@@ -746,24 +746,16 @@ pub enum PolicyUnsupportedReason {
 
 // --- prepare_install_intent ------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PrepareInstallIntentInput {
-    /// The PolicySpec as JSON.
-    pub spec: serde_json::Value,
-    pub rule_index: usize,
-    /// Exact, recognition-verified deployed policy instances.
-    pub binding_set: PolicyBindingSet,
-    /// The complete check artifact. Preparation must compare its outer spec/binding
-    /// hashes and registry root, plus the verdict's inner binding hash, network,
-    /// account/code identity and safe result against this input.
-    pub call_surface_check: CheckPolicyCallSurfaceOutput,
-}
+/// Exactly the authority check's request: the intent runs the check itself, so there is no
+/// verdict for a caller to supply.
+pub type PrepareInstallIntentInput = CheckPolicyCallSurfaceInput;
 
-/// The pure install intent: the `add_context_rule` operation shape and parameters. It is
-/// NOT a signed or even assembled transaction — assembling one needs current sequence,
-/// fees, ledger bounds and restoration preambles (an RPC-backed, wallet-owned step), and
-/// the call-surface check must pass first. Signing is always wallet-owned (§6.2).
+/// The install intent: the exact `add_context_rule` arguments, derived from the same `grant`
+/// the authority answer's commitment covers, offered only when that answer has no refusal and
+/// nothing unresolved. It is NOT a signed or even assembled transaction — assembling one needs
+/// current sequence, fees, ledger bounds and restoration preambles (wallet-owned) — and NOT a
+/// safety verdict: the wallet holding the owner key recomputes the answer, matches the listed
+/// owners, and signs only on the user's confirmation (§6.2, Decision D7).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareInstallIntentOutput {
@@ -777,13 +769,17 @@ pub struct PrepareInstallIntentOutput {
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(required)]
     pub valid_until_ledger: Option<u32>,
-    /// The account's typed signer arguments for `add_context_rule`.
-    pub delegate_signers: Vec<InstallSigner>,
+    /// The account's typed signer arguments for `add_context_rule`, in the same shape the
+    /// authority answer reports them.
+    pub delegate_signers: Vec<PolicySignerKey>,
     /// One entry per policy in the selected spec rule. The preparer must match each
     /// index and address to the binding set, match the install parameters to the spec,
     /// and reject missing or duplicate indexes and addresses before returning an intent.
     pub policies: Vec<InstallPolicy>,
     pub next_steps: Vec<String>,
+    /// The live authority answer these arguments were checked against; its
+    /// `authority_commitment` covers them.
+    pub authority: CheckPolicyCallSurfaceOutput,
 }
 
 /// The only account operation represented by a prepared install intent.
@@ -791,16 +787,6 @@ pub struct PrepareInstallIntentOutput {
 #[serde(rename_all = "snake_case")]
 pub enum InstallOperation {
     AddContextRule,
-}
-
-/// Signer arguments accepted by the account. An external signer needs both its verifier
-/// address and key bytes; the verifier's expected code hash remains in the PolicySpec for
-/// the pre-install recognition check and is not an `add_context_rule` argument.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum InstallSigner {
-    Delegated { address: String },
-    External { verifier: String, key_hex: String },
 }
 
 /// One address and its value in the account's `Map<Address, Val>` policy argument.
@@ -892,7 +878,6 @@ mod tests {
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
         let _ = schemars::schema_for!(PrepareInstallIntentOutput);
         let _ = schemars::schema_for!(InstallOperation);
-        let _ = schemars::schema_for!(InstallSigner);
         let _ = schemars::schema_for!(InstallPolicy);
         let _ = schemars::schema_for!(InstallPolicyParams);
     }
@@ -1054,9 +1039,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn call_surface_artifact_requires_typed_observation_and_evidence() {
-        let complete = serde_json::json!({
+    /// A complete, well-typed authority answer as a client receives it.
+    fn check_output_wire() -> serde_json::Value {
+        serde_json::json!({
             "spec_hash": "spec",
             "binding_set_hash": "binding",
             "registry_snapshot_root": "registry",
@@ -1173,7 +1158,12 @@ mod tests {
                 "authority_commitment": "authority-commitment"
             },
             "summary": "plain words"
-        });
+        })
+    }
+
+    #[test]
+    fn call_surface_artifact_requires_typed_observation_and_evidence() {
+        let complete = check_output_wire();
         assert!(serde_json::from_value::<CheckPolicyCallSurfaceOutput>(complete.clone()).is_ok());
         for field in [
             "spec_hash",
@@ -1368,10 +1358,10 @@ mod tests {
             rule_name: "limited".into(),
             valid_until_ledger: Some(1234),
             delegate_signers: vec![
-                InstallSigner::Delegated {
+                PolicySignerKey::Delegated {
                     address: "CDELEGATE".into(),
                 },
-                InstallSigner::External {
+                PolicySignerKey::External {
                     verifier: "CVERIFIER".into(),
                     key_hex: "0123".into(),
                 },
@@ -1392,6 +1382,7 @@ mod tests {
                 },
             ],
             next_steps: vec![],
+            authority: serde_json::from_value(check_output_wire()).unwrap(),
         };
 
         let wire = serde_json::to_value(&intent).unwrap();
@@ -1399,8 +1390,8 @@ mod tests {
         assert_eq!(
             wire["delegate_signers"],
             serde_json::json!([
-                {"delegated": {"address": "CDELEGATE"}},
-                {"external": {"verifier": "CVERIFIER", "key_hex": "0123"}}
+                {"kind": "delegated", "address": "CDELEGATE"},
+                {"kind": "external", "verifier": "CVERIFIER", "key_hex": "0123"}
             ])
         );
         let decoded: PrepareInstallIntentOutput = serde_json::from_value(wire.clone()).unwrap();
@@ -1443,7 +1434,8 @@ mod tests {
             "valid_until_ledger": 1234,
             "delegate_signers": [],
             "policies": [{"policy_index": 0, "address": "CSPENDING"}],
-            "next_steps": []
+            "next_steps": [],
+            "authority": check_output_wire()
         });
         assert!(serde_json::from_value::<PrepareInstallIntentOutput>(base.clone()).is_err());
 
@@ -1526,9 +1518,16 @@ mod tests {
             "valid_until_ledger": null,
             "delegate_signers": [],
             "policies": [],
-            "next_steps": []
+            "next_steps": [],
+            "authority": check_output_wire()
         });
         assert!(serde_json::from_value::<PrepareInstallIntentOutput>(intent.clone()).is_ok());
+        let mut without_authority = intent.clone();
+        without_authority
+            .as_object_mut()
+            .unwrap()
+            .remove("authority");
+        assert!(serde_json::from_value::<PrepareInstallIntentOutput>(without_authority).is_err());
         let mut missing_expiration = intent;
         missing_expiration
             .as_object_mut()

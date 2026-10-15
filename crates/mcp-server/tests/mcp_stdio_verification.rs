@@ -25,9 +25,9 @@ fn verification_tools_are_listed_with_schemas() {
             "{name} has no output schema"
         );
     }
-    // These names carry stronger claims than the available evidence. A layer-1
-    // reference run is not a full dry run, and installation readiness is the wallet's.
-    for unavailable in ["dry_run", "check_against_policy", "prepare_install_intent"] {
+    // These names carry stronger claims than the available evidence: a layer-1 reference run
+    // is not a full dry run.
+    for unavailable in ["dry_run", "check_against_policy"] {
         assert!(
             tools.iter().all(|tool| tool["name"] != unavailable),
             "{unavailable} must not be advertised without its trusted evidence"

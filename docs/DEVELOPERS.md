@@ -43,9 +43,10 @@ Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
 record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-The complete `dry_run` and `prepare_install_intent` are scheduled operations, not CLI or MCP
-commands. The live authority check is both (`ozpb check-policy-call-surface`,
-`check_policy_call_surface`); it is advisory wherever it runs. `reference_suite` is layer-1 evidence only;
+The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
+check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
+built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
+advisory wherever they run. `reference_suite` is layer-1 evidence only;
 `verify` reproduces source and Wasm but does not perform live preflight. `evaluate_spec` is
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
@@ -142,8 +143,9 @@ ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
 The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant
 the authority check commits to, and never says "safe": the wallet that holds the owner key
 recomputes the check and decides (Decision D7). `ozpb check-policy-call-surface` produces the
-advisory authority answer; no CLI command produces an install intent yet. Assembly, signing,
-and submission remain wallet-owned.
+advisory authority answer; `ozpb prepare-install-intent` runs it and, only when nothing is
+refused and nothing is unresolved, prints the exact arguments with that answer attached.
+Assembly, signing, and submission remain wallet-owned.
 
 ### Build configuration (operator-side)
 
@@ -281,16 +283,22 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   installed for one spec rule, with refusals, evidence gaps, exclusions and an
   `authority_commitment`. It never says "safe": the wallet holding the owner key recomputes it
   and decides (architecture §4.8, Decision D7).
-- **Scheduled, not exposed** — `dry_run`, `check_against_policy`, `prepare_install_intent`.
-  The full dry-run harness and install intent need their own evidence before exposure.
+- **Install intent (advisory)** — `prepare_install_intent` runs the authority check itself
+  (same request) and, only when nothing is refused and nothing is unresolved, returns the
+  exact `add_context_rule` arguments derived from the grant the commitment covers, with the
+  answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
+  or submits.
+- **Scheduled, not exposed** — `dry_run`, `check_against_policy`. The full dry-run harness
+  needs its own evidence before exposure.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
-`check_policy_call_surface` reads through a source the operator names in
-`OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…", "network_passphrase": "Test SDF
-Network ; September 2015"}}` — and the request names only the source; it never carries a URL.
+`check_policy_call_surface` and `prepare_install_intent` read through a source the operator
+names in `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
+"network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
+source; it never carries a URL.
 The source must be for the request's network, a hosted server also requires its URL on
 `OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
 `OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same

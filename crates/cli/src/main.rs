@@ -145,6 +145,23 @@ enum Command {
         #[command(flatten)]
         build: BuildConfigArgs,
     },
+    /// Run the live authority check and, only when nothing is refused or unresolved, print the
+    /// exact `add_context_rule` arguments with the answer they were checked against. Never signs
+    /// or submits; the wallet holding the owner key recomputes the check and decides. A refusal or an
+    /// unresolved item exits non-zero with every finding.
+    PrepareInstallIntent {
+        /// The same request as `check-policy-call-surface`.
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_ROOTS_FILE")]
+        registry_roots: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_MIN_VERSION")]
+        registry_min_version: u64,
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+        #[command(flatten)]
+        build: BuildConfigArgs,
+    },
     /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
     /// incomplete without the transaction result XDR).
     Import {
@@ -325,6 +342,19 @@ fn main() -> Result<()> {
             },
             text,
         )?,
+        Command::PrepareInstallIntent {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build,
+        } => authority::intent(authority::AuthorityArgs {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build_config: build.resolve()?,
+        })?,
         Command::Import { bundle } => {
             let out = ozpb_toolkit::import_recording(
                 &read_import_document(&bundle)?,

@@ -10,7 +10,8 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use ozpb_api_types::{
-    CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput, ErrorCode, ToolError,
+    CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput, ErrorCode,
+    PrepareInstallIntentInput, PrepareInstallIntentOutput, ToolError,
 };
 use ozpb_source_rpc::{scan_authority_state, HttpTransport};
 
@@ -59,14 +60,75 @@ impl PolicyBuilderServer {
         &self,
         Parameters(input): Parameters<CheckPolicyCallSurfaceInput>,
     ) -> Result<Json<CheckPolicyCallSurfaceOutput>, CallToolResult> {
+        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input)?;
+        let build_config = self.build_config.clone();
+        let work = tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            let plan = ozpb_toolkit::plan_call_surface_read(&input, &trust, &build_config)?;
+            let scan = read(&plan, &source, rpc_url)?;
+            ozpb_toolkit::finish_call_surface_check(&plan, &input.rpc_source, &scan)
+        });
+        Ok(Json(finish(work, deadline).await?))
+    }
+
+    /// The exact install arguments, only for an answer that clears.
+    #[tool(
+        name = "prepare_install_intent",
+        description = "Runs check_policy_call_surface itself (same request, same operator-configured \
+                       RPC source) and, only when it returns no refusal and nothing unresolved, \
+                       returns the exact add_context_rule arguments derived from the grant its \
+                       authority_commitment covers, with that answer attached. A refusal or an \
+                       unresolved item is an error carrying every finding. Never says an account \
+                       is safe, never \
+                       assembles, signs or submits: the user's wallet recomputes the check, \
+                       matches every listed owner to the user's own keys or trusted identities, \
+                       and asks the user. May rebuild generated policies.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn prepare_install_intent(
+        &self,
+        Parameters(input): Parameters<PrepareInstallIntentInput>,
+    ) -> Result<Json<PrepareInstallIntentOutput>, CallToolResult> {
+        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input)?;
+        let build_config = self.build_config.clone();
+        let work = tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            let plan = ozpb_toolkit::plan_install_intent_read(&input, &trust, &build_config)?;
+            let scan = read(&plan, &source, rpc_url)?;
+            ozpb_toolkit::prepare_install_intent_from_scan(&plan, &input.rpc_source, &scan)
+        });
+        Ok(Json(finish(work, deadline).await?))
+    }
+}
+
+type Setup = (
+    ozpb_toolkit::RegistryTrust,
+    ozpb_toolkit::RpcSource,
+    String,
+    std::time::Duration,
+    Option<tokio::sync::OwnedSemaphorePermit>,
+);
+
+impl PolicyBuilderServer {
+    /// What both authority tools need before any work: pinned trust, the configured source
+    /// (resolved first, so an unknown name or another network fails before any build or
+    /// read), its allowlisted URL, a deadline that leaves room for the builds, and on a hosted
+    /// server a work slot.
+    fn authority_setup(
+        &self,
+        input: &CheckPolicyCallSurfaceInput,
+    ) -> Result<Setup, CallToolResult> {
         let trust = self.registry_trust.clone().ok_or_else(|| {
             tool_err(ToolError::new(
                 ErrorCode::ERegistryEmpty,
                 "this server has no pinned registry trust configured",
             ))
         })?;
-        // The source first: an unknown name, or one for another network, fails before any
-        // build or read.
         let source = ozpb_toolkit::resolve_rpc_source(
             &self.rpc_sources,
             &input.rpc_source,
@@ -75,7 +137,6 @@ impl PolicyBuilderServer {
         .map_err(tool_err)?
         .clone();
         let rpc_url = self.authorized_rpc_url(&source.rpc_url).map_err(tool_err)?;
-        let build_config = self.build_config.clone();
         let generated_rules = input
             .binding_set
             .bindings
@@ -89,7 +150,8 @@ impl PolicyBuilderServer {
             .map(|binding| binding.rule_index)
             .collect::<std::collections::BTreeSet<_>>()
             .len();
-        let deadline = build_config
+        let deadline = self
+            .build_config
             .timeout
             .saturating_mul(u32::try_from(generated_rules).unwrap_or(u32::MAX))
             .saturating_add(READ_DEADLINE);
@@ -102,36 +164,45 @@ impl PolicyBuilderServer {
             })?),
             None => None,
         };
-        // A blocking read cannot be cancelled. The slot travels with the work and is released
-        // when it ends, not when the caller stops waiting; the server caps the scan bounds.
-        let work = tokio::task::spawn_blocking(move || {
-            let _slot = slot;
-            let plan = ozpb_toolkit::plan_call_surface_read(&input, &trust, &build_config)?;
-            let transport = HttpTransport::new(rpc_url);
-            let scan = scan_authority_state(
-                &transport,
-                &source.network_passphrase,
-                &plan.account_address,
-                &plan.contract_addresses,
-                &plan.classic_addresses,
-                capped(plan.bounds),
-            )
-            .map_err(|error| ozpb_toolkit::scan_tool_error(&error))?;
-            ozpb_toolkit::finish_call_surface_check(&plan, &input.rpc_source, &scan)
-        });
-        let output = tokio::time::timeout(deadline, work)
-            .await
-            .map_err(|_| {
-                tool_err(ToolError::new(
-                    ErrorCode::EResourceLimit,
-                    format!(
-                        "the authority read did not finish within {} s (builds included)",
-                        deadline.as_secs()
-                    ),
-                ))
-            })?
-            .map_err(internal_tool_err)?
-            .map_err(tool_err)?;
-        Ok(Json(output))
+        Ok((trust, source, rpc_url, deadline, slot))
     }
+}
+
+/// The scan itself, within the server's caps on the signed bounds.
+fn read(
+    plan: &ozpb_toolkit::CallSurfaceReadPlan,
+    source: &ozpb_toolkit::RpcSource,
+    rpc_url: String,
+) -> Result<ozpb_source_rpc::AccountStateScan, ToolError> {
+    let transport = HttpTransport::new(rpc_url);
+    scan_authority_state(
+        &transport,
+        &source.network_passphrase,
+        &plan.account_address,
+        &plan.contract_addresses,
+        &plan.classic_addresses,
+        capped(plan.bounds),
+    )
+    .map_err(|error| ozpb_toolkit::scan_tool_error(&error))
+}
+
+/// Wait for blocking work up to the deadline. A blocking read cannot be cancelled: the slot
+/// travels with the work and is released when it ends, not when the caller stops waiting.
+async fn finish<T: Send + 'static>(
+    work: tokio::task::JoinHandle<Result<T, ToolError>>,
+    deadline: std::time::Duration,
+) -> Result<T, CallToolResult> {
+    tokio::time::timeout(deadline, work)
+        .await
+        .map_err(|_| {
+            tool_err(ToolError::new(
+                ErrorCode::EResourceLimit,
+                format!(
+                    "the authority read did not finish within {} s (builds included)",
+                    deadline.as_secs()
+                ),
+            ))
+        })?
+        .map_err(internal_tool_err)?
+        .map_err(tool_err)
 }

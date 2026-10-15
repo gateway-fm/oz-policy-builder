@@ -20,10 +20,14 @@ fn trust_env() -> Vec<(&'static str, String)> {
 }
 
 fn request(rpc_source: &str) -> serde_json::Value {
+    request_for("check_policy_call_surface", rpc_source)
+}
+
+fn request_for(tool: &str, rpc_source: &str) -> serde_json::Value {
     let testnet = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
     serde_json::json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "check_policy_call_surface", "arguments": {
+        "params": {"name": tool, "arguments": {
             "spec": subscription_spec(),
             "rule_index": 0,
             "binding_set": {
@@ -102,4 +106,41 @@ fn a_source_the_operator_did_not_configure_is_refused_before_any_read() {
     ));
     let responses = run_session_with_env(&[initialize(), initialized(), request("mainnet")], &env);
     assert_eq!(error_code(&responses), "E_NETWORK_MISMATCH");
+}
+
+#[test]
+fn the_install_intent_runs_the_same_gates_before_any_read() {
+    let listed = run_session(&[
+        initialize(),
+        initialized(),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    ]);
+    let tool = by_id(&listed, 2)["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "prepare_install_intent")
+        .cloned()
+        .expect("the install intent is listed");
+    // It takes exactly the check's request: there is no verdict for a caller to supply.
+    assert!(tool["inputSchema"]["properties"]
+        .get("call_surface_check")
+        .is_none());
+    assert_eq!(tool["annotations"]["readOnlyHint"], false, "{tool}");
+
+    let responses = run_session(&[
+        initialize(),
+        initialized(),
+        request_for("prepare_install_intent", "testnet"),
+    ]);
+    assert_eq!(error_code(&responses), "E_REGISTRY_EMPTY");
+    let responses = run_session_with_env(
+        &[
+            initialize(),
+            initialized(),
+            request_for("prepare_install_intent", "anywhere"),
+        ],
+        &trust_env(),
+    );
+    assert_eq!(error_code(&responses), "E_RPC");
 }

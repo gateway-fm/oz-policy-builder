@@ -88,11 +88,12 @@ TTL changes. Missing method
 inventory, unrecognized code, mixed ledgers, archive uncertainty, or exceeded scan bounds
 cannot yield a list. A pure core result is not a complete live wire result (§4.8).
 
-**Install intent.** Require an exact spec/binding match and an authority result with no
-refusal and nothing unresolved for the same account, network, code, bindings, spec rule and
-observation. Reject stale
-or internally inconsistent artifacts. The result is an intent for wallet review, not an
-authorization to sign or submit. A fresh surface check is required immediately before
+**Install intent.** It must run the authority check itself (no caller-supplied verdict) and
+derive every `add_context_rule` argument from the same grant the commitment covers; check that
+a refusal or an unresolved item yields no arguments, that the refusal code does not depend on
+finding order, that a rule aimed at the account or its own policies is refused before any
+read, and that a rule already expired at the read ledger is refused. The result is an intent
+for wallet review, not an authorization to sign or submit. A fresh surface check is required immediately before
 signing; a time window is retry policy, not a safety guarantee (§4.8).
 
 **CLI and MCP exposure.** Exercise the same successful and refused requests through both

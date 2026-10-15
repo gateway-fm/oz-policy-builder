@@ -1,11 +1,13 @@
-//! CLI shell for the live authority check.
+//! CLI shell for the live authority check and the install intent built on it.
 //!
 //! The endpoint comes from the operator's RPC source file, never from the request: the
 //! request only names a source. The registry trust comes from the pinned roots and floor.
 
-use anyhow::{Context, Result};
-use ozpb_api_types::{CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput};
-use ozpb_source_rpc::{scan_authority_state, HttpTransport};
+use anyhow::{Context as _, Result};
+use ozpb_api_types::{
+    CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput, PrepareInstallIntentOutput,
+};
+use ozpb_source_rpc::{scan_authority_state, AccountStateScan, HttpTransport};
 use std::path::PathBuf;
 
 use crate::print_json;
@@ -30,34 +32,78 @@ pub fn check(args: AuthorityArgs, text: bool) -> Result<()> {
     }
 }
 
-pub(crate) fn run_check(args: &AuthorityArgs) -> Result<CheckPolicyCallSurfaceOutput> {
-    let input: CheckPolicyCallSurfaceInput = read_json(&args.request)?;
-    let roots = std::fs::read_to_string(&args.registry_roots)
-        .with_context(|| format!("reading {}", args.registry_roots.display()))?;
-    let trust = ozpb_toolkit::registry_trust_from_roots_json(&roots, args.registry_min_version)?;
-    let sources = std::fs::read_to_string(&args.rpc_sources)
-        .with_context(|| format!("reading {}", args.rpc_sources.display()))?;
-    let sources = ozpb_toolkit::rpc_sources_from_json(&sources)?;
+/// Run the check and, only when it clears, print the exact `add_context_rule` arguments with
+/// the answer they were checked against. A refusal or an unresolved item
+/// exits non-zero with every finding.
+pub fn intent(args: AuthorityArgs) -> Result<()> {
+    let output = run_intent(&args)?;
+    print_json(&output)
+}
 
-    // Resolve the source first: an unknown name or a source for another network fails before
-    // any build or read.
-    let source = ozpb_toolkit::resolve_rpc_source(&sources, &input.rpc_source, &input.network_id)?;
-    let plan = ozpb_toolkit::plan_call_surface_read(&input, &trust, &args.build_config)?;
-    let transport = HttpTransport::new(source.rpc_url.clone());
-    let scan = scan_authority_state(
-        &transport,
-        &source.network_passphrase,
-        &plan.account_address,
-        &plan.contract_addresses,
-        &plan.classic_addresses,
-        plan.bounds,
-    )
-    .map_err(|error| ozpb_toolkit::scan_tool_error(&error))?;
+pub(crate) fn run_check(args: &AuthorityArgs) -> Result<CheckPolicyCallSurfaceOutput> {
+    let session = Session::load(args)?;
+    let plan =
+        ozpb_toolkit::plan_call_surface_read(&session.input, &session.trust, &args.build_config)?;
+    let scan = session.read(&plan)?;
     Ok(ozpb_toolkit::finish_call_surface_check(
         &plan,
-        &input.rpc_source,
+        &session.input.rpc_source,
         &scan,
     )?)
+}
+
+pub(crate) fn run_intent(args: &AuthorityArgs) -> Result<PrepareInstallIntentOutput> {
+    let session = Session::load(args)?;
+    let plan =
+        ozpb_toolkit::plan_install_intent_read(&session.input, &session.trust, &args.build_config)?;
+    let scan = session.read(&plan)?;
+    Ok(ozpb_toolkit::prepare_install_intent_from_scan(
+        &plan,
+        &session.input.rpc_source,
+        &scan,
+    )?)
+}
+
+struct Session {
+    input: CheckPolicyCallSurfaceInput,
+    trust: ozpb_toolkit::RegistryTrust,
+    source: ozpb_toolkit::RpcSource,
+}
+
+impl Session {
+    /// Read the request and the operator's configuration. The source is resolved first, so an
+    /// unknown name or a source for another network fails before any build or read.
+    fn load(args: &AuthorityArgs) -> Result<Self> {
+        let input: CheckPolicyCallSurfaceInput = read_json(&args.request)?;
+        let roots = std::fs::read_to_string(&args.registry_roots)
+            .with_context(|| format!("reading {}", args.registry_roots.display()))?;
+        let trust =
+            ozpb_toolkit::registry_trust_from_roots_json(&roots, args.registry_min_version)?;
+        let sources = std::fs::read_to_string(&args.rpc_sources)
+            .with_context(|| format!("reading {}", args.rpc_sources.display()))?;
+        let sources = ozpb_toolkit::rpc_sources_from_json(&sources)?;
+        let source =
+            ozpb_toolkit::resolve_rpc_source(&sources, &input.rpc_source, &input.network_id)?
+                .clone();
+        Ok(Self {
+            input,
+            trust,
+            source,
+        })
+    }
+
+    fn read(&self, plan: &ozpb_toolkit::CallSurfaceReadPlan) -> Result<AccountStateScan> {
+        let transport = HttpTransport::new(self.source.rpc_url.clone());
+        Ok(scan_authority_state(
+            &transport,
+            &self.source.network_passphrase,
+            &plan.account_address,
+            &plan.contract_addresses,
+            &plan.classic_addresses,
+            plan.bounds,
+        )
+        .map_err(|error| ozpb_toolkit::scan_tool_error(&error))?)
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Result<T> {
