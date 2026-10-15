@@ -4,6 +4,8 @@
 # Each entry is a limitation, not a waiver of a failing case or missing boundary
 # class. New gaps and stale entries fail the gate. An entry may name only a spec
 # the gate actually runs. Review changes together with the corresponding report.
+# Repeat a line once per instance when a rule composes multiple policies of the
+# same kind. Counts must match the evidence exactly; extra copies are stale.
 #
 # The subscription fixture composes the generated policy with OZ spending_limit.
 # Layer 1 models the generated scope/signer/count checks, but not the reviewed

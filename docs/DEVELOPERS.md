@@ -100,19 +100,20 @@ behavior of a composed reviewed policy. CI checks the subscription example's rep
 an exact list of acknowledged layer-1 gaps:
 
 ```bash
-python3 scripts/check-unmodeled-acknowledged.py --known-specs \
-  scripts/layer1-unmodeled-acknowledged.txt subscription
-set -o pipefail
-cargo run --locked -q -p ozpb-cli -- reference-suite --spec docs/examples/subscription-spec.json \
-  | python3 scripts/check-unmodeled-acknowledged.py subscription scripts/layer1-unmodeled-acknowledged.txt
+python3 scripts/check-unmodeled-acknowledged.py --run \
+  scripts/layer1-unmodeled-acknowledged.txt subscription=docs/examples/subscription-spec.json
 ```
 
-The check rejects disagreeing or empty reports, missing required boundary classes, new gaps,
-stale acknowledgements, and entries naming an unchecked spec. Permit-only classes remain
-visible as limitations. An acknowledgement records what layer 1 does not test; it never
-waives a disagreement or proves the reviewed policy's on-chain behavior. When adding a checked
-example, add it to the `--known-specs` call and run its report through the checker in the same
-change. The checker validates local report consistency, not imported evidence authenticity.
+The command runs and checks every declared `label=spec-path` pair; producer failures stop it.
+It reconciles summary fields, coverage counts, and policy gaps against the detailed evidence.
+Each declared rule needs an original permit and a denial control, and every required class
+needs an outcome for that rule. New gaps, stale acknowledgements, or entries naming an
+undeclared spec fail. Repeated policy kinds require one acknowledgement per instance.
+Permit-only classes remain visible as limitations. An acknowledgement records what layer 1
+does not test; it never waives a disagreement or proves the reviewed policy's on-chain behavior.
+Add examples to the same invocation so no declared example can go unchecked. The stdin and
+`--known-specs` modes are lower-level inspection helpers, not a complete gate. The checker
+validates local report consistency, not imported evidence authenticity.
 
 ### Build configuration (operator-side)
 
