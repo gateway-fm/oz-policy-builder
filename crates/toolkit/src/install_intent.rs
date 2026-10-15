@@ -471,6 +471,7 @@ mod tests {
                 authority_state: PolicyAuthorityState {
                     ordered_state_digest: "11".repeat(32),
                     classic_accounts: Default::default(),
+                    verifiers: Default::default(),
                 },
                 evidence: PolicyAuthorityEvidence {
                     enumeration_evidence: PolicyRuleEnumerationEvidence::BoundedNextId {

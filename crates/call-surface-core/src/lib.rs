@@ -19,7 +19,8 @@
 //!   or reset a bound policy alone, another rule on the target lets it around the new limit,
 //!   the new rule targets something it must not, or an in-scope rule has a shape this version
 //!   does not support;
-//! - `unresolved` — evidence missing inside the scope (a classic account that was not read).
+//! - `unresolved` — evidence missing inside the scope (a classic account that was not read, a
+//!   verifier whose code was not observed).
 //!
 //! Why these rules matter: the account's management methods (`add_context_rule`,
 //! `remove_policy`, `add_signer`, …) and every bound policy's `install` / `uninstall` are
@@ -187,6 +188,26 @@ pub struct ClassicSigner {
     pub weight: u32,
 }
 
+/// What the reader observed at a verifier address named by an external signer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct VerifierObservation {
+    /// The verifier's code, at the same ledger as the account state.
+    pub code_hash: String,
+    /// The key scheme, when that code is a reviewed owner verifier (immutable, stateless,
+    /// scheme established); `None` for code nobody recognizes as one.
+    pub scheme: Option<KeyScheme>,
+}
+
+/// How a recognized verifier reads a signer's key data: what one owner identity is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyScheme {
+    /// Exactly a 32-byte ed25519 public key.
+    Ed25519,
+    /// A 65-byte uncompressed P-256 key (`0x04‖X‖Y`); a credential id after it is ignored.
+    WebauthnP256,
+}
+
 /// The rule about to be installed. It comes from the hashed spec the binding set names,
 /// never from a separate claim, and it is what the findings measure the account against.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -259,6 +280,12 @@ pub struct CheckInput<'a> {
     /// on a rule that can change the account, reach a bound policy or call the target — and
     /// every restricted key that is a classic account — needs an entry here.
     pub classic_accounts: BTreeMap<String, ClassicAccount>,
+    /// Verifiers named by external signers, by contract address, as observed in the same
+    /// capture. Every external signer on an in-scope rule or on the new rule needs an entry.
+    pub verifiers: BTreeMap<String, VerifierObservation>,
+    /// Root of the signed registry snapshot that recognized the code above. Committed, so a
+    /// revocation or any registry change asks for approval again.
+    pub registry_snapshot_root: Hash32,
     /// The rule being installed.
     pub grant: Grant,
     pub current_ledger: u32,
@@ -385,6 +412,17 @@ pub enum Identity {
         /// as an owner, even if it holds it.
         aliases_restricted_key: bool,
     },
+    /// A key behind a recognized owner verifier. The identity is the scheme and the canonical
+    /// key; the verifier address is where this account checks it, and the same key behind
+    /// another copy of the same verifier is the same identity.
+    External {
+        verifier: String,
+        verifier_code_hash: String,
+        scheme: KeyScheme,
+        /// Canonical key, hex: 32 bytes for ed25519, the first 65 bytes for WebAuthn.
+        public_key: String,
+        aliases_restricted_key: bool,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -438,6 +476,8 @@ pub struct AuthorityState {
     /// The signing configuration of every classic account the answer consulted: the new
     /// rule's own `G…` signers and those of in-scope rules.
     pub classic_accounts: BTreeMap<String, ClassicAccount>,
+    /// The code (and recognized scheme) of every verifier the answer consulted.
+    pub verifiers: BTreeMap<String, VerifierObservation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -508,6 +548,9 @@ pub enum UnsupportedReason {
     ClassicMultisig,
     /// A classic-account signer that does not exist, so cannot authenticate now.
     ClassicAccountMissing,
+    /// Key data a recognized verifier can never accept (wrong length, not an uncompressed
+    /// P-256 point): a signer that can never sign, so not an identity anyone holds.
+    MalformedKey,
     /// The rule has neither signers nor policies (the account refuses to store one).
     EmptyRule,
 }
@@ -686,10 +729,16 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             continue;
         };
 
-        // Every classic account an in-scope rule names is part of what decides the answer.
+        // Every classic account and verifier an in-scope rule names is part of what decides
+        // the answer.
         for key in &signers {
-            if let StoredSignerKey::Delegated { address } = key {
-                answer.classic_used.insert(address.clone());
+            match key {
+                StoredSignerKey::Delegated { address } => {
+                    answer.classic_used.insert(address.clone());
+                }
+                StoredSignerKey::External { verifier, .. } => {
+                    answer.verifiers_used.insert(verifier.clone());
+                }
             }
         }
 
@@ -756,8 +805,13 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
     // Only the classic accounts the answer consulted are committed: a reader that fetched
     // more (every classic signer in the closure, say) must not make two equal answers differ.
     for key in &input.grant.signers {
-        if let StoredSignerKey::Delegated { address } = key {
-            answer.classic_used.insert(address.clone());
+        match key {
+            StoredSignerKey::Delegated { address } => {
+                answer.classic_used.insert(address.clone());
+            }
+            StoredSignerKey::External { verifier, .. } => {
+                answer.verifiers_used.insert(verifier.clone());
+            }
         }
     }
     let authority_state = AuthorityState {
@@ -768,11 +822,18 @@ pub fn check(input: &CheckInput) -> Result<SurfaceVerdict, CheckError> {
             .filter(|(address, _)| answer.classic_used.contains(*address))
             .map(|(address, entry)| (address.clone(), entry.clone()))
             .collect(),
+        verifiers: input
+            .verifiers
+            .iter()
+            .filter(|(address, _)| answer.verifiers_used.contains(*address))
+            .map(|(address, entry)| (address.clone(), entry.clone()))
+            .collect(),
     };
     let authority_commitment = ozpb_domain::canonical_hash(
         domains::SURFACE_VERDICT,
         &CommitmentPreimage {
             network_id: &input.network_id,
+            registry_snapshot_root: input.registry_snapshot_root,
             account_address: &input.account_address,
             account_code_hash: &input.account_code_hash,
             spec_hash: input.spec_hash,
@@ -818,6 +879,7 @@ struct Answer {
     coverage_exclusions: Vec<ExcludedRule>,
     notes: Notes,
     classic_used: BTreeSet<String>,
+    verifiers_used: BTreeSet<String>,
 }
 
 impl Answer {
@@ -834,6 +896,7 @@ impl Answer {
 #[derive(Serialize)]
 struct CommitmentPreimage<'a> {
     network_id: &'a str,
+    registry_snapshot_root: Hash32,
     account_address: &'a str,
     account_code_hash: &'a str,
     spec_hash: Hash32,
@@ -863,25 +926,18 @@ fn grant_findings(input: &CheckInput<'_>, answer: &mut Answer) {
     // A restricted key that is a contract is a nested account controlled through its own
     // rules, which this check does not read: who really holds the agent's power is unknown.
     for key in &input.grant.signers {
-        if let StoredSignerKey::External { verifier, .. } = key {
+        if let StoredSignerKey::External { verifier, key_hex } = key {
             // Who holds a key behind a verifier is whatever that verifier accepts; one this
             // check does not recognize could accept other keys, or the agent's under another
-            // encoding the aliasing above would miss.
-            answer.refusals.push(
-                Problem::unsupported(
-                    UnsupportedReason::ExternalSigner,
-                    format!(
-                        "it is checked by verifier contract {verifier}, which this check does \
-                         not recognize"
-                    ),
-                )
-                .into_finding(
+            // encoding the aliasing would miss.
+            if let Err(problem) = external_key(input, verifier, key_hex) {
+                answer.push_problem(problem.into_finding(
                     None,
                     "the new rule's signer",
-                    "name the agent's own classic account as the signer, or a key behind a \
-                     verifier the registry recognizes",
-                ),
-            );
+                    "name the agent's own classic account as the signer, or a well-formed key \
+                     behind a verifier the registry recognizes",
+                ));
+            }
         }
         if let StoredSignerKey::Delegated { address } = key {
             if matches!(
@@ -1168,14 +1224,70 @@ fn identity(
                 )),
             }
         }
-        StoredSignerKey::External { verifier, .. } => Err(Problem::unsupported(
+        StoredSignerKey::External { verifier, key_hex } => {
+            let (observation, scheme, public_key) = external_key(input, verifier, key_hex)?;
+            Ok(Identity::External {
+                verifier: verifier.clone(),
+                verifier_code_hash: observation.code_hash.clone(),
+                scheme,
+                public_key: hex::encode(public_key),
+                aliases_restricted_key,
+            })
+        }
+    }
+}
+
+/// An external signer's verifier and canonical key, or why it cannot be an identity. The
+/// canonical forms follow OZ `stellar-accounts` 0.7.2: the ed25519 verifier takes exactly a
+/// `BytesN<32>`; the WebAuthn verifier reads the first 65 bytes (`canonicalize_key`) and
+/// ignores any credential id after them.
+fn external_key<'a>(
+    input: &'a CheckInput<'_>,
+    verifier: &str,
+    key_hex: &str,
+) -> Result<(&'a VerifierObservation, KeyScheme, Vec<u8>), Problem> {
+    if !matches!(
+        stellar_strkey::Strkey::from_string(verifier),
+        Ok(stellar_strkey::Strkey::Contract(_))
+    ) {
+        return Err(Problem::unsupported(
+            UnsupportedReason::ExternalSigner,
+            format!("its verifier {verifier} is not a contract, so no code can check its key"),
+        ));
+    }
+    let observation = input.verifiers.get(verifier).ok_or_else(|| Problem {
+        code: FindingCode::IncompleteAccountState,
+        unsupported: None,
+        what: format!("the code of verifier {verifier} was not observed with the rest"),
+    })?;
+    let Some(scheme) = observation.scheme else {
+        return Err(Problem::unsupported(
             UnsupportedReason::ExternalSigner,
             format!(
-                "one of its signers is checked by verifier contract {verifier}, which this \
-                 check does not recognize"
+                "it is checked by verifier contract {verifier}, whose code {} is not a \
+                 recognized immutable, stateless owner verifier",
+                observation.code_hash
             ),
-        )),
-    }
+        ));
+    };
+    let malformed = |why: &str| {
+        Problem::unsupported(
+            UnsupportedReason::MalformedKey,
+            format!("its key for verifier {verifier} {why}, so it can never sign"),
+        )
+    };
+    let bytes = hex::decode(key_hex).map_err(|_| malformed("is not hex"))?;
+    let canonical = match scheme {
+        KeyScheme::Ed25519 if bytes.len() == 32 => bytes,
+        KeyScheme::Ed25519 => return Err(malformed("is not exactly a 32-byte ed25519 key")),
+        KeyScheme::WebauthnP256 if bytes.len() >= 65 && bytes[0] == 0x04 => bytes[..65].to_vec(),
+        KeyScheme::WebauthnP256 => {
+            return Err(malformed(
+                "does not start with a 65-byte uncompressed P-256 point",
+            ))
+        }
+    };
+    Ok((observation, scheme, canonical))
 }
 
 /// A `Delegated(G…)` signer authorizes through the classic account: the host loads its entry

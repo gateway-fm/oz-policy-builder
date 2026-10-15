@@ -19,8 +19,8 @@ use ozpb_api_types::{
 };
 use ozpb_call_surface_core::{
     AccountState, BoundPolicy, CheckError, CheckInput, ClassicAccount, Enumeration, Grant,
-    GrantPolicy, GrantPolicyParams, PolicyRecognitionPath, PolicySignerSemantics, StoredSignerKey,
-    SurfaceVerdict, VerifiedPolicy,
+    GrantPolicy, GrantPolicyParams, KeyScheme, PolicyRecognitionPath, PolicySignerSemantics,
+    StoredSignerKey, SurfaceVerdict, VerifiedPolicy, VerifierObservation,
 };
 use ozpb_domain::{domains, Hash32};
 use ozpb_policy_spec::{
@@ -44,6 +44,8 @@ pub struct CallSurfaceObservation {
     /// Classic accounts read with the account: at least every `Delegated(G…)` signer of a
     /// rule that can change the account, reach a bound policy or call the target.
     pub classic_accounts: BTreeMap<String, ClassicAccount>,
+    /// Code observed at every contract verifier an external signer names, same ledger.
+    pub verifier_code_hashes: BTreeMap<String, String>,
 }
 
 /// Validated identities and the conservative address-level core verdict over a supplied
@@ -211,6 +213,34 @@ pub fn check_observed_call_surface_with_build_config(
         }
     }
 
+    // A verifier vouches for an owner identity only through its observed code: reviewed,
+    // immutable, stateless, with the scheme its reviewed source implements. Anything else is
+    // passed on as unrecognized code, which the core refuses where it matters.
+    let mut verifiers = BTreeMap::new();
+    for (address, observed) in &observation.verifier_code_hashes {
+        let hash = Hash32::from_hex(observed).map_err(|_| {
+            ToolError::new(
+                EC::EIncompleteAccountState,
+                "verifier observation has an invalid code hash",
+            )
+        })?;
+        record_observed_code(&mut code_by_address, address, hash)?;
+        let scheme = registry
+            .resolve_signature_verifier(&hash)
+            .ok()
+            .map(|scheme| match scheme {
+                ozpb_registry::VerifierKeyScheme::Ed25519 => KeyScheme::Ed25519,
+                ozpb_registry::VerifierKeyScheme::WebauthnP256 => KeyScheme::WebauthnP256,
+            });
+        verifiers.insert(
+            address.clone(),
+            VerifierObservation {
+                code_hash: hash.to_hex(),
+                scheme,
+            },
+        );
+    }
+
     let bound_policies = input
         .binding_set
         .bindings
@@ -231,6 +261,8 @@ pub fn check_observed_call_surface_with_build_config(
         bound_policies,
         recognized_policies,
         classic_accounts: observation.classic_accounts.clone(),
+        verifiers,
+        registry_snapshot_root: loaded_root,
         grant,
         current_ledger: observation.observed_ledger,
         enumeration,
@@ -736,6 +768,7 @@ mod tests {
                     )
                     .map(|address| (address, master_key_only()))
                     .collect(),
+                verifier_code_hashes: BTreeMap::new(),
             },
         )
     }
@@ -1063,6 +1096,85 @@ mod tests {
         let decoded: ozpb_api_types::PolicyCallSurfaceVerdict =
             serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+    }
+
+    /// A passkey owner is an identity only through a verifier the signed registry recognizes
+    /// as an immutable, stateless owner verifier, by the code observed at its address.
+    #[test]
+    fn a_passkey_owner_is_listed_through_the_registry() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let passkey_owner = |request: &CheckPolicyCallSurfaceInput,
+                             observation: &mut CallSurfaceObservation,
+                             code: ozpb_domain::Hash32| {
+            let mut key = vec![0x04];
+            key.extend_from_slice(&[0x31; 64]);
+            key.extend_from_slice(b"credential");
+            observation.account_state.signers.get_mut(&0).unwrap().key =
+                StoredSignerKey::External {
+                    verifier: address(60),
+                    key_hex: hex::encode(key),
+                };
+            observation
+                .verifier_code_hashes
+                .insert(address(60), code.to_hex());
+            check(request, observation).unwrap().verdict
+        };
+
+        // Version 3 of the signed example recognizes OZ's WebAuthn verifier.
+        let (mut request, mut observation) = fixture();
+        replace_fixture_snapshot(
+            &mut request,
+            &mut observation,
+            ozpb_registry::dev::verifier_successor(network).unwrap(),
+        );
+        let verdict = passkey_owner(
+            &request,
+            &mut observation,
+            ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+        );
+        assert!(verdict.refusals.is_empty() && verdict.unresolved.is_empty());
+        let mut wire = serde_json::to_value(&verdict).unwrap();
+        assert_eq!(
+            wire["authority_list"][0]["requirement"]["signers"][0]["kind"],
+            "external"
+        );
+        assert_eq!(
+            wire["authority_list"][0]["requirement"]["signers"][0]["scheme"],
+            "webauthn_p256"
+        );
+        wire["evidence"] = serde_json::json!({
+            "enumeration_evidence": {
+                "method": "bounded_next_id", "next_id": 2, "active_count": 2,
+                "rule_ids": [0, 1], "signer_ids": [0, 1], "policy_ids": [0]
+            }
+        });
+        let decoded: ozpb_api_types::PolicyCallSurfaceVerdict =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+
+        // A verifier address cannot run two codes at one ledger: one that is also a bound
+        // policy with other code is an inconsistent observation.
+        let mut conflicting = observation.clone();
+        conflicting.verifier_code_hashes.insert(
+            request.binding_set.bindings[0].contract_address.clone(),
+            ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex(),
+        );
+        assert_eq!(
+            check(&request, &conflicting).unwrap_err().code,
+            EC::EIncompleteAccountState
+        );
+
+        // Version 1 recognizes no owner verifier, and other code is never one.
+        let (request, mut observation) = fixture();
+        let verdict = passkey_owner(
+            &request,
+            &mut observation,
+            ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+        );
+        assert_eq!(
+            verdict.refusals[0].unsupported,
+            Some(UnsupportedReason::ExternalSigner)
+        );
     }
 
     /// A classic-account owner the reader did not read is not described.

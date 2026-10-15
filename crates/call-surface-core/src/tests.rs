@@ -29,6 +29,44 @@ fn readable_policy() -> String {
 fn unknown_policy() -> String {
     contract(9)
 }
+/// Verifiers: unknown code at 0xEE and 0xEF; the reviewed ed25519 verifier at 0xED and the
+/// reviewed WebAuthn verifier at 0xEB and at another copy, 0xEC.
+const UNKNOWN_VERIFIER: u8 = 0xEE;
+const ED25519_VERIFIER: u8 = 0xED;
+const WEBAUTHN_VERIFIER: u8 = 0xEB;
+const WEBAUTHN_VERIFIER_COPY: u8 = 0xEC;
+
+fn verifiers() -> BTreeMap<String, VerifierObservation> {
+    let observed = |code: &str, scheme| VerifierObservation {
+        code_hash: code.repeat(32),
+        scheme,
+    };
+    BTreeMap::from([
+        (contract(UNKNOWN_VERIFIER), observed("e0", None)),
+        (contract(0xEF), observed("e1", None)),
+        (
+            contract(ED25519_VERIFIER),
+            observed("ed", Some(KeyScheme::Ed25519)),
+        ),
+        (
+            contract(WEBAUTHN_VERIFIER),
+            observed("eb", Some(KeyScheme::WebauthnP256)),
+        ),
+        (
+            contract(WEBAUTHN_VERIFIER_COPY),
+            observed("eb", Some(KeyScheme::WebauthnP256)),
+        ),
+    ])
+}
+
+/// A passkey: a 65-byte uncompressed P-256 point, then a credential id.
+fn passkey(fill: u8, credential: &[u8]) -> Vec<u8> {
+    let mut key = vec![0x04];
+    key.extend_from_slice(&[fill; 64]);
+    key.extend_from_slice(credential);
+    key
+}
+
 /// The agent's key: the new grant's only signer.
 const AGENT: u8 = 0xA0;
 const OWNER: u8 = 0x10;
@@ -191,6 +229,8 @@ fn input(state: &AccountState) -> CheckInput<'_> {
             (classic(STRANGER), master_key_only()),
             (classic(AGENT), master_key_only()),
         ]),
+        verifiers: verifiers(),
+        registry_snapshot_root: ozpb_domain::Hash32([0x7e; 32]),
         grant: Grant {
             rule_index: 0,
             target: target(),
@@ -349,15 +389,154 @@ fn case_4_plain_recovery_is_listed_and_any_policy_on_it_is_refused() {
 }
 
 #[test]
-fn case_5_external_owner_is_refused_until_its_verifier_is_recognized() {
+fn case_5_passkey_owner_is_one_identity_whatever_its_credential_id() {
     let st = StateBuilder::new()
-        .owner_rule(vec![external(0xEE, vec![4; 65])])
+        .owner_rule(vec![external(
+            WEBAUTHN_VERIFIER,
+            passkey(0x31, b"credential-id"),
+        )])
+        .build();
+    let verdict = check(&input(&st)).unwrap();
+    assert_open(&verdict);
+    assert_eq!(
+        verdict.authority_list[0].requirement,
+        all_of(vec![Identity::External {
+            verifier: contract(WEBAUTHN_VERIFIER),
+            verifier_code_hash: "eb".repeat(32),
+            scheme: KeyScheme::WebauthnP256,
+            public_key: hex::encode(passkey(0x31, b"")),
+            aliases_restricted_key: false,
+        }])
+    );
+    assert_eq!(
+        verdict.authority_state.verifiers.keys().collect::<Vec<_>>(),
+        vec![&contract(WEBAUTHN_VERIFIER)]
+    );
+
+    // Exactly 65 bytes is the same identity; an ed25519 key is exactly 32 bytes.
+    let st = StateBuilder::new()
+        .owner_rule(vec![
+            external(WEBAUTHN_VERIFIER, passkey(0x31, b"")),
+            external(ED25519_VERIFIER, vec![0x32; 32]),
+        ])
+        .build();
+    assert_open(&check(&input(&st)).unwrap());
+}
+
+#[test]
+fn external_owners_need_recognized_observed_verifiers_and_well_formed_keys() {
+    let refused = |key: StoredSignerKey| {
+        let st = StateBuilder::new().owner_rule(vec![key]).build();
+        only_unsupported(&check(&input(&st)).unwrap()).unsupported
+    };
+    // Code nobody recognizes as an owner verifier.
+    assert_eq!(
+        refused(external(UNKNOWN_VERIFIER, passkey(0x31, b""))),
+        Some(UnsupportedReason::ExternalSigner)
+    );
+    // A "verifier" that is a classic account has no code to check anything.
+    assert_eq!(
+        refused(StoredSignerKey::External {
+            verifier: classic(0x44),
+            key_hex: hex::encode(passkey(0x31, b"")),
+        }),
+        Some(UnsupportedReason::ExternalSigner)
+    );
+    // Keys a recognized verifier can never accept.
+    let mut compressed = passkey(0x31, b"");
+    compressed[0] = 0x02;
+    for key in [
+        external(WEBAUTHN_VERIFIER, compressed),
+        external(WEBAUTHN_VERIFIER, vec![0x04; 64]),
+        external(ED25519_VERIFIER, vec![0x32; 31]),
+        external(ED25519_VERIFIER, vec![0x32; 33]),
+    ] {
+        assert_eq!(refused(key), Some(UnsupportedReason::MalformedKey));
+    }
+    // A verifier whose code was not observed is missing evidence, not a refusal.
+    let st = StateBuilder::new()
+        .owner_rule(vec![external(0x99, passkey(0x31, b""))])
+        .build();
+    assert_eq!(
+        only_unresolved(&check(&input(&st)).unwrap()).rule_id,
+        Some(0)
+    );
+}
+
+#[test]
+fn a_passkey_on_a_readable_target_rule_is_listed_by_its_semantics() {
+    let st = StateBuilder::new()
+        .owner_rule(vec![delegated(OWNER)])
+        .rule(
+            call(target()),
+            None,
+            vec![external(WEBAUTHN_VERIFIER, passkey(0x33, b"c"))],
+            vec![readable_policy()],
+        )
+        .build();
+    let verdict = check(&input(&st)).unwrap();
+    assert_open(&verdict);
+    assert!(matches!(
+        &verdict.notes.target_rules[0].requirement,
+        Requirement::AnyOf { signers, .. } if matches!(
+            &signers[0],
+            Identity::External { scheme: KeyScheme::WebauthnP256, public_key, .. }
+                if *public_key == hex::encode(passkey(0x33, b""))
+        )
+    ));
+}
+
+#[test]
+fn the_commitment_moves_with_a_consulted_verifiers_code() {
+    let st = StateBuilder::new()
+        .owner_rule(vec![external(WEBAUTHN_VERIFIER, passkey(0x31, b""))])
+        .build();
+    let first = check(&input(&st)).unwrap().authority_commitment;
+    let mut moved = input(&st);
+    moved
+        .verifiers
+        .get_mut(&contract(WEBAUTHN_VERIFIER))
+        .unwrap()
+        .code_hash = "ea".repeat(32);
+    let verdict = check(&moved).unwrap();
+    assert_open(&verdict);
+    assert_ne!(verdict.authority_commitment, first);
+}
+
+#[test]
+fn the_agents_passkey_behind_another_verifier_copy_is_still_the_agent() {
+    // The owner rule holds a passkey behind one copy of the WebAuthn verifier; the grant names
+    // the same passkey (another credential id) behind another copy. One key, so the agent
+    // could change the account alone.
+    let st = StateBuilder::new()
+        .owner_rule(vec![delegated(OWNER)])
+        .owner_rule(vec![external(WEBAUTHN_VERIFIER, passkey(0x31, b"a"))])
+        .build();
+    let mut request = input(&st);
+    request.grant.signers = vec![external(WEBAUTHN_VERIFIER_COPY, passkey(0x31, b"b"))];
+    let verdict = check(&request).unwrap();
+    assert_eq!(
+        only_refusal(&verdict).code,
+        FindingCode::DelegateHasAuthority
+    );
+
+    // And an ed25519 key is one key as a classic account and behind the ed25519 verifier.
+    let st = StateBuilder::new()
+        .owner_rule(vec![delegated(OWNER)])
+        .owner_rule(vec![external(ED25519_VERIFIER, vec![AGENT; 32])])
         .build();
     let verdict = check(&input(&st)).unwrap();
     assert_eq!(
-        only_unsupported(&verdict).unsupported,
-        Some(UnsupportedReason::ExternalSigner)
+        only_refusal(&verdict).code,
+        FindingCode::DelegateHasAuthority
     );
+    assert!(matches!(
+        &verdict.authority_list[1].requirement,
+        Requirement::AllOf { signers } if matches!(
+            &signers[0],
+            Identity::External { aliases_restricted_key: true, .. }
+        )
+    ));
 }
 
 #[test]
@@ -436,6 +615,14 @@ fn restricted_key_named_through_a_verifier_is_still_the_restricted_key() {
     request.grant.signers = vec![external(0xEF, vec![AGENT; 32])];
     let verdict = check(&request).unwrap();
     assert!(has_refusal(&verdict, FindingCode::DelegateHasAuthority));
+    // The same agent key behind the reviewed ed25519 verifier is a well-formed restricted
+    // key: the only refusal is the agent's authority.
+    let mut request = input(&st);
+    request.grant.signers = vec![external(ED25519_VERIFIER, vec![AGENT; 32])];
+    assert_eq!(
+        only_refusal(&check(&request).unwrap()).code,
+        FindingCode::DelegateHasAuthority
+    );
     // A restricted key behind a verifier this check does not recognize is itself refused.
     assert!(verdict
         .refusals
@@ -1107,6 +1294,7 @@ fn commitment_survives_a_later_ledger_and_moves_with_state_and_intent() {
     type Edit = Box<dyn Fn(&mut CheckInput<'_>)>;
     let edits: Vec<Edit> = vec![
         Box::new(|r| r.network_id = "cd".repeat(32)),
+        Box::new(|r| r.registry_snapshot_root = ozpb_domain::Hash32([0x7f; 32])),
         Box::new(|r| r.spec_hash = ozpb_domain::Hash32([0x5d; 32])),
         Box::new(|r| r.grant.rule_index = 1),
         Box::new(|r| r.grant.stateful = false),

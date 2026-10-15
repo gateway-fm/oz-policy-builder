@@ -220,10 +220,13 @@ Three things it makes explicit, because each one broke a demo attempt:
 
 ### Verifying the pinned upstream trust anchors
 
-`ozpb_domain::pinned_upstream` holds the wasm hashes of three OpenZeppelin contracts — the
-spending-limit policy, the smart account, and the ed25519 verifier. The first two are Phase 1
-trust anchors. The verifier pin is retained for later work, but external-verifier signers are
-rejected in Phase 1 because a supplied verifier address is not yet bound to its observed Wasm.
+`ozpb_domain::pinned_upstream` holds the wasm hashes of four OpenZeppelin contracts — the
+spending-limit policy, the smart account, and the ed25519 and WebAuthn (passkey) verifiers. The
+first two are Phase 1 trust anchors. The verifiers are recognized by the authority check as
+owner verifiers only through the code observed at a signer's verifier address at the read
+ledger; the script also checks that both export only the reviewed verifier methods and import
+no ledger, contract-call or ledger-context host functions. A *spec* still cannot name an
+external-verifier signer for the new rule (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`).
 
 ```bash
 bash scripts/verify-pinned-upstream.sh    # clones the pinned tag, rebuilds, compares

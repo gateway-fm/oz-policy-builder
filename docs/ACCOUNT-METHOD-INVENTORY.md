@@ -7,7 +7,7 @@ reproduces that artifact, byte-for-byte on an Apple Silicon host only (see
 `docs/TRANCHE-1-VERIFICATION.md` §3), and checks the names. The account authorization guards
 and direct and transitive effects come from source review, not from export names.
 
-The signed version-2 development example commits to the exact reviewed method-table digest
+The signed development example (version 2 onward) commits to the exact reviewed method-table digest
 and bounded scan protocol for this account Wasm hash. It extends the original example root;
 its signing key is public development material, not production governance, and the
 operator account reader accepts that root only for testnet. The registry resolver checks the

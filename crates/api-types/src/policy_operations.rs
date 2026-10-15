@@ -555,6 +555,36 @@ pub enum PolicyIdentity {
         ed25519_public_key: String,
         aliases_restricted_key: bool,
     },
+    /// A key behind a recognized owner verifier. Match on `scheme` + `public_key` (the
+    /// canonical key); the verifier address is only where this account checks it, and the
+    /// same key behind another copy of that verifier is the same identity. An ed25519 key here
+    /// is also the same identity as a classic account whose master key it is.
+    External {
+        verifier: String,
+        verifier_code_hash: String,
+        scheme: PolicyKeyScheme,
+        /// Canonical key, hex: 32 bytes for ed25519, the first 65 bytes for WebAuthn.
+        public_key: String,
+        aliases_restricted_key: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyKeyScheme {
+    Ed25519,
+    WebauthnP256,
+}
+
+/// The code observed at a verifier, and its scheme when that code is a recognized owner
+/// verifier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyVerifierObservation {
+    pub code_hash: String,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required)]
+    pub scheme: Option<PolicyKeyScheme>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -612,8 +642,10 @@ pub struct PolicyAuthorityState {
     /// Canonical hash of the ordered account rules and transitive storage entries, with every
     /// installed policy's observed code hash. TTLs are not in it.
     pub ordered_state_digest: String,
-    /// Signing configuration of every classic account read with the smart account.
+    /// Signing configuration of every classic account the answer consulted.
     pub classic_accounts: std::collections::BTreeMap<String, PolicyClassicAccount>,
+    /// Code of every verifier the answer consulted.
+    pub verifiers: std::collections::BTreeMap<String, PolicyVerifierObservation>,
 }
 
 /// How the state was acquired. Recorded, never compared: ledger numbers and TTLs move without
@@ -694,6 +726,8 @@ pub enum PolicyUnsupportedReason {
     ClassicMultisig,
     /// A classic account that does not exist, so cannot authenticate now.
     ClassicAccountMissing,
+    /// Key data a recognized verifier can never accept.
+    MalformedKey,
     EmptyRule,
 }
 
@@ -839,6 +873,7 @@ mod tests {
         let _ = schemars::schema_for!(PolicyAuthorityEvidence);
         let _ = schemars::schema_for!(PolicyAuthorityState);
         let _ = schemars::schema_for!(PolicyAuthorityScope);
+        let _ = schemars::schema_for!(PolicyVerifierObservation);
         let _ = schemars::schema_for!(PolicyExpiredRule);
         let _ = schemars::schema_for!(PolicySurfaceFinding);
         let _ = schemars::schema_for!(PrepareInstallIntentInput);
@@ -1048,6 +1083,13 @@ mod tests {
                             "address": "GOWNER",
                             "ed25519_public_key": "owner-key",
                             "aliases_restricted_key": false
+                        }, {
+                            "kind": "external",
+                            "verifier": "CPASSKEYVERIFIER",
+                            "verifier_code_hash": "verifier-code",
+                            "scheme": "webauthn_p256",
+                            "public_key": "04aa",
+                            "aliases_restricted_key": false
                         }]
                     }
                 }],
@@ -1094,6 +1136,10 @@ mod tests {
                             "signers": []
                         },
                         "GMISSING": {"state": "not_found"}
+                    },
+                    "verifiers": {
+                        "CPASSKEYVERIFIER": {"code_hash": "verifier-code", "scheme": "webauthn_p256"},
+                        "CUNKNOWN": {"code_hash": "other-code", "scheme": null}
                     }
                 },
                 "evidence": {

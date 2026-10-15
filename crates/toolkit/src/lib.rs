@@ -719,7 +719,9 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::AccountRuleEnumerationUnsupported { .. } => {
             EC::EAccountRuleEnumerationUnsupported
         }
-        RegistryError::UnknownVerifier(_) => EC::EUnregisteredVerifier,
+        RegistryError::UnknownVerifier(_) | RegistryError::VerifierCapabilityIncomplete(_) => {
+            EC::EUnregisteredVerifier
+        }
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,
         RegistryError::Internal(_) => EC::EInternal,

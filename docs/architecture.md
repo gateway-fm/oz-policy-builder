@@ -1067,8 +1067,13 @@ back or equivocate on is not a root.
   OZ design explicitly treats as trusted — a malicious, buggy, or changed verifier can
   accept invalid signatures (or block valid ones) even when account and policy hashes are
   correct. Entries record: implementation identity and reviewed capabilities; key and
-  signature encoding/canonicalization rules; immutability/upgrade status; drift monitoring
-  and revocation response. PolicySpec and InstallationRecord bind every external signer to
+  signature encoding/canonicalization rules (`key_scheme`: ed25519 = exactly 32 bytes;
+  WebAuthn P-256 = the first 65 bytes, a credential id after them ignored); immutability and
+  statelessness (`immutable`, `stateless`: the reviewed Wasm has no upgrade path and imports
+  no ledger functions); drift monitoring and revocation response. Only a verifier whose
+  observed code carries all three, and whose scheme agrees with the one compiled in for that
+  exact reviewed hash, can vouch for an owner identity; an owner identity is the scheme and
+  canonical key, not the verifier address. PolicySpec and InstallationRecord bind every external signer to
   its verifier entry. Unknown verifier implementations **fail verified mode**. For
   `Signer::Delegated` C-account signers, the nested-account trust assumption is stated
   explicitly, with optional recursive account recognition. Recursive recognition is deferred:

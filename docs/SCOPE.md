@@ -60,7 +60,13 @@ The source-reviewed account method inventory and its limits are described in
    TTL or an unmodeled instance field can change the former without changing the latter. The
    adapter decides nothing about authority.
    The signed version-2 development registry example binds the reviewed method-map digest and
-   bounded scan protocol to the exact pinned account Wasm. Its public development signing key
+   bounded scan protocol to the exact pinned account Wasm. Version 3 extends it with the key
+   scheme and statelessness of the pinned ed25519 verifier and adds OpenZeppelin's WebAuthn
+   (passkey) verifier, so a passkey owner can be listed as an identity (its scheme and first
+   65 key bytes; a credential id is ignored). A verifier vouches for an owner only when its
+   observed code is one whose key handling was reviewed from source (compiled in per exact
+   hash, like the method inventory) and its signed entry agrees; older binaries refuse the
+   version-3 entry's new fields. Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
    authority evidence. The operator reader below refuses that root unless its pinned network
    is testnet.
