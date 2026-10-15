@@ -76,11 +76,19 @@ def run(value=None, ack=ACK, names=None, raw=None):
         )
 
 
-def run_specs(specs, ack=ACK, fail_spec="", raw=None):
+def run_specs(specs, ack=ACK, fail_spec="", raw=None, input_spec=None):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         (root / "ack.txt").write_text(ack, encoding="utf-8")
         (root / "report.json").write_text(raw if raw is not None else json.dumps(report()), encoding="utf-8")
+        if input_spec is None:
+            input_spec = {"rules": [{"policies": [{"reviewed": {"kind": "oz:spending_limit"}}, {"generated": {}}]}]}
+        for binding in specs:
+            _, separator, path = binding.partition("=")
+            if separator and path:
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(input_spec), encoding="utf-8")
         cargo = root / "cargo"
         cargo.write_text(f"#!{sys.executable}\n" + '''
 import json, os, sys
@@ -89,13 +97,13 @@ root = Path(os.environ["GATE_FIXTURE"])
 with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
 print((root / "report.json").read_text())
-if sys.argv[-1] == os.environ["GATE_FAIL_SPEC"]:
+if Path(sys.argv[-1]).name == os.environ["GATE_FAIL_SPEC"]:
     sys.exit(9)
 ''', encoding="utf-8")
         cargo.chmod(0o755)
         environment = dict(os.environ, PATH=str(root), GATE_FIXTURE=str(root), GATE_FAIL_SPEC=fail_spec)
-        result = subprocess.run([sys.executable, str(CHECKER), "--run", str(root / "ack.txt"), *specs],
-                                env=environment, text=True, capture_output=True, check=False)
+        result = subprocess.run([sys.executable, str(CHECKER), "--run", "ack.txt", *specs],
+                                cwd=root, env=environment, text=True, capture_output=True, check=False)
         calls = root / "calls.jsonl"
         return result, [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
 
@@ -266,7 +274,8 @@ class CoverageGateTests(unittest.TestCase):
         result, calls = run_specs(["subscription=first spec.json", "other=second.json"],
                                  ack=ACK + f"other|{ENTRY}\n")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([call[-2:] for call in calls], [["--spec", "first spec.json"], ["--spec", "second.json"]])
+        self.assertEqual([Path(call[-1]).name for call in calls], ["first spec.json", "second.json"])
+        self.assertTrue(all(call[-2] == "--spec" and Path(call[-1]).is_absolute() for call in calls))
         self.assertIn("All 2 declared reference suites ran and passed", result.stdout)
 
     def test_runner_rejects_unchecked_names_and_bad_bindings_before_running(self):
@@ -284,6 +293,31 @@ class CoverageGateTests(unittest.TestCase):
         self.assertNotIn("All 2 declared", result.stdout)
         result, _ = run_specs(["subscription=first.json"], raw="not JSON")
         self.assert_failure(result, "reference coverage check failed")
+
+    def test_runner_catches_a_rule_omitted_from_evidence_and_summary(self):
+        rule = {"policies": [{"reviewed": {"kind": "oz:spending_limit"}}]}
+        result, _ = run_specs(["subscription=spec.json"], input_spec={"rules": [rule, rule]})
+        self.assert_failure(result, "evidence rule set differs from the input spec")
+
+    def test_runner_catches_reviewed_policy_omissions_and_preserves_multiplicity(self):
+        for kind in ["oz:other", "oz:spending_limit"]:
+            spec = {"rules": [{"policies": [{"reviewed": {"kind": "oz:spending_limit"}},
+                                            {"reviewed": {"kind": kind}}]}]}
+            result, _ = run_specs(["subscription=spec.json"], input_spec=spec)
+            self.assert_failure(result, "evidence reviewed-policy counts differ from the input spec")
+        value = report()
+        value["report"]["unmodeled_policies"] *= 2
+        value["unmodeled_reviewed_policies"] *= 2
+        result, _ = run_specs(["subscription=spec.json"], input_spec=spec, raw=json.dumps(value), ack=ACK * 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_runner_refuses_unrecognized_spec_shapes_before_execution(self):
+        for spec in [{}, {"rules": []}, {"rules": [None]},
+                     {"rules": [{"policies": [{"unknown": {}}]}]},
+                     {"rules": [{"policies": [{"reviewed": {"kind": ""}}]}]}]:
+            result, calls = run_specs(["subscription=spec.json"], input_spec=spec)
+            self.assert_failure(result, "input spec")
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

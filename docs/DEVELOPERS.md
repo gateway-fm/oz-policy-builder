@@ -105,6 +105,9 @@ python3 scripts/check-unmodeled-acknowledged.py --run \
 ```
 
 The command runs and checks every declared `label=spec-path` pair; producer failures stop it.
+It reads each input spec to require the complete rule-index set and the exact number of each
+reviewed-policy kind in the evidence. Spec and acknowledgement paths both resolve from the
+caller's working directory; Cargo runs in the repository workspace.
 It reconciles summary fields, coverage counts, and policy gaps against the detailed evidence.
 Each declared rule needs an original permit and a denial control, and every required class
 needs an outcome for that rule. New gaps, stale acknowledgements, or entries naming an

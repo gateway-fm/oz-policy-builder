@@ -83,7 +83,37 @@ def coverage_counts(value: object) -> dict:
     return value
 
 
-def check_report(report: object) -> Counter:
+def spec_requirements(path: Path) -> tuple[set[str], Counter]:
+    """Read only the input shape needed to catch whole-rule or policy omissions.
+
+    The CLI still performs full PolicySpec validation. Unknown policy variants fail
+    here rather than silently disappearing from this gate's reviewed-policy list.
+    """
+    with path.open(encoding="utf-8") as handle:
+        spec = json.load(handle, object_pairs_hook=unique_object)
+    rules = spec.get("rules") if isinstance(spec, dict) else None
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("input spec must contain a nonempty rules array")
+    policies = Counter()
+    for index, rule in enumerate(rules):
+        refs = rule.get("policies") if isinstance(rule, dict) else None
+        if not isinstance(refs, list):
+            raise ValueError("input spec rule must contain a policies array")
+        for ref in refs:
+            if not isinstance(ref, dict) or len(ref) != 1 or next(iter(ref)) not in ("reviewed", "generated"):
+                raise ValueError("input spec contains an unsupported policy variant")
+            variant, details = next(iter(ref.items()))
+            if not isinstance(details, dict):
+                raise ValueError("input spec policy must be an object")
+            if variant == "reviewed":
+                kind = details.get("kind")
+                if not isinstance(kind, str) or not re.fullmatch(r"[^\s|]+", kind):
+                    raise ValueError("input spec reviewed policy has an invalid kind")
+                policies[f"rule[{index}]: {kind}"] += 1
+    return {str(index) for index in range(len(rules))}, policies
+
+
+def check_report(report: object, requirements=None) -> Counter:
     if not isinstance(report, dict):
         raise ValueError("reference-suite output must be a JSON object")
     if report.get("all_agree") is not True:
@@ -109,6 +139,8 @@ def check_report(report: object) -> Counter:
     rules = evidence.get("expected_classes")
     if not isinstance(rules, dict) or not rules:
         raise ValueError("expected_classes must declare a nonempty set of rules")
+    if requirements is not None and set(rules) != requirements[0]:
+        raise ValueError("evidence rule set differs from the input spec")
     for rule, classes in rules.items():
         if not re.fullmatch(r"0|[1-9][0-9]*", rule):
             raise ValueError("expected_classes has an invalid rule index")
@@ -191,12 +223,14 @@ def check_report(report: object) -> Counter:
         computed_unmodeled[f"rule[{rule}]: {kind}"] += 1
     if unmodeled != computed_unmodeled:
         raise ValueError("unmodeled_reviewed_policies contradicts evidence unmodeled_policies")
+    if requirements is not None and computed_unmodeled != requirements[1]:
+        raise ValueError("evidence reviewed-policy counts differ from the input spec")
     return unmodeled
 
 
-def check_acknowledgements(spec: str, rows: list, report: object) -> None:
+def check_acknowledgements(spec: str, rows: list, report: object, requirements=None) -> None:
     acknowledged = Counter(entry for name, entry in rows if name == spec)
-    reported = check_report(report)
+    reported = check_report(report, requirements)
     unacknowledged = sorted((reported - acknowledged).elements())
     stale = sorted((acknowledged - reported).elements())
     if unacknowledged or stale:
@@ -232,11 +266,15 @@ def main() -> int:
             raise ValueError("--run expects <spec-name>=<spec-path> pairs")
         check_names(rows, [name for name, _, _ in specs])
         for name, _, path in specs:
+            # Both the ack file and spec paths resolve from the caller's directory.
+            # Cargo itself runs at the repository root to select the right workspace.
+            path = str(Path(path).resolve())
+            requirements = spec_requirements(Path(path))
             output = subprocess.run(
                 ["cargo", "run", "--locked", "-q", "-p", "ozpb-cli", "--", "reference-suite", "--spec", path],
                 cwd=Path(__file__).resolve().parent.parent, stdout=subprocess.PIPE, text=True, check=True,
             )
-            check_acknowledgements(name, rows, json.loads(output.stdout, object_pairs_hook=unique_object))
+            check_acknowledgements(name, rows, json.loads(output.stdout, object_pairs_hook=unique_object), requirements)
         print(f"All {len(specs)} declared reference suites ran and passed")
         return 0
     if len(sys.argv) != 3:
