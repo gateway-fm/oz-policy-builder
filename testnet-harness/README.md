@@ -53,7 +53,11 @@ the run. The exit status is process bookkeeping, not an acceptance verdict.
 
 On normal shell exit, including a failed step, it writes `evidence.json`: an allowlisted
 summary of recorded addresses, transaction IDs, policy-error codes and available artifact
-digests. A hard kill can leave provenance unfinished; an exporter error keeps the run failed.
+digests. A hard kill can leave provenance unfinished. An exporter error fails the wrapper
+and updates its recorded exit code; an existing failure retains its original code. Successful
+summaries are published by atomic rename so an interrupted write cannot leave partial JSON
+and an output symlink cannot redirect the write. Malformed records, including explicit JSON
+`null`, are refused; only absent files count as missing evidence.
 The summary omits seeds, passkey credential data, local paths, RPC URLs, free-form errors and
 operator trust files. It still reveals public account relationships, so review it before
 sharing. It is never published automatically. Raw run files remain local.

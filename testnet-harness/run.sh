@@ -77,9 +77,8 @@ finish_run() {
     local run_status=$?
     trap - EXIT
     if [ -n "$SECRETS" ]; then rm -rf "$SECRETS" || { [ "$run_status" -ne 0 ] || run_status=1; }; fi
-    node "$SCRIPTS/run-provenance.mjs" finish "$RUN" "$run_status" || { [ "$run_status" -ne 0 ] || run_status=1; }
-    # Export even after refusal or a partial run. A failure stays a failure if reporting fails.
-    node "$SCRIPTS/evidence.mjs" --run-dir "$RUN" > "$RUN/evidence.json" || { [ "$run_status" -ne 0 ] || run_status=1; }
+    # Finalize and export together, keeping provenance consistent with a reporting failure.
+    node "$SCRIPTS/run-provenance.mjs" finalize "$RUN" "$run_status" || { [ "$run_status" -ne 0 ] || run_status=1; }
     exit "$run_status"
 }
 trap finish_run EXIT

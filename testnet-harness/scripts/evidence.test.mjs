@@ -154,6 +154,72 @@ test('CLI suppresses raw parse errors, file paths and partial output', (t) => {
   assert.ok(!result.stderr.includes(dir));
 });
 
+test('JSON null in an existing evidence file is malformed, not missing evidence', (t) => {
+  for (const file of ['run.json', 'provenance.json']) {
+    const dir = setup(t, null);
+    startRun(dir, {});
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+    writeFileSync(join(dir, file), 'null');
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+  }
+});
+
+test('an explicit null invocation list is malformed', (t) => {
+  const run = fixture();
+  run.invocations = null;
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+
+// Run the actual wrapper's EXIT handler without executing its live testnet steps.
+function exitHandler(dir, code = 0) {
+  const script = readFileSync(join(ROOT, 'testnet-harness/run.sh'), 'utf8');
+  const start = script.indexOf('finish_run() {');
+  const end = script.indexOf('trap finish_run EXIT', start) + 'trap finish_run EXIT'.length;
+  assert.ok(start >= 0 && end > start);
+  return spawnSync('bash', ['-c', `set -euo pipefail\n${script.slice(start, end)}\nexit "$HARNESS_TEST_EXIT"\n`], {
+    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: '', HARNESS_TEST_EXIT: String(code) },
+    encoding: 'utf8', timeout: 20000,
+  });
+}
+
+for (const failure of ['invalid record', 'unwritable output']) {
+  test(`actual exit handler records a reporting failure after successful steps: ${failure}`, (t) => {
+    const dir = setup(t, null);
+    startRun(dir, {});
+    writeFileSync(join(dir, 'run.json'), failure === 'invalid record' ? 'invalid-json' : JSON.stringify(fixture()));
+    if (failure === 'unwritable output') mkdirSync(join(dir, 'evidence.json'));
+    const result = exitHandler(dir);
+    assert.equal(result.status, 1, result.stderr);
+    const record = JSON.parse(readFileSync(join(dir, 'provenance.json'), 'utf8'));
+    assert.equal(record.exit_code, 1, 'provenance must not record a successful exit after reporting failed');
+  });
+}
+
+test('actual exit handler keeps an original failure even when reporting also fails', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), 'invalid-json');
+  assert.equal(exitHandler(dir, 42).status, 42);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'provenance.json'), 'utf8')).exit_code, 42);
+});
+
+test('actual exit handler publishes a matching finalized report without following output symlinks', (t) => {
+  const dir = setup(t, null);
+  const outside = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const target = join(outside, 'keep');
+  writeFileSync(target, SENTINEL);
+  symlinkSync(target, join(dir, 'evidence.json'));
+  const result = exitHandler(dir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(target, 'utf8'), SENTINEL);
+  const report = JSON.parse(readFileSync(join(dir, 'evidence.json'), 'utf8'));
+  assert.equal(report.provenance.status, 'exited_zero');
+  const digest = createHash('sha256').update(readFileSync(join(dir, 'provenance.json'))).digest('hex');
+  assert.equal(report.artifacts.provenance.sha256, digest);
+});
+
 test('provenance captures checkout and CLI bytes, then finishes a partial run', (t) => {
   const dir = setup(t, null);
   const binDir = setup(t, null);
