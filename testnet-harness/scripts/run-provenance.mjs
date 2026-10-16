@@ -1,13 +1,25 @@
 // Run bookkeeping only: no keys, endpoint URLs, environment dump, or tool output is saved.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync, constants, fstatSync, ftruncateSync, openSync, readFileSync, readdirSync,
+  realpathSync, statSync, writeFileSync, writeSync,
+} from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FILE = 'provenance.json';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+function withFile(path, flags, maxBytes, action) {
+  const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error('expected a bounded regular file');
+    return action(fd);
+  } finally { closeSync(fd); }
+}
 
 export function startRun(runDir, env = process.env) {
   // A fresh directory prevents old install IDs or outcomes becoming this attempt's evidence.
@@ -21,7 +33,10 @@ export function startRun(runDir, env = process.env) {
       try { return statSync(path).isFile() && (statSync(path).mode & 0o111); } catch { return false; }
     });
     if (!binary) throw new Error('configured CLI is not executable');
-    cli = { mode: 'external', binary_sha256: sha256(readFileSync(binary)) };
+    // An operator-selected executable can be a symlink (as in a package-manager bin dir).
+    // Resolve it explicitly, then hash the same regular-file descriptor we checked.
+    cli = { mode: 'external', binary_sha256: withFile(realpathSync(binary), constants.O_RDONLY,
+      256 * 1024 * 1024, (fd) => sha256(readFileSync(fd))) };
   }
   const record = {
     schema_version: 1,
@@ -40,13 +55,22 @@ export function startRun(runDir, env = process.env) {
 export function finishRun(runDir, exitCode) {
   if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) throw new Error('invalid exit code');
   const path = join(runDir, FILE);
-  const record = JSON.parse(readFileSync(path, 'utf8'));
-  if (record.schema_version !== 1 || record.finished_at !== null || record.exit_code !== null) {
-    throw new Error('run provenance is not an unfinished run');
-  }
-  record.finished_at = new Date().toISOString();
-  record.exit_code = exitCode;
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+  withFile(path, constants.O_RDWR, 64 * 1024, (fd) => {
+    const record = JSON.parse(readFileSync(fd, 'utf8'));
+    if (record.schema_version !== 1 || record.finished_at !== null || record.exit_code !== null) {
+      throw new Error('run provenance is not an unfinished run');
+    }
+    record.finished_at = new Date().toISOString();
+    record.exit_code = exitCode;
+    const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+    let written = 0;
+    while (written < bytes.length) {
+      const count = writeSync(fd, bytes, written, bytes.length - written, written);
+      if (count === 0) throw new Error('provenance write made no progress');
+      written += count;
+    }
+    ftruncateSync(fd, bytes.length);
+  });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

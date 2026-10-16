@@ -1,7 +1,7 @@
 // Export local observations, not a verdict or a cryptographic attestation. Only explicitly
 // selected, typed fields leave the run directory. Raw RPC errors and paths never do.
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,10 +27,16 @@ const timestamp = (v) => {
 };
 
 function readFile(path) {
-  let stat;
-  try { stat = lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-  if (!stat.isFile() || stat.size > MAX_FILE) fail(); // includes symlinks
-  return readFileSync(path);
+  let fd;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  try {
+    // Inspect the opened file, not a pathname that could change before the read. No final
+    // symlink is followed, and a FIFO/device is refused without a blocking open.
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_FILE) fail();
+    return readFileSync(fd);
+  } finally { closeSync(fd); }
 }
 
 function provenance(value) {
