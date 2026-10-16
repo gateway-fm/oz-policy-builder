@@ -133,6 +133,9 @@ async function ttyConfirm() {
 
 if (spec.rules.length !== 1) throw new Error('the harness installs single-rule specs');
 const rule = spec.rules[0];
+if (rule.policies.length !== 1 || rule.policies[0].generated?.kind !== 'gen:scope+count') {
+  throw new Error('the harness installs exactly one generated scope+count policy; composed policies are not supported');
+}
 if (spec.smart_account.address !== run.account) throw new Error('spec is for another account');
 const signers = rule.authorization.signers.map((s) => {
   if (!s.delegated) throw new Error('only Delegated signers are installable here');
@@ -163,6 +166,15 @@ const create = await submit(payer, Operation.createCustomContract({
 const policy = contractIdOf(create.returnValue);
 if ((await contractCodeHash(policy)) !== wasmHash) throw new Error('deployed policy runs other code');
 log(`policy    ${policy}  (tx ${create.hash})`);
+
+// Deployment has already happened even if the wallet later refuses or the operator declines.
+// Save its identifiers before approval, without carrying a previous install into this attempt.
+Object.assign(run, { policy, policy_wasm_hash: wasmHash });
+run.tx = { ...run.tx, upload_policy: upload.hash, create_policy: create.hash };
+delete run.rule_id;
+delete run.tx.add_context_rule;
+delete run.authority_check;
+writeJson(runPath, run);
 
 // --- add_context_rule(context_type, name, valid_until, signers, policies) ------------------------
 const fromSpec = {
@@ -236,10 +248,6 @@ const remaining = await view(policy, 'remaining_calls', [xdr.ScVal.scvU32(ruleId
 if (isInstalled !== true) throw new Error('policy does not report itself installed');
 log(`          policy reports is_installed = ${isInstalled}, remaining_calls = ${remaining}`);
 
-Object.assign(run, {
-  policy,
-  policy_wasm_hash: wasmHash,
-  rule_id: ruleId,
-});
-run.tx = { ...run.tx, upload_policy: upload.hash, create_policy: create.hash, add_context_rule: installed.hash };
+run.rule_id = ruleId;
+run.tx.add_context_rule = installed.hash;
 writeJson(runPath, run);

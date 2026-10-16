@@ -62,6 +62,11 @@ generated crate.
   registry root. This runs on both install paths with the same `OZPB_BIN` (or local Cargo CLI)
   as generation. It catches stale artifacts; it trusts the local generator's manifest rather
   than reproducing the Wasm. Use `ozpb verify` for independent artifact reproduction.
+- The installer accepts exactly one generated scope+count policy. Composed rules, including
+  a reviewed spending limit, are refused before deployment rather than installed incompletely.
+  Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
+  asking the wallet to approve. A refused or declined attempt retains those identifiers;
+  a rule ID and install transaction are recorded only after a successful install.
 - A passkey owner also needs headless Chromium: `run.sh` runs `npm ci` in `browser/` too, and
   `OZPB_BROWSER_CHANNEL=chrome` uses an installed Google Chrome (otherwise run
   `npx playwright install chromium` there once). `OZPB_HARNESS_VERIFIER=C…` reuses an existing

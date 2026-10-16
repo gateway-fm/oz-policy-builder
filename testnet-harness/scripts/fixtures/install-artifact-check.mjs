@@ -17,6 +17,10 @@ try {
   let spec = JSON.parse(readFileSync(new URL('../../native-sac-policy-spec.json', import.meta.url), 'utf8'));
   // Nonzero so the optional authority path can be configured; no registry read is made here.
   spec.registry_snapshot = '1'.repeat(64);
+  if (mode.endsWith('composed')) {
+    const composed = JSON.parse(readFileSync(new URL('../../../docs/examples/subscription-spec.json', import.meta.url), 'utf8'));
+    spec.rules[0].policies.unshift(composed.rules[0].policies.find((policy) => policy.reviewed));
+  }
   const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
   const manifest = {
     wasm_hash: createHash('sha256').update(wasm).digest('hex'), rule_index: 0,
@@ -24,6 +28,7 @@ try {
   };
   const accepts = ['matching', 'canonical-order', 'authority-matching'].includes(mode);
   let expected = /build-manifest\.json/;
+  if (mode.endsWith('composed')) expected = /exactly one generated scope\+count policy/;
   if (mode === 'missing') delete manifest.spec_hash;
   if (mode === 'malformed') manifest.spec_hash = 'not a hash';
   if (mode === 'unrelated') manifest.spec_hash = '0'.repeat(64);

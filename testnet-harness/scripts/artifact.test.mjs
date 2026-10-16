@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 // experimental modules for the other suites. Only RPC and key access are replaced.
 const fixture = fileURLToPath(new URL('./fixtures/install-artifact-check.mjs', import.meta.url));
 for (const mode of ['matching', 'canonical-order', 'missing', 'malformed', 'unrelated', 'amount',
-  'call-cap', 'invalid-spec', 'cli-failure', 'authority-matching', 'authority-amount']) {
+  'call-cap', 'invalid-spec', 'cli-failure', 'authority-matching', 'authority-amount',
+  'composed', 'authority-composed']) {
   test(`installer artifact identity: ${mode}`, () => {
     execFileSync(process.execPath, ['--experimental-vm-modules', fixture, mode], {
       stdio: 'pipe', env: process.env,
