@@ -57,6 +57,11 @@ generated crate.
 - `ozpb` comes from `cargo run -p ozpb-cli`, or from `OZPB_BIN`. `ozpb generate` builds with
   cargo offline in its build cache (`OZPB_BUILD_CACHE_DIR`), so `run.sh` first fetches the golden
   crate's locked dependencies.
+- Before installing, `ozpb reference-suite` validates and canonically hashes the current spec.
+  Its hash must match the adjacent build manifest, alongside the Wasm hash, rule index and
+  registry root. This runs on both install paths with the same `OZPB_BIN` (or local Cargo CLI)
+  as generation. It catches stale artifacts; it trusts the local generator's manifest rather
+  than reproducing the Wasm. Use `ozpb verify` for independent artifact reproduction.
 - A passkey owner also needs headless Chromium: `run.sh` runs `npm ci` in `browser/` too, and
   `OZPB_BROWSER_CHANNEL=chrome` uses an installed Google Chrome (otherwise run
   `npx playwright install chromium` there once). `OZPB_HARNESS_VERIFIER=C…` reuses an existing
@@ -155,7 +160,7 @@ reproduce from our pinned inputs.
 ## Running the parts
 
 ```
-cd testnet-harness/scripts && npm ci && npm test       # offline encoding tests
+cd testnet-harness/scripts && npm ci && npm test       # offline installer and wallet tests
 export OZPB_HARNESS_SECRETS=$(mktemp -d)/keys.json
 node setup.mjs --run-dir R                     # or --owner passkey, after npm ci in ../browser
 node invoke.mjs --run-dir R --signer owner --rule 0 --amount 10000000 --to <recipient> \
@@ -166,6 +171,12 @@ ozpb generate --spec R/spec.json --rule 0 --out R/policy
 node install.mjs --run-dir R --wasm R/policy/<name>.wasm
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect permit
 ```
+
+CI runs both this suite and `npm test` in `testnet-harness/browser`, with locked dependencies
+and pinned Node. The installer tests run the real local CLI (`OZPB_BIN`, or Cargo) but mock
+the RPC and key boundaries; they require the Rust dependencies to be cached for offline use.
+The browser suite tests the passkey modules without launching a browser. Neither suite signs
+or submits a live transaction.
 
 `invoke.mjs --expect deny:<code>` passes only if both of these hold:
 

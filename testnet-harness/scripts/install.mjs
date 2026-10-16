@@ -27,7 +27,7 @@
 // created, plus `--trust`); `--confirm tty` is a terminal prompt and `--confirm operator` is no
 // prompt at all: neither shows that a human approved. It needs an `ozpb` built from the branch
 // that has the check commands (`OZPB_BIN`); README records the testnet runs it has had.
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { closeSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -35,6 +35,7 @@ import { ReadStream } from 'node:tty';
 import { Address, Operation, scValToNative, xdr } from '@stellar/stellar-sdk';
 
 import { approveInstall, signedRuleArgs } from './approve-install.mjs';
+import { checkArtifact } from './artifact.mjs';
 import { cliCheckRunner } from './check-runner.mjs';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { addContextRuleArgs, contractCall, entryAddress, signForSmartAccount } from './lib.mjs';
@@ -53,8 +54,6 @@ const run = readJson(runPath);
 // Read exactly: with --authority-check the spec and manifest are passed on to the check.
 const spec = parseJsonExact(readFileSync(run.spec, 'utf8'));
 const wasm = readFileSync(opts.wasm);
-const payer = loadKey('payer');
-const owner = await ownerSigner(run);
 
 // The authority check, if asked for, is configured before anything is deployed, so a missing
 // setting fails here rather than after the policy is on chain.
@@ -141,13 +140,13 @@ const signers = rule.authorization.signers.map((s) => {
 });
 
 // The wasm must be the one generated from this spec's rule 0. `ozpb generate` writes a
-// BuildManifest beside it; its spec hash is canonical and not recomputed here, but the wasm hash,
-// rule index and registry snapshot are checked so a stray --wasm cannot be installed silently.
-const wasmHash = createHash('sha256').update(wasm).digest('hex');
+// BuildManifest beside it. The CLI validates and canonically hashes the same spec we read above,
+// on both install paths, before loading keys or deploying anything. This trusts the local
+// generator's manifest; independent Wasm reproduction is a separate `ozpb verify` operation.
 const manifest = parseJsonExact(readFileSync(join(dirname(opts.wasm), 'build-manifest.json'), 'utf8'));
-if (manifest.wasm_hash !== wasmHash || manifest.rule_index !== 0 || manifest.registry_snapshot !== spec.registry_snapshot) {
-  throw new Error('the wasm is not the one build-manifest.json beside it records for rule 0 of this spec');
-}
+const wasmHash = await checkArtifact(spec, wasm, manifest);
+const payer = loadKey('payer');
+const owner = await ownerSigner(run);
 await assertTestnet();
 
 // --- deploy the generated artifact ---------------------------------------------------------------

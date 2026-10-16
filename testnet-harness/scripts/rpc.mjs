@@ -21,7 +21,7 @@ export const PINNED_ACCOUNT_WASM = 'a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d5981
  * Pinned here for the harness only; the registry does not recognize it yet. The README says how
  * to reproduce it.
  */
-export const PINNED_WEBAUTHN_VERIFIER_WASM = 'e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76';
+export const PINNED_WEBAUTHN_VERIFIER_WASM = 'e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76'; // gitleaks:allow -- public WebAuthn Wasm SHA-256
 
 /** The native-XLM Stellar Asset Contract: derived, never deployed. */
 export const NATIVE_SAC = Asset.native().contractId(NETWORK_PASSPHRASE);
