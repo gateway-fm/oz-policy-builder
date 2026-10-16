@@ -1,0 +1,96 @@
+{
+  "schema": "policy-spec/v1",
+  "name": "native-sub",
+  "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+  "registry_snapshot": "0000000000000000000000000000000000000000000000000000000000000000",
+  "smart_account": {
+    "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+    "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
+    "registry_resolution": "not resolved: hand-written testnet-harness template, not a synthesis output"
+  },
+  "rules": [
+    {
+      "context": {
+        "type": "CallContract",
+        "contract": "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ",
+        "target_code_hash": null
+      },
+      "valid_until": {
+        "ledger": 4223456,
+        "approx_time": null
+      },
+      "authorization": {
+        "kind": "any_of",
+        "strict_signer_set": true,
+        "signers": [
+          {
+            "delegated": {
+              "address": "GADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOZPI"
+            }
+          }
+        ]
+      },
+      "allowed_calls": [
+        {
+          "fn": "transfer",
+          "args": [
+            {
+              "i": 0,
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "prov": "observed_exact"
+            },
+            {
+              "i": 1,
+              "c": {
+                "eq_address": {
+                  "value": "GABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQHGPC"
+                }
+              },
+              "prov": "observed_exact"
+            },
+            {
+              "i": 2,
+              "c": {
+                "eq_i128": {
+                  "value": "10000000"
+                }
+              },
+              "prov": "observed_exact"
+            }
+          ],
+          "justified_by": [
+            "recordings[0]/auth[0]/root"
+          ]
+        }
+      ],
+      "policies": [
+        {
+          "generated": {
+            "kind": "gen:scope+count",
+            "template_family": "policy-templates/scope@1",
+            "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61"
+          }
+        }
+      ],
+      "state": [
+        {
+          "call_count_per_installation": {
+            "max_calls": 1
+          }
+        }
+      ]
+    }
+  ],
+  "evidence": {
+    "recordings": [
+      {
+        "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "trust": "incomplete"
+      }
+    ]
+  }
+}
