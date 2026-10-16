@@ -123,6 +123,19 @@ impl PolicyBuilderServer {
     }
 }
 
+/// Construct hosted resources once, then clone them into each rmcp session. Creating a new
+/// server inside the closure would give every client its own authority-work budget.
+fn http_session_factory(
+    registry_trust: Option<ozpb_toolkit::RegistryTrust>,
+    rpc_policy: RpcEndpointPolicy,
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
+    build_config: ozpb_toolkit::BuildConfig,
+) -> impl Fn() -> Result<PolicyBuilderServer, std::io::Error> {
+    let server =
+        PolicyBuilderServer::new(registry_trust, Some(rpc_policy), rpc_sources, build_config);
+    move || Ok(server.clone())
+}
+
 /// Map a toolkit ToolError into an rmcp tool-execution error carrying the structured
 /// payload (stable code + message + details) as JSON data — the agent-recoverable
 /// channel (§4.6).
@@ -566,14 +579,7 @@ async fn serve_http(
 
     let ct = tokio_util::sync::CancellationToken::new();
     let service = StreamableHttpService::new(
-        move || {
-            Ok(PolicyBuilderServer::new(
-                registry_trust.clone(),
-                Some(rpc_policy.clone()),
-                rpc_sources.clone(),
-                build_config.clone(),
-            ))
-        },
+        http_session_factory(registry_trust, rpc_policy, rpc_sources, build_config),
         LocalSessionManager::default().into(),
         Default::default(),
     );
@@ -610,6 +616,34 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_sessions_share_authority_capacity_until_work_releases_it() {
+        let factory = http_session_factory(
+            None,
+            RpcEndpointPolicy::from_csv("https://rpc.example").unwrap(),
+            Default::default(),
+            ozpb_toolkit::BuildConfig::default(),
+        );
+        let first = factory().unwrap();
+        let second = factory().unwrap();
+        let running_work = first
+            .authority_slots
+            .as_ref()
+            .unwrap()
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        // Disconnecting the first session must not free capacity still held by its work.
+        drop(first);
+        let slots = second.authority_slots.as_ref().unwrap();
+        assert!(matches!(
+            slots.try_acquire(),
+            Err(tokio::sync::TryAcquireError::NoPermits)
+        ));
+        drop(running_work);
+        assert!(slots.try_acquire().is_ok());
+    }
 
     #[test]
     fn loopback_bind_is_required() {
