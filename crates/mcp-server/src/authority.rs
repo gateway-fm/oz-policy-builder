@@ -206,3 +206,74 @@ async fn finish<T: Send + 'static>(
         .map_err(internal_tool_err)?
         .map_err(tool_err)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    #[test]
+    fn endpoint_controlled_errors_are_redacted_before_mcp_serialization() {
+        const SECRET: &str = "operator-endpoint-token";
+        for (response, expected_code) in [
+            (
+                serde_json::json!({"jsonrpc":"2.0", "id":1,
+                "error":{"code":-32000, "message":SECRET, "data":{"url":SECRET}}}),
+                ErrorCode::ERpc,
+            ),
+            (
+                serde_json::json!({"jsonrpc":"2.0", "id":SECRET, "result":{}}),
+                ErrorCode::ERpc,
+            ),
+            (
+                serde_json::json!({"jsonrpc":"2.0", "id":1,
+                "result":{"passphrase":SECRET, "protocolVersion":29}}),
+                ErrorCode::ENetworkMismatch,
+            ),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                drop(reader);
+                let body = response.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            });
+            let raw = scan_authority_state(
+                &HttpTransport::new(endpoint),
+                ozpb_domain::TESTNET_PASSPHRASE,
+                "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+                &[],
+                &[],
+                Default::default(),
+            )
+            .unwrap_err();
+            server.join().unwrap();
+            assert!(
+                raw.to_string().contains(SECRET),
+                "fixture did not exercise endpoint text: {raw}"
+            );
+            let error = ozpb_toolkit::scan_tool_error(&raw);
+            assert_eq!(error.code, expected_code);
+            let wire = serde_json::to_string(&tool_err(error)).unwrap();
+            assert!(!wire.contains(SECRET), "{wire}");
+            assert!(wire.contains("endpoint detail withheld"));
+        }
+    }
+}

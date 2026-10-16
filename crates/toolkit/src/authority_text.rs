@@ -105,7 +105,8 @@ pub fn render_authority_text(output: &CheckPolicyCallSurfaceOutput) -> String {
     if verdict.authority_list.is_empty() {
         line(
             &mut text,
-            "  • no live rule on these surfaces (nobody could even install this rule)".to_string(),
+            "  • no resolved authority entries; this does not establish that no live rule can act"
+                .to_string(),
         );
     }
     for entry in &verdict.authority_list {
@@ -437,6 +438,26 @@ mod tests {
             assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
         }
         assert!(!text.contains("REFUSED"));
+    }
+
+    #[test]
+    fn an_empty_authority_list_does_not_claim_that_nobody_can_act() {
+        for unresolved in [false, true] {
+            let mut answer = output(true);
+            answer.verdict.authority_list.clear();
+            if unresolved {
+                answer.verdict.unresolved = std::mem::take(&mut answer.verdict.refusals);
+            }
+            let text = render_authority_text(&answer);
+            assert!(text.contains("no resolved authority entries"));
+            assert!(!text.contains("no live rule on these surfaces"));
+            assert!(!text.contains("nobody could even install"));
+            assert!(text.contains(if unresolved {
+                "NOT ANSWERED"
+            } else {
+                "REFUSED"
+            }));
+        }
     }
 
     #[test]

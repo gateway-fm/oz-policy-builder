@@ -3,9 +3,9 @@
 //! A shell calls [`plan_call_surface_read`] to learn exactly what to read and within which
 //! signed bounds, reads it through an operator-configured endpoint with
 //! `ozpb_source_rpc::scan_authority_state`, and hands the scan to
-//! [`finish_call_surface_check`]. Both halves verify the request against the same signed
-//! registry under the same pinned trust, and the second re-derives everything the first
-//! decided, so a shell cannot read one thing and check another.
+//! [`finish_call_surface_check`]. Planning verifies the request and bindings under the pinned
+//! registry trust. Finishing rechecks that snapshot's validity at the current trusted time
+//! and binds the observation to the prepared request, without rebuilding its policies.
 //!
 //! The result is advisory wherever it is delivered: the wallet that holds the owner key
 //! recomputes it against its own endpoint and decides (Decision D7).
@@ -111,6 +111,25 @@ pub fn finish_call_surface_check(
     source_name: &str,
     scan: &AccountStateScan,
 ) -> Result<CheckPolicyCallSurfaceOutput, ToolError> {
+    finish_call_surface_check_at(plan, source_name, scan, std::time::SystemTime::now())
+}
+
+fn finish_call_surface_check_at(
+    plan: &CallSurfaceReadPlan,
+    source_name: &str,
+    scan: &AccountStateScan,
+    now: std::time::SystemTime,
+) -> Result<CheckPolicyCallSurfaceOutput, ToolError> {
+    let now_unix = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| ToolError::new(EC::EInternal, format!("invalid trusted time: {error}")))?
+        .as_secs()
+        .try_into()
+        .map_err(|_| ToolError::new(EC::EInternal, "trusted time exceeds i64"))?;
+    plan.prepared
+        .registry
+        .ensure_valid_at(now_unix)
+        .map_err(map_registry_err)?;
     let incomplete = |message: &str| ToolError::new(EC::EIncompleteAccountState, message);
     if scan.account_address != plan.account_address || scan.network_id.0.to_hex() != plan.network_id
     {
@@ -268,8 +287,9 @@ pub fn resolve_rpc_source<'a>(
     Ok(source)
 }
 
-/// A failed scan as a stable tool error. A transport failure's text can carry the endpoint
-/// URL, and an operator's URL often embeds an API key, so it is withheld.
+/// A failed scan as a stable tool error. Endpoint-controlled strings can echo the operator's
+/// URL or credentials, including JSON-RPC errors, response IDs and reported network names.
+/// Preserve the error category, but expose only static descriptions and numeric diagnostics.
 pub fn scan_tool_error(error: &ozpb_source_rpc::AccountScanError) -> ToolError {
     let code = match error.code() {
         "E_SCAN_BUDGET_EXCEEDED" => EC::EScanBudgetExceeded,
@@ -282,7 +302,21 @@ pub fn scan_tool_error(error: &ozpb_source_rpc::AccountScanError) -> ToolError {
             "E_RPC: the configured RPC source could not be reached (endpoint detail withheld)"
                 .to_string()
         }
-        other => other.to_string(),
+        ozpb_source_rpc::AccountScanError::Rpc(ozpb_source_rpc::RpcError::NetworkMismatch { .. }) =>
+            "E_NETWORK_MISMATCH: the configured RPC source reports a different network (endpoint detail withheld)".to_string(),
+        ozpb_source_rpc::AccountScanError::Rpc(ozpb_source_rpc::RpcError::UnsupportedProtocol { reported, supported }) =>
+            format!("E_RPC: unsupported protocol {reported}; this build supports at most {supported}"),
+        ozpb_source_rpc::AccountScanError::Rpc(_) =>
+            "E_RPC: the configured RPC source could not provide a valid response (endpoint detail withheld)".to_string(),
+        ozpb_source_rpc::AccountScanError::Incomplete(_) =>
+            "E_INCOMPLETE_ACCOUNT_STATE: the account scan is incomplete (endpoint detail withheld)".to_string(),
+        ozpb_source_rpc::AccountScanError::Archived(_) =>
+            "E_INCOMPLETE_ACCOUNT_STATE: the scan returned archived state (endpoint detail withheld)".to_string(),
+        ozpb_source_rpc::AccountScanError::Undecodable(_) =>
+            "E_INCOMPLETE_ACCOUNT_STATE: the account state could not be decoded (endpoint detail withheld)".to_string(),
+        ozpb_source_rpc::AccountScanError::InvalidBounds(_)
+        | ozpb_source_rpc::AccountScanError::Budget(_)
+        | ozpb_source_rpc::AccountScanError::SnapshotChanged => error.to_string(),
     };
     ToolError::new(code, message)
 }
@@ -321,12 +355,18 @@ pub(crate) mod tests {
     /// A request against the version-3 signed example (which binds the account's scan bounds
     /// and recognizes the owner verifiers), and a scan of an account owned by one classic key.
     pub(crate) fn fixture() -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
+        fixture_with_expiry(i64::MAX)
+    }
+
+    fn fixture_with_expiry(expires_at: i64) -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
         let network = NetworkId::from_passphrase(TESTNET_PASSPHRASE);
-        let signed = ozpb_registry::sign_snapshot(
-            &ozpb_registry::dev::dev_signing_key(),
-            ozpb_registry::dev::verifier_successor(network).unwrap(),
-        )
-        .unwrap();
+        let mut snapshot = ozpb_registry::dev::verifier_successor(network).unwrap();
+        if expires_at != i64::MAX {
+            snapshot.valid_from_unix = 1;
+        }
+        snapshot.expires_at_unix = expires_at;
+        let signed =
+            ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
         let mut spec = wire_spec().spec().clone();
         spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
         let spec = spec.validate().unwrap();
@@ -427,6 +467,34 @@ pub(crate) mod tests {
             },
             scan,
         )
+    }
+
+    #[test]
+    fn a_snapshot_that_expires_after_planning_cannot_produce_an_answer() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let (input, scan) = fixture_with_expiry(expires_at as i64);
+        let plan = plan_call_surface_read(&input, &registry_trust(), &build_config()).unwrap();
+        let at_expiry = UNIX_EPOCH + Duration::from_secs(expires_at);
+        let valid = finish_call_surface_check_at(&plan, "testnet", &scan, at_expiry).unwrap();
+        assert!(valid.verdict.refusals.is_empty());
+        assert!(crate::prepare_install_intent_from_scan(&plan, "testnet", &scan).is_ok());
+        let expired = finish_call_surface_check_at(
+            &plan,
+            "testnet",
+            &scan,
+            at_expiry + Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(expired.code, EC::ERegistryExpired);
+        assert!(expired.message.contains("E_REGISTRY_EXPIRED"));
+        let premature =
+            finish_call_surface_check_at(&plan, "testnet", &scan, UNIX_EPOCH).unwrap_err();
+        assert_eq!(premature.code, EC::ERegistryExpired);
     }
 
     #[test]

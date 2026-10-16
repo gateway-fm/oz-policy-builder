@@ -338,7 +338,7 @@ pub enum RegistryError {
 /// supplied *then*; the `resolve_*` methods take no time and do not re-check `expires_at_unix`.
 /// A `Registry` is therefore a snapshot verified as of its load time: a long-lived instance
 /// will keep resolving capabilities after the snapshot expires, so a caller that caches one
-/// across time must reload before `expires_at_unix` and fail closed if it cannot. The Phase 1
+/// across time must recheck with `ensure_valid_at` and reload if it has expired. The Phase 1
 /// toolkit sidesteps this by constructing and loading a fresh registry per synthesis call.
 pub struct Registry {
     root_keys: BTreeMap<String, VerifyingKey>,
@@ -352,6 +352,31 @@ pub struct Registry {
 struct Loaded {
     snapshot: RegistrySnapshot,
     root: Hash32,
+}
+
+fn check_snapshot_validity(
+    snapshot: &RegistrySnapshot,
+    now_unix: i64,
+) -> Result<(), RegistryError> {
+    if snapshot.valid_from_unix > snapshot.expires_at_unix {
+        return Err(RegistryError::Validity {
+            valid_from: snapshot.valid_from_unix,
+            expires_at: snapshot.expires_at_unix,
+        });
+    }
+    if now_unix < snapshot.valid_from_unix {
+        return Err(RegistryError::NotYetValid {
+            valid_from: snapshot.valid_from_unix,
+            now: now_unix,
+        });
+    }
+    if now_unix > snapshot.expires_at_unix {
+        return Err(RegistryError::Expired {
+            expires_at: snapshot.expires_at_unix,
+            now: now_unix,
+        });
+    }
+    Ok(())
 }
 
 impl Registry {
@@ -567,24 +592,7 @@ impl Registry {
                 });
             }
         }
-        if signed.snapshot.valid_from_unix > signed.snapshot.expires_at_unix {
-            return Err(RegistryError::Validity {
-                valid_from: signed.snapshot.valid_from_unix,
-                expires_at: signed.snapshot.expires_at_unix,
-            });
-        }
-        if now_unix < signed.snapshot.valid_from_unix {
-            return Err(RegistryError::NotYetValid {
-                valid_from: signed.snapshot.valid_from_unix,
-                now: now_unix,
-            });
-        }
-        if now_unix > signed.snapshot.expires_at_unix {
-            return Err(RegistryError::Expired {
-                expires_at: signed.snapshot.expires_at_unix,
-                now: now_unix,
-            });
-        }
+        check_snapshot_validity(&signed.snapshot, now_unix)?;
         validate_capability_keys(&signed.snapshot)?;
         for (capability, revocation) in &signed.snapshot.revocations {
             if revocation.reason.trim().is_empty() {
@@ -699,6 +707,13 @@ impl Registry {
         let signed: SignedSnapshot =
             serde_json::from_str(json).map_err(|e| RegistryError::Parse(e.to_string()))?;
         self.load_at(&signed, now_unix)
+    }
+
+    /// Recheck the loaded, signature-verified snapshot's interval at a trusted current time.
+    /// This neither reloads capabilities nor changes the version/checkpoint state. Cached
+    /// consumers must call it before relying on capabilities after long-running work.
+    pub fn ensure_valid_at(&self, now_unix: i64) -> Result<(), RegistryError> {
+        check_snapshot_validity(&self.loaded()?.snapshot, now_unix)
     }
 
     pub fn root(&self) -> Result<Hash32, RegistryError> {
@@ -2027,6 +2042,16 @@ mod tests {
         ));
         let mut active = Registry::with_pinned_root_for_network(&root, network()).unwrap();
         active.load_at(&signed, 100).unwrap();
+        assert!(active.ensure_valid_at(100).is_ok());
+        assert!(active.ensure_valid_at(200).is_ok());
+        assert!(matches!(
+            active.ensure_valid_at(99),
+            Err(RegistryError::NotYetValid { .. })
+        ));
+        assert!(matches!(
+            active.ensure_valid_at(201),
+            Err(RegistryError::Expired { .. })
+        ));
         let mut expired = Registry::with_pinned_root_for_network(&root, network()).unwrap();
         assert!(matches!(
             expired.load_at(&signed, 201),
