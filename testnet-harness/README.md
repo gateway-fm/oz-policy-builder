@@ -44,6 +44,33 @@ Every address, transaction hash and outcome goes into `runs/<timestamp>-<pid>/ru
 is gitignored. The run directory also holds the import bundle, the recording, the spec and the
 generated crate.
 
+`run.sh` requires an empty output directory. It records the checkout commit, dirty state,
+Node version, and start/end timestamps in `provenance.json`. With `OZPB_BIN`, it hashes the
+selected executable's bytes; that hash does not prove the binary was built from the checkout.
+Cargo mode records the checkout and explicitly leaves the executable hash unavailable.
+These observations describe startup, not changes made to the checkout or executable during
+the run. The exit status is process bookkeeping, not an acceptance verdict.
+
+On normal shell exit, including a failed step, it writes `evidence.json`: an allowlisted
+summary of recorded addresses, transaction IDs, policy-error codes and available artifact
+digests. A hard kill can leave provenance unfinished; an exporter error keeps the run failed.
+The summary omits seeds, passkey credential data, local paths, RPC URLs, free-form errors and
+operator trust files. It still reveals public account relationships, so review it before
+sharing. It is never published automatically. Raw run files remain local.
+
+To regenerate the summary for a saved run (including an older run without provenance):
+
+```bash
+node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run > /path/to/run/evidence.json
+```
+
+Old runs say provenance is unavailable. A missing install record means installation was not
+recorded, not that nothing was submitted. Permits carry submitted transaction hashes; denials
+are labeled enforcing simulations and have no transaction hash. Artifact digests cover exact
+file bytes, including whitespace in JSON; they are not the canonical spec hash or independent
+Wasm reproduction. Local records can be edited, and neither a zero exit nor this summary
+establishes authenticated ledger state or completion of the milestone.
+
 ## Prerequisites
 
 - Node ≥ 22.12 (required by `@stellar/stellar-sdk` 17), `stellar` CLI 27.0.0, and the Rust

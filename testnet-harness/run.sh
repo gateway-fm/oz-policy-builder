@@ -69,8 +69,21 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN="${OZPB_HARNESS_OUT:-$HARNESS/runs/$RUN_ID}"
 mkdir -p "$RUN"
 RUN="$(cd "$RUN" && pwd)"
+# Capture checkout/CLI identity before any live operation. Existing nonempty directories are
+# refused so a failed attempt cannot inherit successful installation evidence from an old run.
+node "$SCRIPTS/run-provenance.mjs" start "$RUN"
+SECRETS=''
+finish_run() {
+    local run_status=$?
+    trap - EXIT
+    if [ -n "$SECRETS" ]; then rm -rf "$SECRETS" || { [ "$run_status" -ne 0 ] || run_status=1; }; fi
+    node "$SCRIPTS/run-provenance.mjs" finish "$RUN" "$run_status" || { [ "$run_status" -ne 0 ] || run_status=1; }
+    # Export even after refusal or a partial run. A failure stays a failure if reporting fails.
+    node "$SCRIPTS/evidence.mjs" --run-dir "$RUN" > "$RUN/evidence.json" || { [ "$run_status" -ne 0 ] || run_status=1; }
+    exit "$run_status"
+}
+trap finish_run EXIT
 SECRETS="$(mktemp -d)"
-trap 'rm -rf "$SECRETS"' EXIT
 export OZPB_HARNESS_SECRETS="$SECRETS/keys.json"
 
 # Always, so node_modules is exactly the lockfile rather than whatever an earlier install left.
@@ -124,3 +137,4 @@ say "done"
 echo "  account  https://stellar.expert/explorer/testnet/contract/$(field account)  (owner: $OWNER)"
 echo "  policy   https://stellar.expert/explorer/testnet/contract/$(field policy)"
 echo "  run      $RUN/run.json"
+echo "  evidence $RUN/evidence.json (written on exit)"
