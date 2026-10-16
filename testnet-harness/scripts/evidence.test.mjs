@@ -194,6 +194,37 @@ test('starting a run refuses old evidence and missing external CLI without repla
   assert.ok(!existsSync(join(empty, 'provenance.json')));
 });
 
+test('provenance finalization refuses a replaced symlink without modifying its target', (t) => {
+  const dir = setup(t, null);
+  const outside = setup(t, null);
+  startRun(dir, {});
+  const original = readFileSync(join(dir, 'provenance.json'));
+  const target = join(outside, 'provenance.json');
+  writeFileSync(target, original);
+  rmSync(join(dir, 'provenance.json'));
+  symlinkSync(target, join(dir, 'provenance.json'));
+  assert.throws(() => finishRun(dir, 0));
+  assert.deepEqual(readFileSync(target), original);
+});
+
+test('an operator-selected CLI symlink hashes the executable it resolves to', (t) => {
+  const dir = setup(t, null);
+  const binDir = setup(t, null);
+  const binary = join(binDir, 'binary');
+  writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  symlinkSync(binary, join(binDir, 'ozpb'));
+  const record = startRun(dir, { OZPB_BIN: 'ozpb', PATH: binDir });
+  assert.equal(record.cli.binary_sha256, createHash('sha256').update(readFileSync(binary)).digest('hex'));
+});
+
+test('a FIFO at an artifact path is refused promptly instead of blocking the exporter', (t) => {
+  const dir = setup(t);
+  execFileSync('mkfifo', [join(dir, 'spec.json')]);
+  const result = spawnSync(process.execPath, [SCRIPT, '--run-dir', dir], { encoding: 'utf8', timeout: 3000 });
+  assert.equal(result.status, 1, result.error?.message);
+  assert.equal(result.stdout, '');
+});
+
 test('real run.sh retains its nonzero exit and exports partial evidence before any network operation', (t) => {
   const dir = setup(t, null);
   const binDir = setup(t, null);
