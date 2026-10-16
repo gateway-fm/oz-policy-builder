@@ -1163,7 +1163,8 @@ that contains logic is a code smell here. `Parameters<T>` / `Json<T>` take their
 the core consumes: schema and implementation cannot drift. Annotations are set per §4.6;
 the handler struct is transport-agnostic (`serve(stdio())` and `StreamableHttpService` wrap
 the same handler); hosted auth, rate limits, and quotas are tower layers around the HTTP
-service, never code inside tools. Tools hold no per-session state by design, so the bundled
+service, never code inside tools. The bound on concurrent builds is the build runner's own,
+because a build outlives the HTTP exchange that started it. Tools hold no per-session state by design, so the bundled
 `LocalSessionManager` suffices and horizontal scaling needs no sticky sessions.
 
 **Contract specifics.** Templates are ordinary `#![no_std]` contract crates pinned

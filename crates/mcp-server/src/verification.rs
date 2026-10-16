@@ -53,3 +53,30 @@ impl PolicyBuilderServer {
         Ok(Json(out))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::{hosted, refusal_code, subscription_spec};
+
+    #[tokio::test]
+    async fn hosted_verify_is_busy_while_every_build_slot_is_taken() {
+        let server = hosted();
+        let slots = server
+            .build_config
+            .slots
+            .clone()
+            .expect("hosted build slots");
+        let _running = slots.try_take().expect("the free slot");
+        let result = server
+            .verify(Parameters(VerifyInput {
+                spec: subscription_spec(),
+                rule_index: 0,
+                claimed_generated_files: Default::default(),
+                claimed_wasm_base64: None,
+                claimed_build_manifest: None,
+            }))
+            .await;
+        assert_eq!(refusal_code(result), "E_BUILD_BUSY");
+    }
+}
