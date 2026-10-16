@@ -1,14 +1,13 @@
-//! Pure authority-surface checks over observations acquired by a trusted reader.
+//! Pure authority checks over observations acquired by a trusted reader.
 //!
-//! This module does not acquire ledger state. In particular, a client request cannot choose
-//! the designated administrator, code hashes, or the account-rule snapshot. The future RPC
-//! reader must establish one coherent ledger, complete rule enumeration and transitive storage
-//! closure, and the observed code at every bound address before calling this function.
+//! This module does not acquire ledger state. In particular, a client request cannot supply
+//! code hashes, the account-rule snapshot, or anything about who owns the account: the
+//! authority list is derived from the observation (Decision D7). The RPC reader must
+//! establish one ledger, complete rule enumeration and transitive storage closure, and the
+//! observed code at every bound address before calling this function.
 //!
 //! The result is a check over supplied observations, not the public
-//! `CheckPolicyCallSurfaceOutput`: that wire artifact additionally promises full protected-
-//! method and enumeration evidence. The current account registry does not yet carry a complete
-//! exported management-method inventory, so emitting that artifact here would overclaim.
+//! `CheckPolicyCallSurfaceOutput`, which the live operation builds from it.
 
 use super::{
     from_value, generate_code_with_build_config, map_registry_err, parse_hash, spec_error,
@@ -19,11 +18,14 @@ use ozpb_api_types::{
     PolicyRecognition, ToolError, POLICY_BINDING_SET_SCHEMA,
 };
 use ozpb_call_surface_core::{
-    AccountState, BoundPolicy, CheckError, CheckInput, Enumeration, PolicyRecognitionPath,
-    SurfaceVerdict, VerifiedPolicy,
+    AccountState, BoundPolicy, CheckError, CheckInput, ClassicAccount, Enumeration, Grant,
+    GrantPolicy, GrantPolicyParams, KeyScheme, PolicyRecognitionPath, PolicySignerSemantics,
+    StoredSignerKey, SurfaceVerdict, VerifiedPolicy, VerifierObservation,
 };
 use ozpb_domain::{domains, Hash32};
-use ozpb_policy_spec::{PolicyRef, PolicySpec, ValidatedSpec};
+use ozpb_policy_spec::{
+    PolicyRef, PolicySpec, ReviewedParams, RuleSpec, SignerSpec, ValidatedSpec,
+};
 use ozpb_registry::{
     Registry, SignedSnapshot, MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE,
 };
@@ -39,8 +41,11 @@ pub struct CallSurfaceObservation {
     pub account_code_hash: String,
     pub account_state: AccountState,
     pub bound_policies: Vec<BoundPolicy>,
-    /// Identified from the recognized account's release-specific management evidence.
-    pub admin_rule_id: u32,
+    /// Classic accounts read with the account: at least every `Delegated(G…)` signer of a
+    /// rule that can change the account, reach a bound policy or call the target.
+    pub classic_accounts: BTreeMap<String, ClassicAccount>,
+    /// Code observed at every contract verifier an external signer names, same ledger.
+    pub verifier_code_hashes: BTreeMap<String, String>,
 }
 
 /// Validated identities and the conservative address-level core verdict over a supplied
@@ -50,13 +55,13 @@ pub struct ObservedCallSurfaceCheck {
     pub spec_hash: Hash32,
     pub binding_set_hash: Hash32,
     pub registry_snapshot_root: Hash32,
-    /// `Safe` covers the core's address-level model for this supplied observation only.
-    /// It is not a complete live installation verdict or a substitute for method evidence.
+    /// The authority list and findings for this supplied observation only. Never a safety
+    /// verdict: the wallet holding the owner key confirms the list (Decision D7).
     pub verdict: SurfaceVerdict,
 }
 
 /// Check exact policy bindings against the signed registry, reproduced generated artifacts,
-/// and a supplied same-ledger observation, then run the conservative two-surface core.
+/// and a supplied same-ledger observation, then derive who can change the account.
 ///
 /// The caller must authenticate and reconcile the observation. This function checks its
 /// consistency with the spec and bindings; it cannot prove where its ledger entries came from.
@@ -66,6 +71,29 @@ pub fn check_observed_call_surface_with_build_config(
     registry_trust: &RegistryTrust,
     build_config: &ozpb_build_runner::BuildConfig,
 ) -> Result<ObservedCallSurfaceCheck, ToolError> {
+    let prepared = prepare_call_surface_check(input, registry_trust, build_config)?;
+    check_prepared(input, &prepared, observation)
+}
+
+/// Everything about a request that does not depend on the ledger read: the validated spec,
+/// the signed registry loaded under the pinned trust, the account capability, the bindings
+/// recognized (generated ones rebuilt, once) and the grant. A live check prepares this before
+/// it reads anything, so a request that cannot be answered costs no read and no build after it.
+pub(crate) struct PreparedCallSurfaceCheck {
+    pub(crate) spec: ValidatedSpec,
+    pub(crate) registry: Registry,
+    pub(crate) loaded_root: Hash32,
+    enumeration: Enumeration,
+    binding_set_hash: Hash32,
+    bound_recognition: BTreeMap<String, VerifiedPolicy>,
+    pub(crate) grant: Grant,
+}
+
+pub(crate) fn prepare_call_surface_check(
+    input: &CheckPolicyCallSurfaceInput,
+    registry_trust: &RegistryTrust,
+    build_config: &ozpb_build_runner::BuildConfig,
+) -> Result<PreparedCallSurfaceCheck, ToolError> {
     let spec: PolicySpec = from_value(&input.spec)?;
     let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
     if input.account_address != validated.spec().smart_account.address {
@@ -76,6 +104,58 @@ pub fn check_observed_call_surface_with_build_config(
     if input.network_id != validated.spec().network_id.0.to_hex() {
         return Err(binding_error("network ID does not match the PolicySpec"));
     }
+    if input.rule_index >= validated.spec().rules.len() {
+        return Err(ToolError::new(
+            EC::ESpecInvalid,
+            "rule_index is out of range",
+        ));
+    }
+    let signed: SignedSnapshot = serde_json::from_value(input.signed_registry_snapshot.clone())
+        .map_err(|error| {
+            ToolError::new(
+                EC::ERegistrySignature,
+                format!("malformed signed registry snapshot: {error}"),
+            )
+        })?;
+    let mut registry = registry_for(registry_trust, validated.spec().network_id)?;
+    let loaded_root = registry.load(&signed).map_err(map_registry_err)?;
+    if loaded_root != validated.spec().registry_snapshot {
+        return Err(binding_error(
+            "signed registry root does not match the PolicySpec registry snapshot",
+        ));
+    }
+    let account = registry
+        .resolve_account(&validated.spec().smart_account.observed_code_hash)
+        .map_err(map_registry_err)?;
+    if account.management_evidence != MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE {
+        return Err(ToolError::new(
+            EC::EIncompatibleAccount,
+            "account management-rule evidence strategy is not supported by this checker",
+        ));
+    }
+    let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
+    let (binding_set_hash, bound_recognition) =
+        validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
+    let grant = grant_for(&validated, input.rule_index, &input.binding_set)?;
+    Ok(PreparedCallSurfaceCheck {
+        spec: validated,
+        registry,
+        loaded_root,
+        enumeration,
+        binding_set_hash,
+        bound_recognition,
+        grant,
+    })
+}
+
+/// Run the core over one observation for a prepared request.
+pub(crate) fn check_prepared(
+    input: &CheckPolicyCallSurfaceInput,
+    prepared: &PreparedCallSurfaceCheck,
+    observation: &CallSurfaceObservation,
+) -> Result<ObservedCallSurfaceCheck, ToolError> {
+    let validated = &prepared.spec;
+    let registry = &prepared.registry;
     if observation.network_id != input.network_id
         || observation.account_address != input.account_address
     {
@@ -96,40 +176,17 @@ pub fn check_observed_call_surface_with_build_config(
             "trusted observation account code hash does not match the PolicySpec",
         ));
     }
-
-    let signed: SignedSnapshot = serde_json::from_value(input.signed_registry_snapshot.clone())
-        .map_err(|error| {
-            ToolError::new(
-                EC::ERegistrySignature,
-                format!("malformed signed registry snapshot: {error}"),
-            )
-        })?;
-    let mut registry = registry_for(registry_trust, validated.spec().network_id)?;
-    let loaded_root = registry.load(&signed).map_err(map_registry_err)?;
-    if loaded_root != validated.spec().registry_snapshot {
-        return Err(binding_error(
-            "signed registry root does not match the PolicySpec registry snapshot",
-        ));
-    }
-    let account = registry
-        .resolve_account(&observed_account_hash)
-        .map_err(map_registry_err)?;
-    if account.management_evidence != MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE {
-        return Err(ToolError::new(
-            EC::EIncompatibleAccount,
-            "account management-rule evidence strategy is not supported by this checker",
-        ));
-    }
     if observation.observed_ledger == 0 {
         return Err(ToolError::new(
             EC::EIncompleteAccountState,
             "trusted observation has no ledger anchor",
         ));
     }
-    let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
-
-    let (binding_set_hash, mut recognized_policies) =
-        validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
+    let binding_set_hash = prepared.binding_set_hash;
+    let mut recognized_policies = prepared.bound_recognition.clone();
+    let grant = prepared.grant.clone();
+    let loaded_root = prepared.loaded_root;
+    let enumeration = prepared.enumeration;
     let observed_by_address: BTreeMap<&str, &str> = observation
         .bound_policies
         .iter()
@@ -179,11 +236,9 @@ pub fn check_observed_call_surface_with_build_config(
         record_observed_code(&mut code_by_address, &policy.address, hash)?;
     }
 
-    // A policy already installed in another rule is recognized only if its *observed*
-    // implementation resolves in the signed registry. Address-only recognition would let an
-    // upgrade at that address pass. Generated policies outside the binding set need their own
-    // reproduced manifest and are therefore deliberately left unrecognized here. The core
-    // still refuses policy-bearing admin rules: code recognition is not signer proof.
+    // A policy installed on any rule is readable only if its *observed* implementation
+    // resolves in the signed registry with established signer semantics. Address-only
+    // recognition would let an upgrade at that address pass.
     for policy in observation.account_state.policies.values() {
         if recognized_policies.contains_key(&policy.address) {
             continue;
@@ -191,15 +246,44 @@ pub fn check_observed_call_surface_with_build_config(
         let Ok(hash) = Hash32::from_hex(&policy.observed_wasm_hash) else {
             continue;
         };
-        if registry.resolve_policy(&hash).is_ok() {
+        if let Ok(entry) = registry.resolve_policy(&hash) {
             recognized_policies.insert(
                 policy.address.clone(),
                 VerifiedPolicy {
                     wasm_hash: hash.to_hex(),
                     path: PolicyRecognitionPath::ReviewedRegistry,
+                    signers: signer_semantics(&entry.kind),
                 },
             );
         }
+    }
+
+    // A verifier vouches for an owner identity only through its observed code: reviewed,
+    // immutable, stateless, with the scheme its reviewed source implements. Anything else is
+    // passed on as unrecognized code, which the core refuses where it matters.
+    let mut verifiers = BTreeMap::new();
+    for (address, observed) in &observation.verifier_code_hashes {
+        let hash = Hash32::from_hex(observed).map_err(|_| {
+            ToolError::new(
+                EC::EIncompleteAccountState,
+                "verifier observation has an invalid code hash",
+            )
+        })?;
+        record_observed_code(&mut code_by_address, address, hash)?;
+        let scheme = registry
+            .resolve_signature_verifier(&hash)
+            .ok()
+            .map(|scheme| match scheme {
+                ozpb_registry::VerifierKeyScheme::Ed25519 => KeyScheme::Ed25519,
+                ozpb_registry::VerifierKeyScheme::WebauthnP256 => KeyScheme::WebauthnP256,
+            });
+        verifiers.insert(
+            address.clone(),
+            VerifierObservation {
+                code_hash: hash.to_hex(),
+                scheme,
+            },
+        );
     }
 
     let bound_policies = input
@@ -212,6 +296,8 @@ pub fn check_observed_call_surface_with_build_config(
         })
         .collect();
     let verdict = ozpb_call_surface_core::check(&CheckInput {
+        network_id: input.network_id.clone(),
+        spec_hash: validated.hash(),
         account_state: &observation.account_state,
         account_address: input.account_address.clone(),
         account_code_hash: observed_account_hash.to_hex(),
@@ -219,7 +305,10 @@ pub fn check_observed_call_surface_with_build_config(
         account_recognized: true,
         bound_policies,
         recognized_policies,
-        admin_rule_id: observation.admin_rule_id,
+        classic_accounts: observation.classic_accounts.clone(),
+        verifiers,
+        registry_snapshot_root: loaded_root,
+        grant,
         current_ledger: observation.observed_ledger,
         enumeration,
     })
@@ -230,6 +319,96 @@ pub fn check_observed_call_surface_with_build_config(
         binding_set_hash,
         registry_snapshot_root: loaded_root,
         verdict,
+    })
+}
+
+/// What a reviewed policy kind demands of its rule's signers, from source review. OZ's
+/// spending limit refuses unless at least one of the rule's own signers authenticated
+/// (`stellar-accounts` 0.7.2 `policies/spending_limit.rs`, `enforce`: an empty
+/// `authenticated_signers` panics). Any kind not named here is unknown, which leaves a rule
+/// carrying it unresolved: the account hands such a rule to its policies with whatever
+/// signers came, possibly none.
+fn signer_semantics(kind: &str) -> PolicySignerSemantics {
+    match kind {
+        "oz:spending_limit" => PolicySignerSemantics::AtLeastOneRuleSigner,
+        _ => PolicySignerSemantics::Unknown,
+    }
+}
+
+/// The rule being installed, from the hashed spec: its target, its signers (the restricted
+/// keys), and whether it keeps state. A reviewed policy is counted as stateful: the only
+/// reviewed kind, OZ's spending limit, keeps a window per rule.
+pub(crate) fn grant_for(
+    spec: &ValidatedSpec,
+    rule_index: usize,
+    binding_set: &PolicyBindingSet,
+) -> Result<Grant, ToolError> {
+    let rule: &RuleSpec = spec
+        .spec()
+        .rules
+        .get(rule_index)
+        .ok_or_else(|| ToolError::new(EC::ESpecInvalid, "rule_index is out of range"))?;
+    let policies = rule
+        .policies
+        .iter()
+        .enumerate()
+        .map(|(policy_index, policy)| {
+            let binding = binding_set
+                .bindings
+                .iter()
+                .find(|binding| {
+                    binding.rule_index == rule_index && binding.policy_index == policy_index
+                })
+                .ok_or_else(|| binding_error("selected rule is missing a policy binding"))?;
+            let install_params = match policy {
+                PolicyRef::Generated { .. } => GrantPolicyParams::Generated,
+                PolicyRef::Reviewed {
+                    params:
+                        ReviewedParams::SpendingLimit {
+                            limit,
+                            period_ledgers,
+                        },
+                    ..
+                } => GrantPolicyParams::SpendingLimit {
+                    spending_limit: limit.clone(),
+                    period_ledgers: *period_ledgers,
+                },
+            };
+            Ok(GrantPolicy {
+                address: binding.contract_address.clone(),
+                install_params,
+            })
+        })
+        .collect::<Result<Vec<_>, ToolError>>()?;
+    let rule_index = u32::try_from(rule_index)
+        .map_err(|_| ToolError::new(EC::ESpecInvalid, "rule_index is out of range"))?;
+    Ok(Grant {
+        rule_index,
+        target: rule.context.contract.clone(),
+        stateful: !rule.state.is_empty()
+            || rule
+                .policies
+                .iter()
+                .any(|policy| matches!(policy, PolicyRef::Reviewed { .. })),
+        signers: rule
+            .authorization
+            .signers
+            .iter()
+            .map(|signer| match signer {
+                SignerSpec::Delegated { address } => StoredSignerKey::Delegated {
+                    address: address.clone(),
+                },
+                SignerSpec::External {
+                    verifier, key_hex, ..
+                } => StoredSignerKey::External {
+                    verifier: verifier.clone(),
+                    key_hex: key_hex.clone(),
+                },
+            })
+            .collect(),
+        name: spec.spec().name.clone(),
+        valid_until: rule.valid_until.as_ref().map(|until| until.ledger.0),
+        policies,
     })
 }
 
@@ -251,10 +430,25 @@ fn record_observed_code<'a>(
     Ok(())
 }
 
-fn registry_for(
+pub(crate) fn registry_for(
     trust: &RegistryTrust,
     network: ozpb_domain::NetworkId,
 ) -> Result<Registry, ToolError> {
+    // Anyone can recompute the development root's private key from its published seed, so a
+    // snapshot it signs carries no review authority: an agent could sign one recognizing its
+    // own verifier as an owner verifier. Only the testnet example may use it.
+    let development_root = ozpb_registry::dev::dev_root_verifying_bytes();
+    if network != ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
+        && trust
+            .root_policy
+            .keys
+            .values()
+            .any(|key| *key == development_root)
+    {
+        return Err(map_registry_err(ozpb_registry::RegistryError::RootPolicy(
+            "the public development registry root is accepted only on testnet".into(),
+        )));
+    }
     match trust.checkpoint.clone() {
         Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
             trust.root_policy.clone(),
@@ -340,6 +534,11 @@ fn validate_bindings(
                 "PolicyBindingSet has a duplicate contract address",
             ));
         }
+        if binding.contract_address == spec.spec().smart_account.address {
+            return Err(binding_error(
+                "policy binding cannot use the smart account address",
+            ));
+        }
         if binding.resolution_reference.trim().is_empty() {
             return Err(binding_error(
                 "policy binding resolution reference is empty",
@@ -352,7 +551,7 @@ fn validate_bindings(
                 "binding observed_wasm_hash must use canonical lowercase hex",
             ));
         }
-        let path = match (policy, &binding.recognition) {
+        let (path, signers) = match (policy, &binding.recognition) {
             (
                 PolicyRef::Reviewed {
                     kind, capability, ..
@@ -372,7 +571,10 @@ fn validate_bindings(
                         "reviewed binding kind differs from its registry entry",
                     ));
                 }
-                PolicyRecognitionPath::ReviewedRegistry
+                (
+                    PolicyRecognitionPath::ReviewedRegistry,
+                    signer_semantics(&entry.kind),
+                )
             }
             (
                 PolicyRef::Generated {
@@ -418,7 +620,12 @@ fn validate_bindings(
                         "generated binding failed artifact reproduction",
                     ));
                 }
-                PolicyRecognitionPath::VerifiedGeneratedManifest
+                // Reproduced from this spec, but what it demands of another rule's signers is
+                // not something this check reads; a rule carrying it elsewhere stays unresolved.
+                (
+                    PolicyRecognitionPath::VerifiedGeneratedManifest,
+                    PolicySignerSemantics::Unknown,
+                )
             }
             _ => {
                 return Err(binding_error(
@@ -431,6 +638,7 @@ fn validate_bindings(
             VerifiedPolicy {
                 wasm_hash: observed_hash.to_hex(),
                 path,
+                signers,
             },
         );
     }
@@ -448,8 +656,6 @@ fn map_surface_err(error: CheckError) -> ToolError {
         CheckError::EnumerationUnsupported(_) => EC::EAccountRuleEnumerationUnsupported,
         CheckError::IncompleteState { .. } => EC::EIncompleteAccountState,
         CheckError::IncompatibleAccount(_) => EC::EIncompatibleAccount,
-        CheckError::AdminRuleNotFound(_) => EC::EAdminRuleNotFound,
-        CheckError::AdminRuleUnsafe(_, _) => EC::EAdminRuleUnsafe,
         CheckError::UnrecognizedBoundPolicy(_) => EC::EUnregisteredPolicy,
         CheckError::InvalidBindingSet(_) => EC::EPolicyBindingInvalid,
         CheckError::Internal(_) => EC::EInternal,
@@ -463,13 +669,30 @@ mod tests {
     use crate::test_support::{build_config, registry_trust, signed_registry_json, wire_spec};
     use ozpb_api_types::PolicyBinding;
     use ozpb_call_surface_core::{
-        CheckResult, StoredContextType, StoredPolicy, StoredRule, StoredSigner, StoredSignerKey,
+        FindingCode, StoredContextType, StoredPolicy, StoredRule, StoredSigner, UnsupportedReason,
     };
 
     fn address(byte: u8) -> String {
         format!("{}", stellar_strkey::Contract([byte; 32]))
     }
 
+    fn classic(byte: u8) -> String {
+        format!("{}", stellar_strkey::ed25519::PublicKey([byte; 32]))
+    }
+
+    fn master_key_only() -> ClassicAccount {
+        ClassicAccount::Found {
+            master_weight: 1,
+            low_threshold: 0,
+            medium_threshold: 0,
+            high_threshold: 0,
+            signers: vec![],
+        }
+    }
+
+    /// Before the install: rule 0 is the owner's (`Default`, one classic account), rule 1 is
+    /// someone's grant on an unrelated contract that reuses the shared reviewed policy
+    /// instance (OZ's spending limit keeps state per rule, so sharing it is ordinary).
     fn fixture() -> (CheckPolicyCallSurfaceInput, CallSurfaceObservation) {
         let mut spec = wire_spec().spec().clone();
         let signed: SignedSnapshot = serde_json::from_value(signed_registry_json()).unwrap();
@@ -540,11 +763,11 @@ mod tests {
                     StoredRule {
                         id: 1,
                         context_type: StoredContextType::CallContract {
-                            address: ozpb_synthesizer::fixtures::golden_token_strkey(),
+                            address: address(43),
                         },
                         valid_until: Some(4_223_456),
                         signer_ids: vec![1],
-                        policy_ids: vec![0, 1],
+                        policy_ids: vec![0],
                     },
                 ),
             ]),
@@ -554,7 +777,7 @@ mod tests {
                     StoredSigner {
                         id: 0,
                         key: StoredSignerKey::Delegated {
-                            address: address(10),
+                            address: classic(10),
                         },
                     },
                 ),
@@ -563,30 +786,24 @@ mod tests {
                     StoredSigner {
                         id: 1,
                         key: StoredSignerKey::Delegated {
-                            address: address(11),
+                            address: classic(11),
                         },
                     },
                 ),
             ]),
-            policies: binding_set
-                .bindings
-                .iter()
-                .enumerate()
-                .map(|(id, binding)| {
-                    (
-                        id as u32,
-                        StoredPolicy {
-                            id: id as u32,
-                            address: binding.contract_address.clone(),
-                            observed_wasm_hash: binding.observed_wasm_hash.clone(),
-                        },
-                    )
-                })
-                .collect(),
+            policies: BTreeMap::from([(
+                0,
+                StoredPolicy {
+                    id: 0,
+                    address: binding_set.bindings[0].contract_address.clone(),
+                    observed_wasm_hash: binding_set.bindings[0].observed_wasm_hash.clone(),
+                },
+            )]),
         };
         (
             CheckPolicyCallSurfaceInput {
                 spec: spec_json,
+                rule_index: 0,
                 binding_set,
                 signed_registry_snapshot: signed_registry_json(),
                 account_address: spec.spec().smart_account.address.clone(),
@@ -600,7 +817,23 @@ mod tests {
                 account_code_hash: spec.spec().smart_account.observed_code_hash.to_hex(),
                 account_state: state,
                 bound_policies,
-                admin_rule_id: 0,
+                // Every classic account the check needs, master key alone in control: the two
+                // stored signers and the spec rule's own signers.
+                classic_accounts: [classic(10), classic(11)]
+                    .into_iter()
+                    .chain(
+                        spec.spec().rules[0]
+                            .authorization
+                            .signers
+                            .iter()
+                            .filter_map(|signer| match signer {
+                                SignerSpec::Delegated { address } => Some(address.clone()),
+                                SignerSpec::External { .. } => None,
+                            }),
+                    )
+                    .map(|address| (address, master_key_only()))
+                    .collect(),
+                verifier_code_hashes: BTreeMap::new(),
             },
         )
     }
@@ -646,23 +879,77 @@ mod tests {
             PolicyRecognition::VerifiedGeneratedManifest {
                 build_manifest: generated.build_manifest,
             };
-        observation.bound_policies[1].observed_wasm_hash = generated.wasm_hash.clone();
-        observation
-            .account_state
-            .policies
-            .get_mut(&1)
-            .unwrap()
-            .observed_wasm_hash = generated.wasm_hash;
+        observation.bound_policies[1].observed_wasm_hash = generated.wasm_hash;
     }
 
     #[test]
-    fn exact_checked_bindings_produce_a_safe_core_verdict() {
+    fn exact_checked_bindings_produce_the_authority_list() {
         let (request, observation) = fixture();
         let output = check(&request, &observation).unwrap();
         assert_eq!(output.spec_hash.to_hex(), request.binding_set.spec_hash);
         assert_eq!(output.verdict.binding_set_hash, output.binding_set_hash);
         assert_eq!(output.verdict.observed_ledger, observation.observed_ledger);
-        assert_eq!(output.verdict.result, CheckResult::Safe);
+        assert!(output.verdict.refusals.is_empty() && output.verdict.unresolved.is_empty());
+        let rules = &output.verdict.authority_list;
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_id, 0);
+    }
+
+    /// The restricted keys, the target and statefulness come from the selected spec rule,
+    /// never from the caller separately.
+    #[test]
+    fn the_grant_is_the_selected_spec_rule() {
+        let (request, observation) = fixture();
+        let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+        let grant = check(&request, &observation).unwrap().verdict.grant;
+        assert_eq!(grant.rule_index, 0);
+        assert_eq!(grant.target, spec.rules[0].context.contract);
+        // The fixture rule carries the reviewed spending limit.
+        assert!(grant.stateful);
+        assert_eq!(
+            grant.signers.len(),
+            spec.rules[0].authorization.signers.len()
+        );
+
+        let mut out_of_range = request.clone();
+        out_of_range.rule_index = spec.rules.len();
+        assert_eq!(
+            check(&out_of_range, &observation).unwrap_err().code,
+            EC::ESpecInvalid
+        );
+    }
+
+    /// The fixture spec's first signer is the agent; put its key on a management rule.
+    #[test]
+    fn the_agent_key_on_a_management_rule_is_refused_automatically() {
+        let (request, mut observation) = fixture();
+        let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+        let agent = match &spec.rules[0].authorization.signers[0] {
+            SignerSpec::Delegated { address } => StoredSignerKey::Delegated {
+                address: address.clone(),
+            },
+            SignerSpec::External {
+                verifier, key_hex, ..
+            } => StoredSignerKey::External {
+                verifier: verifier.clone(),
+                key_hex: key_hex.clone(),
+            },
+        };
+        observation.account_state.signers.get_mut(&1).unwrap().key = agent;
+        observation
+            .account_state
+            .rules
+            .get_mut(&1)
+            .unwrap()
+            .context_type = StoredContextType::CallContract {
+            address: request.account_address.clone(),
+        };
+        let output = check(&request, &observation).unwrap();
+        assert!(output
+            .verdict
+            .refusals
+            .iter()
+            .any(|finding| finding.code == FindingCode::DelegateHasAuthority));
     }
 
     #[test]
@@ -731,9 +1018,13 @@ mod tests {
             .unwrap()
             .address = observation.account_address.clone();
 
+        // A binding at the account's own address is refused as a binding, before any
+        // observation is compared.
         let error = check(&request, &observation).unwrap_err();
-        assert_eq!(error.code, EC::EIncompleteAccountState);
-        assert!(error.message.contains("conflicting code hashes"));
+        assert_eq!(error.code, EC::EPolicyBindingInvalid);
+        assert!(error
+            .message
+            .contains("cannot use the smart account address"));
 
         let (request, mut observation) = fixture();
         observation.account_state.policies.insert(
@@ -758,29 +1049,17 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_state_and_weak_management_rule_never_pass() {
+    fn incomplete_state_never_yields_a_list() {
         let (request, mut observation) = fixture();
         observation.account_state.active_count = 3;
         assert_eq!(
             check(&request, &observation).unwrap_err().code,
             EC::EIncompleteAccountState
         );
-
-        observation.account_state.active_count = 2;
-        observation
-            .account_state
-            .rules
-            .get_mut(&1)
-            .unwrap()
-            .context_type = StoredContextType::CallContract {
-            address: request.account_address.clone(),
-        };
-        let output = check(&request, &observation).unwrap();
-        assert!(matches!(output.verdict.result, CheckResult::Unsafe { .. }));
     }
 
     #[test]
-    fn reviewed_policy_on_admin_rule_does_not_prove_admin_signers() {
+    fn any_policy_on_a_management_rule_is_refused() {
         let (request, mut observation) = fixture();
         let reviewed_hash = request.binding_set.bindings[0].observed_wasm_hash.clone();
         observation.account_state.policies.insert(
@@ -794,14 +1073,198 @@ mod tests {
         observation
             .account_state
             .rules
-            .get_mut(&observation.admin_rule_id)
+            .get_mut(&0)
             .unwrap()
             .policy_ids
             .push(2);
 
-        let error = check(&request, &observation).unwrap_err();
-        assert_eq!(error.code, EC::EAdminRuleUnsafe);
-        assert!(error.message.contains("policy-bearing"));
+        // Recognized or not, a policy on a rule that can change the account is refused: it,
+        // not the signer list, decides who may act there.
+        for observed in [None, Some("77".repeat(32))] {
+            if let Some(hash) = observed {
+                observation
+                    .account_state
+                    .policies
+                    .get_mut(&2)
+                    .unwrap()
+                    .observed_wasm_hash = hash;
+            }
+            let output = check(&request, &observation).unwrap();
+            assert_eq!(
+                output.verdict.refusals[0].code,
+                FindingCode::UnsupportedAuthority
+            );
+            assert_eq!(
+                output.verdict.refusals[0].unsupported,
+                Some(UnsupportedReason::PolicyGuarded)
+            );
+        }
+    }
+
+    /// The core's answer is exactly the wire verdict, once the shell adds what only it
+    /// knows (how the state was acquired). The authority list, a refusal with a named reason,
+    /// an exclusion and an expired rule are all populated, so a renamed or retagged field in
+    /// any of them fails here rather than on a client.
+    #[test]
+    fn the_core_answer_is_the_wire_verdict() {
+        let (request, mut observation) = fixture();
+        // Rule 2: the account's own surface, signed by a classic account with another signer
+        // (refused). Rule 3: an expired `Default` rule.
+        for (id, signer, valid_until) in [(2, 1, None), (3, 0, Some(1))] {
+            observation.account_state.rules.insert(
+                id,
+                StoredRule {
+                    id,
+                    context_type: if id == 2 {
+                        StoredContextType::CallContract {
+                            address: request.account_address.clone(),
+                        }
+                    } else {
+                        StoredContextType::Default
+                    },
+                    valid_until,
+                    signer_ids: vec![signer],
+                    policy_ids: vec![],
+                },
+            );
+        }
+        observation.account_state.next_id = 4;
+        observation.account_state.active_count = 4;
+        observation.classic_accounts.insert(
+            classic(11),
+            ClassicAccount::Found {
+                master_weight: 1,
+                low_threshold: 0,
+                medium_threshold: 1,
+                high_threshold: 1,
+                signers: vec![ozpb_call_surface_core::ClassicSigner {
+                    key: classic(12),
+                    weight: 1,
+                }],
+            },
+        );
+        let verdict = check(&request, &observation).unwrap().verdict;
+        assert!(!verdict.authority_list.is_empty());
+        assert_eq!(
+            verdict.refusals[0].unsupported,
+            Some(UnsupportedReason::ClassicMultisig)
+        );
+        assert!(!verdict.coverage_exclusions.is_empty());
+        assert!(!verdict.notes.expired_rules.is_empty());
+        let mut wire = serde_json::to_value(&verdict).unwrap();
+        wire["evidence"] = serde_json::json!({
+            "enumeration_evidence": {
+                "method": "bounded_next_id",
+                "next_id": 4,
+                "active_count": 4,
+                "rule_ids": [0, 1, 2, 3],
+                "signer_ids": [0, 1],
+                "policy_ids": [0]
+            },
+            "source": "testnet",
+            "evidence_trust": "rpc_reported",
+            "raw_ordered_entry_digest": "raw",
+            "rpc_batches": 5,
+            "attempts": 1
+        });
+        let decoded: ozpb_api_types::PolicyCallSurfaceVerdict =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+    }
+
+    /// A passkey owner is an identity only through a verifier the signed registry recognizes
+    /// as an immutable, stateless owner verifier, by the code observed at its address.
+    #[test]
+    fn a_passkey_owner_is_listed_through_the_registry() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let passkey_owner = |request: &CheckPolicyCallSurfaceInput,
+                             observation: &mut CallSurfaceObservation,
+                             code: ozpb_domain::Hash32| {
+            let mut key = vec![0x04];
+            key.extend_from_slice(&[0x31; 64]);
+            key.extend_from_slice(b"credential");
+            observation.account_state.signers.get_mut(&0).unwrap().key =
+                StoredSignerKey::External {
+                    verifier: address(60),
+                    key_hex: hex::encode(key),
+                };
+            observation
+                .verifier_code_hashes
+                .insert(address(60), code.to_hex());
+            check(request, observation).unwrap().verdict
+        };
+
+        // Version 3 of the signed example recognizes OZ's WebAuthn verifier.
+        let (mut request, mut observation) = fixture();
+        replace_fixture_snapshot(
+            &mut request,
+            &mut observation,
+            ozpb_registry::dev::verifier_successor(network).unwrap(),
+        );
+        let verdict = passkey_owner(
+            &request,
+            &mut observation,
+            ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+        );
+        assert!(verdict.refusals.is_empty() && verdict.unresolved.is_empty());
+        let mut wire = serde_json::to_value(&verdict).unwrap();
+        assert_eq!(
+            wire["authority_list"][0]["requirement"]["signers"][0]["kind"],
+            "external"
+        );
+        assert_eq!(
+            wire["authority_list"][0]["requirement"]["signers"][0]["scheme"],
+            "webauthn_p256"
+        );
+        wire["evidence"] = serde_json::json!({
+            "enumeration_evidence": {
+                "method": "bounded_next_id", "next_id": 2, "active_count": 2,
+                "rule_ids": [0, 1], "signer_ids": [0, 1], "policy_ids": [0]
+            },
+            "source": "testnet", "evidence_trust": "rpc_reported",
+            "raw_ordered_entry_digest": "raw", "rpc_batches": 5, "attempts": 1
+        });
+        let decoded: ozpb_api_types::PolicyCallSurfaceVerdict =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+
+        // A verifier address cannot run two codes at one ledger: one that is also a bound
+        // policy with other code is an inconsistent observation.
+        let mut conflicting = observation.clone();
+        conflicting.verifier_code_hashes.insert(
+            request.binding_set.bindings[0].contract_address.clone(),
+            ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex(),
+        );
+        assert_eq!(
+            check(&request, &conflicting).unwrap_err().code,
+            EC::EIncompleteAccountState
+        );
+
+        // Version 1 recognizes no owner verifier, and other code is never one.
+        let (request, mut observation) = fixture();
+        let verdict = passkey_owner(
+            &request,
+            &mut observation,
+            ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+        );
+        assert_eq!(
+            verdict.refusals[0].unsupported,
+            Some(UnsupportedReason::ExternalSigner)
+        );
+    }
+
+    /// A classic-account owner the reader did not read is not described.
+    #[test]
+    fn unread_classic_owner_is_unresolved() {
+        let (request, mut observation) = fixture();
+        observation.classic_accounts.remove(&classic(10));
+        let output = check(&request, &observation).unwrap();
+        assert!(output.verdict.refusals.is_empty());
+        assert_eq!(
+            output.verdict.unresolved[0].code,
+            FindingCode::IncompleteAccountState
+        );
+        assert_eq!(output.verdict.unresolved[0].rule_id, Some(0));
     }
 
     #[test]

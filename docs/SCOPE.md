@@ -10,12 +10,25 @@ The source-reviewed account method inventory and its limits are described in
 [`ACCOUNT-METHOD-INVENTORY.md`](ACCOUNT-METHOD-INVENTORY.md).
 
 1. **Live acquisition adapter** (`getLedgerEntries` → `AccountState` with `NextId`/`Count`
-   reconciliation and transitive closure). The largest remaining gap to RFP #7:
-   `prepare_install_intent` requires a `Safe` authority-surface verdict. The pure core is
-   implemented and tested over supplied `bounded_next_id` observations, but it rejects
-   policy-bearing administrative rules until signer enforcement can be proven. The bounded
-   reader described below still needs live network verification before its observations
-   can support an authority verdict.
+   reconciliation and transitive closure). The largest remaining gap to RFP #7. The pure
+   core is implemented and tested over supplied `bounded_next_id` observations. It never
+   says an account is safe, and its claim is scoped to the new rule's target, the account's
+   management surface and the bound policies. It lists every live rule that can change the
+   account or reset a bound policy, each with exactly who must sign, and refuses
+   automatically when the new rule's own key could already do either alone, when another rule
+   on the target gets around a stateful limit, when the new rule aims at the account or
+   something it trusts, or when an in-scope rule has a shape this version does not support
+   (any policy on an account-reaching rule, k-of-n, guarded recovery, contract signers,
+   unrecognized external signers, classic multisig, a missing classic account). Whether the
+   listed identities are the user's, or trusted by the user, is decided by the wallet that
+   holds the owner key, which recomputes the result itself (Decision D7). Rules for other
+   contracts are listed as not analysed. The live operation is exposed as
+   `ozpb check-policy-call-surface` and the MCP tool `check_policy_call_surface`: it validates
+   the request against the pinned registry trust (rebuilding generated bindings) before it
+   reads anything, reads through an operator-named RPC source (never a request URL), and
+   returns the structured answer with a plain-words `summary`. Over MCP it is advisory; it has
+   not yet been run against a live testnet account in this repository's tests, which use
+   constructed scans and refuse-before-read paths.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes live entries, returned archived entries, and omitted keys. A pure
@@ -27,7 +40,10 @@ The source-reviewed account method inventory and its limits are described in
    A bounded account scanner now derives pinned keys, reads every rule slot through `NextId`,
    follows the signer/policy closure, checks reference counts and `Count`, observes the code at
    every installed policy address and at each contract verifier named by an external signer,
-   and re-reads the account instance. It retries a changed
+   reads the classic account entry (master weight, thresholds, extra signers) of every `G…`
+   signer in the closure and of each classic account the caller names, and re-reads the
+   account instance; the classic reads count against the same signed batch budget. It retries
+   a changed
    endpoint ledger or instance as a whole. Returned archived or undecodable entries, missing
    referenced entries, and a count mismatch fail closed as incomplete account state; exceeded
    scan bounds, including a fixed 24 MiB ceiling on the entry XDR one scan retains, fail closed
@@ -37,39 +53,52 @@ The source-reviewed account method inventory and its limits are described in
    only when the stored count reconciles. The scan does not identify the wallet's intended
    administrator or establish complete reviewed method evidence. The scanner hashes the ordered
    XDR keys and values, TTL metadata, and requested absences, including inspected policy and
-   verifier instances. This digest identifies endpoint responses, not an authenticated ledger
-   snapshot.
+   verifier instances and classic account entries (whose balances and sequence numbers move it
+   on every payment: it is evidence, not the authority commitment). This digest identifies
+   endpoint responses, not an authenticated ledger snapshot. Reading every classic signer in
+   the closure, out-of-scope and expired rules included, keeps the read simple and archive-safe
+   at the cost of batches: an account with many unrelated classic signers can exhaust the
+   signed batch budget and fail closed.
    A structural adapter maps the completed scan into the pure authority model, requires
-   observed code for every installed policy, and lists eligible policy-free management rules
-   with observed fingerprints. Its output keeps the raw XDR/TTL digest separate from the
-   decoded core-state digest: changing a TTL or an unmodeled instance field can change the
-   former without changing the latter. These are candidates; the adapter does not choose
-   an administrator or turn endpoint data into a trusted verdict.
+   observed code for every installed policy, and carries the classic account entries. Its
+   output keeps the raw XDR/TTL digest separate from the decoded core-state digest: changing a
+   TTL or an unmodeled instance field can change the former without changing the latter. The
+   adapter decides nothing about authority.
    The signed version-2 development registry example binds the reviewed method-map digest and
-   bounded scan protocol to the exact pinned account Wasm. Its public development signing key
+   bounded scan protocol to the exact pinned account Wasm. Version 3 extends it with the key
+   scheme and statelessness of the pinned ed25519 verifier and adds OpenZeppelin's WebAuthn
+   (passkey) verifier, so a passkey owner can be listed as an identity (its scheme and first
+   65 key bytes; a credential id is ignored). A verifier vouches for an owner only when its
+   observed code is one whose key handling was reviewed from source (compiled in per exact
+   hash, like the method inventory) and its signed entry agrees; older binaries refuse the
+   version-3 entry's new fields. Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
    authority evidence. The operator reader below refuses that root unless its pinned network
    is testnet.
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
-   and compares the account, installed policies, external-signer verifiers, and selected policy
-   bindings with code hashes observed by the bounded scanner. Unknown, revoked, or changed
-   implementations are refused; a verifier is recognized only by its code at the observed
-   ledger. A contract-address delegated signer is refused: the reader does not inspect a nested
-   account's own rules, so it cannot say who that signer is.
+   and compares the account and the selected policy bindings with code hashes observed by the
+   bounded scanner. It judges nothing else: an unknown policy, an unrecognized verifier or a
+   contract-address signer anywhere on the account is reported as observed, and the pure check
+   refuses it where it can change the account, a bound policy or the target. Refusing one
+   anywhere would refuse every check on an account that has one on an unrelated rule.
+   Recognizing a binding (a reviewed registry entry, or a generated artifact rebuilt from its
+   spec) is the toolkit's, from the binding set itself; the reader checks only that the
+   address runs the expected code.
    The resulting projection is still `rpc_reported`: matching endpoint ledger metadata across
-   calls and re-reading the instance do not authenticate a coherent ledger snapshot. There is
-   no wallet-authenticated binding to the intended administrator. A registry signature covers
-   implementation capabilities, not live ledger state; a client-provided fingerprint cannot
-   establish wallet intent. The missing assurances are required before a public authority verdict.
+   calls and re-reading the instance do not authenticate a coherent ledger snapshot. A registry
+   signature covers implementation capabilities, not live ledger state, and nothing a client
+   sends can say who owns the account: owner matching stays with the key-holding wallet. The
+   missing assurances are required before a public authority list.
 
-   The toolkit has an internal install-intent draft that checks a spec, binding set, and
-   supplied authority artifact for identity and structural consistency, then derives typed
-   account arguments. It cannot authenticate the supplied `Safe` claim, prove a complete
-   exported-method inventory or transitive ledger reads, or establish freshness. It is not
-   exported through the CLI or MCP server; a trusted reader and complete method-level evidence
-   are required before that operation can be offered for wallet review.
+   The install intent (`ozpb prepare-install-intent`, MCP `prepare_install_intent`) runs that
+   live check itself — there is no caller-supplied verdict — and, only when it returns no
+   refusal and nothing unresolved, returns the exact `add_context_rule` arguments derived from
+   the grant the answer's commitment covers, with the answer attached. A new rule aimed at the
+   account or one of its own policies, or one already expired at the read ledger, is refused
+   before any read or after it respectively. Freshness is the wallet's: it re-reads and
+   compares the commitment immediately before signing.
 
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,

@@ -532,8 +532,9 @@ spec can name a verifier address and a verifier wasm hash, but the runtime OpenZ
 value carries only the verifier address and key — nothing at authorization time binds that
 address to the recognized code. Registry recognition of a caller-supplied hash does not prove
 the address runs that code, so validation rejects the shape (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`)
-until a later acquisition/install layer can bind address to observed executable and survive
-upgrades.
+for the new rule. The authority check does bind address to observed executable for the
+account's existing owners: an external owner is an identity only while the code at its verifier
+address, read at the same ledger, is a reviewed immutable and stateless verifier.
 
 **The reviewed spending-limit composition is validated, not assumed.** Composition is accepted
 only for a recognized SEP-41 `transfer` shape with the `i128` amount at argument index 2, a

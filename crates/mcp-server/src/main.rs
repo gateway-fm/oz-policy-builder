@@ -22,6 +22,7 @@ use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod authority;
 mod preflight;
 mod verification;
 
@@ -78,6 +79,13 @@ struct PolicyBuilderServer {
     tool_router: ToolRouter<Self>,
     registry_trust: Option<ozpb_toolkit::RegistryTrust>,
     rpc_policy: Option<RpcEndpointPolicy>,
+    /// Operator-named RPC sources for state reads that must not take a URL from the client
+    /// (`OZPB_RPC_SOURCES_JSON`). Empty when the operator configured none.
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
+    /// Slots for authority reads (which may build and always read the network) on a hosted
+    /// server. Held by the blocking work itself, so a caller who gives up does not free the
+    /// slot while the work still runs. `None` on stdio: one user, their own machine.
+    authority_slots: Option<Arc<tokio::sync::Semaphore>>,
     /// Operator-side build settings. Unlike `rpc_policy` this is not optional: every
     /// transport needs a builder, and the wire contract carries no build fields — a
     /// caller-chosen timeout would be resource exhaustion and a caller-chosen builder path
@@ -89,14 +97,20 @@ impl PolicyBuilderServer {
     fn new(
         registry_trust: Option<ozpb_toolkit::RegistryTrust>,
         rpc_policy: Option<RpcEndpointPolicy>,
+        rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
         build_config: ozpb_toolkit::BuildConfig,
     ) -> Self {
         Self {
             tool_router: Self::tool_router()
                 + Self::verification_tool_router()
-                + Self::preflight_tool_router(),
+                + Self::preflight_tool_router()
+                + Self::authority_tool_router(),
+            authority_slots: rpc_policy
+                .as_ref()
+                .map(|_| Arc::new(tokio::sync::Semaphore::new(1))),
             registry_trust,
             rpc_policy,
+            rpc_sources,
             build_config,
         }
     }
@@ -107,6 +121,19 @@ impl PolicyBuilderServer {
             None => Ok(requested.to_string()),
         }
     }
+}
+
+/// Construct hosted resources once, then clone them into each rmcp session. Creating a new
+/// server inside the closure would give every client its own authority-work budget.
+fn http_session_factory(
+    registry_trust: Option<ozpb_toolkit::RegistryTrust>,
+    rpc_policy: RpcEndpointPolicy,
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
+    build_config: ozpb_toolkit::BuildConfig,
+) -> impl Fn() -> Result<PolicyBuilderServer, std::io::Error> {
+    let server =
+        PolicyBuilderServer::new(registry_trust, Some(rpc_policy), rpc_sources, build_config);
+    move || Ok(server.clone())
 }
 
 /// Map a toolkit ToolError into an rmcp tool-execution error carrying the structured
@@ -307,9 +334,15 @@ impl ServerHandler for PolicyBuilderServer {
             "OZ Accounts Policy Builder. Record a Stellar transaction, synthesize a \
              minimum-permission OpenZeppelin smart-account policy, evaluate it, run the layer-1 \
              reference suite, generate reviewable Rust, verify generated artifacts offline, and \
-             optionally simulate one exact envelope with preflight_transaction. Pure tools are \
-             deterministic; record_transaction, record_simulation and preflight_transaction \
-             read Stellar RPC, and their results depend on ledger state. Fail-closed: this \
+             optionally simulate one exact envelope with preflight_transaction. Once the \
+             policies are deployed and bound, check_policy_call_surface reads, through an \
+             operator-configured source, who can change the account or reset them; it is \
+             advisory and never says an account is safe — the user's wallet decides. \
+             prepare_install_intent runs that check itself and returns the exact \
+             add_context_rule arguments only when nothing is refused and nothing is \
+             unresolved. Pure tools are deterministic; record_transaction, record_simulation, \
+             preflight_transaction, check_policy_call_surface and prepare_install_intent read \
+             Stellar RPC, and their results depend on ledger state. Fail-closed: this \
              server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
              Signed authorization entries given to preflight_transaction stay live \
              authorizations until they expire. Widening a grant beyond exactly what was \
@@ -328,19 +361,44 @@ async fn main() -> anyhow::Result<()> {
     // Parsed before the transport branch so stdio and HTTP are configured identically, and
     // fail-closed: a rejected setting stops startup rather than silently using a default.
     let build_config = ozpb_toolkit::BuildConfig::from_env()?;
+    let rpc_sources = Arc::new(configured_rpc_sources()?);
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("--http") => {
             let addr = args.next().unwrap_or_else(|| "127.0.0.1:8080".to_string());
-            serve_http(&addr, registry_trust, build_config).await
+            serve_http(&addr, registry_trust, rpc_sources, build_config).await
         }
         _ => {
-            let service = PolicyBuilderServer::new(registry_trust, None, build_config)
+            let service = PolicyBuilderServer::new(registry_trust, None, rpc_sources, build_config)
                 .serve(rmcp::transport::stdio())
                 .await?;
             service.waiting().await?;
             Ok(())
         }
+    }
+}
+
+/// A configured source the allowlist does not cover would fail every request that names it;
+/// a hosted server refuses to start instead, so the operator sees the mismatch, not clients.
+fn require_allowlisted_sources(
+    policy: &RpcEndpointPolicy,
+    sources: &std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>,
+) -> anyhow::Result<()> {
+    for (name, source) in sources {
+        policy
+            .authorize(&source.rpc_url)
+            .map_err(|_| anyhow::anyhow!("RPC source {name:?} is not on OZPB_RPC_ALLOWLIST"))?;
+    }
+    Ok(())
+}
+
+/// The operator's named RPC sources, from `OZPB_RPC_SOURCES_JSON`; none when unset.
+fn configured_rpc_sources(
+) -> anyhow::Result<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>> {
+    match std::env::var("OZPB_RPC_SOURCES_JSON") {
+        Ok(json) => Ok(ozpb_toolkit::rpc_sources_from_json(&json).map_err(anyhow::Error::from)?),
+        Err(std::env::VarError::NotPresent) => Ok(Default::default()),
+        Err(error) => Err(anyhow::Error::new(error)),
     }
 }
 
@@ -397,6 +455,7 @@ fn require_loopback_bind(addr: &str) -> anyhow::Result<std::net::SocketAddr> {
 async fn serve_http(
     addr: &str,
     registry_trust: Option<ozpb_toolkit::RegistryTrust>,
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
     build_config: ozpb_toolkit::BuildConfig,
 ) -> anyhow::Result<()> {
     use axum::extract::{DefaultBodyLimit, Request, State};
@@ -486,6 +545,7 @@ async fn serve_http(
     let rpc_allowlist = std::env::var("OZPB_RPC_ALLOWLIST")
         .map_err(|_| anyhow::anyhow!("OZPB_RPC_ALLOWLIST is required for HTTP mode"))?;
     let rpc_policy = RpcEndpointPolicy::from_csv(&rpc_allowlist)?;
+    require_allowlisted_sources(&rpc_policy, &rpc_sources)?;
     let max_requests = parse_positive_env("OZPB_HTTP_REQUESTS_PER_MINUTE", 60)?;
     // Builds are CPU- and memory-heavy. The request semaphore and Cargo's worker count form one
     // resource budget; validating their product prevents four simultaneous requests from each
@@ -519,13 +579,7 @@ async fn serve_http(
 
     let ct = tokio_util::sync::CancellationToken::new();
     let service = StreamableHttpService::new(
-        move || {
-            Ok(PolicyBuilderServer::new(
-                registry_trust.clone(),
-                Some(rpc_policy.clone()),
-                build_config.clone(),
-            ))
-        },
+        http_session_factory(registry_trust, rpc_policy, rpc_sources, build_config),
         LocalSessionManager::default().into(),
         Default::default(),
     );
@@ -562,6 +616,34 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_sessions_share_authority_capacity_until_work_releases_it() {
+        let factory = http_session_factory(
+            None,
+            RpcEndpointPolicy::from_csv("https://rpc.example").unwrap(),
+            Default::default(),
+            ozpb_toolkit::BuildConfig::default(),
+        );
+        let first = factory().unwrap();
+        let second = factory().unwrap();
+        let running_work = first
+            .authority_slots
+            .as_ref()
+            .unwrap()
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        // Disconnecting the first session must not free capacity still held by its work.
+        drop(first);
+        let slots = second.authority_slots.as_ref().unwrap();
+        assert!(matches!(
+            slots.try_acquire(),
+            Err(tokio::sync::TryAcquireError::NoPermits)
+        ));
+        drop(running_work);
+        assert!(slots.try_acquire().is_ok());
+    }
 
     #[test]
     fn loopback_bind_is_required() {
@@ -605,6 +687,23 @@ mod tests {
             .authorize("https://rpc.testnet.stellar.gateway.fm#frag")
             .is_err());
         assert!(policy.authorize("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn every_configured_rpc_source_must_be_allowlisted_on_a_hosted_server() {
+        let policy = RpcEndpointPolicy::from_csv("https://rpc.example").unwrap();
+        let sources = |url: &str| {
+            ozpb_toolkit::rpc_sources_from_json(
+                &serde_json::json!({"testnet": {
+                    "rpc_url": url,
+                    "network_passphrase": "Test SDF Network ; September 2015"
+                }})
+                .to_string(),
+            )
+            .unwrap()
+        };
+        assert!(require_allowlisted_sources(&policy, &sources("https://rpc.example")).is_ok());
+        assert!(require_allowlisted_sources(&policy, &sources("https://other.example")).is_err());
     }
 
     #[test]
