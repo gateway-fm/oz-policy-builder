@@ -82,7 +82,7 @@ execution, live preflight, or successful installation. An older observation labe
 Run the existing MCP verification integration tests with:
 
 ```bash
-cargo test --locked -p ozpb-mcp-server --test mcp_stdio_tranche2
+cargo test --locked -p ozpb-mcp-server --test mcp_stdio_verification
 ```
 
 Those tests cover the named tools' schemas, reference responses and structured errors. They
