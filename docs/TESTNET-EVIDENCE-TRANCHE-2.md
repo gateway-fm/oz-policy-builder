@@ -98,8 +98,11 @@ output directory. The harness spends testnet XLM, creates contracts, and uses th
 For an authority run, configure the compatible CLI, signed snapshot, roots, RPC sources and
 wallet confirmation mode as described there before starting.
 
-`run.sh` writes `provenance.json` at startup and finalizes it on shell exit. It also writes
-`evidence.json` on success or failure. A hard kill can leave the provenance unfinished.
+`run.sh` writes `provenance.json` at startup and finalizes it on shell exit. It attempts an
+evidence export after successful or failed steps, publishing complete `evidence.json` files
+by atomic rename. A reporting error changes a zero exit to failure in the provenance too;
+an original failure keeps its own code. Malformed records (including JSON `null`) are refused,
+and an I/O error can prevent an output file. A hard kill can leave provenance unfinished.
 To regenerate a summary without network access or keys:
 
 ```bash
