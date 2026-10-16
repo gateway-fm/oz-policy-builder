@@ -1,7 +1,10 @@
 // Export local observations, not a verdict or a cryptographic attestation. Only explicitly
 // selected, typed fields leave the run directory. Raw RPC errors and paths never do.
-import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync,
+  renameSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +43,7 @@ function readFile(path) {
 }
 
 function provenance(value) {
-  if (value === null) return { status: 'unavailable' };
+  if (value === undefined) return { status: 'unavailable' };
   const p = object(value);
   if (p.schema_version !== 1 || typeof p.checkout_dirty !== 'boolean') fail();
   const cli = object(p.cli);
@@ -81,7 +84,7 @@ function invocation(value) {
 }
 
 function runRecord(value) {
-  if (value === null) return null;
+  if (value === undefined) return null;
   const r = object(value);
   if (r.network !== TESTNET) fail();
   const owner = object(r.owner);
@@ -116,7 +119,7 @@ function runRecord(value) {
       };
     }
   }
-  const invocations = r.invocations ?? [];
+  const invocations = r.invocations === undefined ? [] : r.invocations;
   if (!Array.isArray(invocations) || invocations.length > 1000) fail();
   return {
     network: 'testnet', protocol: uint(r.protocol), account: address(r.account),
@@ -137,7 +140,7 @@ export function exportEvidence(runDir) {
     if (bytes !== null) artifacts[key] = { sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
     return bytes;
   }
-  const decode = (bytes) => bytes === null ? null : JSON.parse(bytes.toString('utf8'));
+  const decode = (bytes) => bytes === null ? undefined : JSON.parse(bytes.toString('utf8'));
   const run = runRecord(decode(artifact('run', join(runDir, 'run.json'))));
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   if (run === null && source.status === 'unavailable') fail();
@@ -174,6 +177,25 @@ export function exportEvidence(runDir) {
     ],
     provenance: source, run, artifacts,
   };
+}
+
+/** Publish a complete summary atomically; replacing a symlink must not write to its target. */
+export function writeEvidence(runDir) {
+  const report = exportEvidence(runDir);
+  const temporary = join(runDir, `.evidence-${randomUUID()}.tmp`);
+  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  let closed = false;
+  let published = false;
+  try {
+    writeFileSync(fd, `${JSON.stringify(report, null, 2)}\n`);
+    closeSync(fd);
+    closed = true;
+    renameSync(temporary, join(runDir, 'evidence.json'));
+    published = true;
+  } finally {
+    try { if (!closed) closeSync(fd); }
+    finally { if (!published) rmSync(temporary, { force: true }); }
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

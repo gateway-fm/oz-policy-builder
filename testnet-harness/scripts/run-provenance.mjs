@@ -8,6 +8,8 @@ import {
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { writeEvidence } from './evidence.mjs';
+
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FILE = 'provenance.json';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -52,16 +54,12 @@ export function startRun(runDir, env = process.env) {
   return record;
 }
 
-export function finishRun(runDir, exitCode) {
-  if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) throw new Error('invalid exit code');
+function updateRun(runDir, change) {
   const path = join(runDir, FILE);
   withFile(path, constants.O_RDWR, 64 * 1024, (fd) => {
     const record = JSON.parse(readFileSync(fd, 'utf8'));
-    if (record.schema_version !== 1 || record.finished_at !== null || record.exit_code !== null) {
-      throw new Error('run provenance is not an unfinished run');
-    }
-    record.finished_at = new Date().toISOString();
-    record.exit_code = exitCode;
+    if (record?.schema_version !== 1) throw new Error('invalid run provenance');
+    change(record);
     const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
     let written = 0;
     while (written < bytes.length) {
@@ -73,16 +71,45 @@ export function finishRun(runDir, exitCode) {
   });
 }
 
+export function finishRun(runDir, exitCode) {
+  if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) throw new Error('invalid exit code');
+  updateRun(runDir, (record) => {
+    if (record.finished_at !== null || record.exit_code !== null) {
+      throw new Error('run provenance is not an unfinished run');
+    }
+    record.finished_at = new Date().toISOString();
+    record.exit_code = exitCode;
+  });
+}
+
+export function finalizeRun(runDir, exitCode) {
+  finishRun(runDir, exitCode);
+  try { writeEvidence(runDir); }
+  catch (error) {
+    // Export failure changes a successful wrapper exit to failure. Keep that in provenance
+    // as well; an original failure keeps its own code even if reporting fails too.
+    updateRun(runDir, (record) => { record.exit_code = exitCode || 1; });
+    throw error;
+  }
+  return exitCode;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  let failureCode = 1;
   try {
     const [action, runDir, code, ...extra] = process.argv.slice(2);
     if (!runDir || extra.length) throw new Error('usage');
     if (action === 'start' && code === undefined) startRun(runDir);
-    else if (action === 'finish' && /^(0|[1-9][0-9]{0,2})$/.test(code)) finishRun(runDir, Number(code));
+    else if (['finish', 'finalize'].includes(action) && /^(0|[1-9][0-9]{0,2})$/.test(code) && Number(code) <= 255) {
+      if (action === 'finalize') {
+        failureCode = Number(code) || 1;
+        process.exitCode = finalizeRun(runDir, Number(code));
+      } else finishRun(runDir, Number(code));
+    }
     else throw new Error('usage');
   } catch {
     // Filesystem and subprocess errors can include local paths or operator configuration.
-    console.error('run provenance failed; use start <empty-run-dir> or finish <run-dir> <exit-code>');
-    process.exitCode = 1;
+    console.error('run bookkeeping failed; use start <empty-run-dir> or finish/finalize <run-dir> <exit-code>');
+    process.exitCode = failureCode;
   }
 }
