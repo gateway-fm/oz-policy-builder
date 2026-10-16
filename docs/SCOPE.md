@@ -1,10 +1,36 @@
-# What this milestone deliberately does not do
+# Delivery scope and remaining work
 
 Each entry below is scheduled rather than dropped, and says why it is not here yet. The
 distinction matters: a reader deciding whether to depend on this tool should be able to tell
 what was left out on purpose from what was overlooked.
 
 Section numbers refer to `docs/architecture.md`.
+
+## Tranche 2 status
+
+Tranche 1's record-and-generate release remains distinct from the Phase 2 acceptance outcome.
+The following map describes this tree and identifies separately reviewed prerequisites. A
+feature or an automated check is not by itself evidence that the whole milestone is complete.
+
+| Area | Available evidence or implementation | Still required |
+| --- | --- | --- |
+| Agent workflow | The policy-builder skill, plugin and MCP recording/synthesis tools. | An exercised clarification, permission review and wallet confirmation flow. |
+| Reference and contract checks | The reference suite, generated mutation suites, native contract tests and artifact verification. | Complete layer-by-layer execution evidence, state invariants and adversarial direct-call coverage; reference agreement alone does not prove installed behavior. |
+| Account authority | Bounded storage acquisition and pure authority analysis. The [authority-check PR](https://github.com/gateway-fm/oz-policy-builder/pull/57) adds the live operation and install intent on top of [preflight/execution](https://github.com/gateway-fm/oz-policy-builder/pull/48). | Integration of those prerequisites and wallet-owned trust/approval; endpoint observations are not authenticated ledger proofs. |
+| Testnet installation | The harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. | A wallet-product install and revoke flow, protected human approval, safe reconfiguration, and monitoring. Composed rules are refused. |
+| Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
+| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; the live harness uses the native SAC. | All three end-to-end protocol walkthroughs, including the relevant denials and adapter/code-hash evidence. |
+| Hosted MCP | Streamable HTTP exists; [the hosted-limits PR](https://github.com/gateway-fm/oz-policy-builder/pull/56) corrects body and build limits. | Deployment configuration and a deployed service with TLS, client authorization, worker isolation and operational evidence. |
+| Verification and demonstration | Existing Phase 1 gates; [the Phase 2 gate and guide](https://github.com/gateway-fm/oz-policy-builder/pull/55) are reviewed separately. | The complete acceptance run, public demonstration and video. |
+
+[TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) distinguishes historical
+observations from current checks and explains how to collect and review a new run. The
+[harness README](../testnet-harness/README.md) maps each wallet-flow step to what actually runs.
+In particular, the harness fills a checked template; it does not demonstrate synthesis of
+the grant. Passkey-owner support there does not change the toolkit's restriction on generated
+grants using External signers.
+
+## Implementation boundaries
 
 The source-reviewed account method inventory and its limits are described in
 [`ACCOUNT-METHOD-INVENTORY.md`](ACCOUNT-METHOD-INVENTORY.md).

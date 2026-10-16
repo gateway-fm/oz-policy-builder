@@ -75,6 +75,9 @@ file bytes, including whitespace in JSON; they are not the canonical spec hash o
 Wasm reproduction. Local records can be edited, and neither a zero exit nor this summary
 establishes authenticated ledger state or completion of the milestone.
 
+The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
+runs separately and gives the field-by-field review procedure for a new summary.
+
 ## Prerequisites
 
 - Node ≥ 22.12 (required by `@stellar/stellar-sdk` 17), `stellar` CLI 27.0.0, and the Rust
