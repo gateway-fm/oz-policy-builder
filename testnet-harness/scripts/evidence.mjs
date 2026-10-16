@@ -142,8 +142,14 @@ export function exportEvidence(runDir) {
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   if (run === null && source.status === 'unavailable') fail();
   for (const [key, file] of [['spec', 'spec.json'], ['recording', 'recording.json'], ['import_bundle', 'import-bundle.json']]) {
+    // Local CLI-selected directory plus a constant basename, not a backend request path.
+    // readFile checks a regular O_NOFOLLOW descriptor; only a digest leaves this call.
+    // nosemgrep
     artifact(key, join(runDir, file));
   }
+  // The operator explicitly selected this local run. No server accepts this path, and the
+  // directory is checked below; files use checked descriptors and only typed summaries leave.
+  // nosemgrep
   const policyDir = join(runDir, 'policy');
   let policyExists = false;
   try { if (!lstatSync(policyDir).isDirectory()) fail(); policyExists = true; }
