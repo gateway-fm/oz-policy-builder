@@ -18,6 +18,8 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("worker_launcher", ROOT / "deployment/worker-launcher.py")
@@ -28,6 +30,35 @@ SPEC.loader.exec_module(worker)
 def run(*args, timeout=30):
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=True)
     return result.stdout
+
+
+def runtime_probe(config):
+    """Diagnose only a fixed public fixture, before any source or canary enters a job.
+
+    Reuse the launcher's bounded reader while combining this probe's stderr/stdout.
+    Production launches continue discarding diagnostics. The exact containment flags and
+    independent deadline apply even to this no-input command, and cleanup is mandatory.
+    """
+    original_popen = subprocess.Popen
+
+    def with_diagnostics(*args, **kwargs):
+        kwargs["stderr"] = subprocess.STDOUT
+        return original_popen(*args, **kwargs)
+
+    name = "ozpb-job-" + uuid.uuid4().hex
+    command = worker.command(config, name, {"timeout_seconds": 1})
+    command[-1] = "/bin/true"
+    try:
+        with patch.object(worker.subprocess, "Popen", with_diagnostics):
+            status, output = worker.bounded(command, 45, 4096)
+        if status:
+            # ascii() keeps terminal control characters inert; no request/source is present.
+            print("fixed runtime probe failed:", status, ascii(output.decode("utf-8", errors="replace")), flush=True)
+            raise RuntimeError("fixed runtime probe failed")
+    finally:
+        if not worker.removed(name):
+            raise RuntimeError("fixed runtime probe cleanup failed")
+    print("exact runtime flags and entrypoint: passed", flush=True)
 
 
 def assert_no_job_processes(name, identities):
@@ -50,7 +81,14 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.image):
         parser.error("use the immutable local image ID, including sha256:")
+    status, raw_info = worker.bounded([worker.PODMAN, "info", "--format", "json"], 10, 1024 * 1024)
+    host = worker.decode(raw_info).get("host", {})
+    print("runtime capabilities:", json.dumps({"status": status,
+        "rootless": host.get("security", {}).get("rootless"),
+        "cgroup_version": host.get("cgroupVersion"),
+        "controllers": host.get("cgroupControllers")}), flush=True)
     worker.preflight()
+    print("rootless capability preflight: passed", flush=True)
     if subprocess.run([worker.PODMAN, "ps", "--all", "--filter", "label=org.ozpb.worker=true", "--quiet"],
                       stdout=subprocess.PIPE, check=True).stdout.strip():
         raise SystemExit("use a dedicated account with no existing worker jobs")
@@ -61,6 +99,7 @@ def main():
         canary.write_text("secret canary must not enter any worker")
         config = dict(image=args.image, timeout_seconds=600, cpus=2, memory_mib=4096,
                       pids=256, tmpfs_mib=3072, jobs=1)
+        runtime_probe(config)
         golden = ROOT / "contracts/golden-transfer-policy"
         files = {path: (golden / path).read_text() for path in worker.FILES if path != "rustfmt.toml"}
         files["rustfmt.toml"] = ""
