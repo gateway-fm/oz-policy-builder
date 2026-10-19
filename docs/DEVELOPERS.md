@@ -43,11 +43,52 @@ Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
 record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-The complete `dry_run`, live authority-surface check, and `prepare_install_intent` are
-scheduled operations, not CLI or MCP commands. `reference_suite` is layer-1 evidence only;
+The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
+check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
+built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
+advisory wherever they run. `reference_suite` is layer-1 evidence only;
 `verify` reproduces source and Wasm but does not perform live preflight. `evaluate_spec` is
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
+
+`preflight_transaction` is a separate network read for an exact transaction envelope
+carrying the intended authorization entries. It uses RPC authorization enforcement and
+reports the endpoint's simulation outcome at its reported ledger: `simulated_success`,
+`simulation_failed`, `restoration_required`, or `declared_resources_insufficient`. The last
+means the invocation succeeded in simulation but the envelope does not declare what it used:
+`insufficient_declared_resources` names each declared footprint list that is not exactly the
+simulated one (a key missing, extra, or repeated) and each disk-read or write limit below the
+simulated use, never the keys. The endpoint reports instructions and the resource fee only as
+padded estimates, so `below_endpoint_estimate` lists a declared value below either estimate as
+advice beside `simulated_success` or `declared_resources_insufficient`; it never changes the
+outcome, and `simulated_success` does not establish that the declared instructions and fee
+suffice. It does not establish that the generated policy is installed or selected, and it
+never commits writes.
+
+That does not make preflight consequence-free. Enforcement-mode simulation of a smart account
+needs signed `Address`-credential authorization entries, and a Soroban authorization signature
+covers the network ID, the entry's nonce, its `signatureExpirationLedger` and the authorized
+invocation, not the transaction or its source account. Anyone who holds a signed entry can put
+it in a transaction of their own and submit it until it expires, and simulation does not
+consume the nonce. The envelope reaches the RPC endpoint and, through MCP, the agent's
+transcript. Prefer testnet, or sign with a short `signatureExpirationLedger`, and run
+preflight from the CLI or a local stdio server against an RPC endpoint you trust. A hosted
+(`--http`) server refuses any envelope carrying transaction signatures or signed authorization
+entries with `E_UNSUPPORTED_ENVELOPE`, because the hosted service must never hold material
+that can authorize on a user's account (architecture §6.2, §6.5).
+
+An envelope refused before any request carries an input
+code in both shells: `E_RESOURCE_LIMIT` over the XDR size bound, `E_ENVELOPE_PARSE` when it
+is not one unbroken base64 string of transaction XDR, and `E_UNSUPPORTED_ENVELOPE` for a shape
+simulation does not take (not exactly one `InvokeHostFunction` operation, or a memo). `E_RPC`
+is left for the endpoint and its transport. Whitespace anywhere in the envelope is refused
+rather than skipped; the CLI removes only the envelope file's final line ending. The endpoint
+receives the canonical base64 of the bytes `envelope_xdr_sha256` hashes.
+
+Every reported outcome is a completed observation, not a command failure: the CLI exits 0 for
+`simulation_failed`, `restoration_required` and `declared_resources_insufficient` as well as
+for `simulated_success`, and the MCP tool returns them as results. A script must read
+`outcome`; a zero exit status says only that the endpoint answered.
 
 ### CLI
 
@@ -87,11 +128,24 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
 
+# Optional: simulate an exact envelope with its intended authorization entries.
+# Read it from a file so the base64 and signatures stay out of shell history/process arguments.
+# Signed entries are live authorizations until their signatureExpirationLedger: prefer testnet
+# or a short expiration, and an RPC endpoint you trust. This never submits the envelope, and
+# it reports endpoint state at one ledger, not an installed-policy or Safe verdict.
+# It exits 0 for every reported outcome, simulation_failed included: check `outcome`.
+ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
+  --rpc-url https://rpc.testnet.stellar.gateway.fm \
+  --network "Test SDF Network ; September 2015"
+
 ```
 
-The install-intent design in §4.8 requires exact installed bindings and a trusted `Safe`
-authority-surface verdict. No CLI command produces that verdict or intent yet; assembly,
-signing, and submission remain wallet-owned.
+The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant
+the authority check commits to, and never says "safe": the wallet that holds the owner key
+recomputes the check and decides (Decision D7). `ozpb check-policy-call-surface` produces the
+advisory authority answer; `ozpb prepare-install-intent` runs it and, only when nothing is
+refused and nothing is unresolved, prints the exact arguments with that answer attached.
+Assembly, signing, and submission remain wallet-owned.
 
 ### Reference-suite coverage gate
 
@@ -200,10 +254,13 @@ Three things it makes explicit, because each one broke a demo attempt:
 
 ### Verifying the pinned upstream trust anchors
 
-`ozpb_domain::pinned_upstream` holds the wasm hashes of three OpenZeppelin contracts — the
-spending-limit policy, the smart account, and the ed25519 verifier. The first two are Phase 1
-trust anchors. The verifier pin is retained for later work, but external-verifier signers are
-rejected in Phase 1 because a supplied verifier address is not yet bound to its observed Wasm.
+`ozpb_domain::pinned_upstream` holds the wasm hashes of four OpenZeppelin contracts — the
+spending-limit policy, the smart account, and the ed25519 and WebAuthn (passkey) verifiers. The
+first two are Phase 1 trust anchors. The verifiers are recognized by the authority check as
+owner verifiers only through the code observed at a signer's verifier address at the read
+ledger; the script also checks that both export only the reviewed verifier methods and import
+no ledger, contract-call or ledger-context host functions. A *spec* still cannot name an
+external-verifier signer for the new rule (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`).
 
 ```bash
 bash scripts/verify-pinned-upstream.sh    # clones the pinned tag, rebuilds, compares
@@ -213,9 +270,15 @@ Deliberately not part of `verify-phase1/2`: it clones and does a cold build of u
 workspace, which takes minutes. Run it when the pins change, when bumping the upstream tag, or
 when reviewing the trust anchors.
 
-Two things to know. **The hash depends on the compiler** — upstream's `rust-toolchain.toml`
+Three things to know. **The hash depends on the compiler** — upstream's `rust-toolchain.toml`
 says `channel = "stable"`, which floats, so the script forces this repository's pinned rustc;
 building with another one legitimately yields a different hash from identical source.
+**The account hash also depends on the build host** — it reproduces byte-for-byte only on Apple
+Silicon (`aarch64-apple-darwin`). Elsewhere the account Wasm differs only in function order,
+because Cargo hashes the build host into symbol names that rustc orders functions by
+([rust-lang/cargo#8140](https://github.com/rust-lang/cargo/issues/8140), fix pending in
+[rust-lang/cargo#17522](https://github.com/rust-lang/cargo/pull/17522)); the other two pins
+reproduce on every host tested.
 **Upstream publishes no wasm** — releases carry no assets and no deployed instance is blessed,
 so these are our reproducible builds of their source, and the registry entries say exactly
 that rather than claiming an upstream-signed artifact.
@@ -242,22 +305,57 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   `synthesize_policy`, `evaluate_spec`, `generate_code`.
 - **Available reference and verification tools** — `reference_suite` (layer 1 only) and
   `verify` (artifact reproduction with separately labeled limits).
-- **Scheduled, not exposed** — `dry_run`, `check_against_policy`,
-  `check_policy_call_surface`, `prepare_install_intent`. The full dry-run harness, live
-  authority-surface check, and install intent need their own evidence before exposure.
+- **Exact-envelope network evidence** — `preflight_transaction` reports one
+  authorization-enforcing RPC simulation; it does not identify an installed policy.
+- **Account authority (advisory)** — `check_policy_call_surface` reads, through an
+  operator-configured RPC source, who can change the account or reset the policies being
+  installed for one spec rule, with refusals, evidence gaps, exclusions and an
+  `authority_commitment`. It never says "safe": the wallet holding the owner key recomputes it
+  and decides (architecture §4.8, Decision D7).
+- **Install intent (advisory)** — `prepare_install_intent` runs the authority check itself
+  (same request) and, only when nothing is refused and nothing is unresolved, returns the
+  exact `add_context_rule` arguments derived from the grant the commitment covers, with the
+  answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
+  or submits.
+- **Scheduled, not exposed** — `dry_run`, `check_against_policy`. The full dry-run harness
+  needs its own evidence before exposure.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
+`check_policy_call_surface` and `prepare_install_intent` read through a source the operator
+names in `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
+"network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
+source; it never carries a URL.
+The source must be for the request's network, a hosted server also requires its URL on
+`OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
+`OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same
+map from `--rpc-sources` (or `OZPB_RPC_SOURCES_FILE`).
+
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
-(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set; it applies bearer auth, a request-size bound,
-and a global rate limit. The allowlist is a comma-separated list of the full `https://` URLs
-the record tools may reach: each entry is parsed as a URL, so a bare hostname is refused at
-startup rather than at first use. Terminate TLS
-and add per-client authorization at a reverse proxy in front of it. OS-level compile
-isolation, a no-secrets worker role, and per-tool quotas are still owed before genuine
-multi-tenant public hosting.
+(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
+full `https://` URLs the record tools may reach: each entry is parsed as a URL, so a bare
+hostname is refused at startup rather than at first use. Every request to `/v1/mcp` then
+passes three checks in order: the bearer token (`401`), a request quota (`429`) and a body
+bound (`413`). A request without the token spends no quota and its body is never read. Builds
+are bounded separately, by the build runner itself, because rmcp answers a tool call with a
+stream before the tool runs and a build outlives a client that disconnects:
+
+| Env | Default | What it bounds |
+|---|---|---|
+| `OZPB_HTTP_REQUESTS_PER_MINUTE` | 60 | HTTP requests admitted per fixed one-minute window, across all clients. A tool call is one request; opening a session takes several. A fixed window can admit up to twice the limit across a window boundary. |
+| `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
+| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks and install-intent planning. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
+
+Zero or a malformed value stops startup. Authority checks and install-intent planning also
+share a separate one-operation limit across all sessions, held until their blocking work
+ends even if a client disconnects. That limit is independent of build capacity; their binding
+rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
+`preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
+and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
+at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
+per-tool quotas are still owed before genuine multi-tenant public hosting.
 
 ## 2. How the synthesizer decides scope
 
@@ -312,7 +410,7 @@ the tests guide you (TDD: add the failing test first):
    Soroban environment. The committed Soroswap policy is a second generated example; its
    complete file set must match regeneration, and it builds as a standalone crate. Add
    explicit evaluator/contract cases for new constraints. End-to-end account
-   integration and live preflight remain separate work.
+   integration and policy-aware live preflight remain separate work.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove

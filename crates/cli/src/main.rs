@@ -15,6 +15,8 @@
 //!     --manifest ./generated/build-manifest.json
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
+mod authority;
+mod preflight;
 mod verification;
 
 use anyhow::{Context, Result};
@@ -104,6 +106,61 @@ enum Command {
         rpc_url: String,
         #[arg(long)]
         network: String,
+    },
+    /// Simulate an exact transaction envelope, including intended authorization entries.
+    /// Returns endpoint-reported, state-dependent evidence; never submits it. Signed entries
+    /// stay live authorizations until their signatureExpirationLedger: anyone who sees the
+    /// envelope, including the RPC endpoint, can submit them.
+    PreflightTransaction {
+        /// File containing base64 transaction envelope XDR (kept out of process arguments).
+        #[arg(long)]
+        envelope_file: PathBuf,
+        #[arg(long)]
+        rpc_url: String,
+        #[arg(long)]
+        network: String,
+    },
+    /// Read who can change the account or reset the policies being installed, for one spec rule
+    /// (network read through a configured RPC source). Advisory: it never says "safe"; the
+    /// wallet holding the owner key must recompute and decide. Exits 0 for any answer,
+    /// refused or not — read `refusals` and `unresolved`.
+    CheckPolicyCallSurface {
+        /// CheckPolicyCallSurfaceInput JSON (spec, rule_index, binding_set, signed registry
+        /// snapshot, account, network, rpc_source name).
+        #[arg(long)]
+        request: PathBuf,
+        /// Out-of-band root policy JSON for the signed registry snapshot.
+        #[arg(long, env = "OZPB_REGISTRY_ROOTS_FILE")]
+        registry_roots: PathBuf,
+        /// Persisted minimum accepted snapshot version (anti-rollback floor).
+        #[arg(long, env = "OZPB_REGISTRY_MIN_VERSION")]
+        registry_min_version: u64,
+        /// JSON map of source name to {rpc_url, network_passphrase}. The request names a
+        /// source; it never carries a URL.
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+        /// Print the plain-words reading instead of JSON.
+        #[arg(long, default_value_t = false)]
+        text: bool,
+        #[command(flatten)]
+        build: BuildConfigArgs,
+    },
+    /// Run the live authority check and, only when nothing is refused or unresolved, print the
+    /// exact `add_context_rule` arguments with the answer they were checked against. Never signs
+    /// or submits; the wallet holding the owner key recomputes the check and decides. A refusal or an
+    /// unresolved item exits non-zero with every finding.
+    PrepareInstallIntent {
+        /// The same request as `check-policy-call-surface`.
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_ROOTS_FILE")]
+        registry_roots: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_MIN_VERSION")]
+        registry_min_version: u64,
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+        #[command(flatten)]
+        build: BuildConfigArgs,
     },
     /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
     /// incomplete without the transaction result XDR).
@@ -263,6 +320,41 @@ fn main() -> Result<()> {
             let out = record(&snapshot, RecordOptions::default())?;
             print_json(&out)?;
         }
+        Command::PreflightTransaction {
+            envelope_file,
+            rpc_url,
+            network,
+        } => preflight::run(rpc_url, network, envelope_file)?,
+        Command::CheckPolicyCallSurface {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            text,
+            build,
+        } => authority::check(
+            authority::AuthorityArgs {
+                request,
+                registry_roots,
+                registry_min_version,
+                rpc_sources,
+                build_config: build.resolve()?,
+            },
+            text,
+        )?,
+        Command::PrepareInstallIntent {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build,
+        } => authority::intent(authority::AuthorityArgs {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build_config: build.resolve()?,
+        })?,
         Command::Import { bundle } => {
             let out = ozpb_toolkit::import_recording(
                 &read_import_document(&bundle)?,
@@ -370,7 +462,7 @@ fn main() -> Result<()> {
             std::fs::create_dir_all(&out)?;
             let (snapshot_json, roots_json) = ozpb_registry::dev::dev_trust_files(
                 ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
-                1,
+                ozpb_registry::dev::SIGNED_EXAMPLE_VERSION,
             )
             .map_err(|e| anyhow::anyhow!("building the development trust files: {e}"))?;
             let snapshot_path = out.join("registry.signed.json");
@@ -570,5 +662,22 @@ mod tests {
             }
             _ => panic!("expected the Generate subcommand"),
         }
+    }
+
+    #[test]
+    fn preflight_is_an_explicit_network_read_command() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "ozpb",
+            "preflight-transaction",
+            "--envelope-file",
+            "envelope.xdr.base64",
+            "--rpc-url",
+            "https://rpc.example",
+            "--network",
+            "Test SDF Network ; September 2015",
+        ])
+        .expect("preflight command");
+        assert!(matches!(cli.command, Command::PreflightTransaction { .. }));
     }
 }

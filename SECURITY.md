@@ -29,12 +29,15 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
 - Recordings that cross the synthesis boundary as JSON are downgraded to `self_supplied`. A
   caller cannot mint the stronger `rpc_reported` label, and self-supplied evidence is not
   presented as RPC attestation.
-- External-verifier signers are rejected outright, because nothing at authorization time
-  binds a verifier address to the executable a registry recognizes.
+- A spec cannot name an external-verifier signer for a new rule, because nothing at
+  authorization time binds a verifier address to the executable a registry recognizes. The
+  authority check accepts an existing external owner only through the code observed at its
+  verifier address at the read ledger, and only for reviewed immutable, stateless verifiers.
 - The reference evaluator models the generated scope policy. It returns `indeterminate`, never
   a whole-composition `permit`, when an attached reviewed policy is not modelled.
-- The local build runner bounds environment, inputs, outputs, concurrency and time. It is not
-  a multi-tenant sandbox and is not offered as one.
+- The local build runner bounds environment, inputs, outputs and time, and on a hosted
+  (`--http`) server the number of builds running at once. It is not a multi-tenant sandbox
+  and is not offered as one.
 - Nothing in this toolkit signs, submits, or deploys, and it holds no keys.
 - No independent third-party audit has been performed. The evidence that has actually been
   run is in `docs/TESTNET-EVIDENCE.md`, and `docs/SCOPE.md` says what deliberately has not been

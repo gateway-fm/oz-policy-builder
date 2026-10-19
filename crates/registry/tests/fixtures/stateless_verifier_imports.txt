@@ -1,0 +1,21 @@
+# Host functions an owner verifier may import (soroban-env-common 26.1.3 env.json names).
+# No `l` (ledger: storage, own code, deployment), no `d` (calls into other contracts), and
+# from `x` (context) only comparison and failing. Checked by scripts/check-wasm-imports.py.
+b.0  # buf::deserialize_from_bytes
+b.1  # buf::bytes_copy_to_linear_memory
+b.2  # buf::bytes_copy_from_linear_memory
+b.3  # buf::bytes_new_from_linear_memory
+b.6  # buf::bytes_get
+b.8  # buf::bytes_len
+b.f  # buf::bytes_slice
+b.i  # buf::string_new_from_linear_memory
+c.0  # crypto::verify_sig_ed25519
+c.3  # crypto::verify_sig_ecdsa_secp256r1
+c._  # crypto::compute_hash_sha256
+m.a  # map::map_unpack_to_linear_memory
+v.1  # vec::vec_get
+v.3  # vec::vec_len
+v.6  # vec::vec_push_back
+v._  # vec::vec_new
+x.0  # context::obj_cmp
+x.5  # context::fail_with_error
