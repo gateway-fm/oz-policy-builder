@@ -147,6 +147,31 @@ advisory authority answer; `ozpb prepare-install-intent` runs it and, only when 
 refused and nothing is unresolved, prints the exact arguments with that answer attached.
 Assembly, signing, and submission remain wallet-owned.
 
+### Reference-suite coverage gate
+
+`all_agree` covers the generated policy's modeled semantics. It does not establish the
+behavior of a composed reviewed policy. CI checks the subscription example's report against
+an exact list of acknowledged layer-1 gaps:
+
+```bash
+python3 scripts/check-unmodeled-acknowledged.py --run \
+  scripts/layer1-unmodeled-acknowledged.txt subscription=docs/examples/subscription-spec.json
+```
+
+The command runs and checks every declared `label=spec-path` pair; producer failures stop it.
+It reads each input spec to require the complete rule-index set and the exact number of each
+reviewed-policy kind in the evidence. Spec and acknowledgement paths both resolve from the
+caller's working directory; Cargo runs in the repository workspace.
+It reconciles summary fields, coverage counts, and policy gaps against the detailed evidence.
+Each declared rule needs an original permit and a denial control, and every required class
+needs an outcome for that rule. New gaps, stale acknowledgements, or entries naming an
+undeclared spec fail. Repeated policy kinds require one acknowledgement per instance.
+Permit-only classes remain visible as limitations. An acknowledgement records what layer 1
+does not test; it never waives a disagreement or proves the reviewed policy's on-chain behavior.
+Add examples to the same invocation so no declared example can go unchecked. The stdin and
+`--known-specs` modes are lower-level inspection helpers, not a complete gate. The checker
+validates local report consistency, not imported evidence authenticity.
+
 ### Build configuration (operator-side)
 
 `generate` and `verify` compile the policy and accept the same build flags (each with an
@@ -194,7 +219,11 @@ whose callers should not have to carry a signed document around;
 `docs/examples/` holds runnable inputs, some of which feed a later walkthrough rather than
 the Tranche-1 demo. `bash scripts/verify-phase1.sh` is the strict first-milestone release
 gate; `bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
-`verify-phase2.sh` belongs to Tranche 2.
+`bash scripts/verify-phase2.sh` extends the release gate with focused Tranche 2 evidence checks
+and a Soroswap Wasm build; `--offline` explicitly omits the release-only checks. For a shorter
+run, `bash scripts/check-phase2-evidence.sh` checks the named reference, MCP, and partial layer-2
+cases. None of these commands establishes full Tranche 2 acceptance: the
+[Tranche 2 guide](TRANCHE-2-VERIFICATION.md) lists the separate live evidence requirements.
 
 ### Demonstrating the Tranche-1 outcome
 
