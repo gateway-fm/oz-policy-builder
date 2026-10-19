@@ -82,8 +82,8 @@ if (authorityCheck) {
     : [{ classic_account: run.owner.address }];
   checker = {
     runner: cliCheckRunner({
-      // A built `ozpb` that has the check commands; this tree's own CLI does not. It must be the
-      // one `ozpb generate` ran with, or the check's rebuild of the policy will not match.
+      // Use a built `ozpb` with the authority commands from this tree. It must be the same
+      // binary used by `ozpb generate`, so the check's rebuild uses matching build inputs.
       command: [env('OZPB_BIN')],
       registryRoots: env('OZPB_REGISTRY_ROOTS_FILE'),
       registryMinVersion: env('OZPB_REGISTRY_MIN_VERSION'),
