@@ -115,12 +115,18 @@ WASMS=("$RUN"/policy/*.wasm)
 
 say "4. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
+node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"
 
 say "5. permit exactly the recorded transfer, once; deny the rest"
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect permit
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$((AMOUNT + 1))" --to "$RECIPIENT" --expect deny:6
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$OTHER" --expect deny:6
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect deny:7
+
+say "6. inspect the grant, revoke it as owner, and require the account to refuse the removed rule"
+node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"
+node "$SCRIPTS/lifecycle.mjs" --run-dir "$RUN"
+node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect deny-account:3000
 
 say "done"
 echo "  account  https://stellar.expert/explorer/testnet/contract/$(field account)  (owner: $OWNER)"

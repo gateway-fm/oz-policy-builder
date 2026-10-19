@@ -44,6 +44,12 @@ One run, on fresh throwaway keys:
    - One stroop more is refused with the policy's `NoTupleMatched` (#6).
    - Another recipient is refused with #6.
    - The exact transfer a second time is refused with `CallCountExceeded` (#7).
+6. **observe/revoke** reads the installed grant and its account/policy code pins, then has
+   the owner sign removal of exactly that rule. It verifies the pinned account's removal
+   event, checks that the rule is absent and separately observes policy cleanup. A final
+   delegate attempt must fail with the account's `ContextRuleNotFound` (#3000). The already
+   exhausted policy's #7 does not satisfy that control. The earlier installation record is
+   retained alongside the removal journal.
 
 Every address, transaction hash and outcome goes into `runs/<timestamp>-<pid>/run.json`, which
 is gitignored. The run directory also holds the import bundle, RPC recording, explicit decisions, synthesis
@@ -92,6 +98,9 @@ The export labels the pipeline as `recorded` only when its completion record exi
 RPC acquisition trust separate from the synthesis boundary's `self_supplied` trust and reports
 artifact reproduction separately from current-network preflight. These remain editable local
 observations. Older runs say `not_recorded`; they do not acquire results from the new pipeline.
+Lifecycle records likewise distinguish a confirmed removal transaction, its checked event,
+the rule readback and best-effort policy cleanup. A later readback failure does not erase the
+confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
 
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
@@ -232,6 +241,9 @@ node invoke.mjs --run-dir R --signer owner --rule 0 --amount 10000000 --to <reci
 node synthesis-flow.mjs --run-dir R          # real record/synthesis/reference/build/verify
 node install.mjs --run-dir R --wasm R/policy/<name>.wasm
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect permit
+node monitor.mjs --run-dir R                  # read-only grant/code observation; no signing key
+node lifecycle.mjs --run-dir R                # owner signs removal; needs the run's keys
+node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
 
 CI runs both this suite and `npm test` in `testnet-harness/browser`, with locked dependencies
@@ -239,6 +251,23 @@ and pinned Node. The installer tests run the real local CLI (`OZPB_BIN`, or Carg
 the RPC and key boundaries; they require the Rust dependencies to be cached for offline use.
 The browser suite tests the passkey modules without launching a browser. Neither suite signs
 or submits a live transaction.
+
+`monitor.mjs` is a one-shot configuration observation, not a background service. It checks
+this rule's target, name, expiry, signer and policy identities and the account/policy code pins.
+Each account-code, policy-code and rule read retains its own RPC ledger number. These are
+explicitly non-atomic observations, not a common-ledger snapshot or authenticated proof.
+It records drift or unavailable observations and fails closed; it does not enumerate the
+account's complete authority surface or prevent changes after its reads. The wrapper runs it
+after installation and before removal. Full wallet-owned call-surface monitoring remains required.
+
+The removal decoder follows the exact pinned account's embedded event specification, captured
+in `scripts/fixtures/context-rule-removed-spec.json`: `context_rule_removed`, a `u32` rule topic,
+and an empty map. The release's function comment says `[]`, but the compiled event's
+`data_format` is `map`. It checks the successful transaction/envelope identity, the exact
+removal call, event contract and rule, and refuses missing or conflicting removal events.
+OpenZeppelin's pinned removal implementation attempts policy uninstall on a best-effort basis,
+so a removed rule and a policy still reporting installed are distinct outcomes. The journal
+retains both. Neither these offline controls nor the executable flow is a new live observation.
 
 `invoke.mjs --expect deny:<code>` passes only if both of these hold:
 
@@ -264,6 +293,10 @@ when the WebAuthn verifier contract raised it.
 - The account then permits the exact recorded call once.
 - It refuses the call with a changed amount, with a changed recipient, and past the call cap.
   Each refusal is the policy's own published error code.
+
+The new default wrapper also exercises owner removal and a post-removal denial, but those
+steps still need a reviewed live run at this revision. They are not part of the historical
+October 15 observations described below.
 
 **Not shown, or not as you might assume:**
 
@@ -436,6 +469,11 @@ and what does not.
   - Does not run: installing into a stock pollywallet account. Its account wasm is not pinned and
     its verifier does not reproduce from our pinned inputs. pollywallet's UI cannot create the
     pinned account either, because it deploys its own wasm through its own relayer.
+- **revoke and observe.** The wrapper now removes its own grant through owner authorization,
+  verifies the removal event and checks a delegate denial attributed to the missing account
+  rule. It separately observes policy cleanup and grant/code drift. This is an executable
+  harness path awaiting current live evidence, not pollywallet's protected revocation UI or
+  the complete post-install call-surface monitoring requirement.
 
 The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<pid>/` unless
 `OZPB_HARNESS_OUT` says otherwise). Every transaction hash in it can be looked up at

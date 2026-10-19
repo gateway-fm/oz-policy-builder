@@ -71,6 +71,7 @@ function invocation(value) {
     signer: choice(v.signer, ['owner', 'delegate']), rule: uint(v.rule),
     amount: amount(v.amount), to: address(v.to), result,
   };
+  if (v.control !== undefined) common.control = choice(v.control, ['post_revocation']);
   if (result === 'permit') {
     if (v.code !== undefined || v.enforcer !== undefined) fail();
     return { ...common, observation: 'submitted_transaction', transaction: hash(v.hash) };
@@ -151,6 +152,47 @@ function pipelineRecord(value, run) {
   };
 }
 
+function lifecycleRecord(value, run) {
+  if (value === undefined) return { status: 'not_recorded', removals: [], configuration_checks: [] };
+  const journal = object(value);
+  if (!run || !Array.isArray(journal.removals) || journal.removals.length > 100) fail();
+  const removals = journal.removals.map((entry) => {
+    const r = object(entry);
+    const rule = uint(r.rule_id);
+    if (rule === 0 || rule !== run.rule_id) fail();
+    const event = choice(r.event, ['not_verified', 'verified']);
+    const readback = choice(r.rule_readback, ['not_checked', 'absent', 'still_present']);
+    const cleanup = choice(r.policy_cleanup, ['not_checked', 'not_installed', 'still_installed']);
+    const ledger = r.ledger === null ? null : uint(r.ledger);
+    if ((event === 'verified' && !ledger) || (readback !== 'not_checked' && event !== 'verified')
+      || (cleanup !== 'not_checked' && readback !== 'absent')) fail();
+    return { rule_id: rule, transaction: hash(r.transaction), ledger, event,
+      rule_readback: readback, policy_cleanup: cleanup };
+  });
+  const checks = journal.configuration_checks ?? [];
+  if (!Array.isArray(checks) || checks.length > 100) fail();
+  return {
+    status: 'recorded', removals,
+    configuration_checks: checks.map((entry) => {
+      const c = object(entry);
+      const configuration = choice(c.configuration, ['matched', 'drift_or_unavailable']);
+      if (configuration === 'drift_or_unavailable') {
+        if (c.read_ledgers !== null) fail();
+        return { configuration, read_ledgers: null };
+      }
+      const rule = uint(c.rule_id);
+      if (rule !== run.rule_id || c.account_code_hash !== run.account_code_hash
+        || c.policy_code_hash !== run.policy_wasm_hash) fail();
+      if (Object.hasOwn(c, 'ledger')) fail();
+      const ledgers = object(c.read_ledgers);
+      if (!ledgers.account_code || !ledgers.policy_code || !ledgers.rule) fail();
+      return { configuration, observation: choice(c.observation, ['non_atomic']),
+        read_ledgers: { account_code: uint(ledgers.account_code), policy_code: uint(ledgers.policy_code), rule: uint(ledgers.rule) }, rule_id: rule,
+        account_code_hash: hash(c.account_code_hash), policy_code_hash: hash(c.policy_code_hash) };
+    }),
+  };
+}
+
 export function exportEvidence(runDir) {
   if (!lstatSync(runDir).isDirectory()) fail();
   const artifacts = {};
@@ -160,7 +202,9 @@ export function exportEvidence(runDir) {
     return bytes;
   }
   const decode = (bytes) => bytes === null ? undefined : JSON.parse(bytes.toString('utf8'));
-  const run = runRecord(decode(artifact('run', join(runDir, 'run.json'))));
+  const rawRun = decode(artifact('run', join(runDir, 'run.json')));
+  const run = runRecord(rawRun);
+  const lifecycle = lifecycleRecord(rawRun?.lifecycle, run);
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   const pipeline = pipelineRecord(decode(artifact('pipeline', join(runDir, 'pipeline.json'))), run);
   if (run === null && source.status === 'unavailable') fail();
@@ -198,7 +242,7 @@ export function exportEvidence(runDir) {
       'Authority trust, when used, is operator-supplied test configuration.',
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
-    provenance: source, run, pipeline, artifacts,
+    provenance: source, run, pipeline, lifecycle, artifacts,
   };
 }
 

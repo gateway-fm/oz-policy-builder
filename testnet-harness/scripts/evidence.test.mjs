@@ -80,6 +80,39 @@ test('old runs do not acquire synthesized or verified status', (t) => {
   assert.deepEqual(exportEvidence(setup(t)).pipeline, { status: 'not_recorded' });
 });
 
+test('exports confirmed removal separately from installation and best-effort policy cleanup', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 20,
+    event: 'verified', rule_readback: 'absent', policy_cleanup: 'still_installed', secret: SENTINEL }],
+  configuration_checks: [{ configuration: 'matched', observation: 'non_atomic',
+    read_ledgers: { account_code: 17, policy_code: 18, rule: 19 }, rule_id: 1,
+    account_code_hash: HASH, policy_code_hash: wasmHash, private_note: SENTINEL }] };
+  run.invocations.push({ signer: 'delegate', rule: 1, amount: run.amount, to: run.recipient,
+    result: 'deny', code: 3000, enforcer: run.account, control: 'post_revocation' });
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.run.installation, 'recorded');
+  assert.equal(report.lifecycle.removals[0].policy_cleanup, 'still_installed');
+  assert.equal(report.lifecycle.removals[0].rule_readback, 'absent');
+  assert.equal(report.run.invocations.at(-1).control, 'post_revocation');
+  assert.equal(report.lifecycle.configuration_checks[0].configuration, 'matched');
+  assert.deepEqual(report.lifecycle.configuration_checks[0].read_ledgers, { account_code: 17, policy_code: 18, rule: 19 });
+  assert.equal(Object.hasOwn(report.lifecycle.configuration_checks[0], 'ledger'), false);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+  run.lifecycle.configuration_checks[0].ledger = 19;
+  assert.throws(() => exportEvidence(setup(t, run)), 'a synthetic common ledger is refused');
+});
+
+test('retains incomplete removal observations but rejects contradictory cleanup states', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 20,
+    event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked' }] };
+  const dir = setup(t, run);
+  assert.equal(exportEvidence(dir).lifecycle.removals[0].event, 'not_verified');
+  run.lifecycle.removals[0].policy_cleanup = 'not_installed';
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir));
+});
+
 test('refuses a pipeline claiming stronger synthesis trust or a different account', (t) => {
   const run = fixture();
   run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });

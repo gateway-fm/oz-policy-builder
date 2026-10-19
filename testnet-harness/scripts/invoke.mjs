@@ -41,6 +41,11 @@ if (!Number.isInteger(ruleId)) throw new Error('no rule id: pass --rule, or run 
 const amount = BigInt(opts.amount);
 const to = opts.to;
 const expect = opts.expect;
+const postRevocation = expect === 'deny-account:3000';
+if (postRevocation && (signerName !== 'delegate' || !run.lifecycle?.removals?.some((r) =>
+  r.rule_id === ruleId && r.event === 'verified' && r.rule_readback === 'absent'))) {
+  throw new Error('account-denial control requires the delegate and a confirmed removal of this rule');
+}
 
 const payer = loadKey('payer');
 const wrongChallenge = opts['wrong-challenge'] === 'yes';
@@ -49,7 +54,7 @@ if (opts['wrong-challenge'] !== undefined && (!wrongChallenge || signerName !== 
 }
 const signer = signerName === 'owner' ? await ownerSigner(run, { wrongChallenge }) : loadKey(signerName);
 // The contract whose own error code counts as the refusal: the verifier for the control, else the policy.
-const enforcer = wrongChallenge ? run.owner.verifier : run.policy;
+const enforcer = wrongChallenge ? run.owner.verifier : postRevocation ? run.account : run.policy;
 
 const transferArgs = [new Address(run.account).toScVal(), new Address(to).toScVal(), i128(amount)];
 const transfer = (auth) => Operation.invokeContractFunction({
@@ -82,21 +87,22 @@ try {
 } catch (e) {
   if (!(e instanceof SimulationError)) throw e;
   const code = enforcer ? policyDenial(e.error, run.account, enforcer) : null;
-  const who = wrongChallenge ? 'verifier' : 'policy';
+  const who = wrongChallenge ? 'verifier' : postRevocation ? 'account' : 'policy';
   outcome = { result: 'deny', enforcer: enforcer ?? null, code, host: e.error.split('\n')[0] };
   log(`DENIED     ${label}  ${who} error ${code === null ? `(none: not raised by the ${who})` : `#${code}`}`);
   log(`           ${outcome.host}`);
 }
 
 // Kept in the run directory, so the evidence of each attempt outlives the terminal.
-const record = { label, signer: signerName, rule: ruleId, amount: amount.toString(), to, ...outcome };
+const record = { label, signer: signerName, rule: ruleId, amount: amount.toString(), to,
+  ...(postRevocation ? { control: 'post_revocation' } : {}), ...outcome };
 run.invocations = [...(run.invocations ?? []), record];
 writeJson(join(opts['run-dir'], 'run.json'), run);
 
 if (expect) {
   const ok = expect === 'permit'
     ? outcome.result === 'permit'
-    : outcome.result === 'deny' && `deny:${outcome.code}` === expect;
+    : outcome.result === 'deny' && `${postRevocation ? 'deny-account' : 'deny'}:${outcome.code}` === expect;
   if (!ok) {
     console.error(`UNEXPECTED: wanted ${expect}, got ${outcome.result}${outcome.code ? `:${outcome.code}` : ''}`);
     process.exit(1);

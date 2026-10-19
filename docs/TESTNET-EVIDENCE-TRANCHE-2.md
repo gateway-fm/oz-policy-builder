@@ -99,6 +99,12 @@ disagreements and any reproduction mismatch, including a zero-exit `verify` resp
 reports locally. This new executable path does not retrospectively change the historical
 manual-template observations in section 4 and needs its own reviewed live run.
 
+The wrapper now also observes the installed grant's configuration, removes it through owner
+authorization and requires a post-removal delegate denial from the account's missing-rule
+check. It verifies the pinned removal event and records policy cleanup separately, because
+the account's uninstall calls are best effort. These lifecycle steps also await reviewed
+current live evidence; they do not demonstrate a delivered wallet's protected revoke screen.
+
 Use the harness README's prerequisites and its explicit testnet commands. Choose an empty
 output directory. The harness spends testnet XLM, creates contracts, and uses throwaway keys.
 For an authority run, configure the compatible CLI, signed snapshot, roots, RPC sources and
@@ -128,6 +134,7 @@ Review these fields before sharing the summary:
 | `run.authority` | `rechecked`, `refused`, or `not_recorded`. The last means no decision was recorded, not that an account is safe. Refusal text and operator identities are omitted from this summary. |
 | `run.invocations` | Separate owner controls from delegate calls; inspect arguments, selected rule, result and error attribution. A null denial code is not an attributed policy refusal. Simulation denials have no transaction ID. |
 | `pipeline` | A `recorded` completion record describes the new CLI chain. Check the distinct RPC acquisition and `self_supplied` synthesis identities; trust downgrade changes the recording hash. Artifact reproduction remains separate from current-network preflight. Older runs say `not_recorded`. |
+| `lifecycle` | Check removal transaction, event, absent-rule and policy-cleanup observations separately. Configuration reads carry distinct RPC ledger numbers and are non-atomic; a match covers the recorded rule and code pins, not the whole authority surface. `post_revocation` invocation controls retain their actual result, including a failure to obtain the expected denial. |
 | `artifacts` | Digests of available run, provenance, spec, recording, import bundle, manifest and Wasm bytes. Missing artifacts remain missing. JSON file digests are not canonical spec hashes. |
 
 No field makes the summary an acceptance verdict. The exporter checks types and selected

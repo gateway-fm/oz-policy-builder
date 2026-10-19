@@ -81,11 +81,14 @@ export async function submit(payer, operation, { stage = 'submit' } = {}) {
   if (sent.status === 'ERROR') {
     throw new Error(`${stage}: sendTransaction ERROR ${sent.errorResult?.toXDR?.('base64') ?? ''}`);
   }
+  const expectedHash = assembled.hash().toString('hex');
+  if (sent.hash !== expectedHash) throw new Error(`${stage}: RPC returned another transaction identity`);
   const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
   }
-  return { hash: sent.hash, returnValue: done.returnValue };
+  if (done.txHash !== expectedHash) throw new Error(`${stage}: confirmed transaction identity differs`);
+  return { hash: sent.hash, returnValue: done.returnValue, receipt: done };
 }
 
 /** Run a recording simulation and return the auth entries the network says the call needs. */
@@ -100,27 +103,54 @@ export async function recordAuth(payer, operation, stage) {
 
 /** Simulate a read-only call and return its value as an ScVal. Nothing is signed or sent. */
 export async function viewCall(payer, contract, fn, fnArgs = []) {
+  return (await viewCallObservation(payer, contract, fn, fnArgs)).value;
+}
+
+const readLedger = (ledger) => {
+  if (!Number.isSafeInteger(ledger) || ledger < 1 || ledger > 0xffff_ffff) throw new Error('RPC read lacks a valid ledger');
+  return ledger;
+};
+
+/** Retain this simulation's own ledger; separate reads do not form an atomic snapshot. */
+export async function viewCallObservation(payer, contract, fn, fnArgs = []) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
     .setTimeout(60).build();
   const sim = await server.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
-  return sim.result.retval;
+  return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
 }
 
 /** The wasm hash a contract instance runs, as the network reports it. */
 export async function contractCodeHash(contractId) {
+  return (await contractCodeObservation(contractId)).value;
+}
+
+/** Retain the ledger reported by this instance-entry read. */
+export async function contractCodeObservation(contractId) {
   const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
     contract: new Address(contractId).toScAddress(),
     key: xdr.ScVal.scvLedgerKeyContractInstance(),
     durability: xdr.ContractDataDurability.persistent,
   }));
-  const { entries } = await server.getLedgerEntries(key);
+  const { entries, latestLedger } = await server.getLedgerEntries(key);
   if (entries.length !== 1) throw new Error(`no instance entry for ${contractId}`);
-  const exec = entries[0].val.contractData.val.instance.executable;
+  const ledger = readLedger(latestLedger);
+  const entry = entries[0];
+  const sameXdr = (actual, expected) => actual?.toXDR && Buffer.from(actual.toXDR()).equals(Buffer.from(expected.toXDR()));
+  const data = entry.val.contractData;
+  if (!sameXdr(entry.key, key) || entry.val.type !== 'contractData'
+    || !data || !sameXdr(data.contract, key.contractData.contract) || !sameXdr(data.key, key.contractData.key)
+    || data.durability?.name !== 'persistent' || data.val?.type !== 'scvContractInstance') {
+    throw new Error(`RPC returned another instance entry for ${contractId}`);
+  }
+  if (readLedger(entry.lastModifiedLedgerSeq) > ledger || readLedger(entry.liveUntilLedgerSeq) < ledger) {
+    throw new Error(`RPC returned expired or inconsistent instance metadata for ${contractId}`);
+  }
+  const exec = data.val.instance.executable;
   if (exec.type !== 'contractExecutableWasm') throw new Error(`${contractId} is not a wasm contract (${exec.type})`);
-  return Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex');
+  return { value: Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex'), ledger };
 }
 
 export const contractIdOf = (scv) => {
