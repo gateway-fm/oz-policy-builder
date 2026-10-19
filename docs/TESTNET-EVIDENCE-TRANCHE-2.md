@@ -51,11 +51,10 @@ those changes have their own offline regression tests.
 
 The default harness creates the account itself and does not ask for an authority verdict.
 The optional path requires an `ozpb` binary containing `check-policy-call-surface` and
-`prepare-install-intent`, supplied by
-[the authority check](https://github.com/gateway-fm/oz-policy-builder/pull/57), whose base is
-[the preflight and execution work](https://github.com/gateway-fm/oz-policy-builder/pull/48).
-Those operations are not supplied by this harness branch. An external CLI digest identifies
-the selected binary; it does not attest to its source revision.
+`prepare-install-intent`; both commands are included in this checkout. Build the selected
+binary from the revision being tested and configure its trust inputs as the harness README
+describes. An external CLI digest identifies the selected binary; it does not attest to its
+source revision.
 
 ## 5. Browser and wallet observations
 
@@ -87,9 +86,8 @@ cargo test --locked -p ozpb-mcp-server --test mcp_stdio_verification
 
 Those tests cover the named tools' schemas, reference responses and structured errors. They
 do not deploy a hosted endpoint or complete a successful real-builder `verify` round trip.
-The separate [Phase 2 verification changes](https://github.com/gateway-fm/oz-policy-builder/pull/55)
-provide the focused automated gate and its reviewer guide. They are an independent stack;
-the evidence exporter does not require them.
+The [Phase 2 verification guide](TRANCHE-2-VERIFICATION.md) describes the focused automated
+gate included in this tree. The evidence exporter can run independently of that gate.
 
 ## 7. Capture and review a new run
 

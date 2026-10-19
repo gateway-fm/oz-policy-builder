@@ -1,9 +1,9 @@
 //! rmcp stdio MCP server (architecture §4.6, §4.11).
 //!
-//! A thin shell: every `#[tool]` is a wrapper over `ozpb_toolkit`, with types from
-//! `ozpb_api_types` so input/output JSON Schemas are generated from the same structs the
-//! core consumes. No domain logic lives here. Tools are stateless; annotations mark the
-//! read/pure/mutating nature per §4.6 (record_* touch the network; the rest are pure).
+//! A thin shell over `ozpb_toolkit` for policy operations and `ozpb_source_rpc` for
+//! network observations, with wire types from `ozpb_api_types`. Recording and exact-envelope
+//! preflight read the selected RPC endpoint; generation and verification may build Wasm.
+//! No domain logic or transaction submission lives here.
 //!
 //! Deployment and signing are deliberately NOT capabilities of this server.
 
@@ -22,6 +22,9 @@ use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+mod authority;
+mod http;
+mod preflight;
 mod verification;
 
 #[derive(Clone)]
@@ -77,6 +80,13 @@ struct PolicyBuilderServer {
     tool_router: ToolRouter<Self>,
     registry_trust: Option<ozpb_toolkit::RegistryTrust>,
     rpc_policy: Option<RpcEndpointPolicy>,
+    /// Operator-named RPC sources for state reads that must not take a URL from the client
+    /// (`OZPB_RPC_SOURCES_JSON`). Empty when the operator configured none.
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
+    /// Slots for authority reads (which may build and always read the network) on a hosted
+    /// server. Held by the blocking work itself, so a caller who gives up does not free the
+    /// slot while the work still runs. `None` on stdio: one user, their own machine.
+    authority_slots: Option<Arc<tokio::sync::Semaphore>>,
     /// Operator-side build settings. Unlike `rpc_policy` this is not optional: every
     /// transport needs a builder, and the wire contract carries no build fields — a
     /// caller-chosen timeout would be resource exhaustion and a caller-chosen builder path
@@ -88,12 +98,20 @@ impl PolicyBuilderServer {
     fn new(
         registry_trust: Option<ozpb_toolkit::RegistryTrust>,
         rpc_policy: Option<RpcEndpointPolicy>,
+        rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
         build_config: ozpb_toolkit::BuildConfig,
     ) -> Self {
         Self {
-            tool_router: Self::tool_router() + Self::verification_tool_router(),
+            tool_router: Self::tool_router()
+                + Self::verification_tool_router()
+                + Self::preflight_tool_router()
+                + Self::authority_tool_router(),
+            authority_slots: rpc_policy
+                .as_ref()
+                .map(|_| Arc::new(tokio::sync::Semaphore::new(1))),
             registry_trust,
             rpc_policy,
+            rpc_sources,
             build_config,
         }
     }
@@ -104,6 +122,19 @@ impl PolicyBuilderServer {
             None => Ok(requested.to_string()),
         }
     }
+}
+
+/// Construct hosted resources once, then clone them into each rmcp session. Creating a new
+/// server inside the closure would give every client its own authority-work budget.
+fn http_session_factory(
+    registry_trust: Option<ozpb_toolkit::RegistryTrust>,
+    rpc_policy: RpcEndpointPolicy,
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
+    build_config: ozpb_toolkit::BuildConfig,
+) -> impl Fn() -> Result<PolicyBuilderServer, std::io::Error> {
+    let server =
+        PolicyBuilderServer::new(registry_trust, Some(rpc_policy), rpc_sources, build_config);
+    move || Ok(server.clone())
 }
 
 /// Map a toolkit ToolError into an rmcp tool-execution error carrying the structured
@@ -131,6 +162,11 @@ fn rpc_tool_err(error: ozpb_source_rpc::RpcError) -> ToolError {
         ozpb_source_rpc::RpcError::NotFound(_) => ozpb_api_types::ErrorCode::ETxNotFound,
         ozpb_source_rpc::RpcError::NetworkMismatch { .. } => {
             ozpb_api_types::ErrorCode::ENetworkMismatch
+        }
+        ozpb_source_rpc::RpcError::EnvelopeTooLarge(_) => ozpb_api_types::ErrorCode::EResourceLimit,
+        ozpb_source_rpc::RpcError::EnvelopeParse(_) => ozpb_api_types::ErrorCode::EEnvelopeParse,
+        ozpb_source_rpc::RpcError::UnsupportedEnvelope(_) => {
+            ozpb_api_types::ErrorCode::EUnsupportedEnvelope
         }
         _ => ozpb_api_types::ErrorCode::ERpc,
     };
@@ -298,10 +334,20 @@ impl ServerHandler for PolicyBuilderServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "OZ Accounts Policy Builder. Record a Stellar transaction, synthesize a \
              minimum-permission OpenZeppelin smart-account policy, evaluate it, run the layer-1 \
-             reference suite, generate reviewable Rust, and verify generated artifacts offline. \
-             Deterministic and fail-closed: this server never \
-             deploys, signs, or holds keys — code-first, deploy-second. Widening a grant \
-             beyond exactly what was observed requires explicit user decisions.",
+             reference suite, generate reviewable Rust, verify generated artifacts offline, and \
+             optionally simulate one exact envelope with preflight_transaction. Once the \
+             policies are deployed and bound, check_policy_call_surface reads, through an \
+             operator-configured source, who can change the account or reset them; it is \
+             advisory and never says an account is safe — the user's wallet decides. \
+             prepare_install_intent runs that check itself and returns the exact \
+             add_context_rule arguments only when nothing is refused and nothing is \
+             unresolved. Pure tools are deterministic; record_transaction, record_simulation, \
+             preflight_transaction, check_policy_call_surface and prepare_install_intent read \
+             Stellar RPC, and their results depend on ledger state. Fail-closed: this \
+             server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
+             Signed authorization entries given to preflight_transaction stay live \
+             authorizations until they expire. Widening a grant beyond exactly what was \
+             observed requires explicit user decisions.",
         )
     }
 }
@@ -316,19 +362,44 @@ async fn main() -> anyhow::Result<()> {
     // Parsed before the transport branch so stdio and HTTP are configured identically, and
     // fail-closed: a rejected setting stops startup rather than silently using a default.
     let build_config = ozpb_toolkit::BuildConfig::from_env()?;
+    let rpc_sources = Arc::new(configured_rpc_sources()?);
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("--http") => {
             let addr = args.next().unwrap_or_else(|| "127.0.0.1:8080".to_string());
-            serve_http(&addr, registry_trust, build_config).await
+            http::serve(&addr, registry_trust, rpc_sources, build_config).await
         }
         _ => {
-            let service = PolicyBuilderServer::new(registry_trust, None, build_config)
+            let service = PolicyBuilderServer::new(registry_trust, None, rpc_sources, build_config)
                 .serve(rmcp::transport::stdio())
                 .await?;
             service.waiting().await?;
             Ok(())
         }
+    }
+}
+
+/// A configured source the allowlist does not cover would fail every request that names it;
+/// a hosted server refuses to start instead, so the operator sees the mismatch, not clients.
+fn require_allowlisted_sources(
+    policy: &RpcEndpointPolicy,
+    sources: &std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>,
+) -> anyhow::Result<()> {
+    for (name, source) in sources {
+        policy
+            .authorize(&source.rpc_url)
+            .map_err(|_| anyhow::anyhow!("RPC source {name:?} is not on OZPB_RPC_ALLOWLIST"))?;
+    }
+    Ok(())
+}
+
+/// The operator's named RPC sources, from `OZPB_RPC_SOURCES_JSON`; none when unset.
+fn configured_rpc_sources(
+) -> anyhow::Result<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>> {
+    match std::env::var("OZPB_RPC_SOURCES_JSON") {
+        Ok(json) => Ok(ozpb_toolkit::rpc_sources_from_json(&json).map_err(anyhow::Error::from)?),
+        Err(std::env::VarError::NotPresent) => Ok(Default::default()),
+        Err(error) => Err(anyhow::Error::new(error)),
     }
 }
 
@@ -367,201 +438,149 @@ fn configured_registry_trust() -> anyhow::Result<Option<ozpb_toolkit::RegistryTr
     }
 }
 
-/// Parse a bind address and require it to be loopback. Public exposure must go through a
-/// TLS-terminating, authenticating reverse proxy; the server itself never binds a routable
-/// interface. Extracted so the guard is unit-testable without starting a listener.
-fn require_loopback_bind(addr: &str) -> anyhow::Result<std::net::SocketAddr> {
-    let socket: std::net::SocketAddr = addr
-        .parse()
-        .map_err(|error| anyhow::anyhow!("invalid HTTP listen address '{addr}': {error}"))?;
-    if !socket.ip().is_loopback() {
-        anyhow::bail!(
-            "HTTP listener must bind to loopback; terminate TLS at an authenticated reverse proxy"
-        );
-    }
-    Ok(socket)
-}
-
-async fn serve_http(
-    addr: &str,
-    registry_trust: Option<ozpb_toolkit::RegistryTrust>,
-    build_config: ozpb_toolkit::BuildConfig,
-) -> anyhow::Result<()> {
-    use axum::extract::{DefaultBodyLimit, Request, State};
-    use axum::http::{header, StatusCode};
-    use axum::middleware::{self, Next};
-    use axum::response::{IntoResponse, Response};
-    use rmcp::transport::streamable_http_server::{
-        session::local::LocalSessionManager, StreamableHttpService,
-    };
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    #[derive(Clone)]
-    struct HttpSecurity {
-        bearer: Arc<str>,
-        requests: Arc<Mutex<(Instant, u32)>>,
-        max_requests_per_minute: u32,
-        concurrency: Arc<tokio::sync::Semaphore>,
-    }
-
-    async fn enforce_http_security(
-        State(security): State<HttpSecurity>,
-        request: Request,
-        next: Next,
-    ) -> Response {
-        let expected = format!("Bearer {}", security.bearer);
-        let authorized = request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()));
-        if !authorized {
-            return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response();
-        }
-
-        let within_quota = match security.requests.lock() {
-            Ok(mut window) => {
-                if window.0.elapsed() >= Duration::from_secs(60) {
-                    *window = (Instant::now(), 0);
-                }
-                if window.1 >= security.max_requests_per_minute {
-                    false
-                } else {
-                    window.1 += 1;
-                    true
-                }
-            }
-            Err(_) => false,
-        };
-        if !within_quota {
-            return (StatusCode::TOO_MANY_REQUESTS, "request quota exceeded").into_response();
-        }
-        let Ok(permit) = security.concurrency.clone().try_acquire_owned() else {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                "server concurrency limit reached",
-            )
-                .into_response();
-        };
-        let response = next.run(request).await;
-        drop(permit);
-        response
-    }
-
-    fn parse_positive_env(name: &str, default: u32) -> anyhow::Result<u32> {
-        match std::env::var(name) {
-            Ok(value) => {
-                let parsed = value
-                    .parse::<u32>()
-                    .map_err(|error| anyhow::anyhow!("invalid {name}: {error}"))?;
-                if parsed == 0 {
-                    anyhow::bail!("{name} must be positive");
-                }
-                Ok(parsed)
-            }
-            Err(std::env::VarError::NotPresent) => Ok(default),
-            Err(error) => Err(anyhow::Error::new(error)),
-        }
-    }
-
-    let socket = require_loopback_bind(addr)?;
-    let bearer = std::env::var("OZPB_HTTP_BEARER_TOKEN")
-        .map_err(|_| anyhow::anyhow!("OZPB_HTTP_BEARER_TOKEN is required for HTTP mode"))?;
-    if bearer.len() < 32 {
-        anyhow::bail!("OZPB_HTTP_BEARER_TOKEN must contain at least 32 bytes");
-    }
-    let rpc_allowlist = std::env::var("OZPB_RPC_ALLOWLIST")
-        .map_err(|_| anyhow::anyhow!("OZPB_RPC_ALLOWLIST is required for HTTP mode"))?;
-    let rpc_policy = RpcEndpointPolicy::from_csv(&rpc_allowlist)?;
-    let max_requests = parse_positive_env("OZPB_HTTP_REQUESTS_PER_MINUTE", 60)?;
-    // Builds are CPU- and memory-heavy. The request semaphore and Cargo's worker count form one
-    // resource budget; validating their product prevents four simultaneous requests from each
-    // starting an almost-machine-wide compile. Operators can trade request concurrency for
-    // per-build parallelism explicitly.
-    let max_concurrency = parse_positive_env("OZPB_HTTP_MAX_CONCURRENCY", 1)?;
-    let available_cpus = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1);
-    let build_workers = usize::try_from(build_config.jobs).unwrap_or(usize::MAX);
-    let requested_workers = usize::try_from(max_concurrency)
-        .unwrap_or(usize::MAX)
-        .checked_mul(build_workers)
-        .ok_or_else(|| anyhow::anyhow!("HTTP/build concurrency budget overflows"))?;
-    if requested_workers > available_cpus {
-        anyhow::bail!(
-            "OZPB_HTTP_MAX_CONCURRENCY ({max_concurrency}) × OZPB_BUILD_JOBS ({build_workers}) \
-             exceeds available parallelism ({available_cpus})"
-        );
-    }
-    let max_body_bytes = parse_positive_env("OZPB_HTTP_MAX_BODY_BYTES", 1_048_576)? as usize;
-    if max_body_bytes > 24 * 1024 * 1024 {
-        anyhow::bail!("OZPB_HTTP_MAX_BODY_BYTES must not exceed 25165824");
-    }
-    let security = HttpSecurity {
-        bearer: Arc::from(bearer),
-        requests: Arc::new(Mutex::new((Instant::now(), 0))),
-        max_requests_per_minute: max_requests,
-        concurrency: Arc::new(tokio::sync::Semaphore::new(max_concurrency as usize)),
-    };
-
-    let ct = tokio_util::sync::CancellationToken::new();
-    let service = StreamableHttpService::new(
-        move || {
-            Ok(PolicyBuilderServer::new(
-                registry_trust.clone(),
-                Some(rpc_policy.clone()),
-                build_config.clone(),
-            ))
-        },
-        LocalSessionManager::default().into(),
-        Default::default(),
-    );
-    let router = axum::Router::new()
-        .nest_service("/v1/mcp", service)
-        .layer(DefaultBodyLimit::max(max_body_bytes))
-        .layer(middleware::from_fn_with_state(
-            security,
-            enforce_http_security,
-        ));
-    let listener = tokio::net::TcpListener::bind(socket).await?;
-    eprintln!("ozpb MCP streamable-HTTP endpoint on http://{addr}/v1/mcp");
-    let ct2 = ct.clone();
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            ct2.cancel();
-        })
-        .await?;
-    Ok(())
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = left.len() ^ right.len();
-    let max = left.len().max(right.len());
-    for index in 0..max {
-        let a = left.get(index).copied().unwrap_or(0);
-        let b = right.get(index).copied().unwrap_or(0);
-        difference |= usize::from(a ^ b);
-    }
-    difference == 0
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
+    /// A hosted server configured as `--http` configures it, with one build slot. Its builder
+    /// path does not exist, so a call that got past the slot fails fast instead of compiling.
+    pub(crate) fn hosted() -> PolicyBuilderServer {
+        let policy = RpcEndpointPolicy::from_csv("https://rpc.allowed.example")
+            .expect("valid operator allowlist");
+        let build = ozpb_toolkit::BuildConfig {
+            stellar_binary: std::path::PathBuf::from("/nonexistent/ozpb-not-a-builder"),
+            jobs: 1,
+            ..ozpb_toolkit::BuildConfig::default()
+        };
+        let limits = http::hosted_limits(|_| Ok(None), build, 1).expect("default hosted limits");
+        PolicyBuilderServer::new(None, Some(policy), Default::default(), limits.build_config)
+    }
+
+    pub(crate) fn subscription_spec() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../docs/examples/subscription-spec.json"
+        ))
+        .expect("example spec JSON")
+    }
+
+    /// The structured code of a refused tool call.
+    pub(crate) fn refusal_code<T>(result: Result<T, CallToolResult>) -> String {
+        let Err(error) = result else {
+            panic!("expected the call to be refused");
+        };
+        let wire = serde_json::to_value(error).expect("tool error JSON");
+        wire["structuredContent"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn hosted_generate_code_is_busy_while_every_build_slot_is_taken() {
+        let server = hosted();
+        let slots = server
+            .build_config
+            .slots
+            .clone()
+            .expect("hosted build slots");
+        let input = || GenerateCodeInput {
+            spec: subscription_spec(),
+            rule_index: 0,
+        };
+        let running = slots.try_take().expect("the free slot");
+        assert_eq!(
+            refusal_code(server.generate_code(Parameters(input())).await),
+            "E_BUILD_BUSY"
+        );
+        drop(running);
+        // Control: with the slot free the call reaches the builder, whose path does not exist,
+        // and gives the slot back.
+        assert_eq!(
+            refusal_code(server.generate_code(Parameters(input())).await),
+            "E_BUILD_UNAVAILABLE"
+        );
+        assert_eq!(slots.available(), 1);
+    }
+
     #[test]
-    fn loopback_bind_is_required() {
-        // Loopback binds (v4 and v6) are accepted.
-        assert!(require_loopback_bind("127.0.0.1:8080").is_ok());
-        assert!(require_loopback_bind("[::1]:8080").is_ok());
-        // Routable interfaces are refused — no accidental public exposure.
-        assert!(require_loopback_bind("0.0.0.0:8080").is_err());
-        assert!(require_loopback_bind("192.168.1.10:8080").is_err());
-        assert!(require_loopback_bind("203.0.113.5:8080").is_err());
-        // Garbage is a parse error, not a bind.
-        assert!(require_loopback_bind("not-an-addr").is_err());
+    fn hosted_sessions_share_authority_capacity_until_work_releases_it() {
+        let factory = http_session_factory(
+            None,
+            RpcEndpointPolicy::from_csv("https://rpc.example").unwrap(),
+            Default::default(),
+            hosted().build_config,
+        );
+        let first = factory().unwrap();
+        let second = factory().unwrap();
+        let running_work = first
+            .authority_slots
+            .as_ref()
+            .unwrap()
+            .clone()
+            .try_acquire_owned()
+            .unwrap();
+        // Disconnecting the first session must not free capacity still held by its work.
+        drop(first);
+        let slots = second.authority_slots.as_ref().unwrap();
+        assert!(matches!(
+            slots.try_acquire(),
+            Err(tokio::sync::TryAcquireError::NoPermits)
+        ));
+        assert!(second
+            .build_config
+            .slots
+            .as_ref()
+            .unwrap()
+            .try_take()
+            .is_some());
+        drop(running_work);
+        assert!(slots.try_acquire().is_ok());
+    }
+
+    #[test]
+    fn every_hosted_session_draws_on_the_same_build_slots() {
+        let factory = http_session_factory(
+            None,
+            RpcEndpointPolicy::from_csv("https://rpc.example").unwrap(),
+            Default::default(),
+            hosted().build_config,
+        );
+        let first = factory().unwrap();
+        let second = factory().unwrap();
+        let taken = first
+            .build_config
+            .slots
+            .as_ref()
+            .and_then(|slots| slots.try_take());
+        assert!(taken.is_some());
+        drop(first);
+        assert_eq!(
+            second
+                .build_config
+                .slots
+                .as_ref()
+                .map(|slots| slots.available()),
+            Some(0),
+            "a second session saw a free slot while the first held the only one"
+        );
+        assert!(second
+            .authority_slots
+            .as_ref()
+            .unwrap()
+            .try_acquire()
+            .is_ok());
+    }
+
+    #[test]
+    fn a_stdio_server_has_no_build_limit() {
+        let server = PolicyBuilderServer::new(
+            None,
+            None,
+            Default::default(),
+            ozpb_toolkit::BuildConfig::default(),
+        );
+        assert!(server.build_config.slots.is_none());
+        assert!(server.authority_slots.is_none());
     }
 
     #[test]
@@ -596,26 +615,26 @@ mod tests {
     }
 
     #[test]
+    fn every_configured_rpc_source_must_be_allowlisted_on_a_hosted_server() {
+        let policy = RpcEndpointPolicy::from_csv("https://rpc.example").unwrap();
+        let sources = |url: &str| {
+            ozpb_toolkit::rpc_sources_from_json(
+                &serde_json::json!({"testnet": {
+                    "rpc_url": url,
+                    "network_passphrase": "Test SDF Network ; September 2015"
+                }})
+                .to_string(),
+            )
+            .unwrap()
+        };
+        assert!(require_allowlisted_sources(&policy, &sources("https://rpc.example")).is_ok());
+        assert!(require_allowlisted_sources(&policy, &sources("https://other.example")).is_err());
+    }
+
+    #[test]
     fn rpc_allowlist_must_be_nonempty_and_https() {
         assert!(RpcEndpointPolicy::from_csv("").is_err());
         assert!(RpcEndpointPolicy::from_csv("   ,  ").is_err());
         assert!(RpcEndpointPolicy::from_csv("http://insecure.example").is_err());
-    }
-
-    #[test]
-    fn constant_time_eq_matches_only_equal_slices() {
-        assert!(constant_time_eq(
-            b"Bearer secret-token",
-            b"Bearer secret-token"
-        ));
-        // Same length, differing content.
-        assert!(!constant_time_eq(
-            b"Bearer secret-token",
-            b"Bearer wrong-token!"
-        ));
-        // Different length.
-        assert!(!constant_time_eq(b"short", b"a-much-longer-value"));
-        assert!(!constant_time_eq(b"", b"x"));
-        assert!(constant_time_eq(b"", b""));
     }
 }

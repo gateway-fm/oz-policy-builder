@@ -14,6 +14,13 @@
 # The hash depends on the compiler. Upstream's rust-toolchain.toml says `channel = "stable"`,
 # which floats, so building with a different rustc yields a different hash from identical
 # source. This script forces the toolchain this repository pins.
+#
+# The account hash also depends on the build host. Cargo hashes the host into the `-C metadata`
+# of host units (proc-macros, build scripts), which reaches the account's symbol names, and rustc
+# orders functions by symbol name. The account pin reproduces byte-for-byte on
+# aarch64-apple-darwin; built on another host from the same inputs, the account Wasm differs only
+# in function order (rust-lang/cargo#8140, fix pending in rust-lang/cargo#17522). The other two
+# pins reproduce on every host tested. The check stays byte-exact, so elsewhere it fails.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,10 +30,23 @@ UPSTREAM_COMMIT="a9c42169000638da937577f592ebf61a7a3c94ca"
 TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
 CLI_REPO="https://github.com/stellar/stellar-cli.git"
 CLI_RELEASES="https://github.com/stellar/stellar-cli/releases"
+ACCOUNT_PIN_HOST="aarch64-apple-darwin"
 
-for tool in git stellar python3; do
+for tool in git stellar python3 rustc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required"; exit 1; }
 done
+
+# The build host is a build input of the account hash (see above), so it is stated first.
+BUILD_HOST="$(RUSTUP_TOOLCHAIN="$TOOLCHAIN" rustc -vV 2>/dev/null | sed -n 's/^host: //p' || true)"
+echo "== build host: ${BUILD_HOST:-unknown} ($(uname -sm)) =="
+if [ "$BUILD_HOST" = "$ACCOUNT_PIN_HOST" ]; then
+    HOST_DIAGNOSIS="* a different build host platform — ruled out: this host is $ACCOUNT_PIN_HOST,
+    where the account pin reproduces byte-for-byte"
+else
+    HOST_DIAGNOSIS="* a different build host platform: the account pin reproduces byte-for-byte on
+    $ACCOUNT_PIN_HOST; other hosts reorder functions (rust-lang/cargo#8140, fix pending in
+    rust-lang/cargo#17522). This host is ${BUILD_HOST:-unknown}."
+fi
 
 # The pins these builds use must still equal the recorded provenance, or the comparison below is
 # against a hash nobody can reproduce. Covers rustc (forced into every build here) and the CLI.
@@ -35,7 +55,7 @@ bash scripts/check-build-input-pins.sh
 # The hash also depends on the CLI, so reproducing it with a different one is not a weaker check
 # but a meaningless one: `stellar contract build` appends a `contractmetav0` section carrying
 # `cliver = <version>#<git-revision>`, inside the bytes being hashed, so a different CLI reports
-# MISMATCH on all three constants while saying nothing about the trust anchors themselves.
+# MISMATCH on every constant while saying nothing about the trust anchors themselves.
 #
 # BOTH halves of `cliver` matter. A CLI built from a source checkout, a fork or a dirty tree
 # reports the pinned version from `stellar --version` yet stamps a different revision, so the
@@ -53,7 +73,7 @@ bash scripts/check-build-input-pins.sh
 # Installing from crates.io is fine — the published crate carries `.cargo_vcs_info.json` with the
 # release commit and yields an identical `cliver`.
 #
-# Checked before the clone, so a wrong CLI costs a second instead of three cold builds.
+# Checked before the clone, so a wrong CLI costs a second instead of the cold builds.
 EXPECTED_CLI="$(bash scripts/recorded-build-inputs.sh stellar-cli)"
 EXPECTED_CLI_REV="$(bash scripts/recorded-build-inputs.sh stellar-cli-revision)"
 HAVE_CLI="$(stellar --version 2>/dev/null | awk 'NR==1 {print $2}')"
@@ -102,9 +122,10 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-echo "== cloning $UPSTREAM_REPO at $UPSTREAM_TAG =="
+source_repo="${OZPB_PINNED_UPSTREAM_SOURCE:-$UPSTREAM_REPO}"
+echo "== cloning $source_repo at $UPSTREAM_TAG =="
 if ! git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" \
-    "$UPSTREAM_REPO" "$WORK/src" 2>/dev/null; then
+    "$source_repo" "$WORK/src" 2>/dev/null; then
     echo "  clone failed — no network, or the tag no longer exists upstream"
     exit 1
 fi
@@ -118,10 +139,14 @@ fi
 echo "  commit $ACTUAL_COMMIT ✔"
 
 echo "== building with rustc $TOOLCHAIN (upstream's own pin floats on 'stable') =="
+if [ "$BUILD_HOST" != "$ACCOUNT_PIN_HOST" ]; then
+    echo "   note: expect the account to MISMATCH here; its pin reproduces only on $ACCOUNT_PIN_HOST"
+fi
 declare -a NAMES=(
     "spending-limit-policy:multisig_spending_limit_policy_example:OZ_SPENDING_LIMIT_POLICY_WASM"
     "account:multisig_account_example:OZ_SMART_ACCOUNT_WASM"
     "ed25519-verifier:multisig_ed25519_verifier_example:OZ_ED25519_VERIFIER_WASM"
+    "webauthn-verifier:multisig_webauthn_verifier_example:OZ_WEBAUTHN_VERIFIER_WASM"
 )
 
 fail=0
@@ -150,8 +175,25 @@ PY
             if ! python3 scripts/check-wasm-exports.py "$wasm" \
                 crates/registry/tests/fixtures/pinned_account_exports.txt "$pinned"; then
                 fail=1
+            elif [ -n "${OZPB_VERIFIED_ACCOUNT_WASM_OUT:-}" ]; then
+                # Optional output for the full account authorization test. Only copy after
+                # the exact hash and export set both match the reviewed pin.
+                cp "$wasm" "$OZPB_VERIFIED_ACCOUNT_WASM_OUT"
             fi
         fi
+        case "$const" in
+            OZ_ED25519_VERIFIER_WASM | OZ_WEBAUTHN_VERIFIER_WASM)
+                # An owner verifier must be immutable and stateless: exactly the reviewed
+                # exports, and only host imports that cannot reach the ledger, other
+                # contracts or ledger context (the registry's `stateless` claim rests on this).
+                if ! python3 scripts/check-wasm-exports.py "$wasm" \
+                    crates/registry/tests/fixtures/pinned_verifier_exports.txt "$pinned" \
+                    || ! python3 scripts/check-wasm-imports.py "$wasm" \
+                    crates/registry/tests/fixtures/stateless_verifier_imports.txt "$pinned"; then
+                    fail=1
+                fi
+                ;;
+        esac
     else
         printf "  %-28s MISMATCH\n     built:  %s\n     pinned: %s\n" "$dir" "$built" "$pinned"
         fail=1
@@ -161,9 +203,10 @@ done
 if [ "$fail" -ne 0 ]; then
     echo
     echo "A mismatch is not automatically a problem — check the cause before changing anything:"
-    echo "  * different rustc than $TOOLCHAIN (the usual cause; the hash is compiler-dependent)"
+    echo "  $HOST_DIAGNOSIS"
+    echo "  * different rustc than $TOOLCHAIN (the hash is compiler-dependent)"
     echo "  $CLI_DIAGNOSIS"
     echo "  * upstream source changed under the tag (see the commit check above)"
     exit 1
 fi
-echo "pinned upstream hashes reproduce from $UPSTREAM_TAG with rustc $TOOLCHAIN"
+echo "pinned upstream hashes reproduce from $UPSTREAM_TAG with rustc $TOOLCHAIN on $BUILD_HOST"
