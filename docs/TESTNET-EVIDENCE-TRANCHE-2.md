@@ -106,8 +106,11 @@ and an I/O error can prevent an output file. A hard kill can leave provenance un
 To regenerate a summary without network access or keys:
 
 ```bash
-node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run > /path/to/run/evidence.json
+node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run --write
 ```
+
+`--write` uses the same atomic publication as the wrapper: validation happens before the
+previous report is replaced, and output symlinks cannot redirect the write to another file.
 
 Review these fields before sharing the summary:
 
