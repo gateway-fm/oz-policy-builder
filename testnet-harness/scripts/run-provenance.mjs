@@ -30,6 +30,10 @@ export function startRun(runDir, env = process.env) {
   const git = (...args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   let cli = { mode: 'cargo', binary_sha256: null };
   if (env.OZPB_BIN) {
+    // This local harness reads the executable its operator selects and later runs
+    // with that user's authority; no remote request supplies this configuration.
+    // The bounded regular-file read records only a digest, never the file contents.
+    // nosec
     const candidates = env.OZPB_BIN.includes('/') ? [resolve(env.OZPB_BIN)]
       : (env.PATH ?? '').split(delimiter).map((dir) => resolve(dir, env.OZPB_BIN));
     const binary = candidates.find((path) => {
