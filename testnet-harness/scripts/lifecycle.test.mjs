@@ -5,14 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { addContextRuleArgs, contractCall } from './lib.mjs';
 import { removalEvent, revokePolicy } from './lifecycle.mjs';
 import { monitorGrant } from './monitor.mjs';
 import { PINNED_ACCOUNT_WASM, SimulationError } from './rpc.mjs';
+import { composedPolicies, SPENDING_LIMIT_WASM } from './subscription.mjs';
 
 const account = StrKey.encodeContract(Buffer.alloc(32, 1));
 const policy = StrKey.encodeContract(Buffer.alloc(32, 2));
+const spending = StrKey.encodeContract(Buffer.alloc(32, 8));
 const target = StrKey.encodeContract(Buffer.alloc(32, 3));
 const key = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 4));
 const delegate = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 5)).publicKey();
@@ -80,11 +82,18 @@ function fixture(t, mode = '') {
   const run = { network: Networks.TESTNET, account, account_code_hash: PINNED_ACCOUNT_WASM, sac: target,
     owner: { kind: 'ed25519', address: key.publicKey() }, delegate, policy, policy_wasm_hash: hash,
     rule_id: ruleId, tx: { add_context_rule: hash }, payer: key.publicKey() };
+  if (mode.startsWith('subscription')) {
+    run.amount = '100';
+    run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+      policy_address: spending, policy_code_hash: SPENDING_LIMIT_WASM };
+    rule.policies.unshift({ reviewed: { kind: 'oz:spending_limit', capability: SPENDING_LIMIT_WASM,
+      params: { spending_limit: { limit: '100', period_ledgers: 12 } } } });
+  }
   writeFileSync(join(dir, 'spec.json'), JSON.stringify(spec)); writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
   const args = addContextRuleArgs({ context: target, name: spec.name, validUntil: rule.valid_until.ledger,
-    signers: [{ kind: 'delegated', address: delegate }], policies: [{ address: policy, install_params: { kind: 'generated' } }] });
+    signers: [{ kind: 'delegated', address: delegate }], policies: composedPolicies(run, spec, policy) });
   const fields = { id: xdr.ScVal.scvU32(ruleId), context_type: args[0], name: args[1], valid_until: args[2],
-    signers: args[3], policies: xdr.ScVal.scvVec([new Address(policy).toScVal()]) };
+    signers: args[3], policies: xdr.ScVal.scvVec(args[4].map.map((p) => p.key)) };
   if (mode === 'changed rule') fields.valid_until = xdr.ScVal.scvU32(1);
   const liveRule = xdr.ScVal.scvMap(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))
     .map(([name, value]) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(name), val: value })));
@@ -94,10 +103,13 @@ function fixture(t, mode = '') {
     assertTestnet: async () => {}, latestLedger: async () => 500,
     contractCodeHash: async (address) => address === account ? (mode === 'changed code' ? hash : PINNED_ACCOUNT_WASM) : hash,
     contractCodeObservation: async (address) => ({
-      value: address === account ? (mode === 'changed code' ? hash : PINNED_ACCOUNT_WASM) : hash,
+      value: address === account ? (mode === 'changed code' ? hash : PINNED_ACCOUNT_WASM)
+        : address === spending ? (mode === 'subscription wrong code' ? hash : SPENDING_LIMIT_WASM) : hash,
       ledger: address === account ? 497 : 498,
     }),
-    viewCallObservation: async () => ({ value: liveRule, ledger: 499 }),
+    viewCallObservation: async (_payer, _address, fn) => ({ value: fn === 'get_spending_limit_data'
+      ? nativeToScVal({ spending_limit: 100n, period_ledgers: mode === 'subscription wrong params' ? 13 : 12 },
+        { type: { spending_limit: ['symbol', 'i128'], period_ledgers: ['symbol', 'u32'] } }) : liveRule, ledger: 499 }),
     loadKey: () => { keyLoads++; return key; }, ownerSigner: async () => key,
     viewCall: async (_payer, address, fn) => {
       if (fn === 'get_context_rule' && sent === 0) return liveRule;
@@ -108,6 +120,10 @@ function fixture(t, mode = '') {
       if (fn === 'is_installed' && address === policy) {
         if (mode === 'readback fails') throw new Error('endpoint unavailable');
         return xdr.ScVal.scvBool(mode === 'cleanup remains');
+      }
+      if (fn === 'get_spending_limit_data' && address === spending) {
+        if (mode === 'subscription cleanup remains') return nativeToScVal({ spending_limit: 100n, period_ledgers: 12 });
+        throw new SimulationError(fn, `contract:${spending}, topics:[error, Error(Contract, #3220)], data:["failing with contract error", 3220]`);
       }
       assert.fail(`unexpected read ${fn}`);
     },
@@ -161,6 +177,24 @@ test('best-effort policy cleanup failure does not erase confirmed rule removal',
   assert.equal(removal.rule_readback, 'absent');
   assert.equal(removal.policy_cleanup, 'still_installed');
 });
+
+for (const mode of ['subscription', 'subscription cleanup remains']) {
+  test(`composed removal preserves both independent cleanup results: ${mode}`, async (t) => {
+    const f = fixture(t, mode);
+    const removal = await revokePolicy(f.dir, f.deps);
+    assert.equal(removal.policy_cleanup, 'not_installed');
+    assert.equal(removal.reviewed_policy_cleanup, mode.endsWith('remains') ? 'still_installed' : 'not_installed');
+    assert.equal(removal.before.reviewed_policy.address, spending);
+  });
+}
+for (const mode of ['subscription wrong code', 'subscription wrong params']) {
+  test(`composed removal refuses changed reviewed policy before loading keys: ${mode}`, async (t) => {
+    const f = fixture(t, mode);
+    await assert.rejects(revokePolicy(f.dir, f.deps));
+    assert.equal(f.sent(), 0);
+    assert.equal(f.keyLoads(), 0);
+  });
+}
 
 test('one-shot configuration observation reads no signing keys and records drift separately', async (t) => {
   const f = fixture(t);

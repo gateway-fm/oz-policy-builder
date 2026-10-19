@@ -29,6 +29,17 @@ cd "$ROOT"
 
 OWNER="${OZPB_HARNESS_OWNER:-ed25519}"
 case "$OWNER" in ed25519|passkey) ;; *) echo "OZPB_HARNESS_OWNER is ed25519 or passkey, not $OWNER"; exit 1 ;; esac
+WALKTHROUGH="${OZPB_HARNESS_WALKTHROUGH:-native}"
+case "$WALKTHROUGH" in
+    native) ;;
+    subscription)
+        [ "${OZPB_HARNESS_AUTHORITY_CHECK:-}" = cli ] || { echo "subscription needs OZPB_HARNESS_AUTHORITY_CHECK=cli"; exit 1; }
+        [ -n "${OZPB_SUBSCRIPTION_POLICY:-}" ] || { echo "subscription needs OZPB_SUBSCRIPTION_POLICY=CONTRACT or deploy"; exit 1; }
+        node -e 'const n = Number(process.argv[1]); process.exit(Number.isInteger(n) && n >= 12 && n <= 120 ? 0 : 1)' "${OZPB_SUBSCRIPTION_PERIOD_LEDGERS:-}" \
+            || { echo "subscription needs explicit OZPB_SUBSCRIPTION_PERIOD_LEDGERS=12..120 (short test window)"; exit 1; }
+        ;;
+    *) echo "OZPB_HARNESS_WALKTHROUGH is native or subscription"; exit 1 ;;
+esac
 # Optional: install through the wallet decision on the authority check. The spec then names the
 # signed registry root, and install.mjs takes the check's settings from the environment.
 INSTALL_ARGS=()
@@ -89,8 +100,12 @@ if [ "$OWNER" = passkey ]; then npm ci --prefix "$HARNESS/browser" --no-audit --
 say "1. setup: throwaway keys, the pinned OpenZeppelin account (owner: $OWNER)"
 node "$SCRIPTS/setup.mjs" --run-dir "$RUN" --owner "$OWNER" ${OZPB_HARNESS_VERIFIER:+--verifier "$OZPB_HARNESS_VERIFIER"}
 AMOUNT="$(field amount)"
-RECIPIENT="$(field recipient)"
 OTHER="$(field payer)"   # a funded account, so a wrong-recipient transfer cannot fail for lack of one
+if [ "$WALKTHROUGH" = subscription ]; then
+    node "$SCRIPTS/setup-subscription.mjs" --run-dir "$RUN" --policy "$OZPB_SUBSCRIPTION_POLICY" \
+        --period-ledgers "$OZPB_SUBSCRIPTION_PERIOD_LEDGERS"
+fi
+RECIPIENT="$(field recipient)"
 
 say "2. authorize the transfer that will justify the grant"
 # The transaction the grant is built from is a real one. The owner authorizes it through rule 0,
@@ -117,11 +132,16 @@ say "4. install: deploy the policy, add_context_rule signed by the owner ($OWNER
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"
 
+if [ "$WALKTHROUGH" = subscription ]; then
+    say "5. verify subscription tuple, signer, rolling window and total call cap controls"
+    node "$SCRIPTS/subscription-controls.mjs" --run-dir "$RUN"
+else
 say "5. permit exactly the recorded transfer, once; deny the rest"
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect permit
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$((AMOUNT + 1))" --to "$RECIPIENT" --expect deny:6
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$OTHER" --expect deny:6
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect deny:7
+fi
 
 say "6. inspect the grant, revoke it as owner, and require the account to refuse the removed rule"
 node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"

@@ -113,6 +113,38 @@ test('retains incomplete removal observations but rejects contradictory cleanup 
   assert.throws(() => exportEvidence(dir));
 });
 
+test('subscription summary preserves known coverage gap, actual controls and separate reviewed cleanup', (t) => {
+  const run = fixture(); run.payer = G;
+  run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+    policy_address: C, policy_code_hash: HASH, other_token: C, installation_readback: 'matched',
+    controls: { status: 'incomplete', steps: [{ name: 'early_repeat', result: 'inconclusive_window_elapsed',
+      ledger: 112, before_ledger: 112, token: run.sac, to: run.recipient, amount: run.amount, signer: 'delegate',
+      enforcer: C, code: 3221, private_note: SENTINEL }] } };
+  run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 120,
+    event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed', reviewed_policy_cleanup: 'still_installed' }] };
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  const pipeline = { schema_version: 1, account: run.account, recorded_transaction: HASH,
+    recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH,
+    synthesis_trust: 'self_supplied', spec_hash: HASH, normalized_input_hash: HASH,
+    reference_cases: 30, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+    models_all_policies: false, unmodeled_reviewed_policies: ['rule[0]: oz:spending_limit'] };
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(pipeline));
+  const report = exportEvidence(dir);
+  assert.equal(report.pipeline.models_all_policies, false);
+  assert.equal(report.run.subscription.controls.steps[0].result, 'inconclusive_window_elapsed');
+  assert.equal(report.lifecycle.removals[0].reviewed_policy_cleanup, 'still_installed');
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+  pipeline.models_all_policies = true;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(pipeline));
+  assert.throws(() => exportEvidence(dir), 'cannot upgrade the known missing model');
+  pipeline.models_all_policies = false;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(pipeline));
+  run.subscription.controls.steps[0].result = 'verified_denial';
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir), 'late repeat cannot be a verified window denial');
+});
+
 test('refuses a pipeline claiming stronger synthesis trust or a different account', (t) => {
   const run = fixture();
   run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });

@@ -6,10 +6,12 @@ import * as sdk from '@stellar/stellar-sdk';
 const mode = process.argv[2];
 const payer = sdk.Keypair.fromRawEd25519Seed(Buffer.alloc(32, 9));
 let expectedHash; let polls = 0;
+const simulationModes = [];
 class Server {
   async getAccount() { return new sdk.Account(payer.publicKey(), '1'); }
-  async simulateTransaction() {
-    return { latestLedger: mode === 'missing read ledger' ? undefined : 31, result: { retval: sdk.xdr.ScVal.scvU32(42) } };
+  async simulateTransaction(_tx, _resources, authMode) {
+    simulationModes.push(authMode);
+    return { latestLedger: mode === 'missing read ledger' ? undefined : 31, result: { retval: sdk.xdr.ScVal.scvU32(42), auth: [] } };
   }
   async getLedgerEntries(key) {
     const wanted = key.contractData;
@@ -56,7 +58,14 @@ await source.link(async (name) => {
 await source.evaluate();
 const operation = sdk.Operation.invokeContractFunction({ contract: sdk.StrKey.encodeContract(Buffer.alloc(32, 1)),
   function: 'get', args: [] });
-if (mode === 'read ledgers') {
+if (mode === 'explicit auth modes') {
+  await source.namespace.recordAuth(payer, operation, 'test');
+  const simulated = await source.namespace.enforceSimulation(payer, operation);
+  assert.deepEqual(simulationModes, ['record', 'enforce']);
+  assert.equal(simulated.ledger, 31);
+  assert.equal(simulated.result, 'permit');
+  assert.equal(expectedHash, undefined, 'no transaction sent');
+} else if (mode === 'read ledgers') {
   const code = await source.namespace.contractCodeObservation(sdk.StrKey.encodeContract(Buffer.alloc(32, 1)));
   assert.equal(code.value, '05'.repeat(32));
   assert.equal(code.ledger, 29);

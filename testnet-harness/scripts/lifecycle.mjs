@@ -8,6 +8,7 @@ import { isMainModule } from './cli-entry.mjs';
 import { addContextRuleArgs, contractCall, entryAddress, signForSmartAccount } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
 import { parseJsonExact } from './raw-json.mjs';
+import { composedPolicies, subscriptionConfig } from './subscription.mjs';
 import * as rpc from './rpc.mjs';
 
 const same = (actual, expected, what) => assert.deepEqual(actual, expected, `unexpected ${what}`);
@@ -63,9 +64,9 @@ function expectedGrant(run, spec) {
   same(rule.context?.type, 'CallContract', 'grant context');
   same(rule.context.contract, run.sac, 'grant target');
   same(rule.authorization?.signers, [{ delegated: { address: run.delegate } }], 'grant delegate');
-  requireThat(rule.policies?.length === 1 && rule.policies[0].generated?.kind === 'gen:scope+count', 'unsupported installed composition');
+  const policies = composedPolicies(run, spec, run.policy);
   return addContextRuleArgs({ context: run.sac, name: spec.name, validUntil: rule.valid_until?.ledger ?? null,
-    signers: [{ kind: 'delegated', address: run.delegate }], policies: [{ address: run.policy, install_params: { kind: 'generated' } }] });
+    signers: [{ kind: 'delegated', address: run.delegate }], policies });
 }
 
 /** Read the configured rule and code pins. This checks this grant, not the account's complete
@@ -78,24 +79,41 @@ export async function inspectInstalledGrant(run, spec, deps = rpc) {
   same(accountCode.value, run.account_code_hash, 'live account code');
   const policyCode = await deps.contractCodeObservation(run.policy);
   same(policyCode.value, run.policy_wasm_hash, 'live policy code');
+  const subscription = subscriptionConfig(run);
+  const spending = subscription ? await deps.contractCodeObservation(subscription.policy_address) : null;
+  if (spending) same(spending.value, subscription.policy_code_hash, 'live spending policy code');
   // Read-only simulation needs a public fee-source address, not its signing seed.
   const rule = await deps.viewCallObservation({ publicKey: () => run.payer }, run.account, 'get_context_rule', ruleArg(run.rule_id));
   const live = rule.value;
   const fields = { id: xdr.ScVal.scvU32(run.rule_id), context_type: expected[0], name: expected[1],
-    valid_until: expected[2], signers: expected[3], policies: xdr.ScVal.scvVec([new Address(run.policy).toScVal()]) };
+    valid_until: expected[2], signers: expected[3], policies: xdr.ScVal.scvVec(expected[4].map.map((entry) => entry.key)) };
   for (const [name, expectedValue] of Object.entries(fields)) {
     const values = live.map?.filter((entry) => entry.key.type === 'scvSymbol' && entry.key.sym.toString() === name);
     same(values?.length, 1, `live rule ${name} field`);
     same(hex(values[0].val), hex(expectedValue), `live rule ${name}`);
   }
+  let spendingData;
+  if (subscription) {
+    spendingData = await deps.viewCallObservation({ publicKey: () => run.payer }, subscription.policy_address,
+      'get_spending_limit_data', [xdr.ScVal.scvU32(run.rule_id), new Address(run.account).toScVal()]);
+    const data = scValToNative(spendingData.value);
+    same(data.spending_limit, BigInt(run.amount), 'live spending limit');
+    same(data.period_ledgers, subscription.period_ledgers, 'live spending period');
+  }
   return { observation: 'non_atomic', read_ledgers: { account_code: accountCode.ledger,
     policy_code: policyCode.ledger, rule: rule.ledger }, account_code_hash: run.account_code_hash,
-    policy_code_hash: run.policy_wasm_hash, rule_id: run.rule_id, configuration: 'matched' };
+    policy_code_hash: run.policy_wasm_hash, rule_id: run.rule_id, configuration: 'matched',
+    ...(subscription ? { reviewed_policy: { address: subscription.policy_address, code_hash: spending.value,
+      code_ledger: spending.ledger, configuration_ledger: spendingData.ledger } } : {}) };
 }
 
 function missingRule(error, account) {
+  return contractError(error, account, 3000);
+}
+
+function contractError(error, contract, code) {
   if (!(error instanceof rpc.SimulationError)) return false;
-  const pattern = new RegExp(`contract:${account}, topics:\\[error, Error\\(Contract, #3000\\)\\], data:\\["failing with contract error", 3000\\]`);
+  const pattern = new RegExp(`contract:${contract}, topics:\\[error, Error\\(Contract, #${code}\\)\\], data:\\["failing with contract error", ${code}\\]`);
   return pattern.test(error.error);
 }
 
@@ -142,6 +160,21 @@ export async function revokePolicy(dir, overrides = {}) {
   requireThat(typeof installed === 'boolean', 'removal confirmed, but policy cleanup readback is malformed');
   removal.policy_cleanup = installed ? 'still_installed' : 'not_installed';
   deps.writeJson(path, run);
+  const subscription = subscriptionConfig(run);
+  if (subscription) {
+    removal.reviewed_policy_cleanup = 'not_checked';
+    deps.writeJson(path, run);
+    try {
+      await deps.viewCall(payer, subscription.policy_address, 'get_spending_limit_data', [
+        xdr.ScVal.scvU32(run.rule_id), new Address(run.account).toScVal(),
+      ]);
+      removal.reviewed_policy_cleanup = 'still_installed';
+    } catch (error) {
+      if (!contractError(error, subscription.policy_address, 3220)) throw error;
+      removal.reviewed_policy_cleanup = 'not_installed';
+    }
+    deps.writeJson(path, run);
+  }
   return removal;
 }
 

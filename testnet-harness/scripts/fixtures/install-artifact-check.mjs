@@ -28,7 +28,7 @@ try {
   };
   const accepts = ['matching', 'canonical-order', 'authority-matching'].includes(mode);
   let expected = /build-manifest\.json/;
-  if (mode.endsWith('composed')) expected = /exactly one generated scope\+count policy/;
+  if (mode.endsWith('composed')) expected = /unexpected policy composition/;
   if (mode === 'missing') delete manifest.spec_hash;
   if (mode === 'malformed') manifest.spec_hash = 'not a hash';
   if (mode === 'unrelated') manifest.spec_hash = '0'.repeat(64);
@@ -87,7 +87,7 @@ try {
   });
   await assert.rejects(module.evaluate(), accepts ? /STOP_BEFORE_NETWORK/ : expected);
   assert.equal(reachedNetwork, accepts);
-  assert.equal(keyReads, accepts ? 2 : 0);
+  assert.equal(keyReads, 0, 'keys are loaded only after network and optional reviewed-code checks');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

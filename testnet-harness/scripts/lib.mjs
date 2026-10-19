@@ -184,27 +184,40 @@ export function optionU32(value) {
  * and policies as `{ address, install_params }` (the install intent's own shapes). The spec path
  * and the install-intent path both go through here, so their results compare as bytes.
  *
- * `policies` is a `Map<Address, Val>` of install parameters. Only the generated policy's is
- * encoded: its `AccountParams` is a `u32` it ignores, so `0`. At most one policy: the host wants
- * map keys in its own order, and this harness never installs two.
+ * `policies` is a `Map<Address, Val>` in host address order. Generated `AccountParams` is
+ * a u32 ignored by that policy. Spending-limit parameters retain exact decimal i128 values.
  */
 export function addContextRuleArgs({ context, name, validUntil, signers, policies }) {
-  if (policies.length > 1) throw new Error(`at most one policy is supported, got ${policies.length}`);
+  if (policies.length > 2) throw new Error(`at most two policies are supported, got ${policies.length}`);
+  if (new Set(policies.map((p) => p.address)).size !== policies.length) throw new Error('duplicate policy address');
   const signer = (s) => {
     if (s.kind === 'delegated') return delegatedSigner(s.address);
     if (s.kind === 'external') return externalSigner(s.verifier, Buffer.from(s.key_hex, 'hex'));
     throw new Error(`unknown signer kind ${s.kind}`);
   };
   const param = (p) => {
-    if (p.install_params?.kind !== 'generated') throw new Error(`install parameters ${p.install_params?.kind} are not encoded here`);
-    return new xdr.ScMapEntry({ key: new Address(p.address).toScVal(), val: xdr.ScVal.scvU32(0) });
+    if (!StrKey.isValidContract(p.address)) throw new Error('policy must be a contract address');
+    let value;
+    const params = p.install_params;
+    if (params?.kind === 'generated') value = xdr.ScVal.scvU32(0);
+    else if (params?.kind === 'spending_limit') {
+      if (typeof params.spending_limit !== 'string' || !/^[1-9][0-9]*$/.test(params.spending_limit)
+        || BigInt(params.spending_limit) >= (1n << 127n)) throw new Error('invalid spending limit');
+      if (!Number.isSafeInteger(params.period_ledgers) || params.period_ledgers < 1
+        || params.period_ledgers > 0xffff_ffff) throw new Error('invalid spending period');
+      value = xdr.ScVal.scvMap([
+        new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('period_ledgers'), val: xdr.ScVal.scvU32(params.period_ledgers) }),
+        new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('spending_limit'), val: i128(BigInt(params.spending_limit)) }),
+      ]);
+    } else throw new Error(`install parameters ${params?.kind} are not encoded here`);
+    return new xdr.ScMapEntry({ key: new Address(p.address).toScVal(), val: value });
   };
   return [
     callContractRule(context),
     xdr.ScVal.scvString(name),
     optionU32(validUntil),
     xdr.ScVal.scvVec(signers.map(signer)),
-    xdr.ScVal.scvMap(policies.map(param)),
+    xdr.ScVal.scvMap(policies.map(param).sort((a, b) => Buffer.compare(Buffer.from(a.key.toXDR()), Buffer.from(b.key.toXDR())))),
   ];
 }
 

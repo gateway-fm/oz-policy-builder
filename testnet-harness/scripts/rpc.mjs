@@ -96,9 +96,21 @@ export async function recordAuth(payer, operation, stage) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(operation).setTimeout(120).build();
-  const sim = await server.simulateTransaction(tx);
+  const sim = await server.simulateTransaction(tx, undefined, 'record');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(`${stage} (recording)`, sim.error);
   return sim.result?.auth ?? [];
+}
+
+/** Enforce supplied authorization without signing or submitting the fee transaction. */
+export async function enforceSimulation(payer, operation) {
+  const source = await server.getAccount(payer.publicKey());
+  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(operation).setTimeout(60).build();
+  const simulated = await server.simulateTransaction(tx, undefined, 'enforce');
+  const ledger = readLedger(simulated.latestLedger);
+  return rpc.Api.isSimulationError(simulated)
+    ? { result: 'deny', ledger, error: String(simulated.error) }
+    : { result: 'permit', ledger };
 }
 
 /** Simulate a read-only call and return its value as an ScVal. Nothing is signed or sent. */

@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
 import { parseJsonExact } from './raw-json.mjs';
+import { composedPolicies, SPENDING_LIMIT_WASM, SPENDING_MODEL_GAP, subscriptionConfig } from './subscription.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const NETWORK = 'Test SDF Network ; September 2015';
@@ -24,6 +25,7 @@ const read = (path) => parseJsonExact(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 
 function recordingInputs(run, recording) {
+  const subscription = subscriptionConfig(run);
   const bundle = recording.bundle;
   same(bundle?.network_id, NETWORK_ID, 'recording network');
   same(bundle.execution, 'executed_success', 'recording execution');
@@ -51,9 +53,10 @@ function recordingInputs(run, recording) {
   return {
     account: { address: run.account, observed_code_hash: run.account_code_hash,
       registry_resolution: 'resolved by the toolkit from the signed snapshot' },
-    decisions: { grant_name: 'native-sub', delegate_signers: [{ delegated: { address: run.delegate } }],
+    decisions: { grant_name: subscription ? 'subscription' : 'native-sub', delegate_signers: [{ delegated: { address: run.delegate } }],
       predicate: 'any_of', valid_until_ledger: bundle.ledger + HORIZON, no_expiry_acknowledged: false,
-      max_calls: 1, widenings: [], spending_limit: null },
+      max_calls: subscription ? 2 : 1, widenings: [],
+      spending_limit: subscription ? { limit: run.amount, period_ledgers: subscription.period_ledgers } : null },
     justification: `recordings[0]/auth[${index}]`,
   };
 }
@@ -80,11 +83,10 @@ function validateSynthesis(output, run, inputs, expectedRegistryRoot) {
     { i: 1, c: { eq_address: { value: run.recipient } }, prov: 'observed_exact' },
     { i: 2, c: { eq_i128: { value: run.amount } }, prov: 'observed_exact' },
   ], justified_by: [inputs.justification] }], 'allowed tuple');
-  same(rule.state, [{ call_count_per_installation: { max_calls: 1 } }], 'call cap');
-  requireThat(rule.policies?.length === 1 && Object.keys(rule.policies[0]).length === 1
-    && rule.policies[0].generated?.kind === 'gen:scope+count'
-    && rule.policies[0].generated.template_family === TEMPLATE
-    && isHash(rule.policies[0].generated.capability_schema), 'expected exactly the generated scope+count policy');
+  same(rule.state, [{ call_count_per_installation: { max_calls: inputs.decisions.max_calls } }], 'call cap');
+  composedPolicies(run, spec, undefined); // Addresses are bound after deployment; validate exact spec composition now.
+  const generated = rule.policies.find((p) => p.generated)?.generated;
+  requireThat(generated?.template_family === TEMPLATE && isHash(generated.capability_schema), 'unrecognized generated policy');
   requireThat(spec.evidence?.recordings?.length === 1 && isHash(spec.evidence.recordings[0].hash), 'missing synthesis evidence');
   same(spec.evidence.recordings[0].trust, 'self_supplied', 'synthesis evidence trust');
   return spec;
@@ -103,6 +105,7 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   }
   const runPath = join(dir, 'run.json');
   const run = read(runPath);
+  const subscription = subscriptionConfig(run);
   same(run.network, NETWORK, 'run network');
   requireThat(run.delegate !== run.owner?.address && run.delegate !== run.account, 'delegate must differ from the owner and account');
   requireThat(typeof run.amount === 'string' && /^[1-9][0-9]*$/.test(run.amount) && BigInt(run.amount) <= (1n << 127n) - 1n,
@@ -139,7 +142,8 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   save(join(dir, 'decisions.json'), inputs.decisions);
   const synthesis = cli('synthesize', ['--bundle', join(dir, 'recording.json'), '--selected-authorizer', run.account,
     '--account', join(dir, 'account.json'), '--signed-registry', snapshot, '--registry-roots', roots,
-    '--registry-min-version', minimum, '--decisions', join(dir, 'decisions.json'), '--template-family', TEMPLATE], 'synthesis.json');
+    '--registry-min-version', minimum, '--decisions', join(dir, 'decisions.json'), '--template-family', TEMPLATE,
+    ...(subscription ? ['--spending-limit-capability', SPENDING_LIMIT_WASM] : [])], 'synthesis.json');
   const spec = validateSynthesis(synthesis, run, inputs, env.OZPB_REGISTRY_SNAPSHOT_ROOT);
   save(join(dir, 'spec.json'), spec);
   const reference = cli('reference-suite', ['--spec', join(dir, 'spec.json')], 'reference-suite.json');
@@ -147,7 +151,8 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   same(reference.all_agree, true, 'reference verdict');
   same(reference.disagreements, 0, 'reference disagreements');
   same(reference.missing_classes, [], 'reference missing classes');
-  same(reference.unmodeled_reviewed_policies, [], 'reference unmodeled policies');
+  const expectedModelGap = subscription ? SPENDING_MODEL_GAP : [];
+  same(reference.unmodeled_reviewed_policies, expectedModelGap, 'reference unmodeled policies');
   requireThat(Number.isSafeInteger(reference.total) && reference.total > 0, 'reference suite has no cases');
   const policy = join(dir, 'policy');
   cli('generate', ['--spec', join(dir, 'spec.json'), '--rule', '0', '--out', policy]);
@@ -166,9 +171,12 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   same(verified.spec_conformance, 'conforms (validated PolicySpec v1)', 'spec conformance');
   same(verified.source_reproduction, 'reproduced: generated non-lock files are byte-identical', 'source reproduction');
   same(verified.wasm_reproduction, 'reproduced: Wasm and BuildManifest are identical', 'Wasm reproduction');
-  requireThat(/^pass: [1-9][0-9]* constraint-derived cases all agree$/.test(verified.offline_behavioral_conformance), 'incomplete behavioral conformance');
-  same(verified.models_all_policies, true, 'behavioral scope');
-  same(verified.unmodeled_reviewed_policies, [], 'unmodeled verification policies');
+  const behavioralPattern = subscription
+    ? /^pass \(scope\+count only\): [1-9][0-9]* cases agree; 1 composed reviewed policies are enforced on-chain and not modeled here$/
+    : /^pass: [1-9][0-9]* constraint-derived cases all agree$/;
+  requireThat(behavioralPattern.test(verified.offline_behavioral_conformance), 'incomplete behavioral conformance');
+  same(verified.models_all_policies, !subscription, 'behavioral scope');
+  same(verified.unmodeled_reviewed_policies, expectedModelGap, 'unmodeled verification policies');
   requireThat(isHash(manifest.normalized_input_hash), 'manifest lacks normalized input identity');
   same(verified.normalized_input_hash, manifest.normalized_input_hash, 'verification input identity');
   same(verified.current_network_preflight, 'not_checked_here: state-dependent (wallet/live)', 'verification evidence boundary');
@@ -181,6 +189,7 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
     synthesis_recording_hash: spec.evidence.recordings[0].hash, synthesis_trust: 'self_supplied',
     spec_hash: synthesis.spec_hash, normalized_input_hash: verified.normalized_input_hash,
     reference_cases: reference.total, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+    models_all_policies: verified.models_all_policies, unmodeled_reviewed_policies: expectedModelGap,
   });
   return wasm;
 }

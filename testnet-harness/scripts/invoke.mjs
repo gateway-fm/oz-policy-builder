@@ -81,7 +81,7 @@ const op = transfer([accountEntry, delegateEntry].filter(Boolean));
 let outcome;
 try {
   const sent = await submit(payer, op, { stage: label });
-  outcome = { result: 'permit', hash: sent.hash };
+  outcome = { result: 'permit', hash: sent.hash, ...(sent.receipt?.ledger ? { ledger: sent.receipt.ledger } : {}) };
   log(`PERMITTED  ${label}  tx ${sent.hash}`);
   if (opts.bundle) await writeImportBundle(sent.hash, opts.bundle);
 } catch (e) {

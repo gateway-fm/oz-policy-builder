@@ -40,6 +40,7 @@ import { cliCheckRunner } from './check-runner.mjs';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { addContextRuleArgs, contractCall, entryAddress, signForSmartAccount } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
+import { composedPolicies, subscriptionConfig } from './subscription.mjs';
 import { TRUST_OPERATOR, checkRequest, walletTrust } from './wallet-decision.mjs';
 import {
   NETWORK_PASSPHRASE, args, assertTestnet, contractCodeHash, contractIdOf, latestLedger, loadKey, log,
@@ -58,6 +59,9 @@ const wasm = readFileSync(opts.wasm);
 // The authority check, if asked for, is configured before anything is deployed, so a missing
 // setting fails here rather than after the policy is on chain.
 const authorityCheck = opts['authority-check'];
+const subscription = subscriptionConfig(run);
+if (subscription && authorityCheck !== 'cli') throw new Error('subscription installation requires the full authority check');
+if (subscription?.controls !== undefined) throw new Error('subscription controls already started; use a fresh isolated grant');
 if (authorityCheck !== undefined && authorityCheck !== 'cli') throw new Error('--authority-check takes cli');
 if (!authorityCheck && (opts.trust !== undefined || opts.confirm !== undefined)) {
   throw new Error('--trust and --confirm apply only with --authority-check');
@@ -74,7 +78,7 @@ if (authorityCheck) {
     try { closeSync(openSync('/dev/tty', 'r')); } catch { throw new Error('--confirm tty needs a controlling terminal'); }
   }
   if (/^0+$/.test(spec.registry_snapshot)) {
-    throw new Error('--authority-check needs a spec that names the signed registry root: write it with write-spec.mjs --registry-root');
+    throw new Error('--authority-check needs a synthesized spec that names the signed registry root');
   }
   const operator = opts.trust ? readJson(opts.trust).operator ?? [] : [];
   const own = run.owner.kind === 'passkey'
@@ -133,9 +137,7 @@ async function ttyConfirm() {
 
 if (spec.rules.length !== 1) throw new Error('the harness installs single-rule specs');
 const rule = spec.rules[0];
-if (rule.policies.length !== 1 || rule.policies[0].generated?.kind !== 'gen:scope+count') {
-  throw new Error('the harness installs exactly one generated scope+count policy; composed policies are not supported');
-}
+composedPolicies(run, spec, undefined);
 if (spec.smart_account.address !== run.account) throw new Error('spec is for another account');
 const signers = rule.authorization.signers.map((s) => {
   if (!s.delegated) throw new Error('only Delegated signers are installable here');
@@ -148,9 +150,16 @@ const signers = rule.authorization.signers.map((s) => {
 // generator's manifest; independent Wasm reproduction is a separate `ozpb verify` operation.
 const manifest = parseJsonExact(readFileSync(join(dirname(opts.wasm), 'build-manifest.json'), 'utf8'));
 const wasmHash = await checkArtifact(spec, wasm, manifest);
+await assertTestnet();
+if (subscription && await contractCodeHash(subscription.policy_address) !== subscription.policy_code_hash) {
+  throw new Error('live spending policy code differs before installation');
+}
+if (subscription) {
+  delete run.subscription.installation_readback;
+  writeJson(runPath, run);
+}
 const payer = loadKey('payer');
 const owner = await ownerSigner(run);
-await assertTestnet();
 
 // --- deploy the generated artifact ---------------------------------------------------------------
 const upload = await submit(payer, Operation.uploadContractWasm({ wasm }), { stage: 'upload policy wasm' });
@@ -182,7 +191,7 @@ const fromSpec = {
   name: spec.name,
   validUntil: rule.valid_until?.ledger ?? null,
   signers: signers.map((address) => ({ kind: 'delegated', address })),
-  policies: [{ address: policy, install_params: { kind: 'generated' } }],
+  policies: composedPolicies(run, spec, policy),
 };
 let ruleArgs = addContextRuleArgs(fromSpec);
 
@@ -191,11 +200,15 @@ if (checker) {
   const request = checkRequest({
     spec, ruleIndex: 0, manifest, policyAddress: policy, resolutionReference: `testnet deploy tx ${create.hash}`,
     signedRegistrySnapshot: checker.signedRegistrySnapshot, rpcSource: checker.rpcSource,
+    reviewedPolicies: fromSpec.policies.flatMap((p, policyIndex) => p.install_params.kind === 'spending_limit'
+      ? [{ policy_index: policyIndex, contract_address: p.address, observed_wasm_hash: subscription.policy_code_hash,
+        resolution_reference: `configured pinned spending policy; observed before installation` }] : []),
   });
   const approval = await approveInstall({
     runner: checker.runner, request, trust: checker.trust, confirm: checker.confirm, log,
     expect: {
-      account: run.account, networkId: request.network_id, target: fromSpec.context, boundPolicies: [policy], ruleIndex: 0,
+      account: run.account, networkId: request.network_id, target: fromSpec.context,
+      boundPolicies: [...fromSpec.policies.map((p) => p.address)].sort(), ruleIndex: 0,
       specHash: manifest.spec_hash, registrySnapshotRoot: spec.registry_snapshot,
     },
   });
@@ -251,3 +264,10 @@ const isInstalled = await view(policy, 'is_installed', [xdr.ScVal.scvU32(ruleId)
 const remaining = await view(policy, 'remaining_calls', [xdr.ScVal.scvU32(ruleId), new Address(run.account).toScVal()]);
 if (isInstalled !== true) throw new Error('policy does not report itself installed');
 log(`          policy reports is_installed = ${isInstalled}, remaining_calls = ${remaining}`);
+if (subscription) {
+  const data = await view(subscription.policy_address, 'get_spending_limit_data', [xdr.ScVal.scvU32(ruleId), new Address(run.account).toScVal()]);
+  if (data.spending_limit !== BigInt(run.amount) || data.period_ledgers !== subscription.period_ledgers
+    || data.cached_total_spent !== 0n || data.spending_history?.length !== 0) throw new Error('spending policy installation parameters differ');
+  run.subscription.installation_readback = 'matched';
+  writeJson(runPath, run);
+}

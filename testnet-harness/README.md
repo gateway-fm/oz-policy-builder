@@ -17,7 +17,7 @@ authenticator, behind the pinned OpenZeppelin WebAuthn verifier: the kind of acc
 wallet such as pollywallet creates. Everything else is the same in both runs, the delegate
 included.
 
-One run, on fresh throwaway keys:
+The default native-transfer run, on fresh throwaway keys:
 
 1. **setup** deploys the pinned OpenZeppelin account example from its wasm hash. It checks that
    the code hash the network reports is the pin in `ozpb_domain::pinned_upstream`, reads rule 0
@@ -128,8 +128,10 @@ runs separately and gives the field-by-field review procedure for a new summary.
   registry root. This runs on both install paths with the same `OZPB_BIN` (or local Cargo CLI)
   as generation. It catches stale artifacts; it trusts the local generator's manifest rather
   than reproducing the Wasm. The default wrapper also runs `ozpb verify` and requires successful artifact reproduction.
-- The installer accepts exactly one generated scope+count policy. Composed rules, including
-  a reviewed spending limit, are refused before deployment rather than installed incompletely.
+- The default installer accepts exactly one generated scope+count policy. The explicit
+  [subscription mode](../docs/WALKTHROUGH-SEP41.md) requires the full authority-check path and
+  exactly one generated policy plus the pinned reviewed spending-limit policy, with both
+  instances bound to their spec indices. Other compositions are refused before deployment.
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,

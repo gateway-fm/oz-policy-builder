@@ -147,6 +147,12 @@ exposes public account relationships and must be reviewed before publication.
 
 ## 8. Evidence still needed
 
+The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) provides an executable composed
+scope/count + spending-limit flow with isolated token controls, ledger-bounded repeat tests,
+and separate cleanup checks. Its offline tests do not supply live acceptance evidence.
+Subscription summaries explicitly retain the reviewed spending policy's known reference-model
+gap and distinguish confirmed charges from enforcing simulations and inconclusive windows.
+
 Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed current
 evidence for the record → synthesize → verify → sign → install path, the Blend/SEP-41/Soroswap walkthroughs,
 the full harness layers with their actual evidence boundaries, hosted-service deployment
