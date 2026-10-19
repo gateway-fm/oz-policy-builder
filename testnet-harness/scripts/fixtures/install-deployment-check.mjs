@@ -12,6 +12,7 @@ import { signedRuleArgs } from '../approve-install.mjs';
 import { cliSpecHash } from '../check-runner.mjs';
 
 const mode = process.argv[2];
+const readbackFailure = process.argv[3];
 const succeeds = mode === 'approved' || mode === 'default';
 const sourceUrl = new URL('../install.mjs', import.meta.url);
 const dir = mkdtempSync(join(tmpdir(), 'ozpb-deployment-test-'));
@@ -48,6 +49,7 @@ try {
   let approvals = 0;
   let signatures = 0;
   const stages = [];
+  const readbacks = [];
   const approveInstall = async () => {
     approvals++;
     deploymentSaved();
@@ -73,7 +75,14 @@ try {
       assert.equal(stage, 'add_context_rule');
       return { hash: 'install-tx', returnValue: sdk.nativeToScVal({ id: 7, name: spec.name }) };
     },
-    viewCall: async (_payer, _contract, fn) => fn === 'is_installed' ? sdk.xdr.ScVal.scvBool(true) : sdk.xdr.ScVal.scvU32(1),
+    viewCall: async (_payer, _contract, fn) => {
+      readbacks.push(fn);
+      const checkpoint = readRun();
+      assert.equal(checkpoint.rule_id, 7, 'confirmed rule must be saved before any readback');
+      assert.equal(checkpoint.tx.add_context_rule, 'install-tx');
+      if (readbackFailure === fn) throw new Error('fixture readback failure');
+      return fn === 'is_installed' ? sdk.xdr.ScVal.scvBool(readbackFailure !== 'not_installed') : sdk.xdr.ScVal.scvU32(1);
+    },
   };
   const context = vm.createContext({ Buffer, process: { env: {
     ...process.env, OZPB_BIN: 'unused-authority-runner', OZPB_REGISTRY_ROOTS_FILE: 'unused-roots',
@@ -93,7 +102,10 @@ try {
       for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
     }, { context });
   });
-  if (succeeds) await module.evaluate();
+  if (succeeds && readbackFailure) {
+    await assert.rejects(module.evaluate(), readbackFailure === 'not_installed'
+      ? /policy does not report itself installed/ : /fixture readback failure/);
+  } else if (succeeds) await module.evaluate();
   else await assert.rejects(module.evaluate(), /nothing was signed/);
   const saved = readRun();
   assert.equal(approvals, mode === 'default' ? 0 : 1);
@@ -102,6 +114,8 @@ try {
   assert.equal(saved.policy, policy);
   assert.equal(saved.rule_id, succeeds ? 7 : undefined);
   assert.equal(saved.tx.add_context_rule, succeeds ? 'install-tx' : undefined);
+  assert.deepEqual(readbacks, !succeeds ? [] : readbackFailure === 'is_installed'
+    ? ['is_installed'] : ['is_installed', 'remaining_calls']);
   if (!succeeds) {
     deploymentSaved();
     assert.deepEqual(saved.authority_check.refused, [mode === 'declined' ? 'the operator declined' : 'untrusted owner']);

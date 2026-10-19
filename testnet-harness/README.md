@@ -65,8 +65,12 @@ sharing. It is never published automatically. Raw run files remain local.
 To regenerate the summary for a saved run (including an older run without provenance):
 
 ```bash
-node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run > /path/to/run/evidence.json
+node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run --write
 ```
+
+`--write` validates the records before atomically replacing `evidence.json`. A refused export
+preserves the previous summary; an output symlink is replaced without writing to its target.
+Without `--write`, the command prints the summary to stdout.
 
 Old runs say provenance is unavailable. A missing install record means installation was not
 recorded, not that nothing was submitted. Permits carry submitted transaction hashes; denials
@@ -100,7 +104,9 @@ runs separately and gives the field-by-field review procedure for a new summary.
   a reviewed spending limit, are refused before deployment rather than installed incompletely.
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
-  a rule ID and install transaction are recorded only after a successful install.
+  a rule ID and install transaction are recorded immediately after the install is confirmed,
+  before the policy readbacks. A failed readback still fails the installer, but retains those
+  identifiers. Their presence records installation, not successful readback verification.
 - A passkey owner also needs headless Chromium: `run.sh` runs `npm ci` in `browser/` too, and
   `OZPB_BROWSER_CHANNEL=chrome` uses an installed Google Chrome (otherwise run
   `npx playwright install chromium` there once). `OZPB_HARNESS_VERIFIER=C…` reuses an existing

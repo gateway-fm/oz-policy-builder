@@ -200,11 +200,12 @@ export function writeEvidence(runDir) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const [flag, runDir, ...extra] = process.argv.slice(2);
-    if (flag !== '--run-dir' || !runDir || extra.length) fail();
-    console.log(JSON.stringify(exportEvidence(resolve(runDir)), null, 2));
+    const [flag, runDir, mode, ...extra] = process.argv.slice(2);
+    if (flag !== '--run-dir' || !runDir || (mode !== undefined && mode !== '--write') || extra.length) fail();
+    if (mode === '--write') writeEvidence(resolve(runDir));
+    else console.log(JSON.stringify(exportEvidence(resolve(runDir)), null, 2));
   } catch {
-    console.error('evidence export failed: expected --run-dir with valid, consistent local records');
+    console.error('evidence export failed: expected --run-dir <directory> [--write] with valid, consistent local records');
     process.exitCode = 1;
   }
 }

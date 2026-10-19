@@ -237,6 +237,10 @@ const { accountEntry, delegateEntry } = await signForSmartAccount({
 const installed = await submit(payer, addRule([accountEntry, delegateEntry].filter(Boolean)), { stage: 'add_context_rule' });
 const contextRule = scValToNative(installed.returnValue);
 const ruleId = Number(contextRule.id);
+// The transaction is confirmed. Preserve its identifiers even if a later readback fails.
+run.rule_id = ruleId;
+run.tx.add_context_rule = installed.hash;
+writeJson(runPath, run);
 log(`installed rule ${ruleId} "${contextRule.name}" → policy ${policy}  (tx ${installed.hash})`);
 
 // --- read it back --------------------------------------------------------------------------------
@@ -247,7 +251,3 @@ const isInstalled = await view(policy, 'is_installed', [xdr.ScVal.scvU32(ruleId)
 const remaining = await view(policy, 'remaining_calls', [xdr.ScVal.scvU32(ruleId), new Address(run.account).toScVal()]);
 if (isInstalled !== true) throw new Error('policy does not report itself installed');
 log(`          policy reports is_installed = ${isInstalled}, remaining_calls = ${remaining}`);
-
-run.rule_id = ruleId;
-run.tx.add_context_rule = installed.hash;
-writeJson(runPath, run);

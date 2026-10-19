@@ -68,7 +68,7 @@ field() { node -p 'require(process.argv[1])[process.argv[2]]' "$RUN/run.json" "$
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN="${OZPB_HARNESS_OUT:-$HARNESS/runs/$RUN_ID}"
 mkdir -p "$RUN"
-RUN="$(cd "$RUN" && pwd)"
+RUN="$(cd "$RUN" && pwd -P)"
 # Capture checkout/CLI identity before any live operation. Existing nonempty directories are
 # refused so a failed attempt cannot inherit successful installation evidence from an old run.
 node "$SCRIPTS/run-provenance.mjs" start "$RUN"
