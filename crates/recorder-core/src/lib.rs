@@ -22,7 +22,10 @@ use stellar_xdr::{
     WriteXdr,
 };
 
-pub const RECORDING_SCHEMA: &str = "recording/v1";
+pub const RECORDING_SCHEMA: &str = "recording/v2";
+/// Highest acquisition protocol supported by the pinned XDR decoder. Protocol 29
+/// uses the same XDR revision as protocol 28; the RPC compatibility test pins that claim.
+pub const MAX_ACQUISITION_PROTOCOL: u32 = 29;
 // Soroban transactions and ledger entries are far smaller than this in practice. Keep a
 // defensive per-value bound, then separately cap the total encoded evidence below the canonical
 // hash preimage ceiling. This makes every accepted recording hashable instead of discovering an
@@ -65,12 +68,13 @@ pub struct EvidenceSnapshot {
     network_passphrase: String,
     envelope_xdr_base64: String,
     result_meta_xdr_base64: Option<String>,
-    /// Raw `TransactionResult` XDR for imported executed evidence. Verified against the
+    /// Raw `TransactionResult` XDR for executed evidence. Verified against the
     /// claimed outcome in [`record`]; an executed import without it is `incomplete`.
     result_xdr_base64: Option<String>,
     /// Auth entries returned by `simulateTransaction` in record mode (unsigned).
     simulated_auth_xdr_base64: Vec<String>,
     simulated_state_changes: Vec<StateChange>,
+    acquisition: Option<AcquisitionMetadata>,
     contract_executables: BTreeMap<String, ExecutableObservation>,
     ledger: Option<u32>,
     created_at_unix: Option<i64>,
@@ -87,7 +91,9 @@ pub enum Execution {
 }
 
 impl EvidenceSnapshot {
-    /// An executed transaction fetched live from the configured RPC (`rpc_reported`).
+    /// An executed transaction fetched live from the configured RPC. Attach its raw
+    /// result with [`Self::with_rpc_result`] to retain `rpc_reported` on the recording;
+    /// executed evidence without it is recorded as `incomplete`.
     pub fn from_rpc_transaction(
         network_passphrase: impl Into<String>,
         envelope_xdr_base64: impl Into<String>,
@@ -100,11 +106,12 @@ impl EvidenceSnapshot {
             network_passphrase: network_passphrase.into(),
             envelope_xdr_base64: envelope_xdr_base64.into(),
             result_meta_xdr_base64,
-            // The RPC adapter checks the reported status against the transaction result
-            // it fetched before constructing the snapshot; the label is the adapter's.
+            // The adapter attaches the checked result with `with_rpc_result`. A caller
+            // omitting it cannot mint a synthesis-eligible executed recording.
             result_xdr_base64: None,
             simulated_auth_xdr_base64: vec![],
             simulated_state_changes: vec![],
+            acquisition: None,
             contract_executables: BTreeMap::new(),
             ledger: Some(ledger),
             created_at_unix: Some(created_at_unix),
@@ -115,6 +122,24 @@ impl EvidenceSnapshot {
             },
             trust: TrustLevel::rpc_reported(),
         }
+    }
+
+    /// Record the endpoint protocol at acquisition time, not the transaction's historical
+    /// protocol. Decoder identity is filled by the implementation that reads the evidence.
+    pub fn with_acquisition_protocol(mut self, protocol_version: u32) -> Self {
+        self.acquisition = Some(AcquisitionMetadata {
+            protocol_version,
+            decoder_version: stellar_xdr::VERSION.pkg.to_string(),
+            decoder_xdr_revision: stellar_xdr::VERSION.xdr.trim().to_string(),
+        });
+        self
+    }
+
+    /// Preserve the transaction result fetched by the RPC adapter. The pure recorder
+    /// checks it against the envelope and claimed outcome before admitting the snapshot.
+    pub fn with_rpc_result(mut self, result_xdr_base64: String) -> Self {
+        self.result_xdr_base64 = Some(result_xdr_base64);
+        self
     }
 
     /// A local simulation acquired via RPC `simulateTransaction` with `authMode: record`
@@ -132,6 +157,7 @@ impl EvidenceSnapshot {
             result_xdr_base64: None,
             simulated_auth_xdr_base64,
             simulated_state_changes: vec![],
+            acquisition: None,
             contract_executables: BTreeMap::new(),
             ledger: latest_ledger,
             created_at_unix: None,
@@ -191,6 +217,7 @@ impl EvidenceSnapshot {
             result_xdr_base64,
             simulated_auth_xdr_base64: vec![],
             simulated_state_changes: vec![],
+            acquisition: None,
             contract_executables: BTreeMap::new(),
             ledger,
             created_at_unix,
@@ -245,17 +272,8 @@ pub struct RecordingBundle {
     pub canonicalization_version: u32,
     pub network_id: NetworkId,
     pub trust: TrustLevel,
-    /// How this evidence was obtained and how it ended. **Checked at admission, carried
-    /// thereafter, not re-verified from the artifact:** [`record`] proves the outcome
-    /// against the raw `TransactionResult` on import, and the RPC adapter proves it against
-    /// the response's `resultXdr` — but the result XDR is not part of [`RawEvidence`], and
-    /// neither the envelope nor the result meta encodes the transaction's result code. So
-    /// [`RecordingBundle::verify`] cannot re-derive this field and copies it as a claim, the
-    /// same standing `PolicySpec.registry_snapshot` has: recorded because the check happened,
-    /// not because the artifact re-proves it. Carrying the result XDR in the artifact would
-    /// make it re-derivable and is a `recording/v2` candidate — it moves every recording
-    /// hash, including published testnet evidence that cannot honestly be regenerated once
-    /// the transactions leave RPC retention.
+    /// Execution outcome, re-derived from preserved result XDR during verification.
+    /// Executed evidence lacking a result is explicitly `incomplete`.
     pub execution: Execution,
     pub ledger: Option<LedgerSeq>,
     pub created_at_unix: Option<i64>,
@@ -271,6 +289,9 @@ pub struct RecordingBundle {
     /// Contract executable/code hashes captured by the acquisition adapter. This is the
     /// evidence used to bind account recognition and code-hash-specific adapters.
     pub contract_executables: BTreeMap<String, ExecutableObservation>,
+    /// Current acquisition context; not a historical transaction protocol anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<AcquisitionMetadata>,
     /// Effects that could not be decoded/attributed; preserved, labeled, never guessed at.
     pub evidence_notes: Vec<String>,
     /// Raw evidence is always preserved — decoding never replaces it.
@@ -300,9 +321,21 @@ pub struct StateChange {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AcquisitionMetadata {
+    pub protocol_version: u32,
+    pub decoder_version: String,
+    pub decoder_xdr_revision: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutableObservation {
     pub executable: ObservedExecutable,
     pub observed_ledger: LedgerSeq,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified_ledger: Option<LedgerSeq>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_until_ledger: Option<LedgerSeq>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,6 +369,8 @@ pub enum StateChangeSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_xdr_base64: Option<String>,
     pub envelope_xdr_base64: String,
     pub result_meta_xdr_base64: Option<String>,
     pub simulated_auth_xdr_base64: Vec<String>,
@@ -447,19 +482,13 @@ impl RecordingBundle {
     /// proves only that an object is stably named, while `verify` proves its decoded
     /// claims come from its own raw XDR.
     ///
-    /// Acquisition facts that raw XDR cannot express — network id, trust label, execution
-    /// outcome, ledger anchor, timestamp, contract executable observations,
-    /// simulation-sourced state changes — are copied as claims, checked at admission and
-    /// carried thereafter; trust labeling, the synthesis-boundary downgrade and the
-    /// admission-time checks in [`record`] govern those instead. In particular a supplied
-    /// `execution` cannot be re-derived here (see the field's own note), so coherence is not
-    /// what stops a hand-edited outcome — see
-    /// `execution_is_an_admission_time_claim_not_a_re_derivable_fact`. Returns the recording
-    /// hash on success.
+    /// Acquisition facts (network/trust labels, ledger anchors, timestamps and executable
+    /// observations) remain claims. Execution results and simulation summaries are checked
+    /// against preserved XDR. This establishes internal coherence, not ledger inclusion.
     pub fn verify(&self) -> Result<Hash32, RecordError> {
         if self.schema != RECORDING_SCHEMA {
             return Err(RecordError::EvidenceIncoherent(format!(
-                "schema '{}' is not '{RECORDING_SCHEMA}'",
+                "schema '{}' is not '{RECORDING_SCHEMA}'; reimport the original raw evidence or record it again",
                 self.schema
             )));
         }
@@ -472,9 +501,10 @@ impl RecordingBundle {
         // Shapes no acquisition path mints fail closed, even where decoding would merely
         // ignore the extraneous half.
         if self.execution == Execution::Simulated {
-            if self.raw.result_meta_xdr_base64.is_some() {
+            if self.raw.result_meta_xdr_base64.is_some() || self.raw.result_xdr_base64.is_some() {
                 return Err(RecordError::EvidenceIncoherent(
-                    "a simulated recording cannot carry result meta".to_string(),
+                    "a simulated recording cannot carry result meta or a transaction result"
+                        .to_string(),
                 ));
             }
             // The rebuild below would refuse this too, but as a generic divergence: a
@@ -516,7 +546,7 @@ impl RecordingBundle {
         validate_raw_evidence_limits(
             &self.raw.envelope_xdr_base64,
             self.raw.result_meta_xdr_base64.as_deref(),
-            None,
+            self.raw.result_xdr_base64.as_deref(),
             &self.raw.simulated_auth_xdr_base64,
             &simulated_state_changes,
             self.contract_executables.len(),
@@ -530,6 +560,7 @@ impl RecordingBundle {
             created_at_unix: self.created_at_unix,
             operation_index: Some(self.operation_index),
             simulated_state_changes,
+            acquisition: self.acquisition.clone(),
             contract_executables: self.contract_executables.clone(),
         })?;
         if rebuilt != *self {
@@ -632,32 +663,6 @@ pub fn record(
 ) -> Result<RecordingBundle, RecordError> {
     validate_evidence_limits(snapshot)?;
 
-    // An imported outcome claim must agree with the transaction result supplied next to
-    // it; contradictory evidence is rejected, never silently relabeled (§4.1).
-    if let Some(encoded) = &snapshot.result_xdr_base64 {
-        let result = stellar_xdr::TransactionResult::from_xdr_base64(encoded, xdr_limits())
-            .map_err(|e| {
-                map_xdr_parse_error("transaction result", e, RecordError::ResultMismatch)
-            })?;
-        let result_success = matches!(
-            result.result,
-            stellar_xdr::TransactionResultResult::TxSuccess(_)
-                | stellar_xdr::TransactionResultResult::TxFeeBumpInnerSuccess(_)
-        );
-        if result_success != (snapshot.execution == Execution::ExecutedSuccess) {
-            return Err(RecordError::ResultMismatch(format!(
-                "the evidence claims the transaction {}, but the supplied transaction result \
-                 records {}",
-                if snapshot.execution == Execution::ExecutedSuccess {
-                    "succeeded"
-                } else {
-                    "failed"
-                },
-                if result_success { "success" } else { "failure" }
-            )));
-        }
-    }
-
     if snapshot.execution == Execution::ExecutedFailed && !options.allow_failed {
         return Err(RecordError::TxFailed);
     }
@@ -686,17 +691,24 @@ pub fn record(
 
     let bundle = decode_recording(RecordingParts {
         raw: RawEvidence {
+            result_xdr_base64: snapshot.result_xdr_base64.clone(),
             envelope_xdr_base64: snapshot.envelope_xdr_base64.clone(),
             result_meta_xdr_base64: snapshot.result_meta_xdr_base64.clone(),
             simulated_auth_xdr_base64: snapshot.simulated_auth_xdr_base64.clone(),
         },
         execution: snapshot.execution,
-        trust: snapshot.trust,
+        trust: if snapshot.execution != Execution::Simulated && snapshot.result_xdr_base64.is_none()
+        {
+            TrustLevel::incomplete()
+        } else {
+            snapshot.trust
+        },
         network_id: NetworkId::from_passphrase(&snapshot.network_passphrase),
         ledger: snapshot.ledger.map(LedgerSeq),
         created_at_unix: snapshot.created_at_unix,
         operation_index: options.operation_index,
         simulated_state_changes: snapshot.simulated_state_changes.clone(),
+        acquisition: snapshot.acquisition.clone(),
         contract_executables: snapshot.contract_executables.clone(),
     })?;
     // Resource admission and hashing are one boundary: never return a recording that the next
@@ -717,15 +729,73 @@ struct RecordingParts {
     created_at_unix: Option<i64>,
     operation_index: Option<u32>,
     simulated_state_changes: Vec<StateChange>,
+    acquisition: Option<AcquisitionMetadata>,
     contract_executables: BTreeMap<String, ExecutableObservation>,
 }
 
 /// Decode raw evidence into the canonical bundle. Pure and deterministic: the same parts
 /// always yield the same bundle, which is what makes verification-by-rebuild sound.
 fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordError> {
+    if let Some(acquisition) = &parts.acquisition {
+        if !(1..=MAX_ACQUISITION_PROTOCOL).contains(&acquisition.protocol_version)
+            || acquisition.decoder_version != stellar_xdr::VERSION.pkg
+            || acquisition.decoder_xdr_revision != stellar_xdr::VERSION.xdr.trim()
+        {
+            return Err(RecordError::EvidenceIncoherent(
+                "unsupported acquisition protocol or decoder identity".to_string(),
+            ));
+        }
+    }
+    for observation in parts.contract_executables.values() {
+        if observation
+            .last_modified_ledger
+            .is_some_and(|modified| modified > observation.observed_ledger)
+            || observation
+                .live_until_ledger
+                .is_some_and(|live_until| live_until < observation.observed_ledger)
+        {
+            return Err(RecordError::EvidenceIncoherent(
+                "contract-instance modification/lifetime contradicts its observed ledger"
+                    .to_string(),
+            ));
+        }
+    }
+    for change in &parts.simulated_state_changes {
+        let rebuilt = simulation_state_change(
+            change.kind,
+            change.key_xdr_base64.clone().ok_or_else(|| {
+                RecordError::EvidenceIncoherent("simulation change has no key XDR".to_string())
+            })?,
+            change.before_xdr_base64.clone(),
+            change.after_xdr_base64.clone(),
+        )?;
+        if rebuilt != *change {
+            return Err(RecordError::EvidenceIncoherent(
+                "simulation change summary does not match its key XDR".to_string(),
+            ));
+        }
+    }
     let envelope =
         TransactionEnvelope::from_xdr_base64(&parts.raw.envelope_xdr_base64, xdr_limits())
             .map_err(|e| map_xdr_parse_error("envelope", e, RecordError::EnvelopeParse))?;
+
+    if parts.execution == Execution::Simulated {
+        if parts.raw.result_xdr_base64.is_some() || parts.raw.result_meta_xdr_base64.is_some() {
+            return Err(RecordError::EvidenceIncoherent(
+                "simulation cannot carry executed result evidence".to_string(),
+            ));
+        }
+    } else if let Some(encoded) = &parts.raw.result_xdr_base64 {
+        let result = stellar_xdr::TransactionResult::from_xdr_base64(encoded, xdr_limits())
+            .map_err(|e| {
+                map_xdr_parse_error("transaction result", e, RecordError::ResultMismatch)
+            })?;
+        verify_transaction_result(&envelope, &result, parts.execution, parts.network_id)?;
+    } else if parts.trust != TrustLevel::incomplete() {
+        return Err(RecordError::EvidenceIncoherent(
+            "executed evidence without transaction result XDR must remain incomplete".to_string(),
+        ));
+    }
 
     // Fee-bump envelopes are unwrapped explicitly; V0 envelopes predate Soroban.
     let tx = match &envelope {
@@ -867,10 +937,151 @@ fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordErro
         authorizations,
         token_movements,
         state_changes,
+        acquisition: parts.acquisition,
         contract_executables: parts.contract_executables,
         evidence_notes,
         raw: parts.raw,
     })
+}
+
+/// Check result/envelope coherence for all operation kinds. This does not authenticate a
+/// result's inclusion in a ledger; it prevents contradictory evidence from claiming success.
+pub fn verify_transaction_result(
+    envelope: &TransactionEnvelope,
+    result: &stellar_xdr::TransactionResult,
+    execution: Execution,
+    network_id: NetworkId,
+) -> Result<(), RecordError> {
+    use stellar_xdr::{InnerTransactionResultResult as Inner, TransactionResultResult as Outer};
+    let mismatch = |message: &str| RecordError::ResultMismatch(message.to_string());
+    let envelope_operations = match envelope {
+        TransactionEnvelope::Tx(v1) => v1.tx.operations.as_slice(),
+        TransactionEnvelope::TxV0(v0) => v0.tx.operations.as_slice(),
+        TransactionEnvelope::TxFeeBump(bump) => {
+            let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+            inner.tx.operations.as_slice()
+        }
+    };
+    let (success, operations): (bool, Option<&[stellar_xdr::OperationResult]>) =
+        match &result.result {
+            Outer::TxSuccess(operations) | Outer::TxFailed(operations) => {
+                if matches!(envelope, TransactionEnvelope::TxFeeBump(_)) {
+                    return Err(mismatch(
+                        "fee-bump envelope requires a fee-bump inner result",
+                    ));
+                }
+                (
+                    matches!(result.result, Outer::TxSuccess(_)),
+                    Some(operations),
+                )
+            }
+            Outer::TxFeeBumpInnerSuccess(pair) | Outer::TxFeeBumpInnerFailed(pair) => {
+                let TransactionEnvelope::TxFeeBump(bump) = envelope else {
+                    return Err(mismatch("fee-bump result requires a fee-bump envelope"));
+                };
+                let stellar_xdr::FeeBumpTransactionInnerTx::Tx(inner) = &bump.tx.inner_tx;
+                let hash = TransactionEnvelope::Tx(inner.clone())
+                    .hash(network_id.0 .0)
+                    .map_err(|error| {
+                        RecordError::ResultMismatch(format!("cannot hash inner envelope: {error}"))
+                    })?;
+                if pair.transaction_hash.0 != hash {
+                    return Err(mismatch(
+                        "fee-bump result inner transaction hash does not match envelope",
+                    ));
+                }
+                let outer_success = matches!(result.result, Outer::TxFeeBumpInnerSuccess(_));
+                let inner_success = matches!(pair.result.result, Inner::TxSuccess(_));
+                if outer_success != inner_success {
+                    return Err(mismatch(
+                        "fee-bump inner success/failure contradicts its outer result",
+                    ));
+                }
+                let operations = match &pair.result.result {
+                    Inner::TxSuccess(operations) | Inner::TxFailed(operations) => {
+                        Some(operations.as_slice())
+                    }
+                    _ => None,
+                };
+                (outer_success, operations)
+            }
+            _ => (false, None),
+        };
+    if execution == Execution::Simulated || success != (execution == Execution::ExecutedSuccess) {
+        return Err(mismatch(
+            "claimed execution contradicts the decoded transaction result",
+        ));
+    }
+    if let Some(operations) = operations {
+        // txFAILED means an operation failed. Unlike transaction-level rejection codes,
+        // an empty or entirely successful operation list cannot support that outcome.
+        if !success && operations.iter().all(operation_succeeded) {
+            return Err(mismatch(
+                "failed transaction result contains no failed operation",
+            ));
+        }
+        if (success && operations.len() != envelope_operations.len())
+            || operations.len() > envelope_operations.len()
+        {
+            return Err(RecordError::ResultMismatch(format!(
+                "the transaction result reports {} operation results for an envelope with {} operations",
+                operations.len(), envelope_operations.len()
+            )));
+        }
+        for (index, (result, operation)) in operations.iter().zip(envelope_operations).enumerate() {
+            if let stellar_xdr::OperationResult::OpInner(inner) = result {
+                if inner.discriminant() != operation.body.discriminant() {
+                    return Err(RecordError::ResultMismatch(format!(
+                        "operation {index} result kind contradicts its envelope operation"
+                    )));
+                }
+            }
+            if success && !operation_succeeded(result) {
+                return Err(RecordError::ResultMismatch(format!(
+                    "operation {index} of the transaction result did not succeed"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn operation_succeeded(operation: &stellar_xdr::OperationResult) -> bool {
+    use stellar_xdr::{OperationResult, OperationResultTr as Op};
+    let OperationResult::OpInner(inner) = operation else {
+        return false;
+    };
+    // Every operation's success code in the pinned XDR is zero. Enumerate every union arm
+    // explicitly so a newly supported operation cannot silently inherit a success answer.
+    match inner {
+        Op::CreateAccount(value) => value.discriminant() as i32 == 0,
+        Op::Payment(value) => value.discriminant() as i32 == 0,
+        Op::PathPaymentStrictReceive(value) => value.discriminant() as i32 == 0,
+        Op::ManageSellOffer(value) => value.discriminant() as i32 == 0,
+        Op::CreatePassiveSellOffer(value) => value.discriminant() as i32 == 0,
+        Op::SetOptions(value) => value.discriminant() as i32 == 0,
+        Op::ChangeTrust(value) => value.discriminant() as i32 == 0,
+        Op::AllowTrust(value) => value.discriminant() as i32 == 0,
+        Op::AccountMerge(value) => value.discriminant() as i32 == 0,
+        Op::Inflation(value) => value.discriminant() as i32 == 0,
+        Op::ManageData(value) => value.discriminant() as i32 == 0,
+        Op::BumpSequence(value) => value.discriminant() as i32 == 0,
+        Op::ManageBuyOffer(value) => value.discriminant() as i32 == 0,
+        Op::PathPaymentStrictSend(value) => value.discriminant() as i32 == 0,
+        Op::CreateClaimableBalance(value) => value.discriminant() as i32 == 0,
+        Op::ClaimClaimableBalance(value) => value.discriminant() as i32 == 0,
+        Op::BeginSponsoringFutureReserves(value) => value.discriminant() as i32 == 0,
+        Op::EndSponsoringFutureReserves(value) => value.discriminant() as i32 == 0,
+        Op::RevokeSponsorship(value) => value.discriminant() as i32 == 0,
+        Op::Clawback(value) => value.discriminant() as i32 == 0,
+        Op::ClawbackClaimableBalance(value) => value.discriminant() as i32 == 0,
+        Op::SetTrustLineFlags(value) => value.discriminant() as i32 == 0,
+        Op::LiquidityPoolDeposit(value) => value.discriminant() as i32 == 0,
+        Op::LiquidityPoolWithdraw(value) => value.discriminant() as i32 == 0,
+        Op::InvokeHostFunction(value) => value.discriminant() as i32 == 0,
+        Op::ExtendFootprintTtl(value) => value.discriminant() as i32 == 0,
+        Op::RestoreFootprint(value) => value.discriminant() as i32 == 0,
+    }
 }
 
 /// Return every contract address whose executable can influence a recording of this
@@ -919,6 +1130,12 @@ pub fn referenced_contract_addresses(
                 .map_err(|e| map_xdr_parse_error("authorization", e, RecordError::AuthParse))?;
             collect_auth_contract_addresses(&entry, &mut addresses);
         }
+    }
+    if addresses.len() > MAX_CONTRACT_EXECUTABLE_OBSERVATIONS {
+        return Err(RecordError::ResourceLimit(format!(
+            "snapshot references {} contract instances; maximum is {MAX_CONTRACT_EXECUTABLE_OBSERVATIONS}",
+            addresses.len()
+        )));
     }
     Ok(addresses.into_iter().collect())
 }
@@ -1349,6 +1566,67 @@ pub fn ledger_key_summary(key: &stellar_xdr::LedgerKey) -> (String, Option<Strin
     }
 }
 
+/// Decode a simulation change's preserved XDR and derive its explanatory identity.
+/// Both acquisition and serialized-artifact verification use this pure boundary. Entry
+/// values must name the same key and agree with the change's created/updated/removed shape;
+/// these are internal consistency checks, not proof of the endpoint's claimed ledger state.
+pub fn simulation_state_change(
+    kind: StateChangeKind,
+    key_xdr_base64: String,
+    before_xdr_base64: Option<String>,
+    after_xdr_base64: Option<String>,
+) -> Result<StateChange, RecordError> {
+    fn decode<T: ReadXdr>(field: &str, encoded: &str) -> Result<T, RecordError> {
+        if encoded.len() > MAX_XDR_BASE64_BYTES {
+            return Err(RecordError::EvidenceIncoherent(format!(
+                "simulation change {field} exceeds the XDR size limit"
+            )));
+        }
+        T::from_xdr_base64(encoded, xdr_limits()).map_err(|error| {
+            RecordError::EvidenceIncoherent(format!(
+                "simulation change {field} is not valid XDR: {error}"
+            ))
+        })
+    }
+    let key: stellar_xdr::LedgerKey = decode("key", &key_xdr_base64)?;
+    for (field, encoded) in [
+        ("before", before_xdr_base64.as_deref()),
+        ("after", after_xdr_base64.as_deref()),
+    ] {
+        if let Some(encoded) = encoded {
+            let entry: stellar_xdr::LedgerEntry = decode(field, encoded)?;
+            if entry.to_key() != key {
+                return Err(RecordError::EvidenceIncoherent(format!(
+                    "simulation change {field} is a ledger entry for a different key"
+                )));
+            }
+        }
+    }
+    let sides = (before_xdr_base64.is_some(), after_xdr_base64.is_some());
+    let valid = match kind {
+        StateChangeKind::Created => sides == (false, true),
+        StateChangeKind::Updated => sides == (true, true),
+        StateChangeKind::Removed => sides == (true, false),
+        StateChangeKind::Restored => sides != (false, false),
+        StateChangeKind::State => false,
+    };
+    if !valid {
+        return Err(RecordError::EvidenceIncoherent(format!(
+            "simulation change {kind:?} contradicts its before/after evidence"
+        )));
+    }
+    let (entry, contract) = ledger_key_summary(&key);
+    Ok(StateChange {
+        kind,
+        entry,
+        contract,
+        source: StateChangeSource::Simulation,
+        key_xdr_base64: Some(key_xdr_base64),
+        before_xdr_base64,
+        after_xdr_base64,
+    })
+}
+
 /// Decode a SEP-41/CAP-67 token event into a typed movement, or `None` (the caller turns
 /// that into an unattributed evidence note). Fail-closed shape checks: the event must be a
 /// `Contract` event with an emitting contract, its kind topic a valid symbol, the roles
@@ -1583,9 +1861,27 @@ pub mod fixtures {
         TransactionResult {
             fee_charged: 100,
             result: if success {
-                TransactionResultResult::TxSuccess(Default::default())
+                TransactionResultResult::TxSuccess(
+                    vec![stellar_xdr::OperationResult::OpInner(
+                        stellar_xdr::OperationResultTr::InvokeHostFunction(
+                            stellar_xdr::InvokeHostFunctionResult::Success(stellar_xdr::Hash(
+                                [0; 32],
+                            )),
+                        ),
+                    )]
+                    .try_into()
+                    .unwrap(),
+                )
             } else {
-                TransactionResultResult::TxFailed(Default::default())
+                TransactionResultResult::TxFailed(
+                    vec![stellar_xdr::OperationResult::OpInner(
+                        stellar_xdr::OperationResultTr::InvokeHostFunction(
+                            stellar_xdr::InvokeHostFunctionResult::Trapped,
+                        ),
+                    )]
+                    .try_into()
+                    .unwrap(),
+                )
             },
             ext: TransactionResultExt::V0,
         }
@@ -1640,6 +1936,8 @@ pub mod fixtures {
                     code_hash: ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         observations.insert(
@@ -1647,6 +1945,8 @@ pub mod fixtures {
             ExecutableObservation {
                 executable: ObservedExecutable::StellarAsset,
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         observations
@@ -1663,6 +1963,7 @@ pub mod fixtures {
             1_780_000_000,
             true,
         )
+        .with_rpc_result(transaction_result_base64(true))
         .with_contract_executables(observed_executables())
     }
 
@@ -1873,6 +2174,8 @@ mod tests {
                     code_hash: ozpb_domain::sha256(b"fixture-account-wasm"),
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         let snapshot = executed_snapshot().with_contract_executables(observations);
@@ -2707,6 +3010,535 @@ mod tests {
 
     // ----- raw/decoded coherence: verify() -----
 
+    fn simulation_change() -> StateChange {
+        let entry = stellar_xdr::LedgerEntry {
+            last_modified_ledger_seq: 4_200_100,
+            data: stellar_xdr::LedgerEntryData::ContractData(stellar_xdr::ContractDataEntry {
+                ext: stellar_xdr::ExtensionPoint::V0,
+                contract: ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(
+                    TOKEN_CID,
+                ))),
+                key: ScVal::U32(7),
+                durability: stellar_xdr::ContractDataDurability::Persistent,
+                val: ScVal::U32(42),
+            }),
+            ext: stellar_xdr::LedgerEntryExt::V0,
+        };
+        StateChange {
+            kind: StateChangeKind::Created,
+            entry: "contract_data".to_string(),
+            contract: Some(format!("{}", stellar_strkey::Contract(TOKEN_CID))),
+            source: StateChangeSource::Simulation,
+            key_xdr_base64: Some(entry.to_key().to_xdr_base64(Limits::none()).unwrap()),
+            before_xdr_base64: None,
+            after_xdr_base64: Some(entry.to_xdr_base64(Limits::none()).unwrap()),
+        }
+    }
+
+    fn snapshot_with_change(change: StateChange) -> EvidenceSnapshot {
+        EvidenceSnapshot::from_rpc_simulation(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope_with(vec![]).to_xdr_base64(Limits::none()).unwrap(),
+            vec![],
+            Some(4_200_101),
+        )
+        .with_simulated_state_changes(vec![change])
+    }
+
+    #[test]
+    fn simulation_summary_is_derived_from_key_at_admission() {
+        let good = simulation_change();
+        record(
+            &snapshot_with_change(good.clone()),
+            RecordOptions::default(),
+        )
+        .unwrap();
+        for mutate in [
+            |change: &mut StateChange| change.entry = "account".to_string(),
+            |change: &mut StateChange| {
+                change.contract = Some(format!("{}", stellar_strkey::Contract(ACCOUNT_CID)));
+            },
+        ] {
+            let mut changed = good.clone();
+            mutate(&mut changed);
+            assert!(matches!(
+                record(&snapshot_with_change(changed), RecordOptions::default()),
+                Err(RecordError::EvidenceIncoherent(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn simulation_summary_cannot_be_rewritten_after_recording() {
+        let good = record(
+            &snapshot_with_change(simulation_change()),
+            RecordOptions::default(),
+        )
+        .unwrap();
+        good.verify().unwrap();
+        let mut forged = good;
+        forged.state_changes[0].entry = "account".to_string();
+        forged.state_changes[0].contract = None;
+        assert!(forged.recording_hash().is_ok());
+        assert!(matches!(
+            forged.verify(),
+            Err(RecordError::EvidenceIncoherent(_))
+        ));
+    }
+
+    #[test]
+    fn simulation_raw_entries_and_change_shape_are_rechecked() {
+        let good = record(
+            &snapshot_with_change(simulation_change()),
+            RecordOptions::default(),
+        )
+        .unwrap();
+        let mut other = simulation_change();
+        let mut other_entry = stellar_xdr::LedgerEntry::from_xdr_base64(
+            other.after_xdr_base64.as_ref().unwrap(),
+            Limits::none(),
+        )
+        .unwrap();
+        if let stellar_xdr::LedgerEntryData::ContractData(data) = &mut other_entry.data {
+            data.key = ScVal::U32(8);
+        }
+        other.after_xdr_base64 = Some(other_entry.to_xdr_base64(Limits::none()).unwrap());
+        for bad in [
+            StateChange {
+                key_xdr_base64: None,
+                ..simulation_change()
+            },
+            StateChange {
+                key_xdr_base64: Some("AAAA".into()),
+                ..simulation_change()
+            },
+            StateChange {
+                after_xdr_base64: Some("AAAB".into()),
+                ..simulation_change()
+            },
+            StateChange {
+                kind: StateChangeKind::Updated,
+                ..simulation_change()
+            },
+            StateChange {
+                kind: StateChangeKind::State,
+                ..simulation_change()
+            },
+            other,
+        ] {
+            let mut forged = good.clone();
+            forged.state_changes[0] = bad.clone();
+            assert!(
+                matches!(forged.verify(), Err(RecordError::EvidenceIncoherent(_))),
+                "forged change was accepted: {bad:?}"
+            );
+            assert!(matches!(
+                record(&snapshot_with_change(bad), RecordOptions::default()),
+                Err(RecordError::EvidenceIncoherent(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn recording_v2_checks_acquisition_metadata_without_inventing_history() {
+        let snapshot = executed_snapshot().with_acquisition_protocol(MAX_ACQUISITION_PROTOCOL);
+        let good = record(&snapshot, RecordOptions::default()).unwrap();
+        assert!(good.acquisition.is_some());
+        good.verify().unwrap();
+        let absent = record(&executed_snapshot(), RecordOptions::default()).unwrap();
+        assert!(absent.acquisition.is_none());
+        assert_ne!(
+            good.recording_hash().unwrap(),
+            absent.recording_hash().unwrap()
+        );
+        for protocol in [0, MAX_ACQUISITION_PROTOCOL + 1, u32::MAX] {
+            assert!(record(
+                &executed_snapshot().with_acquisition_protocol(protocol),
+                RecordOptions::default()
+            )
+            .is_err());
+            let mut forged = good.clone();
+            forged.acquisition.as_mut().unwrap().protocol_version = protocol;
+            assert!(matches!(
+                forged.verify(),
+                Err(RecordError::EvidenceIncoherent(_))
+            ));
+        }
+        let mut forged = good.clone();
+        forged.acquisition.as_mut().unwrap().decoder_version = "unknown decoder".to_string();
+        assert!(forged.verify().is_err());
+        let mut forged = good;
+        forged.acquisition.as_mut().unwrap().decoder_xdr_revision = "unknown revision".to_string();
+        assert!(forged.verify().is_err());
+    }
+
+    #[test]
+    fn recording_v2_checks_optional_instance_lifetime_at_both_boundaries() {
+        let mut observations = observed_executables();
+        for observation in observations.values_mut() {
+            observation.last_modified_ledger = Some(LedgerSeq(4_200_099));
+            observation.live_until_ledger = Some(observation.observed_ledger);
+        }
+        let good = record(
+            &executed_snapshot().with_contract_executables(observations.clone()),
+            RecordOptions::default(),
+        )
+        .unwrap();
+        good.verify().unwrap();
+        let old = record(&executed_snapshot(), RecordOptions::default()).unwrap();
+        assert_ne!(
+            old.recording_hash().unwrap(),
+            good.recording_hash().unwrap()
+        );
+        for future_modification in [true, false] {
+            let mut forged = good.clone();
+            let observation = forged.contract_executables.values_mut().next().unwrap();
+            if future_modification {
+                observation.last_modified_ledger =
+                    Some(LedgerSeq(observation.observed_ledger.0 + 1));
+            } else {
+                observation.live_until_ledger = Some(LedgerSeq(observation.observed_ledger.0 - 1));
+            }
+            assert!(matches!(
+                forged.verify(),
+                Err(RecordError::EvidenceIncoherent(_))
+            ));
+            assert!(record(
+                &executed_snapshot().with_contract_executables(forged.contract_executables),
+                RecordOptions::default()
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn recording_v2_fee_bump_results_bind_inner_envelope_and_outcome() {
+        use stellar_xdr::{
+            Hash, InnerTransactionResult, InnerTransactionResultExt, InnerTransactionResultPair,
+            InnerTransactionResultResult, TransactionResultResult,
+        };
+        let inner = TransactionV1Envelope {
+            tx: transaction_with(vec![auth_entry(address_credentials(1))]),
+            signatures: Default::default(),
+        };
+        let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let inner_envelope = TransactionEnvelope::Tx(inner.clone());
+        let inner_hash = inner_envelope.hash(network.0 .0).unwrap();
+        let envelope = TransactionEnvelope::TxFeeBump(FeeBumpTransactionEnvelope {
+            tx: FeeBumpTransaction {
+                fee_source: MuxedAccount::Ed25519(Uint256([8; 32])),
+                fee: 1000,
+                inner_tx: FeeBumpTransactionInnerTx::Tx(inner),
+                ext: FeeBumpTransactionExt::V0,
+            },
+            signatures: Default::default(),
+        });
+        let TransactionResultResult::TxSuccess(operations) = transaction_result(true).result else {
+            unreachable!()
+        };
+        let pair = InnerTransactionResultPair {
+            transaction_hash: Hash(inner_hash),
+            result: InnerTransactionResult {
+                fee_charged: 100,
+                result: InnerTransactionResultResult::TxSuccess(operations),
+                ext: InnerTransactionResultExt::V0,
+            },
+        };
+        let mut good = transaction_result(true);
+        good.result = TransactionResultResult::TxFeeBumpInnerSuccess(pair.clone());
+        verify_transaction_result(&envelope, &good, Execution::ExecutedSuccess, network).unwrap();
+        let snapshot = EvidenceSnapshot::from_rpc_transaction(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope.to_xdr_base64(Limits::none()).unwrap(),
+            None,
+            1,
+            1,
+            true,
+        )
+        .with_rpc_result(good.to_xdr_base64(Limits::none()).unwrap());
+        record(&snapshot, RecordOptions::default())
+            .unwrap()
+            .verify()
+            .unwrap();
+        assert!(verify_transaction_result(
+            &inner_envelope,
+            &good,
+            Execution::ExecutedSuccess,
+            network
+        )
+        .is_err());
+        assert!(verify_transaction_result(
+            &envelope,
+            &transaction_result(true),
+            Execution::ExecutedSuccess,
+            network
+        )
+        .is_err());
+        let mut wrong_hash = pair.clone();
+        wrong_hash.transaction_hash = Hash([7; 32]);
+        let mut wrong_inner = pair.clone();
+        wrong_inner.result.result = InnerTransactionResultResult::TxBadSeq;
+        for result in [
+            TransactionResultResult::TxFeeBumpInnerSuccess(wrong_hash),
+            TransactionResultResult::TxFeeBumpInnerSuccess(wrong_inner),
+            TransactionResultResult::TxFeeBumpInnerFailed(pair),
+        ] {
+            let mut forged = good.clone();
+            forged.result = result;
+            assert!(matches!(
+                verify_transaction_result(&envelope, &forged, Execution::ExecutedSuccess, network),
+                Err(RecordError::ResultMismatch(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn raw_import_and_serialized_recording_reject_classic_result_contradictions() {
+        use stellar_xdr::{
+            Asset, OperationResult, OperationResultTr, PaymentOp, PaymentResult,
+            TransactionResultResult,
+        };
+        let mut envelope = envelope_with(vec![auth_entry(address_credentials(1))]);
+        let TransactionEnvelope::Tx(ref mut tx) = envelope else {
+            unreachable!()
+        };
+        let mut operations = tx.tx.operations.to_vec();
+        operations.push(Operation {
+            source_account: None,
+            body: OperationBody::Payment(PaymentOp {
+                destination: MuxedAccount::Ed25519(Uint256([3; 32])),
+                asset: Asset::Native,
+                amount: 1,
+            }),
+        });
+        tx.tx.operations = operations.try_into().unwrap();
+        let TransactionResultResult::TxSuccess(invoke) = transaction_result(true).result else {
+            unreachable!()
+        };
+        let invoke = invoke[0].clone();
+        let result_for = |results: Vec<OperationResult>| {
+            let mut result = transaction_result(true);
+            result.result = TransactionResultResult::TxSuccess(results.try_into().unwrap());
+            result.to_xdr_base64(Limits::none()).unwrap()
+        };
+        let snapshot_for = |result: String| {
+            EvidenceSnapshot::from_import(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                envelope.to_xdr_base64(Limits::none()).unwrap(),
+                None,
+                Some(result),
+                Some(1),
+                Some(1),
+                true,
+            )
+        };
+        let good = record(
+            &snapshot_for(result_for(vec![
+                invoke.clone(),
+                OperationResult::OpInner(OperationResultTr::Payment(PaymentResult::Success)),
+            ])),
+            RecordOptions::default(),
+        )
+        .unwrap();
+        good.verify().unwrap();
+        for operations in [
+            vec![
+                invoke.clone(),
+                OperationResult::OpInner(OperationResultTr::Payment(PaymentResult::Underfunded)),
+            ],
+            vec![invoke.clone(), invoke.clone()],
+            vec![invoke],
+        ] {
+            let result = result_for(operations);
+            assert!(matches!(
+                record(&snapshot_for(result.clone()), RecordOptions::default()),
+                Err(RecordError::ResultMismatch(_))
+            ));
+            let mut forged = good.clone();
+            forged.raw.result_xdr_base64 = Some(result);
+            assert!(matches!(
+                forged.verify(),
+                Err(RecordError::ResultMismatch(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_failed_result_requires_an_operation_that_failed() {
+        use stellar_xdr::TransactionResultResult;
+        let envelope = envelope_with(vec![auth_entry(address_credentials(1))]);
+        let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        verify_transaction_result(
+            &envelope,
+            &transaction_result(false),
+            Execution::ExecutedFailed,
+            network,
+        )
+        .unwrap();
+        let TransactionResultResult::TxSuccess(successes) = transaction_result(true).result else {
+            unreachable!()
+        };
+        for operations in [successes, Default::default()] {
+            let mut result = transaction_result(false);
+            result.result = TransactionResultResult::TxFailed(operations);
+            assert!(matches!(
+                verify_transaction_result(&envelope, &result, Execution::ExecutedFailed, network),
+                Err(RecordError::ResultMismatch(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn every_operation_failure_code_is_refused_inside_success() {
+        use stellar_xdr::{OperationResult, OperationResultTr};
+        for kind in OperationResultTr::VARIANTS {
+            let bytes = [
+                0_i32.to_be_bytes(),
+                (kind as i32).to_be_bytes(),
+                (-1_i32).to_be_bytes(),
+            ]
+            .concat();
+            let failure = OperationResult::from_xdr(&bytes, Limits::none()).unwrap();
+            assert!(
+                !operation_succeeded(&failure),
+                "failure accepted for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recording_v2_checks_result_arity_operation_kind_and_classic_failure() {
+        use stellar_xdr::{
+            BumpSequenceOp, BumpSequenceResult, Operation, OperationResult, OperationResultTr,
+            SequenceNumber, TransactionResultResult,
+        };
+        let mut envelope = envelope_with(vec![auth_entry(address_credentials(1))]);
+        let TransactionEnvelope::Tx(ref mut tx) = envelope else {
+            unreachable!()
+        };
+        let mut operations = tx.tx.operations.to_vec();
+        operations.push(Operation {
+            source_account: None,
+            body: OperationBody::BumpSequence(BumpSequenceOp {
+                bump_to: SequenceNumber(5),
+            }),
+        });
+        tx.tx.operations = operations.try_into().unwrap();
+        let invoke = match transaction_result(true).result {
+            TransactionResultResult::TxSuccess(results) => results[0].clone(),
+            _ => unreachable!(),
+        };
+        let good_classic =
+            OperationResult::OpInner(OperationResultTr::BumpSequence(BumpSequenceResult::Success));
+        let result_for = |results: Vec<OperationResult>| {
+            let mut result = transaction_result(true);
+            result.result = TransactionResultResult::TxSuccess(results.try_into().unwrap());
+            result
+        };
+        let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        verify_transaction_result(
+            &envelope,
+            &result_for(vec![invoke.clone(), good_classic.clone()]),
+            Execution::ExecutedSuccess,
+            network,
+        )
+        .unwrap();
+        for operations in [
+            vec![invoke.clone()],
+            vec![invoke.clone(), invoke.clone()],
+            vec![
+                invoke,
+                OperationResult::OpInner(OperationResultTr::BumpSequence(
+                    BumpSequenceResult::BadSeq,
+                )),
+            ],
+        ] {
+            assert!(matches!(
+                verify_transaction_result(
+                    &envelope,
+                    &result_for(operations),
+                    Execution::ExecutedSuccess,
+                    network
+                ),
+                Err(RecordError::ResultMismatch(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn recording_v2_refuses_legacy_artifacts_without_inventing_evidence() {
+        let mut bundle = record(&imported_snapshot(true), RecordOptions::default()).unwrap();
+        bundle.schema = "recording/v1".to_string();
+        assert!(matches!(
+            bundle.verify(),
+            Err(RecordError::EvidenceIncoherent(_))
+        ));
+    }
+
+    #[test]
+    fn recording_v2_result_presence_matches_execution_shape() {
+        let simulation = EvidenceSnapshot::from_rpc_simulation(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope_with(vec![]).to_xdr_base64(Limits::none()).unwrap(),
+            vec![],
+            Some(1),
+        );
+        let mut bundle = record(&simulation, RecordOptions::default()).unwrap();
+        bundle.raw.result_xdr_base64 = Some(transaction_result_base64(true));
+        assert!(bundle.verify().is_err());
+        assert!(record(
+            &simulation.with_rpc_result(transaction_result_base64(true)),
+            RecordOptions::default()
+        )
+        .is_err());
+        let mut executed = record(&imported_snapshot(true), RecordOptions::default()).unwrap();
+        executed.raw.result_xdr_base64 = None;
+        assert!(executed.verify().is_err());
+        executed.trust = TrustLevel::incomplete();
+        executed.verify().unwrap();
+    }
+
+    #[test]
+    fn recording_v2_missing_result_cannot_gain_synthesis_eligibility() {
+        let mut bundle = record(&imported_snapshot(false), RecordOptions::default()).unwrap();
+        assert_eq!(bundle.trust.as_str(), "incomplete");
+        bundle.verify().unwrap();
+        bundle.trust = TrustLevel::self_supplied();
+        assert!(matches!(
+            bundle.verify(),
+            Err(RecordError::EvidenceIncoherent(_))
+        ));
+    }
+
+    #[test]
+    fn recording_v2_rechecks_the_recorded_execution_outcome() {
+        let snapshot = EvidenceSnapshot::from_import(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope_with(vec![auth_entry(address_credentials(1))])
+                .to_xdr_base64(Limits::none())
+                .unwrap(),
+            Some(meta_v3().to_xdr_base64(Limits::none()).unwrap()),
+            Some(transaction_result_base64(false)),
+            Some(1),
+            Some(1),
+            false,
+        );
+        let mut bundle = record(
+            &snapshot,
+            RecordOptions {
+                allow_failed: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        bundle.verify().unwrap();
+        bundle.execution = Execution::ExecutedSuccess;
+        assert!(matches!(
+            bundle.verify(),
+            Err(RecordError::ResultMismatch(_))
+        ));
+    }
+
     #[test]
     fn recordings_straight_from_record_verify() {
         // Executed, with meta, movements, state and executables.
@@ -2724,15 +3556,7 @@ mod tests {
             vec![sim_entry.to_xdr_base64(Limits::none()).unwrap()],
             Some(4_200_101),
         )
-        .with_simulated_state_changes(vec![StateChange {
-            kind: StateChangeKind::Updated,
-            entry: "simulation_xdr".to_string(),
-            contract: None,
-            source: StateChangeSource::Simulation,
-            key_xdr_base64: Some("AAAA".to_string()),
-            before_xdr_base64: None,
-            after_xdr_base64: Some("AAAB".to_string()),
-        }]);
+        .with_simulated_state_changes(vec![simulation_change()]);
         let simulated = record(&sim, RecordOptions::default()).unwrap();
         simulated.verify().unwrap();
 
@@ -2819,73 +3643,13 @@ mod tests {
         good.verify().unwrap();
     }
 
-    /// Coherence re-derives decoded views from raw XDR; `execution` is not one of them,
-    /// because no part of [`RawEvidence`] encodes the transaction's result code. This pins
-    /// where the outcome check actually lives — at admission, in `record` (against the
-    /// import's transaction result) and in the RPC adapter (against `resultXdr`) — so no
-    /// caller reads `verify` as proof of a claim it cannot make. If a future schema carries
-    /// the result XDR in the artifact, this test fails and the docs above come with it.
-    #[test]
-    fn execution_is_an_admission_time_claim_not_a_re_derivable_fact() {
-        let failed = EvidenceSnapshot::from_import(
-            ozpb_domain::TESTNET_PASSPHRASE,
-            envelope_with(vec![auth_entry(address_credentials(1))])
-                .to_xdr_base64(Limits::none())
-                .unwrap(),
-            Some(meta_v3().to_xdr_base64(Limits::none()).unwrap()),
-            Some(
-                transaction_result(false)
-                    .to_xdr_base64(Limits::none())
-                    .unwrap(),
-            ),
-            Some(1),
-            Some(1),
-            false,
-        );
-        // Admission is where the outcome is proved: the honest failure records only in
-        // failure-analysis mode, and claiming success over the same result is refused.
-        assert_eq!(
-            record(&failed, RecordOptions::default()).unwrap_err(),
-            RecordError::TxFailed
-        );
-        let mut bundle = record(
-            &failed,
-            RecordOptions {
-                allow_failed: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(bundle.execution, Execution::ExecutedFailed);
-        bundle.verify().unwrap();
-
-        // Post-admission, the artifact carries the outcome rather than proving it: the raw
-        // evidence is identical either way, so flipping the field stays coherent. The
-        // synthesis gate on ExecutedFailed is therefore a guard for honest recordings, not
-        // an anti-forgery check — the anti-forgery check is E_RESULT_MISMATCH at admission.
-        bundle.execution = Execution::ExecutedSuccess;
-        assert!(
-            bundle.verify().is_ok(),
-            "if this now fails, the artifact carries the result and the outcome is \
-             re-derivable: update the execution field's note and drop this pin"
-        );
-    }
-
     /// Whatever `record` accepts, `verify` must accept: an admission path that mints a
     /// recording its own verification rejects would make the two disagree about what a
     /// valid artifact is. Simulated state on executed evidence is the pair that could,
     /// since the public API can attach it.
     #[test]
     fn record_cannot_mint_a_recording_verify_would_reject() {
-        let simulated_state = vec![StateChange {
-            kind: StateChangeKind::Updated,
-            entry: "simulation_xdr".to_string(),
-            contract: None,
-            source: StateChangeSource::Simulation,
-            key_xdr_base64: Some("AAAA".to_string()),
-            before_xdr_base64: None,
-            after_xdr_base64: Some("AAAB".to_string()),
-        }];
+        let simulated_state = vec![simulation_change()];
         let snapshot = executed_snapshot().with_simulated_state_changes(simulated_state.clone());
         assert!(
             matches!(
