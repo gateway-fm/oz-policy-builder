@@ -82,10 +82,12 @@ pub(crate) fn read_contract_wasm_hashes_with_witnesses<T: RpcTransport>(
 
     verify_network(transport, network_passphrase)?;
     let keys: Vec<&String> = requested.keys().collect();
-    let result = transport.call(
-        "getLedgerEntries",
-        json!({ "keys": keys, "xdrFormat": "base64" }),
-    )?;
+    let result = transport
+        .call(
+            "getLedgerEntries",
+            json!({ "keys": keys, "xdrFormat": "base64" }),
+        )
+        .map_err(super::redact_ledger_request_error)?;
     let reported_latest_ledger: u32 = result
         .get("latestLedger")
         .and_then(serde_json::Value::as_u64)

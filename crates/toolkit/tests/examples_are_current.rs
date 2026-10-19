@@ -20,6 +20,10 @@
 //!
 //!     cargo run -p ozpb-cli -- dev-registry
 //!     UPDATE_EXAMPLES=1 cargo test -p ozpb-toolkit --test examples_are_current
+//!
+//! Regeneration keeps these files in step with the code, not with what was published. A signed
+//! snapshot's contents are fixed once released, and `ozpb-registry` pins each published root:
+//! new contents need a new `SIGNED_EXAMPLE_VERSION`, not a rewrite of the current one.
 
 use ozpb_domain::{NetworkId, TESTNET_PASSPHRASE};
 use ozpb_registry::{Registry, SignedSnapshot};
@@ -27,8 +31,11 @@ use ozpb_registry::{Registry, SignedSnapshot};
 /// The same arguments `ozpb dev-registry` passes. If the CLI's defaults change without this
 /// following, the test measures a snapshot nobody ships.
 fn current() -> (String, String) {
-    ozpb_registry::dev::dev_trust_files(NetworkId::from_passphrase(TESTNET_PASSPHRASE), 1)
-        .expect("the development trust files must build")
+    ozpb_registry::dev::dev_trust_files(
+        NetworkId::from_passphrase(TESTNET_PASSPHRASE),
+        ozpb_registry::dev::SIGNED_EXAMPLE_VERSION,
+    )
+    .expect("the development trust files must build")
 }
 
 fn committed(name: &str) -> String {
@@ -46,7 +53,8 @@ fn the_committed_signed_snapshot_is_current() {
         committed("registry.signed.json"),
         snapshot,
         "docs/examples/registry.signed.json has drifted from registry::dev — regenerate with \
-         `cargo run -p ozpb-cli -- dev-registry` and review the diff"
+         `cargo run -p ozpb-cli -- dev-registry` and review the diff; changed contents need a \
+         new SIGNED_EXAMPLE_VERSION"
     );
 }
 
@@ -66,8 +74,11 @@ fn the_committed_roots_are_current() {
 /// a reimplementation of it.
 #[test]
 fn the_committed_pair_verifies_through_the_cli_path() {
-    let trust = ozpb_toolkit::registry_trust_from_roots_json(&committed("registry-roots.json"), 1)
-        .expect("the committed roots must parse as a root policy");
+    let trust = ozpb_toolkit::registry_trust_from_roots_json(
+        &committed("registry-roots.json"),
+        ozpb_registry::dev::SIGNED_EXAMPLE_VERSION,
+    )
+    .expect("the committed roots must parse as a root policy");
     let mut registry = Registry::with_pinned_roots_for_network_at_version(
         trust.root_policy,
         NetworkId::from_passphrase(TESTNET_PASSPHRASE),
@@ -89,6 +100,23 @@ fn the_committed_pair_verifies_through_the_cli_path() {
     registry
         .resolve_account(&ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM)
         .expect("the pinned smart account must be a recognized capability");
+    let authority = registry
+        .resolve_account_authority(&ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM)
+        .expect("the signed example must bind the reviewed method map and scan protocol");
+    assert_eq!(authority.methods.methods.len(), 17);
+    assert_eq!(authority.scan.max_scan_ids, 1_000);
+    assert_eq!(authority.scan.max_rpc_batches, 16);
+    assert_eq!(authority.scan.max_transitive_entries, 1_000);
+    assert_eq!(authority.scan.max_attempts, 2);
+    // And the owner verifiers a passkey or ed25519 owner needs.
+    for verifier in [
+        ozpb_domain::pinned_upstream::OZ_ED25519_VERIFIER_WASM,
+        ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+    ] {
+        registry
+            .resolve_signature_verifier(&verifier)
+            .expect("the signed example must recognize both owner verifiers");
+    }
 }
 
 /// The committed example spec must be exactly the shared fixture, serialized.
