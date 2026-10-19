@@ -83,6 +83,9 @@ file bytes, including whitespace in JSON; they are not the canonical spec hash o
 Wasm reproduction. Local records can be edited, and neither a zero exit nor this summary
 establishes authenticated ledger state or completion of the milestone.
 
+The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
+runs separately and gives the field-by-field review procedure for a new summary.
+
 ## Prerequisites
 
 - Node ≥ 22.12 (required by `@stellar/stellar-sdk` 17), `stellar` CLI 27.0.0, and the Rust
@@ -272,7 +275,7 @@ when the WebAuthn verifier contract raised it.
   deployed a moment earlier, whose administrator it knows by construction. That is not evidence
   about anyone else's account. The opt-in wallet decision on the check
   ([`OZPB_HARNESS_AUTHORITY_CHECK=cli`](#the-wallet-decision-on-the-authority-check)) needs an
-  `ozpb` with commands this tree does not have yet.
+  `ozpb` built with the authority commands included in this tree and configured trust inputs.
 - **No wallet product signs.** With the default owner, a script holding an ed25519 key signs.
   With `OZPB_HARNESS_OWNER=passkey`, the account has a passkey wallet's shape: rule 0 is one
   `External` WebAuthn signer. The passkey signs the recorded transfer and the install, and the
@@ -362,8 +365,8 @@ bash testnet-harness/run.sh
   could not approve itself. That claim needs a real wallet's protected approval screen.
   `run.json` records the decision under that label, with the exact operator-trusted identities.
 - It ran on testnet once per path, on 2026-10-15. Both runs used a passkey owner and an `ozpb`
-  built from the branch that has the check, because `ozpb check-policy-call-surface` and
-  `ozpb prepare-install-intent` are not on this tree. One run was accepted: the intent, the
+  built from the authority-check branch before those commands were integrated into this tree.
+  One run was accepted: the intent, the
   decision, the screen, the re-check and the install all ran, and then the delegate's permit and
   denials. The other was refused: a second owner rule for an account the wallet does not trust,
   and no `--trust`. Nothing was signed in that run. The second owner was added by a one-off
@@ -413,10 +416,10 @@ and what does not.
     secrets between steps.
 - **install.**
   - Runs: `add_context_rule` on testnet, after which the policy enforces.
-  - Runs, opt-in, with an `ozpb` from the branch that has the authority check: the wallet decision
+  - Runs, opt-in, with an `ozpb` built with this tree's authority check: the wallet decision
     on the install intent and the check. It ran on testnet once accepted and once refused, both
-    with a passkey owner ([details](#the-wallet-decision-on-the-authority-check)). Neither the
-    intent nor the check is on this tree yet.
+    with a passkey owner ([details](#the-wallet-decision-on-the-authority-check)). Neither
+    those historical runs nor the offline tests establish acceptance at the current revision.
 - **with a wallet.**
   - Runs: pollywallet's own wallet creation, driven headless in its real UI (`browser/`).
   - Closest that runs, with no wallet product involved: an account of pollywallet's shape, created

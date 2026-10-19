@@ -104,6 +104,11 @@ gates. See `scripts/verify-phase1.sh` for the local/release distinction and
 `docs/TESTNET-EVIDENCE.md` for the evidence that has actually been run; test counts alone are
 not treated as assurance.
 
+The [Tranche 2 evidence record](docs/TESTNET-EVIDENCE-TRANCHE-2.md) separates historical
+testnet and browser observations from current automated checks, and explains how to capture
+a reviewable harness run. The [scope map](docs/SCOPE.md#tranche-2-status) lists the remaining
+wallet, harness, hosting and walkthrough work; it does not claim milestone completion.
+
 ## License
 
 Licensed under either of **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)) or **MIT**
