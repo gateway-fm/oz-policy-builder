@@ -892,7 +892,8 @@ impl Answer {
     }
 }
 
-/// Everything in a [`SurfaceVerdict`] except the ledger it was read at.
+/// Canonical commitment input, including the registry root and bound-policy code observations
+/// that are not carried by [`SurfaceVerdict`]. Excludes the observed ledger and acquisition evidence.
 #[derive(Serialize)]
 struct CommitmentPreimage<'a> {
     network_id: &'a str,

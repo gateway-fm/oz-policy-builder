@@ -461,9 +461,11 @@ pub struct PolicyCallSurfaceVerdict {
     pub authority_state: PolicyAuthorityState,
     /// How the state was acquired (recorded, never compared).
     pub evidence: PolicyAuthorityEvidence,
-    /// Hash of the authority-relevant state and the exact intent: everything above except
-    /// `observed_ledger` and `evidence`. Approval binds to it; the pre-signing re-read
-    /// recomputes it. It identifies a result and authenticates nothing.
+    /// Hash of the separate canonical `CommitmentPreimage` in `ozpb-call-surface-core`,
+    /// documented in `docs/CANONICAL-HASHING.md`. It includes the registry snapshot root
+    /// and each bound policy's address/code observation, not just the verdict's addresses.
+    /// The observed ledger and acquisition evidence are excluded. Approval binds to this
+    /// hash and the pre-signing re-read recomputes it; it authenticates nothing by itself.
     pub authority_commitment: String,
 }
 

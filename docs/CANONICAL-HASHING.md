@@ -66,14 +66,21 @@ two as separate and so does this.
 One structure, one domain. A domain used for two structures forfeits exactly the separation the
 scheme exists to provide.
 
-The authority commitment covers (as one canonical map, so the order is the encoding's, not this
-list's): the network ID, the account address and observed
+The authority commitment hashes the separate `CommitmentPreimage` in
+`crates/call-surface-core/src/lib.rs`, not the serialized API verdict with fields removed.
+It covers (as one canonical map, so the order is the encoding's, not this list's): the network ID,
+the outer `registry_snapshot_root`, the account address and observed
 account code hash, the spec hash, the binding-set hash, every bound policy address with its
 observed code hash, the grant (spec rule index, target, whether it keeps state, its signers as
 the account stores them, and the rest of the exact `add_context_rule` arguments: name,
 `valid_until`, each policy address with its install parameters), the scope, the authority list,
-the refusals, the unresolved items, the coverage exclusions, the notes, and the authority state
-(the `account-state` digest and the signing configuration of every classic account read). The
+the refusals, the unresolved items, the coverage exclusions, the notes, and the authority state.
+The latter contains `ordered_state_digest` (the `account-state` digest), `classic_accounts`
+(the consulted classic accounts and their signing configurations), and `verifiers` (the consulted
+external-verifier observations). The core filters the supplied account and verifier maps to
+those used by the authority answer or the proposed grant; unrelated reads are not committed.
+The full bound-policy address/code observations are committed rather than only the API verdict's
+`bound_policy_addresses`. The
 observed ledger and the acquisition evidence (TTLs, ledger metadata) are deliberately absent: a
 re-read immediately before signing reproduces the commitment exactly when nothing that decides
 the answer has moved, whichever ledger it lands on. It identifies a result; it does not
