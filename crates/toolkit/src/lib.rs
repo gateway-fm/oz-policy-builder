@@ -39,6 +39,8 @@ pub use call_surface_live::{
 };
 mod install_intent;
 pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
+mod install_assembly;
+pub use install_assembly::{install_assembly_output, install_assembly_request};
 mod preflight;
 pub use preflight::preflight_transaction_output;
 

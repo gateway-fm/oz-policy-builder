@@ -10,8 +10,9 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use ozpb_api_types::{
-    CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput, ErrorCode,
-    PrepareInstallIntentInput, PrepareInstallIntentOutput, ToolError,
+    AssembleInstallTransactionInput, AssembleInstallTransactionOutput, CheckPolicyCallSurfaceInput,
+    CheckPolicyCallSurfaceOutput, ErrorCode, PrepareInstallIntentInput, PrepareInstallIntentOutput,
+    ToolError,
 };
 use ozpb_source_rpc::{scan_authority_state, HttpTransport};
 
@@ -34,6 +35,57 @@ fn capped(bounds: ozpb_source_rpc::AccountScanBounds) -> ozpb_source_rpc::Accoun
 
 #[tool_router(router = authority_tool_router, vis = "pub(crate)")]
 impl PolicyBuilderServer {
+    /// Assemble an unsigned installation or separate restoration transaction.
+    #[tool(
+        name = "assemble_install_transaction",
+        description = "Runs the authority check and derives the install arguments itself, then \
+                       reads the fee payer sequence and fees and records unsigned authorization \
+                       to assemble bounded unsigned XDR. Never signs or submits. Recording mode \
+                       does not enforce owner authorization: the wallet must independently \
+                       validate all returned fields, recheck authority, obtain protected user \
+                       approval, construct owner authorization and enforce-simulate before signing. \
+                       A separate restoration response contains only a restore transaction and \
+                       requires a fresh intent and assembly after execution. Uses only an \
+                       operator-configured RPC source; may rebuild generated policies.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn assemble_install_transaction(
+        &self,
+        Parameters(input): Parameters<AssembleInstallTransactionInput>,
+    ) -> Result<Json<AssembleInstallTransactionOutput>, CallToolResult> {
+        let (trust, source, rpc_url, deadline, slot) =
+            self.authority_setup(&input.intent_request)?;
+        let build_config = self.build_config.clone();
+        let work = tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            let plan = ozpb_toolkit::plan_install_intent_read(
+                &input.intent_request,
+                &trust,
+                &build_config,
+            )?;
+            let scan = read(&plan, &source, rpc_url.clone())?;
+            let intent = ozpb_toolkit::prepare_install_intent_from_scan(
+                &plan,
+                &input.intent_request.rpc_source,
+                &scan,
+            )?;
+            let request = ozpb_toolkit::install_assembly_request(&input, &intent)?;
+            let observed = ozpb_source_rpc::assemble_install_transaction(
+                &HttpTransport::new(rpc_url),
+                &source.network_passphrase,
+                &request,
+            )
+            .map_err(crate::rpc_tool_err)?;
+            ozpb_toolkit::install_assembly_output(&input, intent, observed)
+        });
+        Ok(Json(finish(work, deadline).await?))
+    }
+
     /// Read who can change the account or reset the policies being installed.
     #[tool(
         name = "check_policy_call_surface",

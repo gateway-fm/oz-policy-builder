@@ -17,6 +17,11 @@ mod account_reconciliation;
 mod account_state_projection;
 mod account_state_scan;
 mod account_storage;
+mod assembly;
+pub use assembly::{
+    assemble_install_transaction, AssemblyRestoration, InstallAssemblyObservation,
+    InstallAssemblyRequest,
+};
 #[cfg(feature = "http")]
 mod checked_account_observation;
 mod classic_account;

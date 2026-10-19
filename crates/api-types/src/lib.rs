@@ -352,6 +352,8 @@ pub(crate) mod test_support;
 /// Wire types for evaluation, verification, live checks, and install intent.
 pub mod policy_operations;
 pub use policy_operations::*;
+mod install_assembly;
+pub use install_assembly::*;
 
 #[cfg(test)]
 mod tests {

@@ -162,6 +162,21 @@ enum Command {
         #[command(flatten)]
         build: BuildConfigArgs,
     },
+    /// Recheck authority and assemble unsigned install/restoration XDR with current sequence
+    /// and fees. Never signs or submits; the wallet must independently validate and simulate.
+    AssembleInstallTransaction {
+        /// AssembleInstallTransactionInput JSON, including intent_request and fee bounds.
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_ROOTS_FILE")]
+        registry_roots: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_MIN_VERSION")]
+        registry_min_version: u64,
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+        #[command(flatten)]
+        build: BuildConfigArgs,
+    },
     /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
     /// incomplete without the transaction result XDR).
     Import {
@@ -349,6 +364,19 @@ fn main() -> Result<()> {
             rpc_sources,
             build,
         } => authority::intent(authority::AuthorityArgs {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build_config: build.resolve()?,
+        })?,
+        Command::AssembleInstallTransaction {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build,
+        } => authority::assemble(authority::AuthorityArgs {
             request,
             registry_roots,
             registry_min_version,
