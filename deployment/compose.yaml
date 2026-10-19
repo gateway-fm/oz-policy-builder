@@ -1,0 +1,89 @@
+# Single-operator service. The compiler shares the API's filesystem/process/network trust
+# domain; these container limits are not a disposable per-job worker boundary.
+name: ozpb-self-hosted
+services:
+  api:
+    image: ${OZPB_IMAGE:?Set an explicitly built image ID or published image digest}
+    user: "10001:10001"
+    read_only: true
+    init: true
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 4g
+    memswap_limit: 4g
+    pids_limit: 256
+    stop_grace_period: 20s
+    logging:
+      driver: none
+    ports:
+      - "${OZPB_BIND_IP:-127.0.0.1}:${OZPB_TLS_PORT:-8443}:8443"
+    environment:
+      OZPB_RPC_ALLOWLIST: ${OZPB_RPC_ALLOWLIST:?Set the exact HTTPS RPC endpoint allowlist}
+      OZPB_REGISTRY_MIN_VERSION: ${OZPB_REGISTRY_MIN_VERSION:?Set the trusted registry minimum version}
+      OZPB_HTTP_REQUESTS_PER_MINUTE: ${OZPB_HTTP_REQUESTS_PER_MINUTE:-60}
+      OZPB_HTTP_MAX_BODY_BYTES: ${OZPB_HTTP_MAX_BODY_BYTES:-1048576}
+      OZPB_HTTP_MAX_CONCURRENCY: 1
+      OZPB_BUILD_JOBS: 1
+    tmpfs:
+      - /tmp/ozpb:size=536870912,uid=10001,gid=10001,mode=0700,nosuid,nodev
+      - /var/cache/ozpb:size=2147483648,uid=10001,gid=10001,mode=0700,nosuid,nodev
+    volumes:
+      - type: bind
+        source: ${OZPB_CONFIG_DIR:?Set an absolute private configuration directory}/bearer-token
+        target: /run/ozpb/bearer-token
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OZPB_CONFIG_DIR}/registry-roots.json
+        target: /run/ozpb/registry-roots.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OZPB_CONFIG_DIR}/registry.signed.json
+        target: /run/ozpb/registry.signed.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OZPB_CONFIG_DIR}/rpc-sources.json
+        target: /run/ozpb/rpc-sources.json
+        read_only: true
+        bind: {create_host_path: false}
+  tls:
+    image: ${OZPB_PROXY_IMAGE:?Set the image ID or digest built from the proxy target}
+    user: "10001:10001"
+    network_mode: service:api
+    depends_on: [api]
+    read_only: true
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.5
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    logging:
+      driver: none
+    environment:
+      OZPB_HOSTNAME: ${OZPB_HOSTNAME:?Set the DNS name covered by the TLS certificate}
+      XDG_DATA_HOME: /tmp/caddy/data
+      XDG_CONFIG_HOME: /tmp/caddy/config
+    tmpfs:
+      - /tmp/caddy:size=16777216,uid=10001,gid=10001,mode=0700,nosuid,nodev,noexec
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OZPB_CONFIG_DIR}/tls.crt
+        target: /run/tls/tls.crt
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OZPB_CONFIG_DIR}/tls.key
+        target: /run/tls/tls.key
+        read_only: true
+        bind: {create_host_path: false}

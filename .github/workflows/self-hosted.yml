@@ -1,0 +1,42 @@
+name: self-hosted image
+on:
+  pull_request:
+    paths:
+      - deployment/**
+      - scripts/*hosted*
+      - .github/workflows/self-hosted.yml
+      - .github/workflows/nightly-live.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - crates/**
+      - contracts/golden-transfer-policy/**
+      - docs/examples/subscription-spec.json
+      - docs/examples/registry-roots.json
+      - docs/examples/registry.signed.json
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: self-hosted (TLS guards · offline generate and verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: build-context publication boundary
+        run: python3 scripts/test-hosted-context.py
+      - name: build immutable source context (no image publication)
+        run: |
+          set -euo pipefail
+          python3 scripts/hosted-context.py HEAD > "$RUNNER_TEMP/ozpb-context.tar"
+          docker build --pull --target proxy --file deployment/Dockerfile --tag ozpb-proxy:check - < "$RUNNER_TEMP/ozpb-context.tar"
+          docker build --pull --file deployment/Dockerfile --tag ozpb-self-host:check - < "$RUNNER_TEMP/ozpb-context.tar"
+      - name: TLS transport and real offline artifact reproduction
+        run: |
+          set -euo pipefail
+          export OZPB_IMAGE="$(docker image inspect ozpb-self-host:check --format '{{.Id}}')"
+          export OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:check --format '{{.Id}}')"
+          bash scripts/test-hosted-container.sh
