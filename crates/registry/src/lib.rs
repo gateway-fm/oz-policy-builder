@@ -145,7 +145,43 @@ pub struct VerifierCapability {
     pub implementation: String,
     pub key_encoding: String,
     pub immutable: bool,
+    /// The key scheme the reviewed implementation verifies, which fixes how a signer's key data
+    /// maps to one owner identity. Absent on entries signed before the field existed (it is
+    /// skipped when absent, so their roots are unchanged); such a verifier recognizes code but
+    /// cannot vouch for an owner identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_scheme: Option<VerifierKeyScheme>,
+    /// The reviewed implementation cannot change what it accepts after review: no ledger access
+    /// (storage, its own code, deployment), no calls into other contracts, no reads of ledger
+    /// context (`scripts/check-wasm-imports.py` against
+    /// `tests/fixtures/stateless_verifier_imports.txt`). Absent means not established.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stateless: Option<bool>,
     pub review_reference: String,
+}
+
+/// The verifier implementations whose key handling was reviewed from source, by exact Wasm
+/// hash. See [`Registry::resolve_signature_verifier`].
+const REVIEWED_VERIFIER_SCHEMES: [(Hash32, VerifierKeyScheme); 2] = [
+    (
+        pinned_upstream::OZ_ED25519_VERIFIER_WASM,
+        VerifierKeyScheme::Ed25519,
+    ),
+    (
+        pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+        VerifierKeyScheme::WebauthnP256,
+    ),
+];
+
+/// How a reviewed verifier reads a signer's key data, and so what one owner identity is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifierKeyScheme {
+    /// Exactly 32 bytes: an ed25519 public key (OZ `verifiers::ed25519`, `BytesN<32>`).
+    Ed25519,
+    /// A 65-byte uncompressed P-256 public key (`0x04‖X‖Y`) followed by an optional credential
+    /// id the verifier ignores (OZ `verifiers::webauthn::canonicalize_key`: the first 65 bytes).
+    WebauthnP256,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -278,6 +314,11 @@ pub enum RegistryError {
     AccountRuleEnumerationUnsupported { wasm_hash: String, method: String },
     #[error("E_UNREGISTERED_VERIFIER: no trusted verifier entry for wasm hash {0}")]
     UnknownVerifier(String),
+    #[error(
+        "E_UNREGISTERED_VERIFIER: verifier entry for wasm hash {0} does not establish an \
+         immutable, stateless implementation with a known key scheme"
+    )]
+    VerifierCapabilityIncomplete(String),
     #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
     UnknownTemplate(String),
     #[error("E_REGISTRY_REVOKED: capability {capability} is revoked: {reason}")]
@@ -297,7 +338,7 @@ pub enum RegistryError {
 /// supplied *then*; the `resolve_*` methods take no time and do not re-check `expires_at_unix`.
 /// A `Registry` is therefore a snapshot verified as of its load time: a long-lived instance
 /// will keep resolving capabilities after the snapshot expires, so a caller that caches one
-/// across time must reload before `expires_at_unix` and fail closed if it cannot. The Phase 1
+/// across time must recheck with `ensure_valid_at` and reload if it has expired. The Phase 1
 /// toolkit sidesteps this by constructing and loading a fresh registry per synthesis call.
 pub struct Registry {
     root_keys: BTreeMap<String, VerifyingKey>,
@@ -311,6 +352,31 @@ pub struct Registry {
 struct Loaded {
     snapshot: RegistrySnapshot,
     root: Hash32,
+}
+
+fn check_snapshot_validity(
+    snapshot: &RegistrySnapshot,
+    now_unix: i64,
+) -> Result<(), RegistryError> {
+    if snapshot.valid_from_unix > snapshot.expires_at_unix {
+        return Err(RegistryError::Validity {
+            valid_from: snapshot.valid_from_unix,
+            expires_at: snapshot.expires_at_unix,
+        });
+    }
+    if now_unix < snapshot.valid_from_unix {
+        return Err(RegistryError::NotYetValid {
+            valid_from: snapshot.valid_from_unix,
+            now: now_unix,
+        });
+    }
+    if now_unix > snapshot.expires_at_unix {
+        return Err(RegistryError::Expired {
+            expires_at: snapshot.expires_at_unix,
+            now: now_unix,
+        });
+    }
+    Ok(())
 }
 
 impl Registry {
@@ -526,24 +592,7 @@ impl Registry {
                 });
             }
         }
-        if signed.snapshot.valid_from_unix > signed.snapshot.expires_at_unix {
-            return Err(RegistryError::Validity {
-                valid_from: signed.snapshot.valid_from_unix,
-                expires_at: signed.snapshot.expires_at_unix,
-            });
-        }
-        if now_unix < signed.snapshot.valid_from_unix {
-            return Err(RegistryError::NotYetValid {
-                valid_from: signed.snapshot.valid_from_unix,
-                now: now_unix,
-            });
-        }
-        if now_unix > signed.snapshot.expires_at_unix {
-            return Err(RegistryError::Expired {
-                expires_at: signed.snapshot.expires_at_unix,
-                now: now_unix,
-            });
-        }
+        check_snapshot_validity(&signed.snapshot, now_unix)?;
         validate_capability_keys(&signed.snapshot)?;
         for (capability, revocation) in &signed.snapshot.revocations {
             if revocation.reason.trim().is_empty() {
@@ -660,6 +709,13 @@ impl Registry {
         self.load_at(&signed, now_unix)
     }
 
+    /// Recheck the loaded, signature-verified snapshot's interval at a trusted current time.
+    /// This neither reloads capabilities nor changes the version/checkpoint state. Cached
+    /// consumers must call it before relying on capabilities after long-running work.
+    pub fn ensure_valid_at(&self, now_unix: i64) -> Result<(), RegistryError> {
+        check_snapshot_validity(&self.loaded()?.snapshot, now_unix)
+    }
+
     pub fn root(&self) -> Result<Hash32, RegistryError> {
         Ok(self.loaded()?.root)
     }
@@ -741,6 +797,35 @@ impl Registry {
             .verifiers
             .get(&wasm_hash.to_hex())
             .ok_or_else(|| RegistryError::UnknownVerifier(wasm_hash.to_hex()))
+    }
+
+    /// A verifier that may vouch for an owner identity: reviewed for this exact code, with an
+    /// established key scheme, immutable and stateless. Recognizing the code is not enough on
+    /// its own: an entry missing any of the three cannot say whose signature it accepts.
+    ///
+    /// The scheme is also compiled in per exact pinned hash, as the account method inventory
+    /// is: a signed entry can recognize other code, but it cannot make that code an owner
+    /// verifier, nor claim a scheme the reviewed source does not implement.
+    pub fn resolve_signature_verifier(
+        &self,
+        wasm_hash: &Hash32,
+    ) -> Result<VerifierKeyScheme, RegistryError> {
+        let capability = self.resolve_verifier(wasm_hash)?;
+        let reviewed = REVIEWED_VERIFIER_SCHEMES
+            .iter()
+            .find(|(hash, _)| hash == wasm_hash)
+            .map(|(_, scheme)| *scheme);
+        match (
+            capability.immutable,
+            capability.stateless,
+            capability.key_scheme,
+            reviewed,
+        ) {
+            (true, Some(true), Some(scheme), Some(reviewed)) if scheme == reviewed => Ok(scheme),
+            _ => Err(RegistryError::VerifierCapabilityIncomplete(
+                wasm_hash.to_hex(),
+            )),
+        }
     }
 
     pub fn resolve_template(&self, family: &str) -> Result<&TemplateCapability, RegistryError> {
@@ -905,6 +990,11 @@ pub mod dev {
     use ozpb_domain::sha256;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
+    /// Version of the committed, signed development example. Versions 1 and 2 remain
+    /// historical parents; changing their contents would fork persisted checkpoints. The same
+    /// holds for this version once published, so tests pin every root.
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 3;
+
     /// Deterministic development root key (NOT a production root; production roots are
     /// threshold-held and pinned at release time).
     pub fn dev_signing_key() -> SigningKey {
@@ -926,7 +1016,12 @@ pub mod dev {
         network_id: NetworkId,
         version: u64,
     ) -> Result<(String, String), RegistryError> {
-        let signed = crate::sign_snapshot(&dev_signing_key(), dev_snapshot(network_id, version))?;
+        let snapshot = match version {
+            3 => verifier_successor(network_id)?,
+            2 => account_authority_successor(network_id)?,
+            other => dev_snapshot(network_id, other),
+        };
+        let signed = crate::sign_snapshot(&dev_signing_key(), snapshot)?;
         let snapshot_json = serde_json::to_string_pretty(&signed)
             .map_err(|error| RegistryError::Internal(error.to_string()))?
             + "\n";
@@ -940,8 +1035,83 @@ pub mod dev {
         Ok((snapshot_json, roots_json))
     }
 
+    /// Public half of [`dev_signing_key`]: development-only, because anyone can sign with
+    /// it. The operator account reader in `ozpb-source-rpc` refuses it outside testnet.
     pub fn dev_root_verifying_bytes() -> [u8; 32] {
         dev_signing_key().verifying_key().to_bytes()
+    }
+
+    /// Extend the original development snapshot with reviewed code-capability
+    /// metadata for the pinned account. This signs no live state or administrator
+    /// intent and cannot authorize a public `Safe` verdict.
+    pub fn account_authority_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        let previous = dev_snapshot(network_id, 1);
+        let mut snapshot = dev_snapshot(network_id, 2);
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let account = snapshot
+            .accounts
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .ok_or_else(|| {
+                RegistryError::Internal("pinned development account is absent".into())
+            })?;
+        account.bounded_next_id = Some(BoundedNextIdCapability {
+            schema_version: 1,
+            max_scan_ids: 1_000,
+            max_rpc_batches: 16,
+            max_transitive_entries: 1_000,
+            max_attempts: 2,
+            archive_policy: AccountArchivePolicy::RejectUnresolved,
+            snapshot_policy: AccountSnapshotPolicy::SameLedgerAndInstance,
+        });
+        account.method_inventory_digest = Some(
+            ozpb_domain::canonical_hash(
+                domains::ACCOUNT_METHOD_INVENTORY,
+                &account_methods::source_reviewed_oz_multisig_candidate(),
+            )
+            .map_err(|error| RegistryError::Internal(error.to_string()))?,
+        );
+        Ok(snapshot)
+    }
+
+    /// Version 3: version 2 plus what lets a verifier vouch for an owner identity. The ed25519
+    /// verifier gains its key scheme and statelessness; OpenZeppelin's WebAuthn (passkey)
+    /// verifier joins, built from the same pinned commit and toolchain (provenance in
+    /// [`ozpb_domain::pinned_upstream`]). Both are reviewed as storage-free with no upgrade
+    /// path: their Wasm imports no ledger functions, so nothing they accept can change.
+    pub fn verifier_successor(network_id: NetworkId) -> Result<RegistrySnapshot, RegistryError> {
+        let previous = account_authority_successor(network_id)?;
+        let mut snapshot = previous.clone();
+        snapshot.version = 3;
+        snapshot.log_index = 3;
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let ed25519 = snapshot
+            .verifiers
+            .get_mut(&pinned_upstream::OZ_ED25519_VERIFIER_WASM.to_hex())
+            .ok_or_else(|| {
+                RegistryError::Internal("pinned development verifier is absent".into())
+            })?;
+        ed25519.key_scheme = Some(VerifierKeyScheme::Ed25519);
+        ed25519.stateless = Some(true);
+        ed25519
+            .review_reference
+            .push_str(" Exports only verify, canonicalize_key and batch_canonicalize_key; its Wasm imports no ledger functions (read from the testnet copy of this exact code), so it is stateless and cannot upgrade itself.");
+        snapshot.verifiers.insert(
+            pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex(),
+            VerifierCapability {
+                implementation: "oz webauthn (passkey) verifier".to_string(),
+                key_encoding: "65-byte uncompressed P-256 public key, then an optional \
+                               credential id the verifier ignores"
+                    .to_string(),
+                immutable: true,
+                key_scheme: Some(VerifierKeyScheme::WebauthnP256),
+                stateless: Some(true),
+                review_reference: "OpenZeppelin/stellar-contracts examples/multisig-smart-account/webauthn-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 and stellar-cli 27.0.0 — provenance in ozpb_domain::pinned_upstream. No storage, constructor, upgrade or admin; Wasm imports no ledger functions. Our build of their source, not an upstream-published artifact."
+                    .to_string(),
+            },
+        );
+        Ok(snapshot)
     }
 
     /// A Phase 1 snapshot: the scope template family, a pinned spending-limit hash, a
@@ -991,6 +1161,8 @@ pub mod dev {
                 implementation: "oz ed25519 verifier".to_string(),
                 key_encoding: "raw ed25519 public key (32 bytes)".to_string(),
                 immutable: true,
+                key_scheme: None,
+                stateless: None,
                 review_reference: "OpenZeppelin/stellar-contracts examples/multisig-smart-account/ed25519-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
                     .to_string(),
             },
@@ -1046,6 +1218,221 @@ pub mod dev {
 mod tests {
     use super::*;
     use ozpb_policy_spec::{Constraint, PredicateKind};
+
+    #[test]
+    fn historical_development_root_is_immutable() {
+        let old = dev::dev_snapshot(
+            NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
+            1,
+        );
+        assert_eq!(
+            snapshot_root(&old).unwrap().to_hex(),
+            "2957b9b07f55b960a58711c1935cb341dc5fe0b3f568b9bce85bbebfb9af0807"
+        );
+    }
+
+    /// The committed signed example is published: an operator may have persisted a checkpoint
+    /// at its root. Regenerating different contents under the same version would fork that
+    /// checkpoint while `examples_are_current` passes, so new contents need a new
+    /// `SIGNED_EXAMPLE_VERSION` that extends this root, and a new pin here.
+    #[test]
+    fn published_signed_example_root_is_immutable() {
+        const PUBLISHED_V2_ROOT: &str =
+            "4474ec405262f83c3d125cffde8f362eefcf4c90120cefa5cae74aec4e929ed9";
+        const PUBLISHED_V3_ROOT: &str =
+            "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f";
+        assert_eq!(
+            dev::SIGNED_EXAMPLE_VERSION,
+            3,
+            "a new signed example version must pin its own published root here"
+        );
+        // Version 2 is a published parent: the verifier fields it never carried must not move
+        // its root, which is why they are skipped when absent.
+        let v2 = dev::account_authority_successor(network()).unwrap();
+        assert_eq!(
+            snapshot_root(&v2).unwrap().to_hex(),
+            PUBLISHED_V2_ROOT,
+            "published development example v2 changed; publish new contents as a new version"
+        );
+        let v3 = dev::verifier_successor(network()).unwrap();
+        assert_eq!(
+            snapshot_root(&v3).unwrap().to_hex(),
+            PUBLISHED_V3_ROOT,
+            "published development example v3 changed; publish new contents as a new version"
+        );
+        assert_eq!(v3.previous_root, Some(snapshot_root(&v2).unwrap()));
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(
+            snapshot_root(&committed.snapshot).unwrap().to_hex(),
+            PUBLISHED_V3_ROOT
+        );
+    }
+
+    /// A verifier vouches for an owner identity only when its entry says how it reads keys
+    /// and that nothing it accepts can change; recognizing its code is not enough.
+    #[test]
+    fn signature_verifiers_need_a_scheme_and_must_be_immutable_and_stateless() {
+        let v2 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::account_authority_successor(network()).unwrap(),
+        )
+        .unwrap();
+        let v3 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::verifier_successor(network()).unwrap(),
+        )
+        .unwrap();
+        let mut registry = pinned_test_registry();
+        registry.load_at(&v2, 100).unwrap();
+        // Recognized code, but v2 never said how it reads keys.
+        assert!(registry
+            .resolve_verifier(&pinned_upstream::OZ_ED25519_VERIFIER_WASM)
+            .is_ok());
+        assert_eq!(
+            registry.resolve_signature_verifier(&pinned_upstream::OZ_ED25519_VERIFIER_WASM),
+            Err(RegistryError::VerifierCapabilityIncomplete(
+                pinned_upstream::OZ_ED25519_VERIFIER_WASM.to_hex()
+            ))
+        );
+        // v3 directly extends a persisted v2.
+        registry.load_at(&v3, 100).unwrap();
+        assert_eq!(
+            registry.resolve_signature_verifier(&pinned_upstream::OZ_ED25519_VERIFIER_WASM),
+            Ok(VerifierKeyScheme::Ed25519)
+        );
+        assert_eq!(
+            registry.resolve_signature_verifier(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM),
+            Ok(VerifierKeyScheme::WebauthnP256)
+        );
+
+        // Each of the three properties is required on its own.
+        for edit in [
+            |c: &mut VerifierCapability| c.immutable = false,
+            |c: &mut VerifierCapability| c.stateless = Some(false),
+            |c: &mut VerifierCapability| c.stateless = None,
+            |c: &mut VerifierCapability| c.key_scheme = None,
+        ] {
+            let mut snapshot = dev::verifier_successor(network()).unwrap();
+            edit(
+                snapshot
+                    .verifiers
+                    .get_mut(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex())
+                    .unwrap(),
+            );
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            let mut fresh = pinned_test_registry();
+            fresh.load_at(&signed, 100).unwrap();
+            assert!(matches!(
+                fresh.resolve_signature_verifier(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM),
+                Err(RegistryError::VerifierCapabilityIncomplete(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn committed_development_successor_extends_a_persisted_v2_checkpoint() {
+        let roots = || RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+        };
+        let v1 = sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
+        let v2 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::account_authority_successor(network()).unwrap(),
+        )
+        .unwrap();
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(committed.snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
+
+        // An operator persisted a checkpoint at v2: the committed v3 extends it directly.
+        let mut registry = pinned_test_registry();
+        registry.load_at(&v1, 100).unwrap();
+        registry.load_at(&v2, 100).unwrap();
+        let v2_checkpoint = registry.checkpoint().unwrap();
+        assert_eq!(committed.snapshot.previous_root, Some(v2_checkpoint.root));
+        let mut restored = Registry::with_pinned_roots_for_network_at_checkpoint(
+            roots(),
+            network(),
+            v2_checkpoint,
+        )
+        .unwrap();
+        restored.load_at(&committed, 100).unwrap();
+        restored
+            .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
+            .unwrap();
+        restored
+            .resolve_signature_verifier(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM)
+            .unwrap();
+
+        // One persisted at v1 cannot jump to v3: v3 does not directly extend it.
+        let mut at_v1 = pinned_test_registry();
+        at_v1.load_at(&v1, 100).unwrap();
+        let v1_checkpoint = at_v1.checkpoint().unwrap();
+        let mut skipping = Registry::with_pinned_roots_for_network_at_checkpoint(
+            roots(),
+            network(),
+            v1_checkpoint,
+        )
+        .unwrap();
+        assert!(matches!(
+            skipping.load_at(&committed, 100),
+            Err(RegistryError::Transparency(_))
+        ));
+    }
+
+    /// A revoked verifier vouches for nobody, however complete its entry.
+    #[test]
+    fn a_revoked_signature_verifier_is_refused() {
+        let mut snapshot = dev::verifier_successor(network()).unwrap();
+        snapshot.revocations.insert(
+            format!(
+                "verifier/{}",
+                pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex()
+            ),
+            Revocation {
+                reason: "test revocation".to_string(),
+                effective_version: 3,
+            },
+        );
+        let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+        let mut registry = registry();
+        registry.load_at(&signed, 100).unwrap();
+        assert!(matches!(
+            registry.resolve_signature_verifier(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM),
+            Err(RegistryError::Revoked { .. })
+        ));
+    }
+
+    /// A signed entry may recognize other verifier code, but cannot make it an owner verifier,
+    /// nor give a reviewed one a scheme its source does not implement.
+    #[test]
+    fn the_key_scheme_must_match_the_reviewed_source() {
+        let mut snapshot = dev::verifier_successor(network()).unwrap();
+        snapshot
+            .verifiers
+            .get_mut(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex())
+            .unwrap()
+            .key_scheme = Some(VerifierKeyScheme::Ed25519);
+        let other = sha256(b"some other verifier");
+        let mut entry =
+            snapshot.verifiers[&pinned_upstream::OZ_ED25519_VERIFIER_WASM.to_hex()].clone();
+        entry.implementation = "other".into();
+        snapshot.verifiers.insert(other.to_hex(), entry);
+        let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+        let mut registry = registry();
+        registry.load_at(&signed, 100).unwrap();
+        for hash in [pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM, other] {
+            assert!(registry.resolve_verifier(&hash).is_ok());
+            assert!(matches!(
+                registry.resolve_signature_verifier(&hash),
+                Err(RegistryError::VerifierCapabilityIncomplete(_))
+            ));
+        }
+    }
 
     /// The shipped snapshot must carry the *pinned upstream* hashes, not values derived
     /// locally. It previously held `sha256("dev:oz:spending_limit:wasm")` — a hash of a text
@@ -1141,31 +1528,17 @@ mod tests {
     }
 
     fn signed_authority_snapshot() -> SignedSnapshot {
-        let mut snapshot = dev::dev_snapshot(network(), 1);
-        let account = snapshot
-            .accounts
-            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
-            .unwrap();
-        account.bounded_next_id = Some(BoundedNextIdCapability {
-            schema_version: 1,
-            max_scan_ids: 1_000,
-            max_rpc_batches: 16,
-            max_transitive_entries: 1_000,
-            max_attempts: 2,
-            archive_policy: AccountArchivePolicy::RejectUnresolved,
-            snapshot_policy: AccountSnapshotPolicy::SameLedgerAndInstance,
-        });
-        let methods = account_methods::source_reviewed_oz_multisig_candidate();
-        account.method_inventory_digest =
-            Some(ozpb_domain::canonical_hash(domains::ACCOUNT_METHOD_INVENTORY, &methods).unwrap());
-        sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
+        sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::account_authority_successor(network()).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn signed_account_authority_requires_exact_method_and_scan_bindings() {
-        let legacy: SignedSnapshot =
-            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
-                .unwrap();
+        let legacy =
+            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
         let mut registry = pinned_test_registry();
         registry.load_at(&legacy, 100).unwrap();
         assert!(matches!(
@@ -1174,7 +1547,6 @@ mod tests {
         ));
 
         let signed = signed_authority_snapshot();
-        let mut registry = pinned_test_registry();
         registry.load_at(&signed, 100).unwrap();
         let resolved = registry
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
@@ -1670,6 +2042,16 @@ mod tests {
         ));
         let mut active = Registry::with_pinned_root_for_network(&root, network()).unwrap();
         active.load_at(&signed, 100).unwrap();
+        assert!(active.ensure_valid_at(100).is_ok());
+        assert!(active.ensure_valid_at(200).is_ok());
+        assert!(matches!(
+            active.ensure_valid_at(99),
+            Err(RegistryError::NotYetValid { .. })
+        ));
+        assert!(matches!(
+            active.ensure_valid_at(201),
+            Err(RegistryError::Expired { .. })
+        ));
         let mut expired = Registry::with_pinned_root_for_network(&root, network()).unwrap();
         assert!(matches!(
             expired.load_at(&signed, 201),
@@ -1948,6 +2330,8 @@ mod tests {
                             implementation: "collision".to_string(),
                             key_encoding: "raw ed25519 public key (32 bytes)".to_string(),
                             immutable: true,
+                            key_scheme: None,
+                            stateless: None,
                             review_reference: "collision".to_string(),
                         },
                     );

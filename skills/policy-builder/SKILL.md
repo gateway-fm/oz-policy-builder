@@ -122,12 +122,65 @@ signer identities, spending limits, and policy composition visible in the propos
    limits, and current-network preflight as separate dimensions. A `matches` result describes
    reproduction; it does not establish live readiness or policy coverage beyond what the
    report names.
+5. If the user has an exact transaction envelope containing the intended authorization entries,
+   `preflight_transaction` can simulate it on the user-selected RPC endpoint with authorization
+   enforced. Before calling it, tell the user that signed authorization entries are live
+   authorizations, not test data: a Soroban authorization signature covers the network, the
+   entry's nonce, its `signatureExpirationLedger` and the invocation, not the transaction that
+   carries it, so anyone who sees the envelope can submit the entry until it expires, and
+   simulation does not consume the nonce. The envelope reaches the RPC endpoint and this
+   conversation. Recommend testnet or a short `signatureExpirationLedger`, a trusted RPC
+   endpoint, and the CLI or a local stdio server; a hosted server refuses signed envelopes
+   with `E_UNSUPPORTED_ENVELOPE`. Never ask the user to paste a signed envelope into the
+   conversation without saying this first. Treat the envelope as confidential and do not echo
+   it. Its
+   `simulated_success`, `simulation_failed`, `restoration_required`, or
+   `declared_resources_insufficient` outcome is evidence for that envelope at the
+   endpoint-reported ledger. `declared_resources_insufficient` means the invocation succeeded
+   in simulation but the envelope does not declare what it used, in each dimension listed in
+   `insufficient_declared_resources`: a footprint list that is not exactly the simulated one,
+   or disk-read or write bytes below the use. The simulation then does not show that the
+   envelope can succeed; it must be re-assembled, and it is not a success. A non-empty
+   `below_endpoint_estimate` is advice, not a failure: the declared instructions or resource
+   fee are below the endpoint's padded estimate. Tell the user, and do not present
+   `simulated_success` as proof that the declared instructions and fee suffice. The server
+   cannot establish that
+   the generated policy is installed or selected, or that installing it is safe.
+   A successful simulation does not predict a later transaction's outcome. No writes are
+   committed, and the tool never submits the envelope, but neither makes the signed entries in
+   it harmless. Do not treat `record_simulation` as this check: it uses record mode to acquire
+   proposed behavior, not enforcement mode.
+
+## Who can change the account
+
+Once the policies are deployed and bound, `check_policy_call_surface` can read, through an RPC
+source the server's operator configured (ask the user which source name; never supply a URL),
+who can change the account or reset those policies for the rule to be installed. Relay its
+`summary` and the structured lists faithfully:
+
+- `refusals`: the install must not proceed; explain each reason and its remediation. Nobody's
+  approval overrides one.
+- `unresolved`: evidence is missing; the answer is incomplete until a re-read succeeds.
+- `authority_list`: every rule that can remove or change the new limit, with exactly who must
+  sign. Do not decide whether those identities are the user's or trusted — you cannot know, and
+  an identity marked as the agent's own key is never an owner.
+- `notes` and `coverage_exclusions`: what the agent can already do elsewhere, who else can call
+  the target, expired rules, and rules for other contracts that were not analysed.
+
+Never call the account or the install safe, even when nothing was refused. The result is
+advisory: the user's wallet, which holds the owner key, must recompute it against its own RPC,
+match every listed rule against the user's keys and trusted identities, and ask the user.
+
+`prepare_install_intent` takes the same request, runs that check itself, and returns the exact
+`add_context_rule` arguments only when nothing is refused and nothing is unresolved. Show them
+with the authority answer and hand them to the user's wallet; never assemble, sign or submit,
+and never present them as approval to install.
 
 ## Hand off
 
 Summarize exactly what the grant permits, what it does not constrain, the signer and expiry
 choices, the evidence trust level, and the limits of the checks that ran. Generated code is a
-review artifact, not an installed permission. The current MCP server does not provide a
-complete live account authority check or a wallet installation flow. Tell the user that a
-trusted live check, wallet review, and their own signature are required before installation.
-Do not deploy, sign, submit, or ask for secret keys.
+review artifact, not an installed permission. The MCP server does not provide a wallet
+installation flow. Tell the user that their wallet's own authority check and review, and their
+own signature, are required before installation. Do not deploy, sign, submit, or ask for secret
+keys.

@@ -53,8 +53,6 @@ pub mod domains {
     pub const ACCOUNT_LEDGER_WITNESS: &str = "ozpb:v1:account-ledger-witness";
     /// Reviewed method inventory for an exact account Wasm hash.
     pub const ACCOUNT_METHOD_INVENTORY: &str = "ozpb:v1:account-method-inventory";
-    /// Observed, eligible management rule identity; wallet intent is established separately.
-    pub const ACCOUNT_ADMIN_CANDIDATE: &str = "ozpb:v1:account-admin-candidate";
     /// A generated crate's source files, lockfile excluded — the value a BuildManifest records
     /// as `source_hash`.
     pub const GENERATED_SOURCE: &str = "ozpb:v1:generated-source";
@@ -63,10 +61,9 @@ pub mod domains {
     /// domain because it hashes a different structure than [`GENERATED_SOURCE`] — reusing that
     /// one because the two look similar is how a domain comes to mean two things.
     pub const GENERATED_CRATE_FILES: &str = "ozpb:v1:generated-crate-files";
-    /// Reserved for the verdict itself. Deliberately unused: the verdict is not hashed yet.
-    /// Architecture §4.8 records it inside an `InstallationRecord`, and §6.3 chains those onto
-    /// the artifact provenance — so that is where this domain will be spent. Reaching for it to
-    /// hash anything else would put two structures under one domain, which is the collision the
+    /// The `authority_commitment`: authority-relevant state plus the exact install intent, the
+    /// value a wallet's approval binds to and its pre-signing re-read recomputes (§4.8, D7). Reaching for it to hash
+    /// anything else would put two structures under one domain, which is the collision the
     /// separation exists to prevent.
     pub const SURFACE_VERDICT: &str = "ozpb:v1:surface-verdict";
 
@@ -85,7 +82,6 @@ pub mod domains {
         ACCOUNT_STATE,
         ACCOUNT_LEDGER_WITNESS,
         ACCOUNT_METHOD_INVENTORY,
-        ACCOUNT_ADMIN_CANDIDATE,
         GENERATED_SOURCE,
         GENERATED_CRATE_FILES,
         SURFACE_VERDICT,
@@ -162,7 +158,21 @@ pub mod pinned_upstream {
         0xb2, 0x89,
     ]);
 
-    /// OpenZeppelin's ed25519 signature verifier. Immutable and shareable.
+    /// OpenZeppelin's WebAuthn (passkey) signature verifier: a 65-byte uncompressed P-256 key,
+    /// then an optional credential id it ignores. No storage, constructor, upgrade or admin; its
+    /// Wasm imports no ledger functions, so it is immutable and stateless. Built from the same
+    /// commit and toolchain as the others (`examples/multisig-smart-account/webauthn-verifier`,
+    /// stellar-cli 27.0.0); the code with this hash is on testnet.
+    pub const OZ_WEBAUTHN_VERIFIER_WASM: Hash32 = Hash32([
+        0xe6, 0x3a, 0x03, 0x0d, 0x0f, 0x1a, 0x14, 0x81, 0xe3, 0x60, 0x59, 0xa4, 0x83, 0x7c, 0x43,
+        0x30, 0x83, 0xb3, 0x3e, 0x70, 0x4c, 0x1f, 0x96, 0x25, 0xb7, 0x31, 0x47, 0x95, 0xb6, 0xd7,
+        0x2b, 0x76,
+    ]);
+
+    /// OpenZeppelin's ed25519 signature verifier: exactly a 32-byte key. Immutable, stateless
+    /// and shareable: it exports only `verify`, `canonicalize_key` and `batch_canonicalize_key`,
+    /// and its Wasm imports only buffer, vector and crypto host functions — no ledger access —
+    /// as read from the testnet copy of this exact code.
     pub const OZ_ED25519_VERIFIER_WASM: Hash32 = Hash32([
         0x60, 0xe8, 0x79, 0x8d, 0xb6, 0x10, 0xbd, 0xaf, 0x33, 0x70, 0xd3, 0x9e, 0xbd, 0xa5, 0x6e,
         0xe1, 0xdc, 0x2c, 0x15, 0xce, 0x1c, 0x3a, 0x9e, 0x28, 0xb5, 0x28, 0xbf, 0xa2, 0x4a, 0x06,

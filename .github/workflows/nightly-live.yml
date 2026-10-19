@@ -17,7 +17,10 @@
 #   * a generated policy builds for wasm32v1-none via the real `stellar contract build`;
 #   * the same source produces byte-identical wasm across two clean builds (§6.3);
 #   * the boundary-shape and golden E2E build tests that are `#[ignore]`d elsewhere because
-#     they need the toolchain.
+#     they need the toolchain;
+#   * the pinned account's full authorization path through a generated policy Wasm, and one
+#     signed candidate call into a source-built target fixture, in their own job so that its
+#     result and the live testnet step's are reported independently.
 # Generated code *compiling* is already covered in ci.yml: the `contracts` job builds the
 # golden policy crate as a dev-dependency of the differential suite.
 name: nightly live
@@ -52,8 +55,11 @@ env:
   #
   # 27.0.0 is not a free choice. It is the version recorded in the `pinned_upstream` provenance
   # table (crates/domain/src/lib.rs), i.e. the one every wasm hash this repository ships was built
-  # with; scripts/check-build-input-pins.sh asserts the two still agree, here and on every PR. The
-  # checksum is the published x86_64-unknown-linux-gnu release asset's, computed from the tarball.
+  # with; scripts/check-build-input-pins.sh asserts the two still agree, here and on every PR.
+  # STELLAR_CLI_SHA256 is the published x86_64-unknown-linux-gnu release asset's, computed from the
+  # tarball. STELLAR_CLI_SHA256_AARCH64_APPLE_DARWIN is the aarch64-apple-darwin asset's, for the
+  # pinned-account job on macOS: computed from the downloaded tarball, equal to the sha256 digest
+  # the release lists for that asset, and the binary reports the revision below.
   #
   # The revision is recorded, not resolved. Both halves of `cliver` are inside the hashed bytes,
   # so the release's commit is a build input exactly as its version is — and a tag is mutable.
@@ -69,6 +75,7 @@ env:
   STELLAR_CLI_VERSION: 27.0.0
   STELLAR_CLI_REVISION: 5a7c5fe76530bf4248477ac812fc757146b98cc4
   STELLAR_CLI_SHA256: 357bf712f6353c28cd33c794402a3c87231757a5b305e6ef1604365af4fdd556
+  STELLAR_CLI_SHA256_AARCH64_APPLE_DARWIN: 70a259d10534259656b63fe7073116ec3bda0ce83839c9c72364750614beeae6
 
 jobs:
   wasm:
@@ -221,7 +228,114 @@ jobs:
 
       # A red job here has three plausible causes, in order of likelihood:
       #   1. our acquisition layer no longer matches what the RPC returns;
-      #   2. testnet moved protocol version ahead of the pinned stellar-xdr;
+      #   2. testnet moved to a protocol above this build's ceiling (`E_RPC: unsupported
+      #      protocol`; `MAX_SUPPORTED_PROTOCOL` in crates/source-rpc);
       #   3. the public endpoint is down, which is not our bug but still blocks the demo.
       # Whichever it is, the answer is to look before the next demo, not to disable the job.
 
+  # Separate from `wasm` so that neither result can hide the other: a failure here would skip
+  # the live testnet step, and that step's own failures would mask a regression here. The gate
+  # compiles the reviewed upstream account source at the recorded tag, checks its exact code
+  # hash, then invokes a generated policy Wasm through the full account `__check_auth` path
+  # with a signed delegated authorization. It also builds a source-defined target Wasm and
+  # checks one signed, synthetic candidate transfer against exact fixture target keys. It fails
+  # if any of the three Wasm artifacts cannot be built or differs. It needs the pinned
+  # toolchain and the network to clone public sources, and no secrets.
+  pinned-account-authorization:
+    name: pinned account authorization (source-built account + generated policy + target fixture)
+    # macOS arm64, because the account pin reproduces byte-for-byte only from an
+    # aarch64-apple-darwin build host. Cargo hashes the build host into the `-C metadata` of host
+    # units (proc-macros, build scripts), that metadata reaches the account's symbol names, and
+    # rustc orders functions by symbol name. Built on Linux from the same pinned source, rustc and
+    # CLI, the account Wasm differs only in function order (measured on aarch64 and x86_64 Linux,
+    # the latter the Ubuntu runner). Known upstream: rust-lang/cargo#8140, with the remaining case
+    # addressed by rust-lang/cargo#17522, not yet merged. The check stays byte-exact; the host is
+    # a build input of that hash like rustc and the CLI.
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: recorded build inputs match the pins in use (rustc · stellar-cli)
+        run: bash scripts/check-build-input-pins.sh
+
+      # With no argument, `rustup toolchain install` installs the channel, components and targets
+      # rust-toolchain.toml names. The host check makes a runner-image change fail here, by name,
+      # instead of as an account hash mismatch after the cold builds.
+      - name: toolchain (on the aarch64-apple-darwin host the account pin needs)
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup show
+          rustup target add wasm32v1-none
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "aarch64-apple-darwin" ]; then
+            echo "::error::rustc host is ${host:-unknown}; the account pin reproduces only on aarch64-apple-darwin"
+            exit 1
+          fi
+          echo "rustc host: $host"
+
+      # The same verified install as the `wasm` job, from the release's aarch64-apple-darwin
+      # asset: both halves of `cliver` are inside the account and policy hashes this gate asserts.
+      - name: stellar-cli (pinned by version, revision and checksum)
+        run: |
+          set -euo pipefail
+          asset="stellar-cli-${STELLAR_CLI_VERSION}-aarch64-apple-darwin.tar.gz"
+          url="https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${asset}"
+          curl -sSfL "$url" -o "$asset"
+          # macOS has `shasum`, not `sha256sum`.
+          echo "${STELLAR_CLI_SHA256_AARCH64_APPLE_DARWIN}  ${asset}" | shasum -a 256 -c -
+
+          # Its own directory placed first on PATH, as in the `wasm` job.
+          mkdir -p "${RUNNER_TEMP}/stellar-cli"
+          tar -xzf "$asset" -C "${RUNNER_TEMP}/stellar-cli" stellar
+          # `$GITHUB_PATH` takes effect for *subsequent* steps, not this one, so the assertions
+          # below invoke the extracted binary by absolute path.
+          echo "${RUNNER_TEMP}/stellar-cli" >> "$GITHUB_PATH"
+
+          cli="${RUNNER_TEMP}/stellar-cli/stellar"
+          line=$("$cli" --version | head -1)
+          have=$(printf '%s\n' "$line" | awk '{print $2}')
+          have_rev=$(printf '%s\n' "$line" | awk '{gsub(/[()]/, "", $3); print $3}')
+          if [ "$have" != "${STELLAR_CLI_VERSION}" ]; then
+            echo "::error::extracted stellar reports $have, expected ${STELLAR_CLI_VERSION}"
+            exit 1
+          fi
+          # Both halves of cliver are hashed, so the version alone is not the artifact's identity.
+          if [ "$have_rev" != "${STELLAR_CLI_REVISION}" ]; then
+            echo "::error::extracted stellar is ${have:-?}#${have_rev:-unknown}, expected ${STELLAR_CLI_VERSION}#${STELLAR_CLI_REVISION}"
+            exit 1
+          fi
+          printf '%s\n' "$line"
+
+      - name: the resolved stellar is the verified one
+        run: |
+          set -euo pipefail
+          resolved=$(command -v stellar)
+          if [ "$resolved" != "${RUNNER_TEMP}/stellar-cli/stellar" ]; then
+            echo "::error::PATH resolves stellar to $resolved, not the verified download"
+            exit 1
+          fi
+          line=$(stellar --version | head -1)
+          rev=$(printf '%s\n' "$line" | awk '{gsub(/[()]/, "", $3); print $3}')
+          [ "$rev" = "${STELLAR_CLI_REVISION}" ] || {
+            echo "::error::resolved stellar is revision ${rev:-unknown}, expected ${STELLAR_CLI_REVISION}"
+            exit 1
+          }
+          echo "stellar resolves to $resolved ($line)"
+
+      # Only the differential test build is cached. The account, policy and target Wasm are
+      # rebuilt from source on every run, and their hashes are asserted. The key names the
+      # architecture as well as the OS, since the build host is a build input here.
+      - name: cache the contracts test build directory
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: contracts/target
+          key: pinned-account-auth-${{ runner.os }}-${{ runner.arch }}-cli${{ env.STELLAR_CLI_VERSION }}-${{ hashFiles('contracts/**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            pinned-account-auth-${{ runner.os }}-${{ runner.arch }}-cli${{ env.STELLAR_CLI_VERSION }}-
+
+      - name: pinned account authorization and signed target fixture
+        run: bash scripts/test-pinned-account-authorization.sh

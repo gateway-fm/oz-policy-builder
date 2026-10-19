@@ -5,11 +5,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Pure two-surface account authority check (enumeration + transitive closure + conservative dominance)"
+description = "Pure account authority check: who can change the account or the bound policies (enumeration + transitive closure + automatic findings)"
 
 [dependencies]
 ozpb-domain = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
+# Decodes a classic account (G…) to the ed25519 key it signs with, so a key that appears both
+# as a classic account and behind a verifier is recognised as one key.
+stellar-strkey = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }

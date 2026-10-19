@@ -23,10 +23,15 @@
 0eb48bcb9e7c76cdb45ec3e280b504a1beaa659138797e4a8fc897e9d80438c9|testnet-tx|the recorded transfer that validated the recorder against live RPC
 5487a04c6a8e6f455d72cd9919a7ad2004dfa3f49df0a5daebcdc7bc2d285b71|testnet-tx|deploy of the generated policy contract
 
-# The stellar-cli release the wasm gates pin. Both halves identify an upstream artifact we
-# download rather than build: the checksum is the published tarball's, and the revision is
+# Historical October 15 run described in docs/TESTNET-EVIDENCE-TRANCHE-2.md and PR #58;
+# not independently re-fetched by the offline gate or by the evidence exporter.
+89c5c181f108682c4f19e1908f17f8926ceae3e16bfa04ba657107a380cc8da6|testnet-tx|passkey-authorized add_context_rule from the accepted authority-check harness run
+
+# The stellar-cli release the wasm gates pin. These identify an upstream artifact we
+# download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.
 357bf712f6353c28cd33c794402a3c87231757a5b305e6ef1604365af4fdd556|upstream-release|sha256 of the v27.0.0 x86_64-unknown-linux-gnu asset
+70a259d10534259656b63fe7073116ec3bda0ce83839c9c72364750614beeae6|upstream-release|sha256 of the v27.0.0 aarch64-apple-darwin asset, for the pinned-account job on macOS
 5a7c5fe76530bf4248477ac812fc757146b98cc4|upstream-revision|the v27.0.0 release commit, quoted abbreviated in recorded-build-inputs.sh
 
 # Wasm hashes. Reproducing one needs the pinned rustc AND the pinned stellar-cli, both of
