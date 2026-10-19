@@ -47,6 +47,9 @@ generated crate.
 `run.sh` requires an empty output directory. It records the checkout commit, dirty state,
 Node version, and start/end timestamps in `provenance.json`. With `OZPB_BIN`, it hashes the
 selected executable's bytes; that hash does not prove the binary was built from the checkout.
+PATH lookup skips files the current user cannot execute; an explicit unusable executable
+path is refused. A symlinked checkout or reporting script still runs the startup checks,
+finalization and evidence export.
 Cargo mode records the checkout and explicitly leaves the executable hash unavailable.
 These observations describe startup, not changes made to the checkout or executable during
 the run. The exit status is process bookkeeping, not an acceptance verdict.

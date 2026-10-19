@@ -2,13 +2,14 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
-  closeSync, constants, fstatSync, ftruncateSync, openSync, readFileSync, readdirSync,
+  accessSync, closeSync, constants, fstatSync, ftruncateSync, openSync, readFileSync, readdirSync,
   realpathSync, statSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { writeEvidence } from './evidence.mjs';
+import { isMainModule } from './cli-entry.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FILE = 'provenance.json';
@@ -32,7 +33,11 @@ export function startRun(runDir, env = process.env) {
     const candidates = env.OZPB_BIN.includes('/') ? [resolve(env.OZPB_BIN)]
       : (env.PATH ?? '').split(delimiter).map((dir) => resolve(dir, env.OZPB_BIN));
     const binary = candidates.find((path) => {
-      try { return statSync(path).isFile() && (statSync(path).mode & 0o111); } catch { return false; }
+      try {
+        if (!statSync(path).isFile()) return false;
+        accessSync(path, constants.X_OK);
+        return true;
+      } catch { return false; }
     });
     if (!binary) throw new Error('configured CLI is not executable');
     // An operator-selected executable can be a symlink (as in a package-manager bin dir).
@@ -94,7 +99,7 @@ export function finalizeRun(runDir, exitCode) {
   return exitCode;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   let failureCode = 1;
   try {
     const [action, runDir, code, ...extra] = process.argv.slice(2);

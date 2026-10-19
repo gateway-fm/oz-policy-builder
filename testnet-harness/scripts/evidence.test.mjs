@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { exportEvidence } from './evidence.mjs';
@@ -291,27 +291,135 @@ test('a FIFO at an artifact path is refused promptly instead of blocking the exp
   assert.equal(result.stdout, '');
 });
 
-for (const useSymlink of [false, true]) {
-  test(`real run.sh retains its nonzero exit and exports partial evidence: ${useSymlink ? 'symlink' : 'directory'}`, (t) => {
-    const dir = setup(t, null);
+function wrapperEnvironment(t, runDir) {
+  const binDir = setup(t, null);
+  for (const [name, body] of [
+    ['npm', ': > "$HARNESS_TEST_STEP"\nexit 42'], ['stellar', 'exit 0'], ['cargo', 'exit 0'],
+  ]) {
+    writeFileSync(join(binDir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('OZPB_')));
+  return {
+    ...env, PATH: `${binDir}${delimiter}${process.env.PATH}`, OZPB_HARNESS_OUT: runDir,
+    OZPB_HARNESS_OWNER: 'ed25519', HARNESS_TEST_STEP: join(binDir, 'npm-called'),
+  };
+}
+
+for (const linkedCheckout of [false, true]) {
+  for (const useSymlink of [false, true]) {
+    test(`real run.sh exports partial evidence: checkout ${linkedCheckout ? 'symlink' : 'directory'}, output ${useSymlink ? 'symlink' : 'directory'}`, (t) => {
+      const dir = setup(t, null);
+      const parent = setup(t, null);
+      const selected = useSymlink ? join(parent, 'selected-run') : dir;
+      if (useSymlink) symlinkSync(dir, selected, 'dir');
+      const checkout = linkedCheckout ? join(parent, 'checkout') : ROOT;
+      if (linkedCheckout) symlinkSync(ROOT, checkout, 'dir');
+      const env = wrapperEnvironment(t, selected);
+      const result = spawnSync('bash', [join(checkout, 'testnet-harness/run.sh')], { env, encoding: 'utf8', timeout: 20000 });
+      assert.equal(result.status, 42, result.stderr);
+      assert.ok(existsSync(env.HARNESS_TEST_STEP));
+      const report = JSON.parse(readFileSync(join(dir, 'evidence.json'), 'utf8'));
+      assert.equal(report.provenance.exit_code, 42);
+      assert.equal(report.run, null);
+      assert.ok(!existsSync(join(dir, 'run.json')));
+      assert.ok(!existsSync(join(dir, 'keys.json')));
+    });
+  }
+}
+
+test('a symlinked checkout refuses an occupied run before any steps', (t) => {
+  const dir = setup(t);
+  const original = readFileSync(join(dir, 'run.json'));
+  const parent = setup(t, null);
+  const checkout = join(parent, 'checkout');
+  symlinkSync(ROOT, checkout, 'dir');
+  const env = wrapperEnvironment(t, dir);
+  const result = spawnSync('bash', [join(checkout, 'testnet-harness/run.sh')], { env, encoding: 'utf8', timeout: 20000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(!existsSync(env.HARNESS_TEST_STEP), 'startup must stop before npm or live operations');
+  assert.deepEqual(readdirSync(dir), ['run.json']);
+  assert.deepEqual(readFileSync(join(dir, 'run.json')), original);
+});
+
+for (const write of [false, true]) {
+  test(`a symlinked evidence entry point runs ${write ? 'atomic publication' : 'stdout export'}`, (t) => {
+    const dir = setup(t);
     const parent = setup(t, null);
-    const selected = useSymlink ? join(parent, 'selected-run') : dir;
-    if (useSymlink) symlinkSync(dir, selected, 'dir');
-    const binDir = setup(t, null);
-    for (const [name, code] of [['npm', 42], ['stellar', 0], ['cargo', 0]]) {
-      const path = join(binDir, name);
-      writeFileSync(path, `#!/bin/sh\nexit ${code}\n`);
-      chmodSync(path, 0o755);
+    const entry = join(parent, 'evidence.mjs');
+    symlinkSync(SCRIPT, entry);
+    if (write) writeFileSync(join(dir, 'evidence.json'), SENTINEL);
+    const result = spawnSync(process.execPath, [entry, '--run-dir', dir, ...(write ? ['--write'] : [])], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const report = write ? readFileSync(join(dir, 'evidence.json'), 'utf8') : result.stdout;
+    assert.deepEqual(JSON.parse(report), exportEvidence(dir));
+    if (write) assert.equal(result.stdout, '');
+  });
+}
+
+test('a symlinked evidence entry point reports validation failure without exposing paths', (t) => {
+  const dir = setup(t);
+  const parent = setup(t, null);
+  const entry = join(parent, `${SENTINEL}.mjs`);
+  symlinkSync(SCRIPT, entry);
+  writeFileSync(join(dir, 'run.json'), 'null');
+  writeFileSync(join(dir, 'evidence.json'), SENTINEL);
+  const result = spawnSync(process.execPath, [entry, '--run-dir', dir, '--write'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.ok(!result.stderr.includes(SENTINEL));
+  assert.ok(!result.stderr.includes(dir));
+  assert.equal(readFileSync(join(dir, 'evidence.json'), 'utf8'), SENTINEL);
+});
+
+for (const entry of ['absent', 'missing', 'other']) {
+  test(`importing bookkeeping modules has no CLI effects with ${entry} argv[1]`, (t) => {
+    const dir = setup(t, null);
+    const other = join(dir, 'other.mjs');
+    if (entry === 'other') writeFileSync(other, '');
+    const argv = entry === 'absent' ? [] : [entry === 'other' ? other : join(dir, SENTINEL), 'start', dir];
+    const source = `process.argv = [process.execPath, ...${JSON.stringify(argv)}];
+      await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
+      await import(${JSON.stringify(new URL('./run-provenance.mjs', import.meta.url).href)});
+      console.log('imported');`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'imported\n');
+    assert.equal(result.stderr, '');
+    assert.deepEqual(readdirSync(dir), entry === 'other' ? ['other.mjs'] : []);
+  });
+}
+
+for (const selection of ['PATH', 'explicit path']) {
+  test(`CLI provenance respects current-user execute access: ${selection}`, (t) => {
+    const dir = setup(t, null);
+    const earlier = setup(t, null);
+    const later = setup(t, null);
+    const inaccessible = join(earlier, 'ozpb');
+    const executable = join(later, 'ozpb');
+    writeFileSync(inaccessible, '#!/bin/sh\nprintf wrong-cli\n');
+    chmodSync(inaccessible, 0o641); // Others can execute, but this file's owner cannot.
+    writeFileSync(executable, '#!/bin/sh\nprintf correct-cli\n', { mode: 0o755 });
+    try {
+      accessSync(inaccessible, constants.X_OK);
+      t.skip('this user can execute mode 0641 (for example, root)');
+      return;
+    } catch (error) { assert.equal(error.code, 'EACCES'); }
+    const env = { ...process.env, PATH: `${earlier}${delimiter}${later}` };
+    for (const [command, args] of [[inaccessible, []], ['/bin/bash', ['-c', 'ozpb']], ['ozpb', []]]) {
+      const actual = spawnSync(command, args, { env, encoding: 'utf8' });
+      if (command === inaccessible) assert.equal(actual.error?.code, 'EACCES');
+      else {
+        assert.equal(actual.status, 0, actual.stderr);
+        assert.equal(actual.stdout, 'correct-cli');
+      }
     }
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('OZPB_')));
-    Object.assign(env, { PATH: `${binDir}:${process.env.PATH}`, OZPB_HARNESS_OUT: selected, OZPB_HARNESS_OWNER: 'ed25519' });
-    const result = spawnSync('bash', [join(ROOT, 'testnet-harness/run.sh')], { env, encoding: 'utf8', timeout: 20000 });
-    assert.equal(result.status, 42, result.stderr);
-    const report = JSON.parse(readFileSync(join(dir, 'evidence.json'), 'utf8'));
-    assert.equal(report.provenance.exit_code, 42);
-    assert.equal(report.run, null);
-    assert.ok(!existsSync(join(dir, 'run.json')));
-    assert.ok(!existsSync(join(dir, 'keys.json')));
+    if (selection === 'explicit path') {
+      assert.throws(() => startRun(dir, { OZPB_BIN: inaccessible, PATH: env.PATH }), /not executable/);
+      assert.ok(!existsSync(join(dir, 'provenance.json')));
+    } else {
+      const record = startRun(dir, { OZPB_BIN: 'ozpb', PATH: env.PATH });
+      assert.equal(record.cli.binary_sha256, createHash('sha256').update(readFileSync(executable)).digest('hex'));
+    }
   });
 }
 
