@@ -1,0 +1,3 @@
+batch_canonicalize_key
+canonicalize_key
+verify

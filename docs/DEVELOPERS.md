@@ -43,8 +43,10 @@ Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
 record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-The complete `dry_run`, live authority-surface check, and `prepare_install_intent` are
-scheduled operations, not CLI or MCP commands. `reference_suite` is layer-1 evidence only;
+The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
+check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
+built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
+advisory wherever they run. `reference_suite` is layer-1 evidence only;
 `verify` reproduces source and Wasm but does not perform live preflight. `evaluate_spec` is
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
@@ -138,9 +140,37 @@ ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
 
 ```
 
-The install-intent design in §4.8 requires exact installed bindings and a trusted `Safe`
-authority-surface verdict. No CLI command produces that verdict or intent yet; assembly,
-signing, and submission remain wallet-owned.
+The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant
+the authority check commits to, and never says "safe": the wallet that holds the owner key
+recomputes the check and decides (Decision D7). `ozpb check-policy-call-surface` produces the
+advisory authority answer; `ozpb prepare-install-intent` runs it and, only when nothing is
+refused and nothing is unresolved, prints the exact arguments with that answer attached.
+Assembly, signing, and submission remain wallet-owned.
+
+### Reference-suite coverage gate
+
+`all_agree` covers the generated policy's modeled semantics. It does not establish the
+behavior of a composed reviewed policy. CI checks the subscription example's report against
+an exact list of acknowledged layer-1 gaps:
+
+```bash
+python3 scripts/check-unmodeled-acknowledged.py --run \
+  scripts/layer1-unmodeled-acknowledged.txt subscription=docs/examples/subscription-spec.json
+```
+
+The command runs and checks every declared `label=spec-path` pair; producer failures stop it.
+It reads each input spec to require the complete rule-index set and the exact number of each
+reviewed-policy kind in the evidence. Spec and acknowledgement paths both resolve from the
+caller's working directory; Cargo runs in the repository workspace.
+It reconciles summary fields, coverage counts, and policy gaps against the detailed evidence.
+Each declared rule needs an original permit and a denial control, and every required class
+needs an outcome for that rule. New gaps, stale acknowledgements, or entries naming an
+undeclared spec fail. Repeated policy kinds require one acknowledgement per instance.
+Permit-only classes remain visible as limitations. An acknowledgement records what layer 1
+does not test; it never waives a disagreement or proves the reviewed policy's on-chain behavior.
+Add examples to the same invocation so no declared example can go unchecked. The stdin and
+`--known-specs` modes are lower-level inspection helpers, not a complete gate. The checker
+validates local report consistency, not imported evidence authenticity.
 
 ### Build configuration (operator-side)
 
@@ -189,7 +219,11 @@ whose callers should not have to carry a signed document around;
 `docs/examples/` holds runnable inputs, some of which feed a later walkthrough rather than
 the Tranche-1 demo. `bash scripts/verify-phase1.sh` is the strict first-milestone release
 gate; `bash scripts/verify-phase1.sh --offline` is the explicitly reduced local gate.
-`verify-phase2.sh` belongs to Tranche 2.
+`bash scripts/verify-phase2.sh` extends the release gate with focused Tranche 2 evidence checks
+and a Soroswap Wasm build; `--offline` explicitly omits the release-only checks. For a shorter
+run, `bash scripts/check-phase2-evidence.sh` checks the named reference, MCP, and partial layer-2
+cases. None of these commands establishes full Tranche 2 acceptance: the
+[Tranche 2 guide](TRANCHE-2-VERIFICATION.md) lists the separate live evidence requirements.
 
 ### Demonstrating the Tranche-1 outcome
 
@@ -220,10 +254,13 @@ Three things it makes explicit, because each one broke a demo attempt:
 
 ### Verifying the pinned upstream trust anchors
 
-`ozpb_domain::pinned_upstream` holds the wasm hashes of three OpenZeppelin contracts — the
-spending-limit policy, the smart account, and the ed25519 verifier. The first two are Phase 1
-trust anchors. The verifier pin is retained for later work, but external-verifier signers are
-rejected in Phase 1 because a supplied verifier address is not yet bound to its observed Wasm.
+`ozpb_domain::pinned_upstream` holds the wasm hashes of four OpenZeppelin contracts — the
+spending-limit policy, the smart account, and the ed25519 and WebAuthn (passkey) verifiers. The
+first two are Phase 1 trust anchors. The verifiers are recognized by the authority check as
+owner verifiers only through the code observed at a signer's verifier address at the read
+ledger; the script also checks that both export only the reviewed verifier methods and import
+no ledger, contract-call or ledger-context host functions. A *spec* still cannot name an
+external-verifier signer for the new rule (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`).
 
 ```bash
 bash scripts/verify-pinned-upstream.sh    # clones the pinned tag, rebuilds, compares
@@ -270,13 +307,31 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   `verify` (artifact reproduction with separately labeled limits).
 - **Exact-envelope network evidence** — `preflight_transaction` reports one
   authorization-enforcing RPC simulation; it does not identify an installed policy.
-- **Scheduled, not exposed** — `dry_run`, `check_against_policy`,
-  `check_policy_call_surface`, `prepare_install_intent`. The full dry-run harness, live
-  authority-surface check, and install intent need their own evidence before exposure.
+- **Account authority (advisory)** — `check_policy_call_surface` reads, through an
+  operator-configured RPC source, who can change the account or reset the policies being
+  installed for one spec rule, with refusals, evidence gaps, exclusions and an
+  `authority_commitment`. It never says "safe": the wallet holding the owner key recomputes it
+  and decides (architecture §4.8, Decision D7).
+- **Install intent (advisory)** — `prepare_install_intent` runs the authority check itself
+  (same request) and, only when nothing is refused and nothing is unresolved, returns the
+  exact `add_context_rule` arguments derived from the grant the commitment covers, with the
+  answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
+  or submits.
+- **Scheduled, not exposed** — `dry_run`, `check_against_policy`. The full dry-run harness
+  needs its own evidence before exposure.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
+
+`check_policy_call_surface` and `prepare_install_intent` read through a source the operator
+names in `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
+"network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
+source; it never carries a URL.
+The source must be for the request's network, a hosted server also requires its URL on
+`OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
+`OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same
+map from `--rpc-sources` (or `OZPB_RPC_SOURCES_FILE`).
 
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
 (≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
@@ -291,11 +346,14 @@ stream before the tool runs and a build outlives a client that disconnects:
 |---|---|---|
 | `OZPB_HTTP_REQUESTS_PER_MINUTE` | 60 | HTTP requests admitted per fixed one-minute window, across all clients. A tool call is one request; opening a session takes several. A fixed window can admit up to twice the limit across a window boundary. |
 | `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
-| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions (`generate_code`, and `verify`, which rebuilds). One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
+| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks and install-intent planning. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
 
-Zero or a malformed value stops startup. Nothing else holds a slot: the RPC reads
-(`record_*`, `preflight_transaction`) and the pure tools are bounded only by the quota and their
-own size and time limits. Terminate TLS and add per-client authorization and per-client limits
+Zero or a malformed value stops startup. Authority checks and install-intent planning also
+share a separate one-operation limit across all sessions, held until their blocking work
+ends even if a client disconnects. That limit is independent of build capacity; their binding
+rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
+`preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
+and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
 at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
 per-tool quotas are still owed before genuine multi-tenant public hosting.
 

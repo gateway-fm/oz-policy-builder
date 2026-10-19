@@ -29,8 +29,10 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
 - Recordings that cross the synthesis boundary as JSON are downgraded to `self_supplied`. A
   caller cannot mint the stronger `rpc_reported` label, and self-supplied evidence is not
   presented as RPC attestation.
-- External-verifier signers are rejected outright, because nothing at authorization time
-  binds a verifier address to the executable a registry recognizes.
+- A spec cannot name an external-verifier signer for a new rule, because nothing at
+  authorization time binds a verifier address to the executable a registry recognizes. The
+  authority check accepts an existing external owner only through the code observed at its
+  verifier address at the read ledger, and only for reviewed immutable, stateless verifiers.
 - The reference evaluator models the generated scope policy. It returns `indeterminate`, never
   a whole-composition `permit`, when an attached reviewed policy is not modelled.
 - The local build runner bounds environment, inputs, outputs and time, and on a hosted

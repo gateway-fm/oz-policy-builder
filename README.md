@@ -7,8 +7,10 @@ transaction you already performed (on-chain by hash, or locally simulated) and t
 synthesizes a context rule plus a small, validated composition of policies that permits
 exactly what you approved — and denies everything else it can observe. Output is
 human-readable Rust implementing the OpenZeppelin `Policy` trait, produced by a
-deterministic, auditable pipeline. **Code-first, deploy-second:** nothing is ever deployed
-automatically.
+deterministic, auditable pipeline. **Code-first, deploy-second:** the toolkit itself never
+deploys anything. Two scripts do: `scripts/demo-tranche1.sh` and the Tranche 2
+[testnet harness](testnet-harness/README.md). Both deploy only to testnet, with throwaway keys,
+and only when you run them.
 
 The full technical architecture (v0.8) lives in `docs/architecture.md`. The Tranche 1
 release surface is the core pipeline — recorder → PolicySpec → synthesizer → codegen —
@@ -20,6 +22,9 @@ claim that those milestones are complete.
 Stellar/SCF reviewers can reproduce the milestone from the
 [Tranche 1 verification guide](docs/TRANCHE-1-VERIFICATION.md), which maps every contracted
 item to an executable check and the artifact it produces.
+
+The [Tranche 2 verification guide](docs/TRANCHE-2-VERIFICATION.md) maps the current automated
+checks and the separate live integration evidence still required for the second milestone.
 
 ## The pipeline
 
@@ -91,12 +96,18 @@ crates/
   cli               human-oriented shell over the same library
 contracts/          separate cargo workspace: golden generated policy + soroban tests
 scripts/            dependency-rule check, determinism check
+testnet-harness/    Tranche 2: install a generated policy into an OZ account on testnet (node)
 ```
 
 The security-critical cores have unit, property, differential, and real-toolchain
 gates. See `scripts/verify-phase1.sh` for the local/release distinction and
 `docs/TESTNET-EVIDENCE.md` for the evidence that has actually been run; test counts alone are
 not treated as assurance.
+
+The [Tranche 2 evidence record](docs/TESTNET-EVIDENCE-TRANCHE-2.md) separates historical
+testnet and browser observations from current automated checks, and explains how to capture
+a reviewable harness run. The [scope map](docs/SCOPE.md#tranche-2-status) lists the remaining
+wallet, harness, hosting and walkthrough work; it does not claim milestone completion.
 
 ## License
 

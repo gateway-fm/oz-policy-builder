@@ -26,12 +26,19 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod authority_text;
+pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{
     check_observed_call_surface_with_build_config, CallSurfaceObservation, ObservedCallSurfaceCheck,
 };
-#[allow(dead_code, reason = "awaiting a trusted complete authority reader")]
+mod call_surface_live;
+pub use call_surface_live::{
+    finish_call_surface_check, plan_call_surface_read, resolve_rpc_source, rpc_sources_from_json,
+    scan_tool_error, CallSurfaceReadPlan, RpcSource,
+};
 mod install_intent;
+pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod preflight;
 pub use preflight::preflight_transaction_output;
 
@@ -720,7 +727,9 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::AccountRuleEnumerationUnsupported { .. } => {
             EC::EAccountRuleEnumerationUnsupported
         }
-        RegistryError::UnknownVerifier(_) => EC::EUnregisteredVerifier,
+        RegistryError::UnknownVerifier(_) | RegistryError::VerifierCapabilityIncomplete(_) => {
+            EC::EUnregisteredVerifier
+        }
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,
         RegistryError::Internal(_) => EC::EInternal,

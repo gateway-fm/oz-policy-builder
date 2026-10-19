@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::{PolicyBuilderServer, RpcEndpointPolicy};
+use crate::{http_session_factory, require_allowlisted_sources, RpcEndpointPolicy};
 
 /// Requests admitted per fixed window, across every client. Per-client limits belong to the
 /// reverse proxy in front of the server, which is the only component that knows the client.
@@ -211,6 +211,7 @@ where
 pub(crate) async fn serve(
     addr: &str,
     registry_trust: Option<ozpb_toolkit::RegistryTrust>,
+    rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
     build_config: ozpb_toolkit::BuildConfig,
 ) -> anyhow::Result<()> {
     use rmcp::transport::streamable_http_server::{
@@ -226,6 +227,7 @@ pub(crate) async fn serve(
     let rpc_allowlist = std::env::var("OZPB_RPC_ALLOWLIST")
         .map_err(|_| anyhow::anyhow!("OZPB_RPC_ALLOWLIST is required for HTTP mode"))?;
     let rpc_policy = RpcEndpointPolicy::from_csv(&rpc_allowlist)?;
+    require_allowlisted_sources(&rpc_policy, &rpc_sources)?;
     let available_cpus = std::thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1);
@@ -239,13 +241,7 @@ pub(crate) async fn serve(
 
     let ct = tokio_util::sync::CancellationToken::new();
     let service = StreamableHttpService::new(
-        move || {
-            Ok(PolicyBuilderServer::new(
-                registry_trust.clone(),
-                Some(rpc_policy.clone()),
-                build_config.clone(),
-            ))
-        },
+        http_session_factory(registry_trust, rpc_policy, rpc_sources, build_config),
         LocalSessionManager::default().into(),
         Default::default(),
     );

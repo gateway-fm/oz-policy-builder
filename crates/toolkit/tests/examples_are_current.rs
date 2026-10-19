@@ -108,6 +108,15 @@ fn the_committed_pair_verifies_through_the_cli_path() {
     assert_eq!(authority.scan.max_rpc_batches, 16);
     assert_eq!(authority.scan.max_transitive_entries, 1_000);
     assert_eq!(authority.scan.max_attempts, 2);
+    // And the owner verifiers a passkey or ed25519 owner needs.
+    for verifier in [
+        ozpb_domain::pinned_upstream::OZ_ED25519_VERIFIER_WASM,
+        ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM,
+    ] {
+        registry
+            .resolve_signature_verifier(&verifier)
+            .expect("the signed example must recognize both owner verifiers");
+    }
 }
 
 /// The committed example spec must be exactly the shared fixture, serialized.

@@ -36,6 +36,7 @@ fn command(env: &[(&str, &str)]) -> Command {
     for name in [
         "OZPB_HTTP_BEARER_TOKEN",
         "OZPB_RPC_ALLOWLIST",
+        "OZPB_RPC_SOURCES_JSON",
         "OZPB_HTTP_REQUESTS_PER_MINUTE",
         "OZPB_HTTP_MAX_CONCURRENCY",
         "OZPB_HTTP_MAX_BODY_BYTES",
@@ -164,6 +165,22 @@ fn the_served_endpoint_authenticates_bounds_bodies_and_refuses_requests_over_the
         429,
         "over the quota"
     );
+}
+
+#[test]
+fn hosted_mode_refuses_a_configured_source_outside_the_allowlist() {
+    let sources = serde_json::json!({"testnet": {
+        "rpc_url": "https://other.example",
+        "network_passphrase": "Test SDF Network ; September 2015"
+    }})
+    .to_string();
+    let stderr = refused_startup(&[
+        ("OZPB_HTTP_BEARER_TOKEN", TOKEN),
+        ("OZPB_RPC_ALLOWLIST", "https://rpc.example"),
+        ("OZPB_BUILD_JOBS", "1"),
+        ("OZPB_RPC_SOURCES_JSON", &sources),
+    ]);
+    assert!(stderr.contains("is not on OZPB_RPC_ALLOWLIST"), "{stderr}");
 }
 
 #[test]

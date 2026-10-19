@@ -19,16 +19,17 @@ mod account_state_scan;
 mod account_storage;
 #[cfg(feature = "http")]
 mod checked_account_observation;
+mod classic_account;
 mod contract_data;
 mod footprint_capture;
 mod ledger_witness;
 mod preflight;
 pub use account_state_projection::{
-    project_account_state, AccountProjectionError, AccountStateProjection, AdminRuleCandidate,
+    project_account_state, AccountProjectionError, AccountStateProjection,
 };
 pub use account_state_scan::{
-    scan_account_state, scan_account_state_with_targets, AccountScanBounds, AccountScanError,
-    AccountStateScan,
+    scan_account_state, scan_account_state_with_targets, scan_authority_state, AccountScanBounds,
+    AccountScanError, AccountStateScan,
 };
 pub use account_storage::{
     decode_account_storage, AccountStorageEntry, AccountStorageError, ContextRuleRecord,
@@ -37,8 +38,9 @@ pub use account_storage::{
 #[cfg(feature = "http")]
 pub use checked_account_observation::{
     CheckedAccountObservation, CheckedAccountObservationError, OperatorAccountSource,
-    OperatorAccountSourceConfig, ReviewedPolicyBinding,
+    OperatorAccountSourceConfig, PolicyBindingExpectation,
 };
+pub use classic_account::ClassicAccountRead;
 pub use contract_data::{read_contract_data, ContractDataRead, ContractDataStatus};
 pub use footprint_capture::{
     read_invocation_footprint, CapturedFootprintEntry, CapturedInvocation, FootprintCaptureError,
