@@ -132,6 +132,25 @@ function runRecord(value) {
   };
 }
 
+function pipelineRecord(value, run) {
+  if (value === undefined) return { status: 'not_recorded' };
+  const p = object(value);
+  if (p.schema_version !== 1 || !run || p.account !== run.account) fail();
+  const ownerTransfers = run.invocations.filter((i) => i.signer === 'owner' && i.rule === 0
+    && i.result === 'permit' && i.to === run.recipient && i.amount === run.amount);
+  if (ownerTransfers.length !== 1 || ownerTransfers[0].transaction !== p.recorded_transaction) fail();
+  const cases = uint(p.reference_cases);
+  if (cases === 0) fail();
+  return {
+    status: 'recorded', recorded_transaction: hash(p.recorded_transaction),
+    recording_hash: hash(p.recording_hash), acquisition_trust: choice(p.acquisition_trust, ['rpc_reported']),
+    synthesis_recording_hash: hash(p.synthesis_recording_hash), synthesis_trust: choice(p.synthesis_trust, ['self_supplied']),
+    spec_hash: hash(p.spec_hash), normalized_input_hash: hash(p.normalized_input_hash), reference_cases: cases,
+    artifact_reproduction: choice(p.artifact_reproduction, ['matched']),
+    current_network_preflight: choice(p.current_network_preflight, ['not_checked_here']),
+  };
+}
+
 export function exportEvidence(runDir) {
   if (!lstatSync(runDir).isDirectory()) fail();
   const artifacts = {};
@@ -143,8 +162,11 @@ export function exportEvidence(runDir) {
   const decode = (bytes) => bytes === null ? undefined : JSON.parse(bytes.toString('utf8'));
   const run = runRecord(decode(artifact('run', join(runDir, 'run.json'))));
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
+  const pipeline = pipelineRecord(decode(artifact('pipeline', join(runDir, 'pipeline.json'))), run);
   if (run === null && source.status === 'unavailable') fail();
-  for (const [key, file] of [['spec', 'spec.json'], ['recording', 'recording.json'], ['import_bundle', 'import-bundle.json']]) {
+  for (const [key, file] of [['spec', 'spec.json'], ['recording', 'recording.json'], ['import_bundle', 'import-bundle.json'],
+    ['synthesis', 'synthesis.json'], ['decisions', 'decisions.json'], ['reference_suite', 'reference-suite.json'],
+    ['verification', 'verification.json']]) {
     // Local CLI-selected directory plus a constant basename, not a backend request path.
     // readFile checks a regular O_NOFOLLOW descriptor; only a digest leaves this call.
     // nosemgrep
@@ -174,8 +196,9 @@ export function exportEvidence(runDir) {
       'Denials describe enforcing simulations, not failed on-chain transactions.',
       'Passkey runs use an exportable software credential in a virtual authenticator.',
       'Authority trust, when used, is operator-supplied test configuration.',
+      'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
-    provenance: source, run, artifacts,
+    provenance: source, run, pipeline, artifacts,
   };
 }
 

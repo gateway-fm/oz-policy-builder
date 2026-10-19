@@ -20,13 +20,13 @@
 // authority check's answer with its own trust, shows the confirmation screen, re-runs the check
 // just before signing and requires the same `authority_commitment` (and an unexpired grant at the
 // fresh ledger). It then signs exactly the intent's arguments, which must also equal the ones
-// built here from the spec. The spec must name the signed registry root (`write-spec.mjs
-// --registry-root`), and the check is run with the same stellar-cli and build cache as
+// built here from the spec. Synthesis must resolve the signed registry root, and the check
+// is run with the same stellar-cli and build cache as
 // `ozpb generate` (`OZPB_STELLAR_BINARY`, `OZPB_BUILD_CACHE_DIR`), because it rebuilds the policy
 // to recognize it. The trust is operator-supplied test configuration (the owner key this run
 // created, plus `--trust`); `--confirm tty` is a terminal prompt and `--confirm operator` is no
-// prompt at all: neither shows that a human approved. It needs an `ozpb` built from the branch
-// that has the check commands (`OZPB_BIN`); README records the testnet runs it has had.
+// prompt at all: neither shows that a human approved. The check commands are included in
+// this tree; README records the historical testnet runs.
 import { randomBytes } from 'node:crypto';
 import { closeSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';

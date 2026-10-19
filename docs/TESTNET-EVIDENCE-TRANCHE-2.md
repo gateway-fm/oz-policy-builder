@@ -91,6 +91,14 @@ gate included in this tree. The evidence exporter can run independently of that 
 
 ## 7. Capture and review a new run
 
+The current wrapper uses `ozpb record` for the owner's confirmed transfer, then runs real
+synthesis with explicit single-call test decisions, the reference suite, generation and
+artifact verification before installation. It refuses incomplete reference coverage,
+disagreements and any reproduction mismatch, including a zero-exit `verify` response with
+`matches: false`. It preserves the RPC recording bytes and the full synthesis/reproduction
+reports locally. This new executable path does not retrospectively change the historical
+manual-template observations in section 4 and needs its own reviewed live run.
+
 Use the harness README's prerequisites and its explicit testnet commands. Choose an empty
 output directory. The harness spends testnet XLM, creates contracts, and uses throwaway keys.
 For an authority run, configure the compatible CLI, signed snapshot, roots, RPC sources and
@@ -119,6 +127,7 @@ Review these fields before sharing the summary:
 | `run.transactions` | Recorded deploy and install transaction identifiers. An install record requires both its transaction and rule ID. Deployment can precede a refused wallet decision. |
 | `run.authority` | `rechecked`, `refused`, or `not_recorded`. The last means no decision was recorded, not that an account is safe. Refusal text and operator identities are omitted from this summary. |
 | `run.invocations` | Separate owner controls from delegate calls; inspect arguments, selected rule, result and error attribution. A null denial code is not an attributed policy refusal. Simulation denials have no transaction ID. |
+| `pipeline` | A `recorded` completion record describes the new CLI chain. Check the distinct RPC acquisition and `self_supplied` synthesis identities; trust downgrade changes the recording hash. Artifact reproduction remains separate from current-network preflight. Older runs say `not_recorded`. |
 | `artifacts` | Digests of available run, provenance, spec, recording, import bundle, manifest and Wasm bytes. Missing artifacts remain missing. JSON file digests are not canonical spec hashes. |
 
 No field makes the summary an acceptance verdict. The exporter checks types and selected
@@ -131,8 +140,8 @@ exposes public account relationships and must be reviewed before publication.
 
 ## 8. Evidence still needed
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, the complete
-record → synthesize → verify → sign → install path, the Blend/SEP-41/Soroswap walkthroughs,
+Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed current
+evidence for the record → synthesize → verify → sign → install path, the Blend/SEP-41/Soroswap walkthroughs,
 the full harness layers with their actual evidence boundaries, hosted-service deployment
 evidence, and the public demonstration/video. Neither these historical observations nor
 offline tests close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

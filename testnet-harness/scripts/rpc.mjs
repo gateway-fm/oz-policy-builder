@@ -18,8 +18,7 @@ export const PINNED_ACCOUNT_WASM = 'a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d5981
 /**
  * OpenZeppelin's WebAuthn verifier example (`examples/multisig-smart-account/webauthn-verifier`),
  * built from the same tag, commit and toolchain as the pins in `ozpb_domain::pinned_upstream`.
- * Pinned here for the harness only; the registry does not recognize it yet. The README says how
- * to reproduce it.
+ * Recognized by the version-3 development registry. The README says how to reproduce it.
  */
 export const PINNED_WEBAUTHN_VERIFIER_WASM = 'e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76'; // gitleaks:allow -- public WebAuthn Wasm SHA-256
 

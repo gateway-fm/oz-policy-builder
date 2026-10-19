@@ -18,7 +18,7 @@ feature or an automated check is not by itself evidence that the whole milestone
 | Reference and contract checks | The reference suite, generated mutation suites, native contract tests and artifact verification. | Complete layer-by-layer execution evidence, state invariants and adversarial direct-call coverage; reference agreement alone does not prove installed behavior. |
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
 | Testnet installation | The harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. | A wallet-product install and revoke flow, protected human approval, safe reconfiguration, and monitoring. Composed rules are refused. |
-| Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
+| Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. The native-transfer wrapper now runs RPC recording, synthesis, reference checks and artifact reproduction before installation. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
 | Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; the live harness uses the native SAC. | All three end-to-end protocol walkthroughs, including the relevant denials and adapter/code-hash evidence. |
 | Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. | Deployment configuration and a deployed service with TLS, client authorization, worker isolation and operational evidence. |
 | Verification and demonstration | Phase 1 gates and the [Phase 2 gate and guide](TRANCHE-2-VERIFICATION.md). | The complete acceptance run, public demonstration and video. |
@@ -26,8 +26,10 @@ feature or an automated check is not by itself evidence that the whole milestone
 [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) distinguishes historical
 observations from current checks and explains how to collect and review a new run. The
 [harness README](../testnet-harness/README.md) maps each wallet-flow step to what actually runs.
-In particular, the harness fills a checked template; it does not demonstrate synthesis of
-the grant. Passkey-owner support there does not change the toolkit's restriction on generated
+The default harness now runs synthesis with explicit test decisions and signed development
+registry trust; the historical October runs filled a checked template. Neither those earlier
+runs nor the new offline workflow tests demonstrate the updated chain on live testnet.
+Passkey-owner support there does not change the toolkit's restriction on generated
 grants using External signers.
 
 ## Implementation boundaries

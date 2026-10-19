@@ -18,9 +18,9 @@
 # run.json (every address and transaction hash), the import bundle, the recording, the spec, the
 # generated crate. The throwaway keys are not: they live in a temp directory deleted on exit.
 #
-# Read the README before presenting a run. In particular: step 3 writes the spec by hand,
-# because synthesis cannot run against protocol-29 testnet on this tree, and the denials in
-# step 6 are observed in the enforcing simulation, so they have no transaction hash.
+# Read the README before presenting a run. The real CLI records and synthesizes the grant,
+# then reproduces the artifact before installation. Denials are enforcing simulations,
+# so they have no transaction hash. This native transfer is not a protocol walkthrough.
 set -euo pipefail
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HARNESS/.." && pwd)"
@@ -31,7 +31,6 @@ OWNER="${OZPB_HARNESS_OWNER:-ed25519}"
 case "$OWNER" in ed25519|passkey) ;; *) echo "OZPB_HARNESS_OWNER is ed25519 or passkey, not $OWNER"; exit 1 ;; esac
 # Optional: install through the wallet decision on the authority check. The spec then names the
 # signed registry root, and install.mjs takes the check's settings from the environment.
-SPEC_ARGS=()
 INSTALL_ARGS=()
 case "${OZPB_HARNESS_AUTHORITY_CHECK:-}" in
     '') ;;
@@ -45,7 +44,6 @@ case "${OZPB_HARNESS_AUTHORITY_CHECK:-}" in
         if [ "${OZPB_HARNESS_CONFIRM:-tty}" = tty ] && ! ( : < /dev/tty ) 2>/dev/null; then
             echo "OZPB_HARNESS_CONFIRM=tty needs a controlling terminal"; exit 1
         fi
-        SPEC_ARGS=(--registry-root "$OZPB_REGISTRY_SNAPSHOT_ROOT")
         INSTALL_ARGS=(--authority-check cli --confirm "${OZPB_HARNESS_CONFIRM:-tty}")
         if [ -n "${OZPB_HARNESS_TRUST:-}" ]; then INSTALL_ARGS+=(--trust "$OZPB_HARNESS_TRUST"); fi
         ;;
@@ -59,9 +57,6 @@ done
 node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)' \
     || { echo "node >= 22.12 is required, found $(node --version)"; exit 1; }
 
-ozpb() {
-    if [ -n "${OZPB_BIN:-}" ]; then "$OZPB_BIN" "$@"; else cargo run --locked -q -p ozpb-cli -- "$@"; fi
-}
 say() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 field() { node -p 'require(process.argv[1])[process.argv[2]]' "$RUN/run.json" "$1"; }
 
@@ -97,12 +92,11 @@ AMOUNT="$(field amount)"
 RECIPIENT="$(field recipient)"
 OTHER="$(field payer)"   # a funded account, so a wrong-recipient transfer cannot fail for lack of one
 
-say "2. record: the owner moves funds out of the account, then ozpb imports the executed transaction"
+say "2. authorize the transfer that will justify the grant"
 # The transaction the grant is built from is a real one. The owner authorizes it through rule 0,
-# the account's Default rule, which has no policy; `ozpb import` decodes the raw XDR offline.
+# the account's Default rule, which has no policy. Keep raw XDR too; the next step records through RPC.
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --signer owner --rule 0 \
     --amount "$AMOUNT" --to "$RECIPIENT" --expect permit --bundle "$RUN/import-bundle.json"
-ozpb import --bundle "$RUN/import-bundle.json" > "$RUN/recording.json"
 if [ "$OWNER" = passkey ]; then
     # Negative control: the same transfer, the passkey signing random bytes instead of the account's
     # digest. The WebAuthn verifier must refuse it with its own ChallengeInvalid (#3114).
@@ -110,23 +104,19 @@ if [ "$OWNER" = passkey ]; then
         --amount "$AMOUNT" --to "$RECIPIENT" --expect deny:3114
 fi
 
-say "3. spec: the template, filled from the recording (synthesis cannot run here; see README)"
-node "$SCRIPTS/write-spec.mjs" --run-dir "$RUN" ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"}
-
-say "4. generate: the policy crate and its wasm"
+say "3. record, synthesize, reference-check, generate and reproduce the policy"
 # The generated crate builds offline against the same locked dependencies as the committed
 # golden crate, so make sure they are in the cargo cache first.
 ( cd contracts/golden-transfer-policy && cargo fetch --locked >/dev/null )
-# With --out, generate reports on stderr; keep that report with the run.
-ozpb generate --spec "$RUN/spec.json" --rule 0 --out "$RUN/policy" 2>&1 | tee "$RUN/generate.log"
+node "$SCRIPTS/synthesis-flow.mjs" --run-dir "$RUN"
 shopt -s nullglob
 WASMS=("$RUN"/policy/*.wasm)
 [ "${#WASMS[@]}" -eq 1 ] || { echo "expected one wasm in $RUN/policy, found ${#WASMS[@]}"; exit 1; }
 
-say "5. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
+say "4. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 
-say "6. permit exactly the recorded transfer, once; deny the rest"
+say "5. permit exactly the recorded transfer, once; deny the rest"
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$RECIPIENT" --expect permit
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$((AMOUNT + 1))" --to "$RECIPIENT" --expect deny:6
 node "$SCRIPTS/invoke.mjs" --run-dir "$RUN" --amount "$AMOUNT" --to "$OTHER" --expect deny:6

@@ -58,6 +58,62 @@ test('selects public observations and labels transactions separately from simula
   assert.ok(!JSON.stringify(report).includes(dir));
 });
 
+test('exports a recorded synthesis and reproduction chain without upgrading its evidence trust', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify({
+    schema_version: 1, account: C, recorded_transaction: HASH, recording_hash: HASH,
+    acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+    spec_hash: HASH, normalized_input_hash: HASH, reference_cases: 20,
+    artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here', private_note: SENTINEL,
+  }));
+  const report = exportEvidence(dir);
+  assert.equal(report.pipeline.status, 'recorded');
+  assert.equal(report.pipeline.synthesis_trust, 'self_supplied');
+  assert.equal(report.pipeline.current_network_preflight, 'not_checked_here');
+  assert.ok(report.artifacts.pipeline);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('old runs do not acquire synthesized or verified status', (t) => {
+  assert.deepEqual(exportEvidence(setup(t)).pipeline, { status: 'not_recorded' });
+});
+
+test('refuses a pipeline claiming stronger synthesis trust or a different account', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  const path = join(dir, 'pipeline.json');
+  const p = { schema_version: 1, account: C, recorded_transaction: HASH, recording_hash: HASH,
+    acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'rpc_reported',
+    spec_hash: HASH, normalized_input_hash: HASH, reference_cases: 20,
+    artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here' };
+  writeFileSync(path, JSON.stringify(p));
+  assert.throws(() => exportEvidence(dir));
+  p.synthesis_trust = 'self_supplied'; p.account = G;
+  writeFileSync(path, JSON.stringify(p));
+  assert.throws(() => exportEvidence(dir));
+});
+
+test('refuses a pipeline transaction absent from, or duplicated in, the owner transfer records', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  const p = { schema_version: 1, account: C, recorded_transaction: 'cd'.repeat(32), recording_hash: HASH,
+    acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+    spec_hash: HASH, normalized_input_hash: HASH, reference_cases: 20,
+    artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here' };
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(p));
+  assert.throws(() => exportEvidence(dir));
+  p.recorded_transaction = HASH;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(p));
+  assert.equal(exportEvidence(dir).pipeline.status, 'recorded');
+  run.invocations.push({ ...run.invocations.at(-1) });
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir));
+});
+
 test('a refused run retains deployment evidence without claiming installation or exposing reasons', (t) => {
   const run = fixture();
   delete run.rule_id;
