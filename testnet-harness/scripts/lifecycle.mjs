@@ -24,7 +24,7 @@ export function removalEvent(receipt, { hash, account, ruleId }) {
   same(receipt?.status, 'SUCCESS', 'removal transaction status');
   same(receipt.txHash, hash, 'removal transaction identity');
   const tx = TransactionBuilder.fromXDR(receipt.envelopeXdr, rpc.NETWORK_PASSPHRASE);
-  same(tx.hash().toString('hex'), hash, 'returned envelope identity');
+  same(Buffer.from(tx.hash()).toString('hex'), hash, 'returned envelope identity');
   const envelope = receipt.envelopeXdr;
   same(envelope.type, 'envelopeTypeTx', 'removal envelope type');
   const ops = envelope.v1.tx.operations;
