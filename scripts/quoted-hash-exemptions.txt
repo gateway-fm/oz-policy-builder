@@ -23,6 +23,10 @@
 0eb48bcb9e7c76cdb45ec3e280b504a1beaa659138797e4a8fc897e9d80438c9|testnet-tx|the recorded transfer that validated the recorder against live RPC
 5487a04c6a8e6f455d72cd9919a7ad2004dfa3f49df0a5daebcdc7bc2d285b71|testnet-tx|deploy of the generated policy contract
 
+# Historical October 15 run described in docs/TESTNET-EVIDENCE-TRANCHE-2.md and PR #58;
+# not independently re-fetched by the offline gate or by the evidence exporter.
+89c5c181f108682c4f19e1908f17f8926ceae3e16bfa04ba657107a380cc8da6|testnet-tx|passkey-authorized add_context_rule from the accepted authority-check harness run
+
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.

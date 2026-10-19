@@ -26,12 +26,19 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod authority_text;
+pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{
     check_observed_call_surface_with_build_config, CallSurfaceObservation, ObservedCallSurfaceCheck,
 };
-#[allow(dead_code, reason = "awaiting a trusted complete authority reader")]
+mod call_surface_live;
+pub use call_surface_live::{
+    finish_call_surface_check, plan_call_surface_read, resolve_rpc_source, rpc_sources_from_json,
+    scan_tool_error, CallSurfaceReadPlan, RpcSource,
+};
 mod install_intent;
+pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod preflight;
 pub use preflight::preflight_transaction_output;
 
@@ -44,7 +51,8 @@ pub use preflight::preflight_transaction_output;
 /// default-config convenience wrapper — every one of them takes an explicit `&BuildConfig`, so
 /// a caller cannot silently bypass operator configuration by picking the shorter name.
 pub use ozpb_build_runner::{
-    BuildConfig, ENV_BUILD_CACHE_DIR, ENV_BUILD_JOBS, ENV_BUILD_TIMEOUT_SECS, ENV_STELLAR_BINARY,
+    BuildConfig, BuildSlots, ENV_BUILD_CACHE_DIR, ENV_BUILD_JOBS, ENV_BUILD_TIMEOUT_SECS,
+    ENV_STELLAR_BINARY,
 };
 
 /// The two names a shell needs to read an import document itself, re-exported for the same
@@ -719,7 +727,9 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::AccountRuleEnumerationUnsupported { .. } => {
             EC::EAccountRuleEnumerationUnsupported
         }
-        RegistryError::UnknownVerifier(_) => EC::EUnregisteredVerifier,
+        RegistryError::UnknownVerifier(_) | RegistryError::VerifierCapabilityIncomplete(_) => {
+            EC::EUnregisteredVerifier
+        }
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,
         RegistryError::Internal(_) => EC::EInternal,
@@ -733,6 +743,7 @@ fn map_build_err(error: ozpb_build_runner::BuildError) -> ToolError {
         ozpb_build_runner::BuildError::ResourceLimit(_) => EC::EBuildResourceLimit,
         // Operator faults (unusable builder path, unusable cache) are not the caller's spec.
         ozpb_build_runner::BuildError::Unavailable(_) => EC::EBuildUnavailable,
+        ozpb_build_runner::BuildError::Busy => EC::EBuildBusy,
         ozpb_build_runner::BuildError::Input(_)
         | ozpb_build_runner::BuildError::Failed(_)
         | ozpb_build_runner::BuildError::Internal(_) => EC::EBuildFailed,
@@ -809,6 +820,8 @@ mod tests {
                 BuildError::Failed("compile error".to_string()),
                 EC::EBuildFailed,
             ),
+            // Transient, unlike every other build error, so it has a code a caller can retry on.
+            (BuildError::Busy, EC::EBuildBusy),
         ] {
             assert_eq!(map_build_err(error.clone()).code, expected, "{error}");
         }

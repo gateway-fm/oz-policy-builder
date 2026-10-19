@@ -1169,8 +1169,11 @@ dependencies = [
 name = "ozpb-call-surface-core"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "ozpb-domain",
  "serde",
+ "serde_json",
+ "stellar-strkey 0.0.18",
  "thiserror",
 ]
 
@@ -1255,6 +1258,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "http-body-util",
  "ozpb-api-types",
  "ozpb-domain",
  "ozpb-recorder-core",
@@ -1267,6 +1271,7 @@ dependencies = [
  "stellar-xdr",
  "tokio",
  "tokio-util",
+ "tower",
  "url",
 ]
 
@@ -1372,6 +1377,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stellar-strkey 0.0.18",
+ "stellar-xdr",
 ]
 
 [[package]]

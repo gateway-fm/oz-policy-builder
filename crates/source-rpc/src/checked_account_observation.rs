@@ -1,17 +1,17 @@
 //! Registry-checked, endpoint-reported account evidence for an operator's RPC source.
 //!
 //! The operator pins the endpoint, network and governance checkpoint. The signed registry
-//! supplies scan ceilings and exact code capabilities; the endpoint supplies storage and
-//! observed executable hashes. Installed policies and external-signer verifiers are
-//! recognized by that observed code; a contract delegate is refused. Matching `latestLedger`
-//! metadata and a final instance read detect ordinary races, but do not prove that separate
-//! RPC replies came from one coherent ledger state. No wallet administrator is selected here,
-//! and this is not an install verdict.
+//! supplies scan ceilings and the account's exact code capability; the endpoint supplies
+//! storage, observed executable hashes and classic account entries. This reader judges
+//! nothing about authority: an unknown policy, verifier or contract signer anywhere on the
+//! account is reported as observed, and the pure check refuses it only where it matters
+//! (inside its scope). Matching `latestLedger` metadata and a final instance read detect
+//! ordinary races, but do not prove that separate RPC replies came from one coherent ledger
+//! state.
 
 use super::{
-    project_account_state, scan_account_state_with_targets, AccountProjectionError,
-    AccountScanBounds, AccountScanError, AccountStateProjection, AccountStateScan, HttpTransport,
-    RpcTransport, SignerIdentity,
+    project_account_state, scan_authority_state, AccountProjectionError, AccountScanBounds,
+    AccountScanError, AccountStateProjection, AccountStateScan, HttpTransport, RpcTransport,
 };
 use ozpb_call_surface_core::BoundPolicy;
 use ozpb_domain::{Hash32, NetworkId, TESTNET_PASSPHRASE};
@@ -33,10 +33,12 @@ pub struct OperatorAccountSourceConfig {
     pub signed_registry_snapshot: SignedSnapshot,
 }
 
-/// An exact policy-address/hash expectation. Only reviewed registry policy hashes are
-/// accepted in this narrow reader; generated artifacts need a separate reproduction path.
+/// An exact policy-address/hash expectation from a binding set. This reader only checks that
+/// the code at the address is the expected hash at the observed ledger. Recognition — a
+/// reviewed registry entry, or a generated artifact rebuilt from its spec — is the toolkit's,
+/// which does it from the binding set itself; a label here would be the caller's word.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReviewedPolicyBinding {
+pub struct PolicyBindingExpectation {
     pub address: String,
     pub expected_wasm_hash: Hash32,
 }
@@ -107,12 +109,14 @@ impl OperatorAccountSource {
         &self,
         account_address: &str,
         expected_account_wasm_hash: Hash32,
-        bindings: &[ReviewedPolicyBinding],
+        bindings: &[PolicyBindingExpectation],
+        classic_addresses: &[String],
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
         self.inspect_at(
             account_address,
             expected_account_wasm_hash,
             bindings,
+            classic_addresses,
             unix_now()?,
         )
     }
@@ -123,7 +127,8 @@ impl OperatorAccountSource {
         &self,
         account_address: &str,
         expected_account_wasm_hash: Hash32,
-        bindings: &[ReviewedPolicyBinding],
+        bindings: &[PolicyBindingExpectation],
+        classic_addresses: &[String],
         now_unix: i64,
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
         let registry = verified_registry(&self.config, now_unix)?;
@@ -134,6 +139,7 @@ impl OperatorAccountSource {
             account_address,
             expected_account_wasm_hash,
             bindings,
+            classic_addresses,
         )
     }
 }
@@ -166,7 +172,8 @@ fn inspect_with_transport<T: RpcTransport>(
     registry: &Registry,
     account_address: &str,
     expected_account_wasm_hash: Hash32,
-    bindings: &[ReviewedPolicyBinding],
+    bindings: &[PolicyBindingExpectation],
+    classic_addresses: &[String],
 ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
     let account = account_address
         .parse::<stellar_strkey::Contract>()
@@ -194,14 +201,14 @@ fn inspect_with_transport<T: RpcTransport>(
                 "duplicate policy binding address",
             ));
         }
-        registry.resolve_policy(&binding.expected_wasm_hash)?;
         targets.push(binding.address.clone());
     }
-    let scan = scan_account_state_with_targets(
+    let scan = scan_authority_state(
         transport,
         &config.network_passphrase,
         account_address,
         &targets,
+        classic_addresses,
         AccountScanBounds {
             max_scan_ids: authority.scan.max_scan_ids,
             max_rpc_batches: authority.scan.max_rpc_batches,
@@ -226,7 +233,7 @@ fn check_scan(
     registry: &Registry,
     expected_account_address: &str,
     expected_account_wasm_hash: Hash32,
-    bindings: &[ReviewedPolicyBinding],
+    bindings: &[PolicyBindingExpectation],
     account_methods: AccountMethodInventory,
 ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
     if scan.account_address != expected_account_address
@@ -237,44 +244,16 @@ fn check_scan(
             "observed account, network, or code differs from the requested identity",
         ));
     }
+    // Every installed policy carries observed code (the projection requires it). Whether a
+    // policy, verifier or contract signer is acceptable is the pure check's decision, made
+    // only where it matters; refusing one anywhere on the account here would refuse every
+    // later check once any unrecognized rule exists, including ones nobody installs into.
     let projection = project_account_state(&scan)?;
-    // Recognition is by the observed code at each address, including existing policies
-    // outside the requested binding set. An unknown or revoked implementation fails closed.
-    for policy in scan.policies.values() {
-        let observed = scan.observed_code_hashes.get(&policy.address).ok_or(
-            CheckedAccountObservationError::Identity("installed policy has no observed code"),
-        )?;
-        registry.resolve_policy(observed)?;
-    }
-    // Signers of every rule, expired ones included, since a management call can revive them.
-    // A verifier is recognized by its observed code. A contract delegate authorizes through
-    // its own rule state, which this reader does not inspect, so it is refused rather than
-    // reported as checked. A G-address delegate is the classic account itself.
-    for signer in scan.signers.values() {
-        match &signer.signer {
-            SignerIdentity::External { verifier, .. } => {
-                let observed = scan.observed_code_hashes.get(verifier).ok_or(
-                    CheckedAccountObservationError::Identity(
-                        "external signer verifier has no observed code",
-                    ),
-                )?;
-                registry.resolve_verifier(observed)?;
-            }
-            SignerIdentity::Delegated(address)
-                if address.parse::<stellar_strkey::Contract>().is_ok() =>
-            {
-                return Err(CheckedAccountObservationError::Identity(
-                    "contract delegated signer requires nested account inspection",
-                ));
-            }
-            SignerIdentity::Delegated(_) => {}
-        }
-    }
     let mut bound_policies = Vec::with_capacity(bindings.len());
     for binding in bindings {
         if scan.observed_code_hashes.get(&binding.address) != Some(&binding.expected_wasm_hash) {
             return Err(CheckedAccountObservationError::Identity(
-                "bound policy code differs from its reviewed identity",
+                "bound policy code differs from its expected identity",
             ));
         }
         bound_policies.push(BoundPolicy {
@@ -295,7 +274,8 @@ fn check_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerRecord};
+    use crate::{ContextRuleRecord, ContextType, PolicyRecord, SignerIdentity, SignerRecord};
+    use ozpb_call_surface_core::ClassicAccount;
     use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq, MAINNET_PASSPHRASE};
     use ozpb_registry::{
         account_methods, sign_snapshot, snapshot_root, AccountArchivePolicy, AccountSnapshotPolicy,
@@ -423,14 +403,15 @@ mod tests {
                 (address(13), pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM),
                 (address(14), pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM),
             ]),
+            classic_accounts: BTreeMap::from([(account_id(12), ClassicAccount::NotFound)]),
             ordered_entry_digest: Hash32([20; 32]),
             rpc_batches: 5,
             attempts: 1,
         }
     }
 
-    fn bindings() -> Vec<ReviewedPolicyBinding> {
-        vec![ReviewedPolicyBinding {
+    fn bindings() -> Vec<PolicyBindingExpectation> {
+        vec![PolicyBindingExpectation {
             address: address(14),
             expected_wasm_hash: pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM,
         }]
@@ -439,7 +420,7 @@ mod tests {
     fn check(
         scan: AccountStateScan,
         config: &OperatorAccountSourceConfig,
-        bindings: &[ReviewedPolicyBinding],
+        bindings: &[PolicyBindingExpectation],
     ) -> Result<CheckedAccountObservation, CheckedAccountObservationError> {
         let registry = verified_registry(config, NOW)?;
         let authority = registry
@@ -465,7 +446,10 @@ mod tests {
             config.registry_checkpoint.root
         );
         assert_eq!(observed.projection.reported_latest_ledger, LedgerSeq(10));
-        assert_eq!(observed.projection.admin_candidates.len(), 1);
+        assert_eq!(
+            observed.projection.classic_accounts[&account_id(12)],
+            ClassicAccount::NotFound
+        );
         assert_eq!(observed.bound_policies.len(), 1);
         assert!(observed.account_methods.methods.contains_key("upgrade"));
         assert_eq!(observed.source_name, "operator-testnet");
@@ -487,10 +471,11 @@ mod tests {
             let mut entries = Vec::new();
             for encoded in params["keys"].as_array().unwrap() {
                 let encoded = encoded.as_str().unwrap();
-                let LedgerKey::ContractData(key) =
-                    LedgerKey::from_xdr_base64(encoded, crate::xdr_limits()).unwrap()
-                else {
-                    panic!("contract-data key expected");
+                let key = match LedgerKey::from_xdr_base64(encoded, crate::xdr_limits()).unwrap() {
+                    LedgerKey::ContractData(key) => key,
+                    // No classic account exists on this endpoint.
+                    LedgerKey::Account(_) => continue,
+                    other => panic!("unexpected key {other:?}"),
                 };
                 assert_eq!(key.key, ScVal::LedgerKeyContractInstance);
                 let account = matches!(
@@ -561,12 +546,64 @@ mod tests {
             &address(7),
             pinned_upstream::OZ_SMART_ACCOUNT_WASM,
             &bindings(),
+            &[],
         )
         .unwrap();
         assert_eq!(observed.scan.reported_latest_ledger, LedgerSeq(10));
         assert_eq!(observed.scan.rpc_batches, 3);
         assert_eq!(observed.bound_policies[0].address, address(14));
-        assert!(observed.projection.admin_candidates.is_empty());
+        assert!(observed.projection.classic_accounts.is_empty());
+    }
+
+    /// The new rule's own classic signer is read in the same attempt, at the same ledger.
+    #[test]
+    fn named_classic_accounts_are_read_with_the_account() {
+        let config = config(signed_snapshot());
+        let registry = verified_registry(&config, NOW).unwrap();
+        let observed = inspect_with_transport(
+            &Endpoint,
+            &config,
+            &registry,
+            &address(7),
+            pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+            &bindings(),
+            &[account_id(30)],
+        )
+        .unwrap();
+        assert_eq!(observed.scan.rpc_batches, 4);
+        assert_eq!(
+            observed.projection.classic_accounts[&account_id(30)],
+            ClassicAccount::NotFound
+        );
+    }
+
+    /// The reader checks a binding by the code at its address only; recognizing it is the
+    /// toolkit's job, so an expectation the registry has never heard of is read, not refused.
+    #[test]
+    fn bindings_are_checked_by_observed_code() {
+        let config = config(signed_snapshot());
+        let registry = verified_registry(&config, NOW).unwrap();
+        let read = |expected_wasm_hash| {
+            inspect_with_transport(
+                &Endpoint,
+                &config,
+                &registry,
+                &address(7),
+                pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+                &[PolicyBindingExpectation {
+                    address: address(14),
+                    expected_wasm_hash,
+                }],
+                &[],
+            )
+        };
+        assert!(read(pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM).is_ok());
+        assert!(matches!(
+            read(Hash32([42; 32])),
+            Err(CheckedAccountObservationError::Identity(
+                "bound policy code differs from its expected identity"
+            ))
+        ));
     }
 
     /// The endpoint read above needs three batches. The ceiling comes from the signed
@@ -589,6 +626,7 @@ mod tests {
                 &address(7),
                 pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 &bindings(),
+                &[],
             ),
             Err(CheckedAccountObservationError::Scan(
                 AccountScanError::Budget(_)
@@ -608,6 +646,7 @@ mod tests {
                 &address(7),
                 pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 &bindings(),
+                &[],
                 i64::MAX,
             ),
             Err(CheckedAccountObservationError::Registry(
@@ -675,66 +714,46 @@ mod tests {
             check(wrong, &config, &bindings()),
             Err(CheckedAccountObservationError::Identity(_))
         ));
-        let mut wrong = scan();
-        wrong
-            .observed_code_hashes
-            .insert(address(13), Hash32([42; 32]));
-        assert!(matches!(
-            check(wrong, &config, &bindings()),
-            Err(CheckedAccountObservationError::Registry(_))
-        ));
-    }
-
-    /// A verifier decides which signatures an external signer accepts, so it is recognized
-    /// by observed code exactly like an installed policy (architecture section 4.10).
-    #[test]
-    fn external_signer_requires_a_registered_verifier_implementation() {
-        let config = config(signed_snapshot());
-        let external = || {
-            let mut scan = scan();
-            scan.signers.get_mut(&10).unwrap().signer = SignerIdentity::External {
-                verifier: address(15),
-                key: vec![1; 32],
-            };
-            scan
-        };
-        assert!(matches!(
-            check(external(), &config, &bindings()),
-            Err(CheckedAccountObservationError::Identity(_))
-        ));
-
-        let mut unknown = external();
+        // An installed policy nobody recognizes is observed and passed on, not refused here:
+        // the pure check decides whether it matters.
+        let mut unknown = scan();
         unknown
             .observed_code_hashes
-            .insert(address(15), Hash32([42; 32]));
-        assert!(matches!(
-            check(unknown, &config, &bindings()),
-            Err(CheckedAccountObservationError::Registry(
-                RegistryError::UnknownVerifier(_)
-            ))
-        ));
-
-        let mut reviewed = external();
-        reviewed
-            .observed_code_hashes
-            .insert(address(15), pinned_upstream::OZ_ED25519_VERIFIER_WASM);
-        let observed = check(reviewed, &config, &bindings()).unwrap();
-        assert!(observed.projection.admin_candidates.is_empty());
+            .insert(address(13), Hash32([42; 32]));
+        let observed = check(unknown, &config, &bindings()).unwrap();
+        assert_eq!(
+            observed.projection.account_state.policies[&11].observed_wasm_hash,
+            Hash32([42; 32]).to_hex()
+        );
     }
 
-    /// A contract delegate authorizes through its own `__check_auth` and rule state. This
-    /// reader does not inspect a nested account, so it must not report one as checked.
+    /// External signers and contract delegates anywhere on the account are reported with what
+    /// was observed (a verifier's code; a nested account's address). Refusing them here would
+    /// refuse every check on an account that has one on an unrelated rule; the pure check
+    /// refuses them where they can change the account, the bound policies or the target.
     #[test]
-    fn contract_delegated_signer_is_refused_without_nested_account_inspection() {
+    fn external_signers_and_contract_delegates_are_reported_not_judged() {
         let config = config(signed_snapshot());
+        let mut external = scan();
+        external.signers.get_mut(&10).unwrap().signer = SignerIdentity::External {
+            verifier: address(15),
+            key: vec![1; 32],
+        };
+        external
+            .observed_code_hashes
+            .insert(address(15), Hash32([42; 32]));
+        let observed = check(external, &config, &bindings()).unwrap();
+        assert_eq!(
+            observed.scan.observed_code_hashes[&address(15)],
+            Hash32([42; 32])
+        );
+
         let mut nested = scan();
         nested.signers.get_mut(&10).unwrap().signer = SignerIdentity::Delegated(address(12));
-        nested
-            .observed_code_hashes
-            .insert(address(12), pinned_upstream::OZ_SMART_ACCOUNT_WASM);
+        let observed = check(nested, &config, &bindings()).unwrap();
         assert!(matches!(
-            check(nested, &config, &bindings()),
-            Err(CheckedAccountObservationError::Identity(_))
+            &observed.projection.account_state.signers[&10].key,
+            ozpb_call_surface_core::StoredSignerKey::Delegated { address: nested } if *nested == address(12)
         ));
     }
 
@@ -767,25 +786,9 @@ mod tests {
                 &address(7),
                 pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 &duplicate,
+                &[],
             ),
             Err(CheckedAccountObservationError::Identity(_))
-        ));
-        let unknown = vec![ReviewedPolicyBinding {
-            address: address(14),
-            expected_wasm_hash: Hash32([42; 32]),
-        }];
-        assert!(matches!(
-            inspect_with_transport(
-                &NoCalls,
-                &good,
-                &registry,
-                &address(7),
-                pinned_upstream::OZ_SMART_ACCOUNT_WASM,
-                &unknown,
-            ),
-            Err(CheckedAccountObservationError::Registry(
-                RegistryError::UnknownPolicy(_)
-            ))
         ));
     }
 
@@ -815,6 +818,7 @@ mod tests {
             &registry,
             &address(7),
             pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+            &[],
             &[],
         )
         .unwrap_err();

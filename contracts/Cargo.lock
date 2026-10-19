@@ -1036,8 +1036,10 @@ dependencies = [
 name = "ozpb-call-surface-core"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "ozpb-domain",
  "serde",
+ "stellar-strkey 0.0.18",
  "thiserror 2.0.19",
 ]
 

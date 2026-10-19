@@ -55,7 +55,7 @@ bash scripts/check-build-input-pins.sh
 # The hash also depends on the CLI, so reproducing it with a different one is not a weaker check
 # but a meaningless one: `stellar contract build` appends a `contractmetav0` section carrying
 # `cliver = <version>#<git-revision>`, inside the bytes being hashed, so a different CLI reports
-# MISMATCH on all three constants while saying nothing about the trust anchors themselves.
+# MISMATCH on every constant while saying nothing about the trust anchors themselves.
 #
 # BOTH halves of `cliver` matter. A CLI built from a source checkout, a fork or a dirty tree
 # reports the pinned version from `stellar --version` yet stamps a different revision, so the
@@ -73,7 +73,7 @@ bash scripts/check-build-input-pins.sh
 # Installing from crates.io is fine — the published crate carries `.cargo_vcs_info.json` with the
 # release commit and yields an identical `cliver`.
 #
-# Checked before the clone, so a wrong CLI costs a second instead of three cold builds.
+# Checked before the clone, so a wrong CLI costs a second instead of the cold builds.
 EXPECTED_CLI="$(bash scripts/recorded-build-inputs.sh stellar-cli)"
 EXPECTED_CLI_REV="$(bash scripts/recorded-build-inputs.sh stellar-cli-revision)"
 HAVE_CLI="$(stellar --version 2>/dev/null | awk 'NR==1 {print $2}')"
@@ -146,6 +146,7 @@ declare -a NAMES=(
     "spending-limit-policy:multisig_spending_limit_policy_example:OZ_SPENDING_LIMIT_POLICY_WASM"
     "account:multisig_account_example:OZ_SMART_ACCOUNT_WASM"
     "ed25519-verifier:multisig_ed25519_verifier_example:OZ_ED25519_VERIFIER_WASM"
+    "webauthn-verifier:multisig_webauthn_verifier_example:OZ_WEBAUTHN_VERIFIER_WASM"
 )
 
 fail=0
@@ -180,6 +181,19 @@ PY
                 cp "$wasm" "$OZPB_VERIFIED_ACCOUNT_WASM_OUT"
             fi
         fi
+        case "$const" in
+            OZ_ED25519_VERIFIER_WASM | OZ_WEBAUTHN_VERIFIER_WASM)
+                # An owner verifier must be immutable and stateless: exactly the reviewed
+                # exports, and only host imports that cannot reach the ledger, other
+                # contracts or ledger context (the registry's `stateless` claim rests on this).
+                if ! python3 scripts/check-wasm-exports.py "$wasm" \
+                    crates/registry/tests/fixtures/pinned_verifier_exports.txt "$pinned" \
+                    || ! python3 scripts/check-wasm-imports.py "$wasm" \
+                    crates/registry/tests/fixtures/stateless_verifier_imports.txt "$pinned"; then
+                    fail=1
+                fi
+                ;;
+        esac
     else
         printf "  %-28s MISMATCH\n     built:  %s\n     pinned: %s\n" "$dir" "$built" "$pinned"
         fail=1
