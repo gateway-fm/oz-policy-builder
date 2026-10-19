@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import * as sdk from '@stellar/stellar-sdk';
@@ -36,7 +37,9 @@ class Server {
     return { latestLedger: mode === 'missing read ledger' ? undefined : 29, entries: [entry] };
   }
   async sendTransaction(tx) {
-    expectedHash = tx.hash().toString('hex');
+    // Model the RPC wire identity independently of the SDK's Uint8Array digest API.
+    expectedHash = createHash('sha256').update(tx.signatureBase()).digest('hex');
+    assert.match(expectedHash, /^[0-9a-f]{64}$/);
     return { status: 'PENDING', hash: mode === 'submitted hash differs' ? 'ab'.repeat(32) : expectedHash };
   }
   async pollTransaction() {

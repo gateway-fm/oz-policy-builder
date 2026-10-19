@@ -81,7 +81,7 @@ export async function submit(payer, operation, { stage = 'submit' } = {}) {
   if (sent.status === 'ERROR') {
     throw new Error(`${stage}: sendTransaction ERROR ${sent.errorResult?.toXDR?.('base64') ?? ''}`);
   }
-  const expectedHash = assembled.hash().toString('hex');
+  const expectedHash = Buffer.from(assembled.hash()).toString('hex');
   if (sent.hash !== expectedHash) throw new Error(`${stage}: RPC returned another transaction identity`);
   const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
   if (done.status !== 'SUCCESS') {

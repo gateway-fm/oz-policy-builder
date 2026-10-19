@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +35,7 @@ function receipt(events = [event()]) {
   const tx = new TransactionBuilder(new Account(key.publicKey(), '1'), { fee: '100', networkPassphrase: Networks.TESTNET })
     .addOperation(Operation.invokeContractFunction({ contract: account, function: 'remove_context_rule', args: [xdr.ScVal.scvU32(ruleId)] }))
     .setTimeout(100).build();
-  return { status: 'SUCCESS', txHash: tx.hash().toString('hex'), ledger: 500, envelopeXdr: tx.toEnvelope(),
+  return { status: 'SUCCESS', txHash: createHash('sha256').update(tx.signatureBase()).digest('hex'), ledger: 500, envelopeXdr: tx.toEnvelope(),
     resultXdr: new xdr.TransactionResult({ feeCharged: 100n, ext: xdr.TransactionResultExt.v0(),
       result: xdr.TransactionResultResult.txSuccess([
         xdr.OperationResult.opInner(xdr.OperationResultTr.invokeHostFunction(xdr.InvokeHostFunctionResult.invokeHostFunctionSuccess(Buffer.alloc(32)))),
