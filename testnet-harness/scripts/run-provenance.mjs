@@ -66,6 +66,9 @@ export function startRun(runDir, env = process.env) {
 function updateRun(runDir, change) {
   const path = join(runDir, FILE);
   withFile(path, constants.O_RDWR, 64 * 1024, (fd) => {
+    // The local operator selects the run directory; this reads only provenance.json
+    // through the checked regular-file descriptor above, with no remote request input.
+    // nosec
     const record = JSON.parse(readFileSync(fd, 'utf8'));
     if (record?.schema_version !== 1) throw new Error('invalid run provenance');
     change(record);
