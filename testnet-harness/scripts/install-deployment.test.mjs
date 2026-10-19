@@ -8,3 +8,11 @@ for (const mode of ['refused', 'declined', 'approved', 'default']) {
     execFileSync(process.execPath, ['--experimental-vm-modules', fixture, mode], { stdio: 'pipe' });
   });
 }
+
+for (const mode of ['approved', 'default']) {
+  for (const failure of ['is_installed', 'remaining_calls', 'not_installed']) {
+    test(`installer preserves confirmed installation after ${failure}: ${mode}`, () => {
+      execFileSync(process.execPath, ['--experimental-vm-modules', fixture, mode, failure], { stdio: 'pipe' });
+    });
+  }
+}
