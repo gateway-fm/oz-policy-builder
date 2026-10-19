@@ -85,12 +85,10 @@ jobs:
         run: bash scripts/test-check-dep-rules.sh
       - name: test
         run: cargo test --workspace
-      - name: reference coverage gate (passing controls and refusal cases)
-        run: python3 scripts/test-check-unmodeled-acknowledged.py
-      - name: subscription reference evidence and acknowledged modeling gaps
-        run: |
-          python3 scripts/check-unmodeled-acknowledged.py --run \
-            scripts/layer1-unmodeled-acknowledged.txt subscription=docs/examples/subscription-spec.json
+      - name: Phase 2 gates refuse missing tests, failed producers, and omitted build evidence
+        run: python3 scripts/test-check-phase2-evidence.py
+      - name: Phase 2 reference coverage and MCP verification evidence
+        run: bash scripts/check-phase2-evidence.sh --host-only
       # Source determinism, asserted without a toolchain. This previously shelled out to
       # `ozpb generate`, which compiles the policy and therefore needs the stellar CLI that
       # this runner does not have — so the step failed on every push while proving nothing.
@@ -100,6 +98,30 @@ jobs:
       - name: determinism (codegen byte-identical; both committed crates in step)
         run: bash scripts/check-codegen-fixtures.sh
 
+  harness:
+    name: harness (offline installer · wallet · passkey tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+      # Installer identity tests use the real canonical validator, with mocked RPC and keys.
+      - name: build the local CLI
+        run: cargo build --locked -p ozpb-cli
+      - name: install locked Node dependencies
+        run: |
+          npm ci --prefix testnet-harness/scripts --no-audit --no-fund
+          npm ci --prefix testnet-harness/browser --no-audit --no-fund
+      - name: offline harness suites (no browser launch or testnet access)
+        env:
+          OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          npm test --prefix testnet-harness/scripts
+          npm test --prefix testnet-harness/browser
+
   contracts:
     name: contracts (differential suite · generated code compiles)
     runs-on: ubuntu-latest
@@ -108,6 +130,8 @@ jobs:
       - name: differential suite (reference evaluator vs real compiled policy)
         working-directory: contracts
         run: cargo test -p ozpb-differential
+      - name: Phase 2 partial layer-2 evidence (each named test must run)
+        run: bash scripts/check-phase2-evidence.sh --contracts-only
 
       # The hash-determinism bans in `clippy.toml` apply to this workspace too — clippy
       # walks up to the repository root to find it — but the host job's `--workspace` never
