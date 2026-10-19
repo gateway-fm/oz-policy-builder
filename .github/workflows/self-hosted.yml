@@ -27,7 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: build-context publication boundary
-        run: python3 scripts/test-hosted-context.py
+        run: |
+          python3 scripts/test-hosted-context.py
+          python3 scripts/test-hosted-mcp.py
       - name: build immutable source context (no image publication)
         run: |
           set -euo pipefail

@@ -12,6 +12,7 @@ from pathlib import Path
 import ssl
 import time
 from urllib.parse import urlsplit
+from hosted_mcp import read_response
 
 
 INITIALIZE = json.dumps({
@@ -50,20 +51,7 @@ def main():
             connection.request("POST", path, body=body, headers=request_headers)
             response = connection.getresponse()
             if response.status == 200:
-                if response.getheader("Content-Type", "").startswith("text/event-stream"):
-                    remaining = 65536
-                    payload = None
-                    while remaining > 0:
-                        line = response.readline(remaining + 1)
-                        remaining -= len(line)
-                        if not line or remaining < 0:
-                            break
-                        if line.startswith(b"data: "):
-                            payload = json.loads(line[6:])
-                            break
-                else:
-                    raw = response.read(65537)
-                    payload = json.loads(raw) if len(raw) <= 65536 else None
+                payload = read_response(response, 1, 65536, time.monotonic() + 15, connection)
                 if not isinstance(payload, dict) or payload.get("result", {}).get("protocolVersion") != "2025-11-25":
                     raise SystemExit("initialization response did not contain the requested MCP protocol")
             return response.status

@@ -13,6 +13,7 @@ from pathlib import Path
 import ssl
 import time
 from urllib.parse import urlsplit
+from hosted_mcp import read_response
 
 
 PROTOCOL = "2025-11-25"
@@ -59,24 +60,7 @@ def main():
             if response.status != 200:
                 raise SystemExit(f"MCP {method} returned HTTP {response.status}")
             session = response.getheader("Mcp-Session-Id") or session
-            if response.getheader("Content-Type", "").startswith("text/event-stream"):
-                remaining = MAX_RESPONSE_BYTES
-                result = None
-                while remaining > 0 and time.monotonic() < deadline:
-                    if client.sock:
-                        client.sock.settimeout(max(0.01, deadline - time.monotonic()))
-                    line = response.readline(remaining + 1)
-                    remaining -= len(line)
-                    if not line or remaining < 0:
-                        break
-                    if line.startswith(b"data: "):
-                        candidate = json.loads(line[6:])
-                        if isinstance(candidate, dict) and candidate.get("id") == request_id:
-                            result = candidate
-                            break
-            else:
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
-                result = json.loads(raw) if len(raw) <= MAX_RESPONSE_BYTES else None
+            result = read_response(response, request_id, MAX_RESPONSE_BYTES, deadline, client)
             if not isinstance(result, dict) or result.get("id") != request_id or "error" in result:
                 raise SystemExit(f"MCP {method} did not return a bounded successful response")
             return result.get("result")
