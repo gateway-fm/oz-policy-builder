@@ -21,6 +21,8 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
 axum = "0.8"
+# The request-body bound and its typed refusal; already in the tree through axum.
+http-body-util = "0.1"
 tokio-util = "0.7"
 url = "2"
 
@@ -33,3 +35,5 @@ ozpb-registry = { workspace = true }
 ozpb-domain = { workspace = true }
 # The shared RPC responder derives its simulation replies from the envelope under test.
 stellar-xdr = { workspace = true }
+# `oneshot` drives the HTTP guard without a listener; already in the tree through axum.
+tower = { version = "0.5", features = ["util"] }

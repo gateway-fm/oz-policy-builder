@@ -41,7 +41,7 @@ category exists and a later reading may need it.
 | 10 | Capability registry governance | ✅ / 🗓 | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
 | 11 | Evaluator and differential evidence | ✅ / 🗓 | An independent evaluator agrees with the real compiled contract on verdict and denial reason. It does not exercise a full smart account's `__check_auth` — later-milestone evidence. |
 | 12 | MCP surface and machine-readable failures | ✅ | Closed request schemas, generated JSON schemas, stable `E_*` codes, structured tool errors. |
-| 13 | Build containment | 🗓 | The local builder bounds environment, inputs, outputs, concurrency and time. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
+| 13 | Build containment | 🗓 | The local builder bounds environment, inputs, outputs and time, and on a hosted server the number of concurrent builds. It is not a multi-tenant sandbox and this milestone does not offer it as one. |
 | 14 | Defaults and limits | — | Every default and bound, with the reasoning for each value. |
 | 15 | Contract code conventions | ✅ / ⚠️ | Measured against OpenZeppelin's own house rules rather than the platform: the emitted crate now satisfies their layout, formatting, imports, docs, storage-key and event conventions. Nine departures are deliberate and argued, and three upstream defects were found while doing it. |
 
@@ -784,8 +784,8 @@ so an agent can distinguish transaction-not-found, network mismatch, import pars
 timeout/resource, and registry failures by stable wire codes.
 
 The server never deploys, signs, or holds user keys. HTTP mode is loopback-only,
-bearer-protected, request-bounded, rate- and concurrency-limited, and RPC-allowlisted. MCP
-annotations remain hints, not authorization controls.
+bearer-protected, body-bounded, rate-limited, build-concurrency-limited, and RPC-allowlisted.
+MCP annotations remain hints, not authorization controls.
 
 ---
 
@@ -795,8 +795,9 @@ annotations remain hints, not authorization controls.
 Cargo build, bounded source/wasm/log sizes, a bounded timeout with bounded version probes,
 process-group termination, a protected per-user cache, and — since the hardening pass — a
 sanitized allowlisted child environment that excludes service and cloud credentials and proxy
-variables, plus a combined CPU budget so HTTP request concurrency multiplied by Cargo jobs
-cannot exceed the detected budget.
+variables, plus a combined CPU budget so the hosted server's concurrent-build slots multiplied
+by Cargo jobs cannot exceed the detected budget. The slots are taken by the build itself and
+held until it ends; a build beyond them is refused with `E_BUILD_BUSY`.
 
 **Verdict.** A boundary of this milestone, stated rather than glossed: these controls are a
 local safeguard, not the isolation a hosted multi-tenant build service would need. They provide
@@ -818,11 +819,11 @@ The knobs and caps the release ships with, and what each one does and does not p
 |---|---|
 | Rust 1.91.1 / CLI 27.0.0 / SDK 26.1.0 / OZ 0.7.2 | Intentional reproducibility set; upgrades change artifact hashes and require review. |
 | Build timeout 600 s | Reasonable for a cold local build; hosted infrastructure still needs an outer deadline and hard quotas (§13). |
-| Build jobs CPU−1, minimum 1 | Appropriate for one local build; HTTP defaults to one concurrent request and enforces a combined CPU budget. |
+| Build jobs CPU−1, minimum 1 | Appropriate for one local build; HTTP defaults to one concurrent build and enforces a combined CPU budget. |
 | HTTP request body 1 MiB / RPC response 24 MiB | Transport ceilings; nested domain and per-XDR limits still apply before evidence is accepted. |
 | RPC timeout 30 s and bounded response stream | Prevents unbounded read/allocation; endpoint correctness is still part of `rpc_reported` trust (§9). |
 | XDR 512 KiB per value / 1 MiB total encoded evidence | Deliberately below the 4 MiB canonical-hash preimage ceiling, so a recording accepted by the recorder does not fail only when hashed (§1). |
-| Import document 1 MiB + 4 KiB | The total-evidence ceiling above plus the format's own JSON syntax — an import carries no simulated authorizations or state changes, so a longer document cannot describe admissible evidence. Refused on length before parsing, which is also the only bound on the supplied network passphrase. The syntax that allowance covers measures ~200 bytes, so the 4 KiB is headroom, not a fit. Over HTTP the 1 MiB request-body limit binds first, so the last 4 KiB of this range is reachable only over stdio and in-process. |
+| Import document 1 MiB + 4 KiB | The total-evidence ceiling above plus the format's own JSON syntax — an import carries no simulated authorizations or state changes, so a longer document cannot describe admissible evidence. Refused on length before parsing, which is also the only bound on the supplied network passphrase. The syntax that allowance covers measures ~200 bytes, so the 4 KiB is headroom, not a fit. Over HTTP the default 1 MiB request-body limit binds first, so at that default the last 4 KiB of this range is reachable only over stdio and in-process. |
 | 5 policies / 15 signers / 20-byte name | Equal to the pinned OpenZeppelin account constants and contract-tested. |
 | 32 rules / 32 calls per rule / 32 args per call / 256 recordings | Defensive off-chain caps; text, evidence-reference and exact-ScVal limits prevent these counts from hiding unbounded payloads. |
 | 64 KiB exact ScVal / 256 KiB exact-ScVal XDR per rule / 2 MiB generated crate | Validation and codegen share the builder's input ceiling; a maximum-shaped rule is generated in a non-vacuous boundary test (§4). |

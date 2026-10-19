@@ -92,6 +92,9 @@ error_codes! {
     /// Distinct from `EBuildFailed` so an operator fault is never reported to an agent
     /// as "your spec does not compile".
     EBuildUnavailable => "E_BUILD_UNAVAILABLE",
+    /// Every build slot on a hosted server is in use. Retryable by design: the same request
+    /// can succeed once a running build finishes.
+    EBuildBusy => "E_BUILD_BUSY",
     // registry
     ERegistrySignature => "E_REGISTRY_SIGNATURE",
     ERegistryRollback => "E_REGISTRY_ROLLBACK",

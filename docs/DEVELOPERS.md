@@ -305,13 +305,28 @@ The source must be for the request's network, a hosted server also requires its 
 map from `--rpc-sources` (or `OZPB_RPC_SOURCES_FILE`).
 
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
-(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set; it applies bearer auth, a request-size bound,
-and a global rate limit. The allowlist is a comma-separated list of the full `https://` URLs
-the record tools may reach: each entry is parsed as a URL, so a bare hostname is refused at
-startup rather than at first use. Terminate TLS
-and add per-client authorization at a reverse proxy in front of it. OS-level compile
-isolation, a no-secrets worker role, and per-tool quotas are still owed before genuine
-multi-tenant public hosting.
+(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
+full `https://` URLs the record tools may reach: each entry is parsed as a URL, so a bare
+hostname is refused at startup rather than at first use. Every request to `/v1/mcp` then
+passes three checks in order: the bearer token (`401`), a request quota (`429`) and a body
+bound (`413`). A request without the token spends no quota and its body is never read. Builds
+are bounded separately, by the build runner itself, because rmcp answers a tool call with a
+stream before the tool runs and a build outlives a client that disconnects:
+
+| Env | Default | What it bounds |
+|---|---|---|
+| `OZPB_HTTP_REQUESTS_PER_MINUTE` | 60 | HTTP requests admitted per fixed one-minute window, across all clients. A tool call is one request; opening a session takes several. A fixed window can admit up to twice the limit across a window boundary. |
+| `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
+| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks and install-intent planning. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
+
+Zero or a malformed value stops startup. Authority checks and install-intent planning also
+share a separate one-operation limit across all sessions, held until their blocking work
+ends even if a client disconnects. That limit is independent of build capacity; their binding
+rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
+`preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
+and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
+at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
+per-tool quotas are still owed before genuine multi-tenant public hosting.
 
 ## 2. How the synthesizer decides scope
 
