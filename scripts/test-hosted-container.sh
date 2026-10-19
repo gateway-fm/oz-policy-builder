@@ -18,6 +18,13 @@ cleanup() {
     rm -rf "$WORK"
 }
 trap cleanup EXIT
+# First validate the compiler without credentials or egress. If the public fixture fails,
+# its bounded compiler diagnostics can be reported without exposing an API request.
+docker run --rm --network none --read-only --user 10001:10001 --cap-drop ALL \
+    --security-opt no-new-privileges --cpus 2 --memory 4g --memory-swap 4g --pids-limit 256 \
+    --tmpfs /tmp/ozpb:size=536870912,uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev \
+    --tmpfs /var/cache/ozpb:size=2147483648,uid=10001,gid=10001,mode=0700,exec,nosuid,nodev \
+    "$OZPB_IMAGE" /opt/ozpb/verify-offline.sh
 umask 077
 openssl rand -hex 32 >"$WORK/bearer-token"
 cp docs/examples/registry-roots.json docs/examples/registry.signed.json "$WORK/"
@@ -52,10 +59,3 @@ done
 python3 scripts/check-hosted-build.py "https://localhost:$OZPB_TLS_PORT/v1/mcp" \
     --token-file "$WORK/bearer-token" --ca-file "$WORK/tls.crt" --spec docs/examples/subscription-spec.json
 "${compose[@]}" down --remove-orphans >/dev/null
-# This separate container has neither RPC networking nor credentials. These flags prove
-# compilation without egress; Cargo offline by itself cannot contain a build script.
-docker run --rm --network none --read-only --user 10001:10001 --cap-drop ALL \
-    --security-opt no-new-privileges --cpus 2 --memory 4g --memory-swap 4g --pids-limit 256 \
-    --tmpfs /tmp/ozpb:size=536870912,uid=10001,gid=10001,mode=0700 \
-    --tmpfs /var/cache/ozpb:size=2147483648,uid=10001,gid=10001,mode=0700 \
-    "$OZPB_IMAGE" /opt/ozpb/verify-offline.sh

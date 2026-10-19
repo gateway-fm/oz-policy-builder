@@ -28,7 +28,8 @@ services:
       OZPB_BUILD_JOBS: 1
     tmpfs:
       - /tmp/ozpb:size=536870912,uid=10001,gid=10001,mode=0700,nosuid,nodev
-      - /var/cache/ozpb:size=2147483648,uid=10001,gid=10001,mode=0700,nosuid,nodev
+      # Cargo executes native build scripts from its target directory.
+      - /var/cache/ozpb:size=2147483648,uid=10001,gid=10001,mode=0700,exec,nosuid,nodev
     volumes:
       - type: bind
         source: ${OZPB_CONFIG_DIR:?Set an absolute private configuration directory}/bearer-token
