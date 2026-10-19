@@ -25,7 +25,14 @@ fn verification_tools_are_listed_with_schemas() {
             "{name} has no output schema"
         );
     }
-    assert!(tools.iter().all(|tool| tool["name"] != "dry_run"));
+    // These names carry stronger claims than the available evidence: a layer-1 reference run
+    // is not a full dry run.
+    for unavailable in ["dry_run", "check_against_policy"] {
+        assert!(
+            tools.iter().all(|tool| tool["name"] != unavailable),
+            "{unavailable} must not be advertised without its trusted evidence"
+        );
+    }
 }
 
 #[test]

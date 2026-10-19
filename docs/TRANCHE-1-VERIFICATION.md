@@ -35,7 +35,7 @@ and these tools. Use the pinned versions below to reproduce CI's verdict:
 - `cargo-deny` 0.20.2; and
 - `cargo-machete` 0.9.2.
 
-The checksum-verified Linux installation of `stellar-cli` used by CI is in
+The checksum-verified Linux and macOS arm64 installations of `stellar-cli` used by CI are in
 `.github/workflows/nightly-live.yml`. Install the two Cargo tools with:
 
 ```bash
@@ -127,10 +127,20 @@ For the slowest independent trust-anchor check, run:
 bash scripts/verify-pinned-upstream.sh
 ```
 
-It clones the pinned OpenZeppelin tag, rebuilds all three pinned upstream contracts with the
-recorded compiler, and compares their Wasm hashes. Two are Phase 1 trust anchors; the retained
-ed25519-verifier pin is for later work. The script is intentionally separate from the release
+It clones the pinned OpenZeppelin tag, rebuilds every pinned upstream contract with the
+recorded compiler, and compares their Wasm hashes. Two are Phase 1 trust anchors; the
+ed25519 and WebAuthn verifier pins were added for the Tranche 2 authority check. The script is intentionally separate from the release
 gate because it performs a cold build of another repository.
+
+All pins reproduce from the pinned source with the recorded compiler and CLI, but the
+account pin reproduces byte-for-byte only on an Apple Silicon (`aarch64-apple-darwin`) host.
+Cargo hashes the build host into the `-C metadata` of proc-macros and build scripts, which
+reaches the account's symbol names, and rustc orders functions by symbol name
+([rust-lang/cargo#8140](https://github.com/rust-lang/cargo/issues/8140); the remaining case is
+addressed by the open [rust-lang/cargo#17522](https://github.com/rust-lang/cargo/pull/17522)).
+On other hosts the account Wasm differs only in function order, so the script reports the
+account as a mismatch there; it prints the build host first. The scheduled pinned-account job
+runs on a macOS arm64 runner for this reason.
 
 ## 4. Acceptance boundary
 

@@ -23,6 +23,9 @@ Stellar/SCF reviewers can reproduce the milestone from the
 [Tranche 1 verification guide](docs/TRANCHE-1-VERIFICATION.md), which maps every contracted
 item to an executable check and the artifact it produces.
 
+The [Tranche 2 verification guide](docs/TRANCHE-2-VERIFICATION.md) maps the current automated
+checks and the separate live integration evidence still required for the second milestone.
+
 ## The pipeline
 
 Every stage is deterministic and fail-closed, and each hands the next a canonical artifact rather
