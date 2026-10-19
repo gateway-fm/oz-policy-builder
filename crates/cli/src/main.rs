@@ -45,6 +45,9 @@ struct Cli {
 /// shells are configured identically.
 #[derive(Args, Clone, Debug)]
 struct BuildConfigArgs {
+    /// Fixed operator-owned executable that runs a disposable build worker.
+    #[arg(long, env = ozpb_toolkit::ENV_BUILD_WORKER_LAUNCHER)]
+    build_worker_launcher: Option<PathBuf>,
     /// Wall-clock limit for one policy build, in seconds.
     #[arg(long, env = ozpb_toolkit::ENV_BUILD_TIMEOUT_SECS)]
     build_timeout_secs: Option<u64>,
@@ -64,7 +67,10 @@ impl BuildConfigArgs {
     /// Note there is no flag for the builder kind: the hermetic stub emits unattestable wasm
     /// and must never be selectable by configuration.
     fn resolve(&self) -> Result<ozpb_toolkit::BuildConfig> {
-        let mut config = ozpb_toolkit::BuildConfig::default();
+        let mut config = ozpb_toolkit::BuildConfig {
+            worker_launcher: self.build_worker_launcher.clone(),
+            ..ozpb_toolkit::BuildConfig::default()
+        };
         if let Some(seconds) = self.build_timeout_secs {
             config.timeout = std::time::Duration::from_secs(seconds);
         }
@@ -583,6 +589,7 @@ mod tests {
 
     fn args() -> BuildConfigArgs {
         BuildConfigArgs {
+            build_worker_launcher: None,
             build_timeout_secs: None,
             build_cache_dir: None,
             build_jobs: None,
@@ -593,6 +600,7 @@ mod tests {
     #[test]
     fn build_flags_can_never_select_the_unattestable_stub_builder() {
         let resolved = BuildConfigArgs {
+            build_worker_launcher: None,
             build_timeout_secs: Some(30),
             build_cache_dir: Some(PathBuf::from("/operator/cache")),
             build_jobs: Some(2),

@@ -14,6 +14,8 @@ use std::time::Duration;
 use stellar_xdr::{Limited, Limits, ReadXdr, ScMetaEntry};
 use wait_timeout::ChildExt;
 
+pub mod worker;
+
 pub const BUILD_MANIFEST_SCHEMA: &str = "build-manifest/v1";
 
 #[derive(Clone, Debug)]
@@ -129,6 +131,7 @@ pub const ENV_BUILD_TIMEOUT_SECS: &str = "OZPB_BUILD_TIMEOUT_SECS";
 pub const ENV_BUILD_CACHE_DIR: &str = "OZPB_BUILD_CACHE_DIR";
 pub const ENV_BUILD_JOBS: &str = "OZPB_BUILD_JOBS";
 pub const ENV_STELLAR_BINARY: &str = "OZPB_STELLAR_BINARY";
+pub const ENV_BUILD_WORKER_LAUNCHER: &str = "OZPB_BUILD_WORKER_LAUNCHER";
 
 /// How long the toolchain identity probes (`rustc --version`, `<stellar> --version`) may
 /// take. Bounded for the same reason the build is: an operator-supplied binary that never
@@ -142,6 +145,8 @@ const MAX_CONFIGURABLE_JOBS: u32 = 256;
 
 #[derive(Clone, Debug)]
 pub struct BuildConfig {
+    /// Fixed operator-owned launcher for disposable builds. Never supplied by an MCP request.
+    pub worker_launcher: Option<PathBuf>,
     pub stellar_binary: PathBuf,
     pub timeout: Duration,
     /// Production workers keep this true and pre-populate their dependency cache. This
@@ -222,6 +227,7 @@ impl Drop for BuildSlot {
 impl Default for BuildConfig {
     fn default() -> Self {
         Self {
+            worker_launcher: None,
             stellar_binary: PathBuf::from("stellar"),
             // A real bound now that the timeout reaches the whole process group. A cold
             // dependency tree does not fit in the old 120s on ordinary hardware.
@@ -271,6 +277,9 @@ impl BuildConfig {
         if let Some(raw) = get(ENV_STELLAR_BINARY) {
             config.stellar_binary = PathBuf::from(raw);
         }
+        if let Some(raw) = get(ENV_BUILD_WORKER_LAUNCHER) {
+            config.worker_launcher = Some(PathBuf::from(raw));
+        }
         config.validated()
     }
 
@@ -285,6 +294,9 @@ impl BuildConfig {
     /// Both ends fail closed: zero disables the bound it configures, and an absurd value is no
     /// bound at all.
     pub fn validated(self) -> Result<Self, BuildError> {
+        if let Some(launcher) = &self.worker_launcher {
+            worker::validate_launcher(launcher)?;
+        }
         let seconds = self.timeout.as_secs();
         if seconds == 0 || seconds > MAX_CONFIGURABLE_TIMEOUT_SECS {
             return Err(BuildError::Input(format!(
@@ -810,10 +822,26 @@ pub fn build(
     // Taken before anything else and held for the whole build. This runs on the caller's
     // thread, so the slot outlives whatever asked for the build: a server that answered the
     // request with a stream, or a client that disconnected, cannot release it early.
-    let _slot = match &config.slots {
+    let slot = match &config.slots {
         Some(slots) => Some(slots.try_take().ok_or(BuildError::Busy)?),
         None => None,
     };
+    if config.worker_launcher.is_some() {
+        return match worker::build(request, config) {
+            Ok(result) => result,
+            Err(()) => {
+                // A timed-out or crashed launcher cannot prove that its container is gone.
+                // Retain capacity until the operator verifies cleanup and restarts the API.
+                // The runtime deadline still applies independently of this process.
+                if let Some(slot) = slot {
+                    std::mem::forget(slot);
+                }
+                Err(BuildError::Unavailable(
+                    "worker cleanup is unconfirmed; operator cleanup and restart required".into(),
+                ))
+            }
+        };
+    }
     match config.builder {
         Builder::Local => build_local(request, config),
         Builder::Stub => build_stub(request),

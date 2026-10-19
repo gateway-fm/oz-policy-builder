@@ -11,6 +11,10 @@ public multi-tenant compilation service. A disposable, no-secrets worker boundar
 required for that use. The offline image test proves compilation with networking disabled;
 the API service itself needs network access to its operator-configured RPC endpoints.
 
+For a separate Linux host API with a disposable rootless container for each build, see
+[Disposable build workers](ISOLATED-BUILDS.md). That mode has its own deployment and
+containment acceptance checks; it does not add runtime access to this Compose service.
+
 ## Build the reviewed revision
 
 Use Python 3 and Docker with BuildKit. The image supports Linux amd64 and arm64. Building
