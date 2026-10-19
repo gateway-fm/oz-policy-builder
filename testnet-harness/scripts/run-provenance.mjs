@@ -16,6 +16,10 @@ const FILE = 'provenance.json';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 function withFile(path, flags, maxBytes, action) {
+  // This private helper opens only the operator-selected executable or the fixed
+  // local provenance.json. Neither caller accepts a path from a remote request.
+  // Both reads retain no-follow/nonblocking opens and bounded regular-file checks.
+  // nosec
   const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
