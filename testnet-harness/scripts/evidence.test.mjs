@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -291,21 +291,76 @@ test('a FIFO at an artifact path is refused promptly instead of blocking the exp
   assert.equal(result.stdout, '');
 });
 
-test('real run.sh retains its nonzero exit and exports partial evidence before any network operation', (t) => {
-  const dir = setup(t, null);
-  const binDir = setup(t, null);
-  for (const [name, code] of [['npm', 42], ['stellar', 0], ['cargo', 0]]) {
-    const path = join(binDir, name);
-    writeFileSync(path, `#!/bin/sh\nexit ${code}\n`);
-    chmodSync(path, 0o755);
-  }
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('OZPB_')));
-  Object.assign(env, { PATH: `${binDir}:${process.env.PATH}`, OZPB_HARNESS_OUT: dir, OZPB_HARNESS_OWNER: 'ed25519' });
-  const result = spawnSync('bash', [join(ROOT, 'testnet-harness/run.sh')], { env, encoding: 'utf8', timeout: 20000 });
-  assert.equal(result.status, 42, result.stderr);
-  const report = JSON.parse(readFileSync(join(dir, 'evidence.json'), 'utf8'));
-  assert.equal(report.provenance.exit_code, 42);
-  assert.equal(report.run, null);
-  assert.ok(!existsSync(join(dir, 'run.json')));
-  assert.ok(!existsSync(join(dir, 'keys.json')));
+for (const useSymlink of [false, true]) {
+  test(`real run.sh retains its nonzero exit and exports partial evidence: ${useSymlink ? 'symlink' : 'directory'}`, (t) => {
+    const dir = setup(t, null);
+    const parent = setup(t, null);
+    const selected = useSymlink ? join(parent, 'selected-run') : dir;
+    if (useSymlink) symlinkSync(dir, selected, 'dir');
+    const binDir = setup(t, null);
+    for (const [name, code] of [['npm', 42], ['stellar', 0], ['cargo', 0]]) {
+      const path = join(binDir, name);
+      writeFileSync(path, `#!/bin/sh\nexit ${code}\n`);
+      chmodSync(path, 0o755);
+    }
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('OZPB_')));
+    Object.assign(env, { PATH: `${binDir}:${process.env.PATH}`, OZPB_HARNESS_OUT: selected, OZPB_HARNESS_OWNER: 'ed25519' });
+    const result = spawnSync('bash', [join(ROOT, 'testnet-harness/run.sh')], { env, encoding: 'utf8', timeout: 20000 });
+    assert.equal(result.status, 42, result.stderr);
+    const report = JSON.parse(readFileSync(join(dir, 'evidence.json'), 'utf8'));
+    assert.equal(report.provenance.exit_code, 42);
+    assert.equal(report.run, null);
+    assert.ok(!existsSync(join(dir, 'run.json')));
+    assert.ok(!existsSync(join(dir, 'keys.json')));
+  });
+}
+
+test('CLI publishes evidence atomically and replaces output symlinks without touching their targets', (t) => {
+  const dir = setup(t);
+  const outside = setup(t, null);
+  const target = join(outside, SENTINEL);
+  writeFileSync(target, SENTINEL);
+  symlinkSync(target, join(dir, 'evidence.json'));
+  const result = spawnSync(process.execPath, [SCRIPT, '--run-dir', dir, '--write'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(readFileSync(target, 'utf8'), SENTINEL);
+  assert.ok(lstatSync(join(dir, 'evidence.json')).isFile());
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'evidence.json'), 'utf8')), exportEvidence(dir));
+  assert.ok(!readdirSync(dir).some((name) => name.startsWith('.evidence-')));
+});
+
+for (const useSymlink of [false, true]) {
+  test(`CLI refuses invalid evidence without truncating ${useSymlink ? 'a symlink target' : 'the previous summary'}`, (t) => {
+    const dir = setup(t, null);
+    startRun(dir, {});
+    const provenance = readFileSync(join(dir, 'provenance.json'));
+    writeFileSync(join(dir, 'run.json'), 'null');
+    const output = join(dir, 'evidence.json');
+    if (useSymlink) symlinkSync(join(dir, 'provenance.json'), output);
+    else writeFileSync(output, SENTINEL);
+    const before = readFileSync(output);
+    const result = spawnSync(process.execPath, [SCRIPT, '--run-dir', dir, '--write'], { encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.ok(!result.stderr.includes(dir));
+    assert.ok(!result.stderr.includes(SENTINEL));
+    assert.deepEqual(readFileSync(output), before);
+    assert.deepEqual(readFileSync(join(dir, 'provenance.json')), provenance);
+    assert.equal(lstatSync(output).isSymbolicLink(), useSymlink);
+  });
+}
+
+test('CLI publication failure preserves the previous output and removes its temporary file', (t) => {
+  const dir = setup(t);
+  const output = join(dir, 'evidence.json');
+  mkdirSync(output);
+  writeFileSync(join(output, 'keep'), SENTINEL);
+  const result = spawnSync(process.execPath, [SCRIPT, '--run-dir', dir, '--write'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.ok(!result.stderr.includes(dir));
+  assert.ok(!result.stderr.includes(SENTINEL));
+  assert.equal(readFileSync(join(output, 'keep'), 'utf8'), SENTINEL);
+  assert.ok(!readdirSync(dir).some((name) => name.startsWith('.evidence-')));
 });

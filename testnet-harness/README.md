@@ -65,8 +65,12 @@ sharing. It is never published automatically. Raw run files remain local.
 To regenerate the summary for a saved run (including an older run without provenance):
 
 ```bash
-node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run > /path/to/run/evidence.json
+node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run --write
 ```
+
+`--write` validates the records before atomically replacing `evidence.json`. A refused export
+preserves the previous summary; an output symlink is replaced without writing to its target.
+Without `--write`, the command prints the summary to stdout.
 
 Old runs say provenance is unavailable. A missing install record means installation was not
 recorded, not that nothing was submitted. Permits carry submitted transaction hashes; denials
