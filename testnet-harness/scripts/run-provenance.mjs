@@ -5,7 +5,7 @@ import {
   accessSync, closeSync, constants, fstatSync, ftruncateSync, openSync, readFileSync, readdirSync,
   realpathSync, statSync, writeFileSync, writeSync,
 } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { writeEvidence } from './evidence.mjs';
@@ -33,9 +33,11 @@ export function startRun(runDir, env = process.env) {
     // This local harness reads the executable its operator selects and later runs
     // with that user's authority; no remote request supplies this configuration.
     // The bounded regular-file read records only a digest, never the file contents.
+    // Preserve parent components until filesystem traversal: join/resolve would
+    // collapse a symlink/.. path before the kernel follows its symlink.
     // nosec
-    const candidates = env.OZPB_BIN.includes('/') ? [resolve(env.OZPB_BIN)]
-      : (env.PATH ?? '').split(delimiter).map((dir) => resolve(dir, env.OZPB_BIN));
+    const candidates = env.OZPB_BIN.includes('/') ? [env.OZPB_BIN]
+      : (env.PATH ?? '').split(delimiter).map((dir) => `${dir || '.'}${sep}${env.OZPB_BIN}`);
     const binary = candidates.find((path) => {
       try {
         if (!statSync(path).isFile()) return false;
@@ -45,8 +47,9 @@ export function startRun(runDir, env = process.env) {
     });
     if (!binary) throw new Error('configured CLI is not executable');
     // An operator-selected executable can be a symlink (as in a package-manager bin dir).
-    // Resolve it explicitly, then hash the same regular-file descriptor we checked.
-    cli = { mode: 'external', binary_sha256: withFile(realpathSync(binary), constants.O_RDONLY,
+    // Native realpath follows the kernel's traversal order, including symlink targets
+    // containing parent components; Node's non-native realpath normalizes those first.
+    cli = { mode: 'external', binary_sha256: withFile(realpathSync.native(binary), constants.O_RDONLY,
       256 * 1024 * 1024, (fd) => sha256(readFileSync(fd))) };
   }
   const record = {

@@ -423,6 +423,89 @@ for (const selection of ['PATH', 'explicit path']) {
   });
 }
 
+for (const selection of ['absolute path', 'relative path', 'absolute PATH', 'relative PATH', 'executable symlink']) {
+  test(`CLI provenance hashes the executable Bash selects through symlink/..: ${selection}`, (t) => {
+    const dir = setup(t, null);
+    const parent = setup(t, null);
+    const logical = join(parent, 'logical');
+    const physical = join(parent, 'physical');
+    mkdirSync(logical);
+    mkdirSync(physical);
+    mkdirSync(join(physical, 'nested'));
+    symlinkSync(join(physical, 'nested'), join(logical, 'link'), 'dir');
+    const expected = Buffer.from('#!/bin/sh\nprintf physical-cli\n');
+    writeFileSync(join(physical, 'ozpb'), expected, { mode: 0o755 });
+    writeFileSync(join(logical, 'ozpb'), '#!/bin/sh\nprintf logical-cli\n', { mode: 0o755 });
+
+    // Keep the parent component literal: join/resolve would erase the behavior under test.
+    const throughLink = `${logical}/link/..`;
+    let command = `${throughLink}/ozpb`;
+    let path = process.env.PATH;
+    if (selection === 'relative path') command = 'logical/link/../ozpb';
+    if (selection.endsWith('PATH')) {
+      command = 'ozpb';
+      path = `${selection === 'absolute PATH' ? throughLink : 'logical/link/..'}${delimiter}${path}`;
+    }
+    if (selection === 'executable symlink') {
+      const alias = join(parent, 'selected-ozpb');
+      symlinkSync(command, alias);
+      command = alias;
+    }
+    const env = { ...process.env, OZPB_BIN: command, PATH: path };
+    const actual = spawnSync('/bin/bash', ['-c', '"$1"', 'harness-cli-test', command], {
+      cwd: parent, env, encoding: 'utf8', timeout: 3000,
+    });
+    assert.equal(actual.status, 0, actual.error?.message ?? actual.stderr);
+    assert.equal(actual.stdout, 'physical-cli');
+
+    const result = spawnSync(process.execPath, [join(ROOT, 'testnet-harness/scripts/run-provenance.mjs'), 'start', dir], {
+      cwd: parent, env, encoding: 'utf8', timeout: 20000,
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+    const record = JSON.parse(readFileSync(join(dir, 'provenance.json'), 'utf8'));
+    assert.equal(record.cli.binary_sha256, createHash('sha256').update(expected).digest('hex'));
+  });
+}
+
+test('an empty PATH component selects an executable in the current directory', (t) => {
+  const dir = setup(t, null);
+  const parent = setup(t, null);
+  const expected = Buffer.from('#!/bin/sh\nprintf current-directory-cli\n');
+  writeFileSync(join(parent, 'ozpb'), expected, { mode: 0o755 });
+  const env = { ...process.env, OZPB_BIN: 'ozpb', PATH: `${delimiter}${process.env.PATH}` };
+  const actual = spawnSync('/bin/bash', ['-c', 'ozpb'], { cwd: parent, env, encoding: 'utf8', timeout: 3000 });
+  assert.equal(actual.status, 0, actual.error?.message ?? actual.stderr);
+  assert.equal(actual.stdout, 'current-directory-cli');
+  const result = spawnSync(process.execPath, [join(ROOT, 'testnet-harness/scripts/run-provenance.mjs'), 'start', dir], {
+    cwd: parent, env, encoding: 'utf8', timeout: 20000,
+  });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  const record = JSON.parse(readFileSync(join(dir, 'provenance.json'), 'utf8'));
+  assert.equal(record.cli.binary_sha256, createHash('sha256').update(expected).digest('hex'));
+});
+
+test('main detection follows the Node loader for a symlink target containing symlink/..', (t) => {
+  const parent = setup(t, null);
+  const logical = join(parent, 'logical');
+  const physical = join(parent, 'physical');
+  mkdirSync(logical);
+  mkdirSync(physical);
+  mkdirSync(join(physical, 'nested'));
+  symlinkSync(join(physical, 'nested'), join(logical, 'link'), 'dir');
+  const helper = new URL('./cli-entry.mjs', import.meta.url).href;
+  for (const [directory, label] of [[logical, 'logical'], [physical, 'physical']]) {
+    writeFileSync(join(directory, 'entry.mjs'), `import { isMainModule } from ${JSON.stringify(helper)};
+      console.log(JSON.stringify({ label: ${JSON.stringify(label)}, main: isMainModule(import.meta.url) }));`);
+  }
+  const alias = join(parent, 'entry.mjs');
+  symlinkSync(`${logical}/link/../entry.mjs`, alias);
+  for (const flags of [[], ['--preserve-symlinks-main']]) {
+    const result = spawnSync(process.execPath, [...flags, alias], { encoding: 'utf8', timeout: 3000 });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { label: flags.length ? 'physical' : 'logical', main: true });
+  }
+});
+
 test('CLI publishes evidence atomically and replaces output symlinks without touching their targets', (t) => {
   const dir = setup(t);
   const outside = setup(t, null);
