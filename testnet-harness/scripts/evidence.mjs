@@ -6,7 +6,7 @@ import {
   renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMainModule } from './cli-entry.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const ADDRESS = /^[CG][A-Z2-7]{55}$/;
@@ -198,7 +198,7 @@ export function writeEvidence(runDir) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     const [flag, runDir, mode, ...extra] = process.argv.slice(2);
     if (flag !== '--run-dir' || !runDir || (mode !== undefined && mode !== '--write') || extra.length) fail();
