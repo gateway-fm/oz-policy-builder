@@ -13,11 +13,15 @@ use super::{
     account_reconciliation::{
         check_supplied_account_entries, ReconciliationBounds, ReconciliationError,
     },
-    account_storage::{AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerRecord},
+    account_storage::{
+        AccountStorageEntry, ContextRuleRecord, PolicyRecord, SignerIdentity, SignerRecord,
+    },
+    classic_account::read_classic_accounts_with_witnesses,
     contract_code::read_contract_wasm_hashes_with_witnesses,
     ledger_witness::{ordered_ledger_witness_digest, LedgerWitness},
     RpcError, RpcTransport, MAX_LEDGER_ENTRY_KEYS,
 };
+use ozpb_call_surface_core::ClassicAccount;
 use ozpb_domain::{Hash32, LedgerSeq, NetworkId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,9 +74,15 @@ pub struct AccountStateScan {
     pub rules: BTreeMap<u32, ContextRuleRecord>,
     pub signers: BTreeMap<u32, SignerRecord>,
     pub policies: BTreeMap<u32, PolicyRecord>,
-    /// Includes every installed policy and each extra contract requested by the caller.
-    /// Each instance was live when its individual response was read.
+    /// Includes every installed policy, every contract verifier named by an external
+    /// signer, and each extra contract requested by the caller. Each instance was live
+    /// when its individual response was read.
     pub observed_code_hashes: BTreeMap<String, Hash32>,
+    /// The signing configuration of every classic account named by a `Delegated(G…)` signer
+    /// anywhere in the closure, expired rules included, and of each classic account the caller
+    /// asked for (the new rule's own signers), read at the same reported ledger. An absent
+    /// entry is `NotFound`.
+    pub classic_accounts: BTreeMap<String, ClassicAccount>,
     /// SHA-256 over canonical XDR keys and values, TTL metadata, and requested absences.
     /// This identifies the validated entry payloads and ledger metadata used by the scan;
     /// it does not authenticate a ledger snapshot or authorize installation.
@@ -136,6 +146,27 @@ pub fn scan_account_state_with_targets<T: RpcTransport>(
     target_addresses: &[String],
     bounds: AccountScanBounds,
 ) -> Result<AccountStateScan, AccountScanError> {
+    scan_authority_state(
+        transport,
+        network_passphrase,
+        account_address,
+        target_addresses,
+        &[],
+        bounds,
+    )
+}
+
+/// The full authority capture: as [`scan_account_state_with_targets`], plus the classic
+/// accounts the caller names (the new rule's own `G…` signers) alongside every classic
+/// account the closure names, all inside the same attempt and reported ledger.
+pub fn scan_authority_state<T: RpcTransport>(
+    transport: &T,
+    network_passphrase: &str,
+    account_address: &str,
+    target_addresses: &[String],
+    classic_addresses: &[String],
+    bounds: AccountScanBounds,
+) -> Result<AccountStateScan, AccountScanError> {
     validate_bounds(bounds)?;
     if account_address.len() > 128 {
         return Err(AccountScanError::Rpc(RpcError::InvalidRequest(
@@ -173,6 +204,26 @@ pub fn scan_account_state_with_targets<T: RpcTransport>(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if classic_addresses.len() > bounds.max_transitive_entries {
+        return Err(AccountScanError::Budget(
+            "too many requested classic accounts",
+        ));
+    }
+    let canonical_classic = classic_addresses
+        .iter()
+        .map(|address| {
+            address
+                .parse::<stellar_strkey::ed25519::PublicKey>()
+                .ok()
+                .filter(|key| format!("{key}") == *address)
+                .map(|_| address.clone())
+                .ok_or_else(|| {
+                    AccountScanError::Rpc(RpcError::InvalidRequest(
+                        "requested classic account must be a canonical G-address".into(),
+                    ))
+                })
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
     for attempt in 1..=bounds.max_attempts {
         match scan_once(
             transport,
@@ -180,6 +231,7 @@ pub fn scan_account_state_with_targets<T: RpcTransport>(
             &canonical_account_address,
             account_contract.0,
             &canonical_targets,
+            &canonical_classic,
             bounds,
         ) {
             Ok(mut scan) => {
@@ -223,6 +275,7 @@ fn scan_once<T: RpcTransport>(
     account_address: &str,
     account_id: [u8; 32],
     target_addresses: &[String],
+    classic_targets: &BTreeSet<String>,
     bounds: AccountScanBounds,
 ) -> Result<AccountStateScan, AccountScanError> {
     let mut batches = 0;
@@ -374,9 +427,18 @@ fn scan_once<T: RpcTransport>(
     for policy in policies.values() {
         addresses.insert(policy.address.clone());
     }
+    // A verifier decides which signatures an external signer accepts, so its code belongs
+    // to the account's authority closure. A non-contract verifier has no code to observe.
+    for signer in signers.values() {
+        if let SignerIdentity::External { verifier, .. } = &signer.signer {
+            if verifier.parse::<stellar_strkey::Contract>().is_ok() {
+                addresses.insert(verifier.clone());
+            }
+        }
+    }
     if addresses.len() > bounds.max_transitive_entries {
         return Err(AccountScanError::Budget(
-            "policy code closure exceeds bound",
+            "policy and verifier code closure exceeds bound",
         ));
     }
     let addresses = addresses.into_iter().collect::<Vec<_>>();
@@ -387,7 +449,7 @@ fn scan_once<T: RpcTransport>(
             read_contract_wasm_hashes_with_witnesses(transport, network_passphrase, chunk)
                 .map_err(|error| match error {
                     RpcError::CodeRead(detail) => AccountScanError::Incomplete(format!(
-                        "installed or candidate policy code is unavailable: {detail}"
+                        "installed policy, verifier, or candidate code is unavailable: {detail}"
                     )),
                     other => AccountScanError::Rpc(other),
                 })?;
@@ -400,6 +462,38 @@ fn scan_once<T: RpcTransport>(
         .is_some_and(|hash| *hash != counters.wasm_hash)
     {
         return Err(AccountScanError::SnapshotChanged);
+    }
+
+    // A `Delegated(G…)` signer authorizes through its classic account's own signers and
+    // thresholds, so who it is depends on that entry. Read every one the closure names
+    // (expired rules included: a management call can revive them) and every one the caller
+    // names, inside this attempt and at this ledger.
+    let mut classic = classic_targets.clone();
+    for signer in signers.values() {
+        if let SignerIdentity::Delegated(address) = &signer.signer {
+            if address
+                .parse::<stellar_strkey::ed25519::PublicKey>()
+                .is_ok()
+            {
+                classic.insert(address.clone());
+            }
+        }
+    }
+    if classic.len() > bounds.max_transitive_entries {
+        return Err(AccountScanError::Budget(
+            "classic account closure exceeds bound",
+        ));
+    }
+    let classic = classic.into_iter().collect::<Vec<_>>();
+    let mut classic_accounts = BTreeMap::new();
+    for chunk in classic.chunks(MAX_LEDGER_ENTRY_KEYS) {
+        reserve_batch(&mut batches, bounds)?;
+        let (read, classic_witnesses) =
+            read_classic_accounts_with_witnesses(transport, network_passphrase, chunk)
+                .map_err(AccountScanError::Rpc)?;
+        same_ledger(ledger, read.reported_latest_ledger)?;
+        merge_witnesses(&mut witnesses, &mut witness_bytes, classic_witnesses)?;
+        classic_accounts.extend(read.accounts);
     }
 
     let last = read_page(
@@ -433,6 +527,7 @@ fn scan_once<T: RpcTransport>(
         signers,
         policies,
         observed_code_hashes,
+        classic_accounts,
         ordered_entry_digest,
         rpc_batches: batches,
         attempts: 0,
@@ -454,7 +549,8 @@ fn merge_witnesses(
         }
         let payload = match &value {
             LedgerWitness::Absent => 0,
-            LedgerWitness::Present { entry_data_xdr, .. } => entry_data_xdr.len(),
+            LedgerWitness::Present { entry_data_xdr, .. }
+            | LedgerWitness::Classic { entry_data_xdr, .. } => entry_data_xdr.len(),
         };
         *retained_bytes = retained_bytes
             .saturating_add(key.len())
@@ -563,6 +659,25 @@ mod tests {
                     let mut entries = Vec::new();
                     for encoded in keys {
                         let encoded = encoded.as_str().unwrap();
+                        // Classic accounts: one exists (`CLASSIC_PRESENT`), any other is absent.
+                        if let LedgerKey::Account(_) =
+                            LedgerKey::from_xdr_base64(encoded, xdr_limits()).unwrap()
+                        {
+                            if encoded
+                                == crate::classic_account::tests::account_key(CLASSIC_PRESENT)
+                            {
+                                entries.push(json!({
+                                    "key": encoded,
+                                    "xdr": crate::classic_account::tests::account_entry(
+                                        CLASSIC_PRESENT,
+                                        [1, 0, 0, 0],
+                                        &[],
+                                    ),
+                                    "lastModifiedLedgerSeq": 9,
+                                }));
+                            }
+                            continue;
+                        }
                         if let Some((value, ttl)) = self.values.borrow().get(encoded) {
                             let LedgerKey::ContractData(key) =
                                 LedgerKey::from_xdr_base64(encoded, xdr_limits()).unwrap()
@@ -680,6 +795,129 @@ mod tests {
 
     fn rule() -> ScVal {
         rule_with_policies(vec![])
+    }
+
+    const CLASSIC_PRESENT: u8 = 0x61;
+
+    fn classic_signer(byte: u8) -> ScVal {
+        map(vec![
+            ("count", ScVal::U32(1)),
+            (
+                "signer",
+                vector(vec![
+                    symbol("Delegated"),
+                    ScVal::Address(ScAddress::Account(stellar_xdr::AccountId(
+                        stellar_xdr::PublicKey::PublicKeyTypeEd25519(stellar_xdr::Uint256(
+                            [byte; 32],
+                        )),
+                    ))),
+                ]),
+            ),
+        ])
+    }
+
+    /// A `Delegated(G…)` signer's classic account and every account the caller names are read
+    /// inside the attempt, at the same reported ledger, and an absent one is reported absent.
+    #[test]
+    fn classic_accounts_are_read_inside_the_attempt() {
+        let endpoint = mock();
+        endpoint.values.borrow_mut().insert(
+            encoded(7, AccountEntryKey::Signer(2)),
+            (classic_signer(CLASSIC_PRESENT), 20),
+        );
+        let scan = scan_authority_state(
+            &endpoint,
+            NETWORK,
+            &address(ACCOUNT[0]),
+            &[],
+            &[format!(
+                "{}",
+                stellar_strkey::ed25519::PublicKey([0x62; 32])
+            )],
+            AccountScanBounds {
+                max_attempts: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let present = format!(
+            "{}",
+            stellar_strkey::ed25519::PublicKey([CLASSIC_PRESENT; 32])
+        );
+        let absent = format!("{}", stellar_strkey::ed25519::PublicKey([0x62; 32]));
+        assert!(matches!(
+            scan.classic_accounts[&present],
+            ClassicAccount::Found {
+                master_weight: 1,
+                ..
+            }
+        ));
+        assert_eq!(scan.classic_accounts[&absent], ClassicAccount::NotFound);
+        // The classic entries are part of the witnessed responses: the same scan without the
+        // requested (absent) account digests differently.
+        let without = scan_authority_state(
+            &endpoint,
+            NETWORK,
+            &address(ACCOUNT[0]),
+            &[],
+            &[],
+            AccountScanBounds {
+                max_attempts: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(without.ordered_entry_digest, scan.ordered_entry_digest);
+
+        // The classic read is the fourth batch (instance, rules, closure, accounts); a ledger
+        // that moves there is a changed snapshot, not a mixed answer.
+        let moved = mock();
+        moved.values.borrow_mut().insert(
+            encoded(7, AccountEntryKey::Signer(2)),
+            (classic_signer(CLASSIC_PRESENT), 20),
+        );
+        let moved = Mock {
+            changed_ledger_at: Some(4),
+            ..moved
+        };
+        assert!(matches!(
+            inspect(&moved),
+            Err(AccountScanError::SnapshotChanged)
+        ));
+
+        // A requested classic account must be a canonical G-address, not a contract or a
+        // muxed account.
+        let muxed = format!(
+            "{}",
+            stellar_strkey::ed25519::MuxedAccount {
+                ed25519: [CLASSIC_PRESENT; 32],
+                id: 1,
+            }
+        );
+        for wrong in [address(9), muxed] {
+            assert!(matches!(
+                scan_authority_state(
+                    &endpoint,
+                    NETWORK,
+                    &address(ACCOUNT[0]),
+                    &[],
+                    &[wrong],
+                    AccountScanBounds::default(),
+                ),
+                Err(AccountScanError::Rpc(RpcError::InvalidRequest(_)))
+            ));
+        }
+        assert!(matches!(
+            scan_authority_state(
+                &endpoint,
+                NETWORK,
+                &address(ACCOUNT[0]),
+                &[],
+                &[address(9)],
+                AccountScanBounds::default(),
+            ),
+            Err(AccountScanError::Rpc(RpcError::InvalidRequest(_)))
+        ));
     }
 
     fn signer() -> ScVal {
@@ -970,7 +1208,7 @@ mod tests {
                 bounds(1_000, 2)
             ),
             Err(AccountScanError::Budget(
-                "policy code closure exceeds bound"
+                "policy and verifier code closure exceeds bound"
             ))
         ));
         assert_eq!(code.calls.get(), 3);
@@ -1052,6 +1290,8 @@ mod tests {
         );
         // Instance, rules, signers, then the second code-read batch is the one refused.
         assert_eq!(large.calls.get(), 5);
+        // The cap exists only with the HTTP transport this test stands in for.
+        #[cfg(feature = "http")]
         assert!(measured.largest_response.get() <= crate::MAX_HTTP_RESPONSE_BYTES);
     }
 
@@ -1190,6 +1430,48 @@ mod tests {
         let scan = inspect(&mock).unwrap();
         assert_eq!(scan.policies.len(), 1);
         assert_eq!(scan.observed_code_hashes[&address(8)], Hash32([3; 32]));
+    }
+
+    #[test]
+    fn external_signer_verifier_code_is_observed_with_policy_code() {
+        let mock = mock();
+        mock.values.borrow_mut().insert(
+            encoded(7, AccountEntryKey::Signer(2)),
+            (
+                map(vec![
+                    ("count", ScVal::U32(1)),
+                    (
+                        "signer",
+                        vector(vec![
+                            symbol("External"),
+                            ScVal::Address(ScAddress::Contract(ContractId(Hash([5; 32])))),
+                            ScVal::Bytes(vec![1; 32].try_into().unwrap()),
+                        ]),
+                    ),
+                ]),
+                20,
+            ),
+        );
+        // A verifier decides which signatures the account accepts; without its code the
+        // scan cannot say what the signer is, so an omitted instance fails closed.
+        assert!(matches!(
+            inspect(&mock),
+            Err(AccountScanError::Incomplete(_))
+        ));
+
+        mock.values.borrow_mut().insert(
+            encoded(5, AccountEntryKey::Instance),
+            (
+                ScVal::ContractInstance(ScContractInstance {
+                    executable: ContractExecutable::Wasm(Hash([6; 32])),
+                    storage: None,
+                }),
+                20,
+            ),
+        );
+        let scan = inspect(&mock).unwrap();
+        assert_eq!(scan.observed_code_hashes[&address(5)], Hash32([6; 32]));
+        assert_eq!(scan.rpc_batches, 5);
     }
 
     #[test]

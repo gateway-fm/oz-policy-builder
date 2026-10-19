@@ -92,6 +92,9 @@ error_codes! {
     /// Distinct from `EBuildFailed` so an operator fault is never reported to an agent
     /// as "your spec does not compile".
     EBuildUnavailable => "E_BUILD_UNAVAILABLE",
+    /// Every build slot on a hosted server is in use. Retryable by design: the same request
+    /// can succeed once a running build finishes.
+    EBuildBusy => "E_BUILD_BUSY",
     // registry
     ERegistrySignature => "E_REGISTRY_SIGNATURE",
     ERegistryRollback => "E_REGISTRY_ROLLBACK",
@@ -108,10 +111,16 @@ error_codes! {
     EPolicyBindingInvalid => "E_POLICY_BINDING_INVALID",
     EAccountRuleEnumerationUnsupported => "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED",
     EIncompleteAccountState => "E_INCOMPLETE_ACCOUNT_STATE",
-    EAdminRuleNotFound => "E_ADMIN_RULE_NOT_FOUND",
-    EAdminRuleUnsafe => "E_ADMIN_RULE_UNSAFE",
     EUnsafeCallSurface => "E_UNSAFE_CALL_SURFACE",
     EUnsafeManagementSurface => "E_UNSAFE_MANAGEMENT_SURFACE",
+    /// A rule that can change the account has a shape the authority check cannot describe
+    /// (a policy-guarded owner rule, a nested-account signer, an unrecognized verifier).
+    EUnsupportedAuthority => "E_UNSUPPORTED_AUTHORITY",
+    /// A restricted (delegate) key can already change the account on its own.
+    EDelegateHasAuthority => "E_DELEGATE_HAS_AUTHORITY",
+    /// A restricted key already has another usable rule on the new rule's target, so a
+    /// stateful limit would not hold.
+    EDelegateGrantOverlap => "E_DELEGATE_GRANT_OVERLAP",
     EScanBudgetExceeded => "E_SCAN_BUDGET_EXCEEDED",
     // rpc / transport
     ERpc => "E_RPC",
