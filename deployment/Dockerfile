@@ -14,14 +14,15 @@ COPY crates ./crates
 COPY contracts/golden-transfer-policy ./contracts/golden-transfer-policy
 COPY .github/workflows/nightly-live.yml ./.github/workflows/nightly-live.yml
 COPY deployment ./deployment
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates pkg-config libssl-dev \
+# The official Stellar CLI links libdbus even when only its build/version commands are used.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates pkg-config libssl-dev libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/* \
     && sh deployment/install-tools.sh "$TARGETARCH" \
     && cargo build --locked --release -p ozpb-cli -p ozpb-mcp-server \
     && cargo vendor --locked --manifest-path contracts/golden-transfer-policy/Cargo.toml /opt/ozpb/vendor >/dev/null
 
 FROM rust:1.91.1-slim-trixie@sha256:f75071363e7f4771769d4cf81b1b7b290e607f4d4459e8731f6abdcee9982dc8 AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 libssl3t64 \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 libssl3t64 libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ozpb && useradd --uid 10001 --gid 10001 --home-dir /tmp/ozpb --no-create-home ozpb \
     && mkdir -p /opt/ozpb /var/cache/ozpb /tmp/ozpb /run/ozpb \
