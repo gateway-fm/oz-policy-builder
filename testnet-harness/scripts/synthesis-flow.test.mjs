@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,9 +62,9 @@ function setup(t) {
     },
   };
   function save() { for (const [name, value] of Object.entries(files)) writeFileSync(join(name === 'run.json' ? dir : fixtureDir, name), JSON.stringify(value)); }
-  function execute(env = {}) {
+  function execute(env = {}, cwd = process.cwd()) {
     save();
-    return spawnSync(process.execPath, [script, '--run-dir', dir], { encoding: 'utf8', env: {
+    return spawnSync(process.execPath, [script, '--run-dir', dir], { encoding: 'utf8', cwd, env: {
       ...process.env, OZPB_BIN: cli, OZPB_FLOW_FIXTURE: fixtureDir, OZPB_RPC_URL: 'https://rpc.invalid/path',
       OZPB_SIGNED_REGISTRY_SNAPSHOT: '', OZPB_REGISTRY_ROOTS_FILE: '', OZPB_REGISTRY_MIN_VERSION: '',
       OZPB_REGISTRY_SNAPSHOT_ROOT: '', ...env,
@@ -184,3 +184,17 @@ test('refuses existing pipeline artifacts before invoking the CLI', (t) => {
   assert.notEqual(f.execute().status, 0);
   assert.deepEqual(f.commands(), []);
 });
+
+for (const binary of ['./fake ozpb', 'fake ozpb']) {
+  test(`caller-relative trust files and executable resolve consistently: ${binary}`, (t) => {
+    const f = setup(t);
+    for (const name of ['registry.json', 'roots.json']) writeFileSync(join(f.dir, name), '{}');
+    const result = f.execute({ OZPB_BIN: binary, PATH: `${f.dir}:${process.env.PATH}`,
+      OZPB_SIGNED_REGISTRY_SNAPSHOT: './registry.json', OZPB_REGISTRY_ROOTS_FILE: './roots.json',
+      OZPB_REGISTRY_MIN_VERSION: '3' }, f.dir);
+    assert.equal(result.status, 0, result.stderr);
+    const args = f.commands().find((c) => c.command === 'synthesize').args;
+    assert.equal(args[args.indexOf('--signed-registry') + 1], join(realpathSync(f.dir), 'registry.json'));
+    assert.equal(args[args.indexOf('--registry-roots') + 1], join(realpathSync(f.dir), 'roots.json'));
+  });
+}

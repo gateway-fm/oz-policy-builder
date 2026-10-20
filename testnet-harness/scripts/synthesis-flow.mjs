@@ -115,11 +115,13 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   requireThat(permits?.length === 1, 'run needs exactly one recorded owner transfer');
   const trust = [env.OZPB_SIGNED_REGISTRY_SNAPSHOT, env.OZPB_REGISTRY_ROOTS_FILE, env.OZPB_REGISTRY_MIN_VERSION];
   requireThat(trust.every(Boolean) || trust.every((v) => !v), 'configure all three registry trust inputs, or none');
-  const [snapshot, roots, minimum] = trust.every(Boolean) ? trust
+  const [snapshot, roots, minimum] = trust.every(Boolean) ? [resolve(trust[0]), resolve(trust[1]), trust[2]]
     : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '3'];
   requireThat(/^[1-9][0-9]*$/.test(minimum), 'registry minimum version must be a positive integer');
   requireThat(existsSync(snapshot) && existsSync(roots), 'registry trust files are missing');
-  const command = env.OZPB_BIN ? [env.OZPB_BIN] : ['cargo', 'run', '--locked', '-q', '-p', 'ozpb-cli', '--'];
+  // Resolve caller-selected paths before launching under ROOT; bare names retain PATH lookup.
+  const command = env.OZPB_BIN ? [env.OZPB_BIN.includes('/') ? resolve(env.OZPB_BIN) : env.OZPB_BIN]
+    : ['cargo', 'run', '--locked', '-q', '-p', 'ozpb-cli', '--'];
   function cli(stage, args, filename, parser = parseJsonExact) {
     const result = spawnSync(command[0], [...command.slice(1), stage, ...args], {
       cwd: ROOT, env, encoding: 'utf8', timeout: 600_000, maxBuffer: 64 * 1024 * 1024,
