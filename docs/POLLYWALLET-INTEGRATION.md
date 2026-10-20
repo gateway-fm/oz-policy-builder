@@ -186,7 +186,7 @@ a grant naming any other delegate address cannot run this check.
 4. The final report is accepted only after the wallet recomputes agreement for every case
    from the CLI's expectations and the reported observations, checks all five cryptographic
    controls and the stateful call-cap sequence, and requires a zero worker exit that leaves no
-   process in the worker's group; any refusal kills that group.
+   process in the worker's group; any refusal kills the group members it can signal.
 
 A passing result marks only the `account_wasm` layer. It is local execution in fresh synthetic
 state: no target contract, captured network state or live enforcement runs, and it proves no

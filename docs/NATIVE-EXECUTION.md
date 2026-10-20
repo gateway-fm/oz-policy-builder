@@ -88,7 +88,9 @@ Exactly one signature request is outstanding. IDs are sequential canonical decim
 starting at `"1"`; a mismatched, repeated or out-of-order response fails. EOF, malformed input,
 unknown fields, exceeded limits or child failure yield no usable passing report. The wallet
 requires a zero child exit as well as a fully validated final report, and refuses a run that
-leaves any process in the worker's group; every refusal kills that group.
+leaves any process in the worker's group; every refusal kills the members of that group the
+wallet can signal. The group check enforces the contract of a trusted local binary, not
+containment: a descendant that calls `setsid` or `setpgid` leaves the group unseen.
 
 The wallet keeps a registered, controlled delegate key in backend memory and exposes only its
 address and opaque capability ID to the UI. The worker receives only the address. An arbitrary

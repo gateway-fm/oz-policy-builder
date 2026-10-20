@@ -117,13 +117,21 @@ export async function runNative(executable, jobText, {
         if (done) return;
         if (code !== 0 || exitSignal || pending.length || prepared === undefined || !prepareOnly && result === undefined) failed = true;
         // The worker must leave nothing running: `close` does not wait for a descendant with
-        // ignored stdio. A surviving group member refuses even a complete report, and every
-        // refusal signals the group. Its ID cannot be reused while any member is alive.
-        let lingering = false;
-        try { process.kill(-child.pid, 0); lingering = true; } catch (error) { lingering = error.code === 'EPERM'; }
-        if (lingering) failed = true;
-        if (failed) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group has no members left */ }
-        finish();
+        // ignored stdio. A surviving group member refuses even a complete report. The group is
+        // signalled only while a probe finds a member, because only then can its ID not be
+        // reused; a member forking during one signal is caught by the next probe. The existing
+        // grace period caps the sweep, and the run settles only after it.
+        clearTimeout(grace);
+        const ends = performance.now() + 5000;
+        const sweep = () => {
+          let member;
+          try { process.kill(-child.pid, 0); member = true; } catch (error) { member = error.code === 'EPERM'; }
+          if (!member || performance.now() >= ends) { finish(); return; }
+          failed = true;
+          try { process.kill(-child.pid, 'SIGKILL'); } catch { /* re-probed below */ }
+          grace = setTimeout(sweep, 20);
+        };
+        sweep();
       });
       if (prepareOnly) child.stdin.end(compact + '\n');
       else child.stdin.write(compact + '\n', (error) => { if (error) fail(); });
