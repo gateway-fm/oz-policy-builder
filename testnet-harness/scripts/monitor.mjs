@@ -7,6 +7,8 @@ import * as rpc from './rpc.mjs';
 
 export async function monitorGrant(dir, overrides = {}) {
   const deps = { ...rpc, ...overrides };
+  // Local CLI operator selects --run-dir; this is not a server request or a remote input.
+  // nosec
   const path = join(dir, 'run.json');
   const run = deps.readJson(path);
   const spec = deps.readJson(join(dir, 'spec.json'));
