@@ -47,6 +47,22 @@ pub mod domains {
     pub const POLICY_BINDING_SET: &str = "ozpb:v1:policy-binding-set";
     /// The full typed request for a state-dependent installed-policy check.
     pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
+    /// Exact candidate, artifact claims and per-run nonce for a layered dry run.
+    pub const DRY_RUN_REQUEST: &str = "ozpb:v1:dry-run-request";
+    /// Ordered selected-rule constraint cases used by a layered dry run.
+    pub const DRY_RUN_SUITE: &str = "ozpb:v1:dry-run-suite";
+    /// Fixed XDR sequence defining a counterfactual execution network.
+    pub const OFFLINE_EXECUTION: &str = "ozpb:v1:offline-execution";
+    /// Complete typed NativeJob, including Wasm bytes and source ledger parameters.
+    pub const NATIVE_EXECUTION_JOB: &str = "ozpb:v1:native-execution-job";
+    /// Synthetic local candidate initialization descriptor, not captured live state.
+    pub const NATIVE_INITIALIZATION: &str = "ozpb:v1:native-initialization";
+    /// Sorted (ledger-key XDR, ledger-entry XDR, optional TTL) tuples.
+    pub const NATIVE_STATE_ENTRIES: &str = "ozpb:v1:native-state-entries";
+    /// Tuple of run hash, case ID and exact derived Case.
+    pub const NATIVE_CASE_PAYLOAD: &str = "ozpb:v1:native-case-payload";
+    /// Run hash used to derive a separate deterministic synthetic owner key.
+    pub const NATIVE_BOOTSTRAP: &str = "ozpb:v1:local-bootstrap";
     /// The enumerated account rule-set a call-surface verdict was computed over.
     pub const ACCOUNT_STATE: &str = "ozpb:v1:account-state";
     /// Ordered raw account and policy-instance ledger values, TTLs, and omitted keys.
@@ -79,6 +95,14 @@ pub mod domains {
         BUILD_MANIFEST,
         POLICY_BINDING_SET,
         POLICY_CHECK_REQUEST,
+        DRY_RUN_REQUEST,
+        DRY_RUN_SUITE,
+        OFFLINE_EXECUTION,
+        NATIVE_EXECUTION_JOB,
+        NATIVE_INITIALIZATION,
+        NATIVE_STATE_ENTRIES,
+        NATIVE_CASE_PAYLOAD,
+        NATIVE_BOOTSTRAP,
         ACCOUNT_STATE,
         ACCOUNT_LEDGER_WITNESS,
         ACCOUNT_METHOD_INVENTORY,

@@ -27,7 +27,11 @@ fn initialize_and_list_tools() {
     // The core, verification, preflight and authority routers define the served tool set.
     assert_eq!(
         tools.len(),
-        MVP_TOOLS.len() + VERIFICATION_TOOLS.len() + PREFLIGHT_TOOLS.len() + AUTHORITY_TOOLS.len(),
+        MVP_TOOLS.len()
+            + VERIFICATION_TOOLS.len()
+            + PREFLIGHT_TOOLS.len()
+            + AUTHORITY_TOOLS.len()
+            + POLICY_CHECK_TOOLS.len(),
         "tool set drifted; have {names:?}"
     );
     assert!(

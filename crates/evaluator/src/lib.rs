@@ -18,6 +18,9 @@ use ozpb_policy_spec::{
     ValidatedSpec,
 };
 use serde::{Deserialize, Serialize};
+use stellar_xdr::{Limits, ScAddress, ScVal, WriteXdr};
+
+pub mod spending_limit;
 
 /// A candidate invocation, as the smart account's `__check_auth` would observe it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -346,13 +349,32 @@ fn constraint_satisfied(c: &Constraint, ctx: &EvalContext, value: &ArgValue) -> 
         (Constraint::GeI128 { min }, ArgValue::I128(actual)) => {
             min.parse::<i128>().map(|m| *actual >= m).unwrap_or(false)
         }
-        (Constraint::EqScval { xdr_base64 }, ArgValue::ScvalXdr(actual)) => xdr_base64 == actual,
+        (Constraint::EqScval { xdr_base64 }, actual) => exact_xdr_matches(xdr_base64, actual),
         // Explicit maximal widening: any value at this position satisfies (arity is
         // enforced by the caller before indexing).
         (Constraint::AnyValue, _) => true,
         // Type mismatch between constraint and value: never satisfied (fail closed).
         _ => false,
     }
+}
+
+/// Exact-XDR constraints apply to every argument type, including values which
+/// callers supply in typed form. Use the protocol codec independently of codegen.
+fn exact_xdr_matches(expected: &str, actual: &ArgValue) -> bool {
+    let value = match actual {
+        ArgValue::ScvalXdr(encoded) => return expected == encoded,
+        ArgValue::I128(value) => ScVal::from(*value),
+        ArgValue::Address(value) => match value.parse::<ScAddress>() {
+            Ok(address @ (ScAddress::Account(_) | ScAddress::Contract(_))) => {
+                ScVal::Address(address)
+            }
+            _ => return false,
+        },
+    };
+    // These fixed-size protocol values need at most 44 bytes of XDR.
+    value
+        .to_xdr_base64(Limits { depth: 8, len: 128 })
+        .is_ok_and(|encoded| encoded == expected)
 }
 
 #[cfg(test)]
