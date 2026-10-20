@@ -836,7 +836,7 @@ function protocolFixture(names = SWAP_STEPS) {
       read_ledgers: { account: 95, policy: 95, rule: 95, installed: 95 } },
     installation: { rule_id: 8 + rule_index, transaction: HASH, ledger: 95 }, tx: { upload: HASH, create: HASH, install: HASH },
     removal: { transaction: HASH, ledger: 206, event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed',
-      before: { private_note: SENTINEL } } });
+      before: { configuration: 'matched', private_note: SENTINEL } } });
   run.walkthrough = { kind: 'soroswap_swap', account: C, amount_in: '1000000', minimum_out: '100000', deadline: 1,
     owner_transaction: { hash: HASH, ledger: 90, output_token: C, balance_before: '0', balance_after: '150000', returned_amount: '150000' },
     invocations, bundle: { status: 'installed', account: C, spec_hash: HASH, registry_root: HASH,
@@ -941,4 +941,27 @@ test('an incomplete protocol walkthrough exports its partial journal without com
   assert.equal(report.walkthrough.bundle.entries[1].removal, null);
   assert.equal(report.walkthrough.bundle.entries[1].pending_removal.transaction, 'ef'.repeat(32));
   assert.equal(report.walkthrough.bundle.cleanup, 'incomplete');
+});
+
+test('a single-rule Blend journal is not labelled with transfer-rule denials', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.kind = 'blend_claim';
+  run.walkthrough.invocations = run.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  run.walkthrough.invocations[0].rule_ids = [0];
+  run.walkthrough.bundle.entries.pop();
+  run.walkthrough.controls = { status: 'incomplete', control_set: 2,
+    steps: [{ name: 'reserve_ids', result: 'verified_denial', ledger: 100, enforcer: ROOT_POLICY, code: 6 }] };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.controls.control_set, 'single_rule');
+});
+
+test('a removal after a mismatched or unreadable pre-removal readback says so', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.bundle.entries[1].removal.before = { configuration: 'mismatch_or_unavailable' };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.bundle.entries[1].removal.pre_removal_readback, 'mismatch_or_unavailable');
+  // A matching pre-removal readback adds nothing, so earlier summaries keep their exact bytes.
+  assert.equal(Object.hasOwn(report.walkthrough.bundle.entries[0].removal, 'pre_removal_readback'), false);
+  run.walkthrough.bundle.entries[1].removal.before = { configuration: 'something_else' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
 });

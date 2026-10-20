@@ -272,8 +272,13 @@ function walkthroughRecord(value, run) {
           const cleanup = choice(r.policy_cleanup, ['not_checked', 'not_installed', 'still_installed']);
           if (rule === null || (readback !== 'not_checked' && event !== 'verified')
             || (cleanup !== 'not_checked' && readback !== 'absent')) fail();
+          // Cleanup removes by the confirmed install's rule ID even when its pre-removal readback
+          // no longer matched; say so. A matching one adds no field.
+          const prior = r.before === undefined ? 'matched'
+            : choice(object(r.before).configuration, ['matched', 'mismatch_or_unavailable']);
           removal = { transaction: hash(r.transaction), ledger: r.ledger === null ? null : uint(r.ledger),
-            event, rule_readback: readback, policy_cleanup: cleanup };
+            event, rule_readback: readback, policy_cleanup: cleanup,
+            ...(prior === 'matched' ? {} : { pre_removal_readback: prior }) };
         }
         // A prepared but unconfirmed submission may still land; keep its identity visible.
         const pending = e.pending === undefined ? null : { operation: choice(object(e.pending).operation, ['upload', 'create', 'install']),
@@ -357,7 +362,8 @@ function walkthroughRecord(value, run) {
     }
   }
   return { kind, owner_transaction: owner, invocations, bundle, controls: { status,
-    control_set: set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
+    control_set: kind === 'blend_claim' ? 'single_rule'
+      : set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
 }
 
 function protocolPipelineRecord(value, run, walkthrough) {

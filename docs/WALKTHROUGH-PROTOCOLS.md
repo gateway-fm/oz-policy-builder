@@ -72,8 +72,9 @@ delegate move up to the input amount to the pair. **XLM sent to the pair that wa
 account:** a direct transfer is not a swap, and the pair's surplus balance can be taken by anyone.
 The controls observe that authority only by simulation (`independent_token`), never by submitting
 it, and then check that the transfer rule's own policy still bounds it. Rule IDs are signed in the
-account's context order, router first; the harness's `protocolInputs` refuses a spec whose rule
-order would put the transfer rule first.
+account's context order, router first. The harness's `protocolInputs` refuses a recorded call
+whose rule order would not put the root invocation first, and `validateProtocolSynthesis`
+refuses a synthesized spec whose rules come in any other order.
 
 ### Installation
 
@@ -140,8 +141,9 @@ The exported `evidence.json` adds two typed summaries for these modes: `walkthro
 call, each invocation's status and attribution, the bundle journal including each rule's
 authority answer, readback, pending submissions and removals, and the control steps) and
 `protocol_pipeline`. The native setup's transfer target, recipient and amount are exported as
-`null` for these runs: they only fund the account. A journal without the transfer-rule denials
-is labelled `router_rule_denials_only`. A `completed` control
+`null` for these runs: they only fund the account. A Soroswap journal without the transfer-rule denials
+is labelled `router_rule_denials_only`, and a Blend journal `single_rule`. A removal made after a
+mismatched or unreadable pre-removal readback carries `pre_removal_readback`. A `completed` control
 journal is accepted only with every required step in order, its expected enforcers and codes,
 the expiry boundary, a delegated positive that matches a confirmed invocation and complete
 removal. Per-rule Wasm, manifests and verification reports are hashed. Preflight readings, RPC

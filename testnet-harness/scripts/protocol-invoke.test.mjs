@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Address, Keypair, StrKey, xdr } from '@stellar/stellar-sdk';
+import { Address, Keypair, StrKey, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { invokeProtocol } from './protocol-invoke.mjs';
 import { protocolInvocation, PROTOCOL_TARGETS } from './protocol-calls.mjs';
 import { i128 } from './lib.mjs';
@@ -16,7 +16,7 @@ function fixture(kind = 'soroswap_swap') {
         rule_index, policy: rule_index ? C(5) : policy, installation: { rule_id: 8 + rule_index, transaction: 'aa'.repeat(32) },
       })),
     } } };
-  const controls = {}, sends = [], saved = [], signatures = [];
+  const controls = {}, sends = [], saved = [], signatures = [], simulated = [];
   let balanceCalls = 0;
   const deps = {
     assertTestnet: async () => {}, latestLedger: async () => 100,
@@ -42,6 +42,7 @@ function fixture(kind = 'soroswap_swap') {
     },
     enforceSimulation: async (_payer, op) => {
       xdr.Operation.fromXDR(op.toXDR());
+      simulated.push(op);
       if (controls.permit) return { result: 'permit', ledger: 101 };
       if (controls.error !== undefined) return { result: 'deny', ledger: 101, error: controls.error };
       const { policy: raiser = policy, code = 6 } = controls.deny ?? {};
@@ -62,7 +63,7 @@ function fixture(kind = 'soroswap_swap') {
       signer: 'delegate', expected: { enforcer: policy, code: 6 }, control: 'baseline', ...options,
       save: () => saved.push(structuredClone(run)) }, deps);
   };
-  return { run, sends, saved, signatures, controls, execute };
+  return { run, sends, saved, signatures, controls, simulated, execute };
 }
 for (const kind of ['soroswap_swap', 'blend_claim']) {
   test(`owner ${kind} records confirmed nonzero output and balance change`, async () => {
@@ -151,6 +152,9 @@ test('a direct transfer above the cap is simulated under the transfer rule alone
   assert.equal(result.status, 'verified_denial');
   assert.deepEqual(result.rule_ids, [9]);
   assert.equal(f.sends.length, 0);
+  const call = f.simulated[0].body.invokeHostFunctionOp.hostFunction.invokeContract;
+  assert.equal(call.functionName.toString(), 'transfer');
+  assert.equal(scValToNative(call.args[2]), 1_000_001n, 'one unit above the recorded input');
 });
 
 const ROUTER_ERROR = (account) => `contract:${PROTOCOL_TARGETS.router}, topics:[error, Error(Contract, #6)], data:["failing with contract error", 6]`;
