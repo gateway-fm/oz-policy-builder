@@ -306,13 +306,14 @@ test('an explicit null invocation list is malformed', (t) => {
 });
 
 // Run the actual wrapper's EXIT handler without executing its live testnet steps.
-function exitHandler(dir, code = 0, prelude = '', secrets = '') {
+function exitHandler(dir, code = 0, prelude = '', secrets = '', extraEnv = {}) {
   const script = readFileSync(join(ROOT, 'testnet-harness/run.sh'), 'utf8');
   const start = script.indexOf('finish_run() {');
   const end = script.indexOf('trap finish_run EXIT', start) + 'trap finish_run EXIT'.length;
   assert.ok(start >= 0 && end > start);
   return spawnSync('bash', ['-c', `set -euo pipefail\n${prelude}\n${script.slice(start, end)}\nexit "$HARNESS_TEST_EXIT"\n`], {
-    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: secrets, HARNESS_TEST_EXIT: String(code) },
+    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: secrets, HARNESS_TEST_EXIT: String(code),
+      ...extraEnv },
     encoding: 'utf8', timeout: 20000,
   });
 }
@@ -714,6 +715,29 @@ test('failed exit attempts cleanup before discarding keys and retains original s
   assert.equal(JSON.parse(readFileSync(join(dir, 'provenance.json'))).exit_code, 42);
 });
 
+test('a failed protocol walkthrough removes its bundle grants before discarding keys', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const secrets = join(dir, 'temporary-keys');
+  mkdirSync(secrets);
+  writeFileSync(join(secrets, 'keys.json'), 'test-only');
+  const prelude = `node() {
+    if [[ "$1" == */failure-cleanup.mjs ]]; then return 98; fi
+    if [[ "$1" == */protocol-finish.mjs ]]; then
+      test -f "$SECRETS/keys.json" || return 99
+      printf bundle > "$RUN/cleanup-attempt"
+      return 1
+    fi
+    command node "$@"
+  }`;
+  const result = exitHandler(dir, 42, prelude, secrets, { WALKTHROUGH: 'soroswap' });
+  assert.equal(result.status, 42, result.stderr);
+  assert.equal(readFileSync(join(dir, 'cleanup-attempt'), 'utf8'), 'bundle');
+  assert.equal(existsSync(secrets), false);
+  assert.match(result.stderr, /cleanup incomplete/i);
+});
+
 for (const change of ['matching', 'account code', 'installation', 'reviewed address', 'reviewed code', 'reviewed period', 'missing reviewed', 'unexpected reviewed']) {
   test(`verified failure cleanup binds its original installation: ${change}`, (t) => {
     const run = fixture();
@@ -772,4 +796,104 @@ test('unreaped cleanup keeps original exit and discards keys without finalizing 
   assert.equal(readFileSync(join(dir, 'provenance.json'), 'utf8'), before);
   assert.equal(existsSync(join(dir, 'evidence.json')), false);
   assert.match(result.stderr, /termination.*unconfirmed/i);
+});
+
+const ROOT_POLICY = 'C' + 'D'.repeat(55);
+const CHILD_POLICY = 'C' + 'E'.repeat(55);
+const SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+  'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+function protocolFixture() {
+  const run = fixture();
+  delete run.policy; delete run.policy_wasm_hash; delete run.rule_id; delete run.tx.add_context_rule;
+  run.invocations = []; run.valid_until_ledger = 200;
+  const denial = { enforcer: ROOT_POLICY, code: 6 };
+  const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial,
+    wrong_signer: { enforcer: C, code: 3016 }, zero_signers: { enforcer: ROOT_POLICY, code: 1 },
+    count_cap: { enforcer: ROOT_POLICY, code: 7 }, expired_rule: { enforcer: C, code: 3002 }, post_revocation: { enforcer: C, code: 3000 } };
+  const steps = SWAP_STEPS.map((name, i) => {
+    const ledger = name === 'expired_rule' || name === 'post_revocation' ? 201 + i : 100 + i;
+    if (name === 'cleanup') return { name, result: 'removed' };
+    if (name === 'expiry_wait') return { name, result: 'ledger_reached', target_ledger: 201, ledger: 201 };
+    if (name === 'delegate_swap') return { name, result: 'confirmed', ledger, transaction: 'cd'.repeat(32) };
+    if (name === 'independent_token') return { name, result: 'verified_independent_permission', ledger };
+    return { name, result: 'verified_denial', ledger, ...expected[name] };
+  });
+  const invocations = [{ name: 'owner_record', control: 'baseline', signer: 'owner', rule_ids: [0, 0], status: 'confirmed',
+    observation: 'submitted_transaction', transaction: HASH, ledger: 90, returned_amount: '150000', output_token: C,
+    balance_before: '0', balance_after: '150000' },
+  ...steps.filter((s) => !['cleanup', 'expiry_wait'].includes(s.name)).map((s) => ({ name: s.name, control: 'baseline',
+    signer: 'delegate', rule_ids: [8, 9], status: s.result, ledger: s.ledger,
+    observation: s.transaction ? 'submitted_transaction' : 'enforcing_simulation',
+    ...(s.transaction ? { transaction: s.transaction, returned_amount: '150000' } : {}),
+    ...(s.code ? { enforcer: s.enforcer, code: s.code } : {}), host_error: SENTINEL }))];
+  const entry = (rule_index, policy) => ({ rule_index, wasm_hash: wasmHash, spec_hash: HASH, policy,
+    installation: { rule_id: 8 + rule_index, transaction: HASH, ledger: 95 }, tx: { upload: HASH, create: HASH, install: HASH },
+    removal: { transaction: HASH, ledger: 206, event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed',
+      before: { private_note: SENTINEL } } });
+  run.walkthrough = { kind: 'soroswap_swap', account: C, amount_in: '1000000', minimum_out: '100000', deadline: 1,
+    owner_transaction: { hash: HASH, ledger: 90, output_token: C, balance_before: '0', balance_after: '150000', returned_amount: '150000' },
+    invocations, bundle: { status: 'installed', account: C, spec_hash: HASH, registry_root: HASH,
+      entries: [entry(0, ROOT_POLICY), entry(1, CHILD_POLICY)], cleanup: { status: 'removed' } },
+    controls: { status: 'completed', steps }, prerequisites: { note: SENTINEL } };
+  return run;
+}
+const protocolPipeline = { schema_version: 1, account: C, kind: 'soroswap_swap', recorded_transaction: HASH,
+  recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+  spec_hash: HASH, reference_cases: 40, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+  artifacts: [0, 1].map((rule_index) => ({ rule_index, wasm_hash: wasmHash, normalized_input_hash: HASH })) };
+
+test('protocol walkthrough summary keeps typed bundle, controls and per-rule artifacts only', (t) => {
+  const dir = setup(t, protocolFixture());
+  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(protocolPipeline));
+  for (const i of [0, 1]) {
+    mkdirSync(join(dir, 'policies', `rule-${i}`), { recursive: true });
+    writeFileSync(join(dir, 'policies', `rule-${i}`, 'policy.wasm'), wasm);
+    writeFileSync(join(dir, 'policies', `rule-${i}`, 'build-manifest.json'), '{}');
+  }
+  const report = exportEvidence(dir);
+  assert.equal(report.walkthrough.kind, 'soroswap_swap');
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.deepEqual(report.walkthrough.bundle.entries.map((e) => e.rule_id), [8, 9]);
+  assert.equal(report.walkthrough.bundle.entries[1].removal.rule_readback, 'absent');
+  assert.equal(report.walkthrough.invocations.find((i) => i.name === 'delegate_swap').transaction, 'cd'.repeat(32));
+  assert.equal(report.walkthrough.invocations.find((i) => i.name === 'input_cap').transaction, null);
+  assert.equal(report.protocol_pipeline.reference_cases, 40);
+  assert.equal(report.artifacts.policy_wasm_rule_1.sha256, wasmHash);
+  assert.equal(report.run.installation, 'not_recorded');
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+const protocolInvalid = {
+  'missing control step': (r) => r.walkthrough.controls.steps.splice(1, 1),
+  'reordered control steps': (r) => r.walkthrough.controls.steps.reverse(),
+  'denial from the wrong enforcer': (r) => { r.walkthrough.controls.steps[0].enforcer = CHILD_POLICY; },
+  'expiry denial before expiry': (r) => { r.walkthrough.controls.steps[9].ledger = 150; },
+  'tuple denial after expiry': (r) => { r.walkthrough.controls.steps[0].ledger = 250; },
+  'positive without its confirmed invocation': (r) => { r.walkthrough.controls.steps[6].transaction = 'ef'.repeat(32); },
+  'owner output without balance effect': (r) => { r.walkthrough.owner_transaction.balance_after = '1'; },
+  'owner output without its invocation': (r) => { r.walkthrough.owner_transaction.hash = 'ef'.repeat(32); },
+  'simulation with a transaction': (r) => { r.walkthrough.invocations[1].transaction = HASH; },
+  'other account': (r) => { r.walkthrough.account = 'C' + 'F'.repeat(55); },
+  'removed without readback': (r) => { r.walkthrough.bundle.entries[0].removal.rule_readback = 'not_checked'; },
+  'completed controls with incomplete cleanup': (r) => { r.walkthrough.bundle.cleanup.status = 'incomplete'; },
+};
+for (const [name, mutate] of Object.entries(protocolInvalid)) {
+  test(`protocol walkthrough summary refuses ${name}`, (t) => {
+    const run = protocolFixture();
+    mutate(run);
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+
+test('an incomplete protocol walkthrough exports its partial journal without completion claims', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls = { status: 'incomplete', steps: run.walkthrough.controls.steps.slice(0, 2) };
+  delete run.walkthrough.bundle.entries[1].removal;
+  run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
+  run.walkthrough.bundle.cleanup = { status: 'incomplete' };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.controls.status, 'incomplete');
+  assert.equal(report.walkthrough.bundle.entries[1].removal, null);
+  assert.equal(report.walkthrough.bundle.entries[1].pending_removal.transaction, 'ef'.repeat(32));
+  assert.equal(report.walkthrough.bundle.cleanup, 'incomplete');
 });
