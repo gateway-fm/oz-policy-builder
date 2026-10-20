@@ -13,6 +13,9 @@ else
         env -u CARGO_TARGET_DIR bash scripts/verify-pinned-upstream.sh
 fi
 python3 scripts/atomic-live-helper-fixture.py "$work"
+# Generation builds offline from the committed generated-contract lockfile, so a fresh machine
+# needs those exact dependencies in the cargo cache first; building the CLI does not fetch them.
+( cd contracts/golden-transfer-policy && cargo fetch --locked )
 cargo run --locked --quiet -p ozpb-cli -- generate \
     --spec "$work/spec.json" --rule 0 --out "$work/generated"
 stellar contract build --locked --manifest-path contracts/atomic-live-helper/Cargo.toml \
