@@ -1,6 +1,7 @@
 import type { Approval, WalletIdentity } from '../shared/approval.mjs';
 import type { CheckedAssembly } from '../shared/assembly.mjs';
 import type { SignedAuthorization } from '../shared/signature.mjs';
+import type { SampleApproval, SampleDescriptor } from '../shared/sample.mjs';
 type Details = Readonly<Record<string, unknown>>;
 export interface WalletState {
   readonly busy: boolean;
@@ -14,6 +15,10 @@ export interface WalletState {
   readonly deployPreview: Details | null;
   readonly installation: Details | null;
   readonly receipt: unknown;
+  readonly sample: SampleDescriptor | null;
+  readonly samplePreview: Details | null;
+  readonly sampleTransactionHash: string | null;
+  readonly sampleAttempted: boolean;
 }
 export class WalletController {
   constructor(options: {
@@ -21,9 +26,11 @@ export class WalletController {
     validators: {
       reviewIntent(input: unknown): Approval;
       validateAssembly(input: unknown): CheckedAssembly;
+      reviewSample(input: unknown): SampleApproval;
+      validateSampleAssembly(input: unknown): CheckedAssembly;
       validateSignedAuthorization(input: unknown): Promise<SignedAuthorization>;
     };
-    sign(input: { approval: Approval; checked: CheckedAssembly }): Promise<string[]>;
+    sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly }): Promise<string[]>;
     origin: string;
     pins: { networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
@@ -33,6 +40,9 @@ export class WalletController {
   attachWallet(wallet: WalletIdentity): void;
   prepareAccount(credential: { credentialId: string; publicKey: string }): Promise<void>;
   confirmAccount(): Promise<void>;
+  prepareSample(): Promise<void>;
+  cancelSample(): void;
+  approveSample(): Promise<void>;
   record(transactionHash: string): Promise<void>;
   generate(parameters: { delegateAddress: string; validUntilLedger: number; maxCalls: number; grantName: string }): Promise<void>;
   prepareDeploy(): Promise<void>;

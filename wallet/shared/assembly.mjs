@@ -55,7 +55,7 @@ export function decodeEnvelope(raw) {
   return envelope;
 }
 
-function resources(data, restoration, fee) {
+export function resources(data, restoration, fee) {
   if (!data || data.resourceFee < 0n || data.resourceFee > BigInt(fee)) refuse();
   const footprint = data.resources.footprint;
   const keys = [...footprint.readOnly, ...footprint.readWrite];

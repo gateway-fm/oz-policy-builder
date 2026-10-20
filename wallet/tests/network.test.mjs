@@ -6,6 +6,8 @@ import test from 'node:test';
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
 import { boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
 import { NETWORK_ID } from '../shared/approval.mjs';
+import { sampleTransfer } from './sample-fixture.mjs';
+import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
 
 const contract = Asset.native().contractId(Networks.TESTNET);
 function invocation(payer) {
@@ -109,6 +111,62 @@ function networkFixture(t, change = () => {}) {
     fetchImpl: async (url) => { calls.push({ funded: url }); return new Response('{}'); },
     assemble: (tx) => ({ build: () => prepared(tx) }), pause: async () => {} });
   return { network, server, root, calls };
+}
+
+function sampleNetworkFixture(t, mutation) {
+  const f = networkFixture(t);
+  const sample = sampleTransfer();
+  sample.descriptor.recipient = f.network.payerAddress;
+  f.server.getLatestLedger = async () => ({ sequence: 103 });
+  f.server.getLedgerEntries = async (key) => {
+    const value = new xdr.AccountEntry({ accountId: Keypair.fromPublicKey(f.network.payerAddress).xdrPublicKey(),
+      balance: 100_000_000n, seqNum: 7n, numSubEntries: 0, inflationDest: null, flags: 0,
+      homeDomain: '', thresholds: Buffer.alloc(4), signers: [], ext: xdr.AccountEntryExt.v0() });
+    if (mutation === 'source identity') value.accountId = Keypair.random().xdrPublicKey();
+    const response = { latestLedger: 101, entries: [{ key, lastModifiedLedgerSeq: 100, val: xdr.LedgerEntryData.account(value) }] };
+    if (mutation === 'source key') response.entries[0].key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: Keypair.random().xdrPublicKey() }));
+    return response;
+  };
+  f.server.simulateTransaction = async (tx, _resources, mode) => {
+    assert.equal(mode, 'record');
+    f.calls.push({ mode, tx });
+    const call = sampleCall({ wallet: sample.wallet, recipient: f.network.payerAddress });
+    if (mutation === 'call') call.functionName = 'burn';
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({
+        address: new Address(sample.wallet.contractId).toScAddress(), nonce: 4n,
+        signatureExpirationLedger: 0, signature: xdr.ScVal.scvVoid(),
+      })), rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call), subInvocations: [],
+      }),
+    });
+    if (mutation === 'nested') entry.rootInvocation.subInvocations.push(xdr.SorobanAuthorizedInvocation.fromXDR(entry.rootInvocation.toXDR()));
+    if (mutation === 'signed') entry.credentials.address.signature = xdr.ScVal.scvU32(1);
+    return { latestLedger: mutation === 'old ledger' ? 99 : 102,
+      result: { auth: mutation === 'two entries' ? [entry, entry] : [entry], retval: xdr.ScVal.scvVoid() } };
+  };
+  return { ...f, sample };
+}
+
+test('sample preparation records the fixed call without signing or sending and returns a checked draft', async (t) => {
+  const f = sampleNetworkFixture(t);
+  await f.network.fundPayer();
+  const result = await f.network.prepareSample({ ...f.sample, ownerReadLedger: 100 });
+  const checked = validateSampleAssembly({ ...result, ownerRuleXdr: f.sample.ownerRuleXdr, approval: reviewSample(f.sample) });
+  assert.equal(checked.ownerRuleId, 0);
+  assert.equal(result.limits.sourceSequence, '7');
+  assert.equal(result.assembly.sequence_read_ledger, 101);
+  assert.equal(result.assembly.max_ledger, 221);
+  assert.ok(!f.calls.some((call) => call.sent));
+  assert.deepEqual(readdirSync(f.root), []);
+});
+for (const mutation of ['source identity', 'source key', 'call', 'nested', 'signed', 'two entries', 'old ledger']) {
+  test(`sample preparation rejects ${mutation} from its own RPC`, async (t) => {
+    const f = sampleNetworkFixture(t, mutation);
+    await f.network.fundPayer();
+    await assert.rejects(() => f.network.prepareSample({ ...f.sample, ownerReadLedger: 100 }), /refused/);
+    assert.ok(!f.calls.some((call) => call.sent));
+  });
 }
 
 test('startup and reads never fund; wrong network prevents Friendbot and transaction submission', async (t) => {

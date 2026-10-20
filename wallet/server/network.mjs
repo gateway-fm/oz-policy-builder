@@ -2,8 +2,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
+import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
 
 export const MAX_FEE_STROOPS = 10_000_000;
 export const MAX_UPLOAD_FEE_STROOPS = 100_000_000;
@@ -142,6 +143,64 @@ export class WalletNetwork {
     return network;
   }
   async latestLedger() { await this.assertTestnet(); return ledger((await this.#server.getLatestLedger()).sequence); }
+  async sourceCapture() {
+    const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: this.#payer.xdrPublicKey() }));
+    const response = await this.#server.getLedgerEntries(key);
+    const observed = ledger(response.latestLedger);
+    if (response.entries?.length !== 1) refuse();
+    const entry = response.entries[0];
+    if (!same(entry.key, key) || entry.val.type !== 'account'
+      || !same(entry.val.account.accountId, this.#payer.xdrPublicKey())
+      || ledger(entry.lastModifiedLedgerSeq) > observed || entry.val.account.seqNum < 0n
+      || entry.val.account.seqNum >= 9223372036854775807n) refuse();
+    return { sourceSequence: entry.val.account.seqNum.toString(), ledger: observed };
+  }
+  async prepareSample({ wallet, descriptor, ownerRuleXdr, ownerReadLedger }) {
+    try {
+      if (!this.#funded || this.#ambiguous || descriptor.recipient !== this.payerAddress) refuse();
+      await this.assertTestnet();
+      const approval = reviewSample({ wallet, descriptor, ownerRuleXdr });
+      const captured = await this.sourceCapture();
+      if (captured.ledger < ledger(ownerReadLedger) || captured.ledger - ownerReadLedger > 12) refuse();
+      const maximum = ledger(captured.ledger + 120);
+      const call = sampleCall({ wallet, recipient: this.payerAddress });
+      const tx = new TransactionBuilder(new Account(this.payerAddress, captured.sourceSequence),
+        { fee: '1000000', networkPassphrase: Networks.TESTNET })
+        .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [] }))
+        .setLedgerbounds(captured.ledger, maximum).setTimeout(0).build();
+      const simulation = await this.#server.simulateTransaction(tx, undefined, 'record');
+      if (rpc.Api.isSimulationError(simulation) || simulation.restorePreamble || !simulation.result
+        || simulation.result.retval?.type !== 'scvVoid' || simulation.result.auth?.length !== 1
+        || ledger(simulation.latestLedger) < captured.ledger) refuse();
+      const entry = xdr.SorobanAuthorizationEntry.fromXDR(simulation.result.auth[0].toXDR());
+      if (entry.credentials.type !== 'sorobanCredentialsAddress'
+        || Address.fromScAddress(entry.credentials.address.address).toString() !== wallet.contractId
+        || entry.credentials.address.signature.type !== 'scvVoid'
+        || entry.rootInvocation.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
+        || !same(entry.rootInvocation.function.contractFn, call) || entry.rootInvocation.subInvocations.length) refuse();
+      entry.credentials.address.signatureExpirationLedger = maximum - 1;
+      const envelope = tx.toEnvelope();
+      envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
+      const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
+      const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
+      checkPreparedEnvelope(assembled, bytes(envelope));
+      const final = assembled.toEnvelope();
+      const restored = final.v1.tx.ext.sorobanData.ext;
+      const assembly = {
+        envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: NETWORK_ID,
+        fee_payer: this.payerAddress, source_sequence: captured.sourceSequence, fee_stroops: final.v1.tx.fee,
+        sequence_read_ledger: captured.ledger, simulation_ledger: simulation.latestLedger,
+        min_ledger: captured.ledger, max_ledger: maximum,
+        restoration: restored.type === 'resourceExt' && restored.resourceExt.archivedSorobanEntries.length
+          ? 'automatic_within_invocation' : 'none',
+        simulation_auth_mode: 'record', evidence_trust: 'rpc_reported', state_dependent: true, writes_committed: false,
+      };
+      const limits = { feePayer: this.payerAddress, sourceSequence: captured.sourceSequence,
+        currentLedger: await this.latestLedger(), ownerReadLedger, maxFeeStroops: MAX_FEE_STROOPS, validityLedgers: 120 };
+      validateSampleAssembly({ approval, assembly, ownerRuleXdr, limits });
+      return { assembly, limits };
+    } catch { refuse(); }
+  }
   async source() {
     const source = await this.#server.getAccount(this.payerAddress);
     if (source.accountId() !== this.payerAddress || !/^(0|[1-9][0-9]{0,18})$/.test(source.sequenceNumber())

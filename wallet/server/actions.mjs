@@ -3,6 +3,8 @@ import { Address, Asset, Networks, Operation, StrKey, xdr } from '@stellar/stell
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
 import { decodeBase64Url } from '../shared/base64url.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
+import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
+import { validateSignedAuthorization } from '../shared/signature.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const HASH = /^[a-f0-9]{64}$/;
@@ -55,12 +57,25 @@ export function createWalletActions({ session, toolchain, network }) {
   const attemptedArtifacts = new Set();
   const reviews = new Map();
   let accountAttempted = false;
+  let sampleAccount = null;
+  let sampleSubmitted = false;
+  async function sampleOwner() {
+    await network.assertTestnet();
+    const account = await network.requireInstance(sampleAccount.wallet.contractId, ACCOUNT_WASM);
+    const verifier = await network.requireInstance(sampleAccount.wallet.verifier, WEBAUTHN_WASM);
+    const observed = await network.view(sampleAccount.wallet.contractId, 'get_context_rule', [xdr.ScVal.scvU32(0)]);
+    if (observed.ledger < account.ledger || observed.ledger < verifier.ledger
+      || observed.ledger - account.ledger > 12 || observed.ledger - verifier.ledger > 12) refuse();
+    const ownerRuleXdr = observed.value.toXDR('base64');
+    const approval = reviewSample({ ...sampleAccount, ownerRuleXdr });
+    return { ownerRuleXdr, approval, ownerReadLedger: observed.ledger };
+  }
   return {
     status: async (input) => {
       exact(input, []);
       return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
-        capabilities: { record: true, generate: true, deploy: true, install: false, lifecycle: false },
+        capabilities: { record: true, generate: true, deploy: true, sampleTransfer: true, install: false, lifecycle: false },
         verification: missingVerification() };
     },
     'prepare-account': async (input) => {
@@ -94,7 +109,12 @@ export function createWalletActions({ session, toolchain, network }) {
             xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 10_000_000n })),
           ],
         }), 'fund-account');
-        return { wallet: walletIdentity({ contractId: account.contractId, verifier: verifier.contractId, ...selected }),
+        const wallet = walletIdentity({ contractId: account.contractId, verifier: verifier.contractId, ...selected });
+        const descriptor = freezeCopy({ recipient: network.payerAddress, amountStroops: '1000000',
+          ownerRuleXdr: observed.value.toXDR('base64') });
+        reviewSample({ wallet, descriptor, ownerRuleXdr: descriptor.ownerRuleXdr });
+        sampleAccount = { wallet, descriptor };
+        return { wallet, sample: descriptor,
           receipts: [verifier.receipt, account.receipt, funded].map(receipt) };
       });
     },
@@ -106,6 +126,41 @@ export function createWalletActions({ session, toolchain, network }) {
       await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
       await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
       return toolchain.record({ transactionHash: input.transactionHash, accountAddress: wallet.contractId });
+    },
+    'prepare-sample': async (input) => {
+      exact(input, ['wallet']);
+      const wallet = walletIdentity(input.wallet);
+      if (!sampleAccount || sampleSubmitted
+        || ['contractId', 'credentialId', 'publicKey', 'verifier'].some((key) => wallet[key] !== sampleAccount.wallet[key])) refuse();
+      session.invalidate('sample');
+      const observed = await sampleOwner();
+      const prepared = await network.prepareSample({ ...sampleAccount, ...observed });
+      validateSampleAssembly({ ...prepared, ...observed });
+      return { ...prepared, ownerRuleXdr: observed.ownerRuleXdr,
+        action: session.issue('sample', { ...prepared, approval: observed.approval, ownerRuleXdr: observed.ownerRuleXdr }) };
+    },
+    'submit-sample': async (input) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'sample', async (prepared) => {
+        if (!sampleAccount || sampleSubmitted) refuse();
+        const observed = await sampleOwner();
+        if (observed.approval.commitment !== prepared.approval.commitment) refuse();
+        const source = await network.sourceCapture();
+        const currentLedger = await network.latestLedger();
+        if (source.ledger < observed.ownerReadLedger || currentLedger < source.ledger
+          || currentLedger - observed.ownerReadLedger > 12 || currentLedger - source.ledger > 12) refuse();
+        // Preserve the preview read order and its original freshness window. A fresh
+        // owner read additionally checks that this exact credential still owns the account.
+        const limits = { ...prepared.limits, sourceSequence: source.sourceSequence, currentLedger };
+        const checked = validateSampleAssembly({ ...prepared, ...observed, limits });
+        const signed = await validateSignedAuthorization({ approval: observed.approval, checked,
+          signedAuthEntriesXdr: input.signedAuthEntriesXdr, origin: 'http://localhost:3000' });
+        sampleSubmitted = true;
+        session.invalidate('sample');
+        const submitted = await network.submitEnvelope(signed.envelopeXdr, 'sample-transfer');
+        if (submitted.returnValue.type !== 'scvVoid') refuse();
+        return { transactionHash: submitted.hash, receipt: receipt(submitted) };
+      });
     },
     generate: async (input) => {
       exact(input, ['recordId', 'delegateAddress', 'validUntilLedger', 'maxCalls', 'grantName']);

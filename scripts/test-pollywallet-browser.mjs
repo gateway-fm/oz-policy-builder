@@ -17,9 +17,12 @@ const name = `ozpb-browser-check-${randomBytes(8).toString('hex')}.mjs`;
 const path = join(checkout, 'src/lib', name);
 writeFileSync(path, `
 import { Buffer } from 'buffer';
-import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, StrKey, TransactionBuilder, hash, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { createPasskey, signWalletAuthEntries } from './passkey';
 import { validateSignedAuthorization } from '../policy-builder/shared/signature.mjs';
+import { NETWORK_ID } from '../policy-builder/shared/approval.mjs';
+import { decodeBase64Url } from '../policy-builder/shared/base64url.mjs';
+import { reviewSample, validateSampleAssembly } from '../policy-builder/shared/sample.mjs';
 export async function check() {
   const credential = await createPasskey('Policy Builder test', 'Automated virtual authenticator');
   const wallet = { contractId: StrKey.encodeContract(Buffer.alloc(32, 12)),
@@ -49,8 +52,43 @@ export async function check() {
     contextRuleIds: [7], expiration: 200, verifier: wallet.verifier });
   const result = await validateSignedAuthorization({ approval, checked,
     signedAuthEntriesXdr: signed.map((value) => value.toXDR('base64')), origin: window.location.origin });
+  const ownerFields = {
+    context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]), id: xdr.ScVal.scvU32(0),
+    name: xdr.ScVal.scvString('owner'), policies: xdr.ScVal.scvVec([]),
+    signers: xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'),
+      new Address(wallet.verifier).toScVal(), xdr.ScVal.scvBytes(Buffer.concat([
+        Buffer.from(wallet.publicKey, 'hex'), decodeBase64Url(wallet.credentialId),
+      ]))])]), valid_until: xdr.ScVal.scvVoid(),
+  };
+  const ownerRuleXdr = xdr.ScVal.scvMap(Object.entries(ownerFields).map(([name, val]) =>
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(name), val }))).toXDR('base64');
+  const sampleApproval = reviewSample({ wallet, ownerRuleXdr,
+    descriptor: { recipient: payer.publicKey(), amountStroops: '1000000', ownerRuleXdr } });
+  const sampleCall = new xdr.InvokeContractArgs({
+    contractAddress: new Address(Asset.native().contractId(Networks.TESTNET)).toScAddress(),
+    functionName: 'transfer', args: [new Address(wallet.contractId).toScVal(),
+      new Address(payer.publicKey()).toScVal(), nativeToScVal(1_000_000n, { type: 'i128' })],
+  });
+  const sampleEntry = xdr.SorobanAuthorizationEntry.fromXDR(entry.toXDR());
+  sampleEntry.credentials().address().signatureExpirationLedger(219);
+  sampleEntry.rootInvocation().function(xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(sampleCall));
+  const sampleTx = new TransactionBuilder(new Account(payer.publicKey(), '100'), { fee: '1000', networkPassphrase: Networks.TESTNET })
+    .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(sampleCall), auth: [sampleEntry] }))
+    .setLedgerbounds(100, 220).setTimeout(0).setSorobanData(new SorobanDataBuilder().setResourceFee('100').build()).build();
+  const sampleChecked = validateSampleAssembly({ approval: sampleApproval, ownerRuleXdr, assembly: {
+    envelope_xdr_base64: sampleTx.toXDR(), envelope_xdr_sha256: hash(sampleTx.toEnvelope().toXDR()).toString('hex'),
+    network_id: NETWORK_ID, fee_payer: payer.publicKey(), source_sequence: '100', fee_stroops: 1100,
+    sequence_read_ledger: 100, simulation_ledger: 101, min_ledger: 100, max_ledger: 220, restoration: 'none',
+    simulation_auth_mode: 'record', evidence_trust: 'rpc_reported', state_dependent: true, writes_committed: false,
+  }, limits: { feePayer: payer.publicKey(), sourceSequence: '100', maxFeeStroops: 10_000_000,
+    currentLedger: 101, validityLedgers: 120, ownerReadLedger: 100 } });
+  const sampleSigned = await signWalletAuthEntries({ authEntries: [sampleEntry], wallet,
+    contextRuleIds: [0], expiration: 219, verifier: wallet.verifier });
+  const sampleResult = await validateSignedAuthorization({ approval: sampleApproval, checked: sampleChecked,
+    signedAuthEntriesXdr: sampleSigned.map((value) => value.toXDR('base64')), origin: window.location.origin });
   return { origin: window.location.origin, authentication: result.authentication,
-    human_approval_attested: result.human_approval_attested };
+    human_approval_attested: result.human_approval_attested, sampleAuthentication: sampleResult.authentication,
+    sampleHumanApprovalAttested: sampleResult.human_approval_attested };
 }
 `, { flag: 'wx', mode: 0o600 });
 let browser;
@@ -67,7 +105,9 @@ try {
   assert.equal(result.origin, 'http://localhost:3000');
   assert.equal(result.authentication, 'webauthn_user_verified');
   assert.equal(result.human_approval_attested, false);
-  console.log('Actual Pollywallet registration and UV assertion passed through the SDK16→SDK17 browser bridge. No transaction submitted; human approval not attested.');
+  assert.equal(result.sampleAuthentication, 'webauthn_user_verified');
+  assert.equal(result.sampleHumanApprovalAttested, false);
+  console.log('Actual Pollywallet registration and installation/sample UV assertions passed through the SDK16→SDK17 browser bridge. No transaction submitted; human approval not attested.');
 } finally {
   await browser?.close();
   unlinkSync(path);

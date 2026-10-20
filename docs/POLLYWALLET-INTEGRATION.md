@@ -10,13 +10,12 @@ account differs from the account recognized by this toolkit. The integration the
 creates or attaches a recognized account explicitly. It does not relabel an unknown account,
 migrate an existing wallet, or broaden account/verifier recognition.
 
-This first integration supports recognized account creation, confirmed-transaction recording,
-artifact generation and reproduction, artifact deployment, and live authority review. Policy
-installation, revocation and replacement remain disabled: the account-Wasm, captured-target
-and behavioral live-enforcement layers are not yet connected. A fresh account also needs a
-confirmed owner-authorized transaction before recording; this route does not yet create that
-sample transaction. The signing validators below are tested foundations, not a completed
-installation or wallet acceptance claim.
+This integration supports recognized account creation, a fixed owner-authorized sample
+transfer from that new account, confirmed-transaction recording, artifact generation and
+reproduction, artifact deployment, and live authority review. Policy installation, revocation
+and replacement remain disabled: the account-Wasm, captured-target and behavioral
+live-enforcement layers are not yet connected. The signing validators below are tested
+foundations, not a completed installation or wallet acceptance claim.
 
 ## Apply to the supported upstream revision
 
@@ -122,9 +121,13 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
 1. Create a passkey using Pollywallet's existing authenticator helper, then separately review
    and confirm recognized account deployment. Alternatively attach the public locator of an
    existing recognized account. Retain that locator to reconnect; it contains no private key.
-2. Record a confirmed transaction authorized by that account. Select the restricted delegate,
-   grant name, expiry and call limit. The backend retains the resulting specification and
-   generated artifact under opaque identifiers.
+2. For an account created in this session, prepare the fixed sample transfer, review its
+   sender, recipient and fee, then separately approve it with the owner passkey. It transfers
+   exactly 0.1 testnet XLM back to the local fee payer, which pays at most one testnet XLM in
+   transaction fees. Recording remains a separate action after confirmation. An attached
+   wallet must supply its own confirmed authorized transaction. Select the restricted
+   delegate, grant name, expiry and call limit; the backend retains the resulting
+   specification and generated artifact under opaque identifiers.
 3. Inspect the immutable specification, generated files, Wasm hash, build manifest and
    verification limits. Deployment confirmation concerns that exact artifact and the testnet
    fee ceiling; it does not grant account authority.
@@ -137,15 +140,20 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
    user verification, full signer identity and exact owner rule before submission.
 
 Account and policy deployment confirmations are distinct from owner authorization. A cancelled
-or failed signing/submission attempt consumes the prepared review; refresh and review again.
-The client does not silently retry a one-shot action. Backend enforcement and a fresh
-authorization check still apply before the fee payer signs or sends anything.
+or refused signing attempt consumes the prepared review. Sample preparation is available only
+for the exact wallet created in this backend session and checks its retained full owner-zero
+getter. A new preparation invalidates the old action; its 120-second token can expire sooner
+under the ledger freshness checks. Cancellation before submission permits another preparation.
+After any sample submission attempt, the client disables further attempts, including when a
+response is lost. Backend enforcement, fresh code/owner/sequence checks and the journal still
+apply before the fee payer signs or sends anything. The confirmed hash is offered for a
+separate recording action.
 
 The four report layers are `reference`, `account_wasm`, `captured_target` and
 `live_enforcement`. The UI distinguishes the first three local checks from full acceptance.
 Missing, unsupported, failed, duplicated or mismatched evidence keeps acceptance closed.
 An installation preflight is not counted as behavioral live-enforcement evidence. Backend
-capabilities keep signing and lifecycle actions unavailable until their required checks exist.
+capabilities keep installation signing and lifecycle actions unavailable until their required checks exist.
 
 Authentication with a virtual authenticator is automation evidence. The signature result
 explicitly reports `human_approval_attested: false`; it does not establish a human acceptance
@@ -160,8 +168,9 @@ immutable inputs, dirty/different upstream checkouts, symlinks, missing lock met
 binary/rename patches that omit ordinary text headers.
 
 The upstream bridge test uses the actual Pollywallet SDK 16 passkey helper and nested SDK 17
-validator with a generated test key. It checks the full credential and a nonzero owner rule,
-and marks the result as automated authentication.
+validator with a generated test key. It checks the full credential, a nonzero installation
+owner rule, and the exact fixed sample-transfer envelope with owner rule zero. It marks the
+result as automated authentication.
 
 With the applied checkout's development server running, the browser regression uses the
 existing Playwright lockfile and a temporary virtual authenticator:
@@ -172,8 +181,9 @@ OZPB_BROWSER_CHANNEL=chrome node scripts/test-pollywallet-browser.mjs /absolute/
 ```
 
 Run this from the toolkit checkout. It calls the actual upstream registration and signing
-helpers at the supported `localhost` origin, verifies the resulting signature independently,
-and submits no transaction. It removes its temporary browser module afterward. Omit
+helpers at the supported `localhost` origin, independently verifies installation and
+sample-transfer signatures, and submits no transaction. It removes its temporary browser
+module afterward. Omit
 `OZPB_BROWSER_CHANNEL` to use the installed Playwright Chromium instead of local Chrome.
 
 At the pinned upstream revision, `pnpm exec tsc --noEmit` already reports five errors in

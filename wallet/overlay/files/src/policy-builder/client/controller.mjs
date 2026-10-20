@@ -16,7 +16,8 @@ const sameWallet = (a, b) => ['contractId', 'credentialId', 'publicKey', 'verifi
 export class WalletController {
   #request; #validators; #sign; #origin; #pins; #notify; #busy = false;
   #state = copy({ status: null, wallet: null, record: null, artifact: null, deployment: null,
-    review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null, busy: false });
+    review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
+    sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {} }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
     this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange;
@@ -24,7 +25,8 @@ export class WalletController {
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
   #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null,
-    accountPreview: null, deployPreview: null, installation: null, receipt: null }); }
+    accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null }); }
+  #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
     this.#busy = true; this.#set({ busy: true });
@@ -49,11 +51,12 @@ export class WalletController {
   attachWallet(wallet) {
     if (this.#busy || !wallet || ['contractId', 'credentialId', 'publicKey', 'verifier']
       .some((key) => typeof wallet[key] !== 'string' || !wallet[key].length || wallet[key].length > 2048)) throw refused();
-    this.#clear(); this.#set({ wallet });
+    this.#clear(); this.#clearSample(); this.#set({ wallet });
   }
   async prepareAccount(credential) {
     return this.#act(async () => {
       this.#clear();
+      this.#clearSample();
       const result = await this.#request('prepare-account', credential);
       if (!result.action?.id || result.summary?.accountWasm !== this.#pins.accountWasm
         || result.summary?.verifierWasm !== this.#pins.verifierWasm
@@ -69,7 +72,50 @@ export class WalletController {
       const result = await this.#request('confirm-account', { id: preview.action.id });
       if (result.wallet?.credentialId !== preview.summary.credentialId
         || result.wallet?.publicKey !== preview.summary.publicKey || !result.wallet?.contractId || !result.wallet?.verifier) throw refused();
-      this.#set({ wallet: result.wallet, receipt: result.receipts });
+      this.#validators.reviewSample({ wallet: result.wallet, descriptor: result.sample,
+        ownerRuleXdr: result.sample?.ownerRuleXdr });
+      this.#set({ wallet: result.wallet, receipt: result.receipts, sample: result.sample });
+    });
+  }
+  async prepareSample() {
+    return this.#act(async () => {
+      this.#set({ samplePreview: null });
+      this.#capability('sampleTransfer');
+      const { wallet, sample, sampleAttempted } = this.#state;
+      if (!wallet || !sample || sampleAttempted) throw refused();
+      const result = await this.#request('prepare-sample', { wallet });
+      if (!HASH.test(result.action?.id) || !Number.isInteger(result.action?.expires_in_seconds)
+        || result.action.expires_in_seconds < 1 || result.action.expires_in_seconds > 120) throw refused();
+      const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: result.ownerRuleXdr });
+      this.#validators.validateSampleAssembly({ approval, assembly: result.assembly,
+        ownerRuleXdr: result.ownerRuleXdr, limits: result.limits });
+      this.#set({ samplePreview: { action: result.action, assembly: result.assembly,
+        ownerRuleXdr: result.ownerRuleXdr, limits: result.limits } });
+    });
+  }
+  cancelSample() {
+    if (this.#busy) throw refused();
+    this.#set({ samplePreview: null });
+  }
+  async approveSample() {
+    return this.#act(async () => {
+      const { wallet, sample, samplePreview, sampleAttempted } = this.#state;
+      this.#set({ samplePreview: null });
+      this.#capability('sampleTransfer');
+      if (!wallet || !sample || !samplePreview || sampleAttempted) throw refused();
+      const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: samplePreview.ownerRuleXdr });
+      const checked = this.#validators.validateSampleAssembly({ approval, assembly: samplePreview.assembly,
+        ownerRuleXdr: samplePreview.ownerRuleXdr, limits: samplePreview.limits });
+      const signedAuthEntriesXdr = await this.#sign({ approval, checked });
+      const signed = await this.#validators.validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr,
+        origin: this.#origin });
+      // A lost response cannot establish whether submission happened. Require a fresh
+      // session rather than exposing another signing or submission attempt.
+      this.#set({ sampleAttempted: true });
+      const submitted = await this.#request('submit-sample', { id: samplePreview.action.id,
+        signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
+      if (!HASH.test(submitted?.transactionHash) || submitted.receipt?.hash !== submitted.transactionHash) throw refused();
+      this.#set({ sampleTransactionHash: submitted.transactionHash, receipt: submitted.receipt });
     });
   }
   async record(transactionHash) {

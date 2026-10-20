@@ -108,3 +108,106 @@ test('review refuses a substituted policy, binding or grant artifact', async () 
     assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false);
   }
 });
+
+function sampleFixture() {
+  const f = fixture();
+  const descriptor = { recipient: 'payer', amountStroops: '1000000', ownerRuleXdr: 'created-owner' };
+  const approval = { wallet, ownerRuleId: 0, commitment: hash('8') };
+  const checked = { authEntriesXdr: ['sample-auth'], ownerRuleId: 0, expirationLedger: 123 };
+  f.replies.status.capabilities.sampleTransfer = true;
+  f.replies['prepare-account'] = { action: { id: 'create1' }, summary: { ...wallet,
+    accountWasm: pins.accountWasm, verifierWasm: pins.verifierWasm } };
+  f.replies['confirm-account'] = { wallet, sample: descriptor, receipts: [] };
+  f.replies['prepare-sample'] = { action: { id: hash('4'), expires_in_seconds: 120 },
+    ownerRuleXdr: descriptor.ownerRuleXdr, assembly: { exact: 'sample-envelope' }, limits: { feePayer: 'payer' },
+    approval: { wallet: { contractId: 'forged' } }, checked: { authEntriesXdr: ['forged-auth'] } };
+  f.replies['submit-sample'] = { transactionHash: hash('e'), receipt: { hash: hash('e') } };
+  f.validators.reviewSample = (input) => {
+    assert.deepEqual(input, { wallet, descriptor: { recipient: 'payer', amountStroops: '1000000',
+      ownerRuleXdr: 'created-owner' }, ownerRuleXdr: 'created-owner' });
+    f.calls.push(['reviewSample', input]);
+    return approval;
+  };
+  f.validators.validateSampleAssembly = (input) => {
+    assert.deepEqual(input, { approval, ownerRuleXdr: 'created-owner',
+      assembly: { exact: 'sample-envelope' }, limits: { feePayer: 'payer' } });
+    f.calls.push(['validateSampleAssembly', input]);
+    return checked;
+  };
+  const validateSignature = f.validators.validateSignedAuthorization;
+  f.validators.validateSignedAuthorization = async (input) => {
+    assert.equal(input.approval, approval);
+    assert.equal(input.checked, checked);
+    return validateSignature(input);
+  };
+  return f;
+}
+async function created(f) {
+  await f.controller.connect();
+  await f.controller.prepareAccount({ credentialId: wallet.credentialId, publicKey: wallet.publicKey });
+  await f.controller.confirmAccount();
+}
+test('sample transfer uses retained creation evidence and local validators before explicit signing', async () => {
+  const f = sampleFixture();
+  await created(f);
+  await f.controller.prepareSample();
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit-sample'), false);
+  assert.deepEqual(f.controller.state.sample, f.replies['confirm-account'].sample);
+  f.replies['confirm-account'].sample.recipient = 'changed-after-creation';
+  await f.controller.approveSample();
+  assert.deepEqual(f.calls.slice(-4).map(([name]) => name),
+    ['reviewSample', 'validateSampleAssembly', 'sign', 'submit-sample']);
+  assert.deepEqual(f.calls.at(-1)[1], { id: hash('4'), signedAuthEntriesXdr: ['signed'] });
+  assert.equal(f.controller.state.sampleTransactionHash, hash('e'));
+  assert.equal(f.controller.state.samplePreview, null);
+  await assert.rejects(f.controller.approveSample(), /wallet action refused/);
+  await assert.rejects(f.controller.prepareSample(), /wallet action refused/);
+});
+test('sample descriptor survives recording but attach or new credential clears eligibility', async () => {
+  for (const reset of ['attach', 'credential']) {
+    const f = sampleFixture();
+    await created(f);
+    await f.controller.prepareSample();
+    await f.controller.record(hash('d'));
+    assert.equal(f.controller.state.sample.recipient, 'payer');
+    assert.equal(f.controller.state.samplePreview, null);
+    if (reset === 'attach') f.controller.attachWallet(wallet);
+    else await f.controller.prepareAccount({ credentialId: wallet.credentialId, publicKey: wallet.publicKey });
+    assert.equal(f.controller.state.sample, null);
+    await assert.rejects(f.controller.prepareSample(), /wallet action refused/);
+  }
+});
+test('sample validator refusal consumes preview without signing and requires preparation again', async () => {
+  const f = sampleFixture();
+  await created(f);
+  await f.controller.prepareSample();
+  f.validators.validateSampleAssembly = () => { throw new Error('mismatched sample envelope'); };
+  await assert.rejects(f.controller.approveSample(), /wallet action refused/);
+  await assert.rejects(f.controller.approveSample(), /wallet action refused/);
+  assert.equal(f.controller.state.samplePreview, null);
+  assert.equal(f.controller.state.sampleAttempted, false);
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit-sample'), false);
+});
+test('a lost sample submission response cannot cause an automatic or manual retry', async () => {
+  const f = sampleFixture();
+  await created(f);
+  await f.controller.prepareSample();
+  f.replies['submit-sample'] = null;
+  await assert.rejects(f.controller.approveSample(), /wallet action refused/);
+  assert.equal(f.controller.state.sampleAttempted, true);
+  await assert.rejects(f.controller.prepareSample(), /wallet action refused/);
+  await assert.rejects(f.controller.approveSample(), /wallet action refused/);
+  assert.equal(f.calls.filter(([name]) => name === 'submit-sample').length, 1);
+});
+test('cancelling sample review requires a new preparation and does not sign or submit', async () => {
+  const f = sampleFixture();
+  await created(f);
+  await f.controller.prepareSample();
+  f.controller.cancelSample();
+  assert.equal(f.controller.state.samplePreview, null);
+  await assert.rejects(f.controller.approveSample(), /wallet action refused/);
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit-sample'), false);
+  await f.controller.prepareSample();
+  await f.controller.approveSample();
+  assert.equal(f.calls.filter(([name]) => name === 'submit-sample').length, 1);
+});

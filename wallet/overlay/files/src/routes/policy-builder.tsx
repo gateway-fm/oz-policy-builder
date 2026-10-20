@@ -10,6 +10,7 @@ import { verificationGate } from "../policy-builder/client/verification.mjs";
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, reviewIntent } from "../policy-builder/shared/approval.mjs";
 import { validateAssembly } from "../policy-builder/shared/assembly.mjs";
 import { validateSignedAuthorization } from "../policy-builder/shared/signature.mjs";
+import { reviewSample, validateSampleAssembly } from "../policy-builder/shared/sample.mjs";
 
 export const Route = createFileRoute("/policy-builder")({ component: PolicyBuilder });
 const button = "rounded-lg bg-cyan-600 px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-40";
@@ -96,7 +97,8 @@ function PolicyBuilder() {
     try {
       const token = takeSessionToken(window.location, window.history);
       const instance = new WalletController({
-        request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization },
+        request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
+          reviewSample, validateSampleAssembly },
         pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
         origin: window.location.origin, onChange: setState,
         sign: async ({ approval, checked }) => {
@@ -116,6 +118,9 @@ function PolicyBuilder() {
       setMessage("Session unavailable. Open a fresh local launcher session.");
     }
   }, []);
+  useEffect(() => {
+    setTransactionHash(state?.sampleTransactionHash ?? "");
+  }, [state?.sampleTransactionHash, state?.wallet?.contractId]);
   const busy = creating || state?.busy || !state?.status;
   const run = async (action: (value: WalletController) => Promise<void> | void) => {
     if (!controller.current || busy) return;
@@ -181,6 +186,34 @@ function PolicyBuilder() {
       </section>
       <section className={panel} aria-labelledby="record-heading">
         <h2 id="record-heading" className="text-xl font-semibold">2. Record and generate</h2>
+        {state?.sample && <div className="space-y-3 rounded-lg border border-cyan-700 bg-cyan-950/20 p-4">
+          <h3 className="font-semibold">Create a sample transaction with this new account</h3>
+          <p className="text-sm">Transfer exactly 0.1 testnet XLM from the account to the local testnet fee payer.
+            The fee payer pays the transaction fee, up to 1 testnet XLM. Your owner passkey approves only this transfer.</p>
+          <dl className="space-y-2 break-all text-sm">
+            <div><dt className="text-slate-400">From</dt><dd>{state.wallet?.contractId}</dd></div>
+            <div><dt className="text-slate-400">Recipient and fee payer</dt><dd>{state.sample.recipient}</dd></div>
+          </dl>
+          <button className={button} disabled={busy || state.sampleAttempted || !state.status?.capabilities.sampleTransfer}
+            onClick={() => void run((value) => value.prepareSample())}>Prepare 0.1 XLM sample transfer</button>
+          {state.samplePreview && <>
+            <p className="text-sm">Prepared fee: {xlm(object(state.samplePreview.assembly).fee_stroops)}.
+              {" "}Review expires within 120 seconds and may expire sooner as ledgers advance.</p>
+            <div className="flex flex-wrap gap-3">
+              <button className={button} disabled={busy}
+                onClick={() => void run((value) => value.approveSample())}>Approve 0.1 XLM transfer with owner passkey</button>
+              <button className={button} disabled={busy}
+                onClick={() => void run((value) => value.cancelSample())}>Cancel sample review</button>
+            </div>
+            <Evidence title="Exact unsigned sample transaction and owner evidence" value={state.samplePreview} />
+          </>}
+          {state.sampleAttempted && !state.sampleTransactionHash && <p className="text-sm text-amber-200">
+            A submission was attempted. Further sample attempts are disabled. Check the backend journal if confirmation is missing.
+          </p>}
+          {state.sampleTransactionHash && <p className="text-sm text-cyan-300">
+            Sample transfer confirmed. Record its hash below to generate the grant.
+          </p>}
+        </div>}
         <label htmlFor="record-hash" className="block text-sm">Confirmed testnet transaction hash authorized by this account</label>
         <input id="record-hash" className={input} value={transactionHash} onChange={(event) => setTransactionHash(event.target.value)} />
         <button className={button} disabled={busy || !state?.wallet || !state?.status?.capabilities.record}

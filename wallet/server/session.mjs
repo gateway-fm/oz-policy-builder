@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 const LIFETIME_MS = 120_000;
 const MAX_PENDING = 16;
 const MAX_VALUE_BYTES = 16 * 1024 * 1024;
-const KINDS = new Set(['create_account', 'record', 'generate', 'deploy', 'install', 'submit', 'restore', 'revoke', 'reconfigure']);
+const KINDS = new Set(['create_account', 'record', 'generate', 'deploy', 'install', 'submit', 'restore', 'revoke', 'reconfigure', 'sample']);
 const denied = () => new Error('wallet request unauthorized');
 const unavailable = () => new Error('wallet action unavailable; review again');
 
@@ -56,6 +56,11 @@ export class WalletSession {
     const id = randomBytes(32).toString('hex');
     this.#pending.set(id, { kind, value: freeze(JSON.parse(serialized)), expires: now + LIFETIME_MS });
     return { id, expires_in_seconds: LIFETIME_MS / 1000 };
+  }
+
+  invalidate(kind) {
+    if (!KINDS.has(kind)) throw unavailable();
+    for (const [id, held] of this.#pending) if (held.kind === kind) this.#pending.delete(id);
   }
 
   async consume(id, kind, operation) {
