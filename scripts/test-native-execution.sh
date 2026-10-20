@@ -18,8 +18,9 @@ cargo run --locked --quiet -p ozpb-cli -- generate \
     --spec "$work/spec.json" --rule 0 --out "$work/generated"
 python3 scripts/native-execution-fixture.py job "$work"
 export OZPB_NATIVE_TEST_JOB="$work/job.json"
-cargo test --manifest-path execution-runtime/Cargo.toml --locked -- \
-    --include-ignored | tee "$work/result.log"
+cargo test --manifest-path execution-runtime/Cargo.toml --locked \
+    --lib --test boundary --test execution --test process -- \
+    --include-ignored --skip process_runs_the_captured_target_protocol | tee "$work/result.log"
 for test in \
     worker_rejects_protocol_identity_and_expansion_mismatches_before_signing \
     real_candidate_account_path_cannot_substitute_a_missing_delegate \

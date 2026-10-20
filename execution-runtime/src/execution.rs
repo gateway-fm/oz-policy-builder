@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::time::Instant;
 
-const LOCAL_RULE_ID: u32 = 1;
+pub(crate) const LOCAL_RULE_ID: u32 = 1;
 const MAX_STATEFUL_CALLS: u32 = 512;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,12 +57,12 @@ pub struct PreparedExecution {
     pub policy_code_hash: String,
     pub account_code_hash: String,
     pub candidate_context_rule_id: u32,
-    job: NativeJob,
-    spec: ValidatedSpec,
-    suite: Vec<Case>,
+    pub(crate) job: NativeJob,
+    pub(crate) spec: ValidatedSpec,
+    pub(crate) suite: Vec<Case>,
     account_wasm: Vec<u8>,
     policy_wasm: Vec<u8>,
-    bootstrap: SigningKey,
+    pub(crate) bootstrap: SigningKey,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -110,7 +110,7 @@ impl PreparedFrame {
     }
 }
 
-fn hash<T: Serialize>(domain: &str, value: &T) -> RuntimeResult<String> {
+pub(crate) fn hash<T: Serialize>(domain: &str, value: &T) -> RuntimeResult<String> {
     canonical_hash(domain, value)
         .map(|h| h.to_hex())
         .map_err(|e| e.to_string())
@@ -337,11 +337,11 @@ pub struct ExecutionReport {
     pub complete: bool,
 }
 
-fn scval<T: IntoVal<Env, Val>>(env: &Env, value: T) -> RuntimeResult<xdr::ScVal> {
+pub(crate) fn scval<T: IntoVal<Env, Val>>(env: &Env, value: T) -> RuntimeResult<xdr::ScVal> {
     xdr::ScVal::try_from_val(env, &value.into_val(env))
         .map_err(|e| format!("ScVal conversion: {e:?}"))
 }
-fn scaddress(env: &Env, address: &Address) -> RuntimeResult<xdr::ScAddress> {
+pub(crate) fn scaddress(env: &Env, address: &Address) -> RuntimeResult<xdr::ScAddress> {
     match scval(env, address.clone())? {
         xdr::ScVal::Address(a) => Ok(a),
         _ => Err("expected address".into()),
@@ -386,12 +386,12 @@ fn signer(env: &Env, value: &SignerSpec) -> RuntimeResult<Signer> {
 fn ids(env: &Env) -> SVec<u32> {
     svec![env, LOCAL_RULE_ID]
 }
-fn auth_digest(env: &Env, payload: &[u8; 32], rule_ids: &SVec<u32>) -> Hash32 {
+pub(crate) fn auth_digest(env: &Env, payload: &[u8; 32], rule_ids: &SVec<u32>) -> Hash32 {
     let mut bytes = Bytes::from_array(env, payload);
     bytes.append(&rule_ids.to_xdr(env));
     Hash32(env.crypto().sha256(&bytes).to_array())
 }
-fn delegate_entry(
+pub(crate) fn delegate_entry(
     env: &Env,
     request: &crate::SignRequest,
     key: [u8; 32],
@@ -417,7 +417,7 @@ fn delegate_entry(
         .map_err(|e| e.to_string())?,
     })
 }
-fn snapshot_hash(env: &Env) -> RuntimeResult<String> {
+pub(crate) fn snapshot_hash(env: &Env) -> RuntimeResult<String> {
     let snapshot = env.to_ledger_snapshot();
     let mut entries = Vec::new();
     for (key, (entry, ttl)) in snapshot.ledger_entries {
@@ -432,7 +432,7 @@ fn snapshot_hash(env: &Env) -> RuntimeResult<String> {
     entries.sort();
     hash(domains::NATIVE_STATE_ENTRIES, &entries)
 }
-fn arg(env: &Env, value: &ArgValue) -> RuntimeResult<Val> {
+pub(crate) fn arg(env: &Env, value: &ArgValue) -> RuntimeResult<Val> {
     match value {
         ArgValue::Address(s) => {
             stellar_strkey::Strkey::from_string(s).map_err(|_| "argument address")?;
@@ -453,11 +453,23 @@ fn arg(env: &Env, value: &ArgValue) -> RuntimeResult<Val> {
         }
     }
 }
-fn setup(input: &PreparedExecution, case: &Case) -> RuntimeResult<(Env, Address, Address)> {
-    let rule = &input.spec.spec().rules[input.job.request.candidate.rule_index];
+pub(crate) fn setup(
+    input: &PreparedExecution,
+    case: &Case,
+) -> RuntimeResult<(Env, Address, Address)> {
     let env = Env::new_with_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
     });
+    setup_in(env, input, case)
+}
+
+/// Install the candidate into a caller-supplied fresh environment.
+pub(crate) fn setup_in(
+    env: Env,
+    input: &PreparedExecution,
+    case: &Case,
+) -> RuntimeResult<(Env, Address, Address)> {
+    let rule = &input.spec.spec().rules[input.job.request.candidate.rule_index];
     let setup_ledger = rule
         .valid_until
         .as_ref()
@@ -633,7 +645,7 @@ fn setup(input: &PreparedExecution, case: &Case) -> RuntimeResult<(Env, Address,
     Ok((env, account, policy))
 }
 
-fn attributed_error(env: &Env, contract: &Address, code: u32) -> RuntimeResult<bool> {
+pub(crate) fn attributed_error(env: &Env, contract: &Address, code: u32) -> RuntimeResult<bool> {
     let xdr::ScAddress::Contract(id) = scaddress(env, contract)? else {
         return Ok(false);
     };
@@ -654,7 +666,7 @@ fn attributed_error(env: &Env, contract: &Address, code: u32) -> RuntimeResult<b
                 && body.topics.as_slice() == topics.as_slice()
         }))
 }
-fn expected_error(class: MutationClass, code: u32, account: bool) -> bool {
+pub(crate) fn expected_error(class: MutationClass, code: u32, account: bool) -> bool {
     match (class, account) {
         (MutationClass::DifferentContract | MutationClass::TimeBoundary, true) => code == 3002,
         (
@@ -724,7 +736,7 @@ struct Attempt {
     policy_attributed: bool,
     account_attributed: bool,
 }
-fn counter(env: &Env, account: &Address, policy: &Address) -> Option<u32> {
+pub(crate) fn counter(env: &Env, account: &Address, policy: &Address) -> Option<u32> {
     env.as_contract(policy, || {
         env.storage()
             .persistent()
