@@ -16,6 +16,15 @@ test('fresh-account sample binds the fixed transfer, exact owner0 credential and
   assert.equal(result.feeStroops, 1100);
   assert.ok(Object.isFrozen(approval));
 });
+for (const field of ['policy_ids', 'signer_ids']) {
+  test(`fresh owner refuses changed ${field} even if the descriptor repeats it`, () => {
+    const f = sampleTransfer();
+    const raw = xdr.ScVal.fromXDR(f.ownerRuleXdr, 'base64');
+    raw.map.find((entry) => entry.key.sym.toString() === field).val = xdr.ScVal.scvVec([xdr.ScVal.scvU32(9)]);
+    f.ownerRuleXdr = f.descriptor.ownerRuleXdr = raw.toXDR('base64');
+    assert.throws(() => checked(f), /refused/);
+  });
+}
 for (const field of ['owner getter', 'amount', 'owner credential', 'fee ceiling', 'recipient as source', 'source sequence', 'expired', 'stale owner', 'source before owner']) {
   test(`sample refuses changed ${field}`, () => {
     const f = sampleTransfer();

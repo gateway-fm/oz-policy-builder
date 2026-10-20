@@ -30,8 +30,8 @@ export function reviewSample({ wallet, descriptor, ownerRuleXdr }) {
       || ownerRuleXdr !== descriptor.ownerRuleXdr || typeof ownerRuleXdr !== 'string'
       || ownerRuleXdr.length > 32 * 1024) refuse();
     const owner = xdr.ScVal.fromXDR(ownerRuleXdr, 'base64');
-    if (owner.toXDR('base64') !== ownerRuleXdr || owner.type !== 'scvMap' || owner.map.length !== 6) refuse();
-    const names = ['context_type', 'id', 'name', 'policies', 'signers', 'valid_until'];
+    const names = ['context_type', 'id', 'name', 'policies', 'policy_ids', 'signer_ids', 'signers', 'valid_until'];
+    if (owner.toXDR('base64') !== ownerRuleXdr || owner.type !== 'scvMap' || owner.map.length !== names.length) refuse();
     if (owner.map.some((field, index) => field.key.type !== 'scvSymbol' || field.key.sym.toString() !== names[index])) refuse();
     const values = Object.fromEntries(owner.map.map((field, i) => [names[i], field.val]));
     const signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(wallet.verifier).toScVal(),
@@ -39,6 +39,8 @@ export function reviewSample({ wallet, descriptor, ownerRuleXdr }) {
     if (values.id.type !== 'scvU32' || values.id.u32 !== 0 || values.name.type !== 'scvString'
       || !same(values.context_type, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]))
       || !same(values.policies, xdr.ScVal.scvVec([])) || !same(values.signers, xdr.ScVal.scvVec([signer]))
+      || !same(values.policy_ids, xdr.ScVal.scvVec([]))
+      || !same(values.signer_ids, xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]))
       || values.valid_until.type !== 'scvVoid') refuse();
     const commitment = Buffer.from(hash(Buffer.from(JSON.stringify([
       'wallet-sample/v1', NETWORK_ID, wallet.contractId, wallet.verifier, wallet.publicKey, wallet.credentialId,

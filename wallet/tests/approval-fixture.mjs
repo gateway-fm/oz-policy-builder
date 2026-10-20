@@ -11,6 +11,7 @@ export function fixture() {
     const fields = {
       id: xdr.ScVal.scvU32(7), context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]),
       valid_until: xdr.ScVal.scvVoid(), name: xdr.ScVal.scvString('owner'), policies: xdr.ScVal.scvVec([]),
+      policy_ids: xdr.ScVal.scvVec([]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]),
       signers: xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(wallet.verifier).toScVal(),
         xdr.ScVal.scvBytes(Buffer.concat([Buffer.from(wallet.publicKey, 'hex'), Buffer.from([1])]))])]), ...changes,
     };

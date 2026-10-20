@@ -142,7 +142,8 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
 Account and policy deployment confirmations are distinct from owner authorization. A cancelled
 or refused signing attempt consumes the prepared review. Sample preparation is available only
 for the exact wallet created in this backend session and checks its retained full owner-zero
-getter. A new preparation invalidates the old action; its 120-second token can expire sooner
+getter, including the fresh constructor's empty `policy_ids` and `signer_ids: [0]`.
+A new preparation invalidates the old action; its 120-second token can expire sooner
 under the ledger freshness checks. Cancellation before submission permits another preparation.
 After any sample submission attempt, the client disables further attempts, including when a
 response is lost. Backend enforcement, fresh code/owner/sequence checks and the journal still

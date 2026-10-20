@@ -55,6 +55,7 @@ export async function check() {
   const ownerFields = {
     context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]), id: xdr.ScVal.scvU32(0),
     name: xdr.ScVal.scvString('owner'), policies: xdr.ScVal.scvVec([]),
+    policy_ids: xdr.ScVal.scvVec([]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]),
     signers: xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'),
       new Address(wallet.verifier).toScVal(), xdr.ScVal.scvBytes(Buffer.concat([
         Buffer.from(wallet.publicKey, 'hex'), decodeBase64Url(wallet.credentialId),

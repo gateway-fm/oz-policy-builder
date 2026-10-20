@@ -61,6 +61,7 @@ it.each(["install", "sample"] as const)("validates an actual SDK16 Pollywallet %
     const fields = {
       context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Default")]),
       id: xdr.ScVal.scvU32(ownerRuleId), name: xdr.ScVal.scvString("owner"), policies: xdr.ScVal.scvVec([]),
+      policy_ids: xdr.ScVal.scvVec([]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]),
       signers: xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("External"), new Address(verifier).toScVal(),
         xdr.ScVal.scvBytes(Buffer.concat([Buffer.from(publicKey, "hex"), Buffer.from([1])]))])]),
       valid_until: xdr.ScVal.scvVoid(),

@@ -53,13 +53,15 @@ test('account preview performs no writes and separately discloses funding and fe
   await assert.rejects(() => actions['confirm-account']({ id: preview.action.id }), /unavailable|refused/);
   assert.equal(calls.filter((call) => call === 'deploy-account').length, 1);
 });
-test('wrong fresh owner getter never triggers sample funding or returns a wallet', async () => {
+for (const change of [{ id: xdr.ScVal.scvU32(8) }, { id: xdr.ScVal.scvU32(0), name: xdr.ScVal.scvU32(1) }]) {
+test(`wrong fresh owner ${change.name ? 'name type' : 'rule ID'} never triggers sample funding or returns a wallet`, async () => {
   const { actions, network, calls, f } = setup();
-  network.view = async () => ({ value: xdr.ScVal.fromXDR(f.ruleXdr({ id: xdr.ScVal.scvU32(8) }), 'base64'), ledger: 124 });
+  network.view = async () => ({ value: xdr.ScVal.fromXDR(f.ruleXdr(change), 'base64'), ledger: 124 });
   const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
   await assert.rejects(() => actions['confirm-account']({ id: preview.action.id }), /refused/);
   assert.ok(!calls.includes('fund-account'));
 });
+}
 test('recording and synthesis accept no caller RPC, paths, current ledger, or invented runtime result', async () => {
   const { actions, calls, f } = setup();
   await actions.record({ wallet: f.wallet, transactionHash: 'a'.repeat(64) });

@@ -30,14 +30,16 @@ function walletIdentity(value) {
 }
 function freshOwner(value, signer) {
   const fields = value?.type === 'scvMap' ? value.map : [];
-  const names = ['context_type', 'id', 'name', 'policies', 'signers', 'valid_until'];
+  const names = ['context_type', 'id', 'name', 'policies', 'policy_ids', 'signer_ids', 'signers', 'valid_until'];
   if (fields.length !== names.length || fields.some((entry, index) => entry.key.type !== 'scvSymbol'
     || entry.key.sym.toString() !== names[index])) refuse();
   const native = Object.fromEntries(fields.map((entry) => [entry.key.sym.toString(), entry.val]));
   const equal = (a, b) => a.toXDR('base64') === b.toXDR('base64');
-  if (native.id.type !== 'scvU32' || native.id.u32 !== 0
+  if (native.id.type !== 'scvU32' || native.id.u32 !== 0 || native.name.type !== 'scvString'
     || !equal(native.context_type, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]))
     || !equal(native.policies, xdr.ScVal.scvVec([])) || !equal(native.signers, xdr.ScVal.scvVec([signer]))
+    || !equal(native.policy_ids, xdr.ScVal.scvVec([]))
+    || !equal(native.signer_ids, xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]))
     || native.valid_until.type !== 'scvVoid') refuse();
 }
 function missingVerification(artifact, bindingSetHash) {
