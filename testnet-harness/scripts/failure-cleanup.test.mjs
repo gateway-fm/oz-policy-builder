@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -37,6 +37,30 @@ for (const mode of ['success', 'child failure', 'timeout', 'unverified', 'identi
     assert.equal(f.read().failure_cleanup.status, result.status);
   });
 }
+test('a run without a journal has nothing to clean up', async (t) => {
+  const f = fixture(t);
+  rmSync(join(f.dir, 'run.json'));
+  const result = await cleanupAfterFailure(f.dir, { runRevoke: () => assert.fail('must not revoke') });
+  assert.equal(result.status, 'not_eligible');
+});
+for (const [mode, bytes] of [['truncated', '{"network":'], ['empty', ''], ['not JSON', 'not json'], ['JSON null', 'null']]) {
+  // The journal can be cut short after an installation it recorded, so an unreadable one may
+  // stand for a live grant: report it as unfinished, never as having nothing to clean up.
+  test(`an unreadable journal leaves cleanup incomplete: ${mode}`, async (t) => {
+    const f = fixture(t);
+    writeFileSync(join(f.dir, 'run.json'), bytes);
+    const result = await cleanupAfterFailure(f.dir, { runRevoke: () => assert.fail('must not revoke') });
+    assert.deepEqual(result, { status: 'incomplete', reason: 'unreadable_journal' });
+    assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), bytes);
+  });
+}
+test('a directory in place of the journal leaves cleanup incomplete', async (t) => {
+  const f = fixture(t);
+  rmSync(join(f.dir, 'run.json'));
+  mkdirSync(join(f.dir, 'run.json'));
+  const result = await cleanupAfterFailure(f.dir, { runRevoke: () => assert.fail('must not revoke') });
+  assert.deepEqual(result, { status: 'incomplete', reason: 'unreadable_journal' });
+});
 for (const mode of ['owner rule', 'missing installation', 'pending removal', 'confirmed removal', 'attempted cleanup']) {
   test(`failure cleanup never retries or invents authority: ${mode}`, async (t) => {
     const f = fixture(t);

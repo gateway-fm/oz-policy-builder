@@ -109,7 +109,9 @@ five-second termination grace. A requested kill must be followed by the child's 
 before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
 `cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
 leaves the child-owned run/provenance files unfinalized. The original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
-remain; secret deletion does not revoke it. The journal records a removal hash before send,
+remain; secret deletion does not revoke it. A `run.json` that exists but cannot be read is
+reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
+since it may have been cut short after recording an installation. The journal records a removal hash before send,
 so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
 automatically. A confirmed removal with incomplete readbacks likewise requires inspection.
 

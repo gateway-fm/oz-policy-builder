@@ -61,7 +61,14 @@ export async function cleanupAfterFailure(dir, { runRevoke = runCleanupChild } =
   const path = join(dir, 'run.json');
   const read = () => parseJsonExact(readFileSync(path, 'utf8'));
   let initial;
-  try { initial = read(); } catch { return { status: 'not_eligible' }; }
+  // No journal means setup never recorded an installation. A journal that exists but cannot be
+  // read may be one cut short after recording a live grant, so it is never "nothing to do".
+  try { initial = read(); } catch (e) {
+    return e?.code === 'ENOENT' ? { status: 'not_eligible' } : { status: 'incomplete', reason: 'unreadable_journal' };
+  }
+  if (initial === null || typeof initial !== 'object' || Array.isArray(initial)) {
+    return { status: 'incomplete', reason: 'unreadable_journal' };
+  }
   if (initial.failure_cleanup !== undefined) return { status: 'already_attempted' };
   if (initial.network !== NETWORK_PASSPHRASE || initial.account_code_hash !== PINNED_ACCOUNT_WASM
     || !contract(initial.account) || !contract(initial.policy) || !hash(initial.policy_wasm_hash)
