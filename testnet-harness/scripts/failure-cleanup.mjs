@@ -77,6 +77,10 @@ export async function cleanupAfterFailure(dir, { runRevoke = runCleanupChild } =
   }
   initial.failure_cleanup = record;
   writeJson(path, initial);
+  // `dir` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this script. Only a digest of the journal just
+  // written leaves this read, to pin the revoke child to that exact file.
+  // nosec
   const expectedRunHash = createHash('sha256').update(readFileSync(path)).digest('hex');
   let child;
   try { child = await runRevoke(dir, { expectedRunHash }); } catch { child = { status: 'failed' }; }

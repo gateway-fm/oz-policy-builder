@@ -53,6 +53,10 @@ const defaults = {
 
 export async function runSubscriptionControls(dir, overrides = {}) {
   const deps = { ...defaults, ...overrides };
+  // `dir` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this script. The basename is fixed to that
+  // run's own journal.
+  // nosec
   const path = join(dir, 'run.json');
   let run = deps.readJson(path);
   const config = subscriptionConfig(run);
