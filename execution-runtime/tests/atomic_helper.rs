@@ -20,7 +20,7 @@ const AMOUNT: i128 = 1_000_000;
 /// The reviewed helper Wasm, as `stellar contract build` produces it with the pinned rustc and
 /// stellar-cli on the aarch64-apple-darwin host the scheduled job also builds on.
 const EXPECTED_HELPER_HASH: &str =
-    "b9f162a8906d7209cc0ccef6c931ab359ee257446fdab43241be5d9fa8294c19";
+    "4ca1510cf2fcc5bc7deb22b8563aa6ee8064898c6b92afc06785a6b04966c6fb";
 // `HelperError` codes from contracts/atomic-live-helper/src/lib.rs.
 const AMOUNT_OUT_OF_SCOPE: u32 = 7001;
 const ALIASED_IDENTITY: u32 = 7002;
@@ -183,18 +183,35 @@ fn account_auth(
     rule_id: u32,
     expiry: u32,
 ) -> [xdr::SorobanAuthorizationEntry; 2] {
+    account_auth_by(env, account, &[signer], root, nonce, &[rule_id], expiry)
+        .try_into()
+        .unwrap()
+}
+/// The account entry carrying every signer and one rule ID per context of `root`'s tree, then
+/// each signer's own entry for the account's `__check_auth`.
+fn account_auth_by(
+    env: &Env,
+    account: &Address,
+    signers: &[&SigningKey],
+    root: xdr::SorobanAuthorizedInvocation,
+    nonce: i64,
+    rule_ids: &[u32],
+    expiry: u32,
+) -> Vec<xdr::SorobanAuthorizationEntry> {
     let payload = preimage(scaddress(env, account), &root, nonce, expiry);
-    let rule_ids = svec![env, rule_id];
+    let rule_ids = SVec::from_slice(env, rule_ids);
     let mut digest_bytes = Bytes::from_array(env, &payload);
     digest_bytes.append(&rule_ids.clone().to_xdr(env));
     let account_digest = env.crypto().sha256(&digest_bytes).to_array();
-    let signer_address = Address::from_str(
-        env,
-        &stellar_strkey::ed25519::PublicKey(signer.verifying_key().to_bytes()).to_string(),
-    );
-    let mut signers = Map::new(env);
-    signers.set(Signer::Delegated(signer_address), Bytes::new(env));
-    let entry = xdr::SorobanAuthorizationEntry {
+    let mut signer_map = Map::new(env);
+    for signer in signers {
+        let address = Address::from_str(
+            env,
+            &stellar_strkey::ed25519::PublicKey(signer.verifying_key().to_bytes()).to_string(),
+        );
+        signer_map.set(Signer::Delegated(address), Bytes::new(env));
+    }
+    let mut entries = vec![xdr::SorobanAuthorizationEntry {
         credentials: xdr::SorobanCredentials::AddressV2(xdr::SorobanAddressCredentials {
             address: scaddress(env, account),
             nonce,
@@ -202,23 +219,23 @@ fn account_auth(
             signature: scval(
                 env,
                 AuthPayload {
-                    signers,
+                    signers: signer_map,
                     context_rule_ids: rule_ids,
                 },
             ),
         }),
         root_invocation: root,
-    };
-    let signer_root = invocation(
-        env,
-        account,
-        "__check_auth",
-        svec![env, Bytes::from_array(env, &account_digest).into_val(env)],
-    );
-    [
-        entry,
-        signed_classic(env, signer, signer_root, nonce + 1, expiry),
-    ]
+    }];
+    for (n, signer) in (1..).zip(signers) {
+        let signer_root = invocation(
+            env,
+            account,
+            "__check_auth",
+            svec![env, Bytes::from_array(env, &account_digest).into_val(env)],
+        );
+        entries.push(signed_classic(env, signer, signer_root, nonce + n, expiry));
+    }
+    entries
 }
 fn state(env: &Env) -> Vec<(String, String, Option<u32>)> {
     let mut entries: Vec<_> = env
@@ -830,4 +847,60 @@ fn atomic_helper_refuses_a_policy_without_an_observable_counter() {
     let f = Fixture::with_policy("generated-uncapped");
     let refusal = f.refused_without_effect(&f.authorizations(), "uncapped policy");
     assert_eq!(refusal, Some(helper_error(UNOBSERVABLE_POLICY)));
+}
+
+#[test]
+#[ignore = "requires freshly built actual Wasm; run scripts/test-atomic-live-helper.sh"]
+fn counter_guard_is_satisfied_by_an_unexecuted_candidate_context() {
+    // Pins a limit the helper cannot close, since it never sees authorization entries. The
+    // account's transfer entry carries the executed adjacent transfer as its root, checked under
+    // the owner's rule 0, and a never-executed permit-amount transfer as a sub-invocation,
+    // checked under the candidate rule. The host hands every context of the signed tree to
+    // `__check_auth`, so the candidate policy counts once for the call that never runs, and the
+    // helper reports success for a transfer the candidate would have denied.
+    let mut f = Fixture::new();
+    f.candidate.amount = AMOUNT + 1;
+    let (e, c) = (&f.env, &f.candidate);
+    let mut root = invocation(e, &f.token, "transfer", f.transfer_args());
+    root.sub_invocations = vec![invocation(
+        e,
+        &f.token,
+        "transfer",
+        svec![
+            e,
+            c.account.clone().into_val(e),
+            c.recipient.clone().into_val(e),
+            AMOUNT.into_val(e)
+        ],
+    )]
+    .try_into()
+    .unwrap();
+    let mut auth = f.authorizations()[..2].to_vec();
+    auth.extend(account_auth_by(
+        e,
+        &c.account,
+        &[&f.owner, &f.delegate],
+        root,
+        20,
+        &[0, c.expected_rule_id],
+        f.expiry,
+    ));
+    let recipient_before = f.balance(&c.recipient);
+    e.set_auths(&auth);
+    let installed = f
+        .run()
+        .expect("the helper cannot detect the unexecuted context")
+        .expect("complete rule result");
+    assert_eq!(installed.id, c.expected_rule_id);
+    assert_eq!(f.balance(&c.recipient), recipient_before + AMOUNT + 1);
+    let remaining: u32 = e.invoke_contract(
+        &c.policy,
+        &Symbol::new(e, "remaining_calls"),
+        svec![e, installed.id.into_val(e), c.account.clone().into_val(e)],
+    );
+    assert_eq!(
+        remaining, 11,
+        "the candidate policy ran once, for the unexecuted context"
+    );
+    assert_eq!(contract_errors(e, &c.policy), vec![]);
 }

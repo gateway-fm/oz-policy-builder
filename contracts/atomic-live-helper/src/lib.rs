@@ -10,8 +10,11 @@
 //!
 //! The transfer's authorization chooses which of the account's rules it is checked against, and
 //! the owner's own rule needs no policy. So the helper succeeds only if the candidate policy's
-//! call counter for the installed rule moved by exactly one across the transfer: only the
-//! account can make the policy count, and only while checking a call under that rule.
+//! call counter for the installed rule moved by exactly one across the transfer. That shows the
+//! candidate policy ran once for some context of the transfer's authorization, not that it
+//! checked the executed transfer: a signed tree can add a never-executed candidate context
+//! beside an executed call checked under another rule. Only the authorization entries, which the
+//! helper cannot see, settle which rule checked the transfer.
 //!
 //! None of those authorizations names the helper. They are rooted at the account's
 //! `add_context_rule` and at the asset's `transfer`, so the same set is a valid, submittable
@@ -121,8 +124,9 @@ pub struct AtomicLiveHelper;
 #[contractimpl]
 impl AtomicLiveHelper {
     /// Installs the candidate rule through the account's own `add_context_rule`, then transfers
-    /// `amount` of the native asset from the account to `recipient` under that rule. Returns
-    /// the installed rule only after the transfer succeeds and the candidate policy counted it.
+    /// `amount` of the native asset from the account to `recipient`. Returns the installed rule
+    /// only after the transfer succeeds and the candidate policy's counter for that rule dropped
+    /// by exactly one, which does not show which rule checked the executed transfer.
     pub fn install_and_transfer(env: Env, candidate: Candidate) -> ContextRule {
         if candidate.amount <= 0 || candidate.amount > MAX_AMOUNT {
             panic_with_error!(&env, HelperError::AmountOutOfScope);

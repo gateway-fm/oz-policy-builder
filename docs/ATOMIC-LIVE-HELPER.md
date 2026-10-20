@@ -35,16 +35,24 @@ amount. In order, it:
    `transfer(account, recipient, amount)`, reads the count again, and returns the installed rule
    only if the transfer succeeded **and** the count dropped by exactly one.
 
-Step 6 is what ties success to the candidate. The transfer's own authorization names the rule
-it is checked against, and the owner's Default rule needs no policy: an owner-signed transfer
+Step 6 narrows, but does not close, how success can be reached without the candidate. The
+transfer's own authorization names the rule it is checked against, and the owner's Default rule
+needs no policy: an owner-signed transfer
 under rule 0 moves even the adjacent 1,000,001 stroops without the candidate policy ever running.
 That was reproduced against the previous helper, which then succeeded with the policy's counter
 untouched; the host test `atomic_helper_refuses_a_transfer_not_authorized_by_the_candidate_rule`
-now requires the refusal. The generated policy's `enforce` requires
-the account's own authorization and counts only while the account checks a call under the rule
-the policy is installed on, so a drop of exactly one in this invocation can only come from the
-candidate rule checking this transfer. A generated policy without a cap exports no counter;
-the helper then cannot observe its execution and refuses rather than report success.
+now requires the refusal. The generated policy's `enforce` requires the account's own
+authorization and counts only while the account checks some context under the rule the policy is
+installed on, so a drop of exactly one shows that the candidate policy ran once for a context of
+the transfer's authorization. It does not show that this context was the executed transfer. The
+host hands every context of the signed authorization tree to `__check_auth`, executed or not, and
+the account checks each under its own rule: an entry whose root is the executed 1,000,001-stroop
+transfer, checked under rule 0, with a never-executed 1,000,000-stroop transfer as a
+sub-invocation checked under the candidate rule, satisfies the guard while the candidate never
+checks what moves. The host test `counter_guard_is_satisfied_by_an_unexecuted_candidate_context`
+pins that limit. The helper cannot see authorization entries, so only the orchestrator can close
+it (see below). A generated policy without a cap exports no counter; the helper then cannot
+observe its execution and refuses rather than report success.
 
 It has no storage, constructor, administrator, upgrade path, relay or arbitrary call surface; its
 only export is `install_and_transfer`. It cannot authorize anything: installation needs the
@@ -127,10 +135,16 @@ the expiry and the replay warning and gets explicit consent before any signature
 `simulateTransaction` in enforce mode is used, never `sendTransaction`. A recording-mode
 simulation only discovers the authorization shape and is never evidence.
 
-Helper success is evidence only together with what the orchestrator checks itself: the
-simulation's ledger changes must include the installed rule, the candidate policy's counter
-write for that rule and account, and exactly the expected balance changes; and the transfer's
-authorization must be the delegate's, selecting the candidate rule. A denial needs the
+Helper success is evidence only together with what the orchestrator checks itself:
+
+- the simulation's ledger changes include the installed rule, the candidate policy's counter
+  write for that rule and account, and exactly the expected balance changes;
+- the account's authorization entry for the transfer has the exact transfer as its root and no
+  sub-invocations, its `context_rule_ids` are exactly `[expected_rule_id]`, and its signers are
+  exactly `{Delegated(delegate)}`;
+- the owner's entries cover only the installation.
+
+A denial needs the
 `NoTupleMatched` error attributed to the candidate policy; a helper refusal such as
 `CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy. The
 owner must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real

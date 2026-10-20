@@ -166,4 +166,5 @@ build host. The existing nightly source-build gate runs this worker suite as wel
 Missing captured-target and live-enforcement evidence remains explicit. This worker is an
 incremental execution component; it does not expose the full public `dry_run` operation. The
 [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is the contract a future live layer
-would simulate; it is tested on the same host but not deployed or wired to any run.
+would simulate; it is tested on the same host but not deployed or wired to any run, and it
+refuses generated policies without a call cap, whose execution it cannot observe.
