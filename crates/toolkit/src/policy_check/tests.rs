@@ -530,7 +530,17 @@ fn change_spec(
         &build_config(),
     )
     .unwrap();
-    let binding = &mut input.binding_set.bindings[1];
+    let binding = input
+        .binding_set
+        .bindings
+        .iter_mut()
+        .find(|binding| {
+            matches!(
+                binding.recognition,
+                PolicyRecognition::VerifiedGeneratedManifest { .. }
+            )
+        })
+        .unwrap();
     binding.observed_wasm_hash = generated.wasm_hash.clone();
     binding.recognition = PolicyRecognition::VerifiedGeneratedManifest {
         build_manifest: generated.build_manifest,
@@ -542,11 +552,9 @@ fn change_spec(
     );
 }
 
-#[test]
-fn a_complete_generated_only_installation_can_permit_without_reviewed_state() {
-    let (mut input, mut capture) = fixture();
+fn remove_reviewed_policy(input: &mut CheckAgainstPolicyInput, capture: &mut PolicyStateCapture) {
     let reviewed = input.binding_set.bindings[0].contract_address.clone();
-    change_spec(&mut input, &mut capture, |spec| {
+    change_spec(input, capture, |spec| {
         spec.rules[0].policies.remove(0);
     });
     input.binding_set.bindings.remove(0);
@@ -579,10 +587,59 @@ fn a_complete_generated_only_installation_can_permit_without_reviewed_state() {
         .unwrap()
         .val = vector(vec![ScVal::U32(9)]);
     *fields = replacement.try_into().unwrap();
+}
+
+#[test]
+fn a_complete_generated_only_installation_can_permit_without_reviewed_state() {
+    let (mut input, mut capture) = fixture();
+    remove_reviewed_policy(&mut input, &mut capture);
     assert!(matches!(
         run(&input, &capture),
         CheckAgainstPolicyOutput::Permit { .. }
     ));
+}
+
+fn generated_exact_xdr_case(index: usize, expected: ScVal, mismatch: ArgValue) {
+    let (mut input, mut capture) = fixture();
+    remove_reviewed_policy(&mut input, &mut capture);
+    change_spec(&mut input, &mut capture, |spec| {
+        spec.rules[0].allowed_calls[0].args[index].constraint =
+            ozpb_policy_spec::Constraint::EqScval {
+                xdr_base64: encode(&expected).unwrap(),
+            };
+    });
+    assert!(
+        matches!(
+            run(&input, &capture),
+            CheckAgainstPolicyOutput::Permit { .. }
+        ),
+        "matching typed argument at {index} must satisfy exact canonical XDR"
+    );
+    let mut invocation: Invocation = serde_json::from_value(input.invocation.clone()).unwrap();
+    invocation.args[index] = mismatch;
+    input.invocation = serde_json::to_value(invocation).unwrap();
+    assert!(matches!(
+        run(&input, &capture),
+        CheckAgainstPolicyOutput::Deny { .. }
+    ));
+}
+
+#[test]
+fn generated_exact_xdr_accepts_matching_typed_address() {
+    generated_exact_xdr_case(
+        1,
+        ScVal::Address(
+            ozpb_synthesizer::fixtures::golden_merchant_strkey()
+                .parse()
+                .unwrap(),
+        ),
+        ArgValue::Address(g(98)),
+    );
+}
+
+#[test]
+fn generated_exact_xdr_accepts_matching_typed_i128() {
+    generated_exact_xdr_case(2, amount(500_000_000), ArgValue::I128(500_000_001));
 }
 
 #[test]
