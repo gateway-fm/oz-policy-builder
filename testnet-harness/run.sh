@@ -87,6 +87,9 @@ export OZPB_HARNESS_SECRETS="$SECRETS/keys.json"
 
 # Always, so node_modules is exactly the lockfile rather than whatever an earlier install left.
 npm ci --prefix "$SCRIPTS" --no-audit --no-fund --silent
+# The authority decision is the wallet's own module (wallet/shared/authority.mjs), and Node resolves
+# its imports from wallet/node_modules, so the wallet's lockfile is installed too, as CI does.
+npm ci --prefix "$ROOT/wallet" --ignore-scripts --no-audit --no-fund --silent
 # A passkey owner signs in headless Chromium (Playwright). OZPB_BROWSER_CHANNEL=chrome uses an
 # installed Google Chrome; without it, Playwright's own build must have been installed once.
 if [ "$OWNER" = passkey ]; then npm ci --prefix "$HARNESS/browser" --no-audit --no-fund --silent; fi
