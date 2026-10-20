@@ -7,8 +7,8 @@ remain in [TESTNET-EVIDENCE.md](TESTNET-EVIDENCE.md), sections 1–3.
 
 The [testnet harness](../testnet-harness/README.md) is the executable source for the install
 flow. Its run records are local observations, not authenticated ledger proofs. The
-[scope map](SCOPE.md) names the remaining requirements. No new live transaction was executed
-to prepare this document; the October observations below predate subsequent installer fixes.
+[scope map](SCOPE.md) names the remaining requirements. The 15 October observations predate later installer fixes; section 8 records a separate
+20 October run against the reviewed subscription harness.
 
 ## 4. Pinned account, passkey owner, and generated policy
 
@@ -92,18 +92,18 @@ gate included in this tree. The evidence exporter can run independently of that 
 ## 7. Capture and review a new run
 
 The current wrapper uses `ozpb record` for the owner's confirmed transfer, then runs real
-synthesis with explicit single-call test decisions, the reference suite, generation and
+synthesis with explicit bounded test decisions, the reference suite, generation and
 artifact verification before installation. It refuses incomplete reference coverage,
 disagreements and any reproduction mismatch, including a zero-exit `verify` response with
 `matches: false`. It preserves the RPC recording bytes and the full synthesis/reproduction
 reports locally. This new executable path does not retrospectively change the historical
-manual-template observations in section 4 and needs its own reviewed live run.
+manual-template observations in section 4. Section 8 records the later subscription run.
 
 The wrapper now also observes the installed grant's configuration, removes it through owner
 authorization and requires a post-removal delegate denial from the account's missing-rule
 check. It verifies the pinned removal event and records policy cleanup separately, because
-the account's uninstall calls are best effort. These lifecycle steps also await reviewed
-current live evidence; they do not demonstrate a delivered wallet's protected revoke screen.
+the account's uninstall calls are best effort. Section 8 records these lifecycle observations;
+they do not demonstrate a delivered wallet's protected revoke screen.
 
 Use the harness README's prerequisites and its explicit testnet commands. Choose an empty
 output directory. The harness spends testnet XLM, creates contracts, and uses throwaway keys.
@@ -145,16 +145,47 @@ for deeper review. Do not publish the secrets file or a whole run directory: fre
 raw errors and operator configuration are outside the export's allowlist. The summary still
 exposes public account relationships and must be reviewed before publication.
 
-## 8. Evidence still needed
+## 8. Controlled SEP-41 subscription run, 20 October 2026
 
-The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) provides an executable composed
-scope/count + spending-limit flow with isolated token controls, ledger-bounded repeat tests,
-and separate cleanup checks. Its offline tests do not supply live acceptance evidence.
-Subscription summaries explicitly retain the reviewed spending policy's known reference-model
-gap and distinguish confirmed charges from enforcing simulations and inconclusive windows.
+The [allowlisted run summary](evidence/testnet-subscription-2026-10-20.json) records a complete
+W2 harness execution from 10:21:26 to 10:28:44 UTC, with a clean checkout at
+`0fdb55c274d474ef641022502ccfbe25289f9cd3`. The external CLI digest is retained in its provenance;
+that digest identifies executable bytes, not a source attestation. The owner was an exportable
+virtual passkey, and confirmation used the explicit operator mode without a human prompt.
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed current
-evidence for the record → synthesize → verify → sign → install path, the Blend/SEP-41/Soroswap walkthroughs,
-the full harness layers with their actual evidence boundaries, hosted-service deployment
-evidence, and the public demonstration/video. Neither these historical observations nor
-offline tests close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.
+The selected account was `CDSWQ6MBK6UICYCSYWNTTLP3RQ27BQKCU435LBBHPXQ3XLXPB53OFCVC`.
+Its grant composed an exact 1-XLM transfer to one controlled merchant, a two-call lifetime
+cap, and the pinned spending policy with a deliberately short 24-ledger test window.
+
+| Observation | Recorded result |
+| --- | --- |
+| Owner recording and artifact chain | A confirmed owner transfer went through the real RPC recorder, synthesis, the 30-case reference suite, generation/build and matching source/Wasm/manifest reproduction. |
+| Install | [Transaction 5fcaab10…d615](https://stellar.expert/explorer/testnet/tx/5fcaab10e09e28a0bad514683962cfd01827d0846ea3f3a2a744aeb123d3d615) installed rule 1 after the authority commitment recheck at ledger 5293646. Both policy configurations matched. |
+| Tuple and signer controls | Larger amount, split charge, other merchant, funded other token, wrong signer and empty signer set all produced attributed enforcing-simulation denials before charging. |
+| First charge and early repeat | [First charge](https://stellar.expert/explorer/testnet/tx/2538c174dfbbd730c4ccaa8cdf52fd9ed03156af8b22531836db3bbd55156ec9) confirmed at 5293653. The immediate repeat returned spending-policy code 3221 at 5293653, strictly before cutoff 5293677. |
+| Next window and lifetime cap | [Second charge](https://stellar.expert/explorer/testnet/tx/4a33492fb9ad6d65a73e07e428a8470fb46c085a1f2e3c1d5d510a6f2252c347) confirmed at 5293681. After another full window, generated-policy code 7 was observed at 5293705. |
+| Owner removal | [Removal transaction](https://stellar.expert/explorer/testnet/tx/b924cc544bc958077990718d8c10728f0cd8f4f88a98e748a31020486f3261e6) confirmed at 5293707. The pinned event matched, the rule read back absent, and both policies reported uninstalled. |
+| Post-removal control | An enforcing simulation returned the account's missing-rule code 3000 at 5293707. No negative-control fee transaction was submitted. |
+
+All 12 subscription control steps completed and the wrapper finalized with exit 0. The
+reference evaluator still does not model the reviewed spending policy's rolling state;
+the summary retains that exact gap. These remain editable local RPC observations, with
+non-atomic reads and no ledger proof or protected wallet-approval claim.
+
+A separate earlier failed attempt installed rule 1 on
+`CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL` and stopped during a negative
+control before charging. No removal was confirmed before its throwaway keys were discarded;
+its configured expiry is ledger 5310498. The completed run above does not revoke that earlier
+grant. The current wrapper attempts bounded owner removal before discarding keys after a
+failure, retaining pending or incomplete removal evidence without automatic resubmission.
+
+## 9. Evidence still needed
+
+The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 now provide current
+live harness observations for composed scope/count plus spending limits, ledger-bounded
+repeats and separate cleanup checks. The known reference-model gap remains explicit.
+
+Phase 2 still needs a delivered wallet's protected approval and revoke flow, the Blend and
+Soroswap walkthroughs, the remaining harness layers with their actual evidence boundaries,
+hosted-service deployment evidence, and the public demonstration/video. The controlled W2
+run does not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

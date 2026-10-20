@@ -92,6 +92,6 @@ results. These are editable local RPC observations, not authenticated ledger pro
 reads are non-atomic and do not cover the account's entire authority surface.
 
 The harness uses throwaway test keys or an exportable virtual passkey. Its operator trust and
-approval flow do not establish Pollywallet's protected human approval. Offline regression
-tests establish the executable controls; a reviewed live run and adopted wallet evidence are
-still required before claiming W2 acceptance. This document records no new live transaction.
+approval flow do not establish Pollywallet's protected human approval. The [20 October live evidence](TESTNET-EVIDENCE-TRANCHE-2.md#8-controlled-sep-41-subscription-run-20-october-2026)
+records both charges, attributed controls and complete removal for a fresh controlled account.
+Adopted wallet evidence remains separate from this harness execution.

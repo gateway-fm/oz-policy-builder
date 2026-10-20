@@ -27,6 +27,13 @@
 # not independently re-fetched by the offline gate or by the evidence exporter.
 89c5c181f108682c4f19e1908f17f8926ceae3e16bfa04ba657107a380cc8da6|testnet-tx|passkey-authorized add_context_rule from the accepted authority-check harness run
 
+# Controlled October 20 subscription run in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
+# public testnet outcomes, not recomputed or independently fetched by the offline gate.
+5fcaab10e09e28a0bad514683962cfd01827d0846ea3f3a2a744aeb123d3d615|testnet-tx|passkey-authorized rule 1 installation for the October 20 subscription run
+2538c174dfbbd730c4ccaa8cdf52fd9ed03156af8b22531836db3bbd55156ec9|testnet-tx|first delegated subscription charge at ledger 5293653
+4a33492fb9ad6d65a73e07e428a8470fb46c085a1f2e3c1d5d510a6f2252c347|testnet-tx|second delegated subscription charge at ledger 5293681
+b924cc544bc958077990718d8c10728f0cd8f4f88a98e748a31020486f3261e6|testnet-tx|owner-authorized rule 1 removal at ledger 5293707
+
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.
