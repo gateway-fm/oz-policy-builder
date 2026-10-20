@@ -55,8 +55,12 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
     save();
     try {
       const id = entry.installation.rule_id;
-      // The account assigns rule IDs from a monotonic counter, so the ID from our confirmed
-      // install names only that grant. A changed or unreadable grant is still removed.
+      // The pinned account assigns rule IDs from a monotonic counter, so the ID from our
+      // confirmed install names only that grant. That holds only for the pinned code on the
+      // expected network: those checks must pass before signing. A changed or unreadable grant
+      // or policy is still removed.
+      await deps.assertTestnet();
+      same(await deps.contractCodeHash(run.account), run.account_code_hash, 'live account code');
       let before;
       try { before = await deps.inspectGrant(run, spec, entry, deps); }
       catch { before = { configuration: 'mismatch_or_unavailable' }; }

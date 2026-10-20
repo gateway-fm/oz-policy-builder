@@ -965,3 +965,48 @@ test('a removal after a mismatched or unreadable pre-removal readback says so', 
   run.walkthrough.bundle.entries[1].removal.before = { configuration: 'something_else' };
   assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
 });
+
+const unresolved = {
+  'install still pending': (e) => { delete e.installation; delete e.tx.install; delete e.authority; delete e.readback; delete e.removal;
+    e.pending = { operation: 'install', transaction: 'ef'.repeat(32), status: 'prepared_for_submission' }; },
+  'confirmed install with unknown rule ID': (e) => { e.installation.rule_id = null; delete e.readback; delete e.removal; },
+  'removal still pending': (e) => { delete e.removal; e.pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' }; },
+};
+for (const [name, mutate] of Object.entries(unresolved)) {
+  test(`a bundle is not exported as removed while a grant is unresolved: ${name}`, (t) => {
+    const run = protocolFixture();
+    run.walkthrough.controls.status = 'incomplete';
+    mutate(run.walkthrough.bundle.entries[1]);
+    run.walkthrough.bundle.cleanup = { status: 'incomplete' };
+    assert.equal(exportEvidence(setup(t, run)).walkthrough.bundle.cleanup, 'incomplete');
+    run.walkthrough.bundle.cleanup = { status: 'removed' };
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+test('no_installed_grants is refused while an installation was confirmed', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+const contradictions = {
+  'unexpected permit behind a denial step': (i) => { i.status = 'unexpected_permit'; delete i.enforcer; delete i.code; },
+  'invocation at another ledger': (i) => { i.ledger += 1; },
+  'invocation attributed elsewhere': (i) => { i.enforcer = CHILD_POLICY; },
+  'invocation with another code': (i) => { i.code = 7; },
+  'missing invocation': (i, list) => { list.splice(list.indexOf(i), 1); },
+  'duplicate invocation': (i, list) => { list.push({ ...i }); },
+};
+for (const [name, mutate] of Object.entries(contradictions)) {
+  test(`completed controls must match exactly one invocation record: ${name}`, (t) => {
+    const run = protocolFixture();
+    const list = run.walkthrough.invocations;
+    mutate(list.find((i) => i.name === 'input_cap'), list);
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+test('the independent permit step must match its invocation too', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.invocations.find((i) => i.name === 'independent_token').status = 'independent_permission_not_observed';
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});

@@ -30,6 +30,11 @@ function fixture() {
       return { configuration: 'matched', rule_index: entry.rule_index, observation: 'non_atomic' };
     },
     loadKey: () => payer, latestLedger: async () => 110,
+    assertTestnet: async () => { if (controls.wrongNetwork) throw new Error('not testnet'); },
+    contractCodeHash: async (address) => {
+      assert.equal(address, run.account);
+      return controls.accountUpgraded ? H(99) : PINNED_ACCOUNT_WASM;
+    },
     ownerSigner: async () => ({ verifier: C(40), keyData: Buffer.alloc(66, 1), sign: async (digest) => {
       signs.push(digest); return Buffer.alloc(64, 2);
     } }),
@@ -160,3 +165,19 @@ test('the owner signs each removal through its own rule 0, not the removed rule'
     assert.deepEqual(ids, [0]);
   }
 });
+
+for (const mode of ['wrong network', 'upgraded account code']) {
+  test(`cleanup signs nothing when the network or account identity fails: ${mode}`, async () => {
+    // Rule IDs are only known not to be reused by the pinned account implementation.
+    const f = fixture();
+    if (mode === 'wrong network') f.controls.wrongNetwork = true;
+    else f.controls.accountUpgraded = true;
+    assert.equal((await f.execute()).status, 'incomplete');
+    assert.equal(f.signs.length, 0);
+    assert.deepEqual(f.sends, []);
+    for (const entry of f.run.walkthrough.bundle.entries) {
+      assert.equal(entry.removal, undefined);
+      assert.equal(entry.cleanup_attempt.status, 'incomplete');
+    }
+  });
+}

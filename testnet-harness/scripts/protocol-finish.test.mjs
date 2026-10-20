@@ -139,3 +139,18 @@ for (const mode of ['nonzero child exit', 'install still pending from the start'
     assert.equal(f.read().walkthrough.final_cleanup.status, 'incomplete');
   });
 }
+
+test('an unreadable journal before cleanup is incomplete, not inapplicable', async (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, 'run.json'), '{"walkthrough": {"bundle"');
+  const result = await finishProtocolBundle(f.dir, { runChild: () => assert.fail('nothing to bind a child to') });
+  assert.equal(result.status, 'incomplete');
+  assert.equal(result.reason, 'unreadable_journal');
+});
+test('a missing journal or one without a bundle is not applicable', async (t) => {
+  const f = fixture(t);
+  delete f.run.walkthrough.bundle; f.save();
+  assert.equal((await finishProtocolBundle(f.dir, { runChild: () => assert.fail('no bundle') })).status, 'not_applicable');
+  rmSync(join(f.dir, 'run.json'));
+  assert.equal((await finishProtocolBundle(f.dir, { runChild: () => assert.fail('no journal') })).status, 'not_applicable');
+});

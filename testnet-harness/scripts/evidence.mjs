@@ -310,9 +310,15 @@ function walkthroughRecord(value, run) {
           installation_transaction: installed === null ? null : hash(installed.transaction), pending,
           authority, readback, removal, pending_removal: pendingRemoval };
       }) };
-    const done = (e) => e.rule_id === null || (e.removal?.event === 'verified' && e.removal.rule_readback === 'absent'
-      && e.removal.policy_cleanup === 'not_installed');
-    if (bundle.cleanup === 'removed' && !bundle.entries.every(done)) fail();
+    // A grant is unresolved while its install or removal is pending, or while a confirmed
+    // install (even one whose rule ID is unknown) lacks a complete removal.
+    const removed = (e) => e.removal?.event === 'verified' && e.removal.rule_readback === 'absent'
+      && e.removal.policy_cleanup === 'not_installed';
+    const installed = (e) => e.installation_transaction !== null || e.pending?.operation === 'install';
+    const unresolved = (e) => e.pending_removal !== null || e.pending?.operation === 'install'
+      || (e.installation_transaction !== null && !removed(e));
+    if (bundle.cleanup === 'removed' && (bundle.entries.some(unresolved) || !bundle.entries.some(removed))) fail();
+    if (bundle.cleanup === 'no_installed_grants' && bundle.entries.some(installed)) fail();
   }
   if (w.controls === undefined) return { kind, owner_transaction: owner, invocations, bundle, controls: { status: 'not_recorded', steps: [] } };
   const c = object(w.controls);
@@ -353,6 +359,11 @@ function walkthroughRecord(value, run) {
       if (s.name === 'expiry_wait' && s.target_ledger !== valid + 1) fail();
       if (s.name.endsWith('_wait')) continue;
       if (s.name === 'expired_rule' ? s.ledger <= valid : s.name !== 'post_revocation' && s.ledger > valid) fail();
+      // Each completed step is backed by exactly one invocation record with the same outcome,
+      // ledger and attribution; a contradictory record (e.g. an unexpected permit) refuses.
+      const records = invocations.filter((i) => i.name === s.name);
+      if (records.length !== 1 || records[0].status !== s.result || records[0].ledger !== s.ledger
+        || records[0].enforcer !== s.enforcer || records[0].code !== s.code) fail();
       if (s.name === positive) {
         if (s.result !== 'confirmed' || invocations.filter((i) => i.signer === 'delegate' && i.status === 'confirmed'
           && i.transaction === s.transaction && i.ledger === s.ledger).length !== 1) fail();

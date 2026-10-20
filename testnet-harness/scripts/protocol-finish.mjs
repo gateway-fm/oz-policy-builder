@@ -57,7 +57,11 @@ export function runProtocolCleanupChild(dir, {
 export async function finishProtocolBundle(dir, { runChild = runProtocolCleanupChild } = {}) {
   const path = join(dir, 'run.json'), read = () => JSON.parse(readFileSync(path, 'utf8'));
   let initial;
-  try { initial = read(); } catch { return { status: 'not_applicable' }; }
+  try { initial = read(); }
+  catch (error) {
+    // Only a missing journal is known to hold no grant; an unreadable one may.
+    return error?.code === 'ENOENT' ? { status: 'not_applicable' } : { status: 'incomplete', reason: 'unreadable_journal' };
+  }
   if (!initial.walkthrough?.bundle) return { status: 'not_applicable' };
   if (initial.walkthrough.final_cleanup !== undefined) return { status: 'already_attempted' };
   if (initial.network !== NETWORK_PASSPHRASE || initial.account_code_hash !== PINNED_ACCOUNT_WASM

@@ -115,10 +115,12 @@ elapsed wall-clock time never stands in for a ledger.
 On failure after installation, the wrapper runs `protocol-finish.mjs` before discarding keys.
 It removes each rule whose installation was confirmed, with the same bounded child process and
 termination handling as W2's failure cleanup. A removal that was prepared or sent is never
-resubmitted; an attempt that prepared nothing may be retried. A rule whose readback no longer
-matches is still removed by the ID from its confirmed install, since the account never reuses
-rule IDs. A rule whose installation was never confirmed is reported as uncertain rather than
-inferred.
+resubmitted; an attempt that prepared nothing may be retried. Before signing any removal, the
+network must be testnet and the account must still run the pinned code, whose rule IDs are never
+reused; otherwise nothing is signed. A rule whose grant or policy readback no longer matches is
+then still removed by the ID from its confirmed install. A rule whose installation was never
+confirmed is reported as uncertain rather than inferred. An unreadable journal makes the final
+cleanup `incomplete`, so the wrapper warns that grants may remain.
 
 ## W1 Blend
 
@@ -145,8 +147,9 @@ authority answer, readback, pending submissions and removals, and the control st
 is labelled `router_rule_denials_only`, and a Blend journal `single_rule`. A removal made after a
 mismatched or unreadable pre-removal readback carries `pre_removal_readback`. A `completed` control
 journal is accepted only with every required step in order, its expected enforcers and codes,
-the expiry boundary, a delegated positive that matches a confirmed invocation and complete
-removal. Per-rule Wasm, manifests and verification reports are hashed. Preflight readings, RPC
+the expiry boundary, exactly one matching invocation record per step (outcome, ledger and
+attribution), a confirmed delegated positive and complete removal. `cleanup: removed` is refused
+while any install or removal is pending or a confirmed install lacks a complete removal. Per-rule Wasm, manifests and verification reports are hashed. Preflight readings, RPC
 readbacks and host error text stay in the local run directory.
 
 These are editable local RPC observations, not authenticated ledger proofs, and monitoring reads
