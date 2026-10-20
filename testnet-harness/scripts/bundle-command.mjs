@@ -14,6 +14,10 @@ const requireThat = (ok, text) => { if (!ok) throw new Error(text); };
 
 export function loadBundleFiles(directory, expectedRunHash) {
   const dir = resolve(directory), runPath = join(dir, 'run.json');
+  // `directory` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this script. The basename is fixed to that
+  // run's own journal, whose digest can pin a cleanup child to the exact snapshot.
+  // nosec
   const bytes = readFileSync(runPath);
   if (expectedRunHash !== undefined) requireThat(/^[0-9a-f]{64}$/.test(expectedRunHash)
     && createHash('sha256').update(bytes).digest('hex') === expectedRunHash, 'protocol cleanup run snapshot changed');

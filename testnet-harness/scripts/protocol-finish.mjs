@@ -71,6 +71,9 @@ export async function finishProtocolBundle(dir, { runChild = runProtocolCleanupC
   if (child.status === 'termination_unconfirmed') {
     const result = { status: 'termination_unconfirmed', reason: 'cleanup_process_not_reaped' };
     try {
+      // `dir` is the run directory `run.sh` created, or one its operator names on the command
+      // line; no server or remote request reaches this script. `wx` refuses an existing path.
+      // nosec
       writeFileSync(join(dir, 'cleanup-termination.json'), JSON.stringify({ ...result,
         expected_run_sha256: expectedRunHash }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     } catch { console.error('Could not create the separate cleanup termination marker.'); }

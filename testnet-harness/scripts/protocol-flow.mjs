@@ -21,6 +21,10 @@ const read = (path) => parseJsonExact(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 
 export function runProtocolFlow(runDirectory, env = process.env) {
+  // `runDirectory` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this script. It must be a directory; inside it,
+  // only fixed names and the CLI's own output under `policies/` are read or written.
+  // nosec
   const dir = resolve(runDirectory);
   requireThat(lstatSync(dir).isDirectory(), 'run directory must be a directory');
   for (const name of ['recording.json', 'account.json', 'decisions.json', 'synthesis.json', 'spec.json',
