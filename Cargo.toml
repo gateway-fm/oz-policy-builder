@@ -13,7 +13,7 @@ resolver = "2"
 # workspace-membership error about a crate that is fine, while the same commands passed from the
 # main checkout. Since the work here happens in worktrees, that is where those gates were not
 # running.
-exclude = ["contracts", "demo-runs", ".claude/worktrees"]
+exclude = ["contracts", "execution-runtime", "demo-runs", ".claude/worktrees"]
 members = [
     "crates/domain",
     "crates/policy-spec",
