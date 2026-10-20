@@ -23,6 +23,7 @@ mod classic_account;
 mod contract_data;
 mod footprint_capture;
 mod ledger_witness;
+mod policy_state_capture;
 mod preflight;
 pub use account_state_projection::{
     project_account_state, AccountProjectionError, AccountStateProjection,
@@ -46,6 +47,7 @@ pub use footprint_capture::{
     read_invocation_footprint, CapturedFootprintEntry, CapturedInvocation, FootprintCaptureError,
     FootprintList, InvocationFootprintCapture,
 };
+pub use policy_state_capture::{capture_policy_state, CapturedPolicyEntry, PolicyStateCapture};
 pub use preflight::{
     envelope_carries_signatures, preflight_transaction, DeclaredResource, EstimatedResource,
     PreflightObservation, PreflightOutcome, SimulationAuthMode,

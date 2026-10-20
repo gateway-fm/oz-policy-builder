@@ -16,6 +16,7 @@
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
 mod authority;
+mod policy_check;
 mod preflight;
 mod verification;
 
@@ -151,6 +152,20 @@ enum Command {
     /// unresolved item exits non-zero with every finding.
     PrepareInstallIntent {
         /// The same request as `check-policy-call-surface`.
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_ROOTS_FILE")]
+        registry_roots: PathBuf,
+        #[arg(long, env = "OZPB_REGISTRY_MIN_VERSION")]
+        registry_min_version: u64,
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+        #[command(flatten)]
+        build: BuildConfigArgs,
+    },
+    /// Predict one installed rule at a current ledger, conditional on candidate signers
+    /// authenticating. Recognition-scoped; repeat the check and enforce-simulate before signing.
+    CheckAgainstPolicy {
         #[arg(long)]
         request: PathBuf,
         #[arg(long, env = "OZPB_REGISTRY_ROOTS_FILE")]
@@ -349,6 +364,19 @@ fn main() -> Result<()> {
             rpc_sources,
             build,
         } => authority::intent(authority::AuthorityArgs {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build_config: build.resolve()?,
+        })?,
+        Command::CheckAgainstPolicy {
+            request,
+            registry_roots,
+            registry_min_version,
+            rpc_sources,
+            build,
+        } => policy_check::check(authority::AuthorityArgs {
             request,
             registry_roots,
             registry_min_version,

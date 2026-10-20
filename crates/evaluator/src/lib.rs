@@ -19,6 +19,8 @@ use ozpb_policy_spec::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod spending_limit;
+
 /// A candidate invocation, as the smart account's `__check_auth` would observe it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
