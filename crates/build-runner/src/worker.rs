@@ -94,15 +94,13 @@ pub(crate) fn validate_launcher(path: &Path) -> Result<(), BuildError> {
         if !protected(&metadata) || metadata.permissions().mode() & 0o111 == 0 {
             return Err(invalid());
         }
-        let absolute = path.canonicalize().map_err(|_| invalid())?;
-        for parent in path.ancestors().skip(1).chain(absolute.ancestors().skip(1)) {
-            // Inspect the spelling as well as its resolved target: an unprotected parent
-            // must not be able to retarget a symlink after this validation.
-            let entry = std::fs::symlink_metadata(parent).map_err(|_| invalid())?;
-            if entry.file_type().is_symlink() && entry.uid() != uid && entry.uid() != 0 {
+        for parent in path.ancestors().skip(1) {
+            // Reject every symlink ancestor. Comparing only the original and final
+            // paths misses writable intermediate targets in a chain of symlinks.
+            let metadata = std::fs::symlink_metadata(parent).map_err(|_| invalid())?;
+            if metadata.file_type().is_symlink() {
                 return Err(invalid());
             }
-            let metadata = std::fs::metadata(parent).map_err(|_| invalid())?;
             // A root-owned sticky temporary directory protects an owned private child.
             let sticky_root = metadata.uid() == 0 && metadata.permissions().mode() & 0o1000 != 0;
             if !metadata.is_dir() || (!protected(&metadata) && !sticky_root) {
@@ -384,7 +382,7 @@ mod tests {
 
     fn launcher(body: &str) -> (tempfile::TempDir, BuildConfig, BuildSlots) {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("launcher");
+        let path = directory.path().canonicalize().unwrap().join("launcher");
         std::fs::write(&path, format!("#!/usr/bin/python3\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         let slots = BuildSlots::new(1).unwrap();
@@ -472,6 +470,74 @@ print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256
         assert_eq!(slots.available(), 1, "trusted launcher did confirm cleanup");
     }
 
+    fn artifact_launcher(wasm: &[u8], toolchain: ToolchainIdentity, digest: Hash32) -> String {
+        let result = serde_json::to_string(&WorkerResult {
+            schema: RESULT_SCHEMA.into(),
+            artifact: Some(WorkerArtifact {
+                wasm_base64: base64::engine::general_purpose::STANDARD.encode(wasm),
+                wasm_hash: digest,
+                toolchain,
+            }),
+        })
+        .unwrap();
+        let quoted = serde_json::to_string(&result).unwrap();
+        CONFIRMED_FAILURE.replace("'result':None", &format!("'result':json.loads({quoted})"))
+    }
+
+    #[test]
+    fn valid_worker_artifact_reconstructs_the_api_manifest_and_releases_capacity() {
+        let wasm = crate::tests::honest_wasm();
+        let tools = crate::tests::honest_toolchain();
+        let body = artifact_launcher(&wasm, tools.clone(), sha256(&wasm));
+        let (_directory, config, slots) = launcher(&body);
+        let generated = generated();
+        let artifact = run(&generated, &config).unwrap();
+        assert_eq!(artifact.wasm, wasm);
+        let manifest = &artifact.manifest;
+        assert_eq!(manifest.schema, BUILD_MANIFEST_SCHEMA);
+        assert_eq!(manifest.spec_hash, sha256(b"spec"));
+        assert_eq!(manifest.registry_snapshot, sha256(b"registry"));
+        assert_eq!(manifest.rule_index, 0);
+        assert_eq!(manifest.template_family, "fixture");
+        assert_eq!(
+            manifest.normalized_input_hash,
+            generated.normalized_input_hash
+        );
+        assert_eq!(manifest.lockfile_hash, sha256(b"fixture"));
+        assert_eq!(manifest.wasm_hash, sha256(&wasm));
+        assert_eq!(manifest.wasm_size, wasm.len() as u64);
+        assert_eq!(manifest.toolchain, tools);
+        assert_eq!(manifest.soroban_sdk_version, Pins::default().soroban_sdk);
+        assert_eq!(artifact.manifest_hash, manifest.hash().unwrap());
+        assert_eq!(slots.available(), 1);
+        assert_eq!(run(&generated, &config).unwrap(), artifact);
+    }
+
+    #[test]
+    fn bad_digest_and_metadata_claims_release_capacity_after_confirmed_cleanup() {
+        let wasm = crate::tests::honest_wasm();
+        for corrupt_digest in [true, false] {
+            let mut tools = crate::tests::honest_toolchain();
+            let digest = if corrupt_digest {
+                sha256(b"wrong artifact")
+            } else {
+                tools.stellar_cli_version = "stellar 99.0.0 (0000000000)".into();
+                sha256(&wasm)
+            };
+            let body = artifact_launcher(&wasm, tools, digest);
+            let (_directory, config, slots) = launcher(&body);
+            assert!(matches!(
+                run(&generated(), &config),
+                Err(BuildError::Unavailable(_))
+            ));
+            assert_eq!(slots.available(), 1);
+            assert!(matches!(
+                run(&generated(), &config),
+                Err(BuildError::Unavailable(_))
+            ));
+        }
+    }
+
     #[test]
     fn a_response_for_a_different_job_cannot_release_capacity() {
         let body = CONFIRMED_FAILURE.replace("hashlib.sha256(data).hexdigest()", "'0'*64");
@@ -532,6 +598,23 @@ print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256
         std::os::unix::fs::symlink(directory.path(), unprotected.join("alias")).unwrap();
         assert!(BuildConfig {
             worker_launcher: Some(unprotected.join("alias/launcher")),
+            ..config
+        }
+        .validated()
+        .is_err());
+    }
+
+    #[test]
+    fn intermediate_symlink_targets_cannot_hide_a_writable_parent() {
+        let (directory, config, _) = launcher(CONFIRMED_FAILURE);
+        let root = directory.path().canonicalize().unwrap();
+        let unprotected = root.join("unprotected");
+        std::fs::create_dir(&unprotected).unwrap();
+        std::fs::set_permissions(&unprotected, std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::os::unix::fs::symlink(&root, unprotected.join("relay")).unwrap();
+        std::os::unix::fs::symlink(unprotected.join("relay"), root.join("alias")).unwrap();
+        assert!(BuildConfig {
+            worker_launcher: Some(root.join("alias/launcher")),
             ..config
         }
         .validated()

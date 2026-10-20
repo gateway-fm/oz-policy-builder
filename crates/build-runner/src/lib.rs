@@ -1648,7 +1648,7 @@ mod tests {
     /// The metadata a real build writes, in the **two** sections it writes them in: `rsver` and
     /// `rssdkver` by the SDK at compile time, `cliver` appended afterwards by
     /// `stellar contract build`. Measured on the golden policy, which carries exactly this shape.
-    fn honest_wasm() -> Vec<u8> {
+    pub(crate) fn honest_wasm() -> Vec<u8> {
         let sdk = format!("26.1.0#{SDK_REVISION}");
         let cli = format!("27.0.0#{CLI_REVISION}");
         wasm_with_meta(&[
@@ -1659,7 +1659,7 @@ mod tests {
 
     /// What a build on the pinned toolchain probes for itself: whole `--version` lines, exactly
     /// as `command_version` returns them, against the pinned `Pins::default().soroban_sdk`.
-    fn honest_toolchain() -> ToolchainIdentity {
+    pub(crate) fn honest_toolchain() -> ToolchainIdentity {
         ToolchainIdentity {
             rustc_version: "rustc 1.91.1 (ed61e7d7e 2025-11-07)".to_string(),
             stellar_cli_version: format!("stellar 27.0.0 ({CLI_REVISION})"),

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Protocol and launcher tests; kernel containment is tested separately on Linux."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +25,12 @@ def config():
 def job():
     return dict(schema="build-worker-job/v1", crate_name="fixture", timeout_seconds=1, jobs=1,
                 files=[dict(path=name, body="fixture") for name in sorted(worker.FILES)])
+
+
+def result():
+    return dict(schema="build-worker-result/v1", artifact=dict(
+        wasm_base64="AGFzbQEAAAA=", wasm_hash="a" * 64,
+        toolchain=dict(builder="stellar-cli-local", rustc_version="rustc 1.91.1", stellar_cli_version="stellar 27.0.0")))
 
 
 class LauncherTests(unittest.TestCase):
@@ -104,6 +112,41 @@ class LauncherTests(unittest.TestCase):
             frame = worker.launch(json.dumps(job()).encode(), config())
         self.assertEqual(events, ["run", "removed"])
         self.assertEqual(frame["containment"], "removed")
+
+    def test_invalid_worker_strings_preserve_confirmed_cleanup(self):
+        for field, value in [("wasm_base64", "\ud800"), ("wasm_base64", "\uffff"),
+                             ("rustc_version", "\ud800"), ("stellar_cli_version", "\udfff"),
+                             ("builder", "\ud800")]:
+            response = result()
+            target = response["artifact"] if field == "wasm_base64" else response["artifact"]["toolchain"]
+            target[field] = value
+            removed = mock.Mock(return_value=True)
+            with self.subTest(field=field, value=ascii(value)), mock.patch.object(worker, "preflight"), \
+                    mock.patch.object(worker, "bounded", return_value=(0, json.dumps(response).encode())), \
+                    mock.patch.object(worker, "removed", removed):
+                frame = worker.launch(json.dumps(job()).encode(), config())
+            removed.assert_called_once()
+            self.assertEqual(frame["containment"], "removed")
+            self.assertIsNone(frame["result"])
+
+    def test_framing_overhead_becomes_a_small_cleanup_confirmed_failure(self):
+        raw = json.dumps(result(), separators=(",", ":")).encode()
+        output = io.BytesIO()
+        with mock.patch.object(worker, "MAX_OUTPUT", len(raw) + 1), \
+                mock.patch.object(worker, "load_config", return_value=config()), \
+                mock.patch.object(worker, "preflight"), \
+                mock.patch.object(worker, "bounded", return_value=(0, raw)), \
+                mock.patch.object(worker, "removed", return_value=True), \
+                mock.patch.object(worker.sys, "argv", ["worker-launcher"]), \
+                mock.patch.object(worker.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(job()).encode()))), \
+                mock.patch.object(worker.sys, "stdout", SimpleNamespace(buffer=output)), \
+                mock.patch.object(worker.sys, "stderr", io.StringIO()):
+            status = worker.main()
+        self.assertEqual(status, 0)
+        self.assertLessEqual(len(output.getvalue()), len(raw) + 1)
+        frame = json.loads(output.getvalue())
+        self.assertEqual(frame["containment"], "removed")
+        self.assertIsNone(frame["result"])
 
     def test_unconfirmed_cleanup_never_emits_a_result(self):
         with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "bounded", return_value=(1, b"secret")), mock.patch.object(worker, "removed", return_value=False):

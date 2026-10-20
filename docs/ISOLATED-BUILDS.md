@@ -39,7 +39,8 @@ Install these reviewed files using your normal host configuration system:
 | Edited `deployment/http.example.env` | `/etc/ozpb/http.env` | root, 0644 |
 | `deployment/ozpb-api.service` | service account's `.config/systemd/user/ozpb-api.service` | service account, 0600 |
 
-Every parent of the launcher must be protected from writes by other users. The worker JSON
+Every parent of the launcher must be protected from writes by other users. Symlinks are
+refused in the launcher and every ancestor; configure its canonical absolute path. The worker JSON
 contains only operator resource ceilings and the immutable image identity. Its `jobs` and
 `timeout_seconds` ceilings must cover the API's `OZPB_BUILD_JOBS` and
 `OZPB_BUILD_TIMEOUT_SECS`. The runtime adds 35 seconds for bounded toolchain probes; the

@@ -181,7 +181,8 @@ def worker_result(raw):
     if artifact is not None:
         if not isinstance(artifact, dict) or set(artifact) != {"wasm_base64", "wasm_hash", "toolchain"}:
             raise Refused()
-        if not isinstance(artifact["wasm_base64"], str) or len(artifact["wasm_base64"]) > 2800000:
+        if not isinstance(artifact["wasm_base64"], str) or len(artifact["wasm_base64"]) > 2800000 \
+                or not artifact["wasm_base64"].isascii():
             raise Refused()
         if not isinstance(artifact["wasm_hash"], str) or not re.fullmatch("[0-9a-f]{64}", artifact["wasm_hash"]):
             raise Refused()
@@ -190,6 +191,11 @@ def worker_result(raw):
             raise Refused()
         if not all(isinstance(value, str) and len(value) <= 256 for value in tools.values()):
             raise Refused()
+        try:
+            if any(len(value.encode("utf-8")) > 256 for value in tools.values()):
+                raise Refused()
+        except UnicodeError:
+            raise Refused() from None
     return result
 
 
@@ -231,7 +237,10 @@ def main():
         frame = launch(raw, load_config())
         encoded = json.dumps(frame, separators=(",", ":")).encode()
         if len(encoded) > MAX_OUTPUT:
-            raise Refused()
+            # Cleanup was already confirmed. Retain that fact even when framing
+            # overhead or JSON escaping pushes the result over its wire budget.
+            frame["result"] = None
+            encoded = json.dumps(frame, separators=(",", ":")).encode()
         sys.stdout.buffer.write(encoded)
         return 0
     except (Refused, ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError, RecursionError):
