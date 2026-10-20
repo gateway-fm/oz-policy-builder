@@ -2,8 +2,10 @@
 """Specifications for the captured-target tests; these are not trust receipts.
 
 `fixture WORK` binds the synthetic native-execution rule to the source network's native asset
-contract. `testnet WORK CALL_JSON` binds the same rule shape to the account, recipient, amount
-and ledger of a recorded testnet capture (see target_capture_conformance.rs).
+contract. `fixture-uncapped` drops its call cap; `fixture-self-recipient` pays the delegate
+itself, whose account the candidate also holds. `testnet WORK CALL_JSON` binds the same rule
+shape to the account, recipient, amount and ledger of a recorded testnet capture (see
+target_capture_conformance.rs).
 """
 import base64
 import binascii
@@ -27,8 +29,14 @@ rule = spec["rules"][0]
 rule["context"]["contract"] = contract
 rule["context"].pop("target_code_hash", None)
 args = rule["allowed_calls"][0]["args"]
-if mode == "fixture":
+if mode.startswith("fixture"):
     args[2]["c"]["eq_i128"]["value"] = "1000000"
+    if mode == "fixture-uncapped":
+        rule["state"] = []
+    elif mode == "fixture-self-recipient":
+        args[1]["c"]["eq_address"]["value"] = rule["authorization"]["signers"][0]["delegated"]["address"]
+    elif mode != "fixture":
+        raise SystemExit("unknown fixture variant")
 elif mode == "testnet":
     call = json.loads(Path(rest[0]).read_text())
     spec["smart_account"]["address"] = call["account"]
@@ -37,5 +45,5 @@ elif mode == "testnet":
     # The capture ledger must fall inside the grant's validity window.
     rule["valid_until"] = {"ledger": call["observed_ledger"] + 100_000, "approx_time": None}
 else:
-    raise SystemExit("expected fixture or testnet")
+    raise SystemExit("expected fixture, fixture-uncapped, fixture-self-recipient or testnet")
 (work / "spec.json").write_text(json.dumps(spec, separators=(",", ":")))

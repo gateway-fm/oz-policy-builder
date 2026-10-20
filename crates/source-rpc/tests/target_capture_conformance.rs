@@ -5,8 +5,9 @@
 //! `rpc_conformance.rs` for the bug that taught us this). The fixtures in
 //! `captured-testnet/target-capture/` are the `result` objects a real endpoint returned for one
 //! read-only capture: `getNetwork`, record-mode `simulateTransaction`, `getLedgerEntries` and
-//! `getLedgers`. The transfer is from the public Pollywallet sample account recorded in
-//! `docs/evidence/pollywallet-sample-2026-10-20.json` (wallet branch) to its sample recipient.
+//! `getLedgers`. The transfer is from the public Pollywallet sample account to its sample
+//! recipient, as recorded by that sample run in `docs/evidence/pollywallet-sample-2026-10-20.json`
+//! on branch `feat/pollywallet-policy-builder` (commit f55dc8e3), not on this branch.
 //! The only edit is dropping `getLedgers`' `metadataXdr`, the ledger's whole close meta (~140 KB),
 //! which capture never reads. Nothing is signed or submitted. Refresh with
 //! `cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.

@@ -26,8 +26,9 @@ Three cases run, each from identical initial state at the capture ledger `L`:
 | `target:empty-signers:0` | the captured call, no authenticated signer | generated-policy error 1 |
 
 When the rule has a call cap, the candidate counter is seeded at 0. That seed is synthetic and
-reported; counter boundaries, validity windows and cryptographic controls remain the account-Wasm
-layer's responsibility.
+reported. An uncapped rule's policy defines no counter, which is then neither seeded nor read.
+Counter boundaries, validity windows and cryptographic controls remain the account-Wasm layer's
+responsibility.
 
 ## Capture
 
@@ -43,16 +44,20 @@ authorization's fresh nonce. The nonce key is new by construction and is not rea
 and code are read only to bind `account_code_hash`, the Wasm hash the account executed at `L`;
 neither becomes a target entry, and a footprint touching other account storage is refused.
 Every remaining key and the network's state-archival configuration are read in one bounded
-`getLedgerEntries` call. Each must be returned, decode canonically, match its key, be modified
-no later than `L` and, for contract entries, be live at `L`. An omitted key is refused because
-the endpoint does not distinguish absence from archival. `getLedgers` supplies the header for
-exactly `L`; its canonical bytes must hash to the reported hash and state the sequence,
-protocol 29 and close time. If the simulation and the entry read report different ledgers the
+`getLedgerEntries` call. Each must be returned, decode, match its key, be modified no later
+than `L` and, for contract entries, live beyond `L`: any submission based on the capture lands
+at `L + 1` or later, where an entry living only until `L` is archived. Entries are re-encoded
+canonically, so a non-canonical encoding is normalised rather than refused. An omitted key is
+refused because the endpoint does not distinguish absence from archival. `getLedgers` supplies
+the header for exactly `L`; its canonical bytes must hash to the hash reported beside it and
+state the sequence, protocol 29 and close time. That proves only that the header is
+self-consistent: it is not chained to other ledgers or tied to the entries, and whoever builds
+a job could recompute it. If the simulation and the entry read report different ledgers the
 capture retries once, then fails.
 
 The capture's provenance is `rpc_reported`: an endpoint's answer, not an inclusion proof. RPC
-exposes bare `LedgerEntryData`; the runtime reconstructs the outer `LedgerEntry` extension as V0
-without claiming it was V0 on the network. For the supported C-to-G native transfer, the SAC
+also returns each entry's outer `LedgerEntry` extension (`extXdr`, including any sponsor ID).
+It is not captured; the runtime rebuilds it as V0 without claiming it was V0 on the network. For the supported C-to-G native transfer, the SAC
 reads liabilities and sponsorship counts from inside the captured `AccountEntry`; the omitted
 outer sponsor ID does not decide this call. The fixture capture carries nontrivial liabilities
 and sponsorship counts for that reason.
@@ -132,8 +137,9 @@ live authorization after owner consent.
 `cargo test --manifest-path execution-runtime/Cargo.toml --locked` runs the strict-source and
 change-classification unit tests and argument refusal. `cargo test -p ozpb-source-rpc` replays
 the recorded testnet capture and the mocked refusal cases. `bash scripts/test-captured-target.sh`
-generates two real policies and requires every actual-Wasm test to run and pass: the fixture
-capture (a real SDK-29 SAC deployment built locally), a capture whose sender cannot cover the
-amount, eleven preparation refusals, the recorded testnet capture replayed offline, and the full
-process protocol. The nightly pinned-account gate runs it. Refresh the recorded responses
+generates four real policies and requires every actual-Wasm test to run and pass: the fixture
+capture (a real SDK-29 SAC deployment built locally), the same with an uncapped rule, a capture
+whose sender cannot cover the amount, a rule paying the delegate itself (refused as overlapping
+candidate state), twenty preparation refusals including re-hashed headers that describe another
+ledger, the recorded testnet capture replayed offline, and the full process protocol. The nightly pinned-account gate runs it. Refresh the recorded responses
 deliberately with `cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.

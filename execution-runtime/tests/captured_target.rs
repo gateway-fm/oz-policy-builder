@@ -3,13 +3,13 @@
 #[path = "support/captured_fixture.rs"]
 mod captured_fixture;
 
-use captured_fixture::{enc, job, job_with_balance};
+use captured_fixture::{enc, job, job_from, job_with_balance, SENDER_BALANCE};
 use ed25519_dalek::{Signer, SigningKey};
 use ozpb_execution_runtime::{
     execute_captured, prepare_captured, CapturedTargetJob, DelegateSigner, SignRequest,
     SignatureResponse,
 };
-use soroban_sdk::xdr::{self, ReadXdr};
+use soroban_sdk::xdr::{self, ReadXdr, WriteXdr};
 
 struct Capability;
 impl DelegateSigner for Capability {
@@ -80,7 +80,37 @@ fn captured_state_decides_the_target_outcome() {
 #[ignore = "requires source-built captured native SAC fixture; run scripts/test-captured-target.sh"]
 fn captured_prepare_refuses_modified_header_config_scope_and_incomplete_closure() {
     type Mutation = fn(&mut CapturedTargetJob);
-    let cases: [(Mutation, &str); 11] = [
+    const HEADER: &str = "ledger header does not hash to or describe the job ledger";
+    const CLOSURE: &str = "not exactly the native transfer closure";
+    fn edit_header(j: &mut CapturedTargetJob, change: fn(&mut xdr::LedgerHeader), rehash: bool) {
+        let mut header = xdr::LedgerHeaderHistoryEntry::from_xdr_base64(
+            &j.capture.header_xdr,
+            xdr::Limits::none(),
+        )
+        .unwrap();
+        change(&mut header.header);
+        if rehash {
+            header.hash = xdr::Hash(
+                ozpb_domain::sha256(&header.header.to_xdr(xdr::Limits::none()).unwrap()).0,
+            );
+        }
+        j.capture.header_xdr = enc(&header);
+    }
+    fn edit_archival(j: &mut CapturedTargetJob, change: fn(&mut xdr::StateArchivalSettings)) {
+        let mut data = xdr::LedgerEntryData::from_xdr_base64(
+            &j.capture.state_archival.data_xdr,
+            xdr::Limits::none(),
+        )
+        .unwrap();
+        let xdr::LedgerEntryData::ConfigSetting(xdr::ConfigSettingEntry::StateArchival(settings)) =
+            &mut data
+        else {
+            panic!("state-archival entry")
+        };
+        change(settings);
+        j.capture.state_archival.data_xdr = enc(&data);
+    }
+    let cases: [(Mutation, &str); 20] = [
         (
             |j| j.capture.observed_ledger += 1,
             "network or ledger differs",
@@ -108,9 +138,52 @@ fn captured_prepare_refuses_modified_header_config_scope_and_incomplete_closure(
             "not live",
         ),
         (
-            |j| drop(j.capture.entries.pop()),
-            "not exactly the native transfer closure",
+            // Live through L only: archived by the time any submission lands.
+            |j| {
+                let observed = j.capture.observed_ledger;
+                for entry in &mut j.capture.entries {
+                    if entry.live_until_ledger.is_some() {
+                        entry.live_until_ledger = Some(observed);
+                    }
+                }
+            },
+            "not live",
         ),
+        // Valid, re-hashed headers that describe a different ledger.
+        (|j| edit_header(j, |h| h.ledger_version = 28, true), HEADER),
+        (
+            |j| edit_header(j, |h| h.scp_value.close_time.0 += 1, true),
+            HEADER,
+        ),
+        (|j| edit_header(j, |h| h.base_reserve += 1, true), HEADER),
+        // A changed header carrying its old, now stale hash.
+        (
+            |j| edit_header(j, |h| h.scp_value.close_time.0 += 1, false),
+            HEADER,
+        ),
+        (
+            |j| edit_archival(j, |s| s.min_persistent_ttl += 1),
+            "state-archival configuration differs",
+        ),
+        (
+            |j| {
+                for entry in &mut j.capture.entries {
+                    let mut data =
+                        xdr::LedgerEntryData::from_xdr_base64(&entry.data_xdr, xdr::Limits::none())
+                            .unwrap();
+                    if let xdr::LedgerEntryData::ContractData(d) = &mut data {
+                        if let xdr::ScVal::ContractInstance(instance) = &mut d.val {
+                            instance.executable = xdr::ContractExecutable::Wasm(xdr::Hash([7; 32]));
+                        }
+                    }
+                    entry.data_xdr = enc(&data);
+                }
+            },
+            "not the built-in asset contract",
+        ),
+        (|j| j.capture.read_write_keys.reverse(), CLOSURE),
+        (|j| j.capture.entries.reverse(), CLOSURE),
+        (|j| drop(j.capture.entries.pop()), CLOSURE),
         (
             |j| j.native.ledger.protocol_version = 26,
             "unsupported job schema or source protocol",
@@ -124,7 +197,7 @@ fn captured_prepare_refuses_modified_header_config_scope_and_incomplete_closure(
                 let key = j.capture.read_only_keys[0].clone();
                 j.capture.read_write_keys.push(key);
             },
-            "not exactly the native transfer closure",
+            CLOSURE,
         ),
         (
             |j| {
@@ -167,6 +240,37 @@ fn captured_prepare_refuses_modified_header_config_scope_and_incomplete_closure(
             Ok(_) => panic!("mutation {index} was accepted"),
         }
     }
+}
+
+#[test]
+#[ignore = "requires source-built uncapped policy fixture; run scripts/test-captured-target.sh"]
+fn captured_uncapped_rule_executes_without_a_counter() {
+    // The generated policy defines no counter key: nothing may read it from the strict source.
+    let prepared =
+        prepare_captured(job_from("OZPB_CAPTURED_UNCAPPED_JOB", SENDER_BALANCE)).unwrap();
+    let value =
+        serde_json::to_value(execute_captured(&prepared, &mut Capability).unwrap()).unwrap();
+    assert_eq!(value["passed"], true, "{value:#}");
+    for case in value["cases"].as_array().unwrap() {
+        assert!(case["counter_seed"].is_null());
+        assert!(case["counter_before"].is_null());
+        assert!(case["counter_after"].is_null());
+        assert!(case["undeclared_reads"].as_array().unwrap().is_empty());
+    }
+    let original = &value["cases"][0];
+    assert_eq!(original["sender_delta"], "-1000000");
+    assert_eq!(original["written_keys"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+#[ignore = "requires source-built self-recipient policy fixture; run scripts/test-captured-target.sh"]
+fn captured_state_overlapping_the_candidate_is_refused() {
+    // Paying the delegate itself: its captured account entry collides with the candidate's
+    // synthetic delegate account, which must be refused rather than overwritten.
+    let error = prepare_captured(job_from("OZPB_CAPTURED_SELF_RECIPIENT_JOB", SENDER_BALANCE))
+        .err()
+        .expect("overlap must be refused");
+    assert!(error.contains("overlaps candidate"), "{error}");
 }
 
 #[test]

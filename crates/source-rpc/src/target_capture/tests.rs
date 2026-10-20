@@ -235,67 +235,162 @@ fn native_target_capture_binds_recorded_call_header_config_and_exact_entries() {
 }
 #[test]
 fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
-    for mutate in [
-        |f: &mut Fixture| f.entries["latestLedger"] = json!(LEDGER + 1),
-        |f: &mut Fixture| f.header["ledgers"][0]["hash"] = json!("ff".repeat(32)),
-        |f: &mut Fixture| f.header["ledgers"][0]["sequence"] = json!(LEDGER + 1),
-        |f: &mut Fixture| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1),
-        |f: &mut Fixture| {
-            f.entries["entries"].as_array_mut().unwrap().remove(1);
-        },
-        |f: &mut Fixture| f.simulation["results"][0]["auth"] = json!([]),
-        |f: &mut Fixture| f.simulation["restorePreamble"] = json!({}),
-        |f: &mut Fixture| f.simulation["results"][0]["xdr"] = json!(encode(&ScVal::Bool(true))),
-        |f: &mut Fixture| {
-            let mut auth = SorobanAuthorizationEntry::from_xdr_base64(
-                f.simulation["results"][0]["auth"][0].as_str().unwrap(),
-                xdr_limits(),
-            )
-            .unwrap();
-            let child = auth.root_invocation.clone();
-            auth.root_invocation.sub_invocations = vec![child].try_into().unwrap();
-            f.simulation["results"][0]["auth"][0] = json!(encode(&auth));
-        },
-        |f: &mut Fixture| {
-            let mut header = LedgerHeaderHistoryEntry::from_xdr_base64(
-                f.header["ledgers"][0]["headerXdr"].as_str().unwrap(),
-                xdr_limits(),
-            )
-            .unwrap();
-            header.header.ledger_version = 28;
-            let hash = sha256(&header.header.to_xdr(xdr_limits()).unwrap());
+    type Mutation = fn(&mut Fixture);
+    fn edit_header(f: &mut Fixture, change: fn(&mut LedgerHeaderHistoryEntry), rehash: bool) {
+        let mut header = LedgerHeaderHistoryEntry::from_xdr_base64(
+            f.header["ledgers"][0]["headerXdr"].as_str().unwrap(),
+            xdr_limits(),
+        )
+        .unwrap();
+        change(&mut header);
+        let hash = sha256(&header.header.to_xdr(xdr_limits()).unwrap());
+        if rehash {
             header.hash = Hash(hash.0);
-            f.header["ledgers"][0]["hash"] = json!(hash.to_hex());
-            f.header["ledgers"][0]["headerXdr"] = json!(encode(&header));
-        },
-        |f: &mut Fixture| f.entries["entries"][3]["liveUntilLedgerSeq"] = json!(LEDGER + 10),
+        }
+        f.header["ledgers"][0]["hash"] = json!(hash.to_hex());
+        f.header["ledgers"][0]["headerXdr"] = json!(encode(&header));
+    }
+    const HEADER: &str = "the ledger header does not hash to, or describe, the captured ledger";
+    let cases: [(Mutation, &str); 18] = [
+        (
+            |f| f.entries["latestLedger"] = json!(LEDGER + 1),
+            "kept observing different ledgers",
+        ),
+        (
+            |f| f.header["ledgers"][0]["hash"] = json!("ff".repeat(32)),
+            HEADER,
+        ),
+        (
+            |f| f.header["ledgers"][0]["sequence"] = json!(LEDGER + 1),
+            HEADER,
+        ),
+        (
+            |f| f.header["ledgers"][0]["ledgerCloseTime"] = json!("1"),
+            HEADER,
+        ),
+        // Valid, re-hashed headers that describe something else.
+        (
+            |f| edit_header(f, |h| h.header.ledger_version = 28, true),
+            HEADER,
+        ),
+        (
+            |f| edit_header(f, |h| h.header.ledger_seq = LEDGER + 1, true),
+            HEADER,
+        ),
+        // A changed header whose embedded hash is stale.
+        (
+            |f| edit_header(f, |h| h.header.base_reserve += 1, false),
+            HEADER,
+        ),
+        (
+            |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1),
+            "is archived at reported ledger",
+        ),
+        (
+            |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER),
+            "expires at the captured ledger",
+        ),
+        (
+            |f| {
+                f.entries["entries"].as_array_mut().unwrap().remove(1);
+            },
+            "is missing from getLedgerEntries",
+        ),
+        (
+            |f| f.simulation["results"][0]["auth"] = json!([]),
+            "exactly one recorded authorization root",
+        ),
+        (
+            |f| f.simulation["restorePreamble"] = json!({}),
+            "requires restoration",
+        ),
+        (
+            |f| f.simulation["results"][0]["xdr"] = json!(encode(&ScVal::Bool(true))),
+            "did not return void",
+        ),
+        (
+            |f| {
+                let mut auth = SorobanAuthorizationEntry::from_xdr_base64(
+                    f.simulation["results"][0]["auth"][0].as_str().unwrap(),
+                    xdr_limits(),
+                )
+                .unwrap();
+                let child = auth.root_invocation.clone();
+                auth.root_invocation.sub_invocations = vec![child].try_into().unwrap();
+                f.simulation["results"][0]["auth"][0] = json!(encode(&auth));
+            },
+            "not exactly the account's transfer",
+        ),
+        (
+            |f| f.entries["entries"][3]["liveUntilLedgerSeq"] = json!(LEDGER + 10),
+            "state-archival configuration is inconsistent",
+        ),
+        (
+            |f| {
+                let archival = LedgerEntryData::ConfigSetting(ConfigSettingEntry::StateArchival(
+                    StateArchivalSettings {
+                        max_entry_ttl: 631200,
+                        min_temporary_ttl: 16,
+                        min_persistent_ttl: 0,
+                        ..Default::default()
+                    },
+                ));
+                f.entries["entries"][3]["xdr"] = json!(encode(&archival));
+            },
+            "state-archival configuration is inconsistent",
+        ),
         // Account code missing from the response.
-        |f: &mut Fixture| {
-            f.entries["entries"].as_array_mut().unwrap().remove(5);
-        },
-        // The target footprint reads account storage beyond its instance.
-        |f: &mut Fixture| {
-            let mut data = SorobanTransactionData::from_xdr_base64(
-                f.simulation["transactionData"].as_str().unwrap(),
-                xdr_limits(),
-            )
-            .unwrap();
-            let LedgerKey::ContractData(instance) = data.resources.footprint.read_only[0].clone()
-            else {
-                panic!()
-            };
-            let mut read_only = data.resources.footprint.read_only.to_vec();
-            read_only.push(LedgerKey::ContractData(LedgerKeyContractData {
-                key: ScVal::Symbol("Signers".try_into().unwrap()),
-                ..instance
-            }));
-            data.resources.footprint.read_only = read_only.try_into().unwrap();
-            f.simulation["transactionData"] = json!(encode(&data));
-        },
-    ] {
+        (
+            |f| {
+                f.entries["entries"].as_array_mut().unwrap().remove(5);
+            },
+            "is missing from getLedgerEntries",
+        ),
+        // The target footprint reads account storage beyond its instance, and RPC returns it.
+        (
+            |f| {
+                let mut data = SorobanTransactionData::from_xdr_base64(
+                    f.simulation["transactionData"].as_str().unwrap(),
+                    xdr_limits(),
+                )
+                .unwrap();
+                let LedgerKey::ContractData(instance) =
+                    data.resources.footprint.read_only[0].clone()
+                else {
+                    panic!()
+                };
+                let signers = ContractDataEntry {
+                    ext: ExtensionPoint::V0,
+                    contract: instance.contract,
+                    key: ScVal::Symbol("Signers".try_into().unwrap()),
+                    durability: ContractDataDurability::Persistent,
+                    val: ScVal::Void,
+                };
+                let entry = LedgerEntryData::ContractData(signers);
+                let mut read_only = data.resources.footprint.read_only.to_vec();
+                read_only.push(entry.to_key());
+                data.resources.footprint.read_only = read_only.try_into().unwrap();
+                f.simulation["transactionData"] = json!(encode(&data));
+                f.entries["entries"].as_array_mut().unwrap().push(json!({
+                    "key": encode(&entry.to_key()),
+                    "xdr": encode(&entry),
+                    "lastModifiedLedgerSeq": 999,
+                    "liveUntilLedgerSeq": 900000,
+                }));
+            },
+            "the target reads account storage",
+        ),
+    ];
+    for (index, (mutate, reason)) in cases.into_iter().enumerate() {
         let mut fixture = fixture();
         mutate(&mut fixture);
-        assert!(capture_native_target(&fixture, NETWORK, &fixture.envelope).is_err());
+        match capture_native_target(&fixture, NETWORK, &fixture.envelope) {
+            Err(error) => assert!(
+                error.to_string().contains(reason),
+                "mutation {index}: {error}"
+            ),
+            Ok(_) => panic!("mutation {index} was accepted"),
+        }
         assert!(fixture.calls.borrow().len() <= 10);
     }
 }
@@ -333,17 +428,32 @@ fn native_target_capture_refuses_unsupported_envelopes_before_any_rpc() {
         .unwrap();
         encode(&changed)
     };
-    for candidate in [
-        signed,
-        with_call(|call| call.contract_address = ScAddress::Contract(ContractId(Hash([9; 32])))),
-        with_call(|call| call.function_name = "approve".try_into().unwrap()),
-        with_call(|call| {
-            let mut args = call.args.to_vec();
-            args[2] = ScVal::I128(Int128Parts { hi: 0, lo: 0 });
-            call.args = args.try_into().unwrap();
-        }),
+    const SHAPE: &str = "only a positive native-asset transfer";
+    for (candidate, reason) in [
+        (signed, "the envelope carries signatures"),
+        (
+            with_call(|call| {
+                call.contract_address = ScAddress::Contract(ContractId(Hash([9; 32])))
+            }),
+            SHAPE,
+        ),
+        (
+            with_call(|call| call.function_name = "approve".try_into().unwrap()),
+            SHAPE,
+        ),
+        (
+            with_call(|call| {
+                let mut args = call.args.to_vec();
+                args[2] = ScVal::I128(Int128Parts { hi: 0, lo: 0 });
+                call.args = args.try_into().unwrap();
+            }),
+            SHAPE,
+        ),
     ] {
-        assert!(capture_native_target(&fixture, NETWORK, &candidate).is_err());
+        match capture_native_target(&fixture, NETWORK, &candidate) {
+            Err(error) => assert!(error.to_string().contains(reason), "{error}"),
+            Ok(_) => panic!("an unsupported envelope was accepted"),
+        }
         assert!(fixture.calls.borrow().is_empty());
     }
 }

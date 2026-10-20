@@ -25,11 +25,16 @@ struct Balance {
 }
 
 pub fn job_with_balance(sender_balance: i128) -> CapturedTargetJob {
+    job_from("OZPB_CAPTURED_TEST_JOB", sender_balance)
+}
+
+/// The capture for the native job named by `native_job_var`, whose rule supplies the SAC
+/// address, recipient and amount.
+pub fn job_from(native_job_var: &str, sender_balance: i128) -> CapturedTargetJob {
     use ozpb_domain::{sha256, TargetCapture, TargetEntry};
-    let native: NativeJob = serde_json::from_slice(
-        &std::fs::read(std::env::var("OZPB_CAPTURED_TEST_JOB").unwrap()).unwrap(),
-    )
-    .unwrap();
+    let native: NativeJob =
+        serde_json::from_slice(&std::fs::read(std::env::var(native_job_var).unwrap()).unwrap())
+            .unwrap();
     let env = Env::new_with_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
     });

@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct TargetEntry {
     pub key_xdr: String,
-    /// Bare LedgerEntryData, exactly as exposed by getLedgerEntries.
+    /// LedgerEntryData from getLedgerEntries, re-encoded canonically. The outer
+    /// `LedgerEntry` extension (RPC's `extXdr`, including any sponsor) is not captured.
     pub data_xdr: String,
     pub last_modified_ledger: u32,
     pub live_until_ledger: Option<u32>,

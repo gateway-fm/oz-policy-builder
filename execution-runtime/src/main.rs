@@ -79,9 +79,9 @@ fn main() {
         eprintln!("execution deadline exceeded");
         std::process::exit(124);
     });
-    std::panic::set_hook(Box::new(|_| eprintln!("native execution aborted")));
+    std::panic::set_hook(Box::new(|_| eprintln!("execution worker aborted")));
     let result =
-        std::panic::catch_unwind(run).unwrap_or_else(|_| Err("native execution aborted".into()));
+        std::panic::catch_unwind(run).unwrap_or_else(|_| Err("execution worker aborted".into()));
     if let Err(message) = result {
         eprintln!("{message}");
         std::process::exit(1);

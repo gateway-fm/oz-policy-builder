@@ -538,7 +538,9 @@ pub fn prepare_captured(job: CapturedTargetJob) -> RuntimeResult<PreparedCapture
         if data.to_key() != key
             || captured.last_modified_ledger > observed
             || has_ttl != captured.live_until_ledger.is_some()
-            || captured.live_until_ledger.is_some_and(|ttl| ttl < observed)
+            // A submission based on this capture lands at L + 1 or later, where an entry
+            // living only until L is archived.
+            || captured.live_until_ledger.is_some_and(|ttl| ttl <= observed)
         {
             return Err(refuse(
                 "captured entry is mismatched, from a later ledger, or not live",
@@ -555,7 +557,8 @@ pub fn prepare_captured(job: CapturedTargetJob) -> RuntimeResult<PreparedCapture
         }
         entries.push(CapturedEntry {
             key,
-            // RPC exposes bare entry data; the outer extension is reconstructed as V0.
+            // The outer extension (RPC's `extXdr`, including any sponsor) is not captured;
+            // it is rebuilt as V0.
             entry: xdr::LedgerEntry {
                 last_modified_ledger_seq: captured.last_modified_ledger,
                 data,
@@ -977,8 +980,12 @@ pub fn execute_captured(
         for value in call.args.iter() {
             args.push_back(Val::try_from_val(&env, value).map_err(|e| format!("argument: {e:?}"))?);
         }
+        // An uncapped rule's policy defines no counter key and setup never writes one, so a
+        // read would leave the candidate cache and reach the strict source.
+        let counted = case.context.call_count_so_far.is_some();
+        let read_counter = || counted.then(|| counter(&env, &account, &policy)).flatten();
         // Observe first: a test contract frame ends the host's authorization scope.
-        let counter_before = counter(&env, &account, &policy);
+        let counter_before = read_counter();
         let before = effective_state(&env, &input.entries)?;
         env.set_auths(&auths);
         let target = Address::from_str(&env, &input.target_contract);
@@ -997,7 +1004,7 @@ pub fn execute_captured(
             None => false,
         };
         let after = effective_state(&env, &input.entries)?;
-        let counter_after = counter(&env, &account, &policy);
+        let counter_after = read_counter();
         // Captured read-write keys, plus the candidate counter when one is configured.
         let mut writable = input
             .entries
@@ -1005,7 +1012,7 @@ pub fn execute_captured(
             .filter(|e| e.writable)
             .map(|e| encode(&e.key))
             .collect::<RuntimeResult<BTreeSet<_>>>()?;
-        if case.context.call_count_so_far.is_some() {
+        if counted {
             let key = scval(
                 &env,
                 PolicyStorageKey::CallCount(account.clone(), LOCAL_RULE_ID),

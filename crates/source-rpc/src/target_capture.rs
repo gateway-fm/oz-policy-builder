@@ -255,6 +255,15 @@ pub fn capture_native_target<T: RpcTransport>(
         if capture.reported_ledger.0 != observed {
             continue;
         }
+        // A submission based on this capture lands at L + 1 or later; an entry living only
+        // until L would be archived by then.
+        if capture
+            .entries
+            .values()
+            .any(|entry| entry.live_until_ledger.is_some_and(|ttl| ttl.0 <= observed))
+        {
+            return Err(refuse("a footprint entry expires at the captured ledger"));
+        }
         let headers = transport.call(
             "getLedgers",
             json!({
