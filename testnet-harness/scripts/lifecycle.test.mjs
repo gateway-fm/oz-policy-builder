@@ -227,7 +227,7 @@ test('one-shot configuration observation reads no signing keys and records drift
   assert.equal(changed.state().lifecycle.configuration_checks[0].configuration, 'drift_or_unavailable');
 });
 
-for (const mode of ['account refusal', 'exhausted policy', 'unrelated policy code', 'permit', 'unrecorded removal']) {
+for (const mode of ['account refusal', 'exhausted policy', 'unrelated policy code', 'permit', 'unrecorded removal', 'scope refusal', 'scope permit', 'wrong challenge refusal', 'wrong challenge permit', 'wrong challenge implicit refusal', 'wrong challenge implicit permit', 'wrong challenge conflicting expectation']) {
   test(`post-revocation invocation control: ${mode}`, () => {
     execFileSync(process.execPath, ['--experimental-vm-modules', fileURLToPath(new URL('./fixtures/post-revoke-invoke.mjs', import.meta.url)), mode], { stdio: 'pipe' });
   });

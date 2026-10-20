@@ -738,3 +738,18 @@ for (const change of ['matching', 'account code', 'installation', 'reviewed addr
     else assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
   });
 }
+
+
+test('an unexpectedly permitted negative simulation is retained without a transaction identity', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'delegate', rule: 1, amount: run.amount, to: run.recipient,
+    result: 'permit', observation: 'enforcing_simulation', ledger: 100 });
+  const dir = setup(t, run);
+  const observation = exportEvidence(dir).run.invocations.at(-1);
+  assert.equal(observation.observation, 'enforcing_simulation');
+  assert.equal(observation.result, 'permit');
+  assert.equal(observation.transaction, null);
+  run.invocations.at(-1).hash = HASH;
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+});

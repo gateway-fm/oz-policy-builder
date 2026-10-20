@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const fixture = fileURLToPath(new URL('./fixtures/install-deployment-check.mjs', import.meta.url));
-for (const mode of ['refused', 'declined', 'approved', 'default', 'subscription-approved', 'subscription-incomplete-approval']) {
+for (const mode of ['refused', 'declined', 'approved', 'default', 'subscription-approved', 'subscription-approved-reverse', 'subscription-incomplete-approval']) {
   test(`installer preserves deployment evidence: ${mode}`, () => {
     execFileSync(process.execPath, ['--experimental-vm-modules', fixture, mode], { stdio: 'pipe' });
   });

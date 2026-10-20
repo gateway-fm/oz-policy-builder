@@ -73,8 +73,13 @@ function invocation(value) {
   };
   if (v.control !== undefined) common.control = choice(v.control, ['post_revocation']);
   if (v.ledger !== undefined) common.ledger = uint(v.ledger);
+  if (v.observation !== undefined) choice(v.observation, ['enforcing_simulation']);
   if (result === 'permit') {
     if (v.code !== undefined || v.enforcer !== undefined) fail();
+    if (v.observation === 'enforcing_simulation') {
+      if (v.hash !== undefined || !common.ledger) fail();
+      return { ...common, observation: 'enforcing_simulation', transaction: null };
+    }
     return { ...common, observation: 'submitted_transaction', transaction: hash(v.hash) };
   }
   if (v.hash !== undefined) fail(); // simulation denials have no submitted transaction

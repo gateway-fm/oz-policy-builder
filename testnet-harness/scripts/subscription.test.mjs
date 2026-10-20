@@ -90,12 +90,18 @@ for (const signer of ['delegate', 'payer', 'none', 'other_token']) for (const au
 function controlFixture(mode = '') {
   let { run } = fixture(); let ledger = 500; let clock = 0; let charges = 0; let controls = 0;
   const deps = {
-    readJson: () => structuredClone(run), writeJson: (_path, value) => { run = structuredClone(value); },
+    readJson: () => { if (mode === 'charge journal unreadable' && charges) throw new Error('child journal unreadable'); return structuredClone(run); },
+    writeJson: (_path, value) => { run = structuredClone(value); },
     assertTestnet: async () => {}, viewCall: async () => i128(mode === 'unfunded token' ? 0n : 100n),
     latestLedger: async () => ledger, now: () => clock,
     delay: async () => { clock += mode === 'timeout' ? 1_000_000 : 5000; if (mode !== 'timeout') ledger += 12; },
     invokePermit: async () => {
       charges++; ledger++;
+      if (mode === 'charge denied' || mode === 'charge journal unreadable') {
+        run.invocations.push({ signer: 'delegate', rule: 1, amount: run.amount, to: run.recipient, result: 'deny',
+          code: 3221, enforcer: run.subscription.policy_address });
+        throw new Error('child charge denied');
+      }
       run.invocations.push({ signer: 'delegate', rule: 1, amount: run.amount, to: run.recipient,
         result: 'permit', hash: String(charges).repeat(64), ledger });
     },
@@ -183,3 +189,21 @@ test(`subscription fixture setup isolates the merchant and journals confirmed st
   assert.equal(run.subscription.control_token_funding, 'matched');
 });
 }
+
+
+test('a failed child charge retains its journal when the parent marks controls incomplete', async () => {
+  const f = controlFixture('charge denied');
+  await assert.rejects(runSubscriptionControls('/unused', f.deps), /child charge denied/);
+  assert.equal(f.state().subscription.controls.status, 'incomplete');
+  assert.equal(f.state().invocations.length, 1);
+  assert.equal(f.state().invocations[0].result, 'deny');
+  assert.equal(f.state().invocations[0].code, 3221);
+});
+
+
+test('a failed journal reload never overwrites the child with stale parent data', async () => {
+  const f = controlFixture('charge journal unreadable');
+  await assert.rejects(runSubscriptionControls('/unused', f.deps), /child journal unreadable/);
+  assert.equal(f.state().invocations.length, 1);
+  assert.equal(f.state().invocations[0].result, 'deny');
+});

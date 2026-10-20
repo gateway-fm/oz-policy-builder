@@ -10,11 +10,12 @@ import * as sdk from '@stellar/stellar-sdk';
 import * as lib from '../lib.mjs';
 import { signedRuleArgs } from '../approve-install.mjs';
 import { cliSpecHash } from '../check-runner.mjs';
+import { decide, walletTrust } from '../wallet-decision.mjs';
 import { SPENDING_LIMIT_WASM } from '../subscription.mjs';
 
 const mode = process.argv[2];
 const readbackFailure = process.argv[3];
-const succeeds = mode === 'approved' || mode === 'default' || mode === 'subscription-approved';
+const succeeds = mode === 'approved' || mode === 'default' || mode.startsWith('subscription-approved');
 const subscription = mode.startsWith('subscription-');
 const sourceUrl = new URL('../install.mjs', import.meta.url);
 const dir = mkdtempSync(join(tmpdir(), 'ozpb-deployment-test-'));
@@ -24,8 +25,9 @@ try {
   const rule = spec.rules[0];
   const account = spec.smart_account.address;
   const payer = rule.authorization.signers[0].delegated.address;
-  const policy = sdk.StrKey.encodeContract(Buffer.alloc(32, 42));
-  const reviewed = sdk.StrKey.encodeContract(Buffer.alloc(32, 43));
+  const addresses = [42, 43].map((n) => sdk.StrKey.encodeContract(Buffer.alloc(32, n))).sort();
+  const policy = addresses[mode.endsWith('-reverse') ? 1 : 0];
+  const reviewed = addresses[mode.endsWith('-reverse') ? 0 : 1];
   const amount = rule.allowed_calls[0].args[2].c.eq_i128.value;
   if (subscription) rule.policies.unshift({ reviewed: { kind: 'oz:spending_limit', capability: SPENDING_LIMIT_WASM,
     params: { spending_limit: { limit: amount, period_ledgers: 12 } } } });
@@ -63,7 +65,15 @@ try {
     deploymentSaved();
     if (subscription) {
       assert.deepEqual(request.binding_set.bindings.map((b) => [b.policy_index, b.contract_address]), [[0, reviewed], [1, policy]]);
-      assert.deepEqual(Array.from(expect.boundPolicies), [policy, reviewed].sort());
+      const check = JSON.parse(readFileSync(new URL('./authority/intent-passkey-owner.json', import.meta.url))).authority;
+      check.spec_hash = expect.specHash; check.registry_snapshot_root = expect.registrySnapshotRoot;
+      Object.assign(check.verdict, { account_address: account, network_id: request.network_id, spec_hash: expect.specHash,
+        bound_policy_addresses: [reviewed, policy], scope: { account, targets: [rule.context.contract], bound_policies: [reviewed, policy] } });
+      Object.assign(check.verdict.grant, { rule_index: 0, target: rule.context.contract });
+      const publicKey = check.verdict.authority_list[0].requirement.signers[0].public_key;
+      const decision = decide(check, { expect, trust: walletTrust({ own: [{ scheme: 'webauthn_p256', public_key: publicKey }] }) });
+      assert.equal(decision.accept, true, decision.reasons.join('; '));
+      assert.deepEqual(Array.from(expect.boundPolicies), [reviewed, policy]);
     }
     if (!succeeds && mode !== 'subscription-incomplete-approval') return { approved: false, reasons: [mode === 'declined' ? 'the operator declined' : 'untrusted owner'] };
     return { approved: true, commitment: 'fixture-commitment', evidence: { rechecked_at_ledger: 10 }, args: {

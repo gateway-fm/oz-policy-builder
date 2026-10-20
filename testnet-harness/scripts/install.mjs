@@ -208,7 +208,7 @@ if (checker) {
     runner: checker.runner, request, trust: checker.trust, confirm: checker.confirm, log,
     expect: {
       account: run.account, networkId: request.network_id, target: fromSpec.context,
-      boundPolicies: [...fromSpec.policies.map((p) => p.address)].sort(), ruleIndex: 0,
+      boundPolicies: fromSpec.policies.map((p) => p.address), ruleIndex: 0,
       specHash: manifest.spec_hash, registrySnapshotRoot: spec.registry_snapshot,
     },
   });

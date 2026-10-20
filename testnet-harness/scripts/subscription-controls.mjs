@@ -84,8 +84,12 @@ export async function runSubscriptionControls(dir, overrides = {}) {
   }
   async function charge(name) {
     const previous = run.invocations?.length ?? 0;
-    await deps.invokePermit(dir, run);
-    run = deps.readJson(path);
+    try { await deps.invokePermit(dir, run); }
+    finally {
+      // If the child journal cannot be re-read, do not overwrite it with stale parent state.
+      run = null;
+      run = deps.readJson(path);
+    }
     const record = run.invocations?.at(-1);
     requireThat(run.invocations?.length === previous + 1 && record.signer === 'delegate' && record.rule === run.rule_id
       && record.amount === run.amount && record.to === run.recipient && record.result === 'permit'
@@ -129,7 +133,7 @@ export async function runSubscriptionControls(dir, overrides = {}) {
     await deny('count_cap', {}, [[generated, 7]]);
     journal.status = 'completed'; save();
   } catch (error) {
-    journal.status = 'incomplete'; save(); throw error;
+    journal.status = 'incomplete'; if (run !== null) save(); throw error;
   }
   return journal;
 }
