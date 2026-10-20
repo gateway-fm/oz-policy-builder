@@ -258,6 +258,8 @@ pub enum PolicyCheckSigner {
 /// ledger state was not acquired, the only honest result is `Unsupported` (§4.6).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "prediction", rename_all = "snake_case", deny_unknown_fields)]
+// Every tagged variant is an object; MCP also requires this at the schema root.
+#[schemars(extend("type" = "object"))]
 pub enum CheckAgainstPolicyOutput {
     Permit {
         evidence: PolicyCheckEvidence,
@@ -268,12 +270,17 @@ pub enum CheckAgainstPolicyOutput {
     },
     Unsupported {
         reason: String,
+        /// Present only when a complete endpoint observation was acquired.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence: Option<Box<PolicyCheckEvidence>>,
     },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyCheckEvidence {
+    pub evidence_trust: PolicyCheckTrust,
+    pub authentication_assumption: PolicyAuthenticationAssumption,
     /// Request identities. A consumer must compare these to the original request and
     /// independently verify the trusted server's response before relying on a prediction.
     pub account_address: String,
@@ -299,6 +306,9 @@ pub struct PolicyCheckEvidence {
     /// Exact XDR key/value pairs and TTLs used to resolve the selected account rule,
     /// its signers and policies, and the policies' own configuration.
     pub configuration_reads: Vec<PolicyStateRead>,
+    /// Classic accounts have no TTL and are never encoded as contract-data observations.
+    pub classic_account_reads: Vec<PolicyClassicAccountRead>,
+    pub target_drift: Option<PolicyTargetDrift>,
     pub restoration: PolicyStateRestoration,
     /// State may change immediately after this observation. A new live check is needed
     /// immediately before a transaction is signed; this is not a validity interval.
@@ -328,6 +338,37 @@ pub enum RecheckBeforeSigning {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyCheckTrust {
+    RpcReported,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyAuthenticationAssumption {
+    CandidateSignersMustAuthenticate,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyClassicAccountRead {
+    pub account_address: String,
+    pub key_xdr_base64: String,
+    /// Canonical Account LedgerEntryData XDR; None records endpoint omission.
+    pub value_xdr_base64: Option<String>,
+    pub last_modified_ledger: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyTargetDrift {
+    pub expected_hash: String,
+    pub observed_hash: String,
+    /// True for an adapter-required or refuse-on-drift identity.
+    pub refusal_required: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyStateRead {
     pub contract_address: String,
@@ -343,7 +384,9 @@ pub struct PolicyStateRead {
 pub enum PolicyStateObservation {
     Absent,
     Present {
+        /// Canonical full LedgerEntryData XDR, including its embedded key identity.
         value_xdr_base64: String,
+        last_modified_ledger: u32,
         live_until_ledger: u32,
     },
 }
@@ -354,6 +397,8 @@ pub enum PolicyStateRestoration {
     NotRequired,
     Restored,
     Required,
+    /// Required persistence was omitted: it may never have existed or be archived.
+    Unknown,
 }
 
 // --- policy binding + call-surface check ----------------------------------------------
@@ -966,6 +1011,10 @@ mod tests {
                 "request_hash": "request-hash",
                 "observed_ledger": 100,
                 "ledger_hash": "ledger-hash",
+                "evidence_trust": "rpc_reported",
+                "authentication_assumption": "candidate_signers_must_authenticate",
+                "classic_account_reads": [],
+                "target_drift": null,
                 "storage_reads": [],
                 "configuration_reads": [],
                 "restoration": "not_required",
@@ -994,6 +1043,9 @@ mod tests {
             "binding_set_hash",
             "registry_snapshot_root",
             "request_hash",
+            "evidence_trust",
+            "authentication_assumption",
+            "classic_account_reads",
         ] {
             let mut detached = evidence_without_rule.clone();
             detached["evidence"].as_object_mut().unwrap().remove(field);
@@ -1310,6 +1362,10 @@ mod tests {
             "request_hash": baseline_hash.to_hex(),
             "observed_ledger": 100,
             "ledger_hash": "ledger-hash",
+            "evidence_trust": "rpc_reported",
+            "authentication_assumption": "candidate_signers_must_authenticate",
+            "classic_account_reads": [],
+            "target_drift": null,
             "storage_reads": [],
             "configuration_reads": [],
             "restoration": "not_required",
@@ -1478,12 +1534,17 @@ mod tests {
             "observation": {
                 "present": {
                     "value_xdr_base64": "value",
+                    "last_modified_ledger": 123,
                     "live_until_ledger": 1234
                 }
             }
         });
         assert!(serde_json::from_value::<PolicyStateRead>(present.clone()).is_ok());
-        for field in ["value_xdr_base64", "live_until_ledger"] {
+        for field in [
+            "value_xdr_base64",
+            "last_modified_ledger",
+            "live_until_ledger",
+        ] {
             let mut missing = present.clone();
             missing["observation"]["present"]
                 .as_object_mut()
@@ -1500,6 +1561,7 @@ mod tests {
             "observation": {
                 "present": {
                     "value_xdr_base64": "value",
+                    "last_modified_ledger": 123,
                     "live_until_ledger": 1234,
                     "source": "caller_supplied"
                 }

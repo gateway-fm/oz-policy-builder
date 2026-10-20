@@ -45,6 +45,10 @@ mod install_intent;
 pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod preflight;
 pub use preflight::preflight_transaction_output;
+mod policy_check;
+pub use policy_check::{
+    finish_policy_check, plan_policy_check_read, policy_check_unavailable, PolicyCheckReadPlan,
+};
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
