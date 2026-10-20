@@ -60,10 +60,70 @@ export async function latestLedger() {
   return (await server.getLatestLedger()).sequence;
 }
 
+/** Fixed total transaction fee, including Soroban resources: one testnet XLM. */
+export const MAX_TRANSACTION_FEE = 10_000_000n;
+
+/** Explicit source-payer authorization for exactly this operation, never an RPC-supplied tree. */
+function withSourceAuthorization(operation, payer) {
+  const invoke = operation.body?.invokeHostFunctionOp;
+  if (!invoke || invoke.auth.length !== 0) return operation;
+  const func = invoke.hostFunction;
+  const preimage = (func.createContract ?? func.createContractV2)?.contractIdPreimage;
+  if (preimage?.type === 'contractIdPreimageFromAddress'
+    && Address.fromScAddress(preimage.fromAddress.address).toString() !== payer) {
+    throw new Error('submission refused: contract creation source differs from fee payer');
+  }
+  let root;
+  switch (func.type) {
+    case 'hostFunctionTypeInvokeContract':
+      root = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(func.invokeContract);
+      break;
+    case 'hostFunctionTypeCreateContract':
+      root = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(func.createContract);
+      break;
+    case 'hostFunctionTypeCreateContractV2':
+      root = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractV2HostFn(func.createContractV2);
+      break;
+    case 'hostFunctionTypeUploadContractWasm':
+      return operation;
+    default:
+      throw new Error('submission refused: unsupported host function');
+  }
+  if (operation.sourceAccount !== null) throw new Error('submission refused: explicit operation source');
+  return Operation.invokeHostFunction({ func, auth: [new xdr.SorobanAuthorizationEntry({
+    credentials: xdr.SorobanCredentials.sorobanCredentialsSourceAccount(),
+    rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: root, subInvocations: [] }),
+  })] });
+}
+
+/** Assembly may add resource data and a bounded fee, never change the call we will sign. */
+function checkAssembly(assembled, expectedEnvelope) {
+  try {
+    const envelope = assembled.toEnvelope();
+    if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'
+      || envelope.v1.signatures.length !== 0) throw new Error();
+    const wire = envelope.v1.tx;
+    if (!Number.isSafeInteger(wire.fee) || wire.fee < 100 || BigInt(wire.fee) > MAX_TRANSACTION_FEE) throw new Error();
+    if (wire.ext.type === 'sorobanData') {
+      const resourceFee = wire.ext.sorobanData.resourceFee;
+      if (typeof resourceFee !== 'bigint' || resourceFee < 0n || resourceFee > BigInt(wire.fee)) throw new Error();
+    } else if (wire.ext.type !== 'v0') throw new Error();
+    const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
+    // Decode a separate copy: the SDK's envelope shares objects with its transaction.
+    const normalized = xdr.TransactionEnvelope.fromXDR(envelope.toXDR());
+    normalized.v1.tx.fee = expected.v1.tx.fee;
+    normalized.v1.tx.ext = expected.v1.tx.ext;
+    if (!Buffer.from(normalized.toXDR()).equals(expectedEnvelope)) throw new Error();
+  } catch {
+    throw new Error('submission refused: assembled transaction differs or exceeds the fee ceiling');
+  }
+}
+
 /**
  * Simulate, assemble, sign with the fee payer, submit and wait. An operation that already carries
  * signed auth entries (attached after a recording simulation) is simulated in enforcing mode with
- * them; one without uses the simulation's own source-account authorization.
+ * them; one without gets an explicit fee-payer entry for this exact host function only.
+ * Assembly may change only resources and a bounded total fee; it cannot add authorization.
  *
  * A failed simulation throws `SimulationError` before the transaction is signed or sent, which is
  * what makes a denial observable without spending a fee: the enforcing simulation runs
@@ -72,10 +132,13 @@ export async function latestLedger() {
 export async function submit(payer, operation, { stage = 'submit' } = {}) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
-    .addOperation(operation).setTimeout(120).build();
-  const sim = await server.simulateTransaction(tx);
+    .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
+  if (tx.source !== payer.publicKey()) throw new Error('submission refused: RPC returned another fee payer');
+  const expectedEnvelope = Buffer.from(tx.toEnvelope().toXDR());
+  const sim = await server.simulateTransaction(tx, undefined, 'enforce');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error);
   const assembled = rpc.assembleTransaction(tx, sim).build();
+  checkAssembly(assembled, expectedEnvelope);
   assembled.sign(payer);
   const sent = await server.sendTransaction(assembled);
   if (sent.status === 'ERROR') {
