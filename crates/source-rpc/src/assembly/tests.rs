@@ -345,6 +345,44 @@ fn separate_restoration_returns_only_a_restore_transaction_and_its_fee() {
 }
 
 #[test]
+fn the_next_open_ledger_must_fit_below_the_exclusive_maximum() {
+    for restore in [false, true] {
+        // latestLedger is already closed. Even a same-ledger simulation with a
+        // one-ledger validity window leaves no possible inclusion ledger.
+        for (validity, simulated, accepted) in [(1, 100, false), (2, 101, false), (2, 100, true)] {
+            let (mut request, rpc) = fixture();
+            request.validity_ledgers = validity;
+            {
+                let mut responses = rpc.responses.borrow_mut();
+                responses[3].1["latestLedger"] = simulated.into();
+                if restore {
+                    let mut invocation_data = restored_data();
+                    invocation_data.resource_fee = 1234;
+                    responses[3].1["transactionData"] = b64(&invocation_data).into();
+                    responses[3].1["restorePreamble"] = json!({
+                        "transactionData": b64(&restored_data()), "minResourceFee":"4321"
+                    });
+                }
+            }
+            let result = assemble_install_transaction(&rpc, NETWORK, &request);
+            if accepted {
+                let output = result.unwrap();
+                assert!(output.simulation_ledger + 1 < output.max_ledger);
+                assert_eq!(
+                    output.restoration == AssemblyRestoration::SeparateTransaction,
+                    restore
+                );
+            } else {
+                assert!(
+                    result.unwrap_err().to_string().contains("expired"),
+                    "validity={validity}, simulation={simulated}, restoration={restore}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn automatic_restoration_is_labeled_and_its_indices_are_checked() {
     for indices in [vec![0], vec![0, 0], vec![1]] {
         let (request, rpc) = fixture();
