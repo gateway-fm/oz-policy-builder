@@ -28,14 +28,14 @@
     "protocol": 29,
     "account": "CBSCLOU6CGH5DVIFL2K7KZHOPZNSQRKLI4ZIESVAMOG6S3D6XXZ27Z7E",
     "account_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
-    "target": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
     "owner": {
       "kind": "ed25519",
       "address": "GAPUNLVEGHZK6N6YUD5AXALM33Y4VVFY7YPLSPJB5M6U53LMMIDROPUO"
     },
     "delegate": "GDJ7ZU4ILAXDQMWWX4LHN4PBCXEDGRBDE3BOVCLJO3UN533WYEJ4EMOF",
-    "recipient": "GANTS327R2HLBYQBXGGNKAXXTHMAUUTSYRHGYLBJB4HTBTJ4NTSXQJGT",
-    "amount": "10000000",
+    "target": null,
+    "recipient": null,
+    "amount": null,
     "valid_until_ledger": 5294992,
     "registry_root": "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f",
     "policy": null,
@@ -260,6 +260,22 @@
           "rule_id": 1,
           "installation_transaction": "d20dabfd95bb1bfcb341749be65d450a7af4c62bfb8e55603b01cb61625e523c",
           "pending": null,
+          "authority": {
+            "status": "rechecked",
+            "authority_commitment": "77095805c32387e66c59ab3eed83cb945c21c569a3b7d294d7581b5fef809fe2",
+            "checked_at_ledger": 5294817,
+            "rechecked_at_ledger": 5294818
+          },
+          "readback": {
+            "configuration": "matched",
+            "observation": "non_atomic",
+            "read_ledgers": {
+              "account": 5294819,
+              "policy": 5294819,
+              "rule": 5294819,
+              "installed": 5294819
+            }
+          },
           "removal": {
             "transaction": "26970d5b278688bc82e9aa3ff667a19634234b010c36b89032a565d4c850e800",
             "ledger": 5294997,
@@ -276,6 +292,22 @@
           "rule_id": 2,
           "installation_transaction": "02bf33a1b07bf699778ff1703c676f638bc9af1054629d1763fe0cbf44a12b61",
           "pending": null,
+          "authority": {
+            "status": "rechecked",
+            "authority_commitment": "55cac4dbe6f19afd1e4b219ea1218c61e4a6be9457150a0a51b1ef5907c9d32f",
+            "checked_at_ledger": 5294822,
+            "rechecked_at_ledger": 5294822
+          },
+          "readback": {
+            "configuration": "matched",
+            "observation": "non_atomic",
+            "read_ledgers": {
+              "account": 5294824,
+              "policy": 5294824,
+              "rule": 5294824,
+              "installed": 5294824
+            }
+          },
           "removal": {
             "transaction": "ea7ac2b0a21688bc86dd78a5e531d9b53ef7ce0bed715b0c356aeadf869ed1d2",
             "ledger": 5294996,
@@ -289,6 +321,7 @@
     },
     "controls": {
       "status": "completed",
+      "control_set": "router_rule_denials_only",
       "steps": [
         {
           "name": "input_cap",
