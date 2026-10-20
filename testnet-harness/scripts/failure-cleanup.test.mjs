@@ -64,3 +64,44 @@ test('cleanup child has a fixed whole-process-group deadline', async () => {
   assert.equal(options.detached, true);
   assert.equal(killed, 123);
 });
+
+test('cleanup deadline waits for child close before permitting journal reconciliation', async () => {
+  const child = new EventEmitter(); child.pid = 123;
+  const timers = new Map();
+  let resolved = false, killed;
+  const pending = runCleanupChild('/controlled', { expectedRunHash: 'ab'.repeat(32),
+    spawnProcess: () => child,
+    setTimer: (fn, ms) => { timers.set(ms, fn); return ms; },
+    clearTimer: () => {}, killGroup: (pid) => { killed = pid; },
+  }).then((result) => { resolved = true; return result; });
+  timers.get(180_000)();
+  await Promise.resolve();
+  assert.equal(killed, 123);
+  assert.equal(resolved, false, 'a requested SIGKILL is not a reaped child');
+  child.emit('close', null, 'SIGKILL');
+  assert.deepEqual(await pending, { status: 'timed_out' });
+});
+for (const mode of ['kill fails', 'close never arrives']) {
+  test(`cleanup termination grace preserves uncertainty without reconciling: ${mode}`, async (t) => {
+    const child = new EventEmitter(); child.pid = 123;
+    const timers = new Map();
+    const pending = runCleanupChild('/controlled', { expectedRunHash: 'ab'.repeat(32),
+      spawnProcess: () => child, setTimer: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimer: () => {},
+      killGroup: () => { if (mode === 'kill fails') throw new Error('permission denied'); },
+    });
+    timers.get(180_000)();
+    assert.ok(timers.has(5000), 'termination grace is fixed and bounded');
+    timers.get(5000)();
+    assert.deepEqual(await pending, { status: 'termination_unconfirmed' });
+    const f = fixture(t);
+    const result = await cleanupAfterFailure(f.dir, { runRevoke: async () => {
+      writeFileSync(join(f.dir, 'run.json'), '{child may still be writing');
+      return { status: 'termination_unconfirmed' };
+    } });
+    assert.equal(result.status, 'termination_unconfirmed');
+    assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), '{child may still be writing');
+    const marker = JSON.parse(readFileSync(join(f.dir, 'cleanup-termination.json'), 'utf8'));
+    assert.equal(marker.status, 'termination_unconfirmed');
+    assert.match(marker.expected_run_sha256, /^[0-9a-f]{64}$/);
+  });
+}

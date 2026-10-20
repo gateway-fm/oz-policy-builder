@@ -753,3 +753,23 @@ test('an unexpectedly permitted negative simulation is retained without a transa
   writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
   assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
 });
+
+
+test('unreaped cleanup keeps original exit and discards keys without finalizing child-owned files', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const before = readFileSync(join(dir, 'provenance.json'), 'utf8');
+  const secrets = join(dir, 'temporary-keys');
+  mkdirSync(secrets); writeFileSync(join(secrets, 'keys.json'), 'test-only');
+  const prelude = `node() {
+    if [[ "$1" == */failure-cleanup.mjs ]]; then return 2; fi
+    command node "$@"
+  }`;
+  const result = exitHandler(dir, 42, prelude, secrets);
+  assert.equal(result.status, 42);
+  assert.equal(existsSync(secrets), false);
+  assert.equal(readFileSync(join(dir, 'provenance.json'), 'utf8'), before);
+  assert.equal(existsSync(join(dir, 'evidence.json')), false);
+  assert.match(result.stderr, /termination.*unconfirmed/i);
+});

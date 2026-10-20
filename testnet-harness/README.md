@@ -104,8 +104,11 @@ confirmed transaction. The observations come from the configured RPC; they are n
 
 A failed run with a confirmed installation attempts owner removal before discarding its
 temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
-policy configuration. Its entire child process group has a fixed 180-second deadline. The
-original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
+policy configuration. Its entire child process group has a fixed 180-second deadline and a
+five-second termination grace. A requested kill must be followed by the child's close event
+before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
+`cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
+leaves the child-owned run/provenance files unfinalized. The original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
 remain; secret deletion does not revoke it. The journal records a removal hash before send,
 so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
 automatically. A confirmed removal with incomplete readbacks likewise requires inspection.

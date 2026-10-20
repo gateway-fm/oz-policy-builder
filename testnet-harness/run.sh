@@ -81,11 +81,17 @@ node "$SCRIPTS/run-provenance.mjs" start "$RUN"
 SECRETS=''
 finish_run() {
     local run_status=$?
+    local cleanup_status=0
     trap - EXIT
     if [ "$run_status" -ne 0 ] && [ -n "$SECRETS" ]; then
-        node "$SCRIPTS/failure-cleanup.mjs" --run-dir "$RUN" || echo 'Failure cleanup incomplete; inspect run.json before assuming the grant was removed.' >&2
+        node "$SCRIPTS/failure-cleanup.mjs" --run-dir "$RUN" || cleanup_status=$?
     fi
     if [ -n "$SECRETS" ]; then rm -rf "$SECRETS" || { [ "$run_status" -ne 0 ] || run_status=1; }; fi
+    if [ "$cleanup_status" -eq 2 ]; then
+        echo 'Cleanup termination is unconfirmed; retaining its files without finalization. Inspect cleanup-termination.json and run.json.' >&2
+        exit "$run_status"
+    fi
+    if [ "$cleanup_status" -ne 0 ]; then echo 'Failure cleanup incomplete; inspect run.json before assuming the grant was removed.' >&2; fi
     # Finalize and export together, keeping provenance consistent with a reporting failure.
     node "$SCRIPTS/run-provenance.mjs" finalize "$RUN" "$run_status" || { [ "$run_status" -ne 0 ] || run_status=1; }
     exit "$run_status"

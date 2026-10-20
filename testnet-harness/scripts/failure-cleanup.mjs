@@ -2,7 +2,7 @@
 // A missing confirmation is ambiguous: never send another removal automatically.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StrKey } from '@stellar/stellar-sdk';
@@ -22,36 +22,37 @@ const identity = (run) => ({
 const sameIdentity = (left, right) => JSON.stringify(identity(left)) === JSON.stringify(identity(right));
 
 export function runCleanupChild(dir, {
-  expectedRunHash,
-  spawnProcess = spawn, setTimer = setTimeout, clearTimer = clearTimeout,
+  expectedRunHash, spawnProcess = spawn, setTimer = setTimeout, clearTimer = clearTimeout,
   killGroup = (pid) => process.kill(-pid, 'SIGKILL'),
 } = {}) {
   return new Promise((resolve) => {
-    let child; let timer; let settled = false; let timedOut = false;
+    let timer, child, settled = false, timedOut = false;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimer(timer);
       resolve(result);
     };
+    const terminate = () => {
+      timedOut = true;
+      if (timer !== undefined) clearTimer(timer);
+      try {
+        if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error('missing child process');
+        killGroup(child.pid);
+      } catch { /* A failed kill is uncertainty, not proof that cleanup stopped. */ }
+      if (!settled) timer = setTimer(() => {
+        child.unref?.();
+        finish({ status: 'termination_unconfirmed' });
+      }, 5000);
+    };
     try {
       if (!hash(expectedRunHash)) throw new Error('missing cleanup run snapshot');
       child = spawnProcess(process.execPath, [fileURLToPath(new URL('./lifecycle.mjs', import.meta.url)),
         '--run-dir', dir, '--expected-run-sha256', expectedRunHash],
       { detached: true, stdio: 'ignore', env: process.env });
-      child.once('error', () => finish({ status: 'failed' }));
+      child.once('error', () => Number.isSafeInteger(child.pid) && child.pid > 0 ? terminate() : finish({ status: 'failed' }));
       child.once('close', (code) => finish(timedOut ? { status: 'timed_out' } : { status: 'exited', code }));
-      timer = setTimer(() => {
-        timedOut = true;
-        try {
-          if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error('missing child identity');
-          killGroup(child.pid);
-        } catch {
-          // Never extend the deadline after a failed kill; preserve ambiguity and exit.
-          child.unref?.();
-        }
-        finish({ status: 'timed_out' });
-      }, 180_000);
+      timer = setTimer(terminate, 180_000);
     } catch { finish({ status: 'failed' }); }
   });
 }
@@ -79,6 +80,16 @@ export async function cleanupAfterFailure(dir, { runRevoke = runCleanupChild } =
   const expectedRunHash = createHash('sha256').update(readFileSync(path)).digest('hex');
   let child;
   try { child = await runRevoke(dir, { expectedRunHash }); } catch { child = { status: 'failed' }; }
+  if (child.status === 'termination_unconfirmed') {
+    const result = { status: 'termination_unconfirmed', reason: 'cleanup_process_not_reaped' };
+    // The child may still own run.json. Retain uncertainty in a separate file without
+    // following an existing path or allowing a reporting failure to authorize finalization.
+    try {
+      writeFileSync(join(dir, 'cleanup-termination.json'), JSON.stringify({ ...result,
+        expected_run_sha256: expectedRunHash }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    } catch { console.error('Could not create the separate cleanup termination marker.'); }
+    return result;
+  }
   const current = read();
   const removals = current.lifecycle?.removals;
   const removal = Array.isArray(removals) && removals.filter((r) => r.rule_id === initial.rule_id);
@@ -99,5 +110,11 @@ if (isMainModule(import.meta.url)) {
   if (!opts['run-dir']) throw new Error('usage: failure-cleanup.mjs --run-dir DIRECTORY');
   const result = await cleanupAfterFailure(opts['run-dir']);
   console.error(`Failure cleanup: ${result.status}${result.reason ? ` (${result.reason})` : ''}.`);
-  if (result.status === 'incomplete') console.error('The live grant may remain; inspect the retained journal. Keys will still be discarded.');
+  if (result.status === 'incomplete' || result.status === 'termination_unconfirmed') {
+    console.error('The live grant may remain; inspect the retained journal. Keys will still be discarded.');
+  }
+  if (result.status === 'termination_unconfirmed') {
+    console.error('Cleanup termination is unconfirmed; do not rewrite or finalize its journal.');
+    process.exitCode = 2;
+  }
 }
