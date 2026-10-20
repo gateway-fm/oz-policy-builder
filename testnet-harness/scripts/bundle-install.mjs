@@ -66,8 +66,10 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
       const fromSpec = bundleGrantDescription(run, spec, entry);
       const request = bundleCheckRequest({ spec, artifacts, policies, ruleIndex: entry.rule_index,
         signedRegistrySnapshot: checker.signedRegistrySnapshot, rpcSource: checker.rpcSource });
+      // The request binds every rule's policy, so the check answers about all of them; the
+      // signed intent itself must still name only this rule's policy (signedRuleArgs).
       const approval = await deps.approveInstall({ ...checker, request, log: deps.log, expect: {
-        account: run.account, networkId: spec.network_id, target: fromSpec.context, boundPolicies: [entry.policy],
+        account: run.account, networkId: spec.network_id, target: fromSpec.context, boundPolicies: policies,
         ruleIndex: entry.rule_index, specHash: entry.spec_hash, registrySnapshotRoot: spec.registry_snapshot,
       } });
       entry.authority = approval.approved ? { ...approval.evidence, status: 'rechecked' } : { status: 'refused' };

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Address, Keypair, StrKey, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { installPermissionBundle } from './bundle-install.mjs';
+import { decide, walletTrust } from './wallet-decision.mjs';
 import { contractCall } from './lib.mjs';
 import { RawJson } from './raw-json.mjs';
 const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
@@ -110,6 +111,22 @@ test('bundle installation deploys every artifact then checks and signs each exac
     assert.deepEqual(scValToNative(auth).context_rule_ids, [0], 'owner alone authorizes installation');
     assert.deepEqual(body.auth[0].rootInvocation.subInvocations, []);
     xdr.Operation.fromXDR(op.toXDR());
+  }
+});
+test('wallet expectation matches the scope a bundle check answers: every bound policy, this rule target', async () => {
+  // Shape observed from the CLI on testnet: a bundle request's verdict covers all bindings.
+  const f = fixture();
+  await f.execute();
+  for (const [i, { request, expect }] of f.approvals.entries()) {
+    const bound = request.binding_set.bindings.map((b) => b.contract_address);
+    const target = f.spec.rules[i].context.contract;
+    const verdict = { account_address: expect.account, network_id: expect.networkId, bound_policy_addresses: bound,
+      grant: { target, rule_index: i, valid_until: null }, scope: { targets: [target], account: expect.account, bound_policies: bound },
+      spec_hash: expect.specHash };
+    const check = { verdict, spec_hash: expect.specHash, registry_snapshot_root: expect.registrySnapshotRoot };
+    const { reasons } = decide(check, { trust: walletTrust({ own: [], operator: [] }), expect });
+    // Only identity mismatches matter here; the fixture verdict has no authority entries.
+    assert.deepEqual(reasons.filter((r) => r.startsWith('the answer is about')), []);
   }
 });
 for (const kind of ['partial install refusal', 'unconfirmed send', 'readback failure', 'intent substitution', 'nested authorization', 'owner rule response']) {
