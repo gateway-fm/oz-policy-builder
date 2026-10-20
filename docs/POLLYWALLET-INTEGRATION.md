@@ -170,6 +170,12 @@ control of the operator's OS account or browser profile.
 
 ## Verification
 
+The [20 October 2026 sample run](evidence/pollywallet-sample-2026-10-20.json) created and
+funded a pinned testnet account, approved the fixed 0.1 XLM transfer using `AddressV2`,
+confirmed it at ledger 5294119, and recorded the transaction through the CLI. It used the
+actual browser integration with a virtual authenticator. This is sample-flow evidence;
+the run did not install a generated grant or complete four-layer/lifecycle acceptance.
+
 Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR
 and signature checks, and the client controller's refusal paths. The apply-script tests cover
 immutable inputs, dirty/different upstream checkouts, symlinks, missing lock metadata, and
