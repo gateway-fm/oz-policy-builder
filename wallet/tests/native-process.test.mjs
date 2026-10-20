@@ -63,7 +63,8 @@ for (const [scenario, [violation, control]] of Object.entries(violations)) {
     test(`native process ${kind} ${scenario}`, async (t) => {
       const w = worker(t, `${input}${emit}const PREPARED=${JSON.stringify(prepared)},RESULT=${JSON.stringify(result)};`
         + `const it=lines[Symbol.asyncIterator]();await it.next();${body}`);
-      const run = runNative(w.executable, '{}', { ...lenient(), timeoutMs: 2000 });
+      // Generous: only a hang reaches it, and a control must not lose a race with slow start-up.
+      const run = runNative(w.executable, '{}', { ...lenient(), timeoutMs: 20000 });
       if (kind === 'rejects') await assert.rejects(() => run, /native process refused/);
       else assert.deepEqual(await run, result);
     });
@@ -73,7 +74,9 @@ test('native deadline kills its entire process group and waits for termination',
   const w = worker(t, '');
   const pidFile = join(w.dir, 'pid');
   writeFileSync(join(w.dir, 'worker.mjs'), `import {writeFileSync} from 'node:fs';import{spawn}from'node:child_process';const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},1000);`);
-  await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 400 }), /native process refused/);
+  // The deadline must exceed process start-up: first execution of a fresh script can take seconds
+  // on a loaded host, and a deadline that fires first proves nothing about the process group.
+  await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 5000 }), /native process refused/);
   assert.ok(existsSync(pidFile), 'the real child started');
   const pid = Number(readFileSync(pidFile, 'utf8'));
   // The OS may retain a dead orphan briefly; it must not remain a live running process.
