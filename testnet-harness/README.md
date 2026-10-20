@@ -95,7 +95,8 @@ runs separately and gives the field-by-field review procedure for a new summary.
   `OZPB_RPC_URL`. The scripts' own output and `run.json` show only its origin, but an error raised
   inside the RPC client can still print the full URL, so keep credentials out of it. Every script
   that signs first checks that the endpoint serves testnet.
-- `run.sh` runs `npm ci` in `scripts/` every time. Dependencies are pinned exactly and locked.
+- `run.sh` runs `npm ci` in `scripts/` and `../wallet` every time (the authority decision is the
+  wallet's module). Dependencies are pinned exactly and locked.
 - `ozpb` comes from `cargo run -p ozpb-cli`, or from `OZPB_BIN`. `ozpb generate` builds with
   cargo offline in its build cache (`OZPB_BUILD_CACHE_DIR`), so `run.sh` first fetches the golden
   crate's locked dependencies.
@@ -209,7 +210,9 @@ reproduce from our pinned inputs.
 ## Running the parts
 
 ```
-cd testnet-harness/scripts && npm ci && npm test       # offline installer and wallet tests
+cd testnet-harness/scripts && npm ci
+npm ci --prefix ../../wallet --ignore-scripts          # the wallet's shared authority decision
+npm test                                               # offline installer and wallet tests
 export OZPB_HARNESS_SECRETS=$(mktemp -d)/keys.json
 node setup.mjs --run-dir R                     # or --owner passkey, after npm ci in ../browser
 node invoke.mjs --run-dir R --signer owner --rule 0 --amount 10000000 --to <recipient> \
