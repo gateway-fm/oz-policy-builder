@@ -164,4 +164,6 @@ pinned hash. Source reproduction of the account requires the documented aarch64-
 build host. The existing nightly source-build gate runs this worker suite as well.
 
 Missing captured-target and live-enforcement evidence remains explicit. This worker is an
-incremental execution component; it does not expose the full public `dry_run` operation.
+incremental execution component; it does not expose the full public `dry_run` operation. The
+[atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is the contract a future live layer
+would simulate; it is tested on the same host but not deployed or wired to any run.
