@@ -31,22 +31,43 @@ test('interactive protocol sends a job and one response, waits for zero exit and
   try { assert.deepEqual(await runNative(w.executable, '{"schema":1}', hooks()), result); }
   finally { delete process.env.OZPB_TEST_PRIVATE_TOKEN; }
 });
-for (const scenario of ['missing newline', 'invalid UTF8', 'oversized frame', 'stderr flood', 'nonzero after result',
-  'extra after result', 'missing result', 'unknown frame', 'two outstanding signatures']) {
+for (const scenario of ['missing newline', 'invalid UTF8', 'nonzero after result',
+  'extra after result', 'missing result', 'unknown frame']) {
   test(`native process rejects ${scenario} without returning usable evidence`, async (t) => {
     let source;
     if (scenario === 'missing newline') source = `process.stdout.write(JSON.stringify(${JSON.stringify(prepared)}));`;
     if (scenario === 'invalid UTF8') source = 'process.stdout.write(Buffer.from([0xff,10]));';
-    if (scenario === 'oversized frame') source = `process.stdout.write('x'.repeat(256*1024+1));`;
-    if (scenario === 'stderr flood') source = `process.stderr.write('x'.repeat(65537));`;
     if (scenario === 'nonzero after result') source = `emit(${JSON.stringify(prepared)});emit(${JSON.stringify(result)});process.exitCode=2;`;
     if (scenario === 'extra after result') source = `emit(${JSON.stringify(prepared)});emit(${JSON.stringify(result)});emit(${JSON.stringify(result)});`;
     if (scenario === 'missing result') source = `emit(${JSON.stringify(prepared)});`;
     if (scenario === 'unknown frame') source = `emit(${JSON.stringify(prepared)});emit({type:'execute'});`;
-    if (scenario === 'two outstanding signatures') source = `process.stdout.write(JSON.stringify(${JSON.stringify(prepared)})+'\\n'+JSON.stringify({type:'sign_request',request_id:'1'})+'\\n'+JSON.stringify({type:'sign_request',request_id:'2'})+'\\n');`;
     const w = worker(t, `${emit}${source}`);
     await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 2000 }), /native process refused/);
   });
+}
+// Each worker reads its job and completes an otherwise valid prepared/result exchange, so only
+// the named guard can refuse it; the control run shows the same worker passes without the violation.
+const lenient = () => ({ ...hooks(), validatePrepared: (frame) => { assert.equal(frame.type, 'prepared'); } });
+const violations = {
+  'trailing partial line': [`emit(PREPARED);emit(RESULT);process.stdout.write('{"type"');`, `emit(PREPARED);emit(RESULT);`],
+  'oversized frame': [`emit({...PREPARED,pad:'x'.repeat(256*1024)});emit(RESULT);`, `emit({...PREPARED,pad:'x'.repeat(1024)});emit(RESULT);`],
+  'stderr flood': [`process.stderr.write('x'.repeat(65537));emit(PREPARED);emit(RESULT);`, `process.stderr.write('x'.repeat(65536));emit(PREPARED);emit(RESULT);`],
+  'unsafe number': [`process.stdout.write('{"type":"prepared","id":"retained","big":9007199254740993}\\n');emit(RESULT);`,
+    `process.stdout.write('{"type":"prepared","id":"retained","big":9007199254740991}\\n');emit(RESULT);`],
+  'two outstanding signatures': [
+    `process.stdout.write(JSON.stringify(PREPARED)+'\\n'+JSON.stringify({type:'sign_request',request_id:'1'})+'\\n'+JSON.stringify({type:'sign_request',request_id:'2'})+'\\n');await it.next();await it.next();emit(RESULT);`,
+    `emit(PREPARED);emit({type:'sign_request',request_id:'1'});await it.next();emit(RESULT);`],
+};
+for (const [scenario, [violation, control]] of Object.entries(violations)) {
+  for (const [kind, body] of [['rejects', violation], ['accepts control for', control]]) {
+    test(`native process ${kind} ${scenario}`, async (t) => {
+      const w = worker(t, `${input}${emit}const PREPARED=${JSON.stringify(prepared)},RESULT=${JSON.stringify(result)};`
+        + `const it=lines[Symbol.asyncIterator]();await it.next();${body}`);
+      const run = runNative(w.executable, '{}', { ...lenient(), timeoutMs: 2000 });
+      if (kind === 'rejects') await assert.rejects(() => run, /native process refused/);
+      else assert.deepEqual(await run, result);
+    });
+  }
 }
 test('native deadline kills its entire process group and waits for termination', async (t) => {
   const w = worker(t, '');

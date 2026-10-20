@@ -261,17 +261,27 @@ export function createWalletActions({ session, toolchain, network, native = null
       } else {
         accountCheckRunning = true;
         try {
-          const { request, output } = await toolchain.prepareDryRun({ artifactId: deployment.artifactId,
-            candidate: deployment.request, candidateContextRuleId: review.nextRuleId });
-          const source = await network.nativeSource(ACCOUNT_WASM);
-          const checked = checkDryRunPreparation(output, { specHash: artifact.specHash,
-            bindingSetHash: deployment.response.bindingSetHash, accountAddress: artifact.spec.smart_account.address,
-            delegateAddress: delegate, policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
-            candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence });
-          layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls,
-            jobText: nativeJobText(request, source.accountWasmBase64, source.ledger), ...checked });
-        } catch {
-          layer = accountLayer('failed', 'Native account execution did not produce a fully validated passing report; no evidence accepted.');
+          let prepared, source;
+          try {
+            prepared = await toolchain.prepareDryRun({ artifactId: deployment.artifactId,
+              candidate: deployment.request, candidateContextRuleId: review.nextRuleId });
+            source = await network.nativeSource(ACCOUNT_WASM);
+          } catch {
+            // Infrastructure, not the candidate: the CLI preparation or operator RPC read did not complete.
+            layer = accountLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
+          }
+          if (!layer) {
+            try {
+              const checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
+                bindingSetHash: deployment.response.bindingSetHash, accountAddress: artifact.spec.smart_account.address,
+                delegateAddress: delegate, policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
+                candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence });
+              layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls,
+                jobText: nativeJobText(prepared.request, source.accountWasmBase64, source.ledger), ...checked });
+            } catch {
+              layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
+            }
+          }
         } finally { accountCheckRunning = false; }
       }
       const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer);

@@ -9,7 +9,7 @@ const LEDGER = { protocol_version: 29, sequence: 1000, timestamp: '1760000000', 
   min_temp_entry_ttl: 720, min_persistent_entry_ttl: 120960, max_entry_ttl: 3110400 };
 
 /** A deployed, reviewed grant whose delegate is a backend-created capability; the worker is faked. */
-async function reviewed({ maxCalls = 2, runFails = false } = {}) {
+async function reviewed({ maxCalls = 2, runFails = false, intentChange = () => {}, prepareFails = false, sourceFails = false } = {}) {
   const runs = [];
   const prepares = [];
   let frames;
@@ -29,11 +29,13 @@ async function reviewed({ maxCalls = 2, runFails = false } = {}) {
   f.artifact.spec.rules[0].state = [{ call_count_per_installation: { max_calls: maxCalls } }];
   const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
   const deployed = await f.actions['confirm-deploy']({ id: preview.action.id });
+  intentChange(f.f.intent.authority.verdict.evidence);
   const review = await f.actions.review({ deploymentId: deployed.deploymentId, wallet: f.f.wallet });
   frames = nativeFixture({ maxCalls, accountAddress: f.f.wallet.contractId, delegateAddress: delegate.address,
     policyAddress: f.policy, policyCodeHash: f.artifact.wasmHash, candidateContextRuleId: 1 });
   f.toolchain.prepareDryRun = async (input) => {
     prepares.push(input);
+    if (prepareFails) throw new Error('wallet pipeline refused; refresh and review again');
     return { request: { candidate: input.candidate, run_nonce: 'e'.repeat(64) }, output: {
       schema: 'ozpb:dry-run:v1', run_hash: frames.expected.runHash, binding: { spec_hash: f.artifact.specHash,
         binding_set_hash: f.f.expected.bindingSetHash, registry_snapshot_root: 'c'.repeat(64), account_address: f.f.wallet.contractId,
@@ -46,6 +48,7 @@ async function reviewed({ maxCalls = 2, runFails = false } = {}) {
       complete: false, disclaimer: 'x' } };
   };
   f.network.nativeSource = async (hash) => { assert.equal(hash, ACCOUNT_WASM);
+    if (sourceFails) throw new Error('wallet network operation refused; inspect the local journal before retrying');
     return { ledger: LEDGER, accountWasmBase64: 'AGFzbQEAAAA=' }; };
   return { ...f, delegate, deployed, review, runs, prepares, native };
 }
@@ -108,4 +111,38 @@ test('a fresh review starts without earlier account evidence and callers cannot 
   await assert.rejects(() => f.actions['check-account']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId,
     verification: { complete: true } }), /refused/);
   await assert.rejects(() => f.actions['check-account']({ reviewId: 'f'.repeat(64), capabilityId: f.delegate.capabilityId }), /refused/);
+});
+
+for (const [name, change] of [['an on-chain list enumeration', (evidence) => { evidence.enumeration_evidence.method = 'onchain_list'; }],
+  ['a missing next ID', (evidence) => { delete evidence.enumeration_evidence.next_id; }],
+  ['no enumeration evidence', (evidence) => { delete evidence.enumeration_evidence; }]]) {
+  test(`${name} leaves the proposed rule ID unestablished, so the layer is unavailable and nothing runs`, async () => {
+    const f = await reviewed({ intentChange: change });
+    const result = await f.actions['check-account']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+    assert.equal(result.verification.layers[1].status, 'unavailable');
+    assert.match(result.verification.layers[1].detail, /next context rule ID/);
+    assert.equal(f.prepares.length + f.runs.length, 0);
+  });
+}
+
+for (const failure of ['prepareFails', 'sourceFails']) {
+  test(`an infrastructure error before the worker (${failure}) is unavailable, not a failed candidate`, async () => {
+    const f = await reviewed({ [failure]: true });
+    const result = await f.actions['check-account']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+    assert.equal(result.verification.layers[1].status, 'unavailable');
+    assert.match(result.verification.layers[1].detail, /did not run/);
+    assert.equal(f.runs.length, 0);
+  });
+}
+
+test('refused preparation evidence is a failed check, distinct from an infrastructure error', async () => {
+  const f = await reviewed();
+  const prepare = f.toolchain.prepareDryRun;
+  f.toolchain.prepareDryRun = async (input) => {
+    const value = await prepare(input);
+    return { ...value, output: { ...value.output, complete: true } };
+  };
+  const result = await f.actions['check-account']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+  assert.equal(result.verification.layers[1].status, 'failed');
+  assert.equal(f.runs.length, 0);
 });

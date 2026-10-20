@@ -180,17 +180,25 @@ a grant naming any other delegate address cannot run this check.
 3. The worker runs once with `--prepare`; the wallet checks that frame against step 1 and the
    offline signing domain, then runs the identical job interactively. Every repeated frame
    must equal the retained one. The wallet signs only the offline-domain `__check_auth`
-   digests for the derived case, control and sequence inventory, in the runner's exact
-   request and nonce order.
+   digests of IDs in the derived case, control and sequence inventory, each at most once,
+   in the runner's exact request-ID and nonce order. The order of the IDs themselves is not
+   enforced.
 4. The final report is accepted only after the wallet recomputes agreement for every case
    from the CLI's expectations and the reported observations, checks all five cryptographic
    controls and the stateful call-cap sequence, and requires a zero worker exit.
 
 A passing result marks only the `account_wasm` layer. It is local execution in fresh synthetic
 state: no target contract, captured network state or live enforcement runs, and it proves no
-ownership of the real wallet. A refused, failed or out-of-scope run (for example a call cap
-above 512) is reported as `failed` or `unsupported` without evidence. A new review starts
-again without account-Wasm evidence.
+ownership of the real wallet. Every other outcome carries no evidence:
+
+- `unsupported`: the grant is outside the worker's scope, for example a call cap above 512;
+  nothing runs.
+- `unavailable`: the next rule ID was not established, or CLI preparation or the operator
+  RPC read did not complete; the worker does not run.
+- `failed`: the preparation evidence, the worker or its report was refused.
+
+A new review starts again without account-Wasm evidence. A hung worker is stopped by its
+120-second deadline in each of its two runs; the backend serves no other request meanwhile.
 
 `bash scripts/test-wallet-native-execution.sh` runs this sequence against the actual CLI and
 worker with the runtime test's public delegate seed. Like the testnet harness, it needs

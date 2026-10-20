@@ -84,6 +84,21 @@ for (const mutation of ['live network', 'source network', 'account', 'function',
     assert.throws(() => f.signer(frame), /refused/); assert.equal(f.count(), 0);
   });
 }
+test('offline signer refuses a replayed case even with the next request ID, nonce and digest', () => {
+  const f = fixture();
+  f.signer(request(f));
+  const next = (caseId) => request(f, ({ request: r, preimage }) => {
+    r.request_id = '2'; r.nonce = '1002'; r.case_id = caseId; preimage.sorobanAuthorization.nonce = 1002n;
+  });
+  assert.throws(() => f.signer(next('case:0')), /refused/);
+  assert.equal(f.count(), 1);
+  const g = fixture();
+  g.signer(request(g));
+  const fresh = request(g, ({ request: r, preimage }) => {
+    r.request_id = '2'; r.nonce = '1002'; r.case_id = 'control:nonce_replay'; preimage.sorobanAuthorization.nonce = 1002n;
+  });
+  assert.equal(g.signer(fresh).type, 'signature', 'the same sequence for an unused case is signed');
+});
 test('offline signer rejects altered digest, noncanonical base64, replayed case and duplicate nonce', () => {
   for (const mutation of ['digest', 'base64', 'replayed case', 'duplicate nonce']) {
     const f = fixture(), first = request(f);

@@ -71,6 +71,9 @@ test('a passing native report is accepted only when every case, control and coun
 
 for (const [name, change] of [
   ['worker Boolean alone', (r) => { r.cases[1].permitted = true; r.cases[1].refusal_contract = null; r.cases[1].refusal_code = null; }],
+  // Fully consistent apart from the permit itself: only the CLI expectation can refuse it.
+  ['consistent forged permit', (r) => { Object.assign(r.cases[1], { permitted: true, refusal_contract: null, refusal_code: null,
+    counter_after: r.cases[1].counter_before + 1, state_after_hash: H('d'), state_changed: true }); }],
   ['forged expectation', (r) => { r.cases[1].expected_permit = true; r.cases[1].permitted = true; r.cases[1].refusal_contract = null; r.cases[1].refusal_code = null; }],
   ['relabelled case', (r) => { r.cases[2].label = 'original'; }],
   ['reclassified case', (r) => { r.cases[2].class = 'different_contract'; }],
