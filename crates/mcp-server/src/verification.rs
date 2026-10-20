@@ -38,7 +38,9 @@ impl PolicyBuilderServer {
     ) -> Result<Json<DryRunOutput>, CallToolResult> {
         // Reserve shared work capacity and validate the operator's RPC source
         // before building, even though this preparation does not read that source.
-        let (trust, _source, _url, deadline, slot) = self.authority_setup(&input.candidate)?;
+        // Binding recognition reproduces each generated rule. Artifact verification
+        // then builds the selected rule again and needs its own timeout allowance.
+        let (trust, _source, _url, deadline, slot) = self.authority_setup(&input.candidate, 1)?;
         let build = self.build_config.clone();
         let work = tokio::task::spawn_blocking(move || {
             let _slot = slot;
@@ -156,6 +158,33 @@ mod tests {
             refusal_code(server.prepare_dry_run(Parameters(input)).await),
             "E_RESOURCE_LIMIT",
         );
+    }
+
+    #[test]
+    fn preparation_budget_includes_binding_reproduction_and_artifact_verification() {
+        use ozpb_api_types::{PolicyBinding, PolicyRecognition};
+        use std::time::Duration;
+
+        let (mut server, mut input) = preparation();
+        server.build_config.timeout = Duration::from_secs(500);
+        // Two generated rules, including a repeated binding for one rule. The
+        // selected artifact needs another build after binding reproduction.
+        for rule_index in [0, 0, 2] {
+            input.candidate.binding_set.bindings.push(PolicyBinding {
+                rule_index,
+                policy_index: 0,
+                contract_address: "candidate".into(),
+                observed_wasm_hash: "11".repeat(32),
+                recognition: PolicyRecognition::VerifiedGeneratedManifest {
+                    build_manifest: serde_json::json!({}),
+                },
+                resolution_reference: "test".into(),
+            });
+        }
+        let (_, _, _, deadline, _) = server.authority_setup(&input.candidate, 1).unwrap();
+        assert_eq!(deadline, Duration::from_secs(1800));
+        let (_, _, _, authority_deadline, _) = server.authority_setup(&input.candidate, 0).unwrap();
+        assert_eq!(authority_deadline, Duration::from_secs(1300));
     }
 
     #[tokio::test]

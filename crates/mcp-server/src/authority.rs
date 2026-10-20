@@ -60,7 +60,7 @@ impl PolicyBuilderServer {
         &self,
         Parameters(input): Parameters<CheckPolicyCallSurfaceInput>,
     ) -> Result<Json<CheckPolicyCallSurfaceOutput>, CallToolResult> {
-        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input)?;
+        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input, 0)?;
         let build_config = self.build_config.clone();
         let work = tokio::task::spawn_blocking(move || {
             let _slot = slot;
@@ -94,7 +94,7 @@ impl PolicyBuilderServer {
         &self,
         Parameters(input): Parameters<PrepareInstallIntentInput>,
     ) -> Result<Json<PrepareInstallIntentOutput>, CallToolResult> {
-        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input)?;
+        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input, 0)?;
         let build_config = self.build_config.clone();
         let work = tokio::task::spawn_blocking(move || {
             let _slot = slot;
@@ -122,6 +122,7 @@ impl PolicyBuilderServer {
     pub(crate) fn authority_setup(
         &self,
         input: &CheckPolicyCallSurfaceInput,
+        additional_builds: u32,
     ) -> Result<Setup, CallToolResult> {
         let trust = self.registry_trust.clone().ok_or_else(|| {
             tool_err(ToolError::new(
@@ -153,7 +154,11 @@ impl PolicyBuilderServer {
         let deadline = self
             .build_config
             .timeout
-            .saturating_mul(u32::try_from(generated_rules).unwrap_or(u32::MAX))
+            .saturating_mul(
+                u32::try_from(generated_rules)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(additional_builds),
+            )
             .saturating_add(READ_DEADLINE);
         let slot = match &self.authority_slots {
             Some(slots) => Some(slots.clone().try_acquire_owned().map_err(|_| {
