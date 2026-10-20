@@ -1,0 +1,58 @@
+{
+  "schema": "pollywallet-sample-evidence/v1",
+  "network": "Test SDF Network ; September 2015",
+  "trust": "rpc_reported",
+  "toolkit_revision": "dd2e1f7553e992a0ad5e714d30a44f057b66c0a2",
+  "pollywallet_revision": "853b102983699726f918b68d8e42edbba74e65b9",
+  "started_at": "2026-10-20T11:02:18.409Z",
+  "finished_at": "2026-10-20T11:03:16.930Z",
+  "authentication": "webauthn_user_verified",
+  "authenticator": "browser_virtual_authenticator",
+  "human_approval_attested": false,
+  "account": "CARDQAE4VYNTNB5JDTEIWVJYTZ5V6KPI5S4WJRTN2BOOFUT2AR5MQGIJ",
+  "verifier": "CDSSSACTDAZVPD6N2K423IIQVQJL3UBGDVURKRZHIAPDGZZQ7FZGAKRC",
+  "account_creation": {
+    "deploy_verifier": {
+      "hash": "c970add1f261728c9462c323483cfcfa29a73d476de4aa1be6322c6bd28ff5b0",
+      "ledger": 5294113,
+      "trust": "rpc_reported"
+    },
+    "deploy_account": {
+      "hash": "3ce77ea71c918a58b4e61898286d34fa54bcc711672920f67a9573dd3fab3a64",
+      "ledger": 5294114,
+      "trust": "rpc_reported"
+    },
+    "fund_sample_balance": {
+      "hash": "820601e876b565a41211318b2125001c346041b76fe34d58c8f6a8e8ac009e6b",
+      "ledger": 5294117,
+      "trust": "rpc_reported"
+    }
+  },
+  "sample_transfer": {
+    "amount_stroops": "1000000",
+    "recipient": "GCTSURZBB5ELTL3XMEDKQVLVAMKURVUJOAUXPE7DGSXSUCPEDPYDV37R",
+    "authorization_credentials": "AddressV2",
+    "owner_rule_id": 0,
+    "receipt": {
+      "hash": "b4da609ea643890255de12113910ac71a433c2cad737347d00d4d2f403f5dbaa",
+      "ledger": 5294119,
+      "trust": "rpc_reported"
+    }
+  },
+  "recorded_transaction": "b4da609ea643890255de12113910ac71a433c2cad737347d00d4d2f403f5dbaa",
+  "steps": [
+    "prepare-account",
+    "confirm-account",
+    "prepare-sample",
+    "submit-sample",
+    "record"
+  ],
+  "status": "sample_flow_passed",
+  "complete_wallet_acceptance": false,
+  "limitations": [
+    "No generated grant was installed or executed in this run.",
+    "Four-layer verification and grant lifecycle acceptance remain separate.",
+    "Virtual authentication does not attest human approval.",
+    "The ephemeral test credentials were discarded after the run."
+  ]
+}

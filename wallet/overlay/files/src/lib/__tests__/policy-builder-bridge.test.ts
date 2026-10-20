@@ -25,7 +25,10 @@ function derSignature(raw: Uint8Array) {
   return Buffer.concat([Buffer.from([48, body.length]), body]);
 }
 
-it.each(["install", "sample"] as const)("validates an actual SDK16 Pollywallet %s signature in the isolated SDK17 validator", async (kind) => {
+it.each([
+  ["install", "sorobanCredentialsAddress"], ["install", "sorobanCredentialsAddressV2"],
+  ["sample", "sorobanCredentialsAddress"], ["sample", "sorobanCredentialsAddressV2"],
+] as const)("validates an actual SDK16 Pollywallet %s %s signature in the isolated SDK17 validator", async (kind, credentialType) => {
   vi.stubGlobal("crypto", webcrypto);
   try {
     const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -42,7 +45,7 @@ it.each(["install", "sample"] as const)("validates an actual SDK16 Pollywallet %
           nativeToScVal(1_000_000n, { type: "i128" })] })
       : new xdr.InvokeContractArgs({ contractAddress: new Address(account).toScAddress(), functionName: "add_context_rule", args: [] });
     const entry = new xdr.SorobanAuthorizationEntry({
-      credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({
+      credentials: xdr.SorobanCredentials[credentialType](new xdr.SorobanAddressCredentials({
         address: new Address(account).toScAddress(), nonce: xdr.Int64.fromString("42"),
         signatureExpirationLedger: expiration, signature: xdr.ScVal.scvVoid(),
       })),
@@ -98,11 +101,22 @@ it.each(["install", "sample"] as const)("validates an actual SDK16 Pollywallet %
     });
     const signed = await signWalletAuthEntries({ authEntries: [entry], wallet: approval.wallet,
       contextRuleIds: [ownerRuleId], expiration, verifier });
+    expect(signed[0].credentials().switch().name).toBe(credentialType);
+    const signedCredentials = credentialType === "sorobanCredentialsAddress"
+      ? signed[0].credentials().address() : signed[0].credentials().addressV2();
+    expect(Address.fromScAddress(signedCredentials.address()).toString()).toBe(account);
+    expect(signedCredentials.signature().switch().name).not.toBe("scvVoid");
     const result = await validateSignedAuthorization({ approval: signingApproval, checked,
       signedAuthEntriesXdr: signed.map((value) => value.toXDR("base64")), origin });
     expect(result.authentication).toBe("webauthn_user_verified");
     expect(result.human_approval_attested).toBe(false);
     expect(webauthn.authenticate).toHaveBeenCalledTimes(1);
+    const substituted = xdr.SorobanAuthorizationEntry.fromXDR(signed[0].toXDR());
+    substituted.credentials(credentialType === "sorobanCredentialsAddress"
+      ? xdr.SorobanCredentials.sorobanCredentialsAddressV2(signedCredentials)
+      : xdr.SorobanCredentials.sorobanCredentialsAddress(signedCredentials));
+    await expect(validateSignedAuthorization({ approval: signingApproval, checked,
+      signedAuthEntriesXdr: [substituted.toXDR("base64")], origin })).rejects.toThrow("wallet signature refused");
     await expect(validateSignedAuthorization({ approval: { ...signingApproval, ownerRuleId: ownerRuleId + 1 }, checked,
       signedAuthEntriesXdr: signed.map((value) => value.toXDR("base64")), origin })).rejects.toThrow("wallet signature refused");
   } finally {

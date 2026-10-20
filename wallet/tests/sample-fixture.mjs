@@ -1,7 +1,7 @@
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
 import { NETWORK_ID } from '../shared/approval.mjs';
-export function sampleTransfer(mutate = () => {}) {
+export function sampleTransfer(mutate = () => {}, version = 'legacy') {
   const f = fixture();
   const recipient = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 11)).publicKey();
   const ownerRuleXdr = f.ruleXdr({ id: xdr.ScVal.scvU32(0) });
@@ -10,7 +10,7 @@ export function sampleTransfer(mutate = () => {}) {
     functionName: 'transfer', args: [new Address(f.wallet.contractId).toScVal(), new Address(recipient).toScVal(),
       xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 1_000_000n }))] });
   const entry = new xdr.SorobanAuthorizationEntry({
-    credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({
+    credentials: xdr.SorobanCredentials[version === 'v2' ? 'sorobanCredentialsAddressV2' : 'sorobanCredentialsAddress'](new xdr.SorobanAddressCredentials({
       address: new Address(f.wallet.contractId).toScAddress(), nonce: 123n,
       signatureExpirationLedger: 219, signature: xdr.ScVal.scvVoid(),
     })), rootInvocation: new xdr.SorobanAuthorizedInvocation({

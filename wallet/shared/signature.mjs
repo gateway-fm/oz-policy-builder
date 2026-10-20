@@ -3,6 +3,7 @@ import { Address, Networks, buildAuthorizationEntryPreimage, hash, xdr } from '#
 import { freezeCopy } from './approval.mjs';
 import { decodeEnvelope } from './assembly.mjs';
 import { decodeBase64Url, encodeBase64Url } from './base64url.mjs';
+import { directAddressCredentials } from './auth-credentials.mjs';
 
 const refuse = () => { throw new Error('wallet signature refused; refresh and approve again'); };
 const digest = (value) => Buffer.from(hash(value));
@@ -16,12 +17,13 @@ export async function validateSignedAuthorization({ approval, checked, signedAut
     const raw = signedAuthEntriesXdr[0];
     if (typeof raw !== 'string' || raw.length > 32 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) refuse();
     const entry = xdr.SorobanAuthorizationEntry.fromXDR(raw, 'base64');
-    if (entry.toXDR('base64') !== raw || entry.credentials.type !== 'sorobanCredentialsAddress') refuse();
-    const signature = entry.credentials.address.signature;
-    entry.credentials.address.signature = xdr.ScVal.scvVoid();
+    if (entry.toXDR('base64') !== raw) refuse();
+    const credentials = directAddressCredentials(entry.credentials);
+    const signature = credentials.signature;
+    credentials.signature = xdr.ScVal.scvVoid();
     if (entry.toXDR('base64') !== checked.authEntriesXdr[0] || checked.ownerRuleId !== approval.ownerRuleId
       || checked.authorityCommitment !== approval.commitment) refuse();
-    entry.credentials.address.signature = signature;
+    credentials.signature = signature;
     if (signature.type !== 'scvMap' || signature.map?.length !== 2) refuse();
     const ruleIds = xdr.ScVal.scvVec([xdr.ScVal.scvU32(approval.ownerRuleId)]);
     const signers = signature.map[1].val;

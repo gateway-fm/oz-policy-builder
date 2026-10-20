@@ -113,7 +113,7 @@ function networkFixture(t, change = () => {}) {
   return { network, server, root, calls };
 }
 
-function sampleNetworkFixture(t, mutation) {
+function sampleNetworkFixture(t, mutation, version = 'legacy') {
   const f = networkFixture(t);
   const sample = sampleTransfer();
   sample.descriptor.recipient = f.network.payerAddress;
@@ -133,7 +133,7 @@ function sampleNetworkFixture(t, mutation) {
     const call = sampleCall({ wallet: sample.wallet, recipient: f.network.payerAddress });
     if (mutation === 'call') call.functionName = 'burn';
     const entry = new xdr.SorobanAuthorizationEntry({
-      credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({
+      credentials: xdr.SorobanCredentials[version === 'v2' ? 'sorobanCredentialsAddressV2' : 'sorobanCredentialsAddress'](new xdr.SorobanAddressCredentials({
         address: new Address(sample.wallet.contractId).toScAddress(), nonce: 4n,
         signatureExpirationLedger: 0, signature: xdr.ScVal.scvVoid(),
       })), rootInvocation: new xdr.SorobanAuthorizedInvocation({
@@ -298,3 +298,13 @@ for (const mismatch of [false, true]) {
     else { assert.match((await result).contractId, /^C/); assert.equal(readbacks, 1); }
   });
 }
+
+test('sample preparation preserves the recorded AddressV2 arm without downgrading its payload', async (t) => {
+  const f = sampleNetworkFixture(t, undefined, 'v2');
+  await f.network.fundPayer();
+  const result = await f.network.prepareSample({ ...f.sample, ownerReadLedger: 100 });
+  const auth = xdr.TransactionEnvelope.fromXDR(result.assembly.envelope_xdr_base64, 'base64').v1.tx.operations[0].body.invokeHostFunctionOp.auth[0];
+  assert.equal(auth.credentials.type, 'sorobanCredentialsAddressV2');
+  assert.equal(auth.credentials.addressV2.signature.type, 'scvVoid');
+  assert.ok(!f.calls.some((call) => call.sent));
+});
