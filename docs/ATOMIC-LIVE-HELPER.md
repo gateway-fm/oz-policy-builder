@@ -43,10 +43,13 @@ Refusals are contract errors 7001–7007: `AmountOutOfScope`, `AliasedIdentity`,
 `UnsupportedDelegate`, `UnrecognizedAccount`, `PolicyCodeMismatch`, `UnexpectedRuleId`,
 `InstalledRuleMismatch`. The last cannot be reached with the pinned account, which returns the
 rule it was given; the check stays so that the helper never relies on that. The range keeps
-clear of the asset contract's and the policies' small codes, but errors raised by the account,
-policy or asset propagate through the helper unchanged — an already expired grant surfaces as
-the account's `PastValidUntil` (3005). A refusal is therefore attributed by the contract ID of
-its diagnostic `error` event, never by its code alone.
+clear of the asset contract's and the policies' small codes. An error a called contract raises
+directly keeps its code — an already expired grant surfaces as the account's `PastValidUntil`
+(3005) from `add_context_rule`, a failing transfer as the asset's own error. Any failure inside
+an account's `__check_auth`, a policy denial included, is converted by the host into
+`Error(Auth, InvalidAction)`, and the helper's failed call then reaches its caller as the generic
+`Error(Context, InvalidAction)`. A refusal is therefore attributed by the contract ID of its
+diagnostic `error` events, never by its code alone.
 
 The helper declares its own copies of the account's `Signer`, `ContextRuleType` and
 `ContextRule` wire types so that its contract spec describes its return value. Their encoding is
@@ -67,14 +70,16 @@ approval. The tests require:
 - the permitted 1,000,000-stroop transfer installs rule 1, moves exactly that amount, advances
   the policy's call counter, returns the rule the account now stores, and leaves the helper with
   no state;
-- the adjacent 1,000,001-stroop transfer fails with the generated policy's `NoTupleMatched`
-  (code 6) attributed to the policy contract, and every ledger entry — installation, balances,
-  nonces, counters — is unchanged;
+- the adjacent 1,000,001-stroop transfer returns `Error(Context, InvalidAction)`, carries the
+  generated policy's `NoTupleMatched` (code 6) as a diagnostic error attributed to the policy
+  contract, and leaves every ledger entry — installation, balances, nonces, counters — unchanged;
 - a missing owner or delegate authorization, a delegate signing the installation, the owner
-  signing the transfer, an altered signature preimage, an expired signature and an already
-  expired grant are all refused with no state change, and before the policy raises any error —
-  all of these share one host error, so this is what shows they were refused as authorization
-  failures; the expired grant is also attributed to the account's `PastValidUntil`;
+  signing the transfer, an altered signature preimage and an expired signature are refused with
+  no state change and the same `Error(Context, InvalidAction)` a policy denial returns. Each must
+  raise its underlying authorization error — for the expired signature the signer's
+  `Error(Auth, InvalidInput)` ("signature has expired"), which the account check converts — and
+  the policy must raise none, which is what distinguishes them from a denial. An already expired
+  grant returns the account's `PastValidUntil` (3005), attributed to the account;
 - each reachable helper guard (errors 7001–7006) refuses with its own code and no state change,
   including an unexpected rule ID after a valid installation.
 
@@ -105,8 +110,10 @@ is rooted at the account's `add_context_rule` and its signer entry at the accoun
 `__check_auth`; the delegate's account entry is rooted at the asset's `transfer` and its signer
 entry likewise at `__check_auth`. Each is valid on its own, so the set signed for the permit case
 is a real, submittable installation of the candidate rule followed by a real 1,000,000-stroop
-transfer — an independent review reproduced exactly that by submitting the set directly, without
-the helper. Simulating it as a helper invocation does not change what was signed.
+transfer. The host test `permit_case_authorizations_install_and_transfer_without_the_helper`
+submits the first two entries to `add_context_rule` and the other two to the asset's `transfer`
+directly, and both succeed. Simulating the set as a helper invocation does not change what was
+signed.
 
 The entries cannot be bound to the helper with the pinned account. A single helper-rooted
 account authorization would be checked by the account once, at installation, before the rule it

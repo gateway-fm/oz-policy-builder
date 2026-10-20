@@ -33,7 +33,8 @@ for test in \
     atomic_helper_refuses_missing_owner_or_delegate_and_preserves_all_state \
     atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_state \
     atomic_helper_refuses_expired_signatures_or_grant_and_preserves_all_state \
-    atomic_helper_guards_refuse_out_of_scope_candidates_and_preserve_all_state; do
+    atomic_helper_guards_refuse_out_of_scope_candidates_and_preserve_all_state \
+    permit_case_authorizations_install_and_transfer_without_the_helper; do
     grep -qx "test $test ... ok" "$work/result.log" || {
         echo "required atomic helper test did not run and pass: $test" >&2
         exit 1

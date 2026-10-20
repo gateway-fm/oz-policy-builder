@@ -20,7 +20,7 @@ const AMOUNT: i128 = 1_000_000;
 /// The reviewed helper Wasm, as `stellar contract build` produces it with the pinned rustc and
 /// stellar-cli on the aarch64-apple-darwin host the scheduled job also builds on.
 const EXPECTED_HELPER_HASH: &str =
-    "b989c47da8fd982facc25746ae36c6e382eb0a0e5082da75c5f139484cb2f248";
+    "0731bd4e33855aaa51200595039152e72b3c44e40c324a35ecb2d407107f6dcc";
 // `HelperError` codes from contracts/atomic-live-helper/src/lib.rs.
 const AMOUNT_OUT_OF_SCOPE: u32 = 7001;
 const ALIASED_IDENTITY: u32 = 7002;
@@ -255,9 +255,17 @@ fn alter_preimage(entry: &mut xdr::SorobanAuthorizationEntry) {
 }
 /// Error values of the diagnostic `error` events attributed to `contract`, in order.
 fn contract_errors(env: &Env, contract: &Address) -> Vec<xdr::ScVal> {
-    let xdr::ScAddress::Contract(id) = scaddress(env, contract) else {
-        panic!("contract address")
-    };
+    diagnostic_errors(env, Some(contract))
+}
+/// Error values of the diagnostic `error` events, in order: all of them, or only those
+/// attributed to `contract`.
+fn diagnostic_errors(env: &Env, contract: Option<&Address>) -> Vec<xdr::ScVal> {
+    let id = contract.map(|contract| {
+        let xdr::ScAddress::Contract(id) = scaddress(env, contract) else {
+            panic!("contract address")
+        };
+        id
+    });
     let error = scval(env, Symbol::new(env, "error"));
     let events = env.host().get_diagnostic_events().unwrap();
     events
@@ -268,7 +276,7 @@ fn contract_errors(env: &Env, contract: &Address) -> Vec<xdr::ScVal> {
             match body.topics.as_slice() {
                 [topic, value]
                     if event.event.type_ == xdr::ContractEventType::Diagnostic
-                        && event.event.contract_id.as_ref() == Some(&id)
+                        && (id.is_none() || event.event.contract_id.as_ref() == id.as_ref())
                         && *topic == error =>
                 {
                     Some(value.clone())
@@ -280,6 +288,19 @@ fn contract_errors(env: &Env, contract: &Address) -> Vec<xdr::ScVal> {
 }
 fn contract_error(code: u32) -> xdr::ScVal {
     xdr::ScVal::Error(xdr::ScError::Contract(code))
+}
+/// What the helper's caller receives when a call the helper makes fails with a host error
+/// rather than a contract error: every authorization failure and every policy denial. Inside,
+/// the host has already turned a failure in the account's `__check_auth` into
+/// `Error(Auth, InvalidAction)`; the failed call then traps the helper.
+fn trapped_call_error() -> soroban_sdk::Error {
+    soroban_sdk::Error::from_type_and_code(
+        xdr::ScErrorType::Context,
+        xdr::ScErrorCode::InvalidAction,
+    )
+}
+fn auth_error(code: xdr::ScErrorCode) -> xdr::ScVal {
+    xdr::ScVal::Error(xdr::ScError::Auth(code))
 }
 fn helper_error(code: u32) -> soroban_sdk::Error {
     soroban_sdk::Error::from_contract_error(code)
@@ -402,6 +423,32 @@ impl Fixture {
     }
     /// Owner-rule authorization of the installation, then candidate-rule authorization of the
     /// transfer, each as the account entry followed by its signer's entry.
+    /// The exact `add_context_rule` arguments the helper passes for the candidate.
+    fn install_args(&self) -> SVec<Val> {
+        let e = &self.env;
+        let c = &self.candidate;
+        let mut policies = Map::<Address, Val>::new(e);
+        policies.set(c.policy.clone(), 0u32.into_val(e));
+        svec![
+            e,
+            ContextRuleType::CallContract(self.token.clone()).into_val(e),
+            c.name.clone().into_val(e),
+            Some(c.valid_until).into_val(e),
+            svec![e, Signer::Delegated(c.delegate.clone())].into_val(e),
+            policies.into_val(e)
+        ]
+    }
+    /// The exact asset `transfer` arguments the helper passes for the candidate.
+    fn transfer_args(&self) -> SVec<Val> {
+        let e = &self.env;
+        let c = &self.candidate;
+        svec![
+            e,
+            c.account.clone().into_val(e),
+            c.recipient.clone().into_val(e),
+            c.amount.into_val(e)
+        ]
+    }
     fn authorizations_signed_by(
         &self,
         install: &SigningKey,
@@ -409,37 +456,17 @@ impl Fixture {
     ) -> Vec<xdr::SorobanAuthorizationEntry> {
         let e = &self.env;
         let c = &self.candidate;
-        let mut policies = Map::<Address, Val>::new(e);
-        policies.set(c.policy.clone(), 0u32.into_val(e));
-        let install_args = svec![
-            e,
-            ContextRuleType::CallContract(self.token.clone()).into_val(e),
-            c.name.clone().into_val(e),
-            Some(c.valid_until).into_val(e),
-            svec![e, Signer::Delegated(c.delegate.clone())].into_val(e),
-            policies.into_val(e)
-        ];
         let mut auth = account_auth(
             e,
             &c.account,
             install,
-            invocation(e, &c.account, "add_context_rule", install_args),
+            invocation(e, &c.account, "add_context_rule", self.install_args()),
             10,
             0,
             self.expiry,
         )
         .to_vec();
-        let call_root = invocation(
-            e,
-            &self.token,
-            "transfer",
-            svec![
-                e,
-                c.account.clone().into_val(e),
-                c.recipient.clone().into_val(e),
-                c.amount.into_val(e)
-            ],
-        );
+        let call_root = invocation(e, &self.token, "transfer", self.transfer_args());
         auth.extend(account_auth(
             e,
             &c.account,
@@ -477,22 +504,30 @@ impl Fixture {
         );
         refusal.ok()
     }
-    /// As `refused_without_effect`, and also requires that the generated policy raised no
-    /// error: every authorization case shares one host error, so without this a policy denial
-    /// after a wrongly accepted signer would pass as an authorization refusal.
+    /// As `refused_without_effect`, requiring the exact `expected` error, a diagnostic `raised`
+    /// error showing the underlying cause, and no error from the generated policy.
+    /// Authorization failures return the same `trapped_call_error()` as a policy denial, so
+    /// without the last check a policy denial after a wrongly accepted signer would pass as an
+    /// authorization refusal. Call it once per fresh fixture: the host's diagnostic log does
+    /// not keep earlier invocations' errors, so it cannot be compared across runs.
     fn refused_before_policy(
         &self,
         auth: &[xdr::SorobanAuthorizationEntry],
         case: &str,
-    ) -> Option<soroban_sdk::Error> {
-        let before = contract_errors(&self.env, &self.candidate.policy).len();
+        expected: soroban_sdk::Error,
+        raised: xdr::ScVal,
+    ) {
         let refusal = self.refused_without_effect(auth, case);
+        assert_eq!(refusal, Some(expected), "{case}: refusal error");
+        assert!(
+            diagnostic_errors(&self.env, None).contains(&raised),
+            "{case}: underlying {raised:?} not raised"
+        );
         assert_eq!(
-            contract_errors(&self.env, &self.candidate.policy).len(),
-            before,
+            contract_errors(&self.env, &self.candidate.policy),
+            vec![],
             "{case}: must be refused before the policy decides"
         );
-        refusal
     }
     fn balance(&self, address: &Address) -> i128 {
         self.env.invoke_contract(
@@ -558,7 +593,12 @@ fn atomic_helper_installs_and_transfers_with_separate_real_v2_owner_and_delegate
 fn atomic_helper_adjacent_policy_denial_rolls_back_installation_target_and_nonces() {
     let mut f = Fixture::new();
     f.candidate.amount += 1;
-    f.refused_without_effect(&f.authorizations(), "adjacent amount");
+    let refusal = f.refused_without_effect(&f.authorizations(), "adjacent amount");
+    assert_eq!(
+        refusal,
+        Some(trapped_call_error()),
+        "the policy's denial reaches the caller as a trapped call"
+    );
     assert!(
         contract_errors(&f.env, &f.candidate.policy)
             .contains(&contract_error(POLICY_NO_TUPLE_MATCHED)),
@@ -573,48 +613,68 @@ fn atomic_helper_refuses_missing_owner_or_delegate_and_preserves_all_state() {
         let f = Fixture::new();
         let mut auth = f.authorizations();
         auth.remove(omitted);
-        f.refused_before_policy(&auth, &format!("missing authorization {omitted}"));
+        f.refused_before_policy(
+            &auth,
+            &format!("missing authorization {omitted}"),
+            trapped_call_error(),
+            auth_error(xdr::ScErrorCode::InvalidAction),
+        );
     }
 }
 
 #[test]
 #[ignore = "requires freshly built actual Wasm; run scripts/test-atomic-live-helper.sh"]
 fn atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_state() {
-    let f = Fixture::new();
     // The delegate cannot install, and the owner's key is not a signer of the candidate rule.
+    let f = Fixture::new();
     f.refused_before_policy(
         &f.authorizations_signed_by(&f.delegate, &f.delegate),
         "install signed by delegate",
+        trapped_call_error(),
+        auth_error(xdr::ScErrorCode::InvalidAction),
     );
+    let f = Fixture::new();
     f.refused_before_policy(
         &f.authorizations_signed_by(&f.owner, &f.owner),
         "transfer signed by owner",
+        trapped_call_error(),
+        auth_error(xdr::ScErrorCode::InvalidAction),
     );
     for index in 0..4 {
+        let f = Fixture::new();
         let mut auth = f.authorizations();
         alter_preimage(&mut auth[index]);
-        f.refused_before_policy(&auth, &format!("altered preimage of authorization {index}"));
+        f.refused_before_policy(
+            &auth,
+            &format!("altered preimage of authorization {index}"),
+            trapped_call_error(),
+            auth_error(xdr::ScErrorCode::InvalidAction),
+        );
     }
 }
 
 #[test]
 #[ignore = "requires freshly built actual Wasm; run scripts/test-atomic-live-helper.sh"]
 fn atomic_helper_refuses_expired_signatures_or_grant_and_preserves_all_state() {
+    // Signatures expiring at ledger 999 while the ledger is 1000. The signer's
+    // `Error(Auth, InvalidInput)` ("signature has expired") arises inside the account's
+    // `__check_auth`, so it is converted and then traps the helper like the rest.
     let mut f = Fixture::new();
-    f.expiry = 999; // the ledger is 1000
+    f.expiry = 999;
     f.refused_before_policy(
         &f.authorizations(),
         "signatures past their expiration ledger",
+        trapped_call_error(),
+        auth_error(xdr::ScErrorCode::InvalidInput),
     );
     let mut f = Fixture::new();
     f.candidate.valid_until = 999;
-    // The account's own error propagates through the helper unchanged.
-    let refusal = f.refused_before_policy(&f.authorizations(), "grant validity already over");
-    assert_eq!(
-        refusal,
-        Some(soroban_sdk::Error::from_contract_error(
-            ACCOUNT_PAST_VALID_UNTIL
-        ))
+    // `add_context_rule`'s own input check, outside `__check_auth`, so the code is kept.
+    f.refused_before_policy(
+        &f.authorizations(),
+        "grant validity already over",
+        soroban_sdk::Error::from_contract_error(ACCOUNT_PAST_VALID_UNTIL),
+        contract_error(ACCOUNT_PAST_VALID_UNTIL),
     );
     assert!(contract_errors(&f.env, &f.candidate.account)
         .contains(&contract_error(ACCOUNT_PAST_VALID_UNTIL)));
@@ -675,4 +735,30 @@ fn atomic_helper_guards_refuse_out_of_scope_candidates_and_preserve_all_state() 
         let refusal = f.refused_without_effect(&f.authorizations(), case);
         assert_eq!(refusal, Some(helper_error(code)), "{case}");
     }
+}
+
+#[test]
+#[ignore = "requires freshly built actual Wasm; run scripts/test-atomic-live-helper.sh"]
+fn permit_case_authorizations_install_and_transfer_without_the_helper() {
+    // None of the entries names the helper, so the permit-case set is a real installation and a
+    // real transfer on its own. Nothing about signing for a simulation limits that.
+    let f = Fixture::new();
+    let auth = f.authorizations();
+    let sender_before = f.balance(&f.candidate.account);
+    let recipient_before = f.balance(&f.candidate.recipient);
+    f.env.set_auths(&auth[..2]);
+    let installed: ContextRule = f.env.invoke_contract(
+        &f.candidate.account,
+        &Symbol::new(&f.env, "add_context_rule"),
+        f.install_args(),
+    );
+    assert_eq!(installed.id, f.candidate.expected_rule_id);
+    f.env.set_auths(&auth[2..]);
+    f.env.invoke_contract::<()>(
+        &f.token,
+        &Symbol::new(&f.env, "transfer"),
+        f.transfer_args(),
+    );
+    assert_eq!(f.balance(&f.candidate.account), sender_before - AMOUNT);
+    assert_eq!(f.balance(&f.candidate.recipient), recipient_before + AMOUNT);
 }
