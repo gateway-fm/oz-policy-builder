@@ -19,6 +19,7 @@ import tempfile
 import time
 import tomllib
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,6 +76,44 @@ def assert_no_job_processes(name, identities):
             raise RuntimeError("a process escaped disposable container teardown")
 
 
+def build_and_check_workspace(raw, config):
+    """Observe the actual Rust build's directory, not a synthetic mkdir."""
+    probe = """
+import os,stat
+from pathlib import Path
+root=Path('/tmp/ozpb')
+if stat.S_IMODE(root.stat().st_mode)!=0o1777 or root.stat().st_uid!=0:
+    raise SystemExit(12)
+workspaces=list(root.glob('ozpb-build-*'))
+if not workspaces:
+    raise SystemExit(11)
+for path in [root/'cargo',root/'target',*workspaces]:
+    item=path.stat()
+    if item.st_uid!=10001 or item.st_gid!=10001 or stat.S_IMODE(item.st_mode)!=0o700:
+        raise SystemExit(12)
+"""
+    observed = False
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(worker.launch, raw, config)
+        while not future.done():
+            names = run(worker.PODMAN, "ps", "--filter", "label=org.ozpb.worker=true",
+                        "--format", "{{.Names}}").decode().splitlines()
+            for name in names:
+                result = subprocess.run([worker.PODMAN, "exec", name, "/usr/bin/python3", "-c", probe],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                if result.returncode == 12:
+                    raise RuntimeError("actual worker directory ownership or mode failed")
+                if result.returncode == 0:
+                    observed = True
+            if observed:
+                break
+            time.sleep(0.1)
+        frame = future.result(timeout=config["timeout_seconds"] + 45)
+    if not observed:
+        raise RuntimeError("actual worker directory permissions were not observed")
+    return frame
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="immutable local image ID")
@@ -109,7 +148,7 @@ def main():
             files=[dict(path=path, body=body) for path, body in sorted(files.items())])).encode()
         artifacts = []
         for _ in range(2):
-            frame = worker.launch(raw, config)
+            frame = build_and_check_workspace(raw, config)
             result = frame["result"]
             if frame["containment"] != "removed" or result is None or result["artifact"] is None:
                 raise RuntimeError("real disposable compilation failed")
@@ -122,7 +161,7 @@ def main():
             artifacts.append(artifact)
         if artifacts[0] != artifacts[1]:
             raise RuntimeError("separate disposable builds did not reproduce")
-        print("real offline Wasm reproduced in two fresh disposable workers: passed")
+        print("real offline Wasm reproduced in two fresh disposable workers with private job directories: passed")
         # A synthetic worker image tests hostile process behavior under the exact production
         # launcher command. Only an immutable image ID enters that command.
         probe_context = private / "probe-context"

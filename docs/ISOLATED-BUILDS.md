@@ -77,6 +77,13 @@ dependencies are read-only image content. Source, target cache and output disapp
 the container; no writable target cache is shared between jobs. The compiler has no network
 egress, host mounts, bearer token, RPC configuration or registry signing material. The tmpfs
 permits execution because Cargo build scripts execute native programs inside the container.
+The fresh container's tmpfs mount is root-owned with sticky mode `1777`, following the
+[Podman 4.9 tmpfs interface](https://github.com/containers/podman/blob/v4.9.3/docs/source/markdown/options/tmpfs.md).
+That release rejects explicit `uid`/`gid` mount options. The single worker principal remains
+UID/GID `10001`; its source directory, Cargo home and target directory are mode `0700`
+under umask `0077`. Each container has its own mount, so this does not expose one job's
+files to another job or the API. Linux acceptance observes the actual Rust build directory's
+ownership and mode while compiling, as well as fresh-cache isolation.
 
 Podman's [runtime timeout](https://docs.podman.io/en/v5.7.0/markdown/podman-run.1.html#timeout-seconds)
 is enforced by conmon, independently of the API and launcher processes. Namespace teardown

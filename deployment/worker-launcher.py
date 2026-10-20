@@ -145,7 +145,7 @@ def command(config, name, job):
             "--cpus", str(config["cpus"]), "--memory", str(config["memory_mib"]) + "m",
             "--memory-swap", str(config["memory_mib"]) + "m", "--pids-limit", str(config["pids"]),
             "--ulimit", "nofile=1024:1024", "--umask", "0077", "--shm-size", "8m",
-            "--tmpfs", "/tmp/ozpb:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=" + str(config["tmpfs_mib"]) + "m",
+            "--tmpfs", "/tmp/ozpb:rw,exec,nosuid,nodev,mode=1777,size=" + str(config["tmpfs_mib"]) + "m",
             "--unsetenv-all", "--env", "PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin",
             "--env", "RUSTUP_HOME=/usr/local/rustup", "--env", "RUSTUP_AUTO_INSTALL=0",
             "--env", "CARGO_NET_OFFLINE=true", "--env", "CARGO_HOME=/tmp/ozpb/cargo",

@@ -79,6 +79,14 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("exec,nosuid,nodev", args[args.index("--tmpfs") + 1])
         self.assertEqual(args[-2:], [config()["image"], "/usr/local/bin/ozpb-build-worker"])
 
+    def test_private_tmpfs_uses_supported_options_and_restrictive_child_umask(self):
+        args = worker.command(config(), "ozpb-job-test", job())
+        mount = args[args.index("--tmpfs") + 1]
+        self.assertIn("mode=1777", mount)
+        self.assertNotIn("uid=", mount)
+        self.assertNotIn("gid=", mount)
+        self.assertEqual(args[args.index("--umask") + 1], "0077")
+
     def test_worker_cannot_forge_the_launcher_cleanup_frame(self):
         forged = dict(schema="contained-build-result/v1", containment="removed", job_hash="a" * 64, result=None)
         with self.assertRaises(worker.Refused):
