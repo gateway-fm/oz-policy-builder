@@ -314,7 +314,8 @@ function walkthroughRecord(value, run) {
     // install (even one whose rule ID is unknown) lacks a complete removal.
     const removed = (e) => e.removal?.event === 'verified' && e.removal.rule_readback === 'absent'
       && e.removal.policy_cleanup === 'not_installed';
-    const installed = (e) => e.installation_transaction !== null || e.pending?.operation === 'install';
+    const installed = (e) => e.installation_transaction !== null || e.pending?.operation === 'install'
+      || e.pending_removal !== null;
     const unresolved = (e) => e.pending_removal !== null || e.pending?.operation === 'install'
       || (e.installation_transaction !== null && !removed(e));
     if (bundle.cleanup === 'removed' && (bundle.entries.some(unresolved) || !bundle.entries.some(removed))) fail();
@@ -363,7 +364,7 @@ function walkthroughRecord(value, run) {
       // ledger and attribution; a contradictory record (e.g. an unexpected permit) refuses.
       const records = invocations.filter((i) => i.name === s.name);
       if (records.length !== 1 || records[0].status !== s.result || records[0].ledger !== s.ledger
-        || records[0].enforcer !== s.enforcer || records[0].code !== s.code) fail();
+        || records[0].enforcer !== s.enforcer || records[0].code !== s.code || records[0].transaction !== s.transaction) fail();
       if (s.name === positive) {
         if (s.result !== 'confirmed' || invocations.filter((i) => i.signer === 'delegate' && i.status === 'confirmed'
           && i.transaction === s.transaction && i.ledger === s.ledger).length !== 1) fail();

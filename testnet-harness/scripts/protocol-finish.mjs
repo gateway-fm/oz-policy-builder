@@ -3,7 +3,7 @@
 // If termination is unconfirmed, the caller must not reconcile/finalize the child-owned journal.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
@@ -56,12 +56,15 @@ export function runProtocolCleanupChild(dir, {
 
 export async function finishProtocolBundle(dir, { runChild = runProtocolCleanupChild } = {}) {
   const path = join(dir, 'run.json'), read = () => JSON.parse(readFileSync(path, 'utf8'));
+  // Only a journal that does not exist at all is known to hold no grant. A dangling symlink,
+  // unparsable text or a non-object value is unreadable, and grants may remain.
+  try { lstatSync(path); }
+  catch (error) { return error?.code === 'ENOENT' ? { status: 'not_applicable' } : { status: 'incomplete', reason: 'unreadable_journal' }; }
   let initial;
-  try { initial = read(); }
-  catch (error) {
-    // Only a missing journal is known to hold no grant; an unreadable one may.
-    return error?.code === 'ENOENT' ? { status: 'not_applicable' } : { status: 'incomplete', reason: 'unreadable_journal' };
-  }
+  try {
+    initial = read();
+    if (initial === null || typeof initial !== 'object' || Array.isArray(initial)) throw new Error('not a journal object');
+  } catch { return { status: 'incomplete', reason: 'unreadable_journal' }; }
   if (!initial.walkthrough?.bundle) return { status: 'not_applicable' };
   if (initial.walkthrough.final_cleanup !== undefined) return { status: 'already_attempted' };
   if (initial.network !== NETWORK_PASSPHRASE || initial.account_code_hash !== PINNED_ACCOUNT_WASM

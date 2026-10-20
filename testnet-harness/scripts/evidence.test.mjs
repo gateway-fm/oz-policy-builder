@@ -1010,3 +1010,43 @@ test('the independent permit step must match its invocation too', (t) => {
   run.walkthrough.invocations.find((i) => i.name === 'independent_token').status = 'independent_permission_not_observed';
   assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
 });
+
+test('the positive step and its own record must name the same transaction', (t) => {
+  // Another confirmed delegate record carrying the step's transaction must not stand in for it.
+  const run = protocolFixture();
+  const list = run.walkthrough.invocations;
+  const own = list.find((i) => i.name === 'delegate_swap');
+  list.push({ ...own, name: 'other_swap' });
+  own.transaction = 'ab'.repeat(32);
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+test('removed is refused when nothing was installed or removed', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  for (const e of run.walkthrough.bundle.entries) {
+    for (const key of ['installation', 'authority', 'readback', 'removal']) delete e[key];
+    delete e.tx.install;
+  }
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  assert.equal(exportEvidence(setup(t, run)).walkthrough.bundle.cleanup, 'no_installed_grants');
+  run.walkthrough.bundle.cleanup = { status: 'removed' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+test('a pending removal alone keeps a removed bundle unresolved', (t) => {
+  // Entry 1 completed its removal and also journals a later pending one; only that clause refuses.
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+test('no_installed_grants is refused while a removal is pending', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  for (const e of run.walkthrough.bundle.entries) {
+    for (const key of ['installation', 'authority', 'readback', 'removal']) delete e[key];
+    delete e.tx.install;
+  }
+  run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});

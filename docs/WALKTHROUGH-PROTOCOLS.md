@@ -36,8 +36,9 @@ The expected identities are the constants in `testnet-harness/scripts/protocol-c
 `soroswap-preflight.mjs`; the pair's code is compared with this run's own preflight observation
 before every later call.
 
-The owner then calls `swap_exact_tokens_for_tokens` once through the account's owner rule (ID 0) with these fixed,
-operator-chosen values. They are test decisions, not a price oracle or a slippage policy:
+The owner then calls `swap_exact_tokens_for_tokens` once through the account's owner rule
+(ID 0) with these fixed, operator-chosen values. They are test decisions, not a price oracle or a
+slippage policy:
 
 | Value | Decision |
 | --- | --- |
@@ -143,13 +144,16 @@ The exported `evidence.json` adds two typed summaries for these modes: `walkthro
 call, each invocation's status and attribution, the bundle journal including each rule's
 authority answer, readback, pending submissions and removals, and the control steps) and
 `protocol_pipeline`. The native setup's transfer target, recipient and amount are exported as
-`null` for these runs: they only fund the account. A Soroswap journal without the transfer-rule denials
-is labelled `router_rule_denials_only`, and a Blend journal `single_rule`. A removal made after a
-mismatched or unreadable pre-removal readback carries `pre_removal_readback`. A `completed` control
+`null` for these runs: they only fund the account. A Soroswap journal without the
+transfer-rule denials is labelled `router_rule_denials_only`, and a Blend journal `single_rule`.
+A removal made after a mismatched or unreadable pre-removal readback carries
+`pre_removal_readback`. A `completed` control
 journal is accepted only with every required step in order, its expected enforcers and codes,
 the expiry boundary, exactly one matching invocation record per step (outcome, ledger and
 attribution), a confirmed delegated positive and complete removal. `cleanup: removed` is refused
-while any install or removal is pending or a confirmed install lacks a complete removal. Per-rule Wasm, manifests and verification reports are hashed. Preflight readings, RPC
+while any install or removal is pending, a confirmed install lacks a complete removal, or nothing
+was removed; `no_installed_grants` is refused after a confirmed or pending install or a pending
+removal. Per-rule Wasm, manifests and verification reports are hashed. Preflight readings, RPC
 readbacks and host error text stay in the local run directory.
 
 These are editable local RPC observations, not authenticated ledger proofs, and monitoring reads

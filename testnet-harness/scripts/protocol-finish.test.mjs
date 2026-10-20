@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -154,3 +154,14 @@ test('a missing journal or one without a bundle is not applicable', async (t) =>
   rmSync(join(f.dir, 'run.json'));
   assert.equal((await finishProtocolBundle(f.dir, { runChild: () => assert.fail('no journal') })).status, 'not_applicable');
 });
+
+for (const mode of ['null', 'array', 'string', 'dangling symlink']) {
+  test(`a journal that is not a readable object is unreadable, not missing: ${mode}`, async (t) => {
+    const f = fixture(t);
+    const path = join(f.dir, 'run.json');
+    if (mode === 'dangling symlink') { rmSync(path); symlinkSync(join(f.dir, 'gone.json'), path); }
+    else writeFileSync(path, mode === 'null' ? 'null' : mode === 'array' ? '[]' : '"run"');
+    const result = await finishProtocolBundle(f.dir, { runChild: () => assert.fail('no child') });
+    assert.deepEqual(result, { status: 'incomplete', reason: 'unreadable_journal' });
+  });
+}
