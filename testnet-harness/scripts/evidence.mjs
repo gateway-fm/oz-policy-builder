@@ -244,8 +244,17 @@ function lifecycleRecord(value, run) {
   });
   const checks = journal.configuration_checks ?? [];
   if (!Array.isArray(checks) || checks.length > 100) fail();
+  let pending;
+  if (journal.pending_removal !== undefined) {
+    const p = object(journal.pending_removal);
+    const rule = uint(p.rule_id);
+    if (!rule || rule !== run.rule_id || removals.some((r) => r.rule_id === rule)) fail();
+    pending = { rule_id: rule, transaction: hash(p.transaction),
+      status: choice(p.status, ['prepared_for_submission']) };
+  }
   return {
     status: 'recorded', removals,
+    ...(pending ? { pending_removal: pending } : {}),
     configuration_checks: checks.map((entry) => {
       const c = object(entry);
       const configuration = choice(c.configuration, ['matched', 'drift_or_unavailable']);
@@ -274,6 +283,38 @@ function lifecycleRecord(value, run) {
   };
 }
 
+function failureCleanupRecord(value, run, lifecycle) {
+  if (value === undefined) return { status: 'not_recorded' };
+  const c = object(value);
+  const status = choice(c.status, ['attempting', 'removed', 'incomplete']);
+  const rule = uint(c.rule_id);
+  if (!run || !rule) fail();
+  const record = { status, network: choice(c.network, [TESTNET]), account: address(c.account),
+    account_code_hash: hash(c.account_code_hash), rule_id: rule, installation: hash(c.installation),
+    policy: address(c.policy), policy_wasm_hash: hash(c.policy_wasm_hash),
+    reason: optional(c.reason, (v) => choice(v, ['verified_removal', 'deadline', 'identity_changed',
+      'removal_unconfirmed', 'removal_already_recorded'])),
+    transaction: optional(c.transaction, hash) };
+  if (c.subscription !== null) {
+    const s = object(c.subscription);
+    if (s.schema_version !== 1) fail();
+    record.reviewed_policy = { address: address(s.policy_address), code_hash: hash(s.policy_code_hash),
+      mode: choice(s.mode, ['short_test_window']), period_ledgers: uint(s.period_ledgers) };
+  }
+  if (status === 'removed' && (record.reason !== 'verified_removal' || record.account !== run.account
+    || record.account_code_hash !== run.account_code_hash || record.installation !== run.transactions.add_context_rule
+    || record.policy !== run.policy || rule !== run.rule_id || record.policy_wasm_hash !== run.policy_wasm_hash
+    || (c.subscription === null) !== (run.subscription === undefined)
+    || (c.subscription !== null && (record.reviewed_policy.address !== run.subscription?.policy_address
+      || record.reviewed_policy.code_hash !== run.subscription?.policy_code_hash
+      || record.reviewed_policy.mode !== run.subscription?.mode
+      || record.reviewed_policy.period_ledgers !== run.subscription?.period_ledgers))
+    || !lifecycle.removals.some((r) => r.rule_id === rule && r.transaction === record.transaction
+      && r.event === 'verified' && r.rule_readback === 'absent'))) fail();
+  if (status !== 'removed' && record.transaction !== null) fail();
+  return record;
+}
+
 export function exportEvidence(runDir) {
   if (!lstatSync(runDir).isDirectory()) fail();
   const artifacts = {};
@@ -286,6 +327,7 @@ export function exportEvidence(runDir) {
   const rawRun = decode(artifact('run', join(runDir, 'run.json')));
   const run = runRecord(rawRun);
   const lifecycle = lifecycleRecord(rawRun?.lifecycle, run);
+  const failureCleanup = failureCleanupRecord(rawRun?.failure_cleanup, run, lifecycle);
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   const pipeline = pipelineRecord(decode(artifact('pipeline', join(runDir, 'pipeline.json'))), run);
   if (run === null && source.status === 'unavailable') fail();
@@ -323,7 +365,7 @@ export function exportEvidence(runDir) {
       'Authority trust, when used, is operator-supplied test configuration.',
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
-    provenance: source, run, pipeline, lifecycle, artifacts,
+    provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup, artifacts,
   };
 }
 

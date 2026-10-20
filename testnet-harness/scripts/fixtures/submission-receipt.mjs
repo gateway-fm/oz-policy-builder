@@ -6,7 +6,7 @@ import * as sdk from '@stellar/stellar-sdk';
 
 const mode = process.argv[2];
 const payer = sdk.Keypair.fromRawEd25519Seed(Buffer.alloc(32, 9));
-let expectedHash; let polls = 0; let signatures = 0;
+let expectedHash; let checkpointHash; let polls = 0; let signatures = 0;
 const signDecorated = payer.signDecorated.bind(payer);
 payer.signDecorated = (...args) => { signatures++; return signDecorated(...args); };
 const simulationModes = [];
@@ -56,6 +56,7 @@ class Server {
     // Model the RPC wire identity independently of the SDK's Uint8Array digest API.
     expectedHash = createHash('sha256').update(tx.signatureBase()).digest('hex');
     assert.match(expectedHash, /^[0-9a-f]{64}$/);
+    if (mode === 'submission checkpoint') assert.equal(checkpointHash, expectedHash);
     return { status: 'PENDING', hash: mode === 'submitted hash differs' ? 'ab'.repeat(32) : expectedHash };
   }
   async pollTransaction() {
@@ -138,7 +139,23 @@ if (mode === 'existing auth') {
   savedExistingAuth = Buffer.from(entry.toXDR());
   operation.body.invokeHostFunctionOp.auth.push(entry);
 }
-if (mode === 'explicit auth modes') {
+if (mode === 'submission checkpoint' || mode === 'checkpoint failure') {
+  const pending = source.namespace.submit(payer, operation, { onSubmitting: async (hash) => {
+    assert.equal(expectedHash, undefined, 'checkpoint precedes send');
+    assert.equal(signatures, 1);
+    assert.match(hash, /^[0-9a-f]{64}$/);
+    checkpointHash = hash;
+    if (mode === 'checkpoint failure') throw new Error('journal unavailable');
+  } });
+  if (mode === 'checkpoint failure') {
+    await assert.rejects(pending, /journal unavailable/);
+    assert.equal(expectedHash, undefined);
+    assert.equal(polls, 0);
+  } else {
+    const sent = await pending;
+    assert.equal(sent.hash, checkpointHash);
+  }
+} else if (mode === 'explicit auth modes') {
   await source.namespace.recordAuth(payer, operation, 'test');
   const simulated = await source.namespace.enforceSimulation(payer, operation);
   assert.deepEqual(simulationModes, ['record', 'enforce']);

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Address, Operation, authorizeEntry, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { isMainModule } from './cli-entry.mjs';
-import { contractCall, entryAddress, i128, policyDenial, ruleIdsXdr, signForSmartAccount } from './lib.mjs';
+import { contractCall, entryAddress, i128, policyDenial, signForSmartAccount } from './lib.mjs';
 import { subscriptionConfig } from './subscription.mjs';
 import * as rpc from './rpc.mjs';
 
@@ -27,7 +27,7 @@ export async function simulatedTransfer(run, { token = run.sac, to = run.recipie
   let auth;
   if (signer === 'none') {
     const accountEntry = await authorizeEntry(entries[0], async () => ({ signatureScVal: xdr.ScVal.scvMap([
-      new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('context_rule_ids'), val: ruleIdsXdr([run.rule_id]) }),
+      new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('context_rule_ids'), val: xdr.ScVal.scvVec([xdr.ScVal.scvU32(run.rule_id)]) }),
       new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('signers'), val: xdr.ScVal.scvMap([]) }),
     ]) }), until, rpc.NETWORK_PASSPHRASE);
     auth = [accountEntry];

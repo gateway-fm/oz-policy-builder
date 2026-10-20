@@ -66,6 +66,12 @@ permitted. A late immediate-repeat observation is marked inconclusive and fails 
 retry with a fresh isolated grant. Ledger waits have a finite deadline. Neither wall-clock
 elapsed time nor a missing readback is converted into a successful observation.
 
+On failure after installation, the wrapper makes one bounded owner-removal attempt before
+discarding its temporary keys. A pending or already confirmed removal is not resubmitted.
+The failure-cleanup journal distinguishes verified removal from an unresolved live grant,
+and the run retains its original nonzero exit status. An unresolved grant may remain until
+its configured ledger expiry; disposal of the throwaway keys is not evidence of revocation.
+
 ## Evidence boundaries
 
 The real CLI chain is record → synthesize → reference-suite → generate/build → verify. It

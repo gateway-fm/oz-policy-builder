@@ -48,28 +48,34 @@ test('configuration reads exact reviewed policy code before saving and refuses r
   await assert.rejects(configureSubscription('/unused', { policy: C(3), period: 12 }, deps), /already configured/);
 });
 
-for (const signer of ['delegate', 'payer', 'none', 'other_token']) {
-  test(`negative control signs only the intended auth, never a fee transaction: ${signer}`, async () => {
+for (const signer of ['delegate', 'payer', 'none', 'other_token']) for (const authV2 of [false, true]) {
+  test(`negative control signs only the intended auth, never a fee transaction: ${signer}, authV2=${authV2}`, async () => {
     const { run } = fixture(); let simulated = 0;
     run.recipient = C(9);
     const token = signer === 'other_token' ? run.subscription.other_token : run.sac;
     const request = { signer: signer === 'other_token' ? 'delegate' : signer, token };
     const intended = contractCall(token, 'transfer', [new Address(run.account).toScVal(), new Address(run.recipient).toScVal(), i128(100n)]);
-    const entry = new xdr.SorobanAuthorizationEntry({ credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
+    const credentials = authV2 ? xdr.SorobanCredentials.sorobanCredentialsAddressV2 : xdr.SorobanCredentials.sorobanCredentialsAddress;
+    const entry = new xdr.SorobanAuthorizationEntry({ credentials: credentials(
       new xdr.SorobanAddressCredentials({ address: new Address(run.account).toScAddress(), nonce: 1n,
         signatureExpirationLedger: 600, signature: xdr.ScVal.scvVoid() })), rootInvocation: intended });
     const deps = { loadKey: (name) => key(name === 'payer' ? 6 : 5), latestLedger: async () => 500,
       recordAuth: async () => [entry], enforceSimulation: async (_payer, operation) => {
         simulated++;
-        const call = operation.body.invokeHostFunctionOp.hostFunction.invokeContract;
+        // Exercise the actual SDK wire boundary: inspecting in-memory fields misses a
+        // Buffer accidentally supplied where a ScVal is required.
+        const decoded = xdr.Operation.fromXDR(operation.toXDR());
+        const call = decoded.body.invokeHostFunctionOp.hostFunction.invokeContract;
         assert.equal(Address.fromScAddress(call.contractAddress).toString(), token);
         assert.equal(scValToNative(call.args[1]), C(9), 'wrong-token control keeps the recorded merchant');
-        const auth = operation.body.invokeHostFunctionOp.auth;
+        const auth = decoded.body.invokeHostFunctionOp.auth;
         assert.equal(auth.length, signer === 'none' ? 1 : 2);
-        const payload = auth[0].credentials.address.signature;
+        const accountCredentials = auth[0].credentials.address ?? auth[0].credentials.addressV2;
+        const payload = accountCredentials.signature;
+        assert.deepEqual(scValToNative(payload.map.find((p) => p.key.sym.toString() === 'context_rule_ids').val), [run.rule_id]);
         const signers = payload.map.find((p) => p.key.sym.toString() === 'signers').val.map;
         assert.equal(signers.length, signer === 'none' ? 0 : 1);
-        assert.equal(auth[0].credentials.address.signatureExpirationLedger, 600);
+        assert.equal(accountCredentials.signatureExpirationLedger, 600);
         return { result: 'permit', ledger: 500 };
       }, submit: () => assert.fail('negative controls cannot submit') };
     const observed = await simulatedTransfer(run, request, deps);

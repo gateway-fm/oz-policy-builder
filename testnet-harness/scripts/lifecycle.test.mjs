@@ -179,6 +179,21 @@ test('best-effort policy cleanup failure does not erase confirmed rule removal',
   assert.equal(removal.policy_cleanup, 'still_installed');
 });
 
+test('an ambiguous removal keeps its pre-submission identity and is never resubmitted', async (t) => {
+  const f = fixture(t);
+  let attempts = 0;
+  f.deps.submit = async (_payer, _op, { onSubmitting }) => {
+    attempts++;
+    await onSubmitting(hash);
+    assert.equal(f.state().lifecycle.pending_removal.transaction, hash);
+    throw new Error('confirmation unavailable');
+  };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /confirmation unavailable/);
+  assert.equal(f.state().lifecycle.pending_removal.rule_id, ruleId);
+  await assert.rejects(revokePolicy(f.dir, f.deps), /already recorded|pending/);
+  assert.equal(attempts, 1);
+});
+
 for (const mode of ['subscription', 'subscription cleanup remains']) {
   test(`composed removal preserves both independent cleanup results: ${mode}`, async (t) => {
     const f = fixture(t, mode);
@@ -217,3 +232,11 @@ for (const mode of ['account refusal', 'exhausted policy', 'unrelated policy cod
     execFileSync(process.execPath, ['--experimental-vm-modules', fileURLToPath(new URL('./fixtures/post-revoke-invoke.mjs', import.meta.url)), mode], { stdio: 'pipe' });
   });
 }
+
+
+test('failure cleanup refuses a changed run snapshot before loading owner keys', async (t) => {
+  const f = fixture(t);
+  await assert.rejects(revokePolicy(f.dir, { ...f.deps, expectedRunHash: '00'.repeat(32) }), /cleanup run snapshot/);
+  assert.equal(f.keyLoads(), 0);
+  assert.equal(f.sent(), 0);
+});

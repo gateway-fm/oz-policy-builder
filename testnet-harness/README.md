@@ -102,6 +102,14 @@ Lifecycle records likewise distinguish a confirmed removal transaction, its chec
 the rule readback and best-effort policy cleanup. A later readback failure does not erase the
 confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
 
+A failed run with a confirmed installation attempts owner removal before discarding its
+temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
+policy configuration. Its entire child process group has a fixed 180-second deadline. The
+original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
+remain; secret deletion does not revoke it. The journal records a removal hash before send,
+so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
+automatically. A confirmed removal with incomplete readbacks likewise requires inspection.
+
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
 

@@ -135,7 +135,7 @@ function checkAssembly(assembled, expectedEnvelope) {
  * what makes a denial observable without spending a fee: the enforcing simulation runs
  * `__check_auth` and the installed policies exactly as the network would.
  */
-export async function submit(payer, operation, { stage = 'submit' } = {}) {
+export async function submit(payer, operation, { stage = 'submit', onSubmitting } = {}) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
@@ -146,11 +146,14 @@ export async function submit(payer, operation, { stage = 'submit' } = {}) {
   const assembled = rpc.assembleTransaction(tx, sim).build();
   checkAssembly(assembled, expectedEnvelope);
   assembled.sign(payer);
+  const expectedHash = Buffer.from(assembled.hash()).toString('hex');
+  // Persist a removal identity before the first network write. A failed checkpoint prevents send;
+  // a later transport/confirmation failure keeps the identity available for manual inspection.
+  if (onSubmitting) await onSubmitting(expectedHash);
   const sent = await server.sendTransaction(assembled);
   if (sent.status === 'ERROR') {
     throw new Error(`${stage}: sendTransaction ERROR ${sent.errorResult?.toXDR?.('base64') ?? ''}`);
   }
-  const expectedHash = Buffer.from(assembled.hash()).toString('hex');
   if (sent.hash !== expectedHash) throw new Error(`${stage}: RPC returned another transaction identity`);
   const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
   if (done.status !== 'SUCCESS') {

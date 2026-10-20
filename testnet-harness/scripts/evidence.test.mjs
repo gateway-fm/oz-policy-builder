@@ -58,6 +58,20 @@ test('selects public observations and labels transactions separately from simula
   assert.ok(!JSON.stringify(report).includes(dir));
 });
 
+test('exports unresolved removal and failure cleanup without claiming revocation', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [], pending_removal: { rule_id: 1, transaction: HASH, status: 'prepared_for_submission', secret: SENTINEL } };
+  run.failure_cleanup = { status: 'incomplete', reason: 'removal_already_recorded', network: run.network,
+    account: C, account_code_hash: HASH, rule_id: 1, installation: HASH,
+    policy: C, policy_wasm_hash: wasmHash, subscription: null, secret: SENTINEL };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.lifecycle.pending_removal.transaction, HASH);
+  assert.equal(report.failure_cleanup.status, 'incomplete');
+  assert.equal(report.failure_cleanup.reason, 'removal_already_recorded');
+  assert.equal(report.failure_cleanup.transaction, null);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
 test('exports a recorded synthesis and reproduction chain without upgrading its evidence trust', (t) => {
   const run = fixture();
   run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
@@ -292,13 +306,13 @@ test('an explicit null invocation list is malformed', (t) => {
 });
 
 // Run the actual wrapper's EXIT handler without executing its live testnet steps.
-function exitHandler(dir, code = 0) {
+function exitHandler(dir, code = 0, prelude = '', secrets = '') {
   const script = readFileSync(join(ROOT, 'testnet-harness/run.sh'), 'utf8');
   const start = script.indexOf('finish_run() {');
   const end = script.indexOf('trap finish_run EXIT', start) + 'trap finish_run EXIT'.length;
   assert.ok(start >= 0 && end > start);
-  return spawnSync('bash', ['-c', `set -euo pipefail\n${script.slice(start, end)}\nexit "$HARNESS_TEST_EXIT"\n`], {
-    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: '', HARNESS_TEST_EXIT: String(code) },
+  return spawnSync('bash', ['-c', `set -euo pipefail\n${prelude}\n${script.slice(start, end)}\nexit "$HARNESS_TEST_EXIT"\n`], {
+    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: secrets, HARNESS_TEST_EXIT: String(code) },
     encoding: 'utf8', timeout: 20000,
   });
 }
@@ -676,3 +690,51 @@ test('CLI publication failure preserves the previous output and removes its temp
   assert.equal(readFileSync(join(output, 'keep'), 'utf8'), SENTINEL);
   assert.ok(!readdirSync(dir).some((name) => name.startsWith('.evidence-')));
 });
+
+
+test('failed exit attempts cleanup before discarding keys and retains original status', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const secrets = join(dir, 'temporary-keys');
+  mkdirSync(secrets);
+  writeFileSync(join(secrets, 'keys.json'), 'test-only');
+  const prelude = `node() {
+    if [[ "$1" == */failure-cleanup.mjs ]]; then
+      test -f "$SECRETS/keys.json" || return 99
+      printf checked > "$RUN/cleanup-attempt"
+      return 17
+    fi
+    command node "$@"
+  }`;
+  const result = exitHandler(dir, 42, prelude, secrets);
+  assert.equal(result.status, 42, result.stderr);
+  assert.equal(readFileSync(join(dir, 'cleanup-attempt'), 'utf8'), 'checked');
+  assert.equal(existsSync(secrets), false);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'provenance.json'))).exit_code, 42);
+});
+
+for (const change of ['matching', 'account code', 'installation', 'reviewed address', 'reviewed code', 'reviewed period', 'missing reviewed', 'unexpected reviewed']) {
+  test(`verified failure cleanup binds its original installation: ${change}`, (t) => {
+    const run = fixture();
+    if (change !== 'unexpected reviewed') run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+      policy_address: C, policy_code_hash: HASH };
+    run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 20,
+      event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed' }] };
+    run.failure_cleanup = { status: 'removed', reason: 'verified_removal', transaction: HASH,
+      network: run.network, account: C, account_code_hash: HASH, rule_id: 1, installation: HASH,
+      policy: C, policy_wasm_hash: wasmHash, subscription: structuredClone(run.subscription ?? null) };
+    const c = run.failure_cleanup;
+    if (change === 'account code') c.account_code_hash = 'cd'.repeat(32);
+    if (change === 'installation') c.installation = 'cd'.repeat(32);
+    if (change === 'reviewed address') c.subscription.policy_address = 'C' + 'B'.repeat(55);
+    if (change === 'reviewed code') c.subscription.policy_code_hash = 'cd'.repeat(32);
+    if (change === 'reviewed period') c.subscription.period_ledgers = 13;
+    if (change === 'missing reviewed') c.subscription = null;
+    if (change === 'unexpected reviewed') c.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+      policy_address: C, policy_code_hash: HASH };
+    const dir = setup(t, run);
+    if (change === 'matching') assert.equal(exportEvidence(dir).failure_cleanup.status, 'removed');
+    else assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+  });
+}

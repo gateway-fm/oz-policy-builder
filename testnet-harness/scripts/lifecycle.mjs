@@ -1,6 +1,7 @@
 // Owner-driven removal of the harness's recorded grant. Removal, its event and policy cleanup
 // are distinct observations: stellar-accounts 0.7.2 uninstalls policies on a best-effort basis.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Address, Operation, StrKey, TransactionBuilder, scValToNative, xdr } from '@stellar/stellar-sdk';
@@ -120,10 +121,14 @@ function contractError(error, contract, code) {
 export async function revokePolicy(dir, overrides = {}) {
   const deps = { ...rpc, ownerSigner, ...overrides };
   const path = join(dir, 'run.json');
-  const run = parseJsonExact(readFileSync(path, 'utf8'));
+  const bytes = readFileSync(path, 'utf8');
+  if (deps.expectedRunHash !== undefined) requireThat(/^[0-9a-f]{64}$/.test(deps.expectedRunHash)
+    && createHash('sha256').update(bytes).digest('hex') === deps.expectedRunHash, 'cleanup run snapshot changed');
+  const run = parseJsonExact(bytes);
   const spec = parseJsonExact(readFileSync(join(dir, 'spec.json'), 'utf8'));
   requireThat(run.lifecycle === undefined || (run.lifecycle && Array.isArray(run.lifecycle.removals)), 'malformed lifecycle journal');
   const previous = run.lifecycle?.removals ?? [];
+  requireThat(run.lifecycle?.pending_removal === undefined, 'a pending removal is already recorded; inspect it before retrying');
   requireThat(!previous.some((r) => r.rule_id === run.rule_id), 'a removal for this rule is already recorded; inspect it before retrying');
   const observed = await inspectInstalledGrant(run, spec, deps);
   const payer = deps.loadKey('payer');
@@ -135,11 +140,16 @@ export async function revokePolicy(dir, overrides = {}) {
     expect: contractCall(run.account, 'remove_context_rule', ruleArg(run.rule_id)), signer: owner, ruleIds: [0],
     validUntilLedger: (await deps.latestLedger()) + 100, networkPassphrase: rpc.NETWORK_PASSPHRASE });
   const sent = await deps.submit(payer, removeOperation(run.account, run.rule_id, [signed.accountEntry, signed.delegateEntry].filter(Boolean)),
-    { stage: 'remove_context_rule' });
+    { stage: 'remove_context_rule', onSubmitting: (hash) => {
+      run.lifecycle = { ...(run.lifecycle ?? {}), removals: previous,
+        pending_removal: { rule_id: run.rule_id, transaction: hash, status: 'prepared_for_submission' } };
+      deps.writeJson(path, run);
+    } });
   const removal = { rule_id: run.rule_id, transaction: sent.hash, ledger: sent.receipt?.ledger ?? null,
     event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked', before: observed };
   // Submission was confirmed; preserve its identity before event or readback validation can fail.
   run.lifecycle = { ...(run.lifecycle ?? {}), removals: [...previous, removal] };
+  delete run.lifecycle.pending_removal;
   deps.writeJson(path, run);
   removalEvent(sent.receipt, { hash: sent.hash, account: run.account, ruleId: run.rule_id });
   removal.event = 'verified';
@@ -181,6 +191,6 @@ export async function revokePolicy(dir, overrides = {}) {
 if (isMainModule(import.meta.url)) {
   const opts = rpc.args();
   requireThat(opts['run-dir'], 'usage: lifecycle.mjs --run-dir DIRECTORY');
-  const removed = await revokePolicy(opts['run-dir']);
+  const removed = await revokePolicy(opts['run-dir'], { expectedRunHash: opts['expected-run-sha256'] });
   console.log(`REMOVED rule ${removed.rule_id}, transaction ${removed.transaction}; policy cleanup: ${removed.policy_cleanup}`);
 }
