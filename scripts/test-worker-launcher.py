@@ -63,6 +63,8 @@ class LauncherTests(unittest.TestCase):
 
     def test_container_options_enforce_private_state_and_independent_deadline(self):
         args = worker.command(config(), "ozpb-job-test", job())
+        # Podman rejects any DNS option together with the disconnected network mode.
+        self.assertNotIn("--dns", args)
         for flag, value in (("--network", "none"), ("--pid", "private"), ("--ipc", "private"),
                             ("--userns", "nomap"), ("--pull", "never"), ("--timeout", "36"),
                             ("--cap-drop", "ALL"), ("--memory", "4096m"),

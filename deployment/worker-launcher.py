@@ -137,7 +137,7 @@ def bounded(command, timeout, limit, source=None):
 def command(config, name, job):
     return [PODMAN, "run", "--rm", "--name", name, "--label", "org.ozpb.worker=true",
             "--pull", "never", "--timeout", str(job["timeout_seconds"] + 35),
-            "--network", "none", "--no-hosts", "--dns", "none", "--http-proxy=false",
+            "--network", "none", "--no-hosts", "--http-proxy=false",
             "--pid", "private", "--ipc", "private", "--uts", "private", "--cgroupns", "private",
             "--userns", "nomap", "--user", "10001:10001", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--read-only", "--read-only-tmpfs=false",
