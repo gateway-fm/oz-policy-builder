@@ -50,7 +50,11 @@ reported 90th percentile with a 100-stroop minimum; it is an estimate, not an in
 guarantee.
 
 `validity_ledgers` must be 1–120. The maximum ledger is exclusive, measured from the sequence
-read; the assembled authorization expires no later than the preceding ledger. Acquisition
+read; the assembled authorization expires no later than the preceding ledger. Because the
+simulation's latest ledger is already closed, at least the next ledger must fit below that
+maximum. This applies to installation and separate restoration drafts: a one-ledger window
+cannot produce a usable draft, and a two-ledger window requires a same-ledger simulation.
+Acquisition
 must proceed monotonically and finish within 12 ledgers of the authority observation, or
 the caller must retry. These are transaction and retry bounds, **not a guarantee that
 account authority stayed unchanged**. Sequence, authority and simulation observations are

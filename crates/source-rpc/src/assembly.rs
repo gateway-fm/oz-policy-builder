@@ -212,7 +212,12 @@ fn assemble<T: RpcTransport>(
     let simulation_ledger = ledger(&simulation)?;
     ordered_ledgers(fee_ledger, simulation_ledger)?;
     ordered_ledgers(request.authority_observed_ledger, simulation_ledger)?;
-    if simulation_ledger >= max_ledger {
+    // latestLedger is already closed. Both invocation and restoration drafts
+    // need at least the next ledger below the transaction's exclusive maximum.
+    if simulation_ledger
+        .checked_add(1)
+        .is_none_or(|next| next >= max_ledger)
+    {
         return Err(malformed("assembly ledger bound already expired"));
     }
     if simulation.get("error").is_some() {
