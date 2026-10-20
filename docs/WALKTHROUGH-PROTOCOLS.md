@@ -6,9 +6,9 @@ record → synthesize → reference-suite → generate → verify chain as
 They are controlled testnet runs with throwaway keys or an exportable virtual passkey. They do
 not establish a wallet's protected human approval.
 
-**Status.** W3 is executable through `run.sh`. One controlled run on 20 October 2026 completed
-every step below except the two transfer-rule denials, which were added afterwards
-([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-run-20-october-2026)).
+**Status.** W3 is executable through `run.sh`. A controlled run on 20 October 2026 completed every
+step below; an earlier run that day predates the two transfer-rule denials
+([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-runs-20-october-2026)).
 W1 has its pipeline, bundle installation and controls, but no setup for the Blend position its
 claim needs; `run.sh` refuses it (see [W1](#w1-blend)), and no W1 run exists.
 
