@@ -71,6 +71,13 @@ function assemble(tx) {
   if (mode === 'fee ceiling') wire.fee = 10_000_000;
   if (mode === 'fee zero') wire.fee = 0;
   if (mode === 'fee above ceiling') wire.fee = 10_000_001;
+  if (mode === 'upload fee ceiling') wire.fee = 100_000_000;
+  if (mode === 'upload fee above ceiling') wire.fee = 100_000_001;
+  if (mode === 'upload bytes replaced') wire.operations[0] = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109, 1]) });
+  if (mode === 'replacement upload bypass') {
+    wire.operations[0] = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109]) });
+    wire.fee = 100_000_000;
+  }
   if (mode === 'negative resource fee' || mode === 'resource fee exceeds total' || mode === 'resource fee') {
     wire.ext = sdk.xdr.TransactionExt.sorobanData(new sdk.xdr.SorobanTransactionData({
       ext: sdk.xdr.SorobanTransactionDataExt.v0(),
@@ -118,7 +125,7 @@ if (mode === 'create source auth' || mode === 'wrong create source') operation =
   address: new sdk.Address(mode === 'wrong create source' ? sdk.StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 4)) : payer.publicKey()),
   wasmHash: Buffer.alloc(32, 1), salt: Buffer.alloc(32, 3), constructorArgs: [sdk.xdr.ScVal.scvU32(17)],
 });
-if (mode === 'upload no auth') operation = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109]) });
+if (mode.startsWith('upload ')) operation = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109]) });
 let savedExistingAuth;
 if (mode === 'existing auth') {
   const entry = new sdk.xdr.SorobanAuthorizationEntry({
@@ -152,14 +159,15 @@ if (mode === 'explicit auth modes') {
   'expired instance', 'future modified', 'missing modified', 'missing TTL'].includes(mode)) {
   await assert.rejects(source.namespace.contractCodeObservation(sdk.StrKey.encodeContract(Buffer.alloc(32, 1))), /instance|ledger/);
 } else if (['matching', 'fee ceiling', 'resource fee', 'submit enforce mode', 'source auth', 'create source auth',
-  'upload no auth', 'existing auth'].includes(mode)) {
+  'upload no auth', 'upload fee ceiling', 'existing auth'].includes(mode)) {
   const sent = await source.namespace.submit(payer, operation);
   assert.equal(sent.hash, expectedHash);
   assert.equal(sent.receipt.txHash, expectedHash);
   if (mode === 'submit enforce mode') assert.deepEqual(simulationModes, ['enforce']);
 } else if (['fee zero', 'fee above ceiling', 'negative resource fee', 'resource fee exceeds total', 'replacement operation',
   'replacement source', 'replacement sequence', 'replacement network', 'replacement timeout', 'replacement memo',
-  'replacement signatures', 'extra operation', 'extra auth', 'wrong fetched source', 'wrong create source'].includes(mode)) {
+  'replacement signatures', 'extra operation', 'extra auth', 'wrong fetched source', 'wrong create source',
+  'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass'].includes(mode)) {
   await assert.rejects(source.namespace.submit(payer, operation), /submission refused/);
   assert.equal(signatures, 0, 'nothing signed');
   assert.equal(expectedHash, undefined, 'nothing submitted');
