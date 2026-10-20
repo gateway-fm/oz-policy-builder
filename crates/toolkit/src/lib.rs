@@ -234,17 +234,10 @@ pub fn synthesize_policy(
     //    lowers a label — `incomplete` evidence stays `incomplete`, because a bundle that
     //    was missing evidence when it was recorded is still missing it here.
     //
-    // What this does *not* do, stated so nobody reads more into it: `trust` is an
-    // admission-time claim, like `execution`, and neither is re-derivable from the raw
-    // evidence the artifact carries (`RawEvidence` has no transaction result). So a caller
-    // who edits an `incomplete` bundle's `trust` to `self_supplied` is not caught here — the
-    // weakening is monotone in the *supplied* label, and `self_supplied` is synthesizable by
-    // design. What the boundary does enforce is the ceiling (no wire bundle earns more than
-    // `self_supplied`) and coherence (decoded views must be what the raw evidence derives).
-    // Making the outcome itself checkable from the artifact needs the transaction result
-    // inside the recording — a `recording/v2` change, because it moves every recording hash
-    // including published testnet evidence that cannot honestly be regenerated once those
-    // transactions leave RPC retention.
+    // Wire trust remains an acquisition claim, so this boundary caps it at self_supplied.
+    // V2 also rechecks execution against preserved transaction-result XDR and refuses
+    // executed evidence without that XDR unless its label remains incomplete.
+    // Internal coherence still does not prove ledger inclusion.
     for (index, bundle) in bundles.iter().enumerate() {
         bundle.verify().map_err(|error| {
             let mapped = map_record_err(&error);

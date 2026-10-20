@@ -58,7 +58,7 @@ pub use preflight::{
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,
-    StateChange, StateChangeKind, StateChangeSource,
+    StateChange, StateChangeKind,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -67,9 +67,9 @@ use std::io::Read;
 #[cfg(feature = "http")]
 use std::time::Duration;
 use stellar_xdr::{
-    ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntry, LedgerEntryData,
-    LedgerKey, LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope,
-    TransactionResult, TransactionResultResult, WriteXdr,
+    ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntryData, LedgerKey,
+    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScVal, TransactionEnvelope,
+    TransactionResult, WriteXdr,
 };
 
 mod contract_code;
@@ -103,7 +103,7 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// XDR: stellar-core v29.0.0 builds against the same `stellar/stellar-xdr` commit as v28.0.x,
 /// which is the commit `stellar-xdr` 28 compiles, so this build decodes protocol 29 as it is.
 ///
-/// There is deliberately no floor. `getNetwork` reports the protocol the endpoint is on now,
+/// There is no historical-protocol floor (zero is invalid). `getNetwork` reports the protocol the endpoint is on now,
 /// which bounds what it can newly produce; it says nothing about the protocol of an old
 /// transaction whose stored XDR is what a `getTransaction` actually returns, so a floor checked
 /// against this field would be a claim about the wrong thing.
@@ -113,16 +113,10 @@ const MAX_LEDGER_ENTRY_KEYS: usize = 200;
 /// the commit the pinned crate compiles, bump `stellar-xdr` to the release that carries it. The
 /// test fails until the ceiling, the table and the crate agree.
 ///
-/// This gates acquisition. Whether the acquisition protocol should also be *recorded* is not
-/// settled here and is not settled by §4.1: that section rules out a per-transaction
-/// **historical** protocol anchor, because the endpoint's current protocol would describe the
-/// wrong ledger for an old transaction (`docs/architecture.md:210-213`). "The endpoint was on
-/// the protocol it reported when this evidence was acquired" is a different and true statement,
-/// which that
-/// argument does not reach — and the risk table still promises protocol and XDR versions per
-/// bundle (`docs/architecture.md:1448`), so that promise is outstanding rather than withdrawn
-/// by this gate.
-const MAX_SUPPORTED_PROTOCOL: u32 = 29;
+/// V2 records this endpoint protocol together with decoder identity as acquisition
+/// metadata. It is explicitly separate from the historical transaction ledger: a current
+/// endpoint protocol does not establish which protocol originally executed a transaction.
+const MAX_SUPPORTED_PROTOCOL: u32 = ozpb_recorder_core::MAX_ACQUISITION_PROTOCOL;
 
 mod target_wasm;
 pub use target_wasm::{read_target_capture, CapturedTargetEntry, TargetCapture, TargetWasmError};
@@ -444,13 +438,13 @@ pub fn get_transaction<T: RpcTransport>(
         )
     })?;
     let canonical_hash = requested_hash.to_hex();
-    verify_network(transport, network_passphrase)?;
+    let protocol = verify_network(transport, network_passphrase)?;
     let result = transport.call(
         "getTransaction",
         json!({ "hash": canonical_hash, "xdrFormat": "base64" }),
     )?;
     let snapshot = parse_get_transaction(network_passphrase, &canonical_hash, &result)?;
-    acquire_contract_executables(transport, snapshot)
+    acquire_contract_executables(transport, snapshot.with_acquisition_protocol(protocol))
 }
 
 fn parse_get_transaction(
@@ -508,65 +502,17 @@ fn parse_get_transaction(
     ensure_base64_size("resultXdr", &result_xdr)?;
     let decoded_result = TransactionResult::from_xdr_base64(&result_xdr, xdr_limits())
         .map_err(|error| RpcError::Malformed(format!("invalid resultXdr: {error}")))?;
-    // Success and the operation results it claims, from one match, so the two cannot disagree.
-    let (result_success, operations): (bool, &[stellar_xdr::OperationResult]) =
-        match &decoded_result.result {
-            TransactionResultResult::TxSuccess(operations) => (true, operations),
-            TransactionResultResult::TxFeeBumpInnerSuccess(pair) => {
-                let stellar_xdr::InnerTransactionResultResult::TxSuccess(operations) =
-                    &pair.result.result
-                else {
-                    // The outer union says the inner transaction succeeded and the inner one
-                    // says otherwise: the result contradicts itself before anything is
-                    // compared to it.
-                    return Err(RpcError::Malformed(
-                        "the transaction result reports fee-bump inner success but its inner \
-                         transaction result does not"
-                            .to_string(),
-                    ));
-                };
-                (true, operations)
-            }
-            _ => (false, &[]),
-        };
-    if result_success != (status == "SUCCESS") {
-        return Err(RpcError::Malformed(format!(
-            "status '{status}' contradicts the decoded transaction result, which records {}",
-            if result_success { "success" } else { "failure" }
-        )));
-    }
-    // `SUCCESS` is a claim about the operations as well. Nothing binds `resultXdr` to the
-    // transaction hash the way `envelopeXdr` is bound — the ledger commits the result set's
-    // Merkle root, not this field — so internal consistency is all that can be established
-    // about it, and two things about a reported success are checkable that way.
-    //
-    // Its length: the envelope is hash-bound to the requested transaction, so its operation
-    // count is a fact, and a result set of a different length is about a different
-    // transaction. `TxSuccess([])` for a one-operation transaction is the cheapest form of
-    // that, and it is what a result set carrying no per-operation claims at all looks like.
-    let expected_results = envelope_operations(&decoded_envelope).len();
-    if result_success && operations.len() != expected_results {
-        return Err(RpcError::Malformed(format!(
-            "the transaction result reports {} operation results for an envelope with \
-             {expected_results} operations",
-            operations.len()
-        )));
-    }
-    // And each result, as far as this crate reads them: a transaction succeeds only if all of
-    // its operations do, so a `txSUCCESS` carrying an operation that did not succeed
-    // contradicts itself. Partial cover, not complete — `operation_succeeded` judges the
-    // outer arms and the `InvokeHostFunction` results, and answers "succeeded" for the other
-    // operation kinds rather than interpreting code enums this crate does not record. A forged
-    // result can still hide a failed non-Soroban operation inside `TxSuccess`; that fail-open
-    // is known and filed, and this comment does not claim otherwise.
-    if let Some(index) = operations
-        .iter()
-        .position(|operation| !operation_succeeded(operation))
-    {
-        return Err(RpcError::Malformed(format!(
-            "status '{status}' but operation {index} of the transaction result did not succeed"
-        )));
-    }
+    ozpb_recorder_core::verify_transaction_result(
+        &decoded_envelope,
+        &decoded_result,
+        if status == "SUCCESS" {
+            ozpb_recorder_core::Execution::ExecutedSuccess
+        } else {
+            ozpb_recorder_core::Execution::ExecutedFailed
+        },
+        ozpb_domain::NetworkId::from_passphrase(network_passphrase),
+    )
+    .map_err(|error| RpcError::Malformed(error.to_string()))?;
     // Optional, but not therefore unchecked: bounded here like every other XDR field, and a
     // value of some other type is refused rather than silently dropped as absent evidence.
     let meta = match result.get("resultMetaXdr") {
@@ -601,7 +547,8 @@ fn parse_get_transaction(
         ledger,
         created_at,
         status == "SUCCESS",
-    ))
+    )
+    .with_rpc_result(result_xdr))
 }
 
 /// The operations a transaction envelope carries. A fee bump wraps a transaction, so its
@@ -618,27 +565,6 @@ fn envelope_operations(envelope: &TransactionEnvelope) -> &[stellar_xdr::Operati
     }
 }
 
-/// Whether one operation result reports success.
-///
-/// Every outer arm other than `OpInner` is a failure by definition. Within `OpInner`, only the
-/// `InvokeHostFunction` arm is judged: that is the operation kind this adapter records, and
-/// every other kind carries its own result enum whose codes are not this crate's to interpret.
-///
-/// So this **fails open** for those kinds — it answers `true` for an inner result it did not
-/// read — and a forged `TxSuccess` can hide a failed non-Soroban operation from it. Covering
-/// the remaining kinds means a match over every `OperationResultTr` arm and its own success
-/// variant; that is filed separately rather than half-done here.
-fn operation_succeeded(operation: &stellar_xdr::OperationResult) -> bool {
-    use stellar_xdr::{InvokeHostFunctionResult, OperationResult, OperationResultTr};
-    match operation {
-        OperationResult::OpInner(OperationResultTr::InvokeHostFunction(invoke)) => {
-            matches!(invoke, InvokeHostFunctionResult::Success(_))
-        }
-        OperationResult::OpInner(_) => true,
-        _ => false,
-    }
-}
-
 /// Simulate an unsigned envelope in record mode and build a snapshot (`rpc_reported`;
 /// confidential input — §6.5).
 pub fn simulate_transaction<T: RpcTransport>(
@@ -647,7 +573,7 @@ pub fn simulate_transaction<T: RpcTransport>(
     envelope_xdr_base64: &str,
 ) -> Result<EvidenceSnapshot, RpcError> {
     let _ = validate_simulation_envelope(envelope_xdr_base64)?;
-    verify_network(transport, network_passphrase)?;
+    let protocol = verify_network(transport, network_passphrase)?;
     let result = transport.call(
         "simulateTransaction",
         json!({
@@ -657,7 +583,7 @@ pub fn simulate_transaction<T: RpcTransport>(
         }),
     )?;
     let snapshot = parse_simulate(network_passphrase, envelope_xdr_base64, &result)?;
-    acquire_contract_executables(transport, snapshot)
+    acquire_contract_executables(transport, snapshot.with_acquisition_protocol(protocol))
 }
 
 /// What the caller's envelope has to be before it is worth sending anywhere.
@@ -845,6 +771,25 @@ fn parse_contract_executables(
                     "getLedgerEntries entry {index} lastModifiedLedgerSeq exceeds u32"
                 ))
             })?;
+        let live_until_ledger: u32 = value
+            .get("liveUntilLedgerSeq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                RpcError::Malformed(format!(
+                    "getLedgerEntries entry {index} has no integer liveUntilLedgerSeq"
+                ))
+            })?
+            .try_into()
+            .map_err(|_| {
+                RpcError::Malformed(format!(
+                    "getLedgerEntries entry {index} liveUntilLedgerSeq exceeds u32"
+                ))
+            })?;
+        if live_until_ledger < observed_ledger {
+            return Err(RpcError::Evidence(format!(
+                "getLedgerEntries entry {index} is not live at reported ledger {observed_ledger}"
+            )));
+        }
         // `getLedgerEntries` returns the *current* value of a live entry, and reports both
         // sequences: the ledger it is serving (`latestLedger`) and the ledger that last wrote
         // the entry. An entry written after the ledger being served describes no ledger that
@@ -916,6 +861,8 @@ fn parse_contract_executables(
             ExecutableObservation {
                 executable,
                 observed_ledger: ozpb_domain::LedgerSeq(observed_ledger),
+                last_modified_ledger: Some(ozpb_domain::LedgerSeq(last_modified_ledger)),
+                live_until_ledger: Some(ozpb_domain::LedgerSeq(live_until_ledger)),
             },
         );
     }
@@ -1007,62 +954,21 @@ fn parse_simulation_state_change(
         .get("key")
         .and_then(|field| field.as_str())
         .ok_or_else(|| RpcError::Malformed(format!("stateChanges[{index}] has no string key")))?;
-    // Exact evidence has to be evidence: `key` is a `LedgerKey` and `before`/`after` are whole
-    // `LedgerEntry`s for that key (the official simulateTransaction schema). Text that is merely
-    // string-shaped would be recorded as "exact simulation evidence" while proving nothing, and
-    // an entry for some other key describes a change this one does not claim to be about.
-    let key: LedgerKey = decode_state_change_xdr(index, "key", key_xdr)?;
-    let before = state_change_entry(index, "before", value, &key)?;
-    let after = state_change_entry(index, "after", value, &key)?;
-    let sides = (before.is_some(), after.is_some());
-    let contradiction = match kind {
-        StateChangeKind::Created if sides != (false, true) => Some("only 'after'"),
-        StateChangeKind::Updated if sides != (true, true) => Some("both 'before' and 'after'"),
-        StateChangeKind::Removed if sides != (true, false) => Some("only 'before'"),
-        // `restored` is outside the documented created/updated/deleted matrix, so require that
-        // it carries some entry evidence rather than inventing a shape for it.
-        StateChangeKind::Restored if sides == (false, false) => Some("'before', 'after' or both"),
-        _ => None,
-    };
-    if let Some(expected) = contradiction {
-        return Err(RpcError::Malformed(format!(
-            "stateChanges[{index}] is '{type_text}' but a '{type_text}' entry carries {expected}"
-        )));
-    }
-    // The summary describes what the decoded key says changed, in the recorder's own
-    // vocabulary — not an opaque marker standing in for a value nobody parsed.
-    let (entry, contract) = ozpb_recorder_core::ledger_key_summary(&key);
-    Ok(StateChange {
+    // Admission and later artifact verification use the same pure XDR coherence checks.
+    ozpb_recorder_core::simulation_state_change(
         kind,
-        entry,
-        contract,
-        source: StateChangeSource::Simulation,
-        key_xdr_base64: Some(key_xdr.to_string()),
-        before_xdr_base64: before,
-        after_xdr_base64: after,
-    })
+        key_xdr.to_string(),
+        state_change_text(index, "before", value)?,
+        state_change_text(index, "after", value)?,
+    )
+    .map_err(|error| RpcError::Malformed(format!("stateChanges[{index}] is inconsistent: {error}")))
 }
 
-fn decode_state_change_xdr<T: ReadXdr>(
-    index: usize,
-    field: &str,
-    encoded: &str,
-) -> Result<T, RpcError> {
-    ensure_base64_size(&format!("stateChanges[{index}].{field}"), encoded)?;
-    T::from_xdr_base64(encoded, xdr_limits()).map_err(|error| {
-        RpcError::Malformed(format!(
-            "stateChanges[{index}].{field} is not valid XDR: {error}"
-        ))
-    })
-}
-
-/// One side of a state change: absent, or a `LedgerEntry` for `key`. Returns the encoded text
-/// unchanged, so the recording preserves exactly what the endpoint sent.
-fn state_change_entry(
+/// Keep the exact endpoint text; the core checks its XDR and key correspondence.
+fn state_change_text(
     index: usize,
     field: &str,
     value: &serde_json::Value,
-    key: &LedgerKey,
 ) -> Result<Option<String>, RpcError> {
     let encoded = match value.get(field) {
         None | Some(serde_json::Value::Null) => return Ok(None),
@@ -1073,20 +979,13 @@ fn state_change_entry(
             )))
         }
     };
-    let entry: LedgerEntry = decode_state_change_xdr(index, field, encoded)?;
-    if entry.to_key() != *key {
-        return Err(RpcError::Malformed(format!(
-            "stateChanges[{index}].{field} is a ledger entry for a different key than \
-             stateChanges[{index}].key"
-        )));
-    }
     Ok(Some(encoded.clone()))
 }
 
 fn verify_network<T: RpcTransport>(
     transport: &T,
     expected_passphrase: &str,
-) -> Result<(), RpcError> {
+) -> Result<u32, RpcError> {
     let result = transport.call("getNetwork", json!({}))?;
     let actual = str_field(&result, "passphrase")?;
     if actual != expected_passphrase {
@@ -1107,13 +1006,13 @@ fn verify_network<T: RpcTransport>(
         })?
         .try_into()
         .map_err(|_| RpcError::Malformed("getNetwork protocolVersion exceeds u32".to_string()))?;
-    if protocol > MAX_SUPPORTED_PROTOCOL {
+    if protocol == 0 || protocol > MAX_SUPPORTED_PROTOCOL {
         return Err(RpcError::UnsupportedProtocol {
             reported: protocol,
             supported: MAX_SUPPORTED_PROTOCOL,
         });
     }
-    Ok(())
+    Ok(protocol)
 }
 
 /// The base64 size bound and its message in one place, taking the field's path so the refusal
@@ -1400,6 +1299,7 @@ mod tests {
     use super::*;
     use ozpb_recorder_core::{fixtures as fx, record, RecordOptions};
     use std::cell::RefCell;
+    use stellar_xdr::TransactionResultResult;
     use stellar_xdr::{
         ContractDataDurability, ContractDataEntry, ContractExecutable, ExtensionPoint, Hash,
         LedgerEntryData, LedgerKey, LedgerKeyContractData, Limits, ScContractInstance, ScVal,
@@ -1538,7 +1438,8 @@ mod tests {
                 json!({
                     "key": encoded,
                     "xdr": entry,
-                    "lastModifiedLedgerSeq": LAST_MODIFIED_LEDGER
+                    "lastModifiedLedgerSeq": LAST_MODIFIED_LEDGER,
+                    "liveUntilLedgerSeq": OBSERVED_LEDGER + 100
                 })
             })
             .collect())
@@ -1985,11 +1886,8 @@ mod tests {
     /// The recorder fixture's transaction result, given the one operation result the fixture
     /// envelope's one operation must have.
     ///
-    /// The fixture encodes `TxSuccess([])`/`TxFailed([])`, which is enough for the recorder —
-    /// it checks only the transaction-level outcome — but describes a transaction with no
-    /// operations, and this adapter requires one result per operation. Fee and extension still
-    /// come from the fixture, so there is one place that decides what a transaction result
-    /// looks like and this only supplies what the pairing here requires.
+    /// Keep the success and failure operation payloads explicit here so mutation tests
+    /// can replace individual result arms independently of the recorder fixture.
     fn result_xdr(success: bool) -> String {
         let outcome = if success {
             succeeded_operation()
@@ -2523,6 +2421,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn acquisition_metadata_budget_is_enforced_before_any_instance_request() {
+        let (envelope, _) = fixture_envelope_and_meta();
+        let auth = (0..256_u32)
+            .map(|index| {
+                let mut id = [0xAA; 32];
+                id[..4].copy_from_slice(&index.to_be_bytes());
+                base64(&fx::auth_entry(stellar_xdr::SorobanCredentials::Address(
+                    stellar_xdr::SorobanAddressCredentials {
+                        address: ScAddress::Contract(ContractId(Hash(id))),
+                        nonce: 1,
+                        signature_expiration_ledger: 4_210_000,
+                        signature: ScVal::Void,
+                    },
+                )))
+            })
+            .collect();
+        let snapshot = EvidenceSnapshot::from_rpc_simulation(NET, envelope, auth, Some(4_200_101));
+        let transport = KeyLimitTransport {
+            batches: RefCell::new(Vec::new()),
+        };
+        let error = acquire_contract_executables(&transport, snapshot)
+            .expect_err("257 distinct contracts exceed the recording budget");
+        assert!(error.to_string().contains("256"), "{error}");
+        assert!(
+            transport.batches.borrow().is_empty(),
+            "an inadmissible snapshot must not consume lookup requests"
+        );
+    }
+
     /// The recorder admits more executable observations than `getLedgerEntries` accepts keys in
     /// one request, so asking for all of them at once made a recording that fits every local
     /// bound fail at the endpoint and nowhere else.
@@ -2775,6 +2703,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn acquisition_metadata_preserves_protocol_decoder_and_entry_lifetime() {
+        let (envelope, _) = fixture_envelope_and_meta();
+        let (_, response) = valid_executed_response();
+        let transport = CannedTransport {
+            result: response,
+            last_method: RefCell::new(String::new()),
+        };
+        let snapshot = get_transaction(&transport, NET, &transaction_hash(&envelope)).unwrap();
+        let bundle = record(&snapshot, RecordOptions::default()).unwrap();
+        let wire = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(
+            wire["acquisition"]["protocol_version"],
+            MAX_SUPPORTED_PROTOCOL
+        );
+        assert_eq!(
+            wire["acquisition"]["decoder_version"],
+            stellar_xdr::VERSION.pkg
+        );
+        assert_eq!(
+            wire["raw"]["result_xdr_base64"],
+            transport.result["resultXdr"]
+        );
+        for observation in wire["contract_executables"].as_object().unwrap().values() {
+            assert_eq!(observation["last_modified_ledger"], LAST_MODIFIED_LEDGER);
+            assert_eq!(observation["live_until_ledger"], OBSERVED_LEDGER + 100);
+        }
+        bundle.verify().unwrap();
+    }
+
+    #[test]
+    fn acquisition_metadata_refuses_archived_or_malformed_instance_lifetime() {
+        let key = LedgerKey::ContractData(LedgerKeyContractData {
+            contract: fx::account_sc(),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let requested = BTreeMap::from([(
+            key.clone(),
+            (
+                format!("{}", stellar_strkey::Contract(fx::ACCOUNT_CID)),
+                fx::account_sc(),
+            ),
+        )]);
+        let mut entries = ledger_entries_for(&json!({"keys": [key]})).unwrap();
+        entries[0]["liveUntilLedgerSeq"] = json!(OBSERVED_LEDGER);
+        let valid = json!({"latestLedger": OBSERVED_LEDGER, "entries": entries});
+        assert!(parse_contract_executables(&valid, &requested).is_ok());
+        for ttl in [
+            serde_json::Value::Null,
+            json!(OBSERVED_LEDGER - 1),
+            json!(-1),
+            json!(u64::MAX),
+            json!("4200202"),
+        ] {
+            let mut response = valid.clone();
+            response["entries"][0]["liveUntilLedgerSeq"] = ttl;
+            assert!(
+                parse_contract_executables(&response, &requested).is_err(),
+                "accepted invalid lifetime: {response}"
+            );
+        }
+    }
+
     struct ExecutableTransport {
         transaction: serde_json::Value,
         instance_keys: Vec<String>,
@@ -2837,7 +2831,7 @@ mod tests {
             .unwrap();
             let result = json!({
                 "latestLedger": 4200099,
-                "entries": [{ "key": key, "xdr": xdr, "lastModifiedLedgerSeq": 4200099 }],
+                "entries": [{ "key": key, "xdr": xdr, "lastModifiedLedgerSeq": 4200099, "liveUntilLedgerSeq": 4200202 }],
             });
             let mut requested = BTreeMap::new();
             requested.insert(
@@ -2914,7 +2908,8 @@ mod tests {
                 json!({
                     "key": key,
                     "xdr": entry,
-                    "lastModifiedLedgerSeq": 4200099
+                    "lastModifiedLedgerSeq": 4200099,
+                    "liveUntilLedgerSeq": 4200202
                 }),
             )
         };
