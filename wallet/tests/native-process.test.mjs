@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { runNative } from '../server/native-process.mjs';
+const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
+function worker(t, source) {
+  const dir = mkdtempSync(join(tmpdir(), 'wallet-native-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'worker.mjs'), source, { mode: 0o600 });
+  const executable = join(dir, 'worker');
+  writeFileSync(executable, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(dir, 'worker.mjs'))} "$@"\n`, { mode: 0o700 });
+  return { executable, dir };
+}
+const emit = `const emit = (frame) => process.stdout.write(JSON.stringify(frame)+'\\n');`;
+const input = `import {createInterface} from 'node:readline'; const lines=createInterface({input:process.stdin});`;
+const prepared = { type: 'prepared', id: 'retained' };
+const result = { type: 'result', passed: true, complete: false };
+const hooks = () => ({ validatePrepared: (frame) => { assert.deepEqual(frame, prepared); },
+  sign: (frame) => { assert.equal(frame.type, 'sign_request'); return { type: 'signature', request_id: frame.request_id }; },
+  validateResult: (frame) => { assert.deepEqual(frame, result); return frame; } });
+
+test('fixed preparation accepts exactly one frame and closes job input', async (t) => {
+  const w = worker(t, `${input}${emit}let count=0;for await(const line of lines){count++;JSON.parse(line);}if(process.argv[2]!=='--prepare'||count!==1)process.exit(1);emit(${JSON.stringify(prepared)});`);
+  assert.deepEqual(await runNative(w.executable, '{"integer":9223372036854775807}', { prepareOnly: true, ...hooks() }), prepared);
+});
+test('interactive protocol sends a job and one response, waits for zero exit and drops inherited secrets', async (t) => {
+  const w = worker(t, `${input}${emit}let count=0;for await(const line of lines){const f=JSON.parse(line);if(count++===0){if(process.argv.length!==2||Object.hasOwn(process.env,'OZPB_TEST_PRIVATE_TOKEN'))process.exit(3);emit(${JSON.stringify(prepared)});emit({type:'sign_request',request_id:'1'});}else{if(f.type!=='signature')process.exit(4);emit(${JSON.stringify(result)});lines.close();break;}}`);
+  process.env.OZPB_TEST_PRIVATE_TOKEN = 'test-only-never-passed';
+  try { assert.deepEqual(await runNative(w.executable, '{"schema":1}', hooks()), result); }
+  finally { delete process.env.OZPB_TEST_PRIVATE_TOKEN; }
+});
+for (const scenario of ['missing newline', 'invalid UTF8', 'oversized frame', 'stderr flood', 'nonzero after result',
+  'extra after result', 'missing result', 'unknown frame', 'two outstanding signatures']) {
+  test(`native process rejects ${scenario} without returning usable evidence`, async (t) => {
+    let source;
+    if (scenario === 'missing newline') source = `process.stdout.write(JSON.stringify(${JSON.stringify(prepared)}));`;
+    if (scenario === 'invalid UTF8') source = 'process.stdout.write(Buffer.from([0xff,10]));';
+    if (scenario === 'oversized frame') source = `process.stdout.write('x'.repeat(256*1024+1));`;
+    if (scenario === 'stderr flood') source = `process.stderr.write('x'.repeat(65537));`;
+    if (scenario === 'nonzero after result') source = `emit(${JSON.stringify(prepared)});emit(${JSON.stringify(result)});process.exitCode=2;`;
+    if (scenario === 'extra after result') source = `emit(${JSON.stringify(prepared)});emit(${JSON.stringify(result)});emit(${JSON.stringify(result)});`;
+    if (scenario === 'missing result') source = `emit(${JSON.stringify(prepared)});`;
+    if (scenario === 'unknown frame') source = `emit(${JSON.stringify(prepared)});emit({type:'execute'});`;
+    if (scenario === 'two outstanding signatures') source = `process.stdout.write(JSON.stringify(${JSON.stringify(prepared)})+'\\n'+JSON.stringify({type:'sign_request',request_id:'1'})+'\\n'+JSON.stringify({type:'sign_request',request_id:'2'})+'\\n');`;
+    const w = worker(t, `${emit}${source}`);
+    await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 2000 }), /native process refused/);
+  });
+}
+test('native deadline kills its entire process group and waits for termination', async (t) => {
+  const w = worker(t, '');
+  const pidFile = join(w.dir, 'pid');
+  writeFileSync(join(w.dir, 'worker.mjs'), `import {writeFileSync} from 'node:fs';import{spawn}from'node:child_process';const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},1000);`);
+  await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 400 }), /native process refused/);
+  assert.ok(existsSync(pidFile), 'the real child started');
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  // The OS may retain a dead orphan briefly; it must not remain a live running process.
+  const { execFileSync } = await import('node:child_process');
+  let state = '';
+  try { state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim(); } catch {}
+  assert.ok(!state || state.startsWith('Z'), `grandchild remains live: ${state}`);
+});
+test('aborted execution and malformed initial job never start a worker', async (t) => {
+  const w = worker(t, 'process.exit(0)');
+  const signal = AbortSignal.abort();
+  await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), signal }), /native process refused/);
+  for (const text of ['{}\n{}', 'x', 'x'.repeat(16*1024*1024+1)]) {
+    await assert.rejects(() => runNative(w.executable, text, hooks()), /native process refused/);
+  }
+});

@@ -211,3 +211,62 @@ test('cancelling sample review requires a new preparation and does not sign or s
   await f.controller.approveSample();
   assert.equal(f.calls.filter(([name]) => name === 'submit-sample').length, 1);
 });
+
+const DELEGATE = `G${'A'.repeat(55)}`;
+async function accountChecked(change = () => {}) {
+  const f = fixture();
+  f.replies.status.capabilities.accountCheck = true;
+  f.replies['create-delegate'] = { capabilityId: hash('5'), address: DELEGATE };
+  f.replies.generate.spec.rules[0].authorization.signers = [{ delegated: { address: DELEGATE } }];
+  f.replies.review.verification = { ...f.replies.review.verification, complete: false,
+    layers: f.replies.review.verification.layers.map((layer) => ({ ...layer, status: layer.layer === 'reference' ? 'passed' : 'unavailable' })) };
+  f.replies['check-account'] = { reviewId: 'review1', verification: { ...f.replies.review.verification, runId: hash('6'),
+    layers: f.replies.review.verification.layers.map((layer) => layer.layer === 'account_wasm' ? { ...layer, status: 'passed' } : layer) } };
+  change(f);
+  await f.controller.connect();
+  await f.controller.createDelegate();
+  f.controller.attachWallet(wallet);
+  await f.controller.record(hash('d'));
+  await f.controller.generate({ delegateAddress: DELEGATE, maxCalls: 2, validUntilLedger: 123, grantName: 'grant' });
+  await f.controller.prepareDeploy();
+  await f.controller.confirmDeploy();
+  await f.controller.review();
+  return f;
+}
+test('account check uses the explicit backend delegate and updates only the matching review evidence', async () => {
+  const f = await accountChecked();
+  assert.deepEqual(f.controller.state.delegate, { capabilityId: hash('5'), address: DELEGATE });
+  await f.controller.checkAccount();
+  assert.deepEqual(f.calls.at(-1), ['check-account', { reviewId: 'review1', capabilityId: hash('5') }]);
+  assert.equal(f.controller.state.review.verification.layers[1].status, 'passed');
+  assert.equal(f.controller.state.review.approval.ownerRuleId, 7, 'the reviewed approval is retained');
+  assert.equal(f.calls.some(([name]) => name === 'sign'), false);
+  await assert.rejects(f.controller.install(), /wallet action refused/, 'three local layers do not enable installation');
+});
+for (const change of ['other review', 'other spec', 'other binding set', 'missing layers']) {
+  test(`account check refuses a response for ${change} and keeps the earlier evidence`, async () => {
+    const f = await accountChecked((value) => {
+      const reply = value.replies['check-account'];
+      if (change === 'other review') reply.reviewId = 'review2';
+      if (change === 'other spec') reply.verification = { ...reply.verification, specHash: hash('f') };
+      if (change === 'other binding set') reply.verification = { ...reply.verification, bindingSetHash: hash('f') };
+      if (change === 'missing layers') reply.verification = { ...reply.verification, layers: reply.verification.layers.slice(0, 2) };
+    });
+    await assert.rejects(f.controller.checkAccount(), /wallet action refused/);
+    assert.equal(f.controller.state.review.verification.layers[1].status, 'unavailable');
+  });
+}
+test('account check is unavailable without the capability or for a grant naming another delegate', async () => {
+  const f = fixture();
+  await f.controller.connect();
+  await assert.rejects(f.controller.createDelegate(), /wallet action refused/);
+  assert.equal(f.calls.some(([name]) => name === 'create-delegate'), false);
+  const g = await accountChecked((value) => {
+    value.replies.generate.spec.rules[0].authorization.signers = [{ delegated: { address: `G${'B'.repeat(55)}` } }];
+  }).catch(() => null);
+  assert.equal(g, null, 'generation refuses a grant whose delegate differs from the selected address');
+  const h = await accountChecked();
+  h.controller.attachWallet(wallet);
+  await assert.rejects(h.controller.checkAccount(), /wallet action refused/, 'no review after the wallet changes');
+  assert.equal(h.calls.some(([name]) => name === 'check-account'), false);
+});

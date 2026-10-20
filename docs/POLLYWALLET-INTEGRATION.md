@@ -12,10 +12,11 @@ migrate an existing wallet, or broaden account/verifier recognition.
 
 This integration supports recognized account creation, a fixed owner-authorized sample
 transfer from that new account, confirmed-transaction recording, artifact generation and
-reproduction, artifact deployment, and live authority review. Policy installation, revocation
-and replacement remain disabled: the account-Wasm, captured-target and behavioral
-live-enforcement layers are not yet connected. The signing validators below are tested
-foundations, not a completed installation or wallet acceptance claim.
+reproduction, artifact deployment, live authority review and, when the operator configures
+the [native worker](NATIVE-EXECUTION.md), local account-Wasm execution of the reviewed grant.
+Policy installation, revocation and replacement remain disabled: the captured-target and
+behavioral live-enforcement layers are not yet connected. The signing validators below are
+tested foundations, not a completed installation or wallet acceptance claim.
 
 ## Apply to the supported upstream revision
 
@@ -88,8 +89,9 @@ an operator JSON file using absolute canonical paths:
 
 Set the minimum registry version to the operator's accepted rollback floor. Optional
 `stellarBinary`, `cargoHome`, `rustupHome`, and `buildCacheDir` fields select existing local
-toolchain paths; the cache directory also requires mode `0700`. The CLI and optional Stellar
-binary must be executable regular files. Configuration, registry and executable paths cannot
+toolchain paths; the cache directory also requires mode `0700`. Optional `nativeExecutable`
+names the operator-built `ozpb-execution-runtime` binary; without it the account-Wasm check is
+unavailable. The CLI and optional Stellar and native binaries must be executable regular files. Configuration, registry and executable paths cannot
 be symlinks or writable by other users. Arbitrary environment overrides are refused, builds
 run offline, and HTTP requests cannot select these settings.
 
@@ -134,7 +136,9 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
 4. Refresh the live authority and exact installation grant. The browser independently checks
    the recognized owner rule, full credential identifier, policy address and retained bindings.
    The selected owner rule comes from that evidence; rule zero is not assumed.
-5. Only when the required verification report is complete does the route enable owner signing.
+5. Optionally run the account-Wasm check described below. It signs nothing with the owner
+   passkey and does not change the installation gate's other required layers.
+6. Only when the required verification report is complete does the route enable owner signing.
    It checks the fresh unsigned envelope against the immutable display before asking Pollywallet
    for a passkey signature. It then independently checks the signed XDR, origin, challenge,
    user verification, full signer identity and exact owner rule before submission.
@@ -156,6 +160,44 @@ For `AddressV2`, the SDK constructs the address-bound preimage described in Stel
 The browser and backend reject a changed credential discriminator and do not downgrade V2
 to the legacy payload. Source-account credentials and delegation wrappers are unsupported
 for this owner-passkey flow.
+
+## Account-Wasm execution
+
+With `nativeExecutable` configured, the route can create a local automation delegate. The
+backend generates an Ed25519 key in process memory and returns only its public address and an
+opaque capability ID; at most eight exist per backend, and they disappear when it stops. Use
+that address as the grant's restricted delegate. The owner passkey never stands in for it, and
+a grant naming any other delegate address cannot run this check.
+
+`Run account-Wasm check` uses only state the backend retained for the reviewed deployment:
+
+1. `ozpb prepare-dry-run` binds the exact artifact claims, binding set, signed registry, the
+   next context rule ID from the reviewed authority evidence and a fresh run nonce. Its run
+   hash, suite hash and per-case reference expectations become the independent expectations.
+   Without a bounded next-ID enumeration in that evidence, the layer stays `unavailable`.
+2. The operator RPC supplies one coherent protocol-29 ledger header, the archival TTL limits
+   and the pinned account Wasm bytes, within twelve ledgers of each other.
+3. The worker runs once with `--prepare`; the wallet checks that frame against step 1 and the
+   offline signing domain, then runs the identical job interactively. Every repeated frame
+   must equal the retained one. The wallet signs only the offline-domain `__check_auth`
+   digests for the derived case, control and sequence inventory, in the runner's exact
+   request and nonce order.
+4. The final report is accepted only after the wallet recomputes agreement for every case
+   from the CLI's expectations and the reported observations, checks all five cryptographic
+   controls and the stateful call-cap sequence, and requires a zero worker exit.
+
+A passing result marks only the `account_wasm` layer. It is local execution in fresh synthetic
+state: no target contract, captured network state or live enforcement runs, and it proves no
+ownership of the real wallet. A refused, failed or out-of-scope run (for example a call cap
+above 512) is reported as `failed` or `unsupported` without evidence. A new review starts
+again without account-Wasm evidence.
+
+`bash scripts/test-wallet-native-execution.sh` runs this sequence against the actual CLI and
+worker with the runtime test's public delegate seed. Like the testnet harness, it needs
+`OZPB_REGISTRY_SNAPSHOT_ROOT` set to the root of `docs/examples/registry.signed.json`;
+`OZPB_ACCOUNT_WASM` may reuse a pinned account artifact.
+
+## Report layers
 
 The four report layers are `reference`, `account_wasm`, `captured_target` and
 `live_enforcement`. The UI distinguishes the first three local checks from full acceptance.

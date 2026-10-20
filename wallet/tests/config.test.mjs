@@ -39,8 +39,16 @@ test('operator configuration retains exact registry bytes and has a closed build
   assert.equal(Object.isFrozen(config.buildEnvironment), true);
 });
 
+test('native execution is unavailable unless the operator configures one canonical executable', (t) => {
+  const { path, value, save } = fixture(t);
+  assert.equal(loadWalletConfig(path).nativeExecutable, null);
+  save({ ...value, nativeExecutable: value.executable });
+  assert.equal(loadWalletConfig(path).nativeExecutable, value.executable);
+});
+
 for (const invalid of ['unknown field', 'environment', 'http rpc', 'rpc secret', 'relative executable',
-  'symlink executable', 'non-executable', 'shared workspace', 'oversized config', 'oversized registry', 'jobs', 'timeout']) {
+  'symlink executable', 'non-executable', 'shared workspace', 'oversized config', 'oversized registry', 'jobs', 'timeout',
+  'relative native executable', 'symlink native executable', 'non-executable native', 'null native executable']) {
   test(`operator configuration refuses ${invalid}`, (t) => {
     const { root, path, value, save } = fixture(t);
     if (invalid === 'unknown field') value.listen = '0.0.0.0';
@@ -53,6 +61,16 @@ for (const invalid of ['unknown field', 'environment', 'http rpc', 'rpc secret',
       value.executable = join(root, 'link');
     }
     if (invalid === 'non-executable') chmodSync(value.executable, 0o600);
+    if (invalid === 'relative native executable') value.nativeExecutable = './ozpb-execution-runtime';
+    if (invalid === 'symlink native executable') {
+      symlinkSync(value.executable, join(root, 'native-link'));
+      value.nativeExecutable = join(root, 'native-link');
+    }
+    if (invalid === 'non-executable native') {
+      writeFileSync(join(root, 'native'), '', { mode: 0o600 });
+      value.nativeExecutable = join(root, 'native');
+    }
+    if (invalid === 'null native executable') value.nativeExecutable = null;
     if (invalid === 'shared workspace') chmodSync(value.workRoot, 0o755);
     if (invalid === 'jobs') value.buildJobs = 0;
     if (invalid === 'timeout') value.buildTimeoutSecs = 901;
@@ -81,6 +99,7 @@ test('launcher creates private retained state without startup network writes or 
   assert.equal(readFileSync(join(captured.toolchain.sessionRoot, 'registry.signed.json'), 'utf8'),
     '{"valid_until":9223372036854775807}');
   assert.ok(captured.network.payerAddress.startsWith('G'));
+  assert.equal(captured.native, null, 'no native worker unless the operator configures one');
   assert.equal(captured.session.authenticate({ host: 'localhost:3000', origin: 'http://localhost:3000',
     authorization: `Bearer ${new URL(runtime.launchUrl).hash.slice('#session='.length)}` }), true);
   assert.throws(() => captured.session.authenticate({ host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000',

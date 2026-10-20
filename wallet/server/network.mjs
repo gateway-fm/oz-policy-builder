@@ -277,13 +277,49 @@ export class WalletNetwork {
     if (!same(entry.key, key) || ledger(entry.lastModifiedLedgerSeq) > observed || ledger(entry.liveUntilLedgerSeq) < observed) refuse();
     return { entry, ledger: observed };
   }
-  async requireCode(wasmHash) {
+  async #code(wasmHash) {
     if (!/^[0-9a-f]{64}$/.test(wasmHash)) refuse();
     const key = xdr.LedgerKey.contractCode(new xdr.LedgerKeyContractCode({ hash: Buffer.from(wasmHash, 'hex') }));
     const { entry, ledger: observed } = await this.#entry(key);
     if (entry.val.type !== 'contractCode' || Buffer.from(entry.val.contractCode.hash.value).toString('hex') !== wasmHash
       || digest(entry.val.contractCode.code) !== wasmHash) refuse();
+    return { code: Buffer.from(entry.val.contractCode.code), ledger: observed };
+  }
+  async requireCode(wasmHash) {
+    const { ledger: observed } = await this.#code(wasmHash);
     return { hash: wasmHash, ledger: observed };
+  }
+  /**
+   * Source-ledger provenance and archival limits for the local native worker, read from the
+   * operator RPC in one bounded window. Only protocol 29 is supported; nothing is written.
+   */
+  async nativeSource(wasmHash) {
+    try {
+      const network = await this.assertTestnet();
+      const latest = await this.#server.getLatestLedger();
+      const header = latest.headerXdr;
+      const sequence = ledger(latest.sequence);
+      if (network.protocolVersion !== 29 || Number(latest.protocolVersion) !== 29 || header?.ledgerVersion !== 29
+        || header.ledgerSeq !== sequence || digest(bytes(header)) !== latest.id
+        || !Number.isSafeInteger(header.baseReserve) || header.baseReserve < 1 || typeof header.scpValue.closeTime !== 'bigint') refuse();
+      const key = xdr.LedgerKey.configSetting(new xdr.LedgerKeyConfigSetting({
+        configSettingId: xdr.ConfigSettingId.configSettingStateArchival }));
+      const response = await this.#server.getLedgerEntries(key);
+      const configLedger = ledger(response.latestLedger);
+      const entry = response.entries?.length === 1 ? response.entries[0] : refuse();
+      const settings = entry.val?.type === 'configSetting' && entry.val.configSetting.type === 'configSettingStateArchival'
+        ? entry.val.configSetting.stateArchivalSettings : refuse();
+      const { code, ledger: codeLedger } = await this.#code(wasmHash);
+      const limits = [settings.minTemporaryTtl, settings.minPersistentTtl, settings.maxEntryTtl];
+      if (!same(entry.key, key) || ledger(entry.lastModifiedLedgerSeq) > configLedger
+        || limits.some((value) => !Number.isSafeInteger(value) || value < 1 || value > 0xffffffff)
+        || settings.minTemporaryTtl > settings.maxEntryTtl || settings.minPersistentTtl > settings.maxEntryTtl
+        || [configLedger, codeLedger].some((observed) => observed < sequence || observed - sequence > 12)) refuse();
+      return { ledger: { protocol_version: 29, sequence, timestamp: header.scpValue.closeTime.toString(),
+        base_reserve: header.baseReserve, min_temp_entry_ttl: settings.minTemporaryTtl,
+        min_persistent_entry_ttl: settings.minPersistentTtl, max_entry_ttl: settings.maxEntryTtl },
+      accountWasmBase64: code.toString('base64') };
+    } catch { refuse(); }
   }
   async requireInstance(contractId, wasmHash) {
     if (!StrKey.isValidContract(contractId)) refuse();

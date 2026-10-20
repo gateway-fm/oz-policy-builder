@@ -24,7 +24,8 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   mkdirSync(journalRoot, { mode: 0o700 });
   const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;
-  const actions = createActions({ session, toolchain, network });
+  const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
+  const actions = createActions({ session, toolchain, network, native });
   const server = createWalletServer({ session, actions });
   return { server, launchUrl: `${ORIGIN}/policy-builder#session=${secret}` };
 }
