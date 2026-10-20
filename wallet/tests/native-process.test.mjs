@@ -82,8 +82,32 @@ test('native deadline kills its entire process group and waits for termination',
   // The OS may retain a dead orphan briefly; it must not remain a live running process.
   const { execFileSync } = await import('node:child_process');
   let state = '';
-  try { state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim(); } catch {}
+  // `ps` exits 1 for an absent process; any other failure must not pass this check vacuously.
+  try { state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim(); }
+  catch (error) { if (error.status !== 1) throw error; }
   assert.ok(!state || state.startsWith('Z'), `grandchild remains live: ${state}`);
+});
+test('a refused process-group signal still terminates the worker itself', async (t) => {
+  const w = worker(t, '');
+  const pidFile = join(w.dir, 'self');
+  writeFileSync(join(w.dir, 'worker.mjs'), `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`);
+  const original = process.kill;
+  const alive = (pid) => { try { original.call(process, pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+  // Simulate a group that cannot be signalled (not yet formed, or refused): only that call fails.
+  process.kill = (pid, signal) => {
+    if (pid < 0) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    return original.call(process, pid, signal);
+  };
+  let selfPid;
+  // Registered after worker()'s directory cleanup, so it runs first and can still find a survivor.
+  t.after(() => { process.kill = original; if (selfPid) try { original.call(process, selfPid, 'SIGKILL'); } catch {} });
+  const started = performance.now();
+  await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 5000 }), /native process refused/);
+  process.kill = original;
+  assert.ok(existsSync(pidFile), 'the worker started before its deadline');
+  selfPid = Number(readFileSync(pidFile, 'utf8'));
+  assert.equal(alive(selfPid), false, 'the worker survived its deadline');
+  assert.ok(performance.now() - started < 9000, 'termination was observed, not assumed after the grace period');
 });
 test('aborted execution and malformed initial job never start a worker', async (t) => {
   const w = worker(t, 'process.exit(0)');

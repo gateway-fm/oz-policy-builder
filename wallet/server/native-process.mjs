@@ -43,14 +43,21 @@ export async function runNative(executable, jobText, {
       signal?.removeEventListener('abort', fail);
       if (failed) reject(failure()); else resolve(prepareOnly ? prepared : result);
     };
+    // Signal the worker itself first, so it cannot start more processes, then its group for any
+    // descendants. Either signal can fail independently; neither failure skips the other.
+    const terminate = () => {
+      try { child.kill('SIGKILL'); } catch { /* close or the grace period decides */ }
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group already gone or never formed */ }
+    };
     const fail = () => {
       if (done || failed) return;
       failed = true;
       clearTimeout(timer);
       if (!child?.pid) { finish(); return; }
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Wait for close; a kill request alone is not termination. */ }
+      terminate();
       child.stdin.destroy();
       grace = setTimeout(() => {
+        terminate();
         child.stdout.destroy(); child.stderr.destroy(); child.unref(); finish();
       }, 5000);
     };
