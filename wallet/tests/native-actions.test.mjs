@@ -115,6 +115,9 @@ test('a fresh review starts without earlier account evidence and callers cannot 
 
 for (const [name, change] of [['an on-chain list enumeration', (evidence) => { evidence.enumeration_evidence.method = 'onchain_list'; }],
   ['a missing next ID', (evidence) => { delete evidence.enumeration_evidence.next_id; }],
+  ['a fractional next ID', (evidence) => { evidence.enumeration_evidence.next_id = 1.5; }],
+  ['a string next ID', (evidence) => { evidence.enumeration_evidence.next_id = '1'; }],
+  ['an out-of-range next ID', (evidence) => { evidence.enumeration_evidence.next_id = 4294967296; }],
   ['no enumeration evidence', (evidence) => { delete evidence.enumeration_evidence; }]]) {
   test(`${name} leaves the proposed rule ID unestablished, so the layer is unavailable and nothing runs`, async () => {
     const f = await reviewed({ intentChange: change });
