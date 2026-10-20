@@ -221,7 +221,7 @@ def launch(raw, config):
                                      MAX_OUTPUT, source)
             if status == 0:
                 result = worker_result(output)
-        except (Refused, ValueError, TypeError, OSError, subprocess.SubprocessError):
+        except (Refused, ValueError, TypeError, OSError, subprocess.SubprocessError, RecursionError):
             result = None
         finally:
             if not removed(name):

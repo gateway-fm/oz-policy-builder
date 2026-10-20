@@ -148,6 +148,17 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(frame["containment"], "removed")
         self.assertIsNone(frame["result"])
 
+    def test_deeply_nested_worker_json_preserves_confirmed_cleanup(self):
+        raw = b"[" * 2000 + b"0" + b"]" * 2000
+        removed = mock.Mock(return_value=True)
+        with mock.patch.object(worker, "preflight"), \
+                mock.patch.object(worker, "bounded", return_value=(0, raw)), \
+                mock.patch.object(worker, "removed", removed):
+            frame = worker.launch(json.dumps(job()).encode(), config())
+        removed.assert_called_once()
+        self.assertEqual(frame["containment"], "removed")
+        self.assertIsNone(frame["result"])
+
     def test_unconfirmed_cleanup_never_emits_a_result(self):
         with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "bounded", return_value=(1, b"secret")), mock.patch.object(worker, "removed", return_value=False):
             with self.assertRaises(worker.Refused):
