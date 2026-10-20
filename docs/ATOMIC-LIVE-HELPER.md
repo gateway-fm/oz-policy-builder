@@ -20,7 +20,8 @@ hash, one delegate, the expected rule ID, the grant name and validity, a recipie
 amount. In order, it:
 
 1. refuses an amount outside `1..=1,000,001` stroops — the sample permit of 1,000,000 and its
-   one-stroop adjacent denial case, so no authorization for this helper can name more;
+   one-stroop adjacent denial case. This bounds only the transfer the helper executes, not what
+   any signature authorizes (see [Signatures](#signatures-are-real-and-usable-without-the-helper));
 2. derives the native asset contract of the executing network itself; there is no token or
    function argument;
 3. refuses any two of helper, account, policy, delegate, recipient and asset sharing an address;
@@ -38,15 +39,20 @@ account owner's authorization of `add_context_rule` and the transfer needs the d
 authorization under the new rule, exactly as without the helper. A denial is never caught, so it
 aborts the invocation and the installation with it.
 
-Refusals are contract errors 1–7: `AmountOutOfScope`, `AliasedIdentity`, `UnsupportedDelegate`,
-`UnrecognizedAccount`, `PolicyCodeMismatch`, `UnexpectedRuleId`, `InstalledRuleMismatch`. The
-last cannot be reached with the pinned account, which returns the rule it was given; the check
-stays so that the helper never relies on that.
+Refusals are contract errors 7001–7007: `AmountOutOfScope`, `AliasedIdentity`,
+`UnsupportedDelegate`, `UnrecognizedAccount`, `PolicyCodeMismatch`, `UnexpectedRuleId`,
+`InstalledRuleMismatch`. The last cannot be reached with the pinned account, which returns the
+rule it was given; the check stays so that the helper never relies on that. The range keeps
+clear of the asset contract's and the policies' small codes, but errors raised by the account,
+policy or asset propagate through the helper unchanged — an already expired grant surfaces as
+the account's `PastValidUntil` (3005). A refusal is therefore attributed by the contract ID of
+its diagnostic `error` event, never by its code alone.
 
 The helper declares its own copies of the account's `Signer`, `ContextRuleType` and
 `ContextRule` wire types so that its contract spec describes its return value. Their encoding is
-checked against the [shared ABI vector](examples/native-runtime-abi.json) offline and against the
-real account Wasm in the host tests.
+checked against the [shared ABI vector](examples/native-runtime-abi.json) by
+`cargo test -p ozpb-atomic-live-helper` in the CI contracts job, and against the real account
+Wasm in the host tests.
 
 ## What the host tests establish
 
@@ -66,8 +72,10 @@ approval. The tests require:
   nonces, counters — is unchanged;
 - a missing owner or delegate authorization, a delegate signing the installation, the owner
   signing the transfer, an altered signature preimage, an expired signature and an already
-  expired grant are all refused with no state change;
-- each reachable helper guard (errors 1–6) refuses with its own code and no state change,
+  expired grant are all refused with no state change, and before the policy raises any error —
+  all of these share one host error, so this is what shows they were refused as authorization
+  failures; the expired grant is also attributed to the account's `PastValidUntil`;
+- each reachable helper guard (errors 7001–7006) refuses with its own code and no state change,
   including an unexpected rule ID after a valid installation.
 
 The tests are `#[ignore]`d in the ordinary `cargo test` run because they need freshly built Wasm.
@@ -90,10 +98,25 @@ the expiry and the replay warning and gets explicit consent before any signature
 simulation only discovers the authorization shape and is never evidence. A passing result needs
 the exact rule, counter and balance changes; a denial needs the policy-attributed error.
 
-Signatures produced for these simulations are real. Anyone holding them can submit a matching
-invocation until they expire. In particular the owner's `add_context_rule` authorization is an
-independent subtree: it does not bind the helper call or the transfer, so it could install the
-candidate rule on its own. The consent screen has to say so, and expiries have to be short.
+## Signatures are real and usable without the helper
+
+None of the four authorization entries a case needs names the helper. The owner's account entry
+is rooted at the account's `add_context_rule` and its signer entry at the account's
+`__check_auth`; the delegate's account entry is rooted at the asset's `transfer` and its signer
+entry likewise at `__check_auth`. Each is valid on its own, so the set signed for the permit case
+is a real, submittable installation of the candidate rule followed by a real 1,000,000-stroop
+transfer — an independent review reproduced exactly that by submitting the set directly, without
+the helper. Simulating it as a helper invocation does not change what was signed.
+
+The entries cannot be bound to the helper with the pinned account. A single helper-rooted
+account authorization would be checked by the account once, at installation, before the rule it
+needs for the transfer exists; and the host does not start a second, independent root for the
+same address while a helper-rooted one is active.
+
+So the helper's amount bound and identity checks constrain only what the helper executes. The
+wallet must enforce the amount, recipient and a short expiry before it signs, and treat consent
+to a live case as consent to that installation and that transfer actually happening, for as long
+as the signatures are valid. The consent screen has to say so.
 
 ## Outstanding
 

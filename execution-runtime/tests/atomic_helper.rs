@@ -20,14 +20,18 @@ const AMOUNT: i128 = 1_000_000;
 /// The reviewed helper Wasm, as `stellar contract build` produces it with the pinned rustc and
 /// stellar-cli on the aarch64-apple-darwin host the scheduled job also builds on.
 const EXPECTED_HELPER_HASH: &str =
-    "cd8a93332eff602ffecd2647da16eebb4f12a508e57aa85e24d89b706fb1ff4f";
+    "b989c47da8fd982facc25746ae36c6e382eb0a0e5082da75c5f139484cb2f248";
 // `HelperError` codes from contracts/atomic-live-helper/src/lib.rs.
-const AMOUNT_OUT_OF_SCOPE: u32 = 1;
-const ALIASED_IDENTITY: u32 = 2;
-const UNSUPPORTED_DELEGATE: u32 = 3;
-const UNRECOGNIZED_ACCOUNT: u32 = 4;
-const POLICY_CODE_MISMATCH: u32 = 5;
-const UNEXPECTED_RULE_ID: u32 = 6;
+const AMOUNT_OUT_OF_SCOPE: u32 = 7001;
+const ALIASED_IDENTITY: u32 = 7002;
+const UNSUPPORTED_DELEGATE: u32 = 7003;
+const UNRECOGNIZED_ACCOUNT: u32 = 7004;
+const POLICY_CODE_MISMATCH: u32 = 7005;
+const UNEXPECTED_RULE_ID: u32 = 7006;
+/// The account's `PastValidUntil`, from `stellar-accounts` 0.7.2.
+const ACCOUNT_PAST_VALID_UNTIL: u32 = 3005;
+/// The generated policy's `NoTupleMatched`.
+const POLICY_NO_TUPLE_MATCHED: u32 = 6;
 
 #[contracttype]
 #[derive(Clone)]
@@ -249,6 +253,34 @@ fn alter_preimage(entry: &mut xdr::SorobanAuthorizationEntry) {
     };
     credentials.nonce += 100;
 }
+/// Error values of the diagnostic `error` events attributed to `contract`, in order.
+fn contract_errors(env: &Env, contract: &Address) -> Vec<xdr::ScVal> {
+    let xdr::ScAddress::Contract(id) = scaddress(env, contract) else {
+        panic!("contract address")
+    };
+    let error = scval(env, Symbol::new(env, "error"));
+    let events = env.host().get_diagnostic_events().unwrap();
+    events
+        .0
+        .iter()
+        .filter_map(|event| {
+            let xdr::ContractEventBody::V0(body) = &event.event.body;
+            match body.topics.as_slice() {
+                [topic, value]
+                    if event.event.type_ == xdr::ContractEventType::Diagnostic
+                        && event.event.contract_id.as_ref() == Some(&id)
+                        && *topic == error =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+fn contract_error(code: u32) -> xdr::ScVal {
+    xdr::ScVal::Error(xdr::ScError::Contract(code))
+}
 fn helper_error(code: u32) -> soroban_sdk::Error {
     soroban_sdk::Error::from_contract_error(code)
 }
@@ -445,6 +477,23 @@ impl Fixture {
         );
         refusal.ok()
     }
+    /// As `refused_without_effect`, and also requires that the generated policy raised no
+    /// error: every authorization case shares one host error, so without this a policy denial
+    /// after a wrongly accepted signer would pass as an authorization refusal.
+    fn refused_before_policy(
+        &self,
+        auth: &[xdr::SorobanAuthorizationEntry],
+        case: &str,
+    ) -> Option<soroban_sdk::Error> {
+        let before = contract_errors(&self.env, &self.candidate.policy).len();
+        let refusal = self.refused_without_effect(auth, case);
+        assert_eq!(
+            contract_errors(&self.env, &self.candidate.policy).len(),
+            before,
+            "{case}: must be refused before the policy decides"
+        );
+        refusal
+    }
     fn balance(&self, address: &Address) -> i128 {
         self.env.invoke_contract(
             &self.token,
@@ -510,26 +559,9 @@ fn atomic_helper_adjacent_policy_denial_rolls_back_installation_target_and_nonce
     let mut f = Fixture::new();
     f.candidate.amount += 1;
     f.refused_without_effect(&f.authorizations(), "adjacent amount");
-    let xdr::ScAddress::Contract(policy_id) = scaddress(&f.env, &f.candidate.policy) else {
-        panic!()
-    };
     assert!(
-        f.env
-            .host()
-            .get_diagnostic_events()
-            .unwrap()
-            .0
-            .iter()
-            .any(|event| {
-                let xdr::ContractEventBody::V0(body) = &event.event.body;
-                event.event.type_ == xdr::ContractEventType::Diagnostic
-                    && event.event.contract_id.as_ref() == Some(&policy_id)
-                    && body.topics.as_slice()
-                        == [
-                            scval(&f.env, Symbol::new(&f.env, "error")),
-                            xdr::ScVal::Error(xdr::ScError::Contract(6)),
-                        ]
-            }),
+        contract_errors(&f.env, &f.candidate.policy)
+            .contains(&contract_error(POLICY_NO_TUPLE_MATCHED)),
         "denial must be attributed to the actual generated policy's NoTupleMatched"
     );
 }
@@ -541,7 +573,7 @@ fn atomic_helper_refuses_missing_owner_or_delegate_and_preserves_all_state() {
         let f = Fixture::new();
         let mut auth = f.authorizations();
         auth.remove(omitted);
-        f.refused_without_effect(&auth, &format!("missing authorization {omitted}"));
+        f.refused_before_policy(&auth, &format!("missing authorization {omitted}"));
     }
 }
 
@@ -550,18 +582,18 @@ fn atomic_helper_refuses_missing_owner_or_delegate_and_preserves_all_state() {
 fn atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_state() {
     let f = Fixture::new();
     // The delegate cannot install, and the owner's key is not a signer of the candidate rule.
-    f.refused_without_effect(
+    f.refused_before_policy(
         &f.authorizations_signed_by(&f.delegate, &f.delegate),
         "install signed by delegate",
     );
-    f.refused_without_effect(
+    f.refused_before_policy(
         &f.authorizations_signed_by(&f.owner, &f.owner),
         "transfer signed by owner",
     );
     for index in 0..4 {
         let mut auth = f.authorizations();
         alter_preimage(&mut auth[index]);
-        f.refused_without_effect(&auth, &format!("altered preimage of authorization {index}"));
+        f.refused_before_policy(&auth, &format!("altered preimage of authorization {index}"));
     }
 }
 
@@ -570,13 +602,22 @@ fn atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_sta
 fn atomic_helper_refuses_expired_signatures_or_grant_and_preserves_all_state() {
     let mut f = Fixture::new();
     f.expiry = 999; // the ledger is 1000
-    f.refused_without_effect(
+    f.refused_before_policy(
         &f.authorizations(),
         "signatures past their expiration ledger",
     );
     let mut f = Fixture::new();
     f.candidate.valid_until = 999;
-    f.refused_without_effect(&f.authorizations(), "grant validity already over");
+    // The account's own error propagates through the helper unchanged.
+    let refusal = f.refused_before_policy(&f.authorizations(), "grant validity already over");
+    assert_eq!(
+        refusal,
+        Some(soroban_sdk::Error::from_contract_error(
+            ACCOUNT_PAST_VALID_UNTIL
+        ))
+    );
+    assert!(contract_errors(&f.env, &f.candidate.account)
+        .contains(&contract_error(ACCOUNT_PAST_VALID_UNTIL)));
 }
 
 #[test]

@@ -7,6 +7,11 @@
 //! call surface. It cannot authorize anything itself: the installation needs the account
 //! owner's authorization and the transfer needs the delegate's, exactly as when called
 //! directly. A failed transfer rolls the installation back with it.
+//!
+//! None of those authorizations names the helper. They are rooted at the account's
+//! `add_context_rule` and at the asset's `transfer`, so the same set is a valid, submittable
+//! installation followed by a real transfer without the helper. Nothing here limits what a
+//! signature authorizes; the signer has to bound amount, recipient and expiry before signing.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, Bytes,
@@ -20,8 +25,8 @@ const PINNED_ACCOUNT_WASM: [u8; 32] = [
     0xb5, 0xda, 0x7b, 0x5d, 0x59, 0x81, 0x2c, 0x04, 0x7c, 0xe1, 0xf9, 0xca, 0xd2, 0x26, 0xb2, 0x89,
 ];
 
-/// The sample permit is 1,000,000 stroops and its adjacent denial case one stroop more, so the
-/// largest transfer any authorization for this helper can name is 1,000,001 stroops.
+/// The sample permit is 1,000,000 stroops and its adjacent denial case one stroop more. This
+/// bounds only the transfer the helper itself executes, not what any signature authorizes.
 pub const MAX_AMOUNT: i128 = 1_000_001;
 
 /// `Asset::Native` in canonical XDR.
@@ -74,24 +79,27 @@ pub struct Candidate {
     pub amount: i128,
 }
 
+/// Codes start at 7001 so they do not collide with the asset contract's or a policy's small
+/// codes. Errors raised by the account, policy or asset propagate through the helper unchanged,
+/// so a refusal is attributed by the contract ID of its diagnostic event, not by code alone.
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum HelperError {
     /// The amount is not in `1..=MAX_AMOUNT`.
-    AmountOutOfScope = 1,
+    AmountOutOfScope = 7001,
     /// Two roles (helper, account, policy, delegate, recipient, asset) share an address.
-    AliasedIdentity = 2,
+    AliasedIdentity = 7002,
     /// The delegate is not an existing classic account.
-    UnsupportedDelegate = 3,
+    UnsupportedDelegate = 7003,
     /// The account is not running the pinned smart-account Wasm.
-    UnrecognizedAccount = 4,
+    UnrecognizedAccount = 7004,
     /// The policy is not running the expected candidate Wasm.
-    PolicyCodeMismatch = 5,
+    PolicyCodeMismatch = 7005,
     /// The account allocated a different rule ID than the one reviewed.
-    UnexpectedRuleId = 6,
+    UnexpectedRuleId = 7006,
     /// The installed rule differs from the requested one in any field.
-    InstalledRuleMismatch = 7,
+    InstalledRuleMismatch = 7007,
 }
 
 #[contract]
@@ -123,7 +131,8 @@ impl AtomicLiveHelper {
                 panic_with_error!(&env, HelperError::AliasedIdentity);
             }
         }
-        // Only an existing classic account can satisfy a `Delegated` signer's `require_auth`.
+        // Scope choice: the supported delegate is an existing classic (G) account. Contract
+        // signers with their own `__check_auth` are valid for the account but not supported here.
         if candidate.delegate.executable() != Some(Executable::Account) {
             panic_with_error!(&env, HelperError::UnsupportedDelegate);
         }
