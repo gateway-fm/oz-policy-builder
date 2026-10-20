@@ -184,6 +184,13 @@ failure, retaining pending or incomplete removal evidence without automatic resu
 Two complete [W3 harness executions](WALKTHROUGH-PROTOCOLS.md) ran that day. The second adds
 the transfer rule's own denials; the first predates them.
 
+### Earlier attempt
+
+An attempt before both runs, on `CDAPJPE5Y4LL5CSSKAHSRWVRDFEQDGOD7AKHNQBF7T5HF55AGJZU5CYD`,
+deployed both policies but installed neither: the harness wallet refused the first rule because
+it expected only that rule's policy in an answer covering the whole bundle. The wrapper's cleanup
+reported no installed grants. Both runs below include the installer fix.
+
 ### First run: router-rule denials only
 
 The [allowlisted run summary](evidence/testnet-soroswap-2026-10-20.json) records a complete
@@ -193,7 +200,7 @@ provenance. The owner was a throwaway ed25519 key, and both rules were approved 
 operator mode without a human prompt.
 
 The selected account was `CBSCLOU6CGH5DVIFL2K7KZHOPZNSQRKLI4ZIESVAMOG6S3D6XXZ27Z7E`. The grant
-was two independent one-call rules from one spec, both expiring at ledger 5294992: the router
+was two independent one-call rules from one spec, both valid until ledger 5294992: the router
 rule (account rule ID 1) for the swap, and the transfer rule (ID 2) for the native-XLM transfer
 to the exact pair. The account's owner rule is ID 0.
 
@@ -229,7 +236,7 @@ owner was again a throwaway ed25519 key, and both rules were approved in the exp
 mode without a human prompt. The summary is the wrapper's own export.
 
 The selected account was `CD5KAVYCDHMS4D6QQ2BCF5646J3KMYMAWUDXAGV6SBDFULKGLC4PFL3H`. Both rules
-expired at ledger 5295820: the router rule (account rule ID 1) and the transfer rule (ID 2).
+were valid until ledger 5295820: the router rule (account rule ID 1) and the transfer rule (ID 2).
 
 | Observation | Recorded result |
 | --- | --- |
@@ -246,11 +253,6 @@ All 14 control steps completed and the wrapper finalized with exit 0, deleting t
 The same limits apply as for the first run: fixed harness widenings, no reviewed adapter,
 editable local RPC observations, non-atomic reads, no ledger proof and no protected
 wallet-approval claim.
-
-An earlier attempt the same day, on `CDAPJPE5Y4LL5CSSKAHSRWVRDFEQDGOD7AKHNQBF7T5HF55AGJZU5CYD`,
-deployed both policies but installed neither: the harness wallet refused the first rule because
-it expected only that rule's policy in an answer covering the whole bundle. The wrapper's cleanup
-reported no installed grants. The installer fix is in the run's checkout.
 
 ## 10. Evidence still needed
 
