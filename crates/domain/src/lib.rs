@@ -47,6 +47,10 @@ pub mod domains {
     pub const POLICY_BINDING_SET: &str = "ozpb:v1:policy-binding-set";
     /// The full typed request for a state-dependent installed-policy check.
     pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
+    /// Exact candidate, artifact claims and per-run nonce for a layered dry run.
+    pub const DRY_RUN_REQUEST: &str = "ozpb:v1:dry-run-request";
+    /// Ordered selected-rule constraint cases used by a layered dry run.
+    pub const DRY_RUN_SUITE: &str = "ozpb:v1:dry-run-suite";
     /// The enumerated account rule-set a call-surface verdict was computed over.
     pub const ACCOUNT_STATE: &str = "ozpb:v1:account-state";
     /// Ordered raw account and policy-instance ledger values, TTLs, and omitted keys.
@@ -79,6 +83,8 @@ pub mod domains {
         BUILD_MANIFEST,
         POLICY_BINDING_SET,
         POLICY_CHECK_REQUEST,
+        DRY_RUN_REQUEST,
+        DRY_RUN_SUITE,
         ACCOUNT_STATE,
         ACCOUNT_LEDGER_WITNESS,
         ACCOUNT_METHOD_INVENTORY,

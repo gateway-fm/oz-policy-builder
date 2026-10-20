@@ -119,7 +119,7 @@ impl PolicyBuilderServer {
     /// (resolved first, so an unknown name or another network fails before any build or
     /// read), its allowlisted URL, a deadline that leaves room for the builds, and on a hosted
     /// server a work slot.
-    fn authority_setup(
+    pub(crate) fn authority_setup(
         &self,
         input: &CheckPolicyCallSurfaceInput,
     ) -> Result<Setup, CallToolResult> {

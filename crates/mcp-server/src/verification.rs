@@ -8,12 +8,55 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
-use ozpb_api_types::{ReferenceSuiteInput, ReferenceSuiteOutput, VerifyInput, VerifyOutput};
+use ozpb_api_types::{
+    DryRunInput, DryRunOutput, ErrorCode, ReferenceSuiteInput, ReferenceSuiteOutput, ToolError,
+    VerifyInput, VerifyOutput,
+};
 
 use crate::{internal_tool_err, tool_err, PolicyBuilderServer};
 
 #[tool_router(router = verification_tool_router, vis = "pub(crate)")]
 impl PolicyBuilderServer {
+    /// Prepare immutable candidate evidence without pretending runtime layers have executed.
+    #[tool(
+        name = "prepare_dry_run",
+        description = "Recognize candidate bindings and reproduce its artifact, derive the \
+                       selected-rule reference suite, and bind the complete request to a run \
+                       hash. Account-Wasm, captured-target and live-enforcement execution are \
+                       explicitly unavailable; complete is false. Resource-consuming, no \
+                       network reads, signing or submission. This is not the full dry_run.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn prepare_dry_run(
+        &self,
+        Parameters(input): Parameters<DryRunInput>,
+    ) -> Result<Json<DryRunOutput>, CallToolResult> {
+        // Reserve shared work capacity and validate the operator's RPC source
+        // before building, even though this preparation does not read that source.
+        let (trust, _source, _url, deadline, slot) = self.authority_setup(&input.candidate)?;
+        let build = self.build_config.clone();
+        let work = tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            ozpb_toolkit::prepare_dry_run_with_build_config(&input, &trust, &build)
+        });
+        let output = tokio::time::timeout(deadline, work)
+            .await
+            .map_err(|_| {
+                tool_err(ToolError::new(
+                    ErrorCode::EResourceLimit,
+                    "dry-run preparation exceeded its work deadline",
+                ))
+            })?
+            .map_err(internal_tool_err)?
+            .map_err(tool_err)?;
+        Ok(Json(output))
+    }
+
     /// Run the pure reference evaluator over a constraint-derived permit/deny suite.
     #[tool(
         name = "reference_suite",
@@ -58,6 +101,81 @@ impl PolicyBuilderServer {
 mod tests {
     use super::*;
     use crate::tests::{hosted, refusal_code, subscription_spec};
+
+    fn preparation() -> (PolicyBuilderServer, DryRunInput) {
+        let mut server = hosted();
+        server.registry_trust = Some(
+            ozpb_toolkit::registry_trust_from_roots_json(
+                include_str!("../../../docs/examples/registry-roots.json"),
+                1,
+            )
+            .unwrap(),
+        );
+        server.rpc_sources = std::sync::Arc::new(std::collections::BTreeMap::from([(
+            "wallet".into(),
+            ozpb_toolkit::RpcSource {
+                rpc_url: "https://rpc.allowed.example".into(),
+                network_passphrase: ozpb_domain::TESTNET_PASSPHRASE.into(),
+            },
+        )]));
+        let spec = subscription_spec();
+        let input = DryRunInput {
+            candidate: ozpb_api_types::CheckPolicyCallSurfaceInput {
+                spec: spec.clone(),
+                rule_index: 0,
+                binding_set: ozpb_api_types::PolicyBindingSet {
+                    schema: ozpb_api_types::POLICY_BINDING_SET_SCHEMA.into(),
+                    spec_hash: "11".repeat(32),
+                    network_id: spec["network_id"].as_str().unwrap().into(),
+                    bindings: vec![],
+                },
+                signed_registry_snapshot: serde_json::json!({}),
+                account_address: spec["smart_account"]["address"].as_str().unwrap().into(),
+                network_id: spec["network_id"].as_str().unwrap().into(),
+                rpc_source: "wallet".into(),
+            },
+            artifact: VerifyInput {
+                spec,
+                rule_index: 0,
+                claimed_generated_files: Default::default(),
+                claimed_wasm_base64: None,
+                claimed_build_manifest: None,
+            },
+            candidate_context_rule_id: 7,
+            run_nonce: "22".repeat(32),
+        };
+        (server, input)
+    }
+
+    #[tokio::test]
+    async fn actual_preparation_route_uses_shared_capacity_before_any_build() {
+        let (server, input) = preparation();
+        let slots = server.authority_slots.clone().unwrap();
+        let _permit = slots.try_acquire_owned().unwrap();
+        assert_eq!(
+            refusal_code(server.prepare_dry_run(Parameters(input)).await),
+            "E_RESOURCE_LIMIT",
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_rejects_unconfigured_or_disallowed_candidate_sources() {
+        let (mut server, mut input) = preparation();
+        input.candidate.rpc_source = "unconfigured".into();
+        assert_eq!(
+            refusal_code(server.prepare_dry_run(Parameters(input.clone())).await),
+            "E_RPC",
+        );
+        input.candidate.rpc_source = "wallet".into();
+        std::sync::Arc::make_mut(&mut server.rpc_sources)
+            .get_mut("wallet")
+            .unwrap()
+            .rpc_url = "https://outside.example".into();
+        assert_eq!(
+            refusal_code(server.prepare_dry_run(Parameters(input)).await),
+            "E_RPC",
+        );
+    }
 
     #[tokio::test]
     async fn hosted_verify_is_busy_while_every_build_slot_is_taken() {

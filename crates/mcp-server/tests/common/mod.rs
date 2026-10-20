@@ -21,7 +21,7 @@ pub const MVP_TOOLS: &[&str] = &[
 ];
 
 /// Layer-1 reference evidence and generated-artifact verification tools.
-pub const VERIFICATION_TOOLS: &[&str] = &["reference_suite", "verify"];
+pub const VERIFICATION_TOOLS: &[&str] = &["reference_suite", "verify", "prepare_dry_run"];
 
 /// Exact-envelope network simulation, separate from the complete dry-run.
 pub const PREFLIGHT_TOOLS: &[&str] = &["preflight_transaction"];

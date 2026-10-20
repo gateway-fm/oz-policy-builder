@@ -26,7 +26,11 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod dry_run;
+pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
+#[cfg(test)]
+mod dry_run_tests;
 pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{

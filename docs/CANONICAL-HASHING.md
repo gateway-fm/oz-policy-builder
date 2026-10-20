@@ -56,6 +56,8 @@ two as separate and so does this.
 | `ozpb:v1:build-manifest` | a build manifest |
 | `ozpb:v1:policy-binding-set` | a policy binding set |
 | `ozpb:v1:policy-check-request` | the complete typed `CheckAgainstPolicyInput` |
+| `ozpb:v1:dry-run-request` | the complete typed `DryRunInput`, including artifact claims and nonce |
+| `ozpb:v1:dry-run-suite` | the ordered constraint-derived `Case` array for the selected rule |
 | `ozpb:v1:account-state` | the enumerated account rule-set an authority result was computed over |
 | `ozpb:v1:account-ledger-witness` | the raw entries one account scan read; its own byte layout, below |
 | `ozpb:v1:account-method-inventory` | the source-reviewed method table for one exact account Wasm hash |
