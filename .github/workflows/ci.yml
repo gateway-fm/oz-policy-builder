@@ -114,6 +114,7 @@ jobs:
         run: |
           npm ci --prefix testnet-harness/scripts --no-audit --no-fund
           npm ci --prefix testnet-harness/browser --no-audit --no-fund
+          npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
       - name: offline harness suites (no browser launch or testnet access)
         env:
           OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
@@ -121,6 +122,8 @@ jobs:
         run: |
           npm test --prefix testnet-harness/scripts
           npm test --prefix testnet-harness/browser
+          npm test --prefix wallet
+          python3 scripts/test-apply-pollywallet.py
 
   contracts:
     name: contracts (differential suite · generated code compiles)

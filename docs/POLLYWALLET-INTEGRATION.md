@@ -1,0 +1,182 @@
+# Pollywallet Policy Builder integration
+
+The integration adds a Policy Builder route to a pinned Pollywallet checkout. Pollywallet
+owns the passkey interaction; the local wallet backend owns its RPC connection, registry
+roots, retained artifacts and disposable testnet fee payer. MCP output cannot select a
+command, RPC endpoint, file path or signing identity.
+
+Pollywallet is the wallet named in the public architecture. Its pinned upstream default
+account differs from the account recognized by this toolkit. The integration therefore
+creates or attaches a recognized account explicitly. It does not relabel an unknown account,
+migrate an existing wallet, or broaden account/verifier recognition.
+
+This first integration supports recognized account creation, confirmed-transaction recording,
+artifact generation and reproduction, artifact deployment, and live authority review. Policy
+installation, revocation and replacement remain disabled: the account-Wasm, captured-target
+and behavioral live-enforcement layers are not yet connected. A fresh account also needs a
+confirmed owner-authorized transaction before recording; this route does not yet create that
+sample transaction. The signing validators below are tested foundations, not a completed
+installation or wallet acceptance claim.
+
+## Apply to the supported upstream revision
+
+Use a dedicated clean checkout of
+[`kalepail/pollywallet`](https://github.com/kalepail/pollywallet/tree/853b102983699726f918b68d8e42edbba74e65b9):
+
+```sh
+git clone https://github.com/kalepail/pollywallet.git /absolute/path/pollywallet
+git -C /absolute/path/pollywallet checkout --detach 853b102983699726f918b68d8e42edbba74e65b9
+python3 scripts/apply-pollywallet.py --revision HEAD /absolute/path/pollywallet
+```
+
+Run the apply command from a committed toolkit checkout containing this integration. It reads
+only that immutable Git tree, refuses a different or dirty upstream revision, refuses source
+symlinks and unlisted patch paths, and retains license attribution. Untracked toolkit files
+and working-copy edits do not become integration inputs.
+
+Install the two existing lockfiles separately:
+
+```sh
+cd /absolute/path/pollywallet
+pnpm install --frozen-lockfile --ignore-scripts
+npm --prefix src/policy-builder ci --ignore-scripts --no-audit --no-fund
+pnpm build
+pnpm exec vitest run src/lib/__tests__/policy-builder-bridge.test.ts
+```
+
+The upstream wallet keeps SDK 16.2.0. The nested validator package pins SDK 17.2.1.
+Only serialized XDR crosses that boundary. Do not deduplicate the Stellar SDK packages or
+silently replace the upstream dependency lock. The browser uses the upstream `buffer`
+polyfill, so URL-safe base64 is encoded explicitly rather than relying on Node-only encodings.
+The package-scoped `#wallet-stellar-sdk` import and explicit Vite alias keep the development
+optimizer from reusing the upstream SDK 16 bundle for SDK 17 validators.
+
+The Vite development server binds to `127.0.0.1:3000`, with a same-origin proxy for
+`/api/policy-builder` to the local backend on `127.0.0.1:4317`. Open the UI through
+`http://localhost:3000`: Chrome requires the `localhost` domain for WebAuthn registration
+and rejects the numeric IP as a relying-party domain.
+Open the backend's session launch URL. Its bearer credential is read once from the fragment,
+removed from browser history, and held only in memory. A page reload requires a fresh launch
+URL; the credential is not stored in local storage or sent in a query string.
+
+This route is a local operator workflow. Building it does not deploy a Cloudflare service,
+call the upstream shared relayer, publish an image, or establish a hosted endpoint.
+The overlay disables upstream AI and sandbox service bindings, container startup, remote
+bindings and the development inspector. Those unrelated upstream cloud features are
+unavailable in this dedicated checkout. In particular, ordinary `pnpm dev` must not require
+Cloudflare credentials or launch the upstream compiler container.
+
+## Start the local backend
+
+Build the toolkit CLI and prepare a signed registry snapshot and its trusted roots as
+described in the registry documentation. Use Node 22.12 or newer and install the wallet
+lockfile with `npm --prefix wallet ci --ignore-scripts --no-audit --no-fund`.
+Create an operator-owned directory with mode `0700` for retained session state, then write
+an operator JSON file using absolute canonical paths:
+
+```json
+{
+  "executable": "/absolute/path/oz-policy-builder/target/debug/ozpb",
+  "workRoot": "/absolute/path/wallet-state",
+  "rpcUrl": "https://soroban-testnet.stellar.org",
+  "registrySnapshotPath": "/absolute/path/registry.signed.json",
+  "registryRootsPath": "/absolute/path/registry-roots.json",
+  "registryMinimumVersion": 1,
+  "buildJobs": 2,
+  "buildTimeoutSecs": 600
+}
+```
+
+Set the minimum registry version to the operator's accepted rollback floor. Optional
+`stellarBinary`, `cargoHome`, `rustupHome`, and `buildCacheDir` fields select existing local
+toolchain paths; the cache directory also requires mode `0700`. The CLI and optional Stellar
+binary must be executable regular files. Configuration, registry and executable paths cannot
+be symlinks or writable by other users. Arbitrary environment overrides are refused, builds
+run offline, and HTTP requests cannot select these settings.
+
+From the toolkit checkout:
+
+```sh
+node wallet/server/main.mjs --config /absolute/path/operator.json
+```
+
+In the applied Pollywallet checkout, run `pnpm dev`, then open the one-time session URL
+printed by the backend. The equivalent backend entrypoint in that checkout is
+`node src/policy-builder/server/main.mjs --config /absolute/path/operator.json`.
+Startup does not fund an account, execute the CLI or submit a transaction. The backend
+listens only on `127.0.0.1:4317`; the approved browser origin is exactly
+`http://localhost:3000`; the numeric-IP browser origin is refused.
+
+Each backend launch creates a separate private session directory and an in-memory disposable
+testnet fee payer. Retain the session journal: an intended transaction hash is recorded before
+submission, and an uncertain result blocks subsequent writes in that session. Inspect that
+hash before starting another attempt. The fee payer key is not saved, printed or returned
+to the browser. Fresh account confirmation separately discloses a fixed one-testnet-XLM
+sample balance (`sampleFundingStroops: "10000000"`) and at most three testnet XLM in fees
+across its three transactions (`maxTotalFeeStroops: 30000000`).
+On SIGINT or SIGTERM the listener stops accepting new requests; an already admitted request
+can finish and write its receipt before shutdown. Keep the journal when interrupting a session.
+
+## Review and consent
+
+1. Create a passkey using Pollywallet's existing authenticator helper, then separately review
+   and confirm recognized account deployment. Alternatively attach the public locator of an
+   existing recognized account. Retain that locator to reconnect; it contains no private key.
+2. Record a confirmed transaction authorized by that account. Select the restricted delegate,
+   grant name, expiry and call limit. The backend retains the resulting specification and
+   generated artifact under opaque identifiers.
+3. Inspect the immutable specification, generated files, Wasm hash, build manifest and
+   verification limits. Deployment confirmation concerns that exact artifact and the testnet
+   fee ceiling; it does not grant account authority.
+4. Refresh the live authority and exact installation grant. The browser independently checks
+   the recognized owner rule, full credential identifier, policy address and retained bindings.
+   The selected owner rule comes from that evidence; rule zero is not assumed.
+5. Only when the required verification report is complete does the route enable owner signing.
+   It checks the fresh unsigned envelope against the immutable display before asking Pollywallet
+   for a passkey signature. It then independently checks the signed XDR, origin, challenge,
+   user verification, full signer identity and exact owner rule before submission.
+
+Account and policy deployment confirmations are distinct from owner authorization. A cancelled
+or failed signing/submission attempt consumes the prepared review; refresh and review again.
+The client does not silently retry a one-shot action. Backend enforcement and a fresh
+authorization check still apply before the fee payer signs or sends anything.
+
+The four report layers are `reference`, `account_wasm`, `captured_target` and
+`live_enforcement`. The UI distinguishes the first three local checks from full acceptance.
+Missing, unsupported, failed, duplicated or mismatched evidence keeps acceptance closed.
+An installation preflight is not counted as behavioral live-enforcement evidence. Backend
+capabilities keep signing and lifecycle actions unavailable until their required checks exist.
+
+Authentication with a virtual authenticator is automation evidence. The signature result
+explicitly reports `human_approval_attested: false`; it does not establish a human acceptance
+decision. This local design also does not protect against an agent or process with arbitrary
+control of the operator's OS account or browser profile.
+
+## Verification
+
+Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR
+and signature checks, and the client controller's refusal paths. The apply-script tests cover
+immutable inputs, dirty/different upstream checkouts, symlinks, missing lock metadata, and
+binary/rename patches that omit ordinary text headers.
+
+The upstream bridge test uses the actual Pollywallet SDK 16 passkey helper and nested SDK 17
+validator with a generated test key. It checks the full credential and a nonzero owner rule,
+and marks the result as automated authentication.
+
+With the applied checkout's development server running, the browser regression uses the
+existing Playwright lockfile and a temporary virtual authenticator:
+
+```sh
+npm --prefix testnet-harness/browser ci --ignore-scripts --no-audit --no-fund
+OZPB_BROWSER_CHANNEL=chrome node scripts/test-pollywallet-browser.mjs /absolute/path/pollywallet
+```
+
+Run this from the toolkit checkout. It calls the actual upstream registration and signing
+helpers at the supported `localhost` origin, verifies the resulting signature independently,
+and submits no transaction. It removes its temporary browser module afterward. Omit
+`OZPB_BROWSER_CHANNEL` to use the installed Playwright Chromium instead of local Chrome.
+
+At the pinned upstream revision, `pnpm exec tsc --noEmit` already reports five errors in
+`src/hooks/useWallet.ts` and `src/lib/tx-analyzer.ts`. The unchanged upstream checkout produces
+the same diagnostics. Generate the route tree with `pnpm build` before comparing type checks;
+this integration does not edit the generated route tree or suppress those upstream errors.

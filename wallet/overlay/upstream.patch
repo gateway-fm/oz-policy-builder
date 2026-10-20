@@ -1,0 +1,98 @@
+--- a/src/lib/passkey.ts
++++ b/src/lib/passkey.ts
+@@ -300,6 +300,8 @@
+   contextRuleIds: number[];
+   expiration: number;
+   networkPassphrase?: string;
++  /** Exact verifier recognized by the wallet review; legacy callers retain their default. */
++  verifier?: string;
+ }): Promise<xdr.SorobanAuthorizationEntry[]> {
+   const {
+     authEntries,
+@@ -307,12 +309,14 @@
+     contextRuleIds,
+     expiration,
+     networkPassphrase = TESTNET_NETWORK_PASSPHRASE,
++    verifier = TESTNET_WEBAUTHN_VERIFIER,
+   } = params;
++  if (!StrKey.isValidContract(verifier)) throw new Error("Invalid signer verifier");
+
+   const keyData = buildKeyData(Buffer.from(wallet.publicKey, "hex"), wallet.credentialId);
+   const signer = {
+     tag: "External" as const,
+-    values: [TESTNET_WEBAUTHN_VERIFIER, keyData] as const,
++    values: [verifier, keyData] as const,
+   };
+
+   const signed: xdr.SorobanAuthorizationEntry[] = [];
+--- a/src/components/Header.tsx
++++ b/src/components/Header.tsx
+@@ -13,6 +13,9 @@
+         <Badge variant="teal">Testnet</Badge>
+       </span>
+       <nav className="ml-auto flex items-center gap-4">
++        <Link to="/policy-builder" className="text-sm text-cyan-400 hover:text-cyan-200">
++          Policy Builder
++        </Link>
+         <Link
+           to="/rules"
+           className="flex items-center gap-2 text-sm text-gray-400 hover:text-cyan-400 transition-colors"
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -6,19 +6,27 @@
+ import { fileURLToPath, URL } from 'node:url'
+
+ export default defineConfig({
++  server: {
++    host: '127.0.0.1', port: 3000, strictPort: true,
++    proxy: {
++      '/api/policy-builder': { target: 'http://127.0.0.1:4317', changeOrigin: false },
++    },
++  },
+   define: {
+     global: 'globalThis',
+   },
+   resolve: {
+     alias: {
++      '#wallet-stellar-sdk': fileURLToPath(new URL('./src/policy-builder/node_modules/@stellar/stellar-sdk/lib/esm/index.js', import.meta.url)),
+       buffer: fileURLToPath(new URL('./node_modules/buffer/index.js', import.meta.url)),
+     },
+     tsconfigPaths: true,
+     preserveSymlinks: false,
+-    dedupe: ['@stellar/stellar-sdk', '@stellar/stellar-base'],
++    // The nested Policy Builder validators retain their pinned SDK; XDR crosses versions.
+   },
+   optimizeDeps: {
+     include: [
++      '#wallet-stellar-sdk',
+       'buffer',
+       '@stellar/stellar-sdk',
+       '@stellar/stellar-sdk/rpc',
+@@ -45,8 +53,15 @@
+   },
+   plugins: [
+     cloudflare({
++      // The dedicated local wallet checkout never connects remote provider bindings.
++      remoteBindings: false,
++      inspectorPort: false,
+       viteEnvironment: { name: 'ssr' },
+-      auxiliaryWorkers: [{ configPath: './sandbox-worker/wrangler.jsonc' }],
++      config: (config) => {
++        delete config.ai
++        config.services = []
++        config.dev = { ...config.dev, enable_containers: false }
++      },
+     }),
+     tailwindcss(),
+     tanstackStart(),
+--- a/vitest.config.ts
++++ b/vitest.config.ts
+@@ -13,7 +13,7 @@
+     },
+     tsconfigPaths: true,
+     preserveSymlinks: false,
+-    dedupe: ['@stellar/stellar-sdk', '@stellar/stellar-base'],
++    // The nested Policy Builder validators retain their pinned SDK; XDR crosses versions.
+   },
+   plugins: [
+     viteReact(),
