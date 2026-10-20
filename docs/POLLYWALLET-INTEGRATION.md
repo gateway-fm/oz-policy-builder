@@ -150,6 +150,13 @@ response is lost. Backend enforcement, fresh code/owner/sequence checks and the 
 apply before the fee payer signs or sends anything. The confirmed hash is offered for a
 separate recording action.
 
+Sample authorization preserves either direct `Address` or `AddressV2` credentials exactly.
+For `AddressV2`, the SDK constructs the address-bound preimage described in Stellar's
+[authorization migration guide](https://stellar.github.io/js-stellar-sdk/migration/protocol-27-soroban-auth/).
+The browser and backend reject a changed credential discriminator and do not downgrade V2
+to the legacy payload. Source-account credentials and delegation wrappers are unsupported
+for this owner-passkey flow.
+
 The four report layers are `reference`, `account_wasm`, `captured_target` and
 `live_enforcement`. The UI distinguishes the first three local checks from full acceptance.
 Missing, unsupported, failed, duplicated or mismatched evidence keeps acceptance closed.
@@ -170,7 +177,8 @@ binary/rename patches that omit ordinary text headers.
 
 The upstream bridge test uses the actual Pollywallet SDK 16 passkey helper and nested SDK 17
 validator with a generated test key. It checks the full credential, a nonzero installation
-owner rule, and the exact fixed sample-transfer envelope with owner rule zero. It marks the
+owner rule, and the exact fixed sample-transfer envelope with owner rule zero, using both
+legacy and V2 credentials. It marks the
 result as automated authentication.
 
 With the applied checkout's development server running, the browser regression uses the

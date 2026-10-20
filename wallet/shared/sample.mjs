@@ -3,6 +3,7 @@ import { Address, Asset, Networks, StrKey, hash, xdr } from '#wallet-stellar-sdk
 import { NETWORK_ID, freezeCopy } from './approval.mjs';
 import { decodeBase64Url } from './base64url.mjs';
 import { decodeEnvelope, resources } from './assembly.mjs';
+import { directAddressCredentials } from './auth-credentials.mjs';
 
 export const SAMPLE_AMOUNT_STROOPS = '1000000';
 export const SAMPLE_MAX_FEE_STROOPS = 10_000_000;
@@ -86,10 +87,9 @@ export function validateSampleAssembly({ approval, assembly, ownerRuleXdr, limit
     if (op.type !== 'invokeHostFunction' || op.invokeHostFunctionOp.hostFunction.type !== 'hostFunctionTypeInvokeContract'
       || !same(op.invokeHostFunctionOp.hostFunction.invokeContract, call) || op.invokeHostFunctionOp.auth.length !== 1) refuse();
     const entry = op.invokeHostFunctionOp.auth[0];
-    if (entry.credentials.type !== 'sorobanCredentialsAddress'
-      || entry.rootInvocation.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
+    const credentials = directAddressCredentials(entry.credentials);
+    if (entry.rootInvocation.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
       || !same(entry.rootInvocation.function.contractFn, call) || entry.rootInvocation.subInvocations.length) refuse();
-    const credentials = entry.credentials.address;
     if (Address.fromScAddress(credentials.address).toString() !== approval.wallet.contractId
       || credentials.signature.type !== 'scvVoid' || credentials.signatureExpirationLedger !== assembly.max_ledger - 1
       || tx.ext.type !== 'sorobanData') refuse();

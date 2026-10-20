@@ -9,7 +9,7 @@
  }): Promise<xdr.SorobanAuthorizationEntry[]> {
    const {
      authEntries,
-@@ -307,12 +309,14 @@
+@@ -307,19 +309,22 @@
      contextRuleIds,
      expiration,
      networkPassphrase = TESTNET_NETWORK_PASSPHRASE,
@@ -25,6 +25,16 @@
    };
 
    const signed: xdr.SorobanAuthorizationEntry[] = [];
+   for (const entry of authEntries) {
+     const credType = entry.credentials().switch().name;
+-    if (credType === "sorobanCredentialsAddress") {
+-      const credentials = entry.credentials().address();
++    if (credType === "sorobanCredentialsAddress" || credType === "sorobanCredentialsAddressV2") {
++      const credentials = credType === "sorobanCredentialsAddress"
++        ? entry.credentials().address() : entry.credentials().addressV2();
+       if (Address.fromScAddress(credentials.address()).toString() === wallet.contractId) {
+         signed.push(await authorizeEntry(
+           entry,
 --- a/src/components/Header.tsx
 +++ b/src/components/Header.tsx
 @@ -13,6 +13,9 @@

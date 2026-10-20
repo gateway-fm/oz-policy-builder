@@ -8,14 +8,14 @@ import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { fixture } from './approval-fixture.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
 
-function setup() {
+function setup(version = 'legacy') {
   const calls = [];
   const f = fixture();
   const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const jwk = pair.publicKey.export({ format: 'jwk' });
   f.wallet.publicKey = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]).toString('hex');
   const ownerRuleXdr = f.ruleXdr({ id: xdr.ScVal.scvU32(0) });
-  const draft = sampleTransfer();
+  const draft = sampleTransfer(() => {}, version);
   draft.wallet = f.wallet;
   draft.ownerRuleXdr = ownerRuleXdr;
   draft.descriptor.ownerRuleXdr = ownerRuleXdr;
@@ -43,7 +43,7 @@ function setup() {
       calls.push('submit-sample');
       assert.equal(stage, 'sample-transfer');
       const op = xdr.TransactionEnvelope.fromXDR(raw, 'base64').v1.tx.operations[0].body.invokeHostFunctionOp;
-      assert.equal(op.auth[0].credentials.address.signature.type, 'scvMap');
+      assert.equal((op.auth[0].credentials.address ?? op.auth[0].credentials.addressV2).signature.type, 'scvMap');
       return { hash: 'c'.repeat(64), ledger: 102, trust: 'rpc_reported', returnValue: xdr.ScVal.scvVoid(), events: [] };
     },
   };
@@ -55,12 +55,14 @@ async function create(f) {
   const preview = await f.actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
   return f.actions['confirm-account']({ id: preview.action.id });
 }
-function signed(f, prepared) {
+function signed(f, prepared, legacyPayload = false) {
   const approval = reviewSample({ wallet: f.wallet, descriptor: f.draft.descriptor, ownerRuleXdr: prepared.ownerRuleXdr });
   const checked = validateSampleAssembly({ ...prepared, approval });
   const entry = xdr.SorobanAuthorizationEntry.fromXDR(checked.authEntriesXdr[0], 'base64');
   const rules = xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]);
-  const payload = Buffer.from(hash(buildAuthorizationEntryPreimage(entry, checked.expirationLedger, Networks.TESTNET).toXDR()));
+  const signingEntry = xdr.SorobanAuthorizationEntry.fromXDR(entry.toXDR());
+  if (legacyPayload) signingEntry.credentials = xdr.SorobanCredentials.sorobanCredentialsAddress(signingEntry.credentials.addressV2);
+  const payload = Buffer.from(hash(buildAuthorizationEntryPreimage(signingEntry, checked.expirationLedger, Networks.TESTNET).toXDR()));
   const challenge = createHash('sha256').update(Buffer.concat([payload, rules.toXDR()])).digest('base64url');
   const client = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge, origin: 'http://localhost:3000', crossOrigin: false }));
   const auth = Buffer.concat([createHash('sha256').update('localhost').digest(), Buffer.from([5, 0, 0, 0, 0])]);
@@ -68,7 +70,7 @@ function signed(f, prepared) {
   const field = (key, val) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val });
   const proof = xdr.ScVal.scvMap([field('authenticator_data', xdr.ScVal.scvBytes(auth)),
     field('client_data', xdr.ScVal.scvBytes(client)), field('signature', xdr.ScVal.scvBytes(signature))]);
-  entry.credentials.address.signature = xdr.ScVal.scvMap([field('context_rule_ids', rules), field('signers',
+  (entry.credentials.address ?? entry.credentials.addressV2).signature = xdr.ScVal.scvMap([field('context_rule_ids', rules), field('signers',
     xdr.ScVal.scvMap([new xdr.ScMapEntry({ key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'),
       new Address(f.wallet.verifier).toScVal(), xdr.ScVal.scvBytes(Buffer.concat([Buffer.from(f.wallet.publicKey, 'hex'), Buffer.from([1])]))]),
       val: xdr.ScVal.scvBytes(proof.toXDR()) })]))]);
@@ -128,3 +130,30 @@ test('ambiguous sample send cannot become another implicit attempt', async () =>
   await assert.rejects(() => f.actions['prepare-sample']({ wallet: f.wallet }), /refused/);
   assert.equal(f.calls.filter((x) => x === 'submit-sample').length, 1);
 });
+
+test('AddressV2 sample accepts its address-bound passkey proof', async () => {
+  const f = setup('v2'); await create(f);
+  const prepared = await f.actions['prepare-sample']({ wallet: f.wallet });
+  const input = { id: prepared.action.id, signedAuthEntriesXdr: signed(f, prepared) };
+  assert.equal((await f.actions['submit-sample'](input)).transactionHash, 'c'.repeat(64));
+  assert.equal(f.calls.filter((call) => call === 'submit-sample').length, 1);
+});
+test('AddressV2 refuses a valid passkey proof over the legacy non-address-bound payload before send', async () => {
+  const f = setup('v2'); await create(f);
+  const prepared = await f.actions['prepare-sample']({ wallet: f.wallet });
+  await assert.rejects(() => f.actions['submit-sample']({ id: prepared.action.id, signedAuthEntriesXdr: signed(f, prepared, true) }), /refused/);
+  assert.ok(!f.calls.includes('submit-sample'));
+});
+for (const version of ['legacy', 'v2']) {
+  test(`signed ${version} sample cannot substitute the other credential discriminator`, async () => {
+    const f = setup(version); await create(f);
+    const prepared = await f.actions['prepare-sample']({ wallet: f.wallet });
+    const entry = xdr.SorobanAuthorizationEntry.fromXDR(signed(f, prepared)[0], 'base64');
+    entry.credentials = version === 'v2'
+      ? xdr.SorobanCredentials.sorobanCredentialsAddress(entry.credentials.addressV2)
+      : xdr.SorobanCredentials.sorobanCredentialsAddressV2(entry.credentials.address);
+    await assert.rejects(() => f.actions['submit-sample']({ id: prepared.action.id,
+      signedAuthEntriesXdr: [entry.toXDR('base64')] }), /refused/);
+    assert.ok(!f.calls.includes('submit-sample'));
+  });
+}

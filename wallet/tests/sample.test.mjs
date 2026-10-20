@@ -64,3 +64,13 @@ for (const field of ['amount', 'recipient', 'token', 'function', 'nested auth', 
     assert.throws(() => checked(f), /refused/);
   });
 }
+
+test('sample preserves the address-bound V2 credential and rejects unsupported credential arms', () => {
+  const f = sampleTransfer(() => {}, 'v2');
+  const accepted = checked(f);
+  assert.equal(xdr.SorobanAuthorizationEntry.fromXDR(accepted.authEntriesXdr[0], 'base64').credentials.type, 'sorobanCredentialsAddressV2');
+  const source = sampleTransfer((tx) => {
+    tx.operations[0].body.invokeHostFunctionOp.auth[0].credentials = xdr.SorobanCredentials.sorobanCredentialsSourceAccount();
+  });
+  assert.throws(() => checked(source), /refused/);
+});

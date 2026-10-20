@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
+import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 
 export const MAX_FEE_STROOPS = 10_000_000;
 export const MAX_UPLOAD_FEE_STROOPS = 100_000_000;
@@ -173,12 +174,12 @@ export class WalletNetwork {
         || simulation.result.retval?.type !== 'scvVoid' || simulation.result.auth?.length !== 1
         || ledger(simulation.latestLedger) < captured.ledger) refuse();
       const entry = xdr.SorobanAuthorizationEntry.fromXDR(simulation.result.auth[0].toXDR());
-      if (entry.credentials.type !== 'sorobanCredentialsAddress'
-        || Address.fromScAddress(entry.credentials.address.address).toString() !== wallet.contractId
-        || entry.credentials.address.signature.type !== 'scvVoid'
+      const credentials = directAddressCredentials(entry.credentials);
+      if (Address.fromScAddress(credentials.address).toString() !== wallet.contractId
+        || credentials.signature.type !== 'scvVoid'
         || entry.rootInvocation.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
         || !same(entry.rootInvocation.function.contractFn, call) || entry.rootInvocation.subInvocations.length) refuse();
-      entry.credentials.address.signatureExpirationLedger = maximum - 1;
+      credentials.signatureExpirationLedger = maximum - 1;
       const envelope = tx.toEnvelope();
       envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
       const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
