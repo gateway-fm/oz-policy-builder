@@ -57,7 +57,7 @@ class Server {
     expectedHash = createHash('sha256').update(tx.signatureBase()).digest('hex');
     assert.match(expectedHash, /^[0-9a-f]{64}$/);
     if (mode === 'submission checkpoint') assert.equal(checkpointHash, expectedHash);
-    return { status: 'PENDING', hash: mode === 'submitted hash differs' ? 'ab'.repeat(32) : expectedHash };
+    return { status: mode === 'send backpressure' ? 'TRY_AGAIN_LATER' : mode === 'unknown send status' ? 'unexpected' : 'PENDING', hash: mode === 'submitted hash differs' ? 'ab'.repeat(32) : expectedHash };
   }
   async pollTransaction() {
     polls++;
@@ -139,7 +139,10 @@ if (mode === 'existing auth') {
   savedExistingAuth = Buffer.from(entry.toXDR());
   operation.body.invokeHostFunctionOp.auth.push(entry);
 }
-if (mode === 'submission checkpoint' || mode === 'checkpoint failure') {
+if (mode === 'send backpressure' || mode === 'unknown send status') {
+  await assert.rejects(source.namespace.submit(payer, operation), /not accepted/);
+  assert.equal(polls, 0, 'an unaccepted send is not confirmation');
+} else if (mode === 'submission checkpoint' || mode === 'checkpoint failure') {
   const pending = source.namespace.submit(payer, operation, { onSubmitting: async (hash) => {
     assert.equal(expectedHash, undefined, 'checkpoint precedes send');
     assert.equal(signatures, 1);

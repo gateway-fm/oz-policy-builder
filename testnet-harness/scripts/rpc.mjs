@@ -150,11 +150,17 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting 
   // Persist a removal identity before the first network write. A failed checkpoint prevents send;
   // a later transport/confirmation failure keeps the identity available for manual inspection.
   if (onSubmitting) await onSubmitting(expectedHash);
+  log(`transaction prepared ${expectedHash}; expires ${tx.timeBounds.maxTime}`);
   const sent = await server.sendTransaction(assembled);
+  const status = ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER', 'ERROR'].includes(sent.status) ? sent.status : 'UNKNOWN';
+  log(`transaction send ${expectedHash}; status ${status}`);
   if (sent.status === 'ERROR') {
     throw new Error(`${stage}: sendTransaction ERROR ${sent.errorResult?.toXDR?.('base64') ?? ''}`);
   }
   if (sent.hash !== expectedHash) throw new Error(`${stage}: RPC returned another transaction identity`);
+  if (!['PENDING', 'DUPLICATE'].includes(sent.status)) {
+    throw new Error(`${stage}: transaction ${expectedHash} was not accepted (${status}); no automatic retry`);
+  }
   const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
