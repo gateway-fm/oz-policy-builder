@@ -8,7 +8,8 @@ for (const mode of ['matching', 'submitted hash differs', 'confirmed hash differ
   'fee ceiling', 'resource fee', 'fee zero', 'fee above ceiling', 'negative resource fee', 'resource fee exceeds total', 'replacement operation',
   'replacement source', 'replacement sequence', 'replacement network', 'replacement timeout', 'replacement memo',
   'replacement signatures', 'extra operation', 'extra auth', 'wrong fetched source', 'submit enforce mode',
-  'source auth', 'create source auth', 'upload no auth', 'existing auth', 'wrong create source']) {
+  'source auth', 'create source auth', 'upload no auth', 'existing auth', 'wrong create source',
+  'upload fee ceiling', 'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass']) {
   test(`RPC receipt and read identity: ${mode}`, () => {
     execFileSync(process.execPath, ['--experimental-vm-modules',
       fileURLToPath(new URL('./fixtures/submission-receipt.mjs', import.meta.url)), mode], { stdio: 'pipe' });

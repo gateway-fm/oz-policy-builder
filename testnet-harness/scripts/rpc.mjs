@@ -62,6 +62,8 @@ export async function latestLedger() {
 
 /** Fixed total transaction fee, including Soroban resources: one testnet XLM. */
 export const MAX_TRANSACTION_FEE = 10_000_000n;
+/** Uploading newly generated code has a larger fixed ceiling: ten testnet XLM. */
+export const MAX_WASM_UPLOAD_FEE = 100_000_000n;
 
 /** Explicit source-payer authorization for exactly this operation, never an RPC-supplied tree. */
 function withSourceAuthorization(operation, payer) {
@@ -99,16 +101,20 @@ function withSourceAuthorization(operation, payer) {
 /** Assembly may add resource data and a bounded fee, never change the call we will sign. */
 function checkAssembly(assembled, expectedEnvelope) {
   try {
+    const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
+    const intended = expected.v1.tx.operations;
+    const maximumFee = intended.length === 1
+      && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
+      ? MAX_WASM_UPLOAD_FEE : MAX_TRANSACTION_FEE;
     const envelope = assembled.toEnvelope();
     if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'
       || envelope.v1.signatures.length !== 0) throw new Error();
     const wire = envelope.v1.tx;
-    if (!Number.isSafeInteger(wire.fee) || wire.fee < 100 || BigInt(wire.fee) > MAX_TRANSACTION_FEE) throw new Error();
+    if (!Number.isSafeInteger(wire.fee) || wire.fee < 100 || BigInt(wire.fee) > maximumFee) throw new Error();
     if (wire.ext.type === 'sorobanData') {
       const resourceFee = wire.ext.sorobanData.resourceFee;
       if (typeof resourceFee !== 'bigint' || resourceFee < 0n || resourceFee > BigInt(wire.fee)) throw new Error();
     } else if (wire.ext.type !== 'v0') throw new Error();
-    const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
     // Decode a separate copy: the SDK's envelope shares objects with its transaction.
     const normalized = xdr.TransactionEnvelope.fromXDR(envelope.toXDR());
     normalized.v1.tx.fee = expected.v1.tx.fee;

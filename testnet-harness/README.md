@@ -143,7 +143,12 @@ runs separately and gives the field-by-field review procedure for a new summary.
 ## Keys
 
 Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling of
-10,000,000 stroops (1 testnet XLM), including Soroban resources. Before the payer signs,
+10,000,000 stroops (1 testnet XLM), including Soroban resources. Uploading a new Wasm has a
+separate fixed ceiling of 100,000,000 stroops (10 testnet XLM), selected only from the original
+intended upload operation. A read-only estimate on 20 October 2026 for a 21,607-byte generated
+policy at ledger 5293145 required 89,730,616 total stroops (8.9730616 testnet XLM); it exceeded
+the ordinary ceiling and was refused before signing. This observation explains the separate
+upload allowance, not a promised future fee. Before the payer signs,
 assembly must preserve the exact operation, authorization entries, source, sequence, memo,
 time bounds and network. Extra signatures, authorization or operations are refused. A
 resource estimate above the ceiling stops the run; the harness never raises it automatically.
