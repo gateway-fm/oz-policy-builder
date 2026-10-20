@@ -142,6 +142,15 @@ runs separately and gives the field-by-field review procedure for a new summary.
 
 ## Keys
 
+Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling of
+10,000,000 stroops (1 testnet XLM), including Soroban resources. Before the payer signs,
+assembly must preserve the exact operation, authorization entries, source, sequence, memo,
+time bounds and network. Extra signatures, authorization or operations are refused. A
+resource estimate above the ceiling stops the run; the harness never raises it automatically.
+For a source-funded setup operation without existing authorization, the harness constructs
+one source-account entry locally from that exact host function, with no nested calls.
+Contract uploads need none. It does not accept authorization entries supplied by RPC.
+
 `setup.mjs` generates these keys with `Keypair.random()` and funds them from Friendbot:
 
 - payer: pays fees and deploys the contracts
