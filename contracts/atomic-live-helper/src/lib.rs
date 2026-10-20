@@ -8,6 +8,11 @@
 //! owner's authorization and the transfer needs the delegate's, exactly as when called
 //! directly. A failed transfer rolls the installation back with it.
 //!
+//! The transfer's authorization chooses which of the account's rules it is checked against, and
+//! the owner's own rule needs no policy. So the helper succeeds only if the candidate policy's
+//! call counter for the installed rule moved by exactly one across the transfer: only the
+//! account can make the policy count, and only while checking a call under that rule.
+//!
 //! None of those authorizations names the helper. They are rooted at the account's
 //! `add_context_rule` and at the asset's `transfer`, so the same set is a valid, submittable
 //! installation followed by a real transfer without the helper. Nothing here limits what a
@@ -104,6 +109,10 @@ pub enum HelperError {
     UnexpectedRuleId = 7006,
     /// The installed rule differs from the requested one in any field.
     InstalledRuleMismatch = 7007,
+    /// The policy has no readable call counter for the installed rule (an uncapped policy).
+    UnobservablePolicy = 7008,
+    /// The counter did not move by exactly one: the transfer was not checked by the candidate.
+    CandidateRuleNotExercised = 7009,
 }
 
 #[contract]
@@ -113,7 +122,7 @@ pub struct AtomicLiveHelper;
 impl AtomicLiveHelper {
     /// Installs the candidate rule through the account's own `add_context_rule`, then transfers
     /// `amount` of the native asset from the account to `recipient` under that rule. Returns
-    /// the installed rule only after the transfer succeeds.
+    /// the installed rule only after the transfer succeeds and the candidate policy counted it.
     pub fn install_and_transfer(env: Env, candidate: Candidate) -> ContextRule {
         if candidate.amount <= 0 || candidate.amount > MAX_AMOUNT {
             panic_with_error!(&env, HelperError::AmountOutOfScope);
@@ -184,18 +193,40 @@ impl AtomicLiveHelper {
             panic_with_error!(&env, HelperError::InstalledRuleMismatch);
         }
 
+        let remaining_before = remaining_calls(&env, &candidate, installed.id);
         // A denial here aborts the whole invocation, installation included; it is never caught.
         env.invoke_contract::<()>(
             &token,
             &Symbol::new(&env, "transfer"),
             vec![
                 &env,
-                candidate.account.into_val(&env),
-                candidate.recipient.into_val(&env),
+                candidate.account.clone().into_val(&env),
+                candidate.recipient.clone().into_val(&env),
                 candidate.amount.into_val(&env),
             ],
         );
+        if remaining_before.checked_sub(1) != Some(remaining_calls(&env, &candidate, installed.id))
+        {
+            panic_with_error!(&env, HelperError::CandidateRuleNotExercised);
+        }
         installed
+    }
+}
+
+/// The candidate policy's remaining call count for `rule_id` on the account. A policy without a
+/// cap exports no counter, and its execution is then not observable here.
+fn remaining_calls(env: &Env, candidate: &Candidate, rule_id: u32) -> u32 {
+    match env.try_invoke_contract::<u32, soroban_sdk::Error>(
+        &candidate.policy,
+        &Symbol::new(env, "remaining_calls"),
+        vec![
+            env,
+            rule_id.into_val(env),
+            candidate.account.clone().into_val(env),
+        ],
+    ) {
+        Ok(Ok(remaining)) => remaining,
+        _ => panic_with_error!(env, HelperError::UnobservablePolicy),
     }
 }
 

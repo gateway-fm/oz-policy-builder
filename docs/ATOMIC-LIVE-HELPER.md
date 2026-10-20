@@ -27,11 +27,24 @@ amount. In order, it:
 3. refuses any two of helper, account, policy, delegate, recipient and asset sharing an address;
 4. refuses a delegate that is not an existing classic account, an account not running the
    pinned `stellar-accounts` 0.7.2 Wasm, and a policy not running the expected candidate Wasm;
+   the candidate must be a generated policy with a call cap (see step 6);
 5. calls the account's `add_context_rule` with exactly one `CallContract(native asset)` rule,
    one `Delegated` signer and one policy, and refuses unless the account allocated the expected
    rule ID and returned exactly that rule (registry IDs are checked for count, not value);
-6. calls the asset's `transfer(account, recipient, amount)`, and returns the installed rule only
-   if the transfer succeeds.
+6. reads the candidate policy's remaining call count for the installed rule, calls the asset's
+   `transfer(account, recipient, amount)`, reads the count again, and returns the installed rule
+   only if the transfer succeeded **and** the count dropped by exactly one.
+
+Step 6 is what ties success to the candidate. The transfer's own authorization names the rule
+it is checked against, and the owner's Default rule needs no policy: an owner-signed transfer
+under rule 0 moves even the adjacent 1,000,001 stroops without the candidate policy ever running.
+That was reproduced against the previous helper, which then succeeded with the policy's counter
+untouched; the host test `atomic_helper_refuses_a_transfer_not_authorized_by_the_candidate_rule`
+now requires the refusal. The generated policy's `enforce` requires
+the account's own authorization and counts only while the account checks a call under the rule
+the policy is installed on, so a drop of exactly one in this invocation can only come from the
+candidate rule checking this transfer. A generated policy without a cap exports no counter;
+the helper then cannot observe its execution and refuses rather than report success.
 
 It has no storage, constructor, administrator, upgrade path, relay or arbitrary call surface; its
 only export is `install_and_transfer`. It cannot authorize anything: installation needs the
@@ -39,10 +52,12 @@ account owner's authorization of `add_context_rule` and the transfer needs the d
 authorization under the new rule, exactly as without the helper. A denial is never caught, so it
 aborts the invocation and the installation with it.
 
-Refusals are contract errors 7001–7007: `AmountOutOfScope`, `AliasedIdentity`,
+Refusals are contract errors 7001–7009: `AmountOutOfScope`, `AliasedIdentity`,
 `UnsupportedDelegate`, `UnrecognizedAccount`, `PolicyCodeMismatch`, `UnexpectedRuleId`,
-`InstalledRuleMismatch`. The last cannot be reached with the pinned account, which returns the
-rule it was given; the check stays so that the helper never relies on that. The range keeps
+`InstalledRuleMismatch`, `UnobservablePolicy` (no readable counter) and
+`CandidateRuleNotExercised` (the counter did not drop by exactly one). `InstalledRuleMismatch`
+cannot be reached with the pinned account, which returns the rule it was given; the check stays
+so that the helper never relies on that. The range keeps
 clear of the asset contract's and the policies' small codes. An error a called contract raises
 directly keeps its code — an already expired grant surfaces as the account's `PastValidUntil`
 (3005) from `add_context_rule`, a failing transfer as the asset's own error. Any recoverable
@@ -87,7 +102,11 @@ approval. The tests require:
   available, which a policy denial also emits. An already expired grant returns the account's
   `PastValidUntil` (3005), attributed to the account;
 - each reachable helper guard (errors 7001–7006) refuses with its own code and no state change,
-  including an unexpected rule ID after a valid installation.
+  including an unexpected rule ID after a valid installation;
+- a transfer authorized by the owner under the Default rule 0 instead of the candidate rule is
+  refused with `CandidateRuleNotExercised` and no state change, for both the permit and the
+  adjacent amount, and the policy raises no error;
+- a candidate policy generated without a call cap is refused with `UnobservablePolicy`.
 
 The tests are `#[ignore]`d in the ordinary `cargo test` run because they need freshly built Wasm.
 The scheduled source-build job runs the script through
@@ -106,8 +125,16 @@ deployed and their code is read back and matched to reviewed hashes; the delegat
 classic account whose signer settings are checked; the wallet shows the owner both exact calls,
 the expiry and the replay warning and gets explicit consent before any signature exists. Only
 `simulateTransaction` in enforce mode is used, never `sendTransaction`. A recording-mode
-simulation only discovers the authorization shape and is never evidence. A passing result needs
-the exact rule, counter and balance changes; a denial needs the policy-attributed error.
+simulation only discovers the authorization shape and is never evidence.
+
+Helper success is evidence only together with what the orchestrator checks itself: the
+simulation's ledger changes must include the installed rule, the candidate policy's counter
+write for that rule and account, and exactly the expected balance changes; and the transfer's
+authorization must be the delegate's, selecting the candidate rule. A denial needs the
+`NoTupleMatched` error attributed to the candidate policy; a helper refusal such as
+`CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy. The
+owner must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real
+transfer that no policy checks, should the signatures ever be submitted.
 
 ## Signatures are real and usable without the helper
 

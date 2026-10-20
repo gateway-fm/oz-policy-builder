@@ -20,7 +20,7 @@ const AMOUNT: i128 = 1_000_000;
 /// The reviewed helper Wasm, as `stellar contract build` produces it with the pinned rustc and
 /// stellar-cli on the aarch64-apple-darwin host the scheduled job also builds on.
 const EXPECTED_HELPER_HASH: &str =
-    "0731bd4e33855aaa51200595039152e72b3c44e40c324a35ecb2d407107f6dcc";
+    "b9f162a8906d7209cc0ccef6c931ab359ee257446fdab43241be5d9fa8294c19";
 // `HelperError` codes from contracts/atomic-live-helper/src/lib.rs.
 const AMOUNT_OUT_OF_SCOPE: u32 = 7001;
 const ALIASED_IDENTITY: u32 = 7002;
@@ -28,6 +28,8 @@ const UNSUPPORTED_DELEGATE: u32 = 7003;
 const UNRECOGNIZED_ACCOUNT: u32 = 7004;
 const POLICY_CODE_MISMATCH: u32 = 7005;
 const UNEXPECTED_RULE_ID: u32 = 7006;
+const UNOBSERVABLE_POLICY: u32 = 7008;
+const CANDIDATE_RULE_NOT_EXERCISED: u32 = 7009;
 /// The account's `PastValidUntil`, from `stellar-accounts` 0.7.2.
 const ACCOUNT_PAST_VALID_UNTIL: u32 = 3005;
 /// The account's `UnvalidatedContext`: no selected rule validates the call for these signers.
@@ -326,10 +328,14 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_policy("generated")
+    }
+    /// A fixture whose candidate policy is the one generated into `policy_dir`.
+    fn with_policy(policy_dir: &str) -> Self {
         let dir = PathBuf::from(std::env::var("OZPB_ATOMIC_TEST_DIR").unwrap());
         let account_wasm = std::fs::read(dir.join("pinned-account.wasm")).unwrap();
         let policy_wasm =
-            std::fs::read(dir.join("generated/generated_sub_transfer_r0.wasm")).unwrap();
+            std::fs::read(dir.join(policy_dir).join("generated_sub_transfer_r0.wasm")).unwrap();
         let helper_wasm = std::fs::read(dir.join("atomic-helper.wasm")).unwrap();
         assert_eq!(sha256(&account_wasm), OZ_SMART_ACCOUNT_WASM);
         assert_eq!(
@@ -450,6 +456,24 @@ impl Fixture {
             c.recipient.clone().into_val(e),
             c.amount.into_val(e)
         ]
+    }
+    /// The installation as usual, but the transfer authorized by the owner under the owner's
+    /// own Default rule 0, which has no policy: the candidate rule is never consulted.
+    fn authorizations_with_transfer_under_owner_rule(&self) -> Vec<xdr::SorobanAuthorizationEntry> {
+        let e = &self.env;
+        let c = &self.candidate;
+        let mut auth = self.authorizations()[..2].to_vec();
+        let call_root = invocation(e, &self.token, "transfer", self.transfer_args());
+        auth.extend(account_auth(
+            e,
+            &c.account,
+            &self.owner,
+            call_root,
+            20,
+            0,
+            self.expiry,
+        ));
+        auth
     }
     /// Owner-rule authorization of the installation, then candidate-rule authorization of the
     /// transfer, each as the account entry followed by its signer's entry.
@@ -772,4 +796,38 @@ fn permit_case_authorizations_install_and_transfer_without_the_helper() {
     );
     assert_eq!(f.balance(&f.candidate.account), sender_before - AMOUNT);
     assert_eq!(f.balance(&f.candidate.recipient), recipient_before + AMOUNT);
+}
+
+#[test]
+#[ignore = "requires freshly built actual Wasm; run scripts/test-atomic-live-helper.sh"]
+fn atomic_helper_refuses_a_transfer_not_authorized_by_the_candidate_rule() {
+    // The transfer's own authorization chooses the rule it is checked against. Under the
+    // owner's Default rule 0 no candidate policy runs, so even the adjacent amount would move;
+    // helper success there would look like enforcement while proving nothing about the policy.
+    for (case, amount) in [("permit amount", AMOUNT), ("adjacent amount", AMOUNT + 1)] {
+        let mut f = Fixture::new();
+        f.candidate.amount = amount;
+        let refusal =
+            f.refused_without_effect(&f.authorizations_with_transfer_under_owner_rule(), case);
+        assert_eq!(
+            refusal,
+            Some(helper_error(CANDIDATE_RULE_NOT_EXERCISED)),
+            "{case}"
+        );
+        assert_eq!(
+            contract_errors(&f.env, &f.candidate.policy),
+            vec![],
+            "{case}: the policy never decided"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires freshly built actual Wasm; run scripts/test-atomic-live-helper.sh"]
+fn atomic_helper_refuses_a_policy_without_an_observable_counter() {
+    // Without a call cap the generated policy exports no counter, so the helper cannot tell
+    // whether the candidate rule checked the transfer and must not report success.
+    let f = Fixture::with_policy("generated-uncapped");
+    let refusal = f.refused_without_effect(&f.authorizations(), "uncapped policy");
+    assert_eq!(refusal, Some(helper_error(UNOBSERVABLE_POLICY)));
 }

@@ -34,3 +34,6 @@ rule["allowed_calls"][0]["args"][2]["c"]["eq_i128"]["value"] = "1000000"
 rule["policies"] = [p for p in rule["policies"] if "generated" in p]
 assert len(rule["policies"]) == 1
 (work / "spec.json").write_text(json.dumps(spec, separators=(",", ":")) + "\n")
+# The same grant without a call cap: its policy exports no counter the helper could read.
+rule["state"] = []
+(work / "spec-uncapped.json").write_text(json.dumps(spec, separators=(",", ":")) + "\n")

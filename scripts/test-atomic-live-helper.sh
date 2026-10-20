@@ -18,6 +18,8 @@ python3 scripts/atomic-live-helper-fixture.py "$work"
 ( cd contracts/golden-transfer-policy && cargo fetch --locked )
 cargo run --locked --quiet -p ozpb-cli -- generate \
     --spec "$work/spec.json" --rule 0 --out "$work/generated"
+cargo run --locked --quiet -p ozpb-cli -- generate \
+    --spec "$work/spec-uncapped.json" --rule 0 --out "$work/generated-uncapped"
 stellar contract build --locked --manifest-path contracts/atomic-live-helper/Cargo.toml \
     --package ozpb-atomic-live-helper --out-dir "$work"
 mv "$work/ozpb_atomic_live_helper.wasm" "$work/atomic-helper.wasm"
@@ -37,6 +39,8 @@ for test in \
     atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_state \
     atomic_helper_refuses_expired_signatures_or_grant_and_preserves_all_state \
     atomic_helper_guards_refuse_out_of_scope_candidates_and_preserve_all_state \
+    atomic_helper_refuses_a_transfer_not_authorized_by_the_candidate_rule \
+    atomic_helper_refuses_a_policy_without_an_observable_counter \
     permit_case_authorizations_install_and_transfer_without_the_helper; do
     grep -qx "test $test ... ok" "$work/result.log" || {
         echo "required atomic helper test did not run and pass: $test" >&2
