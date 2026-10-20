@@ -34,6 +34,17 @@ function tree(root) {
     args: call.args.map(summary) } }, sub_invocations: root.subInvocations.map(tree) };
 }
 
+/**
+ * Sort calls into the CLI's rule order (by contract address) and require the root invocation
+ * to come first. Signatures list rule IDs in authorization-context order, root first; any
+ * other rule order would misattribute every per-rule control.
+ */
+export function orderRootFirst(calls) {
+  calls.sort((a, b) => a.contract < b.contract ? -1 : a.contract > b.contract ? 1 : 0);
+  requireThat(calls.length >= 1 && !calls[0].path.includes('/sub['), 'root invocation rule order');
+  return calls;
+}
+
 export function protocolInputs(run, recording) {
   same(run.network, Networks.TESTNET, 'network');
   same(run.account_code_hash, PINNED_ACCOUNT_WASM, 'account pin');
@@ -67,10 +78,7 @@ export function protocolInputs(run, recording) {
     node.subInvocations.forEach((child, i) => walk(child, `${path}/sub[${i}]`));
   }
   walk(root, `recordings[0]/auth[${selected[0].index}]`);
-  calls.sort((a, b) => a.contract < b.contract ? -1 : a.contract > b.contract ? 1 : 0);
-  // Signatures list rule IDs in authorization-context order (root first); the walkthrough
-  // targets sort that way, and any other order would misattribute every per-rule control.
-  requireThat(!calls[0].path.includes('/sub['), 'root invocation rule order');
+  orderRootFirst(calls);
   const widen = (contract, fn_name, arg_index, bound, intent) => ({ contract, fn_name, arg_index, bound, intent, blast_radius: 'medium' });
   const widenings = plan.kind === 'soroswap_swap' ? [
     widen(PROTOCOL_TARGETS.router, 'swap_exact_tokens_for_tokens', 0, { le_i128: { max: plan.amount_in } }, 'Bound this swap input at the recorded amount'),

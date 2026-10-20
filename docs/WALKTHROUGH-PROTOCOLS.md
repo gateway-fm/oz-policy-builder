@@ -6,8 +6,9 @@ record → synthesize → reference-suite → generate → verify chain as
 They are controlled testnet runs with throwaway keys or an exportable virtual passkey. They do
 not establish a wallet's protected human approval.
 
-**Status.** W3 is executable through `run.sh`; one controlled run completed every step below on
-20 October 2026 ([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-run-20-october-2026)).
+**Status.** W3 is executable through `run.sh`. One controlled run on 20 October 2026 completed
+every step below except the two transfer-rule denials, which were added afterwards
+([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-run-20-october-2026)).
 W1 has its pipeline, bundle installation and controls, but no setup for the Blend position its
 claim needs; `run.sh` refuses it (see [W1](#w1-blend)), and no W1 run exists.
 
@@ -35,7 +36,7 @@ The expected identities are the constants in `testnet-harness/scripts/protocol-c
 `soroswap-preflight.mjs`; the pair's code is compared with this run's own preflight observation
 before every later call.
 
-The owner then calls `swap_exact_tokens_for_tokens` once through rule 0 with these fixed,
+The owner then calls `swap_exact_tokens_for_tokens` once through the account's owner rule (ID 0) with these fixed,
 operator-chosen values. They are test decisions, not a price oracle or a slippage policy:
 
 | Value | Decision |
@@ -51,50 +52,59 @@ The run requires a confirmed nonzero output and an equal balance increase before
 ### Two independent rules
 
 The account authorizes two contexts for the swap: the router call and the native-SAC
-`transfer` from the account to the pair. Synthesis therefore produces two rules, and the harness
-keeps both from the same complete spec:
+`transfer` from the account to the pair. Synthesis therefore produces two rules from one
+complete spec. This document names them by role, because the account numbers rules itself
+(its owner rule is ID 0, and each installed rule gets the next free ID):
 
-- **Rule 0, the router:** input at most the recorded amount, output at least the floor, the
-  exact route, recipient and deadline.
-- **Rule 1, the token transfer:** at most the recorded amount, from the account to the exact pair.
+- **Router rule** (spec index 0): input at most the recorded amount, output at least the floor,
+  the exact route, recipient and deadline.
+- **Transfer rule** (spec index 1): at most the recorded amount, from the account to the exact pair.
 
-The widenings (input cap, output floor, transfer cap) are explicit `user_widened` decisions in
-the synthesis inputs. No reviewed registry adapter is used: the committed development registry
-has no reviewed Soroswap binding, and the harness does not invent one. The target code hashes in
-the spec are `evidence_only` observations.
+The widenings (input cap, output floor, transfer cap) are written into the synthesis inputs as
+`user_widened` decisions by `protocol-synthesis.mjs` itself. They are fixed for this
+walkthrough; a run does not ask for or record a separate acknowledgment of them. No reviewed
+registry adapter is used: the committed development registry has no reviewed Soroswap binding,
+and the harness does not invent one. The target code hashes in the spec are `evidence_only`
+observations.
 
-The rules are independent capabilities, not an atomic workflow. Rule 1 alone lets the delegate
-move up to the input amount to the pair. The controls observe that authority directly
-(`independent_token`) rather than leaving it implicit. Rule IDs are signed in the account's
-context order, router first; synthesis refuses any other rule order.
+The rules are independent capabilities, not an atomic workflow. The transfer rule alone lets the
+delegate move up to the input amount to the pair. **XLM sent to the pair that way is lost to the
+account:** a direct transfer is not a swap, and the pair's surplus balance can be taken by anyone.
+The controls observe that authority only by simulation (`independent_token`), never by submitting
+it, and then check that the transfer rule's own policy still bounds it. Rule IDs are signed in the
+account's context order, router first; the harness's `protocolInputs` refuses a spec whose rule
+order would put the transfer rule first.
 
 ### Installation
 
 `bundle-command.mjs install` uploads, deploys and installs each generated policy in turn. Every
-authority request carries the bindings of all rules, and each owner-signed `add_context_rule`
-must equal its approved intent. Each transaction hash is journaled before submission; a pending
-or ambiguous step is never retried. An interrupted bundle is recorded as `incomplete`, not as a
-partial success. `bundle-command.mjs inspect` then reads back each live rule, its policy code
-and installation.
+authority request carries the bindings of all rules, so each rule's answer covers every bound
+policy; each owner-signed `add_context_rule` must still equal that rule's approved intent. Each
+transaction hash is journaled before submission; a pending or ambiguous step is never retried. An
+interrupted bundle is recorded as `incomplete`, not as a partial success. Each rule's authority
+answer (commitment, check and pre-sign recheck ledgers) and its install-time readback are kept
+in the journal and exported. `bundle-command.mjs inspect` reads both rules back again.
 
 ### Required observations
 
 All negative controls are enforcing simulations: nothing is submitted, even after an unexpected
-permit. Rule 0's generated policy is the first enforcer reached for tuple, signer and count
-failures.
+permit. With both rules selected, the router rule's generated policy is the first enforcer
+reached for tuple, signer and count failures; the transfer-rule controls select that rule alone.
 
 | Control | Required evidence |
 | --- | --- |
-| Input above the cap | Rule 0 policy refusal `#6`. |
-| Output floor lowered | Rule 0 policy refusal `#6`. |
-| Different deadline | Rule 0 policy refusal `#6`. |
+| Input above the cap | Router-rule policy refusal `#6`. |
+| Output floor lowered | Router-rule policy refusal `#6`. |
+| Different deadline | Router-rule policy refusal `#6`. |
 | Wrong signer | The account's `UnauthorizedSigner` (`#3016`). |
-| Empty signer set | Rule 0 policy `ZeroSigners` (`#1`). |
-| Direct token transfer | Rule 1 alone permits it in simulation; this is the disclosed independent authority. |
+| Empty signer set | Router-rule policy `ZeroSigners` (`#1`). |
+| Direct transfer to the pair | The transfer rule alone permits it in simulation; this is the disclosed independent authority. |
+| Direct transfer above the cap | Transfer-rule policy refusal `#6`. |
 | Delegated swap | Confirmed transaction, nonzero output and matching balance increase. |
-| Repeat | Rule 0 policy `CallCountExceeded` (`#7`). |
+| Repeat swap | Router-rule policy `CallCountExceeded` (`#7`). |
+| Direct transfer after the swap | Transfer-rule policy `CallCountExceeded` (`#7`): the swap's transfer context spent its one call. |
 | Expired rule | After the ledger passes the grant expiry, the account's `UnvalidatedContext` (`#3002`); expiry is checked before any policy runs, so the spent count cannot mask it. |
-| Removal | Owner-signed removal of each rule, event, absent readback and policy cleanup. |
+| Removal | Owner-signed removal of each rule through the owner rule, event, absent readback and policy cleanup. |
 | After removal | The account's `ContextRuleNotFound` (`#3000`). |
 
 Before expiry, every observation must be at or below the expiry ledger; the expiry control must
@@ -102,9 +112,12 @@ be above it. An observation on the wrong side fails the run. Ledger waits are bo
 elapsed wall-clock time never stands in for a ledger.
 
 On failure after installation, the wrapper runs `protocol-finish.mjs` before discarding keys.
-It removes each known installed rule once, with the same bounded child process and termination
-handling as W2's failure cleanup. A rule whose installation was never confirmed is reported as
-uncertain rather than inferred.
+It removes each rule whose installation was confirmed, with the same bounded child process and
+termination handling as W2's failure cleanup. A removal that was prepared or sent is never
+resubmitted; an attempt that prepared nothing may be retried. A rule whose readback no longer
+matches is still removed by the ID from its confirmed install, since the account never reuses
+rule IDs. A rule whose installation was never confirmed is reported as uncertain rather than
+inferred.
 
 ## W1 Blend
 
@@ -124,8 +137,11 @@ reason. A zero-reward claim or a mocked pool is not a substitute.
 ## Evidence
 
 The exported `evidence.json` adds two typed summaries for these modes: `walkthrough` (the owner
-call, each invocation's status and attribution, the bundle journal including pending
-submissions and removals, and the control steps) and `protocol_pipeline`. A `completed` control
+call, each invocation's status and attribution, the bundle journal including each rule's
+authority answer, readback, pending submissions and removals, and the control steps) and
+`protocol_pipeline`. The native setup's transfer target, recipient and amount are exported as
+`null` for these runs: they only fund the account. A journal without the transfer-rule denials
+is labelled `router_rule_denials_only`. A `completed` control
 journal is accepted only with every required step in order, its expected enforcers and codes,
 the expiry boundary, a delegated positive that matches a confirmed invocation and complete
 removal. Per-rule Wasm, manifests and verification reports are hashed. Preflight readings, RPC

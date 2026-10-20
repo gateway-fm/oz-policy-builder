@@ -113,3 +113,29 @@ for (const mode of ['kill fails', 'close never arrives']) {
     assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), '{child may still be writing');
   });
 }
+for (const mode of ['nonzero child exit', 'install still pending from the start', 'confirmed install without a rule ID']) {
+  test(`final protocol cleanup stays incomplete when a grant may remain: ${mode}`, async (t) => {
+    const f = fixture(t);
+    const second = f.run.walkthrough.bundle.entries[1];
+    if (mode === 'install still pending from the start') {
+      delete second.installation;
+      second.pending = { operation: 'install', transaction: 'ee'.repeat(32) };
+    }
+    if (mode === 'confirmed install without a rule ID') second.installation.rule_id = null;
+    f.save();
+    const result = await finishProtocolBundle(f.dir, { runChild: async () => {
+      // A child that reports every known grant removed; the journal's own gaps must still count.
+      const state = f.read();
+      for (const entry of state.walkthrough.bundle.entries) {
+        if (entry.installation?.rule_id > 0) {
+          entry.removal = { transaction: 'dd'.repeat(32), event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed' };
+        }
+      }
+      state.walkthrough.bundle.cleanup = { status: 'removed' };
+      f.save(state);
+      return { status: 'exited', code: mode === 'nonzero child exit' ? 1 : 0 };
+    } });
+    assert.equal(result.status, 'incomplete');
+    assert.equal(f.read().walkthrough.final_cleanup.status, 'incomplete');
+  });
+}

@@ -20,10 +20,10 @@ function fixture(kind = 'soroswap_swap') {
   let balanceCalls = 0;
   const deps = {
     assertTestnet: async () => {}, latestLedger: async () => 100,
-    recheckSoroswapTargets: async () => {},
+    recheckSoroswapTargets: async () => { if (controls.pairDrift) throw new Error('unexpected Soroswap pair code'); },
     contractCodeHash: async (address) => address === account ? PINNED_ACCOUNT_WASM
       : kind === 'blend_claim' ? PROTOCOL_TARGETS.blend_code : PROTOCOL_TARGETS.router_code,
-    loadKey: (name) => name === 'payer' ? payer : delegate,
+    loadKey: (name) => name === 'payer' || controls.wrongDelegate ? payer : delegate,
     ownerSigner: async () => ({ verifier: C(6), keyData: Buffer.alloc(66, 1), sign: async (digest) => {
       signatures.push(digest); return Buffer.alloc(64, 2);
     } }),
@@ -43,7 +43,9 @@ function fixture(kind = 'soroswap_swap') {
     enforceSimulation: async (_payer, op) => {
       xdr.Operation.fromXDR(op.toXDR());
       if (controls.permit) return { result: 'permit', ledger: 101 };
-      return { result: 'deny', ledger: 101, error: `topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #6)]\ncontract:${policy}, topics:[error, Error(Contract, #6)], data:["failing with contract error", 6]` };
+      if (controls.error !== undefined) return { result: 'deny', ledger: 101, error: controls.error };
+      const { policy: raiser = policy, code = 6 } = controls.deny ?? {};
+      return { result: 'deny', ledger: 101, error: `topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #${code})]\ncontract:${raiser}, topics:[error, Error(Contract, #${code})], data:["failing with contract error", ${code}]` };
     },
     submit: async (_payer, op, options) => {
       await options.onSubmitting('bb'.repeat(32));
@@ -54,9 +56,12 @@ function fixture(kind = 'soroswap_swap') {
         returnValue: kind === 'blend_claim' ? i128(150000) : xdr.ScVal.scvVec([i128(1000000), i128(150000)]) };
     },
   };
-  const execute = (options = {}) => invokeProtocol({ run, name: options.name ?? 'control', mode: 'simulate',
-    signer: 'delegate', expected: { enforcer: policy, code: 6 }, control: 'baseline', ...options,
-    save: () => saved.push(structuredClone(run)) }, deps);
+  const execute = ({ deny, ...options } = {}) => {
+    if (deny) controls.deny = deny;
+    return invokeProtocol({ run, name: options.name ?? 'control', mode: 'simulate',
+      signer: 'delegate', expected: { enforcer: policy, code: 6 }, control: 'baseline', ...options,
+      save: () => saved.push(structuredClone(run)) }, deps);
+  };
   return { run, sends, saved, signatures, controls, execute };
 }
 for (const kind of ['soroswap_swap', 'blend_claim']) {
@@ -138,4 +143,39 @@ test('delegate rule IDs follow the root-first context order of the full tree', a
   const f = fixture();
   await f.execute({ name: 'denied' });
   assert.deepEqual(f.run.walkthrough.invocations[0].rule_ids, [8, 9]);
+});
+test('a direct transfer above the cap is simulated under the transfer rule alone', async () => {
+  const f = fixture();
+  const result = await f.execute({ control: 'direct_token_cap', expected: { enforcer: C(5), code: 6 },
+    deny: { policy: C(5), code: 6 } });
+  assert.equal(result.status, 'verified_denial');
+  assert.deepEqual(result.rule_ids, [9]);
+  assert.equal(f.sends.length, 0);
+});
+
+const ROUTER_ERROR = (account) => `contract:${PROTOCOL_TARGETS.router}, topics:[error, Error(Contract, #6)], data:["failing with contract error", 6]`;
+for (const mode of ['raised by another contract', 'different code', 'protocol error without account failure', 'no error text']) {
+  test(`a denial is verified only when the expected policy refused the account: ${mode}`, async () => {
+    const f = fixture();
+    if (mode === 'raised by another contract') f.controls.deny = { policy: C(7), code: 6 };
+    if (mode === 'different code') f.controls.deny = { code: 7 };
+    if (mode === 'protocol error without account failure') f.controls.error = ROUTER_ERROR(f.run.account);
+    if (mode === 'no error text') f.controls.error = '';
+    await assert.rejects(f.execute(), /unexpected simulation result/);
+    assert.equal(f.run.walkthrough.invocations[0].status, 'unattributed_denial');
+    assert.equal(f.run.walkthrough.invocations[0].code, undefined);
+    assert.equal(f.sends.length, 0);
+  });
+}
+test('a changed Soroswap pair stops a call before any authorization is recorded', async () => {
+  const f = fixture(); f.controls.pairDrift = true;
+  await assert.rejects(f.execute(), /pair code/);
+  assert.equal(f.run.walkthrough.invocations, undefined);
+  assert.equal(f.signatures.length, 0);
+});
+test('a delegate call refuses a key that is not the run delegate', async () => {
+  const f = fixture(); f.controls.wrongDelegate = true;
+  await assert.rejects(f.execute(), /delegate key/);
+  assert.equal(f.run.walkthrough.invocations[0].status, 'started');
+  assert.equal(f.sends.length, 0);
 });

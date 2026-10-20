@@ -20,7 +20,8 @@ function fixture() {
   const policies = [C(3), C(4)];
   return { spec, artifacts, policies, specHash, hashSpec: async () => specHash };
 }
-for (const change of ['matching', 'missing artifact', 'extra artifact', 'duplicate index', 'reordered artifacts', 'wrong spec', 'wrong root', 'wrong bytes']) {
+for (const change of ['matching', 'missing artifact', 'extra artifact', 'duplicate index', 'reordered artifacts', 'wrong spec', 'wrong root', 'wrong bytes',
+  'every artifact from another spec']) {
   test(`permission bundle verifies every indexed artifact against the full spec: ${change}`, async () => {
     const f = fixture();
     if (change === 'missing artifact') f.artifacts.pop();
@@ -30,6 +31,8 @@ for (const change of ['matching', 'missing artifact', 'extra artifact', 'duplica
     if (change === 'wrong spec') f.artifacts[1].manifest.spec_hash = 'ef'.repeat(32);
     if (change === 'wrong root') f.artifacts[1].manifest.registry_snapshot = 'ef'.repeat(32);
     if (change === 'wrong bytes') f.artifacts[1].wasm = Buffer.from('different');
+    // Consistent with each other, but not with the spec actually being installed.
+    if (change === 'every artifact from another spec') for (const a of f.artifacts) a.manifest.spec_hash = 'ef'.repeat(32);
     const pending = checkBundleArtifacts(f.spec, f.artifacts, { hashSpec: f.hashSpec });
     if (change === 'matching') assert.equal((await pending).length, 2);
     else await assert.rejects(pending, /bundle/);

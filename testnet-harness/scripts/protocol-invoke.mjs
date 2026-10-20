@@ -31,6 +31,11 @@ export function protocolControlInvocation(plan, control, foreign) {
       call.args[1] = i128(BigInt(plan.minimum_out) - 1n);
     } else if (control === 'deadline') call.args[4] = xdr.ScVal.scvU64(BigInt(plan.deadline) + 1n);
     else if (control === 'direct_token') return intended.subInvocations[0];
+    else if (control === 'direct_token_cap') {
+      const child = intended.subInvocations[0];
+      child.function.contractFn.args[2] = i128(BigInt(plan.amount_in) + 1n);
+      return child;
+    }
     else throw new Error('unsupported swap control');
   } else {
     if (control === 'reserve_ids') call.args[1] = xdr.ScVal.scvVec([xdr.ScVal.scvU32(7)]);
@@ -72,7 +77,7 @@ export async function invokeProtocol({ run, name, mode, signer = 'delegate', con
         && entry.installation.rule_id > 0 && entry.installation.rule_id <= 0xffff_ffff), 'missing complete installed protocol rule IDs');
     ruleIds = entries.map((entry) => entry.installation.rule_id);
     requireThat(new Set(ruleIds).size === ruleIds.length, 'duplicate protocol rule IDs');
-    if (control === 'direct_token') ruleIds = [entries[1].installation.rule_id];
+    if (control.startsWith('direct_token')) ruleIds = [entries[1].installation.rule_id];
   }
   requireThat(ruleIds.length === contexts(intended), 'rule IDs do not align with the authorization contexts');
   await deps.assertTestnet();

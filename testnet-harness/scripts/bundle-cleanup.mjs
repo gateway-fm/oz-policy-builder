@@ -1,5 +1,6 @@
 // Bounded caller-owned cleanup removes each known grant once, preserving partial/ambiguous results.
 // A missing installation ID is never replaced by owner rule 0 or inferred from rule order.
+// An attempt that prepared no transaction may be retried; a prepared or sent removal never is.
 import assert from 'node:assert/strict';
 import { Address, Operation, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { inspectBundleGrant } from './bundle-grant.mjs';
@@ -49,12 +50,16 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
   bundle.cleanup = { status: 'attempting' };
   save();
   for (const entry of [...bundle.entries].reverse()) {
-    if (!entry.installation || entry.installation.rule_id === null || entry.cleanup_attempt || entry.pending_removal || entry.removal) continue;
-    entry.cleanup_attempt = { status: 'attempting' };
+    if (!entry.installation || entry.installation.rule_id === null || entry.pending_removal || entry.removal) continue;
+    entry.cleanup_attempt = { status: 'attempting', attempts: (entry.cleanup_attempt?.attempts ?? 0) + 1 };
     save();
     try {
       const id = entry.installation.rule_id;
-      const before = await deps.inspectGrant(run, spec, entry, deps);
+      // The account assigns rule IDs from a monotonic counter, so the ID from our confirmed
+      // install names only that grant. A changed or unreadable grant is still removed.
+      let before;
+      try { before = await deps.inspectGrant(run, spec, entry, deps); }
+      catch { before = { configuration: 'mismatch_or_unavailable' }; }
       const payer = deps.loadKey('payer');
       same(payer.publicKey(), run.payer, 'fee payer');
       const args = [xdr.ScVal.scvU32(id)];

@@ -37,7 +37,14 @@ test('W3 controls prove bounded calls, independent token authority, actual expir
   const f = fixture();
   assert.equal((await f.execute()).status, 'completed');
   assert.deepEqual(f.calls.map((call) => call.name), ['input_cap', 'output_floor', 'exact_deadline',
-    'wrong_signer', 'zero_signers', 'independent_token', 'delegate_swap', 'count_cap', 'expired_rule', 'cleanup', 'post_revocation']);
+    'wrong_signer', 'zero_signers', 'independent_token', 'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap',
+    'expired_rule', 'cleanup', 'post_revocation']);
+  // The transfer rule's own policy must refuse something the delegate could otherwise use alone.
+  assert.deepEqual(expected(f, 'token_cap'), { enforcer: C(3), code: 6 });
+  assert.equal(f.calls.find((call) => call.name === 'token_cap').control, 'direct_token_cap');
+  assert.deepEqual(expected(f, 'token_count_cap'), { enforcer: C(3), code: 7 });
+  assert.equal(f.calls.find((call) => call.name === 'token_count_cap').control, 'direct_token');
+  assert.equal(f.run.walkthrough.controls.control_set, 2);
   assert.equal(f.calls.filter((call) => call.mode === 'execute').length, 1);
   assert.deepEqual(expected(f, 'input_cap'), { enforcer: C(2), code: 6 });
   assert.deepEqual(expected(f, 'wrong_signer'), { enforcer: C(1), code: 3016 });

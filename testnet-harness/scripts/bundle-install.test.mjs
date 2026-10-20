@@ -27,16 +27,19 @@ function fixture() {
   });
   const policies = [C(20), C(21)];
   const history = [], sends = [], approvals = [], signatures = [];
-  let counter = 0, createIndex = 0;
+  let counter = 0, createIndex = 0, codeChecks = 0;
   const controls = {};
   const owner = { verifier: C(22), keyData: Buffer.alloc(66, 7), sign: async (digest) => {
     signatures.push(Buffer.from(digest)); return Buffer.alloc(64, 1);
   } };
   const deps = {
     hashSpec: async () => synthesis.spec_hash, assertTestnet: async () => {}, loadKey: () => payer,
-    ownerSigner: async () => owner, latestLedger: async () => record.bundle.ledger + 10, log: () => {},
+    ownerSigner: async () => owner, log: () => {},
+    latestLedger: async () => controls.expired ? spec.rules[0].valid_until.ledger : record.bundle.ledger + 10,
     contractCodeHash: async (address) => address === run.account ? run.account_code_hash
-      : artifacts[policies.indexOf(address)].manifest.wasm_hash,
+      : controls.wrongDeployedCode ? hash(99)
+        // One address deployed twice must reach the duplicate check, not the code check.
+        : controls.samePolicy ? artifacts[codeChecks++].manifest.wasm_hash : artifacts[policies.indexOf(address)].manifest.wasm_hash,
     approveInstall: async (args) => {
       approvals.push(args);
       const i = args.request.rule_index;
@@ -62,20 +65,22 @@ function fixture() {
     submit: async (_payer, op, options) => {
       const tx = hash(++counter);
       await options.onSubmitting(tx);
+      const confirmed = controls.hashSwap ? hash(98) : tx;
       const pending = history.at(-1).walkthrough.bundle.entries.find((entry) => entry.pending?.transaction === tx);
       assert.ok(pending, 'public transaction hash is saved before every network send');
       sends.push({ op, tx, stage: options.stage });
       if (controls.failSend && counter === controls.failSend) throw new Error('ambiguous send');
       const host = op.body.invokeHostFunctionOp.hostFunction;
       if (host.type === 'hostFunctionTypeUploadContractWasm') {
-        return { hash: tx, returnValue: xdr.ScVal.scvBytes(createHash('sha256').update(host.wasm).digest()) };
+        return { hash: confirmed, returnValue: xdr.ScVal.scvBytes(controls.wrongUpload ? Buffer.alloc(32, 9)
+          : createHash('sha256').update(host.wasm).digest()) };
       }
       if (host.type === 'hostFunctionTypeCreateContractV2') {
-        return { hash: tx, returnValue: new Address(policies[createIndex++]).toScVal() };
+        return { hash: confirmed, returnValue: new Address(policies[controls.samePolicy ? 0 : createIndex++]).toScVal() };
       }
       const args = host.invokeContract.args;
-      const id = 7 + approvals.length;
-      return { hash: tx, receipt: { ledger: record.bundle.ledger + 11 }, returnValue: xdr.ScVal.scvMap([
+      const id = controls.duplicateRuleId ? 8 : 7 + approvals.length;
+      return { hash: confirmed, receipt: { ledger: record.bundle.ledger + 11 }, returnValue: xdr.ScVal.scvMap([
         new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('id'), val: xdr.ScVal.scvU32(controls.ownerRule ? 0 : id) }),
         new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('name'), val: args[1] }),
       ]) };
@@ -174,5 +179,37 @@ for (const kind of ['mutated wasm', 'missing child spec', 'foreign account', 'pr
     await assert.rejects(f.execute());
     assert.equal(f.sends.length, 0);
     assert.equal(f.signatures.length, 0);
+  });
+}
+
+const sendKinds = (f) => f.sends.map((send) => send.op.body.invokeHostFunctionOp.hostFunction.type);
+for (const [kind, pattern] of [['grant expired before signing', /expired before signing/], ['deployed code differs', /deployed code/],
+  ['uploaded Wasm differs', /uploaded Wasm/], ['confirmed hash differs from the journal', /differs from journaled submission/],
+  ['same policy deployed twice', /duplicate deployed bundle policy/], ['rule ID returned twice', /invalid or duplicate installed/]]) {
+  test(`bundle installation stops before the next step: ${kind}`, async () => {
+    const f = fixture();
+    if (kind === 'grant expired before signing') f.controls.expired = true;
+    if (kind === 'deployed code differs') f.controls.wrongDeployedCode = true;
+    if (kind === 'uploaded Wasm differs') f.controls.wrongUpload = true;
+    if (kind === 'confirmed hash differs from the journal') f.controls.hashSwap = true;
+    if (kind === 'same policy deployed twice') f.controls.samePolicy = true;
+    if (kind === 'rule ID returned twice') f.controls.duplicateRuleId = true;
+    await assert.rejects(f.execute(), pattern);
+    const entries = f.run.walkthrough.bundle.entries;
+    assert.equal(f.run.walkthrough.bundle.status, 'incomplete');
+    if (kind === 'grant expired before signing') {
+      assert.equal(f.signatures.length, 0);
+      assert.equal(sendKinds(f).includes('hostFunctionTypeInvokeContract'), false);
+    }
+    if (['deployed code differs', 'uploaded Wasm differs', 'confirmed hash differs from the journal', 'same policy deployed twice'].includes(kind)) {
+      assert.equal(f.approvals.length, 0);
+    }
+    if (kind === 'uploaded Wasm differs' || kind === 'confirmed hash differs from the journal') assert.deepEqual(sendKinds(f), ['hostFunctionTypeUploadContractWasm']);
+    if (kind === 'confirmed hash differs from the journal') assert.equal(entries[0].pending.transaction, hash(1));
+    if (kind === 'rule ID returned twice') {
+      assert.equal(entries[0].installation.rule_id, 8);
+      assert.equal(entries[1].installation.rule_id, null);
+      assert.ok(entries[1].installation.transaction);
+    }
   });
 }

@@ -20,7 +20,7 @@ function fixture() {
         installation: { rule_id: rule_index + 8, transaction: H(30 + rule_index), ledger: 100 } })) } } };
   const artifacts = run.walkthrough.bundle.entries.map((entry) => ({ manifest: { rule_index: entry.rule_index,
     spec_hash: entry.spec_hash, wasm_hash: entry.wasm_hash, registry_snapshot: spec.registry_snapshot } }));
-  const history = [], sends = [], signs = [];
+  const history = [], sends = [], signs = [], ops = [];
   const controls = {};
   const deps = {
     checkArtifacts: async () => artifacts.map(({ manifest }) => ({ rule_index: manifest.rule_index, spec_hash: manifest.spec_hash,
@@ -48,6 +48,7 @@ function fixture() {
       const latest = history.at(-1).walkthrough.bundle.entries.find((e) => e.installation?.rule_id === id);
       assert.equal(latest.pending_removal.transaction, hash, 'hash retained before send');
       sends.push(id);
+      ops.push(op);
       if (controls.ambiguous === id) throw new Error('send status unknown');
       return { hash, receipt: { ledger: 111, fixture_id: id } };
     },
@@ -58,13 +59,18 @@ function fixture() {
     },
     viewCall: async (_payer, contract, name) => {
       if (name === 'get_context_rule') {
+        if (controls.stillPresent) return xdr.ScVal.scvMap([]);
+        if (controls.readbackError === 'other contract code') {
+          throw new SimulationError(name, `contract:${contract}, topics:[error, Error(Contract, #3001)], data:["failing with contract error", 3001]`);
+        }
+        if (controls.readbackError === 'transport') throw new Error('fetch failed');
         throw new SimulationError(name, `contract:${contract}, topics:[error, Error(Contract, #3000)], data:["failing with contract error", 3000]`);
       }
       return xdr.ScVal.scvBool(controls.stillInstalled === contract);
     },
   };
   const execute = () => revokePermissionBundle({ run, spec, artifacts, save: () => history.push(structuredClone(run)) }, deps);
-  return { run, spec, artifacts, controls, history, sends, signs, execute };
+  return { run, spec, artifacts, controls, history, sends, signs, ops, execute };
 }
 test('bundle cleanup removes every confirmed non-owner grant in reverse order', async () => {
   const f = fixture();
@@ -79,12 +85,11 @@ test('bundle cleanup removes every confirmed non-owner grant in reverse order', 
   await f.execute();
   assert.deepEqual(f.sends, [9, 8], 'confirmed removals are never resubmitted');
 });
-for (const failure of ['ambiguous send', 'missing event', 'changed grant', 'wrong authorization', 'policy cleanup remains', 'unknown second install', 'confirmed unknown rule ID']) {
+for (const failure of ['ambiguous send', 'missing event', 'wrong authorization', 'policy cleanup remains', 'unknown second install', 'confirmed unknown rule ID']) {
   test(`bundle cleanup retains incomplete outcomes while cleaning other known grants: ${failure}`, async () => {
     const f = fixture();
     if (failure === 'ambiguous send') f.controls.ambiguous = 9;
     if (failure === 'missing event') f.controls.eventFails = 9;
-    if (failure === 'changed grant') f.controls.inspectFails = 1;
     if (failure === 'wrong authorization') f.controls.wrongAuth = true;
     if (failure === 'policy cleanup remains') f.controls.stillInstalled = C(21);
     if (failure === 'unknown second install') {
@@ -115,3 +120,43 @@ for (const field of ['account', 'account_code_hash', 'network', 'spec_hash', 're
     assert.equal(f.signs.length, 0);
   });
 }
+
+test('a readback mismatch before removal still removes the journaled rule ID from our confirmed install', async () => {
+  // Rule IDs come from the account's monotonic counter and are never reused.
+  const f = fixture();
+  f.controls.inspectFails = 1;
+  assert.equal((await f.execute()).status, 'removed');
+  assert.deepEqual(f.sends, [9, 8]);
+  assert.deepEqual(f.run.walkthrough.bundle.entries[1].removal.before, { configuration: 'mismatch_or_unavailable' });
+  assert.equal(f.run.walkthrough.bundle.entries[0].removal.before.configuration, 'matched');
+});
+test('an attempt that prepared nothing can be retried; a sent removal never is', async () => {
+  const f = fixture();
+  f.controls.wrongAuth = true;
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.sends, []);
+  f.controls.wrongAuth = false;
+  assert.equal((await f.execute()).status, 'removed');
+  assert.deepEqual(f.sends, [9, 8]);
+});
+for (const mode of ['still present', 'other contract code', 'transport']) {
+  test(`only the account's missing-rule error counts as an absent readback: ${mode}`, async () => {
+    const f = fixture();
+    if (mode === 'still present') f.controls.stillPresent = true;
+    else f.controls.readbackError = mode;
+    assert.equal((await f.execute()).status, 'incomplete');
+    for (const entry of f.run.walkthrough.bundle.entries) {
+      assert.equal(entry.removal.rule_readback, mode === 'still present' ? 'still_present' : 'not_checked');
+      assert.equal(entry.cleanup_attempt.status, 'incomplete');
+    }
+  });
+}
+test('the owner signs each removal through its own rule 0, not the removed rule', async () => {
+  const f = fixture();
+  await f.execute();
+  for (const op of f.ops) {
+    const signature = op.body.invokeHostFunctionOp.auth[0].credentials.address.signature;
+    const ids = signature.map.find((e) => e.key.sym.toString() === 'context_rule_ids').val.vec.map((v) => v.u32);
+    assert.deepEqual(ids, [0]);
+  }
+});

@@ -13,7 +13,7 @@ const positiveLedger = (n) => Number.isSafeInteger(n) && n > 0 && n <= 0xffff_ff
 
 // Rule 0 is the root invocation's rule (protocolInputs refuses any other order), so the
 // root's generated policy is the first enforcer reached for tuple, signer and count denials.
-function negatives(kind, account, root) {
+function negatives(kind, account, root, transfer) {
   const tuple = { enforcer: root, code: 6 };
   const signers = [
     ['wrong_signer', { signer: 'payer', expected: { enforcer: account, code: 3016 } }],
@@ -27,8 +27,10 @@ function negatives(kind, account, root) {
   return [['input_cap', { control: 'input_cap', expected: tuple }],
     ['output_floor', { control: 'output_floor', expected: tuple }],
     ['exact_deadline', { control: 'deadline', expected: tuple }], ...signers,
-    // The child token rule is independently usable; this observes that disclosed authority.
-    ['independent_token', { control: 'direct_token', expected: { permit: true } }]];
+    // The child token rule is independently usable; this observes that disclosed authority, and
+    // that the transfer rule's own policy still bounds a direct transfer.
+    ['independent_token', { control: 'direct_token', expected: { permit: true } }],
+    ['token_cap', { control: 'direct_token_cap', expected: { enforcer: transfer, code: 6 } }]];
 }
 
 const defaults = {
@@ -64,7 +66,8 @@ export async function runProtocolControls(input, overrides = {}) {
   const start = await deps.latestLedger();
   requireThat(positiveLedger(start) && start < run.valid_until_ledger, 'grant is already at or past its expiry ledger');
 
-  const journal = { status: 'running', steps: [] };
+  // Control set 2 adds the transfer rule's own cap and count denials (soroswap only).
+  const journal = { status: 'running', control_set: 2, steps: [] };
   plan.controls = journal;
   save();
   const record = (step) => { journal.steps.push(step); save(); };
@@ -94,11 +97,15 @@ export async function runProtocolControls(input, overrides = {}) {
   }
 
   try {
-    const root = entries[0].policy;
-    for (const [name, options] of negatives(plan.kind, run.account, root)) await call(name, options, 'valid');
+    const root = entries[0].policy, transfer = entries[1]?.policy;
+    for (const [name, options] of negatives(plan.kind, run.account, root, transfer)) await call(name, options, 'valid');
     if (accrualTarget !== null) await waitUntil('accrual_wait', accrualTarget);
     await call(plan.kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap', { mode: 'execute' }, 'valid');
     await call('count_cap', { expected: { enforcer: root, code: 7 } }, 'valid');
+    // The swap's child context spent the transfer rule's one call too.
+    if (plan.kind === 'soroswap_swap') {
+      await call('token_count_cap', { control: 'direct_token', expected: { enforcer: transfer, code: 7 } }, 'valid');
+    }
     // The account rejects an expired rule before any policy runs, so the spent count cannot mask it.
     await waitUntil('expiry_wait', run.valid_until_ledger + 1);
     await call('expired_rule', { expected: { enforcer: run.account, code: 3002 } }, 'expired');

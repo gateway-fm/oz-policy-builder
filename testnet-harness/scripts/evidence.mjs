@@ -131,8 +131,11 @@ function runRecord(value) {
   if (!Array.isArray(invocations) || invocations.length > 1000) fail();
   return {
     network: 'testnet', protocol: uint(r.protocol), account: address(r.account),
-    account_code_hash: hash(r.account_code_hash), target: address(r.sac), owner: ownerSummary,
-    delegate: address(r.delegate), recipient: address(r.recipient), amount: amount(r.amount),
+    // A protocol walkthrough reuses the native setup only to fund the account; its transfer
+    // target, recipient and amount describe nothing the walkthrough does.
+    account_code_hash: hash(r.account_code_hash), owner: ownerSummary, delegate: address(r.delegate),
+    ...(r.walkthrough === undefined ? { target: address(r.sac), recipient: address(r.recipient), amount: amount(r.amount) }
+      : { target: null, recipient: null, amount: null }),
     valid_until_ledger: optional(r.valid_until_ledger, uint), registry_root: optional(r.registry_root, hash),
     policy, policy_wasm_hash: policyHash, rule_id: rule,
     installation: rule === null ? 'not_recorded' : 'recorded', transactions, authority,
@@ -201,11 +204,14 @@ function subscriptionRecord(value, run) {
   return { ...result, controls: { status, steps } };
 }
 
+// Control set 1 (no `control_set` field) predates the transfer rule's own cap and count denials.
 const WALKTHROUGH_STEPS = {
-  soroswap_swap: ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
-    'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'],
+  1: { soroswap_swap: ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+    'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
+  2: { soroswap_swap: ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+    'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'],
   blend_claim: ['reserve_ids', 'claim_recipient', 'pool_function', 'wrong_signer', 'zero_signers', 'accrual_wait',
-    'delegate_claim', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'],
+    'delegate_claim', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
 };
 const SUBMITTED = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
 const SIMULATED = ['started', 'verified_denial', 'unexpected_permit', 'unattributed_denial',
@@ -229,7 +235,7 @@ function walkthroughRecord(value, run) {
     const denial = status === 'verified_denial';
     if (denial !== (i.code !== undefined) || denial !== (i.enforcer !== undefined)) fail();
     return { name: match(i.name, /^[a-z][a-z0-9_]{0,63}$/),
-      control: choice(i.control, ['baseline', 'input_cap', 'output_floor', 'deadline', 'direct_token',
+      control: choice(i.control, ['baseline', 'input_cap', 'output_floor', 'deadline', 'direct_token', 'direct_token_cap',
         'reserve_ids', 'claim_recipient', 'pool_function']),
       signer: choice(i.signer, ['owner', 'delegate', 'payer', 'none']), rule_ids: ids, observation, status, transaction,
       ledger: optional(i.ledger, uint), enforcer: denial ? address(i.enforcer) : null, code: denial ? uint(i.code) : null,
@@ -273,9 +279,31 @@ function walkthroughRecord(value, run) {
         const pending = e.pending === undefined ? null : { operation: choice(object(e.pending).operation, ['upload', 'create', 'install']),
           transaction: hash(e.pending.transaction) };
         const pendingRemoval = e.pending_removal === undefined ? null : { transaction: hash(object(e.pending_removal).transaction) };
+        // Each rule's own authority answer and its install-time readback; trust labels stay local.
+        let authority = null;
+        if (e.authority !== undefined) {
+          const a = object(e.authority);
+          if (choice(a.status, ['rechecked', 'refused']) === 'refused') authority = { status: 'refused' };
+          else {
+            const checked = uint(a.checked_at_ledger), rechecked = uint(a.rechecked_at_ledger);
+            if (rechecked < checked) fail();
+            authority = { status: 'rechecked', authority_commitment: hash(a.authority_commitment),
+              checked_at_ledger: checked, rechecked_at_ledger: rechecked };
+          }
+        }
+        if (rule !== null && authority?.status !== 'rechecked') fail();
+        let readback = null;
+        if (e.readback !== undefined) {
+          const r = object(e.readback);
+          const ledgers = object(r.read_ledgers);
+          if (rule === null || r.rule_id !== rule || r.rule_index !== index) fail();
+          readback = { configuration: choice(r.configuration, ['matched', 'drift_or_unavailable']),
+            observation: choice(r.observation, ['non_atomic']), read_ledgers: { account: uint(ledgers.account),
+              policy: uint(ledgers.policy), rule: uint(ledgers.rule), installed: uint(ledgers.installed) } };
+        }
         return { rule_index: index, wasm_hash: hash(e.wasm_hash), policy: optional(e.policy, address), rule_id: rule,
           installation_transaction: installed === null ? null : hash(installed.transaction), pending,
-          removal, pending_removal: pendingRemoval };
+          authority, readback, removal, pending_removal: pendingRemoval };
       }) };
     const done = (e) => e.rule_id === null || (e.removal?.event === 'verified' && e.removal.rule_readback === 'absent'
       && e.removal.policy_cleanup === 'not_installed');
@@ -284,10 +312,12 @@ function walkthroughRecord(value, run) {
   if (w.controls === undefined) return { kind, owner_transaction: owner, invocations, bundle, controls: { status: 'not_recorded', steps: [] } };
   const c = object(w.controls);
   const status = choice(c.status, ['running', 'incomplete', 'completed']);
+  const set = c.control_set === undefined ? 1 : choice(c.control_set, [2]);
+  const names = WALKTHROUGH_STEPS[set][kind] ?? fail();
   if (!Array.isArray(c.steps) || c.steps.length > 20) fail();
   const steps = c.steps.map((item) => {
     const step = object(item);
-    const name = choice(step.name, WALKTHROUGH_STEPS[kind]);
+    const name = choice(step.name, names);
     if (name === 'cleanup') return { name, result: choice(step.result, ['removed', 'incomplete', 'no_installed_grants', 'missing']) };
     const ledger = uint(step.ledger);
     if (!ledger) fail();
@@ -303,14 +333,16 @@ function walkthroughRecord(value, run) {
       enforcer: denial ? address(step.enforcer) : null, code: denial ? uint(step.code) : null };
   });
   if (status === 'completed') {
-    const root = bundle?.entries[0]?.policy;
+    const root = bundle?.entries[0]?.policy, transfer = bundle?.entries[1]?.policy;
     const valid = run.valid_until_ledger;
     const positive = kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap';
     const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], reserve_ids: [root, 6],
       claim_recipient: [root, 6], pool_function: [root, 6], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
-      count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000] };
+      count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000],
+      token_cap: [transfer, 6], token_count_cap: [transfer, 7] };
     if (!bundle || bundle.status !== 'installed' || bundle.cleanup !== 'removed' || valid === null
-      || JSON.stringify(steps.map((s) => s.name)) !== JSON.stringify(WALKTHROUGH_STEPS[kind])) fail();
+      || bundle.entries.some((e) => e.readback?.configuration !== 'matched')
+      || JSON.stringify(steps.map((s) => s.name)) !== JSON.stringify(names)) fail();
     for (const s of steps) {
       if (s.name === 'cleanup') { if (s.result !== 'removed') fail(); continue; }
       if (s.name === 'expiry_wait' && s.target_ledger !== valid + 1) fail();
@@ -324,7 +356,8 @@ function walkthroughRecord(value, run) {
       } else if (s.result !== 'verified_denial' || s.enforcer !== expected[s.name][0] || s.code !== expected[s.name][1]) fail();
     }
   }
-  return { kind, owner_transaction: owner, invocations, bundle, controls: { status, steps } };
+  return { kind, owner_transaction: owner, invocations, bundle, controls: { status,
+    control_set: set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
 }
 
 function protocolPipelineRecord(value, run, walkthrough) {

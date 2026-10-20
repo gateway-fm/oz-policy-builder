@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { protocolInputs, validateProtocolSynthesis } from './protocol-synthesis.mjs';
+import { orderRootFirst, protocolInputs, validateProtocolSynthesis } from './protocol-synthesis.mjs';
 const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
 function fixture() {
   const f = structuredClone(capture);
@@ -42,7 +42,8 @@ for (const mutation of ['matching', 'simulation only', 'extra auth', 'missing ch
   });
 }
 for (const mutation of ['drop child rule', 'extra rule', 'reorder rules', 'floor removed', 'path broadened', 'deadline broadened',
-  'child recipient', 'child cap', 'unbound target code', 'reviewed-policy invention', 'wrong manifest root']) {
+  'child recipient', 'child cap', 'unbound target code', 'reviewed-policy invention', 'wrong manifest root',
+  'call count raised', 'call count removed', 'expiry extended', 'expiry removed']) {
   test(`protocol synthesis refuses altered independent capabilities: ${mutation}`, () => {
     const f = fixture(); const input = protocolInputs(f.run, f.record);
     const spec = f.synthesis.spec;
@@ -57,6 +58,16 @@ for (const mutation of ['drop child rule', 'extra rule', 'reorder rules', 'floor
     if (mutation === 'unbound target code') spec.rules[0].context.target_code_hash = null;
     if (mutation === 'reviewed-policy invention') spec.rules[0].policies.push({ reviewed: {} });
     if (mutation === 'wrong manifest root') spec.registry_snapshot = 'ab'.repeat(32);
+    if (mutation === 'call count raised') spec.rules[1].state[0].call_count_per_installation.max_calls = 2;
+    if (mutation === 'call count removed') spec.rules[0].state = [];
+    if (mutation === 'expiry extended') spec.rules[1].valid_until.ledger += 1;
+    if (mutation === 'expiry removed') spec.rules[0].valid_until = null;
     assert.throws(() => validateProtocolSynthesis(f.synthesis, f.run, input, capture.synthesis.spec.registry_snapshot));
   });
 }
+
+test('rule order puts the root invocation first or refuses', () => {
+  const root = { contract: 'CB', path: 'recordings[0]/auth[0]' }, child = { contract: 'CA', path: 'recordings[0]/auth[0]/sub[0]' };
+  assert.throws(() => orderRootFirst([root, child]), /root invocation rule order/);
+  assert.deepEqual(orderRootFirst([{ ...child, contract: 'CC' }, root]).map((c) => c.path), [root.path, child.path]);
+});

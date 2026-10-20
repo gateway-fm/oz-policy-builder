@@ -800,17 +800,20 @@ test('unreaped cleanup keeps original exit and discards keys without finalizing 
 
 const ROOT_POLICY = 'C' + 'D'.repeat(55);
 const CHILD_POLICY = 'C' + 'E'.repeat(55);
-const SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+const LEGACY_SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
   'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
-function protocolFixture() {
+const SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+  'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+function protocolFixture(names = SWAP_STEPS) {
   const run = fixture();
   delete run.policy; delete run.policy_wasm_hash; delete run.rule_id; delete run.tx.add_context_rule;
   run.invocations = []; run.valid_until_ledger = 200;
   const denial = { enforcer: ROOT_POLICY, code: 6 };
   const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial,
     wrong_signer: { enforcer: C, code: 3016 }, zero_signers: { enforcer: ROOT_POLICY, code: 1 },
-    count_cap: { enforcer: ROOT_POLICY, code: 7 }, expired_rule: { enforcer: C, code: 3002 }, post_revocation: { enforcer: C, code: 3000 } };
-  const steps = SWAP_STEPS.map((name, i) => {
+    count_cap: { enforcer: ROOT_POLICY, code: 7 }, expired_rule: { enforcer: C, code: 3002 }, post_revocation: { enforcer: C, code: 3000 },
+    token_cap: { enforcer: CHILD_POLICY, code: 6 }, token_count_cap: { enforcer: CHILD_POLICY, code: 7 } };
+  const steps = names.map((name, i) => {
     const ledger = name === 'expired_rule' || name === 'post_revocation' ? 201 + i : 100 + i;
     if (name === 'cleanup') return { name, result: 'removed' };
     if (name === 'expiry_wait') return { name, result: 'ledger_reached', target_ledger: 201, ledger: 201 };
@@ -827,6 +830,10 @@ function protocolFixture() {
     ...(s.transaction ? { transaction: s.transaction, returned_amount: '150000' } : {}),
     ...(s.code ? { enforcer: s.enforcer, code: s.code } : {}), host_error: SENTINEL }))];
   const entry = (rule_index, policy) => ({ rule_index, wasm_hash: wasmHash, spec_hash: HASH, policy,
+    authority: { trust_basis: 'operator-supplied test configuration', authority_commitment: 'ef'.repeat(32),
+      checked_at_ledger: 92 + rule_index, rechecked_at_ledger: 93 + rule_index, accepted_entries: [{ label: SENTINEL }], status: 'rechecked' },
+    readback: { rule_index, rule_id: 8 + rule_index, configuration: 'matched', observation: 'non_atomic',
+      read_ledgers: { account: 95, policy: 95, rule: 95, installed: 95 } },
     installation: { rule_id: 8 + rule_index, transaction: HASH, ledger: 95 }, tx: { upload: HASH, create: HASH, install: HASH },
     removal: { transaction: HASH, ledger: 206, event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed',
       before: { private_note: SENTINEL } } });
@@ -834,7 +841,7 @@ function protocolFixture() {
     owner_transaction: { hash: HASH, ledger: 90, output_token: C, balance_before: '0', balance_after: '150000', returned_amount: '150000' },
     invocations, bundle: { status: 'installed', account: C, spec_hash: HASH, registry_root: HASH,
       entries: [entry(0, ROOT_POLICY), entry(1, CHILD_POLICY)], cleanup: { status: 'removed' } },
-    controls: { status: 'completed', steps }, prerequisites: { note: SENTINEL } };
+    controls: { status: 'completed', ...(names === SWAP_STEPS ? { control_set: 2 } : {}), steps }, prerequisites: { note: SENTINEL } };
   return run;
 }
 const protocolPipeline = { schema_version: 1, account: C, kind: 'soroswap_swap', recorded_transaction: HASH,
@@ -860,22 +867,60 @@ test('protocol walkthrough summary keeps typed bundle, controls and per-rule art
   assert.equal(report.protocol_pipeline.reference_cases, 40);
   assert.equal(report.artifacts.policy_wasm_rule_1.sha256, wasmHash);
   assert.equal(report.run.installation, 'not_recorded');
+  assert.equal(report.walkthrough.controls.control_set, 'transfer_rule_denials_included');
+  assert.deepEqual(report.walkthrough.bundle.entries[1].authority, { status: 'rechecked',
+    authority_commitment: 'ef'.repeat(32), checked_at_ledger: 93, rechecked_at_ledger: 94 });
+  assert.deepEqual(report.walkthrough.bundle.entries[0].readback, { configuration: 'matched', observation: 'non_atomic',
+    read_ledgers: { account: 95, policy: 95, rule: 95, installed: 95 } });
+  // Native-setup funding fields say nothing about the swap; they are not exported as its target or amount.
+  assert.deepEqual([report.run.target, report.run.recipient, report.run.amount], [null, null, null]);
   assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('a run with the earlier control set exports its actual steps and says which set it was', (t) => {
+  const report = exportEvidence(setup(t, protocolFixture(LEGACY_SWAP_STEPS)));
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.equal(report.walkthrough.controls.control_set, 'router_rule_denials_only');
+  assert.equal(report.walkthrough.controls.steps.some((s) => s.name === 'token_cap'), false);
+});
+
+test('per-rule Wasm bytes must be the journaled deployed Wasm', (t) => {
+  const dir = setup(t, protocolFixture());
+  mkdirSync(join(dir, 'policies', 'rule-1'), { recursive: true });
+  writeFileSync(join(dir, 'policies', 'rule-1', 'policy.wasm'), 'other bytes');
+  assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
 });
 
 const protocolInvalid = {
   'missing control step': (r) => r.walkthrough.controls.steps.splice(1, 1),
   'reordered control steps': (r) => r.walkthrough.controls.steps.reverse(),
   'denial from the wrong enforcer': (r) => { r.walkthrough.controls.steps[0].enforcer = CHILD_POLICY; },
-  'expiry denial before expiry': (r) => { r.walkthrough.controls.steps[9].ledger = 150; },
+  'expiry denial before expiry': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'expired_rule').ledger = 150; },
   'tuple denial after expiry': (r) => { r.walkthrough.controls.steps[0].ledger = 250; },
-  'positive without its confirmed invocation': (r) => { r.walkthrough.controls.steps[6].transaction = 'ef'.repeat(32); },
+  'positive without its confirmed invocation': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'delegate_swap').transaction = 'ef'.repeat(32); },
   'owner output without balance effect': (r) => { r.walkthrough.owner_transaction.balance_after = '1'; },
   'owner output without its invocation': (r) => { r.walkthrough.owner_transaction.hash = 'ef'.repeat(32); },
   'simulation with a transaction': (r) => { r.walkthrough.invocations[1].transaction = HASH; },
   'other account': (r) => { r.walkthrough.account = 'C' + 'F'.repeat(55); },
   'removed without readback': (r) => { r.walkthrough.bundle.entries[0].removal.rule_readback = 'not_checked'; },
   'completed controls with incomplete cleanup': (r) => { r.walkthrough.bundle.cleanup.status = 'incomplete'; },
+  'completed controls with an incomplete cleanup step': (r) => {
+    r.walkthrough.controls.steps.find((s) => s.name === 'cleanup').result = 'incomplete';
+  },
+  'bundle removed while a policy stays installed': (r) => {
+    r.walkthrough.bundle.entries[1].removal.policy_cleanup = 'still_installed';
+  },
+  'independent authority recorded as a positive': (r) => {
+    r.walkthrough.controls.steps.find((s) => s.name === 'independent_token').result = 'confirmed';
+  },
+  'transfer-rule denial from the router policy': (r) => {
+    r.walkthrough.controls.steps.find((s) => s.name === 'token_count_cap').enforcer = ROOT_POLICY;
+  },
+  'transfer-rule steps without control set 2': (r) => { delete r.walkthrough.controls.control_set; },
+  'installed rule without a rechecked authority answer': (r) => { r.walkthrough.bundle.entries[0].authority = { status: 'refused' }; },
+  'recheck before the check': (r) => { r.walkthrough.bundle.entries[0].authority.rechecked_at_ledger = 91; },
+  'readback of another rule ID': (r) => { r.walkthrough.bundle.entries[0].readback.rule_id = 9; },
+  'mismatched readback on a completed run': (r) => { r.walkthrough.bundle.entries[0].readback.configuration = 'drift_or_unavailable'; },
 };
 for (const [name, mutate] of Object.entries(protocolInvalid)) {
   test(`protocol walkthrough summary refuses ${name}`, (t) => {

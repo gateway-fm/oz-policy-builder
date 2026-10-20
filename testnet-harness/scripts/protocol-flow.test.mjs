@@ -32,14 +32,15 @@ function fixture(t) {
       offline_behavioral_conformance: 'pass: 40 constraint-derived cases all agree',
       current_network_preflight: 'not_checked_here: state-dependent (wallet/live)' };
   }
+  const env = {};
   const execute = () => {
     writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
     for (const [name, value] of Object.entries(files)) writeFileSync(join(fixtureDir, name), JSON.stringify(value));
     return runProtocolFlow(dir, { ...process.env, OZPB_BIN: bin, OZPB_PROTOCOL_FIXTURE: fixtureDir,
       OZPB_REGISTRY_SNAPSHOT_ROOT: synthesis.spec.registry_snapshot,
-      OZPB_SIGNED_REGISTRY_SNAPSHOT: '', OZPB_REGISTRY_ROOTS_FILE: '', OZPB_REGISTRY_MIN_VERSION: '' });
+      OZPB_SIGNED_REGISTRY_SNAPSHOT: '', OZPB_REGISTRY_ROOTS_FILE: '', OZPB_REGISTRY_MIN_VERSION: '', ...env });
   };
-  return { dir, fixtureDir, run, files, execute };
+  return { dir, fixtureDir, run, files, env, execute };
 }
 for (const mode of ['matching', 'simulation only', 'zero effect', 'missing child', 'wrong second manifest', 'failed second reproduction']) {
   test(`protocol pipeline preserves all rule artifacts and partial outcomes: ${mode}`, (t) => {
@@ -64,5 +65,29 @@ for (const mode of ['matching', 'simulation only', 'zero effect', 'missing child
     assert.deepEqual(calls.map((c) => c.command), ['record', 'synthesize', 'reference-suite', 'generate', 'verify', 'generate', 'verify']);
     const specPaths = calls.filter((c) => ['generate', 'verify'].includes(c.command)).map((c) => c.args[c.args.indexOf('--spec') + 1]);
     assert.equal(new Set(specPaths).size, 1, 'each indexed artifact uses the same complete spec');
+  });
+}
+
+const commands = (f) => {
+  try { return readFileSync(join(f.fixtureDir, 'commands.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).command); }
+  catch { return []; }
+};
+for (const [mode, pattern, ran] of [
+  ['missing registry root', /explicit resolved registry root/, []],
+  ['recording from another ledger', /confirmed recording ledger/, ['record']],
+  ['reference disagreement', /reference disagreements/, ['record', 'synthesize', 'reference-suite']],
+  ['reference without agreement', /reference verdict/, ['record', 'synthesize', 'reference-suite']],
+  ['manifest names other Wasm bytes', /manifest Wasm hash/, ['record', 'synthesize', 'reference-suite', 'generate', 'verify', 'generate']],
+]) {
+  test(`protocol pipeline stops at the failed stage: ${mode}`, (t) => {
+    const f = fixture(t);
+    if (mode === 'missing registry root') f.env.OZPB_REGISTRY_SNAPSHOT_ROOT = '';
+    if (mode === 'recording from another ledger') f.files['record.json'].bundle.ledger += 1;
+    if (mode === 'reference disagreement') f.files['reference-suite.json'].disagreements = 1;
+    if (mode === 'reference without agreement') f.files['reference-suite.json'].all_agree = false;
+    if (mode === 'manifest names other Wasm bytes') f.files['manifest-1.json'].wasm_hash = 'ab'.repeat(32);
+    assert.throws(f.execute, pattern);
+    assert.deepEqual(commands(f), ran);
+    assert.equal(existsSync(join(f.dir, 'protocol-pipeline.json')), false);
   });
 }
