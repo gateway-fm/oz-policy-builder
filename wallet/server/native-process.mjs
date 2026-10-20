@@ -116,6 +116,13 @@ export async function runNative(executable, jobText, {
       child.once('close', (code, exitSignal) => {
         if (done) return;
         if (code !== 0 || exitSignal || pending.length || prepared === undefined || !prepareOnly && result === undefined) failed = true;
+        // The worker must leave nothing running: `close` does not wait for a descendant with
+        // ignored stdio. A surviving group member refuses even a complete report, and every
+        // refusal signals the group. Its ID cannot be reused while any member is alive.
+        let lingering = false;
+        try { process.kill(-child.pid, 0); lingering = true; } catch (error) { lingering = error.code === 'EPERM'; }
+        if (lingering) failed = true;
+        if (failed) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group has no members left */ }
         finish();
       });
       if (prepareOnly) child.stdin.end(compact + '\n');

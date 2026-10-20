@@ -87,7 +87,8 @@ memory budget. These local limits are not claims of network transaction feasibil
 Exactly one signature request is outstanding. IDs are sequential canonical decimal strings
 starting at `"1"`; a mismatched, repeated or out-of-order response fails. EOF, malformed input,
 unknown fields, exceeded limits or child failure yield no usable passing report. The wallet
-requires a zero child exit as well as a fully validated final report.
+requires a zero child exit as well as a fully validated final report, and refuses a run that
+leaves any process in the worker's group; every refusal kills that group.
 
 The wallet keeps a registered, controlled delegate key in backend memory and exposes only its
 address and opaque capability ID to the UI. The worker receives only the address. An arbitrary

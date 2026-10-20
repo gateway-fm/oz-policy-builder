@@ -99,7 +99,7 @@ test('a refused process-group signal still terminates the worker itself', async 
     return original.call(process, pid, signal);
   };
   let selfPid;
-  // Registered after worker()'s directory cleanup, so it runs first and can still find a survivor.
+  // Uses the pid read during the test, not the file, which worker()'s cleanup may already have removed.
   t.after(() => { process.kill = original; if (selfPid) try { original.call(process, selfPid, 'SIGKILL'); } catch {} });
   const started = performance.now();
   await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), timeoutMs: 5000 }), /native process refused/);
@@ -109,6 +109,36 @@ test('a refused process-group signal still terminates the worker itself', async 
   assert.equal(alive(selfPid), false, 'the worker survived its deadline');
   assert.ok(performance.now() - started < 9000, 'termination was observed, not assumed after the grace period');
 });
+// The worker leaves a descendant in its own process group, with ignored stdio so that `close`
+// does not wait for it, and then ends without a usable report (or, last, with one).
+const exits = {
+  'a nonzero exit': `process.exit(3);`,
+  'an incomplete protocol': `process.stdout.write(JSON.stringify(PREPARED)+'\\n',()=>process.exit(0));`,
+  'a clean report': `emit(PREPARED);emit(RESULT);`,
+};
+for (const [ending, body] of Object.entries(exits)) {
+  test(`${ending} with a surviving descendant is refused and the descendant is terminated`, async (t) => {
+    const w = worker(t, '');
+    const pidFile = join(w.dir, 'descendant');
+    writeFileSync(join(w.dir, 'worker.mjs'), `import {writeFileSync} from 'node:fs';import {spawn} from 'node:child_process';`
+      + `${input}${emit}const PREPARED=${JSON.stringify(prepared)},RESULT=${JSON.stringify(result)};`
+      + `const it=lines[Symbol.asyncIterator]();await it.next();`
+      + `const d=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});d.unref();`
+      + `writeFileSync(${JSON.stringify(pidFile)},String(d.pid));${body}`);
+    // Read the pid even if the assertion below fails, and kill the descendant whatever happens.
+    const descendantPid = () => existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : undefined;
+    let descendant;
+    t.after(() => { if (descendant) try { process.kill(descendant, 'SIGKILL'); } catch {} });
+    const run = runNative(w.executable, '{}', { ...hooks(), timeoutMs: 20000 });
+    await run.catch(() => {});
+    descendant = descendantPid();
+    assert.ok(descendant, 'the worker started its descendant');
+    await assert.rejects(() => run, /native process refused/);
+    const alive = () => { try { process.kill(descendant, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+    for (let i = 0; i < 50 && alive(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(alive(), false, 'the descendant survived the refused run');
+  });
+}
 test('aborted execution and malformed initial job never start a worker', async (t) => {
   const w = worker(t, 'process.exit(0)');
   const signal = AbortSignal.abort();
