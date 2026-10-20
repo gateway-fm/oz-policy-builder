@@ -156,11 +156,8 @@ fn captured_prepare_refuses_modified_header_config_scope_and_incomplete_closure(
             HEADER,
         ),
         (|j| edit_header(j, |h| h.base_reserve += 1, true), HEADER),
-        // A changed header carrying its old, now stale hash.
-        (
-            |j| edit_header(j, |h| h.scp_value.close_time.0 += 1, false),
-            HEADER,
-        ),
+        // A stale embedded hash over a field no other check compares: only the hash refuses it.
+        (|j| edit_header(j, |h| h.total_coins += 1, false), HEADER),
         (
             |j| edit_archival(j, |s| s.min_persistent_ttl += 1),
             "state-archival configuration differs",

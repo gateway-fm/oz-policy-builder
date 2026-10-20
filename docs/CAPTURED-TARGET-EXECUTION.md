@@ -2,9 +2,10 @@
 
 The `captured_target` layer runs the candidate's exact native Stellar Asset Contract (SAC)
 transfer through the pinned account Wasm and the generated policy Wasm, against target ledger
-entries captured from an RPC endpoint. It extends the [native execution worker](NATIVE-EXECUTION.md):
-the candidate installation is the same fresh local state, the target state is byte-exact
-captured data, and the protocol-29 host executes the real built-in SAC. It is an offline
+entries captured from an RPC endpoint. It extends the
+[native execution worker](NATIVE-EXECUTION.md): the candidate installation is the same fresh
+local state, the target state is byte-exact captured data, and the protocol-29 host executes
+the real built-in SAC. It is an offline
 counterfactual. It is not a historical replay, an owner-authority check, a fee, reserve or
 resource check, or live-network acceptance, and its result is always `complete: false`.
 
@@ -57,10 +58,10 @@ capture retries once, then fails.
 
 The capture's provenance is `rpc_reported`: an endpoint's answer, not an inclusion proof. RPC
 also returns each entry's outer `LedgerEntry` extension (`extXdr`, including any sponsor ID).
-It is not captured; the runtime rebuilds it as V0 without claiming it was V0 on the network. For the supported C-to-G native transfer, the SAC
-reads liabilities and sponsorship counts from inside the captured `AccountEntry`; the omitted
-outer sponsor ID does not decide this call. The fixture capture carries nontrivial liabilities
-and sponsorship counts for that reason.
+It is not captured; the runtime rebuilds it as V0 without claiming it was V0 on the network.
+For the supported C-to-G native transfer, the SAC reads liabilities and sponsorship counts from
+inside the captured `AccountEntry`; the omitted outer sponsor ID does not decide this call. The
+fixture capture carries nontrivial liabilities and sponsorship counts for that reason.
 
 [Recorded testnet responses](../crates/source-rpc/tests/captured-testnet/target-capture/) for
 one transfer from the public Pollywallet sample account replay through the real capture code.
@@ -78,7 +79,7 @@ TargetCapture}`), applies every native preparation check, then requires:
 - the captured call, rule, recorded authorization root and footprint to have the supported shape;
 - the footprint to be exactly the SAC instance (read-only) and the sender balance and recipient
   account (read-write), the SAC instance to be the built-in asset executable, and every entry to
-  be canonical, live and no later than `L`.
+  be canonical, modified no later than `L` and, for contract entries, live beyond `L`.
 
 The candidate is then installed once over a source that refuses any target key; the hash of the
 resulting candidate state is bound, and any overlap with captured keys is refused. The binding
@@ -141,5 +142,6 @@ generates four real policies and requires every actual-Wasm test to run and pass
 capture (a real SDK-29 SAC deployment built locally), the same with an uncapped rule, a capture
 whose sender cannot cover the amount, a rule paying the delegate itself (refused as overlapping
 candidate state), twenty preparation refusals including re-hashed headers that describe another
-ledger, the recorded testnet capture replayed offline, and the full process protocol. The nightly pinned-account gate runs it. Refresh the recorded responses
-deliberately with `cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.
+ledger, the recorded testnet capture replayed offline, and the full process protocol. The
+nightly pinned-account gate runs it. Refresh the recorded responses deliberately with
+`cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.
