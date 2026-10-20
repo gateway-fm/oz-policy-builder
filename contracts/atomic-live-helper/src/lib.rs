@@ -82,9 +82,10 @@ pub struct Candidate {
 /// Codes start at 7001 so they do not collide with the asset contract's or a policy's small
 /// codes. Attribute a refusal by the contract ID of its diagnostic error event, not by code.
 // A called contract's own error keeps its code (the account's `add_context_rule` input checks,
-// a failing asset transfer), but the host turns any failure inside an account's `__check_auth`
-// — a policy denial included — into `Error(Auth, InvalidAction)`, and the helper's failed call
-// then reaches its caller as `Error(Context, InvalidAction)`.
+// a failing asset transfer), but the host turns any recoverable failure inside an account's
+// `__check_auth` — a policy denial included — into `Error(Auth, InvalidAction)`. The helper's
+// plain calls propagate that as is, so a transaction or simulation invoking the helper fails
+// with it; only a `try_call` caller sees it narrowed to `Error(Context, InvalidAction)`.
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]

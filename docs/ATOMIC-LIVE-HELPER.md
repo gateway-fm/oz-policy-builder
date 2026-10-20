@@ -45,11 +45,13 @@ Refusals are contract errors 7001–7007: `AmountOutOfScope`, `AliasedIdentity`,
 rule it was given; the check stays so that the helper never relies on that. The range keeps
 clear of the asset contract's and the policies' small codes. An error a called contract raises
 directly keeps its code — an already expired grant surfaces as the account's `PastValidUntil`
-(3005) from `add_context_rule`, a failing transfer as the asset's own error. Any failure inside
-an account's `__check_auth`, a policy denial included, is converted by the host into
-`Error(Auth, InvalidAction)`, and the helper's failed call then reaches its caller as the generic
-`Error(Context, InvalidAction)`. A refusal is therefore attributed by the contract ID of its
-diagnostic `error` events, never by its code alone.
+(3005) from `add_context_rule`, a failing transfer as the asset's own error. Any recoverable
+failure inside an account's `__check_auth`, a policy denial included, is converted by the host
+into `Error(Auth, InvalidAction)`. The helper calls the account and asset without `try_call`, so
+that error propagates as is: a transaction or simulation invoking the helper fails with
+`Error(Auth, InvalidAction)`. Only a caller using `try_call` — as the host tests do — sees it
+narrowed to `Error(Context, InvalidAction)`. A refusal is therefore attributed by the contract ID
+of its diagnostic `error` events, never by its code alone.
 
 The helper declares its own copies of the account's `Signer`, `ContextRuleType` and
 `ContextRule` wire types so that its contract spec describes its return value. Their encoding is
@@ -70,16 +72,20 @@ approval. The tests require:
 - the permitted 1,000,000-stroop transfer installs rule 1, moves exactly that amount, advances
   the policy's call counter, returns the rule the account now stores, and leaves the helper with
   no state;
-- the adjacent 1,000,001-stroop transfer returns `Error(Context, InvalidAction)`, carries the
-  generated policy's `NoTupleMatched` (code 6) as a diagnostic error attributed to the policy
-  contract, and leaves every ledger entry — installation, balances, nonces, counters — unchanged;
+- the adjacent 1,000,001-stroop transfer fails (as `Error(Context, InvalidAction)` at the tests'
+  `try_call`), carries the generated policy's `NoTupleMatched` (code 6) as a diagnostic error
+  attributed to the policy contract, and leaves every ledger entry — installation, balances,
+  nonces, counters — unchanged;
 - a missing owner or delegate authorization, a delegate signing the installation, the owner
   signing the transfer, an altered signature preimage and an expired signature are refused with
-  no state change and the same `Error(Context, InvalidAction)` a policy denial returns. Each must
-  raise its underlying authorization error — for the expired signature the signer's
-  `Error(Auth, InvalidInput)` ("signature has expired"), which the account check converts — and
-  the policy must raise none, which is what distinguishes them from a denial. An already expired
-  grant returns the account's `PastValidUntil` (3005), attributed to the account;
+  no state change and the same error a policy denial returns. What distinguishes them from a
+  denial is that the policy raises no error. Where the cause is specific it is also asserted:
+  the delegate signing the installation raises the account's `UnvalidatedContext` (3002), the
+  owner signing the transfer its `UnauthorizedSigner` (3016), and the expired signature the
+  signer's `Error(Auth, InvalidInput)` ("signature has expired"), all attributed to the account.
+  For the missing and altered entries only the host's generic `Error(Auth, InvalidAction)` is
+  available, which a policy denial also emits. An already expired grant returns the account's
+  `PastValidUntil` (3005), attributed to the account;
 - each reachable helper guard (errors 7001–7006) refuses with its own code and no state change,
   including an unexpected rule ID after a valid installation.
 

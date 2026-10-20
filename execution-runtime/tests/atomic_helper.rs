@@ -30,6 +30,10 @@ const POLICY_CODE_MISMATCH: u32 = 7005;
 const UNEXPECTED_RULE_ID: u32 = 7006;
 /// The account's `PastValidUntil`, from `stellar-accounts` 0.7.2.
 const ACCOUNT_PAST_VALID_UNTIL: u32 = 3005;
+/// The account's `UnvalidatedContext`: no selected rule validates the call for these signers.
+const ACCOUNT_UNVALIDATED_CONTEXT: u32 = 3002;
+/// The account's `UnauthorizedSigner`: a signer is not part of any selected rule.
+const ACCOUNT_UNAUTHORIZED_SIGNER: u32 = 3016;
 /// The generated policy's `NoTupleMatched`.
 const POLICY_NO_TUPLE_MATCHED: u32 = 6;
 
@@ -289,11 +293,11 @@ fn diagnostic_errors(env: &Env, contract: Option<&Address>) -> Vec<xdr::ScVal> {
 fn contract_error(code: u32) -> xdr::ScVal {
     xdr::ScVal::Error(xdr::ScError::Contract(code))
 }
-/// What the helper's caller receives when a call the helper makes fails with a host error
-/// rather than a contract error: every authorization failure and every policy denial. Inside,
-/// the host has already turned a failure in the account's `__check_auth` into
-/// `Error(Auth, InvalidAction)`; the failed call then traps the helper.
-fn trapped_call_error() -> soroban_sdk::Error {
+/// What these tests receive, through `try_invoke_contract`'s `try_call`, when the helper fails
+/// with a host error rather than a contract error: every authorization failure and every policy
+/// denial. The host narrows the propagated `Error(Auth, InvalidAction)` to this only for a
+/// `try_call` caller; a transaction or simulation invoking the helper fails with the Auth error.
+fn try_call_host_error() -> soroban_sdk::Error {
     soroban_sdk::Error::from_type_and_code(
         xdr::ScErrorType::Context,
         xdr::ScErrorCode::InvalidAction,
@@ -421,8 +425,6 @@ impl Fixture {
     fn authorizations(&self) -> Vec<xdr::SorobanAuthorizationEntry> {
         self.authorizations_signed_by(&self.owner, &self.delegate)
     }
-    /// Owner-rule authorization of the installation, then candidate-rule authorization of the
-    /// transfer, each as the account entry followed by its signer's entry.
     /// The exact `add_context_rule` arguments the helper passes for the candidate.
     fn install_args(&self) -> SVec<Val> {
         let e = &self.env;
@@ -449,6 +451,8 @@ impl Fixture {
             c.amount.into_val(e)
         ]
     }
+    /// Owner-rule authorization of the installation, then candidate-rule authorization of the
+    /// transfer, each as the account entry followed by its signer's entry.
     fn authorizations_signed_by(
         &self,
         install: &SigningKey,
@@ -505,23 +509,26 @@ impl Fixture {
         refusal.ok()
     }
     /// As `refused_without_effect`, requiring the exact `expected` error, a diagnostic `raised`
-    /// error showing the underlying cause, and no error from the generated policy.
-    /// Authorization failures return the same `trapped_call_error()` as a policy denial, so
-    /// without the last check a policy denial after a wrongly accepted signer would pass as an
-    /// authorization refusal. Call it once per fresh fixture: the host's diagnostic log does
-    /// not keep earlier invocations' errors, so it cannot be compared across runs.
+    /// error (attributed to the account when `by_account`), and no error from the generated
+    /// policy. Authorization failures return the same `try_call_host_error()` as a policy
+    /// denial, and for some of them `raised` can only be the host's generic Auth wrapper, which
+    /// a denial also emits; so the empty-policy check is what tells a wrongly accepted signer
+    /// followed by a denial from an authorization refusal. Call it once per fresh fixture: the
+    /// host's diagnostic log does not keep earlier invocations' errors.
     fn refused_before_policy(
         &self,
         auth: &[xdr::SorobanAuthorizationEntry],
         case: &str,
         expected: soroban_sdk::Error,
         raised: xdr::ScVal,
+        by_account: bool,
     ) {
         let refusal = self.refused_without_effect(auth, case);
         assert_eq!(refusal, Some(expected), "{case}: refusal error");
+        let by = by_account.then_some(&self.candidate.account);
         assert!(
-            diagnostic_errors(&self.env, None).contains(&raised),
-            "{case}: underlying {raised:?} not raised"
+            diagnostic_errors(&self.env, by).contains(&raised),
+            "{case}: {raised:?} not raised (by the account: {by_account})"
         );
         assert_eq!(
             contract_errors(&self.env, &self.candidate.policy),
@@ -596,8 +603,8 @@ fn atomic_helper_adjacent_policy_denial_rolls_back_installation_target_and_nonce
     let refusal = f.refused_without_effect(&f.authorizations(), "adjacent amount");
     assert_eq!(
         refusal,
-        Some(trapped_call_error()),
-        "the policy's denial reaches the caller as a trapped call"
+        Some(try_call_host_error()),
+        "the policy's denial reaches the tests' try_call as a narrowed host error"
     );
     assert!(
         contract_errors(&f.env, &f.candidate.policy)
@@ -616,8 +623,9 @@ fn atomic_helper_refuses_missing_owner_or_delegate_and_preserves_all_state() {
         f.refused_before_policy(
             &auth,
             &format!("missing authorization {omitted}"),
-            trapped_call_error(),
+            try_call_host_error(),
             auth_error(xdr::ScErrorCode::InvalidAction),
+            false,
         );
     }
 }
@@ -630,15 +638,17 @@ fn atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_sta
     f.refused_before_policy(
         &f.authorizations_signed_by(&f.delegate, &f.delegate),
         "install signed by delegate",
-        trapped_call_error(),
-        auth_error(xdr::ScErrorCode::InvalidAction),
+        try_call_host_error(),
+        contract_error(ACCOUNT_UNVALIDATED_CONTEXT),
+        true,
     );
     let f = Fixture::new();
     f.refused_before_policy(
         &f.authorizations_signed_by(&f.owner, &f.owner),
         "transfer signed by owner",
-        trapped_call_error(),
-        auth_error(xdr::ScErrorCode::InvalidAction),
+        try_call_host_error(),
+        contract_error(ACCOUNT_UNAUTHORIZED_SIGNER),
+        true,
     );
     for index in 0..4 {
         let f = Fixture::new();
@@ -647,8 +657,9 @@ fn atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_sta
         f.refused_before_policy(
             &auth,
             &format!("altered preimage of authorization {index}"),
-            trapped_call_error(),
+            try_call_host_error(),
             auth_error(xdr::ScErrorCode::InvalidAction),
+            false,
         );
     }
 }
@@ -658,14 +669,15 @@ fn atomic_helper_refuses_substituted_or_altered_signatures_and_preserves_all_sta
 fn atomic_helper_refuses_expired_signatures_or_grant_and_preserves_all_state() {
     // Signatures expiring at ledger 999 while the ledger is 1000. The signer's
     // `Error(Auth, InvalidInput)` ("signature has expired") arises inside the account's
-    // `__check_auth`, so it is converted and then traps the helper like the rest.
+    // `__check_auth`, so it is converted like the rest.
     let mut f = Fixture::new();
     f.expiry = 999;
     f.refused_before_policy(
         &f.authorizations(),
         "signatures past their expiration ledger",
-        trapped_call_error(),
+        try_call_host_error(),
         auth_error(xdr::ScErrorCode::InvalidInput),
+        true,
     );
     let mut f = Fixture::new();
     f.candidate.valid_until = 999;
@@ -675,9 +687,8 @@ fn atomic_helper_refuses_expired_signatures_or_grant_and_preserves_all_state() {
         "grant validity already over",
         soroban_sdk::Error::from_contract_error(ACCOUNT_PAST_VALID_UNTIL),
         contract_error(ACCOUNT_PAST_VALID_UNTIL),
+        true,
     );
-    assert!(contract_errors(&f.env, &f.candidate.account)
-        .contains(&contract_error(ACCOUNT_PAST_VALID_UNTIL)));
 }
 
 #[test]
