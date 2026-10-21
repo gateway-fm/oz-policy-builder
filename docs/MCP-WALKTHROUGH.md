@@ -66,8 +66,9 @@ hash and no signature.
 **Going further than one command is better done with the skill.** The flow needs decisions
 only you can make — how long the grant lives, a call cap, a spend limit, which signer.
 The skill asks for them and guides the available record, synthesize, reference, generate,
-and verify tools, with optional exact-envelope preflight. It stops before deployment or
-installation (§4.7).
+and verify tools, with optional exact-envelope preflight. Once the policies are deployed, it
+continues to the advisory authority check and install intent; it never deploys, signs or
+installs (§4.7).
 
 ### Two more things worth trying
 
@@ -83,7 +84,9 @@ Because they are what a reviewer will ask:
 
 `evaluate_spec`, `reference_suite`, `synthesize_policy`, and `import_recording` run offline;
 network recording and exact-envelope preflight read RPC, while generation and verification
-build Wasm. Knowing which is which saves a confusing failure.
+build Wasm. The account and install tools read through an RPC source the server was started
+with (`OZPB_RPC_SOURCES_JSON`) and may rebuild generated policies; `prepare_dry_run` builds but
+reads nothing. Knowing which is which saves a confusing failure.
 
 | Tool | Needs |
 |---|---|
@@ -96,6 +99,11 @@ build Wasm. Knowing which is which saves a confusing failure.
 | `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |
 | `verify` | the spec, selected rule, complete generated non-lock files, claimed Wasm and BuildManifest; reports reproduction and evidence limits separately |
+| `prepare_dry_run` | the authority-check request below, the artifact `verify` takes, a proposed context-rule ID and a fresh run nonce. It reproduces the artifact and derives the reference suite, then reports the account-Wasm, captured-target and live layers as unavailable: not a complete dry run ([`docs/DRY-RUN-PREPARATION.md`](DRY-RUN-PREPARATION.md)) |
+| `check_policy_call_surface` | the spec and rule index, the exact policy bindings, a signed registry snapshot, the account, the network, and the *name* of a configured RPC source, never a URL. Returns who can change the account or reset the bound policies, with refusals and gaps; advisory, never "safe" |
+| `prepare_install_intent` | the same request. It runs that check itself and returns the exact `add_context_rule` arguments only when nothing is refused or unresolved; it never signs |
+| `assemble_install_transaction` | that request plus a fee-payer address, a fee ceiling and a validity window of at most 120 ledgers. Returns unsigned XDR the wallet must validate, recheck and enforce-simulate before signing ([`docs/INSTALL-ASSEMBLY.md`](INSTALL-ASSEMBLY.md)) |
+| `check_against_policy` | an installed rule's on-chain ID with its spec, bindings and signed snapshot, the account, an RPC source name, candidate signers and the proposed invocation. Predicts permit, deny or `unsupported` at one ledger, recognition-scoped and without verifying signatures ([`docs/LIVE-POLICY-CHECK.md`](LIVE-POLICY-CHECK.md)) |
 
 To see recording and synthesis in sequence without an agent, run
 `bash scripts/demo-tranche1.sh`: it drives those operations through the CLI and keeps every
@@ -197,8 +205,10 @@ That refusal is the feature. HTTP mode also requires `OZPB_RPC_ALLOWLIST`, binds
 only, and applies bearer auth, a request quota, a request-size bound and a limit on concurrent
 builds. `docs/DEVELOPERS.md` has the full set, and what is still owed before anything
 resembling multi-tenant hosting.
-This is the shape a hosted deployment would take; it is not what this milestone deploys, and
-it is not how to run it locally.
+This is the shape a hosted deployment would take. [`docs/SELF-HOSTING.md`](SELF-HOSTING.md)
+packages it behind a TLS proxy for one operator, and
+[`docs/ISOLATED-BUILDS.md`](ISOLATED-BUILDS.md) adds disposable build workers. No hosted
+endpoint is deployed, and this is not how to run it locally.
 
 ---
 
@@ -261,11 +271,14 @@ Every command on this page was run to write it, and the outputs are pasted from 
 ## What this does not show
 
 No policy is installed and nothing is signed here. The complete permit/deny dry-run report,
-wallet install flow, and hosted endpoint are scheduled work. `evaluate_spec` is the reference
+wallet install flow, and a deployed hosted endpoint are scheduled work; self-hosting is
+covered in [`docs/SELF-HOSTING.md`](SELF-HOSTING.md). `evaluate_spec` is the reference
 evaluator answering about a spec —
 not a smart account executing a policy, which is a different and stronger claim that belongs
 with the harness.
 
-The `policy-builder` skill guides the available tools and stops at an artifact and evidence
-summary. Its layer-1 reference suite is not the full contract/live dry run. The complete
-dry-run report, wallet install flow, and hosted endpoint remain scheduled work.
+The `policy-builder` skill guides the available tools through an artifact and evidence
+summary and, once the policies are deployed, the advisory authority check and install intent;
+it never signs or installs. Its layer-1 reference suite is not the full contract/live dry run.
+The complete dry-run report, wallet install flow, and a deployed hosted endpoint remain
+scheduled work.

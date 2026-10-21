@@ -317,17 +317,31 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   exact `add_context_rule` arguments derived from the grant the commitment covers, with the
   answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
   or submits.
-- **Scheduled, not exposed** — `dry_run`, `check_against_policy`. The full dry-run harness
-  needs its own evidence before exposure.
+- **Unsigned install assembly (advisory)** — `assemble_install_transaction` reruns that check
+  and returns bounded unsigned XDR with current sequence and fees. It never signs or
+  submits; the wallet must validate it, recheck authority and enforce-simulate before signing
+  ([INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md)).
+- **Installed-rule prediction (advisory)** — `check_against_policy` predicts permit, deny or
+  `unsupported` for one call against one explicitly selected installed rule at one reported
+  ledger. It is recognition-scoped and does not verify signatures
+  ([LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md)).
+- **Dry-run preparation** — `prepare_dry_run` recognizes the candidate, reproduces its
+  artifact and derives the selected-rule reference suite. It reports the account-Wasm,
+  captured-target and live layers as unavailable
+  ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md)).
+- **Scheduled, not exposed** — the full four-layer `dry_run`. The full dry-run harness needs
+  its own evidence before exposure.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
-`check_policy_call_surface` and `prepare_install_intent` read through a source the operator
-names in `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
+`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction` and
+`check_against_policy` read through a source the operator names in `OZPB_RPC_SOURCES_JSON` —
+`{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
-source; it never carries a URL.
+source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
+source, but reads nothing through it.
 The source must be for the request's network, a hosted server also requires its URL on
 `OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
 `OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same
@@ -346,16 +360,18 @@ stream before the tool runs and a build outlives a client that disconnects:
 |---|---|---|
 | `OZPB_HTTP_REQUESTS_PER_MINUTE` | 60 | HTTP requests admitted per fixed one-minute window, across all clients. A tool call is one request; opening a session takes several. A fixed window can admit up to twice the limit across a window boundary. |
 | `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
-| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks and install-intent planning. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
+| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks, install-intent planning, unsigned install assembly, installed-rule checks and dry-run preparation. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
 
-Zero or a malformed value stops startup. Authority checks and install-intent planning also
-share a separate one-operation limit across all sessions, held until their blocking work
-ends even if a client disconnects. That limit is independent of build capacity; their binding
+Zero or a malformed value stops startup. Authority checks, install-intent planning, unsigned
+install assembly, installed-rule checks and dry-run preparation also share a separate
+one-operation limit across all sessions, held until their blocking work ends even if a
+client disconnects. That limit is independent of build capacity; their binding
 rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
 `preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
-at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
-per-tool quotas are still owed before genuine multi-tenant public hosting.
+at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
+supplies OS-level compile isolation and a no-secrets worker role; per-tool quotas and request
+cancellation are still owed before genuine multi-tenant public hosting.
 
 The [self-hosting package](SELF-HOSTING.md) supplies a pinned container build, TLS proxy,
 operator configuration and disposable endpoint/offline-build checks for one operator with
