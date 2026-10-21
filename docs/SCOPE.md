@@ -226,6 +226,16 @@ The source-reviewed account method inventory and its limits are described in
    demonstrate only these fixed-key calls. They do not establish key closure or authorization
    for arbitrary target code, reconstruct actual network account state, or provide a public
    complete dry-run report.
+   The native worker's [captured-target mode](CAPTURED-TARGET-EXECUTION.md) runs one supported
+   shape end to end: an exact-amount native SAC transfer from the candidate account, captured
+   by a record-mode simulation, one `getLedgerEntries` read and a self-consistent `getLedgers`
+   header. The real built-in SAC executes through the pinned account and generated policy Wasm
+   over a strict snapshot source; the original must move exactly the amount between the two
+   captured balances and, for a capped rule, advance the counter, and an amount-plus-one and
+   an unsigned call must be refused by the policy with unchanged state. Recorded testnet
+   responses for the public Pollywallet sample account replay offline through the same path.
+   It is offline and counterfactual, covers no other target, and no CLI or MCP command runs it
+   yet.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.

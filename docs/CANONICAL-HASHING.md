@@ -64,6 +64,10 @@ two as separate and so does this.
 | `ozpb:v1:native-state-entries` | sorted `(key XDR base64, entry XDR base64, optional TTL)` tuples |
 | `ozpb:v1:native-case-payload` | `(run hash, case ID, exact derived Case)` tuple |
 | `ozpb:v1:local-bootstrap` | run hash as a string; derives the separate synthetic owner seed |
+| `ozpb:v1:target-capture` | complete endpoint-reported `TargetCapture` in [captured-target execution](CAPTURED-TARGET-EXECUTION.md) |
+| `ozpb:v1:captured-target-job` | complete typed `CapturedTargetJob`: the `NativeJob` plus its raw capture |
+| `ozpb:v1:captured-target-cases` | ordered planned cases: case ID, derived `Case`, exact call XDR and expected policy error |
+| `ozpb:v1:captured-initialization` | capture hash, candidate state hash, local rule ID and bootstrap owner |
 | `ozpb:v1:account-state` | the enumerated account rule-set an authority result was computed over |
 | `ozpb:v1:account-ledger-witness` | the raw entries one account scan read; its own byte layout, below |
 | `ozpb:v1:account-method-inventory` | the source-reviewed method table for one exact account Wasm hash |
