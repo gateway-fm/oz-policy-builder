@@ -140,6 +140,10 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
     '--network', NETWORK], 'recording.json', (text) => JSON.parse(text, (_key, value, context) =>
     typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/.test(context?.source ?? '') ? BigInt(context.source) : value));
   const inputs = recordingInputs(run, record);
+  // `dir` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this function. The name is fixed, and `save`
+  // refuses an existing path.
+  // nosec
   save(join(dir, 'account.json'), inputs.account);
   save(join(dir, 'decisions.json'), inputs.decisions);
   const synthesis = cli('synthesize', ['--bundle', join(dir, 'recording.json'), '--selected-authorizer', run.account,
