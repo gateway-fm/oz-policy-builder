@@ -6,7 +6,9 @@ import { offlineDomain } from '../server/native-protocol.mjs';
 import { RawJson } from '../server/raw-json.mjs';
 import { capturedCall, capturedJobText, captureHash, checkCapturedPrepared, checkCapturedResult, checkTargetCapture,
   runCapturedExecution, targetEnvelopeXdr } from '../server/captured-execution.mjs';
-import { CASE_IDS, RECIPIENT, SAC, captureFixture, capturedFrames, capturedSignRequest, transferCall } from './captured-execution-fixture.mjs';
+import { Address } from '@stellar/stellar-sdk';
+import { CASE_IDS, RECIPIENT, SAC, captureFixture, capturedFrames, capturedKeys, capturedSignRequest, initializationHash,
+  transferCall } from './captured-execution-fixture.mjs';
 
 const H = (n) => n.repeat(64);
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -293,4 +295,98 @@ test('captured execution must repeat the retained preparation and use the bound 
   await assert.rejects(() => runCapturedExecution({ executable: '/fixed/runtime', jobText: '{}', expected: f.expected,
     maxCalls: f.maxCalls, signer: { address: other.publicKey(), sign: (b) => other.sign(b) }, run: never }), /refused/);
   assert.equal(calls.length, 0);
+});
+
+// Self-consistent forgeries: each changes one binding and then recomputes the state hash and the
+// offline domain, as a worker would that meant it, so only the guard under test can refuse.
+function forge(f, change) {
+  const p = clone(f.prepared);
+  change(p);
+  p.binding.state_hash = initializationHash({ runHash: p.binding.run_hash, captureHash: p.capture_hash,
+    candidateStateHash: p.candidate_state_hash });
+  p.execution_network_id = offlineDomain(p.binding).networkId;
+  return p;
+}
+
+test('a self-consistently re-signed preparation for another run, ledger, account or delegate is refused', () => {
+  const f = setup();
+  assert.deepEqual(checkCapturedPrepared(forge(f, () => {}), f.expected), f.prepared, 'the forgery itself is well formed');
+  for (const [name, change] of [
+    ['run', (p) => { p.binding.run_hash = H('7'); }],
+    ['source ledger', (p) => { p.binding.source_ledger += 1; }],
+    ['account', (p) => { p.binding.account_address = POLICY; p.policy_address = StrKey.encodeContract(Buffer.alloc(32, 6)); }],
+    ['delegate', (p) => { p.binding.delegate_address = Keypair.random().publicKey(); }],
+    ['source network', (p) => { p.binding.source_network_id = H('8'); }],
+    ['capture', (p) => { p.capture_hash = H('7'); }],
+  ]) {
+    assert.throws(() => checkCapturedPrepared(forge(f, change), { ...f.expected,
+      ...(name === 'account' ? { policyAddress: StrKey.encodeContract(Buffer.alloc(32, 6)) } : {}) }), /refused/, name);
+  }
+});
+
+const expectedCapture = { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT, recipient: RECIPIENT, notBefore: LEDGER };
+const rehashed = (c, change) => {
+  const entry = xdr.LedgerHeaderHistoryEntry.fromXDR(c.header_xdr, 'base64');
+  const header = new xdr.LedgerHeader({ ...entry.header, ...change });
+  c.header_xdr = new xdr.LedgerHeaderHistoryEntry({ ...entry, header,
+    hash: new xdr.Hash(createHash('sha256').update(header.toXDR()).digest()) }).toXDR('base64');
+};
+const recording = (c, change) => {
+  const entry = xdr.SorobanAuthorizationEntry.fromXDR(c.recording_auth_xdr, 'base64');
+  c.recording_auth_xdr = change(entry).toXDR('base64');
+};
+for (const [name, change] of [
+  ['another schema', (c) => { c.schema = 2; }],
+  ['another protocol in a self-consistent header', (c) => rehashed(c, { ledgerVersion: 28 })],
+  ['a recording for another address', (c) => recording(c, (e) => new xdr.SorobanAuthorizationEntry({ ...e,
+    credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({
+      address: new Address(POLICY).toScAddress(), nonce: 77n, signatureExpirationLedger: 0, signature: xdr.ScVal.scvVoid() })) }))],
+  ['a recording with a sub-invocation', (c) => recording(c, (e) => new xdr.SorobanAuthorizationEntry({ ...e,
+    rootInvocation: new xdr.SorobanAuthorizedInvocation({ ...e.rootInvocation,
+      subInvocations: [xdr.SorobanAuthorizedInvocation.fromXDR(e.rootInvocation.toXDR())] }) }))],
+  ['swapped read-only and read-write keys', (c) => { const keys = capturedKeys({ account: ACCOUNT });
+    c.read_only_keys = [keys.balance]; c.read_write_keys = [keys.instance, keys.recipient].sort(); }],
+  ['an empty read-only footprint', (c) => { c.read_only_keys = []; }],
+  ['a read-write footprint missing the recipient', (c) => { c.read_write_keys = [capturedKeys({ account: ACCOUNT }).balance]; }],
+  ['an archival entry from a later ledger', (c) => { c.state_archival.last_modified_ledger = LEDGER + 1; }],
+  ['an archival entry with a TTL', (c) => { c.state_archival.live_until_ledger = LEDGER + 10; }],
+  ['contract data under the recipient account key', (c) => {
+    const keys = capturedKeys({ account: ACCOUNT });
+    const balance = c.entries.find((e) => e.key_xdr === keys.balance);
+    Object.assign(c.entries.find((e) => e.key_xdr === keys.recipient), { data_xdr: balance.data_xdr, live_until_ledger: LEDGER + 50 });
+  }],
+]) {
+  test(`a capture with ${name} is refused by its own guard`, () => {
+    const { capture } = setup();
+    assert.ok(checkTargetCapture(clone(capture), expectedCapture), 'control');
+    const changed = clone(capture);
+    change(changed);
+    assert.throws(() => checkTargetCapture(changed, expectedCapture), /refused/);
+  });
+}
+
+for (const [name, change] of [
+  ['a denial that paid the recipient', (r) => { r.cases[1].recipient_delta = '1'; }],
+  ['a denial reporting a write', (r) => { r.cases[2].written_keys = [r.cases[0].written_keys[0]]; }],
+  ['a denial reporting a TTL extension', (r) => { r.cases[1].ttl_extended_keys = [r.cases[0].captured_reads[0]]; }],
+  ['a denial without its host error', (r) => { r.cases[2].host_error = null; }],
+  ['an original extending another SAC entry', (r, f) => { r.cases[0].ttl_extended_keys = [capturedKeys({ account: POLICY }).balance]; }],
+  ['an original extending the recipient account', (r, f) => { r.cases[0].ttl_extended_keys = [f.keys.recipient]; }],
+  ['an original extending a malformed key', (r) => { r.cases[0].ttl_extended_keys = ['AAAA']; }],
+]) {
+  test(`captured report refuses ${name}`, () => {
+    const f = setup();
+    const result = clone(f.result);
+    change(result, f);
+    assert.throws(() => checkCapturedResult(result, f), /refused/);
+  });
+}
+
+test('an original may extend the SAC instance and balance and candidate entries', () => {
+  const f = setup();
+  const result = clone(f.result);
+  const policyInstance = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(POLICY).toScAddress(),
+    key: xdr.ScVal.scvLedgerKeyContractInstance(), durability: xdr.ContractDataDurability.persistent })).toXDR('base64');
+  result.cases[0].ttl_extended_keys = [f.keys.instance, f.keys.balance, policyInstance];
+  assert.equal(checkCapturedResult(result, f).status, 'passed');
 });

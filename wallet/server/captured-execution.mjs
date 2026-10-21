@@ -160,7 +160,7 @@ export const checkTargetCapture = guarded((capture, { call, accountAddress, reci
   const recorded = decode(capture.recording_auth_xdr, xdr.SorobanAuthorizationEntry);
   const root = recorded.rootInvocation;
   if (Address.fromScAddress(directAddressCredentials(recorded.credentials).address).toString() !== accountAddress
-    || root.function.type !== 'sorobanAuthorizedFunctionTypeContractFn' || b64(root.function.contractFn) !== b64(call)
+    || b64(root.function) !== b64(xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call))
     || root.subInvocations.length) refuse();
   // The header must describe the observed ledger and hash to itself (self-consistency only).
   const history = decode(capture.header_xdr, xdr.LedgerHeaderHistoryEntry);
@@ -255,6 +255,14 @@ export const checkCapturedResult = guarded((frame, { prepared, expected, maxCall
   const captured = new Set([keys.instance, keys.balance, keys.recipient]);
   const counterKey = b64(contractKey(policy, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallCount'), new Address(account).toScVal(),
     xdr.ScVal.scvU32(1)]), xdr.ContractDataDurability.persistent));
+  // The SAC may extend its own instance and the sender's balance, and the candidate its own
+  // entries; the worker bounds every extension. Any other SAC entry, and classic entries, which
+  // have no TTL, may not appear.
+  const extensible = (key) => {
+    const decoded = decode(key, xdr.LedgerKey);
+    if (decoded.type !== 'contractData') return decoded.type === 'contractCode';
+    return Address.fromScAddress(decoded.contractData.contract).toString() !== SAC || key === keys.instance || key === keys.balance;
+  };
   const amount = expected.amount;
   const plan = [
     { label: 'captured original call', class: 'original', permit: true },
@@ -278,9 +286,8 @@ export const checkCapturedResult = guarded((frame, { prepared, expected, maxCall
         || item.counter_after !== (capped ? 1 : null)
         || !sameSet(item.created_keys, [nonceKey(account, 100n), nonceKey(prepared.binding.delegate_address, 1001n)])
         || !sameSet(item.written_keys, [keys.balance, keys.recipient, ...(capped ? [counterKey] : [])])
-        // The SAC may extend its instance and balance TTLs; the worker bounds every extension.
-        || !Array.isArray(item.ttl_extended_keys) || item.ttl_extended_keys.some((key) => typeof key !== 'string')
-        || new Set(item.ttl_extended_keys).size !== item.ttl_extended_keys.length) refuse();
+        || !Array.isArray(item.ttl_extended_keys) || new Set(item.ttl_extended_keys).size !== item.ttl_extended_keys.length
+        || item.ttl_extended_keys.some((key) => !extensible(key))) refuse();
     // The host error is free text that may quote the call; it is checked for presence, never kept.
     } else if (item.refusal_contract !== policy || item.refusal_code !== want.code || typeof item.host_error !== 'string'
       || !unchanged || item.sender_delta !== '0' || item.recipient_delta !== '0' || item.counter_after !== item.counter_before

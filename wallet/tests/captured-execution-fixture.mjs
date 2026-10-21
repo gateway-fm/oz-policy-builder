@@ -91,7 +91,7 @@ export function captureFixture({ account, recipient = RECIPIENT, amount = 100000
 const canonical = (domain, value) => createHash('sha256')
   .update(xdr.ScVal.scvVec([xdr.ScVal.scvU32(2), xdr.ScVal.scvString(domain), value]).toXDR()).digest();
 /** `ozpb:v1:captured-initialization` with the run's public synthetic bootstrap owner (fields in byte order). */
-function initializationHash({ runHash, captureHash, candidateStateHash }) {
+export function initializationHash({ runHash, captureHash, candidateStateHash }) {
   const owner = Keypair.fromRawEd25519Seed(canonical('ozpb:v1:local-bootstrap', xdr.ScVal.scvString(runHash))).publicKey();
   const field = (key, val) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val });
   return canonical('ozpb:v1:captured-initialization', xdr.ScVal.scvMap([

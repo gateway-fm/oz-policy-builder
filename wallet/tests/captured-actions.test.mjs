@@ -139,14 +139,20 @@ for (const failure of [{ prepareFails: true }, { intentChange: (evidence) => { d
 // check, so no layer is recorded, and the signal reaches whatever child process is running.
 const pending = (signal) => new Promise((_resolve, reject) => signal.addEventListener('abort',
   () => reject(new Error('native process refused; no execution evidence accepted')), { once: true }));
-for (const stage of ['capture-target', 'captured worker', 'account worker']) {
+for (const stage of ['CLI preparation', 'capture-target', 'captured worker', 'account worker']) {
   test(`an aborted check-account rejects at the ${stage} and records no evidence`, async () => {
     const controller = new AbortController();
     const f = await reviewed();
     let held = false;
     const seen = [];
     const reached = new Promise((resolve) => {
-      if (stage === 'capture-target') {
+      if (stage === 'CLI preparation') {
+        const prepare = f.toolchain.prepareDryRun;
+        f.toolchain.prepareDryRun = async (input) => {
+          if (held) return prepare(input);
+          held = true; seen.push(input.signal); resolve(); return pending(input.signal);
+        };
+      } else if (stage === 'capture-target') {
         const capture = f.toolchain.captureTarget;
         f.toolchain.captureTarget = async (envelope, options) => {
           if (held) return capture(envelope, options);
@@ -166,6 +172,10 @@ for (const stage of ['capture-target', 'captured worker', 'account worker']) {
     controller.abort();
     await assert.rejects(checking, /refused/);
     assert.deepEqual(seen, [controller.signal], 'the signal reaches the running child process');
+    // Nothing starts after the abort: no capture once a step before it was aborted.
+    if (stage !== 'capture-target' && stage !== 'captured worker') {
+      assert.equal(f.envelopes.length + f.captures.length + capturedRuns(f).length, 0);
+    }
     // The check lock is free again: the next check runs both layers to completion.
     const next = await check(f);
     assert.equal(status(next).account_wasm, 'passed');

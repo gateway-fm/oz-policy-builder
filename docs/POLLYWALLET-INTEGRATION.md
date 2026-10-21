@@ -220,9 +220,13 @@ call is the testnet native SAC's `transfer(SELF, G recipient, exact amount)`.
 3. The worker runs once with `--prepare-captured` on the same preparation, at the capture's
    ledger and archival settings. The wallet checks that frame against the preparation, the offline
    signing domain and its own `ozpb:v1:target-capture` hash of the capture, which the binding's
-   state hash, and so the signing domain, must also commit to. The job and suite hashes come from
-   that trusted local preparation, as for the account layer. The identical job then runs with
-   `--captured`; the wallet signs only the original and adjacent-amount cases.
+   state hash, and so the signing domain, must also commit to. The run hash must be the CLI's;
+   the source ledger, account, delegate, policy and its code, rule IDs, case IDs and signature
+   expiry must be the ones expected. The captured job and suite hashes cover the capture job and
+   the three planned cases, which the wallet cannot recompute: unlike the account layer, whose
+   suite hash is the CLI's, they are taken from this trusted local preparation and must repeat
+   exactly in the execution. The identical job then runs with `--captured`; the wallet signs
+   only the original and adjacent-amount cases.
 4. The report is accepted only after the wallet recomputes every case. The original must move
    exactly the amount from the sender's SAC balance to the recipient, advance the call counter
    from 0 to 1, create exactly the account's and the delegate's nonces and write nothing else. The
@@ -246,10 +250,18 @@ other outcome carries no evidence:
 - `failed`: the preparation evidence, a capture for another call, network or account code, the
   worker or its report was refused.
 
+A passing layer records the captured ledger as `evidence.observedLedger`, and stored evidence
+does not age: nothing re-checks it later. Installation is disabled; when it is enabled, its
+gate must require that ledger to be recent relative to the installation's own reads.
+
 A new review starts again without local execution evidence. Each worker run has a 120-second
-deadline, and the backend serves one request at a time. If the browser disconnects during the
-checks, the backend kills the running CLI or worker process group, records no evidence for that
-attempt and accepts requests again.
+deadline, `capture-target` 120 seconds, and the backend serves one request at a time. If the
+browser disconnects during the checks, the backend records no evidence for that attempt and
+accepts requests again once the running step stops. It kills the process group of a running
+`ozpb` call or native worker at once. Two things are not stopped that way: a policy build that
+CLI preparation started runs in its own process group until it finishes or reaches the build
+deadline (`buildTimeoutSecs`), and an operator RPC read the backend itself is making completes
+or reaches its 15-second timeout before the check settles.
 
 `bash scripts/test-wallet-native-execution.sh` runs both layers against the actual CLI and
 worker with the runtime test's public delegate seed. For the captured layer, the actual

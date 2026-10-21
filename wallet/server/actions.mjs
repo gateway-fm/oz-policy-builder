@@ -281,7 +281,6 @@ export function createWalletActions({ session, toolchain, network, native = null
               candidate: deployment.request, candidateContextRuleId: review.nextRuleId, signal });
             source = await network.nativeSource(ACCOUNT_WASM);
           } catch {
-            stopped();
             // Infrastructure, not the candidate: the CLI preparation or operator RPC read did not complete.
             layer = accountLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
             captured ??= targetLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
@@ -313,7 +312,6 @@ export function createWalletActions({ session, toolchain, network, native = null
               const notBefore = await network.latestLedger();
               capture = { notBefore, value: await toolchain.captureTarget(envelope, { signal }) };
             } catch {
-              stopped();
               // Includes a simulation the target itself refused: the CLI reports that and an endpoint
               // failure alike, so the backend cannot attribute it to the candidate.
               captured = targetLayer('unavailable', 'capture-target or the operator RPC read did not complete; the worker did not run.');
