@@ -126,17 +126,38 @@ cleanup `incomplete`, so the wrapper warns that grants may remain.
 ## W1 Blend
 
 The pipeline, bundle installation and controls accept `blend_claim`: the exact
-`claim(from = self, reserve_token_ids = [6], to = self)` on pool
-`CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF`, with its code pinned in
-`protocol-calls.mjs`. Its controls are a changed reserve list, a foreign recipient and another
-pool function (`#6` from the generated policy), the signer controls, one delegated claim after an
-explicit 1–120 ledger accrual wait, the count cap, expiry, removal and the post-removal denial.
+`claim(from = self, reserve_token_ids = [3], to = self)` on the Blend v2 pool
+`CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW`. Reserve 1 of that pool is Circle's
+testnet USDC (`CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`), and ID 3 is its
+bToken (supply) ID, `1 * 2 + 1`. The pool, its code, the claimed ID, the BLND token and the
+backstop are pinned in `protocol-calls.mjs`. Its controls are a changed reserve list, a foreign
+recipient and another pool function (`#6` from the generated policy), the signer controls, one
+delegated claim after an explicit 1–120 ledger accrual wait, the count cap, expiry, removal and
+the post-removal denial.
+
+### Read-only preflight
+
+`blend-preflight.mjs` loads no key and sends nothing; every read is a separate RPC
+observation. `--check` inspects the pool and the funding route without a run; `--run-dir`
+also reads the run's account and payer and writes the plan. It refuses:
+
+- a different pool code, BLND token or backstop, or a pool that is not active;
+- a reserve list whose reserve 1 is not Circle USDC, a disabled reserve, a full supply cap or a
+  reserve at its maximum utilization;
+- a missing, zero or expired emission on ID 3, or one that expires within two hours (the run
+  window);
+- an expected owner claim under 10 BLND base units: 12 ledgers at an assumed 5 seconds each,
+  at the current emission rate and supply with this position added;
+- a backstop BLND allowance to the pool smaller than two such claims;
+- a changed Soroswap router or factory code, another native-XLM → USDC pair, empty reserves or a
+  quote for 200 XLM below the 10 USDC supply amount;
+- an account that already has a Blend position, or a payer that cannot fund the swap.
+
+These are fixed controlled-test values, not a yield, price or slippage model.
 
 What is missing is the position. A claim pays only on a position in an emitting reserve, and the
-harness does not yet open one: native-XLM collateral plus a small borrow of a reserve with an
-active emission schedule, sized from live reserve, oracle and health data, with repayment and
-withdrawal while the keys exist. `OZPB_HARNESS_WALKTHROUGH=blend` therefore refuses with that
-reason. A zero-reward claim or a mocked pool is not a substitute.
+harness does not yet open one, so `OZPB_HARNESS_WALKTHROUGH=blend` still refuses. A zero-reward
+claim or a mocked pool is not a substitute.
 
 ## Evidence
 

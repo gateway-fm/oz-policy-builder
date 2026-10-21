@@ -7,7 +7,7 @@ const account = StrKey.encodeContract(Buffer.alloc(32, 8));
 const other = StrKey.encodeContract(Buffer.alloc(32, 9));
 const A = (a) => new Address(a).toScVal();
 const I = (n) => xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: BigInt(n) }));
-const pool = 'CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF';
+const pool = 'CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW';
 const router = 'CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD';
 const native = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC';
 const usdc = 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F';
@@ -31,7 +31,7 @@ function entry(plan, root = protocolInvocation(plan)) {
 }
 for (const plan of [claim, swap]) {
   test(`${plan.kind} preserves the exact public protocol invocation through wire encoding`, () => {
-    const wanted = plan === claim ? expected(pool, 'claim', [A(account), xdr.ScVal.scvVec([xdr.ScVal.scvU32(6)]), A(account)])
+    const wanted = plan === claim ? expected(pool, 'claim', [A(account), xdr.ScVal.scvVec([xdr.ScVal.scvU32(3)]), A(account)])
       : expected(router, 'swap_exact_tokens_for_tokens', [I(1000000), I(100000), xdr.ScVal.scvVec([A(native), A(usdc)]),
         A(account), xdr.ScVal.scvU64(1_800_000_000n)], [expected(native, 'transfer', [A(account), A(pair), I(1000000)])]);
     assert.deepEqual(Buffer.from(protocolInvocation(plan).toXDR()), Buffer.from(wanted.toXDR()));

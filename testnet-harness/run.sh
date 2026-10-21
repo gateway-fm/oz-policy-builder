@@ -47,8 +47,8 @@ case "$WALKTHROUGH" in
         [ "${OZPB_HARNESS_CONFIRM:-}" = operator ] || { echo "soroswap needs OZPB_HARNESS_CONFIRM=operator"; exit 1; }
         ;;
     blend)
-        echo "blend is not runnable yet: the claim needs a bounded Blend position (native-XLM collateral plus a"
-        echo "small borrow of an emitting reserve) and its repayment, which this harness does not create."
+        echo "blend is not runnable yet: the claim needs a bounded Blend position (a USDC supply in the pinned"
+        echo "pool) and its withdrawal, which this harness does not create yet."
         echo "See docs/WALKTHROUGH-PROTOCOLS.md."
         exit 1 ;;
     *) echo "OZPB_HARNESS_WALKTHROUGH is native, subscription or soroswap"; exit 1 ;;

@@ -3,7 +3,7 @@
 // longer than the call that signs with it.
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import {
-  Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
+  Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
 } from '@stellar/stellar-sdk';
 
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
@@ -58,6 +58,14 @@ export async function fund(address) {
 
 export async function latestLedger() {
   return (await server.getLatestLedger()).sequence;
+}
+
+/** The latest ledger and the close time (Unix seconds) the RPC reports for it. */
+export async function latestLedgerClose() {
+  const latest = await server.getLatestLedger();
+  const closeTime = Number(latest.closeTime);
+  if (!Number.isSafeInteger(closeTime) || closeTime <= 0) throw new Error('RPC latest ledger lacks a valid close time');
+  return { ledger: readLedger(latest.sequence), close_time: closeTime };
 }
 
 /** Fixed total transaction fee, including Soroban resources: one testnet XLM. */
@@ -212,6 +220,19 @@ export async function viewCallObservation(payer, contract, fn, fnArgs = []) {
   return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
 }
 
+// A syntactically valid source that need not exist: simulation reads no account entry for it.
+const READ_ONLY_SOURCE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+/** A read-only call simulated without any harness account or key; nothing is signed or sent. */
+export async function readOnlyView(contract, fn, fnArgs = []) {
+  const tx = new TransactionBuilder(new Account(READ_ONLY_SOURCE, '0'), { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
+    .setTimeout(60).build();
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
+  return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
+}
+
 /** The wasm hash a contract instance runs, as the network reports it. */
 export async function contractCodeHash(contractId) {
   return (await contractCodeObservation(contractId)).value;
@@ -219,6 +240,12 @@ export async function contractCodeHash(contractId) {
 
 /** Retain the ledger reported by this instance-entry read. */
 export async function contractCodeObservation(contractId) {
+  const { value, ledger } = await contractInstanceObservation(contractId);
+  return { value, ledger };
+}
+
+/** The instance's code hash and its instance storage entries, from one checked entry read. */
+export async function contractInstanceObservation(contractId) {
   const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
     contract: new Address(contractId).toScAddress(),
     key: xdr.ScVal.scvLedgerKeyContractInstance(),
@@ -240,7 +267,8 @@ export async function contractCodeObservation(contractId) {
   }
   const exec = data.val.instance.executable;
   if (exec.type !== 'contractExecutableWasm') throw new Error(`${contractId} is not a wasm contract (${exec.type})`);
-  return { value: Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex'), ledger };
+  return { value: Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex'), ledger,
+    storage: data.val.instance.storage ?? [] };
 }
 
 export const contractIdOf = (scv) => {
