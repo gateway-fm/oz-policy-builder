@@ -144,6 +144,24 @@ export class WalletToolchain {
       '--rpc-sources', join(this.#root, 'rpc-sources.json')]);
   }
 
+  /**
+   * CLI preparation for one retained artifact and its binding request. The fresh nonce and
+   * artifact claims come only from this process; the returned request is the native job's input.
+   */
+  async prepareDryRun({ artifactId, candidate, candidateContextRuleId }) {
+    const held = this.artifact(artifactId);
+    if (!integer(candidateContextRuleId, 0, 0xffffffff) || candidate?.spec !== held.response.spec || candidate.rule_index !== 0) refuse();
+    const files = Object.fromEntries(FILES.filter((name) => name !== 'Cargo.lock').map((name) => [name, held.response.files[name]]));
+    const request = Object.freeze({ candidate, artifact: { spec: held.response.spec, rule_index: 0, claimed_generated_files: files,
+      claimed_wasm_base64: held.wasmBase64, claimed_build_manifest: held.response.buildManifest },
+    candidate_context_rule_id: candidateContextRuleId, run_nonce: randomBytes(32).toString('hex') });
+    const directory = this.#directory();
+    save(join(directory, 'request.json'), requestText(request));
+    const output = await this.#call(directory, 'prepare-dry-run', ['--request', join(directory, 'request.json'), ...this.#trustArgs,
+      '--rpc-sources', join(this.#root, 'rpc-sources.json')]);
+    return { request, output };
+  }
+
   bindingRequest(artifactId, policyAddress, resolutionReference) {
     const { response: artifact } = this.artifact(artifactId);
     if (!StrKey.isValidContract(policyAddress) || policyAddress === artifact.spec.smart_account.address

@@ -11,13 +11,14 @@ const copy = (value) => {
   return freeze(result);
 };
 const sameWallet = (a, b) => ['contractId', 'credentialId', 'publicKey', 'verifier'].every((key) => a?.[key] === b?.[key]);
+const LAYERS = ['reference', 'account_wasm', 'captured_target', 'live_enforcement'];
 
 /** The route supplies the real validators; only serialized XDR crosses SDK versions. */
 export class WalletController {
   #request; #validators; #sign; #origin; #pins; #notify; #busy = false;
   #state = copy({ status: null, wallet: null, record: null, artifact: null, deployment: null,
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
-    sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, busy: false });
+    sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {} }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
     this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange;
@@ -182,6 +183,30 @@ export class WalletController {
         || result.intent.policies[0].address !== deployment.policyAddress) throw refused();
       const approval = this.#validators.reviewIntent(result);
       this.#set({ review: { ...result, approval } });
+    });
+  }
+  /** A backend-held automation delegate for local execution only; it never replaces the owner passkey. */
+  async createDelegate() {
+    return this.#act(async () => {
+      this.#capability('accountCheck');
+      const result = await this.#request('create-delegate', {});
+      if (!HASH.test(result?.capabilityId) || !/^G[A-Z2-7]{55}$/.test(result.address ?? '')) throw refused();
+      this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address } });
+    });
+  }
+  async checkAccount() {
+    return this.#act(async () => {
+      this.#capability('accountCheck');
+      const { review, delegate, artifact, deployment } = this.#state;
+      const signers = artifact?.spec?.rules?.[0]?.authorization?.signers;
+      if (!review || !delegate || !deployment || signers?.length !== 1 || signers[0].delegated?.address !== delegate.address) throw refused();
+      const result = await this.#request('check-account', { reviewId: review.reviewId, capabilityId: delegate.capabilityId });
+      const verification = result?.verification;
+      if (result?.reviewId !== review.reviewId || !verification || verification.specHash !== artifact.specHash
+        || verification.wasmHash !== artifact.wasmHash || verification.bindingSetHash !== deployment.bindingSetHash
+        || !Array.isArray(verification.layers) || verification.layers.length !== LAYERS.length
+        || verification.layers.some((layer, index) => layer?.layer !== LAYERS[index])) throw refused();
+      this.#set({ review: { ...review, verification } });
     });
   }
   async install() {

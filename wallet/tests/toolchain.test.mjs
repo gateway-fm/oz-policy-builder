@@ -133,3 +133,39 @@ test('bad caller identifiers and unbounded decisions never become process argume
   }
   assert.equal(calls.length, 1);
 });
+
+test('dry-run preparation sends retained artifact claims, a fresh nonce and the exact signed registry bytes', async (t) => {
+  const account = fixture().wallet.contractId;
+  const delegate = Keypair.random().publicKey();
+  const generated = generatedPipeline(account, delegate);
+  const prepared = { schema: 'ozpb:dry-run:v1' };
+  const { toolchain, calls, root } = setup(t, undefined, async (args) => args[0] === 'prepare-dry-run' ? prepared : generated(args));
+  const recorded = await toolchain.record({ transactionHash: '2'.repeat(64), accountAddress: account });
+  const artifact = await toolchain.generate({ recordId: recorded.recordId, delegateAddress: delegate,
+    validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101 });
+  const policy = fixture().expected.boundPolicies[0];
+  const candidate = toolchain.bindingRequest(artifact.artifactId, policy, 'wallet-deployment:test');
+  const first = await toolchain.prepareDryRun({ artifactId: artifact.artifactId, candidate, candidateContextRuleId: 4 });
+  const second = await toolchain.prepareDryRun({ artifactId: artifact.artifactId, candidate, candidateContextRuleId: 4 });
+  assert.deepEqual(first.output, prepared);
+  const call = calls.at(-2);
+  assert.deepEqual(call.args.slice(0, 2), ['prepare-dry-run', '--request']);
+  assert.deepEqual(call.args.slice(3), ['--registry-roots', join(toolchain.sessionRoot, 'registry-roots.json'),
+    '--registry-min-version', '3', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
+  assert.ok(call.args[2].startsWith(root));
+  const sent = readFileSync(call.args[2], 'utf8');
+  assert.ok(sent.includes('"signed_registry_snapshot":{"valid_until":9223372036854775807}'));
+  const request = JSON.parse(sent.replace('9223372036854775807', '0'));
+  assert.deepEqual(Object.keys(request), ['candidate', 'artifact', 'candidate_context_rule_id', 'run_nonce']);
+  assert.equal(request.candidate_context_rule_id, 4);
+  assert.deepEqual(Object.keys(request.artifact.claimed_generated_files).sort(),
+    ['Cargo.toml', 'rust-toolchain.toml', 'rustfmt.toml', 'src/contract.rs', 'src/lib.rs']);
+  assert.equal(request.artifact.claimed_wasm_base64, toolchain.artifact(artifact.artifactId).wasmBase64);
+  assert.deepEqual(request.artifact.claimed_build_manifest, artifact.buildManifest);
+  assert.deepEqual(request.artifact.spec, artifact.spec);
+  assert.match(first.request.run_nonce, /^[0-9a-f]{64}$/);
+  assert.notEqual(first.request.run_nonce, second.request.run_nonce);
+  for (const ruleId of [-1, 4294967296, 1.5, '4']) {
+    await assert.rejects(() => toolchain.prepareDryRun({ artifactId: artifact.artifactId, candidate, candidateContextRuleId: ruleId }), /refused/);
+  }
+});

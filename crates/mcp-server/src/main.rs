@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 mod authority;
 mod http;
+mod policy_check;
 mod preflight;
 mod verification;
 
@@ -105,7 +106,8 @@ impl PolicyBuilderServer {
             tool_router: Self::tool_router()
                 + Self::verification_tool_router()
                 + Self::preflight_tool_router()
-                + Self::authority_tool_router(),
+                + Self::authority_tool_router()
+                + Self::policy_check_tool_router(),
             authority_slots: rpc_policy
                 .as_ref()
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1))),
@@ -341,8 +343,11 @@ impl ServerHandler for PolicyBuilderServer {
              advisory and never says an account is safe — the user's wallet decides. \
              prepare_install_intent runs that check itself and returns the exact \
              add_context_rule arguments only when nothing is refused and nothing is \
-             unresolved. Pure tools are deterministic; record_transaction, record_simulation, \
-             preflight_transaction, check_policy_call_surface and prepare_install_intent read \
+             unresolved. check_against_policy predicts one recognized installed rule, \
+             conditional on candidate identities authenticating later; repeat the check and \
+             enforce-simulate the actual authorization before signing. Pure tools are \
+             deterministic; record_transaction, record_simulation, preflight_transaction, \
+             check_policy_call_surface, prepare_install_intent and check_against_policy read \
              Stellar RPC, and their results depend on ledger state. Fail-closed: this \
              server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
              Signed authorization entries given to preflight_transaction stay live \

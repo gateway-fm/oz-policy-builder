@@ -26,7 +26,11 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod dry_run;
+pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
+#[cfg(test)]
+mod dry_run_tests;
 pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{
@@ -43,6 +47,10 @@ mod install_assembly;
 pub use install_assembly::{install_assembly_output, install_assembly_request};
 mod preflight;
 pub use preflight::preflight_transaction_output;
+mod policy_check;
+pub use policy_check::{
+    finish_policy_check, plan_policy_check_read, policy_check_unavailable, PolicyCheckReadPlan,
+};
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
