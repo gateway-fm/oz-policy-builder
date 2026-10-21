@@ -8,10 +8,11 @@ one invocation installs the candidate rule through the account's own `add_contex
 makes one native-asset transfer under it. An enforce-mode simulation of that invocation runs the
 generated policy on live state, and nothing is installed because nothing is submitted.
 
-This package is the helper contract and its real-Wasm host tests only. **The `live_enforcement`
-layer remains `unavailable`.** The helper is not deployed on any network, no live simulation has
-been run with it, and the wallet-side preparation, consent and result validation it needs are
-not built yet (see [Outstanding](#outstanding)).
+This package is the helper contract, its real-Wasm host tests, and a testnet deployment probed
+by the harness. **The `live_enforcement` layer remains `unavailable`.** The helper is deployed on
+testnet and the harness has simulated one permit and one denial through it with automation keys
+([Testnet deployment](#testnet-deployment)), but the wallet-side preparation, consent and result
+validation the layer needs are not built yet (see [Outstanding](#outstanding)).
 
 ## What the helper does
 
@@ -172,9 +173,90 @@ wallet must enforce the amount, recipient and a short expiry before it signs, an
 to a live case as consent to that installation and that transfer actually happening, for as long
 as the signatures are valid. The consent screen has to say so.
 
+## Testnet deployment
+
+[`testnet-harness/scripts/deploy-live-helper.mjs`](../testnet-harness/scripts/deploy-live-helper.mjs)
+deploys the helper on testnet and probes it once each way. It pins the testnet passphrase and
+refuses an RPC serving any other network before it builds, funds or signs anything. It:
+
+1. builds the helper with `stellar contract build --locked` and refuses unless the Wasm's SHA-256
+   is `EXPECTED_HELPER_HASH` from the host tests. Reproducing it needs the pinned rustc and
+   stellar-cli on the aarch64-apple-darwin host the hash was recorded on;
+2. runs the harness's own steps, as `run.sh` does: setup with Friendbot keys and an ed25519 owner,
+   a real owner transfer of 1,000,000 stroops under rule 0, and record → synthesize → generate →
+   verify. The candidate is a generated policy capped at one call, for exactly that transfer by
+   a separate delegate;
+3. uploads and deploys the candidate policy and the helper, refusing unless the network stores
+   the reviewed bytes and each instance reads back with that code hash;
+4. builds the four authorization entries itself, never from a recording simulation, with
+   signatures that expire 12 ledgers later, and runs one enforce-mode simulation of
+   `install_and_transfer` per case. Nothing is submitted for either case. The owner's and the
+   delegate's `__check_auth` entries carry classic (V1) address credentials, as elsewhere in the
+   harness, where the host tests sign all four entries as `AddressV2`;
+5. requires the permit case to return rule 1, to have the account store that rule, to change no
+   balance except the account's (down exactly 1,000,000 stroops) and the recipient's (up by the
+   same), and to create the candidate's installation with its call counter used once. The denial
+   case must fail with `NoTupleMatched` (6) raised by the candidate policy's contract ID inside the
+   account's failed authentication. A helper refusal (7001–7009) or an account error fails the
+   case; neither counts as a denial;
+6. waits until every case signature has expired, then reads back that the account's balance is
+   unchanged and that the candidate reports no installation;
+7. only then writes public addresses, hashes, ledgers and outcomes, never keys or signed entries,
+   to `docs/evidence/atomic-live-helper-testnet-<date>.json`. It deletes the throwaway keys on
+   success, on failure and on SIGINT, SIGTERM or SIGHUP.
+
+The [21 October 2026 run](evidence/atomic-live-helper-testnet-2026-10-21.json) deployed the
+helper as `CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V`, which reads back with
+`EXPECTED_HELPER_HASH`. Both cases were simulated at ledger 5316206 against the candidate
+`CD6RHN5HQ6ZRZ3DTFCNPLDJWPDZXOSWX7TDOYHIWDDUTA6Y5IOVKZQWS`, on the throwaway account
+`CDQLZKNQHQGHZPIS4GATWI2XTLQVEVF47IETQQMWNV3QRGKBA6KD2L24`:
+
+- the permit case returned rule 1, moved exactly 1,000,000 stroops from the account to the
+  recipient, and used the candidate's one call;
+- the adjacent case failed with `Error(Auth, InvalidAction)`. The candidate policy's own contract
+  ID raised `NoTupleMatched` (6), inside the account's failed authentication. The policy runs
+  below the helper (helper → asset `transfer` → account `__check_auth` → policy `enforce`), and
+  attribution by contract ID survives that nesting, as it does at top level.
+
+After the last case signature expired at ledger 5316218, the account's balance was unchanged and
+the candidate reported no installation. When deployed, the helper's instance entry was live until
+ledger 5437165 and its code entry until ledger 5437164, about a week of testnet ledgers. After
+that the helper is archived and the script has to be run again. The evidence's `script_sha256`
+is the script as committed with it; the script was later restructured so that its gates and key
+handling are unit-tested, without changing what a run checks.
+
+This is a harness probe, not the live layer. The keys are throwaway automation keys held by the
+script, and no owner saw or approved anything. Each outcome describes testnet state at its
+simulation ledger. The signatures were real until they expired, as described
+[above](#signatures-are-real-and-usable-without-the-helper). They went to the testnet RPC endpoint
+inside the simulation request, and the script neither prints nor stores them.
+
+### Redeploying after a testnet reset
+
+A testnet reset removes the helper, the candidate, the pinned account code and every account
+built on it. To deploy again:
+
+1. Upload the pinned account Wasm, which `setup.mjs` deploys from its hash but never uploads.
+   `OZPB_VERIFIED_ACCOUNT_WASM_OUT=<file> bash scripts/verify-pinned-upstream.sh` rebuilds it and
+   checks the bytes against the pin; then
+   `stellar contract upload --wasm <file> --source <funded testnet key> --network testnet`.
+2. Run, from the repository root on the pinned build host:
+
+   ```
+   npm ci --prefix testnet-harness/scripts
+   OZPB_BIN=<built ozpb> node testnet-harness/scripts/deploy-live-helper.mjs
+   ```
+
+   It uploads the helper and a fresh candidate itself and needs nothing else from before the reset.
+3. Commit the new evidence file and replace the contract ID above; the old one is gone.
+
+The script always deploys a new instance. It never restores an archived one, and nothing else
+in this repository extends the deployment's lifetime. Once the helper has been archived, step 2
+deploys a new instance; whether its archived code entry has to be restored first has not been
+tried.
+
 ## Outstanding
 
-- Deploying the helper on testnet and recognizing it by the reviewed hash.
 - The wallet-side preparation, consent, signing, enforce-mode simulation and result validation,
   with its interface agreed before implementation.
-- A live run of both cases.
+- A live run of both cases through the wallet, with the owner's consent.
