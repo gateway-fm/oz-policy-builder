@@ -29,7 +29,7 @@ import { contractCall, entryAddress, i128, policyDenial, signForSmartAccount } f
 import { ownerSigner } from './owner.mjs';
 import {
   NETWORK_PASSPHRASE, RPC_URL, SimulationError, args, assertTestnet, latestLedger, loadKey, log, readJson,
-  recordAuth, submit, writeJson,
+  enforceSimulation, recordAuth, submit, writeJson,
 } from './rpc.mjs';
 
 const opts = args();
@@ -40,15 +40,19 @@ const ruleId = Number(opts.rule ?? (signerName === 'owner' ? 0 : run.rule_id));
 if (!Number.isInteger(ruleId)) throw new Error('no rule id: pass --rule, or run install.mjs first');
 const amount = BigInt(opts.amount);
 const to = opts.to;
-const expect = opts.expect;
+const wrongChallenge = opts['wrong-challenge'] === 'yes';
+const expect = opts.expect ?? (wrongChallenge ? 'deny:3114' : undefined);
+if (wrongChallenge && expect !== 'deny:3114') throw new Error('--wrong-challenge requires an expected verifier denial');
 const postRevocation = expect === 'deny-account:3000';
+const negativeControl = postRevocation || /^deny:[0-9]+$/.test(expect ?? '');
+if (expect !== undefined && expect !== 'permit' && !negativeControl) throw new Error('invalid --expect');
+if (negativeControl && opts.bundle) throw new Error('negative controls cannot export an executed transaction bundle');
 if (postRevocation && (signerName !== 'delegate' || !run.lifecycle?.removals?.some((r) =>
   r.rule_id === ruleId && r.event === 'verified' && r.rule_readback === 'absent'))) {
   throw new Error('account-denial control requires the delegate and a confirmed removal of this rule');
 }
 
 const payer = loadKey('payer');
-const wrongChallenge = opts['wrong-challenge'] === 'yes';
 if (opts['wrong-challenge'] !== undefined && (!wrongChallenge || signerName !== 'owner')) {
   throw new Error('--wrong-challenge yes applies only to --signer owner');
 }
@@ -78,17 +82,27 @@ const { accountEntry, delegateEntry } = await signForSmartAccount({
 // A Delegated signer's proof is a second entry; an External signer's is inside the account's.
 const op = transfer([accountEntry, delegateEntry].filter(Boolean));
 
-let outcome;
+let outcome; let simulationLedger;
 try {
-  const sent = await submit(payer, op, { stage: label });
-  outcome = { result: 'permit', hash: sent.hash };
-  log(`PERMITTED  ${label}  tx ${sent.hash}`);
-  if (opts.bundle) await writeImportBundle(sent.hash, opts.bundle);
+  if (negativeControl) {
+    const observed = await enforceSimulation(payer, op);
+    simulationLedger = observed.ledger;
+    if (observed.result === 'deny') throw new SimulationError(label, observed.error);
+    if (observed.result !== 'permit') throw new Error('unexpected enforcing simulation result');
+    outcome = { result: 'permit', observation: 'enforcing_simulation', ledger: simulationLedger };
+    log(`UNEXPECTED SIMULATION PERMIT  ${label}; no fee transaction submitted`);
+  } else {
+    const sent = await submit(payer, op, { stage: label });
+    outcome = { result: 'permit', hash: sent.hash, ...(sent.receipt?.ledger ? { ledger: sent.receipt.ledger } : {}) };
+    log(`PERMITTED  ${label}  tx ${sent.hash}`);
+    if (opts.bundle) await writeImportBundle(sent.hash, opts.bundle);
+  }
 } catch (e) {
   if (!(e instanceof SimulationError)) throw e;
   const code = enforcer ? policyDenial(e.error, run.account, enforcer) : null;
   const who = wrongChallenge ? 'verifier' : postRevocation ? 'account' : 'policy';
-  outcome = { result: 'deny', enforcer: enforcer ?? null, code, host: e.error.split('\n')[0] };
+  outcome = { result: 'deny', enforcer: enforcer ?? null, code, host: e.error.split('\n')[0],
+    ...(simulationLedger === undefined ? {} : { ledger: simulationLedger }) };
   log(`DENIED     ${label}  ${who} error ${code === null ? `(none: not raised by the ${who})` : `#${code}`}`);
   log(`           ${outcome.host}`);
 }

@@ -135,7 +135,7 @@ function checkAssembly(assembled, expectedEnvelope) {
  * what makes a denial observable without spending a fee: the enforcing simulation runs
  * `__check_auth` and the installed policies exactly as the network would.
  */
-export async function submit(payer, operation, { stage = 'submit' } = {}) {
+export async function submit(payer, operation, { stage = 'submit', onSubmitting } = {}) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
@@ -146,12 +146,21 @@ export async function submit(payer, operation, { stage = 'submit' } = {}) {
   const assembled = rpc.assembleTransaction(tx, sim).build();
   checkAssembly(assembled, expectedEnvelope);
   assembled.sign(payer);
+  const expectedHash = Buffer.from(assembled.hash()).toString('hex');
+  // Persist a removal identity before the first network write. A failed checkpoint prevents send;
+  // a later transport/confirmation failure keeps the identity available for manual inspection.
+  if (onSubmitting) await onSubmitting(expectedHash);
+  log(`transaction prepared ${expectedHash}; expires ${tx.timeBounds.maxTime}`);
   const sent = await server.sendTransaction(assembled);
+  const status = ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER', 'ERROR'].includes(sent.status) ? sent.status : 'UNKNOWN';
+  log(`transaction send ${expectedHash}; status ${status}`);
   if (sent.status === 'ERROR') {
     throw new Error(`${stage}: sendTransaction ERROR ${sent.errorResult?.toXDR?.('base64') ?? ''}`);
   }
-  const expectedHash = Buffer.from(assembled.hash()).toString('hex');
   if (sent.hash !== expectedHash) throw new Error(`${stage}: RPC returned another transaction identity`);
+  if (!['PENDING', 'DUPLICATE'].includes(sent.status)) {
+    throw new Error(`${stage}: transaction ${expectedHash} was not accepted (${status}); no automatic retry`);
+  }
   const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
@@ -168,6 +177,18 @@ export async function recordAuth(payer, operation, stage) {
   const sim = await server.simulateTransaction(tx, undefined, 'record');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(`${stage} (recording)`, sim.error);
   return sim.result?.auth ?? [];
+}
+
+/** Enforce supplied authorization without signing or submitting the fee transaction. */
+export async function enforceSimulation(payer, operation) {
+  const source = await server.getAccount(payer.publicKey());
+  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(operation).setTimeout(60).build();
+  const simulated = await server.simulateTransaction(tx, undefined, 'enforce');
+  const ledger = readLedger(simulated.latestLedger);
+  return rpc.Api.isSimulationError(simulated)
+    ? { result: 'deny', ledger, error: String(simulated.error) }
+    : { result: 'permit', ledger };
 }
 
 /** Simulate a read-only call and return its value as an ScVal. Nothing is signed or sent. */
