@@ -29,3 +29,14 @@ test('wallet CLI runner drops inherited credentials and accepts only operator bu
     assert.equal(observed.CARGO_NET_OFFLINE, 'true');
   } finally { delete process.env.OZPB_WALLET_CANARY; }
 });
+
+test('wallet CLI runner stops its process group as soon as the caller aborts', async () => {
+  const controller = new AbortController();
+  const before = performance.now();
+  const run = runTool(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], { signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+  await assert.rejects(run, /tool failed/);
+  assert.ok(performance.now() - before < 5000);
+  await assert.rejects(runTool(process.execPath, ['-e', ''], { signal: AbortSignal.abort() }), /tool failed/,
+    'an already aborted caller starts nothing');
+});

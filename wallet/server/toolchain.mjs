@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { StrKey } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
@@ -37,9 +37,10 @@ export class WalletToolchain {
 
   #directory() { return mkdtempSync(join(this.#root, 'operation-')); }
   #get(map, id) { if (typeof id !== 'string' || !HASH.test(id) || !map.has(id)) refuse(); return map.get(id); }
-  async #call(directory, command, args, parser = parseJsonExact) {
+  async #call(directory, command, args, parser = parseJsonExact, signal = undefined, timeoutMs = undefined) {
     try {
-      const raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment });
+      const raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment,
+        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}) });
       if (typeof raw !== 'string' || Buffer.byteLength(raw) > 16 * 1024 * 1024) refuse();
       save(join(directory, `${command}.json`), raw);
       return parser(raw);
@@ -148,7 +149,7 @@ export class WalletToolchain {
    * CLI preparation for one retained artifact and its binding request. The fresh nonce and
    * artifact claims come only from this process; the returned request is the native job's input.
    */
-  async prepareDryRun({ artifactId, candidate, candidateContextRuleId }) {
+  async prepareDryRun({ artifactId, candidate, candidateContextRuleId, signal }) {
     const held = this.artifact(artifactId);
     if (!integer(candidateContextRuleId, 0, 0xffffffff) || candidate?.spec !== held.response.spec || candidate.rule_index !== 0) refuse();
     const files = Object.fromEntries(FILES.filter((name) => name !== 'Cargo.lock').map((name) => [name, held.response.files[name]]));
@@ -158,8 +159,29 @@ export class WalletToolchain {
     const directory = this.#directory();
     save(join(directory, 'request.json'), requestText(request));
     const output = await this.#call(directory, 'prepare-dry-run', ['--request', join(directory, 'request.json'), ...this.#trustArgs,
-      '--rpc-sources', join(this.#root, 'rpc-sources.json')]);
+      '--rpc-sources', join(this.#root, 'rpc-sources.json')], parseJsonExact, signal);
     return { request, output };
+  }
+
+  /**
+   * `capture-target` through the operator's `testnet` source for one unsigned envelope the
+   * backend built itself. The envelope is confidential input: it reaches the CLI only in a
+   * private request file. Neither it nor the capture is kept once the CLI exits, and no refusal
+   * repeats either; the worker evidence binds the capture by its hash.
+   */
+  async captureTarget(envelope, { signal } = {}) {
+    if (typeof envelope !== 'string' || envelope.length > 64 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope)) refuse();
+    const directory = this.#directory();
+    const request = join(directory, 'request.json');
+    try {
+      save(request, JSON.stringify({ network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope }));
+      // A read, not a build: bounded well below the build deadline so the whole check stays bounded.
+      return await this.#call(directory, 'capture-target', ['--request', request, '--rpc-sources', join(this.#root, 'rpc-sources.json')],
+        parseJsonExact, signal, 120_000);
+    } finally {
+      // The capture repeats the call (account, recipient, amount), so it is as confidential as the envelope.
+      rmSync(request, { force: true }); rmSync(join(directory, 'capture-target.json'), { force: true });
+    }
   }
 
   bindingRequest(artifactId, policyAddress, resolutionReference) {

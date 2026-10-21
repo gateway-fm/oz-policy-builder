@@ -13,9 +13,9 @@ migrate an existing wallet, or broaden account/verifier recognition.
 This integration supports recognized account creation, a fixed owner-authorized sample
 transfer from that new account, confirmed-transaction recording, artifact generation and
 reproduction, artifact deployment, live authority review and, when the operator configures
-the [native worker](NATIVE-EXECUTION.md), local account-Wasm execution of the reviewed grant.
-Policy installation, revocation and replacement remain disabled: the captured-target and
-behavioral live-enforcement layers are not yet connected. The signing validators below are
+the [native worker](NATIVE-EXECUTION.md), local account-Wasm and captured-target execution of
+the reviewed grant. Policy installation, revocation and replacement remain disabled: the
+behavioral live-enforcement layer is not yet connected. The signing validators below are
 tested foundations, not a completed installation or wallet acceptance claim.
 
 ## Apply to the supported upstream revision
@@ -90,8 +90,8 @@ an operator JSON file using absolute canonical paths:
 Set the minimum registry version to the operator's accepted rollback floor. Optional
 `stellarBinary`, `cargoHome`, `rustupHome`, and `buildCacheDir` fields select existing local
 toolchain paths; the cache directory also requires mode `0700`. Optional `nativeExecutable`
-names the operator-built `ozpb-execution-runtime` binary; without it the account-Wasm check is
-unavailable. The CLI and optional Stellar and native binaries must be executable regular files. Configuration, registry and executable paths cannot
+names the operator-built `ozpb-execution-runtime` binary; without it both local execution checks
+are unavailable. The CLI and optional Stellar and native binaries must be executable regular files. Configuration, registry and executable paths cannot
 be symlinks or writable by other users. Arbitrary environment overrides are refused, builds
 run offline, and HTTP requests cannot select these settings.
 
@@ -136,8 +136,9 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
 4. Refresh the live authority and exact installation grant. The browser independently checks
    the recognized owner rule, full credential identifier, policy address and retained bindings.
    The selected owner rule comes from that evidence; rule zero is not assumed.
-5. Optionally run the account-Wasm check described below. It signs nothing with the owner
-   passkey and does not change the installation gate's other required layers.
+5. Optionally run the local execution checks described below: account-Wasm, then captured
+   target. They sign nothing with the owner passkey and do not change the installation gate's
+   other required layers.
 6. Only when the required verification report is complete does the route enable owner signing.
    It checks the fresh unsigned envelope against the immutable display before asking Pollywallet
    for a passkey signature. It then independently checks the signed XDR, origin, challenge,
@@ -169,7 +170,10 @@ opaque capability ID; at most eight exist per backend, and they disappear when i
 that address as the grant's restricted delegate. The owner passkey never stands in for it, and
 a grant naming any other delegate address cannot run this check.
 
-`Run account-Wasm check` uses only state the backend retained for the reviewed deployment:
+`Run local execution checks` runs this layer and then the
+[captured-target layer](#captured-target-execution) from one CLI preparation, so both report the
+same run hash. The account-Wasm layer uses only state the backend retained for the reviewed
+deployment:
 
 1. `ozpb prepare-dry-run` binds the exact artifact claims, binding set, signed registry, the
    next context rule ID from the reviewed authority evidence and a fresh run nonce. Its run
@@ -198,12 +202,60 @@ ownership of the real wallet. Every other outcome carries no evidence:
   RPC read did not complete; the worker does not run.
 - `failed`: the preparation evidence, the worker or its report was refused.
 
-A new review starts again without account-Wasm evidence. A hung worker is stopped by its
-120-second deadline in each of its two runs; the backend serves no other request meanwhile.
+## Captured-target execution
 
-`bash scripts/test-wallet-native-execution.sh` runs this sequence against the actual CLI and
-worker with the runtime test's public delegate seed. Like the testnet harness, it needs
-`OZPB_REGISTRY_SNAPSHOT_ROOT` set to the root of `docs/examples/registry.signed.json`;
+The second layer runs the reviewed grant's exact call against target state the operator RPC
+reports now, through the worker's [captured-target mode](CAPTURED-TARGET-EXECUTION.md). It is
+supported for the grant this route generates from the fixed sample transfer: one rule whose only
+call is the testnet native SAC's `transfer(SELF, G recipient, exact amount)`.
+
+1. The backend builds an unsigned envelope for that call, sourced from its fee payer at the
+   current sequence, and runs `ozpb capture-target` through the operator RPC. The envelope is
+   confidential input: it reaches the CLI only in a private request file, and neither that file
+   nor the capture, which repeats the call, is kept once the CLI exits. The envelope is never
+   signed, journaled or submitted, and no response, worker job or evidence contains it.
+2. The capture is accepted only for this account's exact call on testnet, from the pinned
+   account code, with exactly the SAC instance, the sender's balance and the recipient account
+   as target entries and a header that hashes to itself and describes the captured ledger.
+3. The worker runs once with `--prepare-captured` on the same preparation, at the capture's
+   ledger and archival settings. The wallet checks that frame against the preparation, the offline
+   signing domain and its own `ozpb:v1:target-capture` hash of the capture, which the binding's
+   state hash, and so the signing domain, must also commit to. The job and suite hashes come from
+   that trusted local preparation, as for the account layer. The identical job then runs with
+   `--captured`; the wallet signs only the original and adjacent-amount cases.
+4. The report is accepted only after the wallet recomputes every case. The original must move
+   exactly the amount from the sender's SAC balance to the recipient, advance the call counter
+   from 0 to 1, create exactly the account's and the delegate's nonces and write nothing else. The
+   adjacent amount and the unsigned call must be refused by the generated policy, with codes 6
+   and 1 attributed to it, and leave state unchanged. No case may read a key outside the capture
+   or report an unexpected change. A refusal by the target itself fails the layer rather than
+   passing as a policy decision.
+
+A passing result marks only the `captured_target` layer. It is offline and counterfactual over
+`rpc_reported` state: it makes no owner-authority, fee, reserve or live-network claim. Every
+other outcome carries no evidence:
+
+- `unsupported`: the grant is not that single exact-amount native transfer, or its call cap is
+  above 512; nothing is captured.
+- `unavailable`: the next rule ID was not established; CLI preparation, the operator RPC, the
+  envelope or `capture-target` did not complete; the captured ledger is older than the backend's
+  read immediately before the capture or more than twelve ledgers newer; or the grant expires at
+  or before the captured ledger. The worker does not run. `capture-target` also refuses when the
+  record-mode simulation fails, for example on an insufficient balance; the CLI reports that
+  like an endpoint failure, so the wallet cannot attribute it to the candidate.
+- `failed`: the preparation evidence, a capture for another call, network or account code, the
+  worker or its report was refused.
+
+A new review starts again without local execution evidence. Each worker run has a 120-second
+deadline, and the backend serves one request at a time. If the browser disconnects during the
+checks, the backend kills the running CLI or worker process group, records no evidence for that
+attempt and accepts requests again.
+
+`bash scripts/test-wallet-native-execution.sh` runs both layers against the actual CLI and
+worker with the runtime test's public delegate seed. For the captured layer, the actual
+`capture-target` reads the [recorded testnet responses](../crates/source-rpc/tests/captured-testnet/target-capture/)
+through the wallet toolchain, served offline by a loopback endpoint. Like the testnet harness, the
+script needs `OZPB_REGISTRY_SNAPSHOT_ROOT` set to the root of `docs/examples/registry.signed.json`;
 `OZPB_ACCOUNT_WASM` may reuse a pinned account artifact.
 
 ## Report layers

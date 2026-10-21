@@ -116,7 +116,9 @@ transport's 30 s timeout. On an MCP server the 300 s deadline ends the wait, not
 hosted server's slot stays held until the read itself stops.
 
 Producing a capture does not run this layer. No CLI or MCP command runs it yet, and
-`prepare_dry_run` still reports `captured_target` as unavailable.
+`prepare_dry_run` still reports `captured_target` as unavailable. The local
+[Pollywallet backend](POLLYWALLET-INTEGRATION.md#captured-target-execution) runs it for a
+reviewed grant.
 
 ## Preparation
 
@@ -190,7 +192,9 @@ change-classification unit tests and argument refusal. `cargo test -p ozpb-sourc
 the recorded testnet capture and the mocked refusal cases, including endpoint replies that quote
 the envelope. `cargo test -p ozpb-cli --test capture_target_cli` and
 `cargo test -p ozpb-mcp-server --test mcp_stdio_capture` replay the same recorded responses over
-a local HTTP endpoint through each shell's operator source configuration. `bash scripts/test-captured-target.sh`
+a local HTTP endpoint through each shell's operator source configuration, and
+`bash scripts/test-wallet-native-execution.sh` drives the wallet backend's checks of the capture
+and of both worker modes with them. `bash scripts/test-captured-target.sh`
 generates four real policies and requires every actual-Wasm test to run and pass: the fixture
 capture (a real SDK-29 SAC deployment built locally), the same with an uncapped rule, a capture
 whose sender cannot cover the amount, a rule paying the delegate itself (refused as overlapping

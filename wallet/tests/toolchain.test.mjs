@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
@@ -23,8 +23,8 @@ function setup(t, change = () => {}, pipeline) {
   change(record);
   const calls = [];
   const raw = JSON.stringify(record).replace('"nonce":1', '"nonce":9223372036854775807');
-  const runner = async (executable, args) => {
-    calls.push({ executable, args });
+  const runner = async (executable, args, options = {}) => {
+    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}) });
     return args[0] === 'record' ? raw : JSON.stringify(await pipeline(args));
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root,
@@ -168,4 +168,33 @@ test('dry-run preparation sends retained artifact claims, a fresh nonce and the 
   for (const ruleId of [-1, 4294967296, 1.5, '4']) {
     await assert.rejects(() => toolchain.prepareDryRun({ artifactId: artifact.artifactId, candidate, candidateContextRuleId: ruleId }), /refused/);
   }
+});
+
+test('target capture sends the envelope only in a private request file that does not outlive the CLI call', async (t) => {
+  const envelope = 'AAAAAgAAAAD' + 'CONFIDENTIAL-ENVELOPE'.replaceAll('-', 'A');
+  const capture = { schema: 1, provenance: 'rpc_reported', observed_ledger: 4294967295 };
+  const seen = [];
+  const { toolchain, calls, root } = setup(t, undefined, async (args) => {
+    const [, , path] = args;
+    seen.push({ path, text: readFileSync(path, 'utf8'), mode: statSync(path).mode & 0o777 });
+    if (seen.length === 2) throw new Error(`endpoint quoted ${envelope}`);
+    return capture;
+  });
+  const controller = new AbortController();
+  assert.deepEqual(await toolchain.captureTarget(envelope, { signal: controller.signal }), capture);
+  const call = calls.at(-1);
+  assert.deepEqual([call.args[0], call.args[1], ...call.args.slice(3)],
+    ['capture-target', '--request', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
+  assert.equal(call.signal, controller.signal, 'a client disconnect reaches the CLI process');
+  assert.ok(seen[0].path.startsWith(root));
+  assert.equal(seen[0].mode, 0o600);
+  assert.deepEqual(JSON.parse(seen[0].text), { network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope });
+  assert.equal(existsSync(seen[0].path), false, 'the envelope is not retained after the capture');
+  assert.equal(existsSync(join(dirname(seen[0].path), 'capture-target.json')), false, 'nor is the capture, which repeats the call');
+  await assert.rejects(() => toolchain.captureTarget(envelope), (error) => /refused/.test(error.message) && !error.message.includes(envelope));
+  assert.equal(existsSync(seen[1].path), false, 'nor after a refused capture');
+  for (const bad of ['', 'not base64!', 7, 'A'.repeat(2 * 1024 * 1024)]) {
+    await assert.rejects(() => toolchain.captureTarget(bad), /refused/);
+  }
+  assert.equal(seen.length, 2, 'a malformed envelope never reaches the CLI');
 });

@@ -279,15 +279,15 @@ function PolicyBuilder() {
         <VerificationLayers verification={state?.review?.verification} />
         {state?.status?.capabilities.accountCheck && <button className={button}
           disabled={busy || !state?.review || !state?.delegate}
-          onClick={() => void run((value) => value.checkAccount())}>Run account-Wasm check with the local delegate</button>}
+          onClick={() => void run((value) => value.checkAccount())}>Run local execution checks with the local delegate</button>}
         <p className="text-sm text-slate-300">Local verification: {gate.localReady ? "three required layers passed" : "incomplete"}.
           {" "}Full acceptance: {gate.acceptanceReady ? "all four required layers passed" : "incomplete; signing is disabled"}.</p>
         <button className={button} disabled={busy || !state?.review || !gate.acceptanceReady || !state?.status?.capabilities.install}
           onClick={() => void run((value) => value.install())}>Approve exact grant with owner passkey and install</button>
         <p className="text-sm text-slate-400">A refreshed unsigned envelope is checked against this review before the authenticator prompt.
           Missing live-enforcement evidence remains unavailable. A virtual authenticator does not establish human approval.
-          The account-Wasm check runs in fresh synthetic local state with an offline signing domain; it is not captured-state,
-          live-enforcement or installation evidence.</p>
+          The local checks run with an offline signing domain: account-Wasm in fresh synthetic state, then the exact transfer
+          against target state the operator RPC reports now. Neither is live-enforcement or installation evidence.</p>
       </section>
       <Evidence title="Transaction receipts and installation result" value={{ receipt: state?.receipt, installation: state?.installation }} open />
       <Evidence title="Backend capabilities, recognized code and verification limitations" value={state?.status} />
