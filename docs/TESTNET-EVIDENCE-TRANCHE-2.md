@@ -7,8 +7,8 @@ remain in [TESTNET-EVIDENCE.md](TESTNET-EVIDENCE.md), sections 1–3.
 
 The [testnet harness](../testnet-harness/README.md) is the executable source for the install
 flow. Its run records are local observations, not authenticated ledger proofs. The
-[scope map](SCOPE.md) names the remaining requirements. The 15 October observations predate later installer fixes; section 8 records a separate
-20 October run against the reviewed subscription harness.
+[scope map](SCOPE.md) names the remaining requirements. The 15 October observations predate
+later installer fixes; sections 8 and 9 record the controlled 20 October W2 and W3 runs.
 
 ## 4. Pinned account, passkey owner, and generated policy
 
@@ -73,10 +73,15 @@ are distinct evidence claims. A successful first three does not establish the fo
 
 ## 6. Reference evaluation and MCP
 
-The current CLI and MCP expose `reference-suite` / `reference_suite` for layer-1 evaluation
-and `verify` for artifact reproduction. A reference result does not establish target
-execution, live preflight, or successful installation. An older observation labeled
-`dry_run` cannot be used as evidence for an operation that the current server does not expose.
+The current CLI and MCP expose `reference-suite` / `reference_suite` for layer-1 evaluation,
+`verify` for artifact reproduction, and `prepare-dry-run` / `prepare_dry_run`, which binds
+candidate evidence and reports the account-Wasm, captured-target and live layers as
+unavailable. Both also expose recording, synthesis, generation, exact-envelope preflight,
+installed-rule prediction, the authority check, install intents and unsigned install
+assembly; [DEVELOPERS.md](DEVELOPERS.md#mcp-server) lists the MCP tools. A reference result
+does not establish target execution, live preflight, or successful installation. An older
+observation labeled `dry_run` cannot be used as evidence for an operation that the current
+server does not expose.
 
 Run the existing MCP verification integration tests with:
 
@@ -84,8 +89,9 @@ Run the existing MCP verification integration tests with:
 cargo test --locked -p ozpb-mcp-server --test mcp_stdio_verification
 ```
 
-Those tests cover the named tools' schemas, reference responses and structured errors. They
-do not deploy a hosted endpoint or complete a successful real-builder `verify` round trip.
+Those tests cover the `reference_suite`, `verify` and `prepare_dry_run` schemas, reference
+responses and structured errors. They do not deploy a hosted endpoint or complete a
+successful real-builder `verify` round trip.
 The [Phase 2 verification guide](TRANCHE-2-VERIFICATION.md) describes the focused automated
 gate included in this tree. The evidence exporter can run independently of that gate.
 
