@@ -142,7 +142,10 @@ bToken (supply) ID, `1 * 2 + 1`. The pool, its code, the claimed ID, the BLND to
 backstop are pinned in `protocol-calls.mjs`. Its controls are a changed reserve list, a foreign
 recipient and another pool function (`#6` from the generated policy), the signer controls, one
 delegated claim after an explicit 1–120 ledger accrual wait, the count cap, expiry, removal and
-the post-removal denial.
+the post-removal denial. The foreign recipient is a contract address derived from a fixed label
+(`BLEND_FOREIGN_RECIPIENT` in `protocol-invoke.mjs`): the pool pays the accrued BLND while the
+call is recorded, and a classic account without a BLND trustline would fail that transfer before
+the policy could refuse it. Like every negative control, it is only simulated.
 
 ### Read-only preflight
 

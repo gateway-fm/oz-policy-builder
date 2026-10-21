@@ -203,3 +203,15 @@ test('a Blend claim names the Blend fee ceiling; a swap keeps the default', asyn
     assert.deepEqual(f.controls.fees, [fee]);
   }
 });
+
+test('the foreign-recipient claim control names a contract, which needs no BLND trustline to be recorded', async () => {
+  const f = fixture('blend_claim');
+  const result = await f.execute({ name: 'claim_recipient', control: 'claim_recipient' });
+  assert.equal(result.status, 'verified_denial');
+  const call = f.simulated[0].body.invokeHostFunctionOp.hostFunction.invokeContract;
+  const recipient = scValToNative(call.args[2]);
+  assert.ok(StrKey.isValidContract(recipient), 'a classic account without a trustline would fail the recording first');
+  assert.notEqual(recipient, f.run.account);
+  assert.notEqual(recipient, f.run.payer);
+  assert.equal(f.sends.length, 0);
+});
