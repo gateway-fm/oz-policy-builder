@@ -3,9 +3,11 @@
 `execution-runtime` is a separate, operator-selected native worker for the `account_wasm`
 layer. It runs the pinned account Wasm and the exact supplied generated policy Wasm through
 real Soroban authorization, with real Ed25519 delegate signatures and committed local state.
-Its result always has `complete: false`: it does not invoke the target contract, import captured
-network state, perform live enforcement, or authorize installation. The source network and
-ledger fields bind provenance; the executed network and boundary ledgers are counterfactual.
+Its result always has `complete: false`: this mode does not invoke the target contract, import
+captured network state, perform live enforcement, or authorize installation. The source network
+and ledger fields bind provenance; the executed network and boundary ledgers are counterfactual.
+The separate [captured-target mode](CAPTURED-TARGET-EXECUTION.md) runs a native SAC target call
+against captured state.
 
 The worker requires successful trusted `prepare_dry_run` artifact reproduction and registry
 recognition before its result is used. It checks byte hashes and candidate identities itself;
@@ -48,7 +50,8 @@ types; the source-built Wasm test additionally exercises the real account ABI.
 Build with `cargo build --locked --manifest-path execution-runtime/Cargo.toml`. The operator
 chooses the executable; requests cannot select a binary, endpoint, path or private key.
 The worker accepts exactly no arguments (interactive execution) or exactly `--prepare`
-(preparation only). All other argument combinations fail.
+(preparation only). `--captured` and `--prepare-captured` are the
+[captured-target](CAPTURED-TARGET-EXECUTION.md) equivalents. All other argument combinations fail.
 
 The first UTF-8 NDJSON line is a `NativeJob` of at most 16 MiB:
 
@@ -163,5 +166,6 @@ An operator may supply `OZPB_ACCOUNT_WASM` to reuse an artifact; the runtime sti
 pinned hash. Source reproduction of the account requires the documented aarch64-apple-darwin
 build host. The existing nightly source-build gate runs this worker suite as well.
 
-Missing captured-target and live-enforcement evidence remains explicit. This worker is an
+Live-enforcement evidence remains missing, and captured-target evidence is the separate mode
+above. This worker is an
 incremental execution component; it does not expose the full public `dry_run` operation.
