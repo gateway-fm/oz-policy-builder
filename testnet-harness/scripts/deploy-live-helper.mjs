@@ -508,7 +508,7 @@ async function main() {
       schema_version: 1,
       evidence_kind: 'atomic_live_helper_testnet_probe',
       live_enforcement: 'unavailable',
-      live_enforcement_reason: 'the wallet-side preparation, consent, signing and result validation are not built; this is a harness probe with automation keys',
+      live_enforcement_reason: 'the wallet-side preparation, consent, signing and simulation are not built; this is a harness probe with automation keys',
       limitations: [
         'Enforce-mode simulations only: this script submitted neither case; post_expiry_readback shows the account balance unchanged and the candidate not installed once every case signature had expired.',
         'Owner and delegate are throwaway automation keys held by this script and deleted after the run; no wallet, consent screen or human approval was involved.',

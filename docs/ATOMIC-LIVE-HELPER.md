@@ -8,11 +8,13 @@ one invocation installs the candidate rule through the account's own `add_contex
 makes one native-asset transfer under it. An enforce-mode simulation of that invocation runs the
 generated policy on live state, and nothing is installed because nothing is submitted.
 
-This package is the helper contract, its real-Wasm host tests, and a testnet deployment probed
-by the harness. **The `live_enforcement` layer remains `unavailable`.** The helper is deployed on
-testnet and the harness has simulated one permit and one denial through it with automation keys
-([Testnet deployment](#testnet-deployment)), but the wallet-side preparation, consent and result
-validation the layer needs are not built yet (see [Outstanding](#outstanding)).
+This package is the helper contract, its real-Wasm host tests, a testnet deployment probed by
+the harness, and the wallet's validators of a live case. **The `live_enforcement` layer remains
+`unavailable`.** The helper is deployed on testnet and the harness has simulated one permit and one
+denial through it with automation keys ([Testnet deployment](#testnet-deployment)), and the
+validators decide what such a simulation must show to count
+([How live use is meant to work](#how-live-use-is-meant-to-work)). The wallet-side preparation,
+consent, signing and simulation the layer needs are not built yet (see [Outstanding](#outstanding)).
 
 ## What the helper does
 
@@ -136,20 +138,41 @@ the expiry and the replay warning and gets explicit consent before any signature
 `simulateTransaction` in enforce mode is used, never `sendTransaction`. A recording-mode
 simulation only discovers the authorization shape and is never evidence.
 
-Helper success is evidence only together with what the orchestrator checks itself:
+Helper success is evidence only together with what the orchestrator checks itself.
+`validateLiveCase` in [`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs)
+makes these checks from the approved case, the exact transaction that was simulated and the RPC's
+raw enforce-mode simulation result, its XDR still base64. It returns `permit`, `deny` or `failed`
+with a reason. Only `permit` and `deny` are evidence:
 
-- the simulation's ledger changes include the installed rule, the candidate policy's counter
-  write for that rule and account, and exactly the expected balance changes;
+- the simulated transaction is one call of the helper for exactly the approved case, on the
+  testnet native asset, which the validator derives rather than accepts;
 - the account's authorization entry for the transfer has the exact transfer as its root and no
   sub-invocations, its `context_rule_ids` are exactly `[expected_rule_id]`, and its signers are
   exactly `{Delegated(delegate)}`;
-- the owner's entries cover only the installation.
+- the owner's entries cover only the installation, with the approved arguments and under the
+  owner's rule. Each delegated signer's own entry authorizes exactly the digest of its account
+  entry, and there is no other entry. Every entry expires at the approved ledger;
+- a permit's ledger changes are exactly these and nothing else: the account's and the recipient's
+  balances, by the amount; the installed rule with the account's bookkeeping for it (next rule ID,
+  rule count, and the delegate's and policy's registry entries); the candidate policy's
+  installation marker and its call counter for that rule and account, used once; and the nonce of
+  every entry, consumed once. The helper must return the rule the account stored. A simulation
+  that would restore archived entries is refused.
 
-A denial needs the
-`NoTupleMatched` error attributed to the candidate policy; a helper refusal such as
-`CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy. The
-owner must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real
-transfer that no policy checks, should the signatures ever be submitted.
+A denial needs the `NoTupleMatched` error attributed to the candidate policy, read from the host's
+diagnostic events as the harness reads them, with no ledger changes; a helper refusal such as
+`CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy, and
+neither is an account error. The policy's error is matched only where the event log starts an
+event, so a value the log prints verbatim, such as the rule name, cannot pass for one. Nothing in
+a response fully binds it to the envelope: a permit's nonces tie it only to the entries' address
+and nonce pairs, and a failed simulation reports no ledger changes at all. The caller must pass
+only the response to its own request for exactly that envelope. The validator does not verify
+signatures, which the simulation's host did, and it neither signs nor simulates anything. Its
+tests use the addresses, amounts, rule and ledgers of the [testnet probe](#testnet-deployment)
+with entries, ledger changes and errors constructed in the shapes the probe used, since the probe
+kept no raw simulation; the exact set of ledger changes has not yet been compared with a real
+response. The owner must never be asked to sign the transfer: an owner-signed transfer under
+rule 0 is a real transfer that no policy checks, should the signatures ever be submitted.
 
 ## Signatures are real and usable without the helper
 
@@ -257,6 +280,6 @@ tried.
 
 ## Outstanding
 
-- The wallet-side preparation, consent, signing, enforce-mode simulation and result validation,
-  with its interface agreed before implementation.
+- The wallet-side preparation, consent, signing and enforce-mode simulation, with its interface
+  agreed before implementation. Their result goes through `validateLiveCase`.
 - A live run of both cases through the wallet, with the owner's consent.
