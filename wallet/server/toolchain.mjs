@@ -9,7 +9,11 @@ import { runTool } from './tool.mjs';
 const NETWORK = 'Test SDF Network ; September 2015';
 const HASH = /^[0-9a-f]{64}$/;
 const FILES = ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'rustfmt.toml', 'src/contract.rs', 'src/lib.rs'];
-const refuse = () => { throw new Error('wallet pipeline refused; refresh and review again'); };
+const refuse = (code) => {
+  throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), code ? { code } : {});
+};
+// `capture-target` codes that name the call's own outcome rather than an endpoint fault.
+const TARGET_CODES = Object.freeze(['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED']);
 const integer = (n, low, high) => Number.isSafeInteger(n) && n >= low && n <= high;
 const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const display = (value) => JSON.parse(JSON.stringify(value, (_key, part) => typeof part === 'bigint' ? part.toString() : part));
@@ -37,10 +41,16 @@ export class WalletToolchain {
 
   #directory() { return mkdtempSync(join(this.#root, 'operation-')); }
   #get(map, id) { if (typeof id !== 'string' || !HASH.test(id) || !map.has(id)) refuse(); return map.get(id); }
-  async #call(directory, command, args, parser = parseJsonExact, signal = undefined, timeoutMs = undefined) {
+  async #call(directory, command, args, parser = parseJsonExact, { signal, timeoutMs, codes = [] } = {}) {
+    let raw;
     try {
-      const raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment,
-        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}) });
+      raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment,
+        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(codes.length ? { codes } : {}) });
+    } catch (error) {
+      // Only a code this call allowlisted survives; the runner never returns the CLI's text.
+      refuse(codes.includes(error?.code) ? error.code : undefined);
+    }
+    try {
       if (typeof raw !== 'string' || Buffer.byteLength(raw) > 16 * 1024 * 1024) refuse();
       save(join(directory, `${command}.json`), raw);
       return parser(raw);
@@ -159,7 +169,7 @@ export class WalletToolchain {
     const directory = this.#directory();
     save(join(directory, 'request.json'), requestText(request));
     const output = await this.#call(directory, 'prepare-dry-run', ['--request', join(directory, 'request.json'), ...this.#trustArgs,
-      '--rpc-sources', join(this.#root, 'rpc-sources.json')], parseJsonExact, signal);
+      '--rpc-sources', join(this.#root, 'rpc-sources.json')], parseJsonExact, { signal });
     return { request, output };
   }
 
@@ -177,7 +187,7 @@ export class WalletToolchain {
       save(request, JSON.stringify({ network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope }));
       // A read, not a build: bounded well below the build deadline so the whole check stays bounded.
       return await this.#call(directory, 'capture-target', ['--request', request, '--rpc-sources', join(this.#root, 'rpc-sources.json')],
-        parseJsonExact, signal, 120_000);
+        parseJsonExact, { signal, timeoutMs: 120_000, codes: TARGET_CODES });
     } finally {
       // The capture repeats the call (account, recipient, amount), so it is as confidential as the envelope.
       rmSync(request, { force: true }); rmSync(join(directory, 'capture-target.json'), { force: true });

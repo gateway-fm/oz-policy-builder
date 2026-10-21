@@ -24,7 +24,8 @@ function setup(t, change = () => {}, pipeline) {
   const calls = [];
   const raw = JSON.stringify(record).replace('"nonce":1', '"nonce":9223372036854775807');
   const runner = async (executable, args, options = {}) => {
-    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}) });
+    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}), ...(options.codes ? { codes: options.codes } : {}),
+      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
     return args[0] === 'record' ? raw : JSON.stringify(await pipeline(args));
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root,
@@ -178,6 +179,8 @@ test('target capture sends the envelope only in a private request file that does
     const [, , path] = args;
     seen.push({ path, text: readFileSync(path, 'utf8'), mode: statSync(path).mode & 0o777 });
     if (seen.length === 2) throw new Error(`endpoint quoted ${envelope}`);
+    if (seen.length === 3) throw Object.assign(new Error(`E_TARGET_REFUSED: ${envelope}`), { code: 'E_TARGET_REFUSED' });
+    if (seen.length === 4) throw Object.assign(new Error('E_RPC'), { code: 'E_RPC' });
     return capture;
   });
   const controller = new AbortController();
@@ -186,6 +189,8 @@ test('target capture sends the envelope only in a private request file that does
   assert.deepEqual([call.args[0], call.args[1], ...call.args.slice(3)],
     ['capture-target', '--request', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
   assert.equal(call.signal, controller.signal, 'a client disconnect reaches the CLI process');
+  assert.deepEqual(call.codes, ['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED'], 'only the target outcomes may be surfaced');
+  assert.equal(call.timeoutMs, 120000);
   assert.ok(seen[0].path.startsWith(root));
   assert.equal(seen[0].mode, 0o600);
   assert.deepEqual(JSON.parse(seen[0].text), { network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope });
@@ -193,8 +198,11 @@ test('target capture sends the envelope only in a private request file that does
   assert.equal(existsSync(join(dirname(seen[0].path), 'capture-target.json')), false, 'nor is the capture, which repeats the call');
   await assert.rejects(() => toolchain.captureTarget(envelope), (error) => /refused/.test(error.message) && !error.message.includes(envelope));
   assert.equal(existsSync(seen[1].path), false, 'nor after a refused capture');
+  await assert.rejects(() => toolchain.captureTarget(envelope), (error) => error.code === 'E_TARGET_REFUSED'
+    && /refused/.test(error.message) && !error.message.includes(envelope));
+  await assert.rejects(() => toolchain.captureTarget(envelope), (error) => error.code === undefined, 'no other code is surfaced');
   for (const bad of ['', 'not base64!', 7, 'A'.repeat(2 * 1024 * 1024)]) {
     await assert.rejects(() => toolchain.captureTarget(bad), /refused/);
   }
-  assert.equal(seen.length, 2, 'a malformed envelope never reaches the CLI');
+  assert.equal(seen.length, 4, 'a malformed envelope never reaches the CLI');
 });

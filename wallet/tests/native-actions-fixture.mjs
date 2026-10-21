@@ -21,7 +21,7 @@ const transfer = () => ({ fn: 'transfer', args: [
  */
 export async function reviewed({ maxCalls = 2, runFails = false, intentChange = () => {}, prepareFails = false, sourceFails = false,
   allowedCalls = [transfer()], captureChange = () => {}, capturedChange = () => {}, capturedPreparedChange = () => {},
-  captureFails = false, envelopeFails = false, capturedRunFails = false, notBefore = CAPTURE_LEDGER - 2, native: realNative } = {}) {
+  captureFails = false, captureCode = undefined, envelopeFails = false, capturedRunFails = false, notBefore = CAPTURE_LEDGER - 2, native: realNative } = {}) {
   const runs = [];
   const prepares = [];
   const captures = [];
@@ -96,7 +96,7 @@ export async function reviewed({ maxCalls = 2, runFails = false, intentChange = 
   f.toolchain.captureTarget = async (envelope, options) => {
     captures.push({ envelope, signal: options?.signal });
     assert.equal(envelope, envelopes.at(-1), 'the capture receives exactly the envelope the backend built');
-    if (captureFails) throw new Error('wallet pipeline refused; refresh and review again');
+    if (captureFails) throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), { code: captureCode });
     return clone(capture);
   };
   return { ...f, delegate, deployed, review, runs, prepares, captures, envelopes, native, capture, captured };

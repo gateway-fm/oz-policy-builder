@@ -40,3 +40,24 @@ test('wallet CLI runner stops its process group as soon as the caller aborts', a
   await assert.rejects(runTool(process.execPath, ['-e', ''], { signal: AbortSignal.abort() }), /tool failed/,
     'an already aborted caller starts nothing');
 });
+
+test('wallet CLI runner surfaces only an allowlisted refusal code from the CLI, never its text', async () => {
+  const refusing = (text, code = 1) => ['-e', `process.stderr.write(${JSON.stringify(text)});process.exit(${code})`];
+  await assert.rejects(runTool(process.execPath, refusing('Error: E_TARGET_REFUSED: endpoint quoted SECRET-CANARY\n'),
+    { codes: ['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED'] }),
+  (error) => error.code === 'E_TARGET_REFUSED' && /tool failed/.test(error.message) && !error.message.includes('SECRET'));
+  for (const [text, codes] of [
+    ['Error: E_RPC: SECRET\n', ['E_TARGET_REFUSED']],
+    ['Error: E_TARGET_REFUSED: x', []],
+    ['warning\nError: E_TARGET_REFUSED: x', ['E_TARGET_REFUSED']],
+    ['Error: E_TARGET_REFUSED_LATER: x', ['E_TARGET_REFUSED']],
+  ]) {
+    await assert.rejects(runTool(process.execPath, refusing(text), { codes }),
+      (error) => error.code === undefined && !error.message.includes('SECRET'), text);
+  }
+  const flood = ['-e', "process.stderr.write('x'.repeat(1<<20));process.stderr.write('Error: E_TARGET_REFUSED: x');process.exit(1)"];
+  await assert.rejects(runTool(process.execPath, flood, { codes: ['E_TARGET_REFUSED'] }), (error) => error.code === undefined);
+  await assert.rejects(runTool(process.execPath, ['-e', 'setTimeout(()=>{},1000)'], { codes: ['E_TARGET_REFUSED'], timeoutMs: 50 }),
+    (error) => error.code === undefined, 'a killed process carries no code');
+  await assert.rejects(runTool(process.execPath, refusing('Error: E_TARGET_REFUSED: x'), { codes: ['not a code'] }), /tool failed/);
+});

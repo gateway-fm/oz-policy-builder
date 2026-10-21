@@ -244,11 +244,13 @@ other outcome carries no evidence:
 - `unavailable`: the next rule ID was not established; CLI preparation, the operator RPC, the
   envelope or `capture-target` did not complete; the captured ledger is older than the backend's
   read immediately before the capture or more than twelve ledgers newer; or the grant expires at
-  or before the captured ledger. The worker does not run. `capture-target` also refuses when the
-  record-mode simulation fails, for example on an insufficient balance; the CLI reports that
-  like an endpoint failure, so the wallet cannot attribute it to the candidate.
-- `failed`: the preparation evidence, a capture for another call, network or account code, the
-  worker or its report was refused.
+  or before the captured ledger. The worker does not run.
+- `failed`: the target refused the exact call in the record-mode simulation
+  (`E_TARGET_REFUSED`, for example an insufficient balance or a missing recipient; the
+  endpoint's simulator failing reports the same code, its text being withheld) or its state
+  needs restoration (`E_TARGET_ARCHIVED`), so the worker does not run; or the preparation
+  evidence, a capture for another call, network or account code, the worker or its report was
+  refused. The backend reads only that code from the CLI's error output, never its text.
 
 A passing layer records the captured ledger as `evidence.observedLedger`, and stored evidence
 does not age: nothing re-checks it later. Installation is disabled; when it is enabled, its

@@ -213,11 +213,21 @@ pub fn capture_native_target<T: RpcTransport>(
                 "xdrFormat": "base64",
             }),
         )?;
+        // The call's own outcome, named apart from endpoint faults so a caller can attribute
+        // it to the target. The endpoint's description is withheld: it could quote the envelope.
         if simulation.get("error").is_some() {
-            return Err(refuse("record-mode simulation failed"));
+            return Err(RpcError::TargetRefused(
+                "native target capture refused: the record-mode simulation failed; the target \
+                 refused the call or the simulator failed (endpoint detail withheld)"
+                    .to_string(),
+            ));
         }
         if simulation.get("restorePreamble").is_some() {
-            return Err(refuse("the target footprint requires restoration"));
+            return Err(RpcError::TargetArchived(
+                "native target capture refused: the target footprint requires restoration, which \
+                 this capture does not perform"
+                    .to_string(),
+            ));
         }
         let observed = ledger(&simulation, "latestLedger")?;
         let [result] = simulation

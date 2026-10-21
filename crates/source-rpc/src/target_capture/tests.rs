@@ -627,3 +627,50 @@ fn native_target_capture_parse_refusals_are_fixed_descriptions() {
         assert!(fixture.calls.borrow().is_empty());
     }
 }
+
+/// A simulation the target itself refused, or one whose footprint needs restoration, is the
+/// call's outcome rather than an endpoint fault: each has its own variant, and neither carries
+/// the endpoint's text, which could quote the envelope.
+#[test]
+fn native_target_capture_names_target_refusal_and_archived_state() {
+    for (field, expected) in [
+        ("error", "E_TARGET_REFUSED: "),
+        ("restorePreamble", "E_TARGET_ARCHIVED: "),
+    ] {
+        let mut fixture = fixture();
+        let quoted = fixture.envelope.clone();
+        fixture.simulation[field] = if field == "error" {
+            json!(format!(
+                "HostError: Error(Contract, #10) balance is not sufficient for {quoted}"
+            ))
+        } else {
+            json!({"transactionData": quoted, "minResourceFee": "1"})
+        };
+        let error = capture_native_target(&fixture, NETWORK, &fixture.envelope)
+            .expect_err("a refused simulation was accepted");
+        assert!(
+            match field {
+                "error" => matches!(error, RpcError::TargetRefused(_)),
+                _ => matches!(error, RpcError::TargetArchived(_)),
+            },
+            "{field}: {error:?}"
+        );
+        assert!(error.to_string().starts_with(expected), "{field}: {error}");
+        for text in [error.to_string(), format!("{error:?}")] {
+            assert!(
+                !text.contains(&quoted),
+                "{field}: the endpoint text reached the error"
+            );
+            assert!(
+                !text.contains("HostError"),
+                "{field}: the endpoint text reached the error"
+            );
+        }
+        // Nothing is read after the refused simulation.
+        assert_eq!(
+            *fixture.calls.borrow(),
+            ["getNetwork", "simulateTransaction"],
+            "{field}"
+        );
+    }
+}

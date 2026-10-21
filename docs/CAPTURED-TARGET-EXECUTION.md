@@ -108,7 +108,9 @@ Only the shape above is captured. The refusals:
 | hosted server: the source's URL is not on `OZPB_RPC_ALLOWLIST` | before any request | `E_RPC` |
 | hosted server: another read through an operator source is running | before any request | `E_RESOURCE_LIMIT` |
 | the endpoint reports another network | during the capture | `E_NETWORK_MISMATCH` |
-| any answer the capture above refuses: a failed, non-void or restoring simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing, archived or expiring entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
+| the record-mode simulation failed: the target refused the call (for example an insufficient balance or a missing recipient) or, indistinguishably once the endpoint's text is withheld, its simulator failed | during the capture | `E_TARGET_REFUSED` |
+| the simulation requires archival restoration first | during the capture | `E_TARGET_ARCHIVED` |
+| any other answer the capture above refuses: a non-void simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing, archived or expiring entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
 | MCP server, stdio or hosted: not finished within 300 s | during the capture | `E_RESOURCE_LIMIT` |
 
 The CLI sets no overall deadline: each of its at most eight requests is bounded by the

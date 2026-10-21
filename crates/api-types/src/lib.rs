@@ -123,6 +123,13 @@ error_codes! {
     /// stateful limit would not hold.
     EDelegateGrantOverlap => "E_DELEGATE_GRANT_OVERLAP",
     EScanBudgetExceeded => "E_SCAN_BUDGET_EXCEEDED",
+    // target capture
+    /// The record-mode simulation of a supported capture failed: the target refused the call
+    /// (for example an insufficient balance or a missing recipient), or the endpoint's
+    /// simulator failed, which its withheld text cannot distinguish. Not a transport fault.
+    ETargetRefused => "E_TARGET_REFUSED",
+    /// The captured call's footprint needs archival restoration, which capture never performs.
+    ETargetArchived => "E_TARGET_ARCHIVED",
     // rpc / transport
     ERpc => "E_RPC",
     // catch-all internal

@@ -311,10 +311,18 @@ export function createWalletActions({ session, toolchain, network, native = null
               const envelope = await network.targetEnvelope(target.call);
               const notBefore = await network.latestLedger();
               capture = { notBefore, value: await toolchain.captureTarget(envelope, { signal }) };
-            } catch {
-              // Includes a simulation the target itself refused: the CLI reports that and an endpoint
-              // failure alike, so the backend cannot attribute it to the candidate.
-              captured = targetLayer('unavailable', 'capture-target or the operator RPC read did not complete; the worker did not run.');
+            } catch (error) {
+              // The call's own outcome in the operator RPC's record-mode simulation, before the
+              // worker: the target, not an infrastructure fault, decided it. No candidate evidence.
+              if (error?.code === 'E_TARGET_REFUSED') {
+                captured = targetLayer('failed', 'The target refused the exact call in the operator RPC\'s record-mode simulation, '
+                  + 'for example for an insufficient balance or a missing recipient; the worker did not run.');
+              } else if (error?.code === 'E_TARGET_ARCHIVED') {
+                captured = targetLayer('failed', 'The exact call\'s target state is archived and needs restoration, which capture '
+                  + 'does not perform; the worker did not run.');
+              } else {
+                captured = targetLayer('unavailable', 'capture-target or the operator RPC read did not complete; the worker did not run.');
+              }
             }
           }
           const observed = capture?.value?.observed_ledger;

@@ -343,9 +343,11 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   RPC source, the `rpc_reported` target state of one unsigned native Stellar Asset Contract
   transfer: the capture the native worker's captured-target layer reads
   ([CAPTURED-TARGET-EXECUTION.md](CAPTURED-TARGET-EXECUTION.md#producing-a-capture)). It does
-  not run that layer. The envelope is confidential input that no result or error echoes, but
-  over MCP it passes through the conversation, and the capture repeats its call; prefer the CLI
-  or a local stdio server.
+  not run that layer. A simulation the target refuses is `E_TARGET_REFUSED` and one needing
+  archival restoration `E_TARGET_ARCHIVED`; every other endpoint answer or fault is `E_RPC`.
+  The envelope is confidential input that no result or error echoes, but over MCP it passes
+  through the conversation, and the capture repeats its call; prefer the CLI or a local stdio
+  server.
 - **Scheduled, not exposed** — the full four-layer `dry_run`. The full dry-run harness needs
   its own evidence before exposure.
 

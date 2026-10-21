@@ -202,3 +202,34 @@ fn an_endpoint_echoing_the_envelope_never_reaches_the_response() {
     );
     assert!(!call.to_string().contains(&envelope), "{call}");
 }
+
+#[test]
+fn a_target_refusal_or_archived_footprint_has_its_own_code() {
+    for (field, code) in [
+        ("error", "E_TARGET_REFUSED"),
+        ("restorePreamble", "E_TARGET_ARCHIVED"),
+    ] {
+        let envelope = envelope();
+        let echoed = envelope.clone();
+        let endpoint = ReplayEndpoint::bind(move |method, _| match method {
+            "simulateTransaction" => {
+                let mut simulation = target_capture_rpc::recorded(method);
+                simulation[field] = json!(format!("balance is not sufficient: {echoed}"));
+                Reply::Result(simulation)
+            }
+            other => Reply::Result(target_capture_rpc::recorded(other)),
+        });
+        let call = capture_call(&endpoint.url, arguments(&envelope));
+        endpoint.finish();
+        assert_eq!(call["result"]["isError"], true, "{field}: {call}");
+        assert_eq!(
+            call["result"]["structuredContent"]["code"], code,
+            "{field}: {call}"
+        );
+        assert!(!call.to_string().contains(&envelope), "{field}: echoed");
+        assert!(
+            !call.to_string().contains("balance is not sufficient"),
+            "{field}: {call}"
+        );
+    }
+}

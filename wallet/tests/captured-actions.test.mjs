@@ -106,6 +106,17 @@ for (const failure of ['envelopeFails', 'captureFails']) {
   });
 }
 
+for (const [code, detail] of [['E_TARGET_REFUSED', /target refused the exact call/], ['E_TARGET_ARCHIVED', /restoration/]]) {
+  test(`a capture the target itself refused (${code}) fails the captured layer, attributed to the target`, async () => {
+    const f = await reviewed({ captureFails: true, captureCode: code });
+    const result = await check(f);
+    assert.equal(status(result).captured_target, 'failed');
+    assert.match(result.verification.layers[2].detail, detail);
+    assert.equal(result.verification.layers[2].evidence, undefined);
+    assert.equal(capturedRuns(f).length, 0);
+  });
+}
+
 test('a grant that expired before the captured ledger is unavailable, not a failed candidate', async () => {
   const f = await reviewed();
   f.artifact.spec.rules[0].valid_until = { ledger: CAPTURE_LEDGER, approx_time: null };

@@ -190,6 +190,16 @@ pub enum RpcError {
     /// Refused locally; nothing was sent.
     #[error("E_UNSUPPORTED_ENVELOPE: {0}")]
     UnsupportedEnvelope(String),
+    /// A record-mode simulation of a supported call failed: the target refused it (for example
+    /// an insufficient balance or a missing recipient), or, indistinguishably once the
+    /// endpoint's text is withheld, the endpoint's simulator failed. The call's outcome, not
+    /// a transport fault. Fixed text only: the endpoint could quote the envelope.
+    #[error("E_TARGET_REFUSED: {0}")]
+    TargetRefused(String),
+    /// A record-mode simulation reported that the call's footprint needs archival restoration
+    /// first. Fixed text only, as for [`RpcError::TargetRefused`].
+    #[error("E_TARGET_ARCHIVED: {0}")]
+    TargetArchived(String),
 }
 
 /// Remove endpoint-controlled detail from errors on ledger-key requests. HTTP
@@ -227,6 +237,8 @@ fn redact_ledger_request_error(error: RpcError) -> RpcError {
         RpcError::EnvelopeTooLarge(_) => RpcError::EnvelopeTooLarge(WITHHELD.to_string()),
         RpcError::EnvelopeParse(_) => RpcError::EnvelopeParse(WITHHELD.to_string()),
         RpcError::UnsupportedEnvelope(_) => RpcError::UnsupportedEnvelope(WITHHELD.to_string()),
+        RpcError::TargetRefused(_) => RpcError::TargetRefused(WITHHELD.to_string()),
+        RpcError::TargetArchived(_) => RpcError::TargetArchived(WITHHELD.to_string()),
     }
 }
 
