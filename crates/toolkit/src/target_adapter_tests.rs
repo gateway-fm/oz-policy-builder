@@ -210,6 +210,8 @@ fn unrelated_authorizers_revoked_adapter_does_not_affect_selected_authorizer() {
                 code_hash: unrelated_hash,
             },
             observed_ledger: ozpb_domain::LedgerSeq(4_200_100),
+            last_modified_ledger: None,
+            live_until_ledger: None,
         },
     );
     let snapshot = EvidenceSnapshot::from_rpc_simulation(
