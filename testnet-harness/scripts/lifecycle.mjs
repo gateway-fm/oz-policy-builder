@@ -120,11 +120,19 @@ function contractError(error, contract, code) {
 
 export async function revokePolicy(dir, overrides = {}) {
   const deps = { ...rpc, ownerSigner, ...overrides };
+  // `dir` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this function. The basename is fixed to that
+  // run's own journal, whose digest can pin the revoke to the exact snapshot.
+  // nosec
   const path = join(dir, 'run.json');
   const bytes = readFileSync(path, 'utf8');
   if (deps.expectedRunHash !== undefined) requireThat(/^[0-9a-f]{64}$/.test(deps.expectedRunHash)
     && createHash('sha256').update(bytes).digest('hex') === deps.expectedRunHash, 'cleanup run snapshot changed');
   const run = parseJsonExact(bytes);
+  // `dir` is the run directory `run.sh` created, or one its operator names on the command
+  // line; no server or remote request reaches this function. The basename is fixed to
+  // the spec that run generated its policy from.
+  // nosec
   const spec = parseJsonExact(readFileSync(join(dir, 'spec.json'), 'utf8'));
   requireThat(run.lifecycle === undefined || (run.lifecycle && Array.isArray(run.lifecycle.removals)), 'malformed lifecycle journal');
   const previous = run.lifecycle?.removals ?? [];
