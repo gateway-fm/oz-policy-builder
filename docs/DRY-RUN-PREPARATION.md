@@ -59,4 +59,6 @@ This preparation package adds no complete acceptance claim.
 
 The separately configured [native execution worker](NATIVE-EXECUTION.md) can produce
 local account-Wasm evidence after this preparation. It does not change this operation's
-meaning or complete the captured-target and live-enforcement layers.
+meaning or complete the captured-target and live-enforcement layers. The worker's separate
+[captured-target mode](CAPTURED-TARGET-EXECUTION.md) does not either: this operation still
+reports `captured_target` as unavailable.
