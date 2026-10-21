@@ -60,32 +60,113 @@ export async function latestLedger() {
   return (await server.getLatestLedger()).sequence;
 }
 
+/** Fixed total transaction fee, including Soroban resources: one testnet XLM. */
+export const MAX_TRANSACTION_FEE = 10_000_000n;
+/** Uploading newly generated code has a larger fixed ceiling: ten testnet XLM. */
+export const MAX_WASM_UPLOAD_FEE = 100_000_000n;
+
+/** Explicit source-payer authorization for exactly this operation, never an RPC-supplied tree. */
+function withSourceAuthorization(operation, payer) {
+  const invoke = operation.body?.invokeHostFunctionOp;
+  if (!invoke || invoke.auth.length !== 0) return operation;
+  const func = invoke.hostFunction;
+  const preimage = (func.createContract ?? func.createContractV2)?.contractIdPreimage;
+  if (preimage?.type === 'contractIdPreimageFromAddress'
+    && Address.fromScAddress(preimage.fromAddress.address).toString() !== payer) {
+    throw new Error('submission refused: contract creation source differs from fee payer');
+  }
+  let root;
+  switch (func.type) {
+    case 'hostFunctionTypeInvokeContract':
+      root = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(func.invokeContract);
+      break;
+    case 'hostFunctionTypeCreateContract':
+      root = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(func.createContract);
+      break;
+    case 'hostFunctionTypeCreateContractV2':
+      root = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractV2HostFn(func.createContractV2);
+      break;
+    case 'hostFunctionTypeUploadContractWasm':
+      return operation;
+    default:
+      throw new Error('submission refused: unsupported host function');
+  }
+  if (operation.sourceAccount !== null) throw new Error('submission refused: explicit operation source');
+  return Operation.invokeHostFunction({ func, auth: [new xdr.SorobanAuthorizationEntry({
+    credentials: xdr.SorobanCredentials.sorobanCredentialsSourceAccount(),
+    rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: root, subInvocations: [] }),
+  })] });
+}
+
+/** Assembly may add resource data and a bounded fee, never change the call we will sign. */
+function checkAssembly(assembled, expectedEnvelope) {
+  try {
+    const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
+    const intended = expected.v1.tx.operations;
+    const maximumFee = intended.length === 1
+      && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
+      ? MAX_WASM_UPLOAD_FEE : MAX_TRANSACTION_FEE;
+    const envelope = assembled.toEnvelope();
+    if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'
+      || envelope.v1.signatures.length !== 0) throw new Error();
+    const wire = envelope.v1.tx;
+    if (!Number.isSafeInteger(wire.fee) || wire.fee < 100 || BigInt(wire.fee) > maximumFee) throw new Error();
+    if (wire.ext.type === 'sorobanData') {
+      const resourceFee = wire.ext.sorobanData.resourceFee;
+      if (typeof resourceFee !== 'bigint' || resourceFee < 0n || resourceFee > BigInt(wire.fee)) throw new Error();
+    } else if (wire.ext.type !== 'v0') throw new Error();
+    // Decode a separate copy: the SDK's envelope shares objects with its transaction.
+    const normalized = xdr.TransactionEnvelope.fromXDR(envelope.toXDR());
+    normalized.v1.tx.fee = expected.v1.tx.fee;
+    normalized.v1.tx.ext = expected.v1.tx.ext;
+    if (!Buffer.from(normalized.toXDR()).equals(expectedEnvelope)) throw new Error();
+  } catch {
+    throw new Error('submission refused: assembled transaction differs or exceeds the fee ceiling');
+  }
+}
+
 /**
  * Simulate, assemble, sign with the fee payer, submit and wait. An operation that already carries
  * signed auth entries (attached after a recording simulation) is simulated in enforcing mode with
- * them; one without uses the simulation's own source-account authorization.
+ * them; one without gets an explicit fee-payer entry for this exact host function only.
+ * Assembly may change only resources and a bounded total fee; it cannot add authorization.
  *
  * A failed simulation throws `SimulationError` before the transaction is signed or sent, which is
  * what makes a denial observable without spending a fee: the enforcing simulation runs
  * `__check_auth` and the installed policies exactly as the network would.
  */
-export async function submit(payer, operation, { stage = 'submit' } = {}) {
+export async function submit(payer, operation, { stage = 'submit', onSubmitting } = {}) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
-    .addOperation(operation).setTimeout(120).build();
-  const sim = await server.simulateTransaction(tx);
+    .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
+  if (tx.source !== payer.publicKey()) throw new Error('submission refused: RPC returned another fee payer');
+  const expectedEnvelope = Buffer.from(tx.toEnvelope().toXDR());
+  const sim = await server.simulateTransaction(tx, undefined, 'enforce');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error);
   const assembled = rpc.assembleTransaction(tx, sim).build();
+  checkAssembly(assembled, expectedEnvelope);
   assembled.sign(payer);
+  const expectedHash = Buffer.from(assembled.hash()).toString('hex');
+  // Persist a removal identity before the first network write. A failed checkpoint prevents send;
+  // a later transport/confirmation failure keeps the identity available for manual inspection.
+  if (onSubmitting) await onSubmitting(expectedHash);
+  log(`transaction prepared ${expectedHash}; expires ${tx.timeBounds.maxTime}`);
   const sent = await server.sendTransaction(assembled);
+  const status = ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER', 'ERROR'].includes(sent.status) ? sent.status : 'UNKNOWN';
+  log(`transaction send ${expectedHash}; status ${status}`);
   if (sent.status === 'ERROR') {
     throw new Error(`${stage}: sendTransaction ERROR ${sent.errorResult?.toXDR?.('base64') ?? ''}`);
+  }
+  if (sent.hash !== expectedHash) throw new Error(`${stage}: RPC returned another transaction identity`);
+  if (!['PENDING', 'DUPLICATE'].includes(sent.status)) {
+    throw new Error(`${stage}: transaction ${expectedHash} was not accepted (${status}); no automatic retry`);
   }
   const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
   }
-  return { hash: sent.hash, returnValue: done.returnValue };
+  if (done.txHash !== expectedHash) throw new Error(`${stage}: confirmed transaction identity differs`);
+  return { hash: sent.hash, returnValue: done.returnValue, receipt: done };
 }
 
 /** Run a recording simulation and return the auth entries the network says the call needs. */
@@ -93,34 +174,73 @@ export async function recordAuth(payer, operation, stage) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(operation).setTimeout(120).build();
-  const sim = await server.simulateTransaction(tx);
+  const sim = await server.simulateTransaction(tx, undefined, 'record');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(`${stage} (recording)`, sim.error);
   return sim.result?.auth ?? [];
 }
 
+/** Enforce supplied authorization without signing or submitting the fee transaction. */
+export async function enforceSimulation(payer, operation) {
+  const source = await server.getAccount(payer.publicKey());
+  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(operation).setTimeout(60).build();
+  const simulated = await server.simulateTransaction(tx, undefined, 'enforce');
+  const ledger = readLedger(simulated.latestLedger);
+  return rpc.Api.isSimulationError(simulated)
+    ? { result: 'deny', ledger, error: String(simulated.error) }
+    : { result: 'permit', ledger };
+}
+
 /** Simulate a read-only call and return its value as an ScVal. Nothing is signed or sent. */
 export async function viewCall(payer, contract, fn, fnArgs = []) {
+  return (await viewCallObservation(payer, contract, fn, fnArgs)).value;
+}
+
+const readLedger = (ledger) => {
+  if (!Number.isSafeInteger(ledger) || ledger < 1 || ledger > 0xffff_ffff) throw new Error('RPC read lacks a valid ledger');
+  return ledger;
+};
+
+/** Retain this simulation's own ledger; separate reads do not form an atomic snapshot. */
+export async function viewCallObservation(payer, contract, fn, fnArgs = []) {
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
     .setTimeout(60).build();
   const sim = await server.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
-  return sim.result.retval;
+  return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
 }
 
 /** The wasm hash a contract instance runs, as the network reports it. */
 export async function contractCodeHash(contractId) {
+  return (await contractCodeObservation(contractId)).value;
+}
+
+/** Retain the ledger reported by this instance-entry read. */
+export async function contractCodeObservation(contractId) {
   const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
     contract: new Address(contractId).toScAddress(),
     key: xdr.ScVal.scvLedgerKeyContractInstance(),
     durability: xdr.ContractDataDurability.persistent,
   }));
-  const { entries } = await server.getLedgerEntries(key);
+  const { entries, latestLedger } = await server.getLedgerEntries(key);
   if (entries.length !== 1) throw new Error(`no instance entry for ${contractId}`);
-  const exec = entries[0].val.contractData.val.instance.executable;
+  const ledger = readLedger(latestLedger);
+  const entry = entries[0];
+  const sameXdr = (actual, expected) => actual?.toXDR && Buffer.from(actual.toXDR()).equals(Buffer.from(expected.toXDR()));
+  const data = entry.val.contractData;
+  if (!sameXdr(entry.key, key) || entry.val.type !== 'contractData'
+    || !data || !sameXdr(data.contract, key.contractData.contract) || !sameXdr(data.key, key.contractData.key)
+    || data.durability?.name !== 'persistent' || data.val?.type !== 'scvContractInstance') {
+    throw new Error(`RPC returned another instance entry for ${contractId}`);
+  }
+  if (readLedger(entry.lastModifiedLedgerSeq) > ledger || readLedger(entry.liveUntilLedgerSeq) < ledger) {
+    throw new Error(`RPC returned expired or inconsistent instance metadata for ${contractId}`);
+  }
+  const exec = data.val.instance.executable;
   if (exec.type !== 'contractExecutableWasm') throw new Error(`${contractId} is not a wasm contract (${exec.type})`);
-  return Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex');
+  return { value: Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex'), ledger };
 }
 
 export const contractIdOf = (scv) => {

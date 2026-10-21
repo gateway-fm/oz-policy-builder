@@ -17,7 +17,7 @@ authenticator, behind the pinned OpenZeppelin WebAuthn verifier: the kind of acc
 wallet such as pollywallet creates. Everything else is the same in both runs, the delegate
 included.
 
-One run, on fresh throwaway keys:
+The default native-transfer run, on fresh throwaway keys:
 
 1. **setup** deploys the pinned OpenZeppelin account example from its wasm hash. It checks that
    the code hash the network reports is the pin in `ozpb_domain::pinned_upstream`, reads rule 0
@@ -44,6 +44,12 @@ One run, on fresh throwaway keys:
    - One stroop more is refused with the policy's `NoTupleMatched` (#6).
    - Another recipient is refused with #6.
    - The exact transfer a second time is refused with `CallCountExceeded` (#7).
+6. **observe/revoke** reads the installed grant and its account/policy code pins, then has
+   the owner sign removal of exactly that rule. It verifies the pinned account's removal
+   event, checks that the rule is absent and separately observes policy cleanup. A final
+   delegate attempt must fail with the account's `ContextRuleNotFound` (#3000). The already
+   exhausted policy's #7 does not satisfy that control. The earlier installation record is
+   retained alongside the removal journal.
 
 Every address, transaction hash and outcome goes into `runs/<timestamp>-<pid>/run.json`, which
 is gitignored. The run directory also holds the import bundle, RPC recording, explicit decisions, synthesis
@@ -92,6 +98,22 @@ The export labels the pipeline as `recorded` only when its completion record exi
 RPC acquisition trust separate from the synthesis boundary's `self_supplied` trust and reports
 artifact reproduction separately from current-network preflight. These remain editable local
 observations. Older runs say `not_recorded`; they do not acquire results from the new pipeline.
+Lifecycle records likewise distinguish a confirmed removal transaction, its checked event,
+the rule readback and best-effort policy cleanup. A later readback failure does not erase the
+confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
+
+A failed run with a confirmed installation attempts owner removal before discarding its
+temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
+policy configuration. Its entire child process group has a fixed 180-second deadline and a
+five-second termination grace. A requested kill must be followed by the child's close event
+before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
+`cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
+leaves the child-owned run/provenance files unfinalized. The original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
+remain; secret deletion does not revoke it. A `run.json` that exists but cannot be read is
+reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
+since it may have been cut short after recording an installation. The journal records a removal hash before send,
+so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
+automatically. A confirmed removal with incomplete readbacks likewise requires inspection.
 
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
@@ -119,8 +141,12 @@ runs separately and gives the field-by-field review procedure for a new summary.
   registry root. This runs on both install paths with the same `OZPB_BIN` (or local Cargo CLI)
   as generation. It catches stale artifacts; it trusts the local generator's manifest rather
   than reproducing the Wasm. The default wrapper also runs `ozpb verify` and requires successful artifact reproduction.
-- The installer accepts exactly one generated scope+count policy. Composed rules, including
-  a reviewed spending limit, are refused before deployment rather than installed incompletely.
+- The default installer accepts exactly one generated scope+count policy. The explicit
+  [subscription mode](../docs/WALKTHROUGH-SEP41.md) requires the full authority-check path and
+  exactly one generated policy plus the pinned reviewed spending-limit policy, with both
+  instances bound to their spec indices. Other compositions are refused before deployment.
+  The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
+  each of its two independent scope+count rules separately through `bundle-command.mjs`.
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -132,6 +158,20 @@ runs separately and gives the field-by-field review procedure for a new summary.
   verifier instance instead of deploying one; its code hash is checked the same way.
 
 ## Keys
+
+Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling of
+10,000,000 stroops (1 testnet XLM), including Soroban resources. Uploading a new Wasm has a
+separate fixed ceiling of 100,000,000 stroops (10 testnet XLM), selected only from the original
+intended upload operation. A read-only estimate on 20 October 2026 for a 21,607-byte generated
+policy at ledger 5293145 required 89,730,616 total stroops (8.9730616 testnet XLM); it exceeded
+the ordinary ceiling and was refused before signing. This observation explains the separate
+upload allowance, not a promised future fee. Before the payer signs,
+assembly must preserve the exact operation, authorization entries, source, sequence, memo,
+time bounds and network. Extra signatures, authorization or operations are refused. A
+resource estimate above the ceiling stops the run; the harness never raises it automatically.
+For a source-funded setup operation without existing authorization, the harness constructs
+one source-account entry locally from that exact host function, with no nested calls.
+Contract uploads need none. It does not accept authorization entries supplied by RPC.
 
 `setup.mjs` generates these keys with `Keypair.random()` and funds them from Friendbot:
 
@@ -232,6 +272,9 @@ node invoke.mjs --run-dir R --signer owner --rule 0 --amount 10000000 --to <reci
 node synthesis-flow.mjs --run-dir R          # real record/synthesis/reference/build/verify
 node install.mjs --run-dir R --wasm R/policy/<name>.wasm
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect permit
+node monitor.mjs --run-dir R                  # read-only grant/code observation; no signing key
+node lifecycle.mjs --run-dir R                # owner signs removal; needs the run's keys
+node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
 
 CI runs both this suite and `npm test` in `testnet-harness/browser`, with locked dependencies
@@ -239,6 +282,23 @@ and pinned Node. The installer tests run the real local CLI (`OZPB_BIN`, or Carg
 the RPC and key boundaries; they require the Rust dependencies to be cached for offline use.
 The browser suite tests the passkey modules without launching a browser. Neither suite signs
 or submits a live transaction.
+
+`monitor.mjs` is a one-shot configuration observation, not a background service. It checks
+this rule's target, name, expiry, signer and policy identities and the account/policy code pins.
+Each account-code, policy-code and rule read retains its own RPC ledger number. These are
+explicitly non-atomic observations, not a common-ledger snapshot or authenticated proof.
+It records drift or unavailable observations and fails closed; it does not enumerate the
+account's complete authority surface or prevent changes after its reads. The wrapper runs it
+after installation and before removal. Full wallet-owned call-surface monitoring remains required.
+
+The removal decoder follows the exact pinned account's embedded event specification, captured
+in `scripts/fixtures/context-rule-removed-spec.json`: `context_rule_removed`, a `u32` rule topic,
+and an empty map. The release's function comment says `[]`, but the compiled event's
+`data_format` is `map`. It checks the successful transaction/envelope identity, the exact
+removal call, event contract and rule, and refuses missing or conflicting removal events.
+OpenZeppelin's pinned removal implementation attempts policy uninstall on a best-effort basis,
+so a removed rule and a policy still reporting installed are distinct outcomes. The journal
+retains both. Neither these offline controls nor the executable flow is a new live observation.
 
 `invoke.mjs --expect deny:<code>` passes only if both of these hold:
 
@@ -265,6 +325,10 @@ when the WebAuthn verifier contract raised it.
 - It refuses the call with a changed amount, with a changed recipient, and past the call cap.
   Each refusal is the policy's own published error code.
 
+The new default wrapper also exercises owner removal and a post-removal denial, but those
+steps still need a reviewed live run at this revision. They are not part of the historical
+October 15 observations described below.
+
 **Not shown, or not as you might assume:**
 
 - **The default pipeline now synthesizes the grant.** Protocol 29 is supported by the RPC
@@ -276,8 +340,9 @@ when the WebAuthn verifier contract raised it.
   manual workflow; the wrapper does not call them.
 - **Reproduction is not a complete dry run.** The default wrapper requires matching source,
   Wasm and manifest and complete layer-1 coverage for its single scope+count policy. It does
-  not establish arbitrary captured-target execution, a wallet product's consent, or the three
-  protocol walkthroughs. Enforcing network simulations remain a separate later observation.
+  not establish arbitrary captured-target execution or a wallet product's consent. The Blend
+  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend still lacks
+  its position setup. Enforcing network simulations remain a separate later observation.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.
@@ -436,6 +501,11 @@ and what does not.
   - Does not run: installing into a stock pollywallet account. Its account wasm is not pinned and
     its verifier does not reproduce from our pinned inputs. pollywallet's UI cannot create the
     pinned account either, because it deploys its own wasm through its own relayer.
+- **revoke and observe.** The wrapper now removes its own grant through owner authorization,
+  verifies the removal event and checks a delegate denial attributed to the missing account
+  rule. It separately observes policy cleanup and grant/code drift. This is an executable
+  harness path awaiting current live evidence, not pollywallet's protected revocation UI or
+  the complete post-install call-surface monitoring requirement.
 
 The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<pid>/` unless
 `OZPB_HARNESS_OUT` says otherwise). Every transaction hash in it can be looked up at
