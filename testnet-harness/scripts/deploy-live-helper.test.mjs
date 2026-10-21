@@ -2,13 +2,17 @@
 // for or sent to a network.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { Address, Keypair, Networks, StrKey, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk';
 
 import {
   EXPECTED_HELPER_HASH, HELPER_ERROR_CODES, buildCaseAuthorizations, candidateScVal, contractIdFor, deployReviewedWasm,
-  evaluateDenial, evaluatePermit, expectedHelperHash, requireTestnet,
+  evaluateDenial, evaluatePermit, expectedHelperHash, postExpiryReadback, refuseExistingEvidence, requireProbeOutcomes,
+  requireTestnet, withThrowawayKeys, writeEvidence,
 } from './deploy-live-helper.mjs';
 import { authDigest, i128 } from './lib.mjs';
 
@@ -204,6 +208,9 @@ test('case authorizations: owner installs under rule 0, delegate transfers under
     validUntilLedger: 777, networkPassphrase: Networks.TESTNET }), /1\.\.=1000001/);
   await assert.rejects(buildCaseAuthorizations({ candidate: CANDIDATE, sac: SAC, owner, delegate,
     validUntilLedger: 777, networkPassphrase: Networks.PUBLIC }), /testnet/);
+  // A key that is not the candidate's delegate is never used to sign the transfer.
+  await assert.rejects(buildCaseAuthorizations({ candidate: { ...CANDIDATE, delegate: G(9) }, sac: SAC, owner, delegate,
+    validUntilLedger: 777, networkPassphrase: Networks.TESTNET }), /not the candidate's delegate/);
 });
 
 // --- denial attribution ---------------------------------------------------------------------------
@@ -287,7 +294,7 @@ const policyKey = (name, rule = 1) => xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name
 const ruleKey = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('ContextRuleData'), xdr.ScVal.scvU32(1)]);
 const change = (key, before, after) => ({ type: before ? (after ? 'updated' : 'deleted') : 'created', key, before, after });
 
-function permitSimulation({ sent = AMOUNT, received = AMOUNT, used = 1, extra = [], ruleId = 1, drop = [] } = {}) {
+function permitSimulation({ sent = AMOUNT, received = AMOUNT, used = 1, extra = [], ruleId = 1, drop = [], counterBefore = null } = {}) {
   const changes = {
     sender: change(contractKey(SAC, balanceKeyVal(ACCOUNT)),
       contractEntry(SAC, balanceKeyVal(ACCOUNT), sacBalance(4_000_000n)),
@@ -295,7 +302,9 @@ function permitSimulation({ sent = AMOUNT, received = AMOUNT, used = 1, extra = 
     recipient: change(accountKey(RECIPIENT), accountEntry(RECIPIENT, 100_000_000n), accountEntry(RECIPIENT, 100_000_000n + received)),
     rule: change(contractKey(ACCOUNT, ruleKey), null, contractEntry(ACCOUNT, ruleKey, xdr.ScVal.scvMap([]))),
     installed: change(contractKey(POLICY, policyKey('Installed')), null, contractEntry(POLICY, policyKey('Installed'), xdr.ScVal.scvBool(true))),
-    counter: change(contractKey(POLICY, policyKey('CallCount')), null, contractEntry(POLICY, policyKey('CallCount'), xdr.ScVal.scvU32(used))),
+    counter: change(contractKey(POLICY, policyKey('CallCount')),
+      counterBefore === null ? null : contractEntry(POLICY, policyKey('CallCount'), xdr.ScVal.scvU32(counterBefore)),
+      contractEntry(POLICY, policyKey('CallCount'), xdr.ScVal.scvU32(used))),
     nonce: change(contractKey(ACCOUNT, xdr.ScVal.scvLedgerKeyNonce(new xdr.ScNonceKey({ nonce: 5n })), xdr.ContractDataDurability.temporary), null,
       contractEntry(ACCOUNT, xdr.ScVal.scvLedgerKeyNonce(new xdr.ScNonceKey({ nonce: 5n })), xdr.ScVal.scvVoid(), xdr.ContractDataDurability.temporary)),
   };
@@ -324,6 +333,9 @@ for (const [name, sim, why] of [
   ['no fresh installation marker', permitSimulation({ drop: ['installed'] }), /installation marker/],
   ['no rule stored by the account', permitSimulation({ drop: ['rule'] }), /account did not store rule 1/],
   ['another rule returned', permitSimulation({ ruleId: 2 }), /returned rule 2/],
+  ['one entry reported changed twice', permitSimulation({ extra: [change(contractKey(POLICY, policyKey('CallCount')), null,
+    contractEntry(POLICY, policyKey('CallCount'), xdr.ScVal.scvU32(1)))] }), /changed twice/],
+  ['a counter that existed before the simulation', permitSimulation({ counterBefore: 0 }), /candidate counter/],
 ]) {
   test(`a permit is refused with ${name}`, () => {
     const outcome = evaluatePermit(sim, PERMIT_CONTEXT);
@@ -335,4 +347,96 @@ for (const [name, sim, why] of [
 test('a failed simulation is never a permit', () => {
   assert.deepEqual(evaluatePermit({ error: NESTED_DENIAL }, PERMIT_CONTEXT),
     { result: 'failed', reason: 'simulation failed', host: 'HostError: Error(Auth, InvalidAction)' });
+});
+
+// --- the run's gates and key handling ---------------------------------------------------------------
+
+const READBACK = {
+  lastExpiry: 100,
+  balanceBefore: { value: 4_000_000n, ledger: 90 },
+  balanceAfter: { value: 4_000_000n, ledger: 101 },
+  installedAfter: { value: false, ledger: 102 },
+};
+
+test('the post-expiry readback passes only with every read after expiry, the balance unchanged and nothing installed', () => {
+  const { untouched, record } = postExpiryReadback(READBACK);
+  assert.equal(untouched, true);
+  assert.deepEqual(record, {
+    after_signature_expiration_ledger: 100,
+    account_balance_before_cases: { amount: '4000000', ledger: 90 },
+    account_balance_after_expiry: { amount: '4000000', ledger: 101 },
+    candidate_is_installed_after_expiry: { value: false, ledger: 102 },
+  });
+  for (const [name, change] of [
+    ['balance moved', { balanceAfter: { value: 3_000_000n, ledger: 101 } }],
+    ['balance read before expiry', { balanceAfter: { value: 4_000_000n, ledger: 100 } }],
+    ['candidate installed', { installedAfter: { value: true, ledger: 102 } }],
+    ['installation read before expiry', { installedAfter: { value: false, ledger: 99 } }],
+  ]) assert.equal(postExpiryReadback({ ...READBACK, ...change }).untouched, false, name);
+});
+
+test('evidence is written only for a permit, a policy denial with code 6 and an untouched account', () => {
+  const permit = { result: 'permit' };
+  const denial = { result: 'deny', code: 6 };
+  assert.doesNotThrow(() => requireProbeOutcomes({ permit, denial, untouched: true }));
+  for (const [name, outcome] of [
+    ['permit failed', { permit: { result: 'failed' }, denial, untouched: true }],
+    ['denial failed', { permit, denial: { result: 'failed', code: 7009 }, untouched: true }],
+    ['code 6 without a policy denial', { permit, denial: { result: 'failed', code: 6 }, untouched: true }],
+    ['another policy code', { permit, denial: { result: 'deny', code: 7 }, untouched: true }],
+    ['account touched after expiry', { permit, denial, untouched: false }],
+  ]) assert.throws(() => requireProbeOutcomes(outcome), /probe failed.*no evidence written/, name);
+});
+
+test('evidence is never overwritten, before the run or at the end of it', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ozpb-live-helper-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'evidence', 'probe.json');
+  assert.doesNotThrow(() => refuseExistingEvidence(path));
+  writeEvidence(path, { first: true });
+  assert.throws(() => refuseExistingEvidence(path), /already exists/);
+  assert.throws(() => writeEvidence(path, { second: true }), /EEXIST/);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { first: true });
+});
+
+function fakeProcess() {
+  const proc = new EventEmitter();
+  proc.env = {};
+  proc.exits = [];
+  proc.exit = (code) => proc.exits.push(code);
+  return proc;
+}
+
+test('throwaway keys are deleted after success and after failure, and the handlers are removed', async () => {
+  for (const fail of [false, true]) {
+    const proc = fakeProcess();
+    let seen;
+    const work = withThrowawayKeys(async (secrets) => {
+      seen = secrets;
+      writeFileSync(secrets, '{"payer":"not a real seed"}');
+      assert.equal(proc.env.OZPB_HARNESS_SECRETS, secrets);
+      assert.equal(proc.listenerCount('SIGTERM'), 1);
+      if (fail) throw new Error('step failed');
+      return 'report';
+    }, { proc });
+    if (fail) await assert.rejects(work, /step failed/);
+    else assert.equal(await work, 'report');
+    assert.equal(existsSync(seen), false);
+    assert.equal(existsSync(join(seen, '..')), false);
+    assert.equal(proc.env.OZPB_HARNESS_SECRETS, undefined);
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) assert.equal(proc.listenerCount(signal), 0, signal);
+  }
+});
+
+test('a signal deletes the throwaway keys before the process exits with the signal status', async () => {
+  for (const [signal, status] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
+    const proc = fakeProcess();
+    await withThrowawayKeys(async (secrets) => {
+      writeFileSync(secrets, '{"payer":"not a real seed"}');
+      proc.emit(signal, signal);
+      // The handler ran synchronously: the keys are already gone when exit is requested.
+      assert.equal(existsSync(join(secrets, '..')), false);
+      assert.deepEqual(proc.exits, [status]);
+    }, { proc });
+  }
 });

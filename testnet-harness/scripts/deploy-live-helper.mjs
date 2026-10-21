@@ -273,6 +273,69 @@ export function evaluatePermit(sim, { sac, account, recipient, policy, amount, r
   };
 }
 
+/**
+ * Once every case signature has expired at `lastExpiry`: the case signatures can no longer move or
+ * install anything, so the account's balance must equal its value before the cases and the
+ * candidate must report no installation, each read at a ledger after `lastExpiry`.
+ */
+export function postExpiryReadback({ lastExpiry, balanceBefore, balanceAfter, installedAfter }) {
+  const record = {
+    after_signature_expiration_ledger: lastExpiry,
+    account_balance_before_cases: { amount: String(balanceBefore.value), ledger: balanceBefore.ledger },
+    account_balance_after_expiry: { amount: String(balanceAfter.value), ledger: balanceAfter.ledger },
+    candidate_is_installed_after_expiry: { value: installedAfter.value, ledger: installedAfter.ledger },
+  };
+  const untouched = balanceAfter.ledger > lastExpiry && installedAfter.ledger > lastExpiry
+    && balanceAfter.value === balanceBefore.value && installedAfter.value === false;
+  return { record, untouched };
+}
+
+/** Evidence is written only for a permit, a policy denial with `NoTupleMatched`, and an untouched account. */
+export function requireProbeOutcomes({ permit, denial, untouched }) {
+  if (permit.result !== 'permit' || denial.result !== 'deny' || denial.code !== POLICY_NO_TUPLE_MATCHED || !untouched) {
+    throw new Error(`probe failed: permit case ${permit.result}, denial case ${denial.result}, `
+      + `post-expiry state ${untouched ? 'unchanged' : 'CHANGED'}; no evidence written`);
+  }
+}
+
+/** Checked before the run starts, so a long live run cannot end at an existing file. */
+export function refuseExistingEvidence(path) {
+  if (existsSync(path)) throw new Error(`${path} already exists; refusing to overwrite evidence`);
+}
+
+/** Written exclusively: an existing file is never replaced, even if it appeared during the run. */
+export function writeEvidence(path, report) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
+}
+
+/** Exit statuses for the signals that delete the throwaway keys before the process exits. */
+const KEY_SIGNALS = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
+
+/**
+ * Run `work(secretsFile)` with a fresh private directory for the throwaway keys, named to the
+ * harness steps by `OZPB_HARNESS_SECRETS`. The directory is deleted when `work` settles, either
+ * way, and on SIGINT, SIGTERM or SIGHUP before the process exits with the signal's status.
+ */
+export async function withThrowawayKeys(work, { proc = process } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'ozpb-live-helper-'));
+  const remove = () => rmSync(dir, { recursive: true, force: true });
+  const onSignal = (signal) => {
+    remove();
+    proc.exit(128 + KEY_SIGNALS[signal]);
+  };
+  for (const signal of Object.keys(KEY_SIGNALS)) proc.once(signal, onSignal);
+  const secrets = join(dir, 'keys.json');
+  proc.env.OZPB_HARNESS_SECRETS = secrets;
+  try {
+    return await work(secrets);
+  } finally {
+    remove();
+    delete proc.env.OZPB_HARNESS_SECRETS;
+    for (const signal of Object.keys(KEY_SIGNALS)) proc.removeListener(signal, onSignal);
+  }
+}
+
 // --- the live run ---------------------------------------------------------------------------------
 
 /** Enforce-mode simulation of `operation` with its supplied authorization. Never signed or sent. */
@@ -338,7 +401,7 @@ async function main() {
   const startedAt = new Date();
   const date = startedAt.toISOString().slice(0, 10);
   const evidencePath = resolve(opts.evidence ?? join(ROOT, `docs/evidence/atomic-live-helper-testnet-${date}.json`));
-  if (existsSync(evidencePath)) throw new Error(`${evidencePath} already exists; refusing to overwrite evidence`);
+  refuseExistingEvidence(evidencePath);
   // Every step resolves the CLI the same way, whatever directory each runs it from.
   if (process.env.OZPB_BIN?.includes('/')) process.env.OZPB_BIN = resolve(process.env.OZPB_BIN);
   const net = await requireTestnet();
@@ -365,17 +428,7 @@ async function main() {
   const fetched = spawnSync('cargo', ['fetch', '--locked'], { cwd: join(ROOT, 'contracts/golden-transfer-policy'), stdio: 'inherit' });
   if (fetched.error || fetched.status !== 0) throw new Error('cargo fetch --locked for the generated policy failed');
 
-  const secretsDir = mkdtempSync(join(tmpdir(), 'ozpb-live-helper-'));
-  const secrets = join(secretsDir, 'keys.json');
-  process.env.OZPB_HARNESS_SECRETS = secrets;
-  const signals = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
-  const onSignal = (signal) => {
-    rmSync(secretsDir, { recursive: true, force: true });
-    process.exit(128 + signals[signal]);
-  };
-  for (const signal of Object.keys(signals)) process.once(signal, onSignal);
-  let report;
-  try {
+  const report = await withThrowawayKeys(async (secrets) => {
     runHarnessStep('setup.mjs', ['--run-dir', runDir, '--owner', 'ed25519', '--amount', String(PERMIT_AMOUNT)], secrets);
     let run = rpc.readJson(join(runDir, 'run.json'));
     runHarnessStep('invoke.mjs', ['--run-dir', runDir, '--signer', 'owner', '--rule', '0', '--amount', run.amount,
@@ -448,17 +501,10 @@ async function main() {
     await waitPast(lastExpiry);
     const balanceAfter = await balance();
     const installedAfter = await view(policy.contract, 'is_installed', [xdr.ScVal.scvU32(EXPECTED_RULE_ID), new Address(run.account).toScVal()]);
-    const postExpiry = {
-      after_signature_expiration_ledger: lastExpiry,
-      account_balance_before_cases: { amount: String(balanceBefore.value), ledger: balanceBefore.ledger },
-      account_balance_after_expiry: { amount: String(balanceAfter.value), ledger: balanceAfter.ledger },
-      candidate_is_installed_after_expiry: { value: installedAfter.value, ledger: installedAfter.ledger },
-    };
-    const untouched = balanceAfter.ledger > lastExpiry && installedAfter.ledger > lastExpiry
-      && balanceAfter.value === balanceBefore.value && installedAfter.value === false;
+    const { record: postExpiry, untouched } = postExpiryReadback({ lastExpiry, balanceBefore, balanceAfter, installedAfter });
     rpc.log(`readback  account balance ${balanceAfter.value} (was ${balanceBefore.value}), candidate installed: ${installedAfter.value}`);
 
-    report = {
+    const record = {
       schema_version: 1,
       evidence_kind: 'atomic_live_helper_testnet_probe',
       live_enforcement: 'unavailable',
@@ -491,19 +537,12 @@ async function main() {
       post_expiry_readback: postExpiry,
     };
     // The same public record stays in the (gitignored) run directory whatever the outcome.
-    rpc.writeJson(join(runDir, 'live-helper.json'), report);
-    if (permit.result !== 'permit' || denial.result !== 'deny' || denial.code !== POLICY_NO_TUPLE_MATCHED || !untouched) {
-      throw new Error(`probe failed: permit case ${permit.result}, denial case ${denial.result}, `
-        + `post-expiry state ${untouched ? 'unchanged' : 'CHANGED'}; no evidence written`);
-    }
-  } finally {
-    rmSync(secretsDir, { recursive: true, force: true });
-    delete process.env.OZPB_HARNESS_SECRETS;
-    for (const signal of Object.keys(signals)) process.removeListener(signal, onSignal);
-  }
+    rpc.writeJson(join(runDir, 'live-helper.json'), record);
+    requireProbeOutcomes({ permit, denial, untouched });
+    return record;
+  });
   report.throwaway_keys_deleted = true;
-  mkdirSync(dirname(evidencePath), { recursive: true });
-  writeFileSync(evidencePath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
+  writeEvidence(evidencePath, report);
   rpc.log(`evidence  ${evidencePath}`);
 }
 

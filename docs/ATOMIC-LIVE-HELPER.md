@@ -190,7 +190,9 @@ refuses an RPC serving any other network before it builds, funds or signs anythi
    the reviewed bytes and each instance reads back with that code hash;
 4. builds the four authorization entries itself, never from a recording simulation, with
    signatures that expire 12 ledgers later, and runs one enforce-mode simulation of
-   `install_and_transfer` per case. Nothing is submitted for either case;
+   `install_and_transfer` per case. Nothing is submitted for either case. The owner's and the
+   delegate's `__check_auth` entries carry classic (V1) address credentials, as elsewhere in the
+   harness, where the host tests sign all four entries as `AddressV2`;
 5. requires the permit case to return rule 1, to have the account store that rule, to change no
    balance except the account's (down exactly 1,000,000 stroops) and the recipient's (up by the
    same), and to create the candidate's installation with its call counter used once. The denial
@@ -219,7 +221,9 @@ helper as `CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V`, which read
 After the last case signature expired at ledger 5316218, the account's balance was unchanged and
 the candidate reported no installation. When deployed, the helper's instance entry was live until
 ledger 5437165 and its code entry until ledger 5437164, about a week of testnet ledgers. After
-that the helper is archived and the script has to be run again.
+that the helper is archived and the script has to be run again. The evidence's `script_sha256`
+is the script as committed with it; the script was later restructured so that its gates and key
+handling are unit-tested, without changing what a run checks.
 
 This is a harness probe, not the live layer. The keys are throwaway automation keys held by the
 script, and no owner saw or approved anything. Each outcome describes testnet state at its
