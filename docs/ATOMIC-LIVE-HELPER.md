@@ -168,12 +168,17 @@ nothing about the policy, and neither is an account error.
 
 A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
 address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
-which the RPC returns for a failed simulation too: they must record one helper call with exactly
-the approved candidate, and `__check_auth` calls into the account for exactly the envelope's two
-account entries, each with that entry's signature payload (which covers its nonce and expiry), its
-signature and its contexts. The authorization entries a result echoes must be absent or exactly
-the envelope's. The validator does not verify signatures, which the simulation's host did, and it
-neither signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
+which the RPC returns for a failed simulation too. In the order the host records them, they must
+show one helper call with exactly the approved candidate, then the account's `__check_auth` for the
+installation and then for the transfer, once each, with that entry's signature payload (which
+covers its nonce and expiry), its signature and its contexts. Only the host's diagnostic events
+count; a contract can emit any topics as a contract event. For a permit those calls succeeded, and
+the result must echo exactly the envelope's four entries, which is what binds the classic signers'
+own entries. For a denial every event comes from a failed call, and the policy's error follows the
+transfer's check. A failed response echoes nothing, so a denial vouches for the helper call and the
+account's two entries but not for the classic signers' entries, although `envelope_xdr_sha256`
+covers their bytes. The validator does not verify signatures, which the simulation's host did, and
+it neither signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
 [testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed
 in the shapes the probe and the host use. They also run it over real responses: a second,
 simulation-only probe the same day reused the deployed helper with a fresh throwaway account,

@@ -324,8 +324,8 @@ export function callEvents(entries, { amount = PROBE.permitAmount, recipient = P
   const ok = !denial;
   const events = [
     fnCall(null, PROBE.helper, 'install_and_transfer', [candidate(amount, recipient)], ok),
-    fnCall(PROBE.helper, PROBE.account, 'add_context_rule', installRoot().function.contractFn.args),
-    ...(install ? [checkAuthCall(PROBE.account, install)] : []),
+    fnCall(PROBE.helper, PROBE.account, 'add_context_rule', installRoot().function.contractFn.args, ok),
+    ...(install ? [checkAuthCall(PROBE.account, install, ok)] : []),
     fnCall(PROBE.helper, PROBE.asset, 'transfer', [addr(PROBE.account), addr(recipient), i128(amount)], ok),
     ...(transfer ? [checkAuthCall(PROBE.asset, transfer, ok)] : []),
   ];
@@ -336,20 +336,24 @@ export function callEvents(entries, { amount = PROBE.permitAmount, recipient = P
     }) }).toXDR('base64'));
     return events;
   }
-  const { code = PROBE.denialCode, raisedBy = PROBE.policy, account = PROBE.account, failedAuthBy = PROBE.asset } = denial;
+  // As the real response shows, every event of a failed simulation comes from a failed call.
+  const {
+    code = PROBE.denialCode, raisedBy = PROBE.policy, account = PROBE.account, failedAuthBy = PROBE.asset,
+    failedAuthError = authInvalidAction(),
+  } = denial;
   return [...events,
     errorEvent(raisedBy, contractError(code), vec([xdr.ScVal.scvString('failing with contract error'), u32(code)])),
     diagnostic(PROBE.account, [sym('log')], vec([xdr.ScVal.scvString('VM call trapped with HostError'), sym('__check_auth'),
       xdr.ScVal.scvError(contractError(code))]), false),
-    errorEvent(failedAuthBy, authInvalidAction(), vec([xdr.ScVal.scvString('failed account authentication with error'), addr(account),
-      xdr.ScVal.scvError(contractError(code))]), true),
-    errorEvent(PROBE.helper, authInvalidAction(), xdr.ScVal.scvString('escalating error to VM trap from failed host function call: call'), true),
+    errorEvent(failedAuthBy, failedAuthError, vec([xdr.ScVal.scvString('failed account authentication with error'), addr(account),
+      xdr.ScVal.scvError(contractError(code))])),
+    errorEvent(PROBE.helper, authInvalidAction(), xdr.ScVal.scvString('escalating error to VM trap from failed host function call: call')),
   ];
 }
 
-/** The RPC's raw result of a successful enforce-mode simulation of `entries`. */
+/** The RPC's raw result of a successful enforce-mode simulation of `entries`, echoing them as the RPC does. */
 export function permitSimulation(changes, {
-  entries = [], amount, recipient, events = callEvents(entries, { amount, recipient }), auth = [],
+  entries = [], amount, recipient, events = callEvents(entries, { amount, recipient }), auth = entries.map((e) => e.toXDR('base64')),
   retval = returnedRule(), latestLedger = PROBE.simulationLedger, archived = [],
 } = {}) {
   const data = new SorobanDataBuilder().setResourceFee('100').build();
@@ -371,7 +375,7 @@ export function denialText({ code = PROBE.denialCode, raisedBy = PROBE.policy, a
     '',
     'Event log (newest first):',
     `   0: [Diagnostic Event] contract:${PROBE.helper}, topics:[error, Error(Auth, InvalidAction)], data:"escalating error to VM trap from failed host function call: call"`,
-    `   1: [Diagnostic Event] contract:${failedAuthBy}, topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #${code})]`,
+    `   1: [Failed Diagnostic Event (not emitted)] contract:${failedAuthBy}, topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #${code})]`,
     `   2: [Failed Diagnostic Event (not emitted)] contract:${PROBE.account}, topics:[log], data:["VM call trapped with HostError", __check_auth, Error(Contract, #${code})]`,
     `   3: [Failed Diagnostic Event (not emitted)] contract:${raisedBy}, topics:[error, Error(Contract, #${code})], data:["failing with contract error", ${code}]`,
   ].join('\n');

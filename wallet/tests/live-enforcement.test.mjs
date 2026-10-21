@@ -457,7 +457,7 @@ test('a denial is evidence only with its own events: the helper call and the acc
   for (const missing of checks) refused(withEvents(own.filter((text) => text !== missing)), 'unbound_response');
   // An authorization check of something the envelope does not carry.
   const stranger = F.accountEntry(F.transferRoot(PROBE.denialAmount), [PROBE.ruleId], [[F.delegated(PROBE.delegate), EMPTY]]);
-  refused(withEvents([...own, F.checkAuthCall(PROBE.asset, stranger)]), 'unbound_response');
+  refused(withEvents([...own, F.checkAuthCall(PROBE.asset, stranger, false)]), 'unbound_response');
   // A check of the transfer entry with other contexts, as for an entry with a sub-invocation.
   const nested = own.map((text) => {
     const event = xdr.DiagnosticEvent.fromXDR(text, 'base64');
@@ -486,19 +486,21 @@ test('the denial must be in the structured events too, not only in the printed l
   assert.equal(refused({ ...base, simulation: refusal }, 'helper_refusal').code, 7009);
 });
 
-test('the result\'s authorization entries are absent or exactly the envelope\'s', () => {
+test('a permit\'s result echoes exactly the envelope\'s entries, the classic signer entries included', () => {
   const entries = F.caseEntries();
   const own = entries.map((e) => e.toXDR('base64'));
   const at = (auth) => sample(entries, { simulation: F.permitSimulation(F.permitChanges(entries), { entries, auth }) });
-  assert.equal(validateLiveCase(at([])).outcome, 'permit');
   assert.equal(validateLiveCase(at(own)).outcome, 'permit');
-  const noAuth = at([]);
+  const noAuth = at(own);
   delete noAuth.simulation.results[0].auth;
-  assert.equal(validateLiveCase(noAuth).outcome, 'permit');
-  refused(at([...own].reverse()), 'unbound_response');
-  refused(at(own.slice(1)), 'unbound_response');
-  refused(at(F.caseEntries().map((e) => e.toXDR('base64'))), 'unbound_response');
-  refused(at('none'), 'unbound_response');
+  for (const [name, input] of [['absent', noAuth], ['empty', at([])], ['a prefix', at(own.slice(0, 3))], ['reordered', at([...own].reverse())],
+    ['shifted', at(own.slice(1))], ['another envelope\'s', at(F.caseEntries().map((e) => e.toXDR('base64')))], ['not a list', at('none')]]) {
+    refused(input, 'unbound_response', name);
+  }
+  // A signer entry the response did not enforce: the same envelope but another delegate proof echoed.
+  const forged = [...own];
+  forged[3] = F.signerEntry(PROBE.delegate, Buffer.alloc(32, 5)).toXDR('base64');
+  refused(at(forged), 'unbound_response');
 });
 
 test('the validator answers with a verdict whatever it is given', () => {
@@ -691,4 +693,112 @@ test('real responses with one part removed or reordered are refused', () => {
   refused(realCase('permit', nonceless), 'nonces');
   refused(realCase('permit', { ...REAL.permit.simulation, events: [] }), 'unbound_response');
   refused(realCase('denial', { ...REAL.denial.simulation, events: undefined }), 'unbound_response');
+});
+
+// --- success flags, order and the remaining single conditions -------------------------------------
+
+const realEvents = (name) => REAL[name].simulation.events.map((text) => xdr.DiagnosticEvent.fromXDR(text, 'base64'));
+const encode = (events) => events.map((e) => e.toXDR('base64'));
+
+test('a spliced response is refused: a denial\'s events all come from failed calls', () => {
+  // The permit's successful events, then the denial's failure tail from the policy's error on.
+  const spliced = [...REAL.permit.simulation.events, ...REAL.denial.simulation.events.slice(16)];
+  refused(realCase('permit', { ...REAL.denial.simulation, events: spliced }), 'unbound_response');
+  // One successful event in an otherwise failed denial is enough to refuse it.
+  const events = realEvents('denial');
+  events[3].inSuccessfulContractCall = true;
+  refused(realCase('denial', { ...REAL.denial.simulation, events: encode(events) }), 'unbound_response');
+});
+
+test('a permit\'s helper call and authorization checks come from successful calls', () => {
+  for (const index of [0, 2, 14]) {
+    const events = realEvents('permit');
+    events[index].inSuccessfulContractCall = false;
+    refused(realCase('permit', { ...REAL.permit.simulation, events: encode(events) }), 'unbound_response', `event ${index}`);
+  }
+});
+
+test('the record is in order: helper call, installation check, transfer check, then the policy\'s error', () => {
+  for (const name of ['permit', 'denial']) {
+    refused(realCase(name, { ...REAL[name].simulation, events: [...REAL[name].simulation.events].reverse() }), 'unbound_response', name);
+    // The two authorization checks swapped.
+    const events = [...REAL[name].simulation.events];
+    [events[2], events[14]] = [events[14], events[2]];
+    refused(realCase(name, { ...REAL[name].simulation, events }), 'unbound_response', `${name} checks swapped`);
+  }
+  // The policy's error moved before the transfer's check: it cannot be the transfer's denial.
+  const events = [...REAL.denial.simulation.events];
+  const errors = events.splice(16, 2);
+  events.splice(13, 0, ...errors);
+  refused(realCase('denial', { ...REAL.denial.simulation, events }), 'not_a_policy_denial');
+});
+
+test('each authorization check is recorded exactly once', () => {
+  for (const name of ['permit', 'denial']) {
+    const events = [...REAL[name].simulation.events];
+    events.splice(15, 0, events[14]);
+    refused(realCase(name, { ...REAL[name].simulation, events }), 'unbound_response', name);
+  }
+});
+
+test('the helper call is recorded into this helper, with exactly this candidate', () => {
+  // Another helper instance with the same four entries: the account's checks are identical, only the
+  // callee of the recorded helper call differs.
+  const entries = F.caseEntries();
+  const otherHelper = StrKey.encodeContract(Buffer.alloc(32, 99));
+  refused({ intent: F.intent({ helper: otherHelper }), envelopeXdr: F.envelopeXdr(entries, { contract: otherHelper }),
+    simulation: F.permitSimulation(F.permitChanges(entries), { entries }) }, 'unbound_response');
+  // The recorded call carrying another candidate.
+  const events = F.callEvents(entries);
+  events[0] = F.fnCall(null, PROBE.helper, 'install_and_transfer', [F.candidate(PROBE.permitAmount - 1n)]);
+  refused(sample(entries, { simulation: F.permitSimulation(F.permitChanges(entries), { entries, events }) }), 'unbound_response');
+});
+
+test('only host diagnostic events count: a contract event shaped like a call is ignored', () => {
+  const entries = F.caseEntries();
+  const mimic = (text) => {
+    const event = xdr.DiagnosticEvent.fromXDR(text, 'base64');
+    event.event.type = xdr.ContractEventType.contract;
+    return event.toXDR('base64');
+  };
+  const events = F.callEvents(entries);
+  const input = (list) => sample(entries, { simulation: F.permitSimulation(F.permitChanges(entries), { entries, events: list }) });
+  assert.equal(validateLiveCase(input([...events, mimic(events[0])])).outcome, 'permit');
+  refused(input([mimic(events[0]), ...events.slice(1)]), 'unbound_response');
+});
+
+test('the account\'s failed authentication must carry the host\'s Auth InvalidAction topic', () => {
+  const { entries, ...base } = F.denialSample();
+  const events = F.callEvents(entries, { amount: PROBE.denialAmount, denial: { failedAuthError: xdr.ScError.sceContract(6) } });
+  refused({ ...base, simulation: { ...base.simulation, events } }, 'not_a_policy_denial');
+});
+
+test('the helper call comes first, and only host error events attribute the denial', () => {
+  for (const name of ['permit', 'denial']) {
+    // The helper call recorded after the installation's check.
+    const events = [...REAL[name].simulation.events];
+    const [call] = events.splice(0, 1);
+    events.splice(2, 0, call);
+    refused(realCase(name, { ...REAL[name].simulation, events }), 'unbound_response', name);
+  }
+  const retyped = (indices) => {
+    const events = realEvents('denial');
+    for (const i of indices) events[i].event.type = xdr.ContractEventType.contract;
+    return realCase('denial', { ...REAL.denial.simulation, events: encode(events) });
+  };
+  // The policy's errors, or the asset's failed authentication, as contract events: anyone's to emit.
+  refused(retyped([16, 17]), 'not_a_policy_denial');
+  refused(retyped([22]), 'not_a_policy_denial');
+});
+
+test('the structured denial is the policy\'s own code, followed by the asset\'s failure', () => {
+  // The policy raising another code while the printed log and the asset report NoTupleMatched.
+  const events = realEvents('denial');
+  for (const i of [16, 17]) events[i].event.body.v0.topics[1] = xdr.ScVal.scvError(xdr.ScError.sceContract(7));
+  refused(realCase('denial', { ...REAL.denial.simulation, events: encode(events) }), 'not_a_policy_denial');
+  // The asset's failure recorded before the policy raised anything.
+  const moved = [...REAL.denial.simulation.events];
+  const [failure] = moved.splice(22, 1);
+  moved.splice(15, 0, failure);
+  refused(realCase('denial', { ...REAL.denial.simulation, events: moved }), 'not_a_policy_denial');
 });
