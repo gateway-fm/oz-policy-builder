@@ -617,3 +617,78 @@ test('an account entry\'s signature is exactly an AuthPayload', () => {
     refused(sample([install, ownerProof, bad, delegateProof]), 'auth_payload', name);
   }
 });
+
+// --- real testnet responses ---------------------------------------------------------------------------
+
+// Raw enforce-mode responses from a testnet probe of the deployed helper on 21 October 2026, with the
+// two classic signer entries' Ed25519 signatures zeroed (see the fixture's provenance). These pin the
+// shapes above to what the RPC actually returns.
+const REAL = JSON.parse(readFileSync(new URL('./live-enforcement-testnet.json', import.meta.url), 'utf8'));
+const realCase = (name, simulation = REAL[name].simulation) => ({ intent: REAL[name].intent, envelopeXdr: REAL[name].envelopeXdr, simulation });
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+test('real testnet responses: the probed permit is a permit and the adjacent amount a policy denial', () => {
+  const { provenance } = REAL;
+  assert.deepEqual([provenance.harness_outcomes.permit.result, provenance.harness_outcomes.denial.result], ['permit', 'deny']);
+  const permit = validateLiveCase(realCase('permit'));
+  assert.equal(permit.outcome, 'permit', JSON.stringify(permit));
+  assert.deepEqual([permit.enforcer, permit.returned_rule_id, permit.balance_changes, permit.amount],
+    [provenance.candidate_policy, 1, { account: '-1000000', recipient: '1000000' }, '1000000']);
+  const denial = validateLiveCase(realCase('denial'));
+  assert.equal(denial.outcome, 'deny', JSON.stringify(denial));
+  assert.deepEqual([denial.enforcer, denial.code, denial.amount, denial.host],
+    [provenance.candidate_policy, 6, '1000001', 'HostError: Error(Auth, InvalidAction)']);
+  assert.equal(provenance.post_expiry_readback.installed, false);
+  assert.equal(provenance.post_expiry_readback.balance_after, provenance.post_expiry_readback.balance_before);
+});
+
+test('real testnet responses swapped between the two cases are refused', () => {
+  refused(realCase('permit', REAL.denial.simulation), 'unbound_response');
+  refused(realCase('denial', REAL.permit.simulation), 'balance_delta');
+});
+
+test('real responses carry the shapes the validator reads', () => {
+  const permit = REAL.permit.simulation;
+  const denial = REAL.denial.simulation;
+  // Enforcing mode echoes the supplied entries; a failed simulation reports neither results nor changes.
+  const envelopeAuth = (name) => xdr.TransactionEnvelope.fromXDR(REAL[name].envelopeXdr, 'base64')
+    .v1.tx.operations[0].body.invokeHostFunctionOp.auth.map((e) => e.toXDR('base64'));
+  assert.deepEqual(permit.results[0].auth, envelopeAuth('permit'));
+  assert.equal(denial.results, undefined);
+  assert.equal(denial.stateChanges, undefined);
+  // Fourteen changes on a fresh account, four of them the entries' nonces.
+  assert.equal(permit.stateChanges.length, 14);
+  const nonces = permit.stateChanges.filter((c) => xdr.LedgerKey.fromXDR(c.key, 'base64').contractData?.key.type === 'scvLedgerKeyNonce');
+  assert.equal(nonces.length, 4);
+  // Both responses record the helper call and the account's two authorization checks; the denial's
+  // events, all from failed calls, include the policy's own NoTupleMatched.
+  const events = (simulation) => simulation.events.map((text) => xdr.DiagnosticEvent.fromXDR(text, 'base64'));
+  const fnCalls = (simulation, fn) => events(simulation).filter((e) => e.event.body.v0.topics[0]?.sym?.toString() === 'fn_call'
+    && e.event.body.v0.topics[2]?.sym?.toString() === fn);
+  for (const simulation of [permit, denial]) {
+    assert.equal(fnCalls(simulation, 'install_and_transfer').length, 1);
+    assert.equal(fnCalls(simulation, '__check_auth').length, 2);
+  }
+  assert.ok(events(denial).every((e) => e.inSuccessfulContractCall === false));
+  const policyId = Buffer.from(StrKey.decodeContract(REAL.provenance.candidate_policy)).toString('hex');
+  assert.ok(events(denial).some((e) => e.event.contractId && Buffer.from(e.event.contractId.toXDR()).toString('hex') === policyId
+    && e.event.body.v0.topics[1]?.error?.contractCode === 6));
+});
+
+test('real responses with one part removed or reordered are refused', () => {
+  const withoutTransferCheck = clone(REAL.denial.simulation);
+  const checks = withoutTransferCheck.events.filter((text) => {
+    const topics = xdr.DiagnosticEvent.fromXDR(text, 'base64').event.body.v0.topics;
+    return topics[2]?.sym?.toString() === '__check_auth';
+  });
+  withoutTransferCheck.events = withoutTransferCheck.events.filter((text) => text !== checks[1]);
+  refused(realCase('denial', withoutTransferCheck), 'unbound_response');
+  const reordered = clone(REAL.permit.simulation);
+  reordered.results[0].auth.reverse();
+  refused(realCase('permit', reordered), 'unbound_response');
+  const nonceless = clone(REAL.permit.simulation);
+  nonceless.stateChanges = nonceless.stateChanges.filter((c) => xdr.LedgerKey.fromXDR(c.key, 'base64').contractData?.key.type !== 'scvLedgerKeyNonce');
+  refused(realCase('permit', nonceless), 'nonces');
+  refused(realCase('permit', { ...REAL.permit.simulation, events: [] }), 'unbound_response');
+  refused(realCase('denial', { ...REAL.denial.simulation, events: undefined }), 'unbound_response');
+});

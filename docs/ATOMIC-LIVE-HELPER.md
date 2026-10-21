@@ -175,8 +175,16 @@ signature and its contexts. The authorization entries a result echoes must be ab
 the envelope's. The validator does not verify signatures, which the simulation's host did, and it
 neither signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
 [testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed
-in the shapes the probe and the host use, since the probe kept no raw simulation; neither the
-exact set of ledger changes nor the events have yet been compared with a real response. The owner
+in the shapes the probe and the host use. They also run it over real responses: a second,
+simulation-only probe the same day reused the deployed helper with a fresh throwaway account,
+automation keys and a new candidate, `CDTRH2NIFBKASKAF3FA2NCEYJ65O4XXI6NUPWDW6J4T3JYBHOLEYCHKF`,
+and kept the RPC's raw responses as
+[`wallet/tests/live-enforcement-testnet.json`](../wallet/tests/live-enforcement-testnet.json),
+with the two classic signer entries' Ed25519 signatures zeroed. On them the permit validates as
+`permit`, the adjacent amount as `deny`, and each case with the other's response as `failed`. The
+real responses matched the shapes the validator expects: the permit result echoes the four
+supplied entries, the fresh account's permit writes fourteen entries including the four nonces,
+and the denial's events, all from failed calls, are returned alongside its error. The owner
 must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real transfer
 that no policy checks, should the signatures ever be submitted.
 
