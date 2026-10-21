@@ -117,8 +117,14 @@ elapsed wall-clock time never stands in for a ledger.
 
 On failure after installation, the wrapper runs `protocol-finish.mjs` before discarding keys.
 It removes each rule whose installation was confirmed, with the same bounded child process and
-termination handling as W2's failure cleanup. A removal that was prepared or sent is never
-resubmitted; an attempt that prepared nothing may be retried. Before signing any removal, the
+termination handling as W2's failure cleanup. The child's output goes to a new private
+`cleanup-child.log` in the run directory: transaction hashes and, on failure, the failing stage
+and a message with the run's secrets redacted. A removal that was prepared or sent is never
+resubmitted. Its hash is reconciled instead. If it landed, it is verified like any confirmed
+removal and marked `reconciled`. If it failed, or was not seen once its validity window had passed,
+it is kept by hash and one fresh removal may follow. Otherwise it stays pending and the cleanup
+is `incomplete`. An attempt that prepared nothing may be retried. Removal readbacks count only
+from an endpoint at or after the removal's ledger. Before signing any removal, the
 network must be testnet and the account must still run the pinned code, whose rule IDs are never
 reused; otherwise nothing is signed. A rule whose grant or policy readback no longer matches is
 then still removed by the ID from its confirmed install. A rule whose installation was never

@@ -61,7 +61,7 @@ test('a directory in place of the journal leaves cleanup incomplete', async (t) 
   const result = await cleanupAfterFailure(f.dir, { runRevoke: () => assert.fail('must not revoke') });
   assert.deepEqual(result, { status: 'incomplete', reason: 'unreadable_journal' });
 });
-for (const mode of ['owner rule', 'missing installation', 'pending removal', 'confirmed removal', 'attempted cleanup']) {
+for (const mode of ['owner rule', 'missing installation', 'confirmed removal', 'attempted cleanup']) {
   test(`failure cleanup never retries or invents authority: ${mode}`, async (t) => {
     const f = fixture(t);
     if (mode === 'owner rule') f.run.rule_id = 0;
@@ -129,3 +129,38 @@ for (const mode of ['kill fails', 'close never arrives']) {
     assert.match(marker.expected_run_sha256, /^[0-9a-f]{64}$/);
   });
 }
+
+test('the cleanup child writes its output to a new private cleanup-child.log, never over an existing file', async (t) => {
+  const { mkdtempSync: mk, rmSync: rm, statSync, writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+  const { tmpdir: td } = await import('node:os');
+  const { join: j } = await import('node:path');
+  const dir = mk(j(td(), 'ozpb-child-log-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const start = () => {
+    const child = new EventEmitter(); child.pid = 5;
+    let options;
+    const done = runCleanupChild(dir, { expectedRunHash: 'ab'.repeat(32), spawnProcess: (_c, _a, o) => { options = o; return child; },
+      setTimer: () => 1, clearTimer: () => {} });
+    child.emit('close', 0);
+    return done.then((result) => ({ result, options }));
+  };
+  const first = await start();
+  assert.deepEqual(first.result, { status: 'exited', code: 0 });
+  assert.equal(first.options.stdio[0], 'ignore');
+  assert.ok(Number.isInteger(first.options.stdio[1]) && first.options.stdio[1] === first.options.stdio[2]);
+  assert.equal(statSync(j(dir, 'cleanup-child.log')).mode & 0o777, 0o600);
+  wf(j(dir, 'cleanup-child.log'), 'earlier output');
+  const second = await start();
+  assert.equal(second.options.stdio, 'ignore', 'an existing log is never reopened or truncated');
+  assert.equal(rf(j(dir, 'cleanup-child.log'), 'utf8'), 'earlier output');
+});
+
+test('a pending removal reaches the cleanup child, which reconciles it by hash instead of resending', async (t) => {
+  const f = fixture(t);
+  f.run.lifecycle = { pending_removal: { rule_id: 7, transaction: 'ef'.repeat(32) } };
+  f.save();
+  let called = 0;
+  const result = await cleanupAfterFailure(f.dir, { runRevoke: async () => { called++; return { status: 'exited', code: 1 }; } });
+  assert.equal(called, 1);
+  assert.equal(result.status, 'incomplete');
+});

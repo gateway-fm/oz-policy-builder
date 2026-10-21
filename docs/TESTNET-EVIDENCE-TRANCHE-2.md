@@ -269,21 +269,28 @@ was one one-call rule (account rule ID 1) for `claim(self, [3], self)` on the Bl
 `CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW`, valid until ledger 5316809. ID 3 is
 the bToken (supply) ID of the pool's Circle testnet USDC reserve. The owner rule is ID 0.
 
+Values marked *(journal)* come from the run's retained local `run.json`, not the published
+summary; everything else in the table is in the summary.
+
 | Observation | Recorded result |
 | --- | --- |
-| Emission and preflight | The emission on ID 3 was live until 26 October 2026, 04:23:27 UTC, so no `gulp_emissions` was sent. The read-only preflight passed at 5316491, including an expected owner claim of 210 BLND base units and a quote of 213647060 USDC base units for 200 XLM. |
-| Position | The payer sent 200 XLM to the account; the owner swapped them on the pinned Soroswap router for 213647060 USDC base units, then [supplied](https://stellar.expert/explorer/testnet/tx/48475f8d7ff5128e7a23292331f8bd1562e4742d2847c59592c8ae511c34a433) exactly 100000000 (10 USDC, request type 0) at 5316494. The readback showed one USDC supply position of 99888711 bTokens. |
+| Emission and preflight | The refresh recorded `not_needed`, so no `gulp_emissions` was sent. *(journal)* The emission on ID 3 was live until 26 October 2026, 04:23:27 UTC; the read-only preflight passed at 5316491, with an expected owner claim of 210 BLND base units and a quote of 213647060 USDC base units for 200 XLM. |
+| Position | The payer sent 200 XLM to the account, the owner swapped them on the pinned Soroswap router, then [supplied](https://stellar.expert/explorer/testnet/tx/48475f8d7ff5128e7a23292331f8bd1562e4742d2847c59592c8ae511c34a433) exactly 100000000 USDC base units (10 USDC, request type 0) at 5316494. *(journal)* The swap returned 213647060 USDC base units, and the readback showed one USDC supply position of 99888711 bTokens. |
 | Owner recording and artifact chain | After a 12-ledger wait, the [owner claim](https://stellar.expert/explorer/testnet/tx/81954cb3585bd5b26a373d37fa0c9502e3464bc2436b49a74c8421c6099c4fbf) confirmed at 5316509 with 262 BLND base units and a matching balance increase. It went through the real RPC recorder, synthesis, the 25-case reference suite, and generation/build with matching source/Wasm/manifest reproduction. |
-| Install | The [rule](https://stellar.expert/explorer/testnet/tx/c0c3c10cccb1f423efffcd1c6c1e32fd4af8b3a05946a7c5ef0f0b626f5ff6d7) was checked and rechecked at 5316515, installed at 5316517 and read back matched. |
+| Install | The [rule](https://stellar.expert/explorer/testnet/tx/c0c3c10cccb1f423efffcd1c6c1e32fd4af8b3a05946a7c5ef0f0b626f5ff6d7) was checked and rechecked at 5316515 and read back matched. *(journal)* It was installed at 5316517. |
 | Claim controls | A different reserve token list and a foreign recipient each returned the generated policy's code 6 (`NoTupleMatched`); another pool function (`submit`) returned its code 5 (`FunctionNotAllowed`). A wrong signer returned the account's 3016; an empty signer set returned the policy's code 1. The foreign recipient is a contract address that holds nothing; nothing was sent to it. |
 | Delegated claim and count cap | After the accrual wait, the [delegated claim](https://stellar.expert/explorer/testnet/tx/4e987cf5f5d3030afe9d044518c26c18edfdb5aa111a07b19419dfc84a3e504f) confirmed at 5316526 with 298 BLND base units and a matching balance increase. The repeat returned the policy's code 7 at 5316526. |
-| Expiry | After the wait reached ledger 5316810, the account returned `UnvalidatedContext` (3002) at 5316811. |
+| Expiry | After the wait reached ledger 5316810 (the grant's last valid ledger plus one), the account returned `UnvalidatedContext` (3002) at 5316811. |
 | Owner removal | The [removal](https://stellar.expert/explorer/testnet/tx/ec505ff30a03aef18cf2c91a68f09b371b74641e074891a11d8e1d365c088a24) confirmed at 5316813. Its event matched, the rule read back absent, and the policy reported uninstalled. |
 | Post-removal control | The account's missing-rule code 3000 at 5316816. No negative-control fee transaction was submitted. |
-| Withdrawal | The owner [withdrew](https://stellar.expert/explorer/testnet/tx/3e7caed05c8793f5411250ce6aebb0b952e33346447ea6bab38a6a2a323c78ce) the supply at 5316817 (99999999 USDC base units returned), and the account's positions read back empty. |
+| Withdrawal | The owner [withdrew](https://stellar.expert/explorer/testnet/tx/3e7caed05c8793f5411250ce6aebb0b952e33346447ea6bab38a6a2a323c78ce) the supply at 5316817, and the account's positions read back empty. *(journal)* 99999999 USDC base units were returned. |
 
-All 12 control steps completed, the position was withdrawn, and the wrapper finalized with exit
-0, deleting the throwaway keys. The claimed BLND (560 base units), the swap's surplus USDC and
+All 12 control steps completed. They are 8 enforcing-simulation denials, 1 confirmed delegated
+claim, 2 ledger waits (accrual and expiry) and the cleanup step. Five of the denials came from the
+generated policy: #6 for the reserve list, #6 for the recipient, #5 for the other pool function, #1
+for the empty signer set and #7 for the repeat. Three came from the account: 3016 for the wrong
+signer, 3002 for the expired rule and 3000 after removal. The position was withdrawn, and the
+wrapper finalized with exit 0, deleting the throwaway keys. The claimed BLND (560 base units), the swap's surplus USDC and
 the withdrawn USDC stay on the throwaway account. No reviewed Blend adapter was involved: the
 pool's code hash in the spec is an `evidence_only` observation. These remain editable local RPC
 observations, with non-atomic reads and no ledger proof or protected wallet-approval claim.
@@ -314,7 +321,8 @@ far as the checks below show.
    the harness expected 6, so it stopped as an unattributed denial. Fixed by expecting 5. The
    wrapper withdrew the position (empty readback), but its grant cleanup ended `incomplete`: the
    cleanup child prepared and sent the removal but did not record its confirmation, and its
-   output is not retained. A later read-only check found the removal transaction successful at
+   output was not retained then. Cleanup children now write `cleanup-child.log`, and a prepared
+   removal is reconciled from its hash on the next cleanup instead of staying pending. A later read-only check found the removal transaction successful at
    ledger 5316457, rule 1 absent (3000), the policy reporting it uninstalled, and no Blend
    position. The keys had already been deleted, as designed; the rule would in any case have
    expired at ledger 5316739.

@@ -110,7 +110,7 @@ finish_run() {
         echo 'Cleanup termination is unconfirmed; retaining its files without finalization. Inspect cleanup-termination.json and run.json.' >&2
         exit "$run_status"
     fi
-    if [ "$cleanup_status" -ne 0 ]; then echo 'Failure cleanup incomplete; inspect run.json before assuming the grant was removed.' >&2; fi
+    if [ "$cleanup_status" -ne 0 ]; then echo 'Failure cleanup incomplete; inspect run.json and cleanup-child.log before assuming the grant was removed.' >&2; fi
     # Finalize and export together, keeping provenance consistent with a reporting failure.
     node "$SCRIPTS/run-provenance.mjs" finalize "$RUN" "$run_status" || { [ "$run_status" -ne 0 ] || run_status=1; }
     exit "$run_status"

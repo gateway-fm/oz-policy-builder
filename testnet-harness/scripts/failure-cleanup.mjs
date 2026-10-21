@@ -2,7 +2,7 @@
 // A missing confirmation is ambiguous: never send another removal automatically.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StrKey } from '@stellar/stellar-sdk';
@@ -20,6 +20,28 @@ const identity = (run) => ({
   subscription: run.subscription ?? null,
 });
 const sameIdentity = (left, right) => JSON.stringify(identity(left)) === JSON.stringify(identity(right));
+
+/**
+ * The cleanup child's stdout and stderr, in a new private file in the run directory. `wx`
+ * semantics: an existing path (or symlink) is never opened, so earlier output is never truncated
+ * and nothing is written through a link; the child then runs without a log. The child prints
+ * transaction hashes and, on failure, its stage and a message with the run's secrets redacted.
+ */
+export function openCleanupLog(dir) {
+  try {
+    // `dir` is the run directory `run.sh` created, or one its operator names on the command
+    // line; the basename is fixed. O_EXCL|O_NOFOLLOW: no existing file or link is followed.
+    // nosec
+    return openSync(join(dir, 'cleanup-child.log'),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  } catch {
+    console.error('Could not create a new cleanup-child.log; the cleanup child runs without a log.');
+    return null;
+  }
+}
+const childStdio = (fd) => fd === null ? 'ignore' : ['ignore', fd, fd];
+const closeLog = (fd) => { if (fd !== null) try { closeSync(fd); } catch { /* the child holds its own copy */ } };
+export { childStdio, closeLog };
 
 export function runCleanupChild(dir, {
   expectedRunHash, spawnProcess = spawn, setTimer = setTimeout, clearTimer = clearTimeout,
@@ -47,9 +69,12 @@ export function runCleanupChild(dir, {
     };
     try {
       if (!hash(expectedRunHash)) throw new Error('missing cleanup run snapshot');
-      child = spawnProcess(process.execPath, [fileURLToPath(new URL('./lifecycle.mjs', import.meta.url)),
-        '--run-dir', dir, '--expected-run-sha256', expectedRunHash],
-      { detached: true, stdio: 'ignore', env: process.env });
+      const log = openCleanupLog(dir);
+      try {
+        child = spawnProcess(process.execPath, [fileURLToPath(new URL('./lifecycle.mjs', import.meta.url)),
+          '--run-dir', dir, '--expected-run-sha256', expectedRunHash],
+        { detached: true, stdio: childStdio(log), env: process.env });
+      } finally { closeLog(log); }
       child.once('error', () => Number.isSafeInteger(child.pid) && child.pid > 0 ? terminate() : finish({ status: 'failed' }));
       child.once('close', (code) => finish(timedOut ? { status: 'timed_out' } : { status: 'exited', code }));
       timer = setTimer(terminate, 180_000);
@@ -75,7 +100,8 @@ export async function cleanupAfterFailure(dir, { runRevoke = runCleanupChild } =
     || !hash(initial.tx?.add_context_rule) || !Number.isSafeInteger(initial.rule_id)
     || initial.rule_id <= 0 || initial.rule_id > 0xffff_ffff) return { status: 'not_eligible' };
   const record = { status: 'attempting', ...identity(initial) };
-  if (initial.lifecycle?.pending_removal !== undefined || initial.lifecycle?.removals?.some((r) => r.rule_id === initial.rule_id)) {
+  // A pending removal goes to the child, which reconciles it by its hash and never resends it.
+  if (initial.lifecycle?.removals?.some((r) => r.rule_id === initial.rule_id)) {
     record.status = 'incomplete';
     record.reason = 'removal_already_recorded';
     initial.failure_cleanup = record;
@@ -122,7 +148,7 @@ if (isMainModule(import.meta.url)) {
   const result = await cleanupAfterFailure(opts['run-dir']);
   console.error(`Failure cleanup: ${result.status}${result.reason ? ` (${result.reason})` : ''}.`);
   if (result.status === 'incomplete' || result.status === 'termination_unconfirmed') {
-    console.error('The live grant may remain; inspect the retained journal. Keys will still be discarded.');
+    console.error('The live grant may remain; inspect the retained journal and cleanup-child.log. Keys will still be discarded.');
   }
   if (result.status === 'termination_unconfirmed') {
     console.error('Cleanup termination is unconfirmed; do not rewrite or finalize its journal.');

@@ -112,8 +112,15 @@ leaves the child-owned run/provenance files unfinalized. The original failure st
 remain; secret deletion does not revoke it. A `run.json` that exists but cannot be read is
 reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
 since it may have been cut short after recording an installation. The journal records a removal hash before send,
-so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
-automatically. A confirmed removal with incomplete readbacks likewise requires inspection.
+so an interrupted or unconfirmed submission remains `pending_removal` and is never sent again.
+The next cleanup reconciles it from its hash, polling until the transaction is final or its
+validity window plus 30 seconds has passed. One that landed is verified and marked `reconciled`.
+One that failed or was never seen is kept by hash under `failed_removals`, and one fresh removal
+may follow. Anything else stays pending. A confirmed removal with incomplete readbacks likewise
+requires inspection; its readbacks count only from an endpoint at or after its ledger. The
+cleanup child's stdout and stderr go to a new private `cleanup-child.log` in the run directory,
+holding transaction hashes and, on failure, the stage and a message with the run's secrets
+redacted.
 
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.

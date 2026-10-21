@@ -45,6 +45,12 @@ function fixture({ withPlan = true } = {}) {
     ownerSigner: async () => ({ verifier: C(6), keyData: Buffer.alloc(66, 1), sign: async (digest) => {
       signatures.push(digest); return Buffer.alloc(64, 2);
     } }),
+    delay: async () => {},
+    viewCallObservation: async (payer, contract, fn, args) => {
+      // A lagging endpoint answers from an earlier ledger for the first `lag` reads.
+      const ledger = control.lag > 0 ? (control.lag--, state.ledger - 10) : state.ledger;
+      return { value: await deps.viewCall(payer, contract, fn, args), ledger };
+    },
     viewCall: async (_payer, contract, fn, args) => {
       if (contract === p.blend_asset && fn === 'balance') { assert.equal(scValToNative(args[0]), account); return i128(state.usdc); }
       if (contract === p.blend_pool && fn === 'get_positions') {
@@ -306,4 +312,18 @@ test('pool and swap calls name the Blend fee ceiling; the plain XLM transfer kee
   assert.deepEqual(f.sends, ['transfer', 'swap_exact_tokens_for_tokens', 'submit:0', 'submit:1']);
   assert.deepEqual(f.fees, [undefined, BLEND_FEE_CEILING, BLEND_FEE_CEILING, BLEND_FEE_CEILING]);
   assert.ok(BLEND_FEE_CEILING > 10_000_000n && BLEND_FEE_CEILING <= 100_000_000n);
+});
+
+test('position and balance readbacks after a confirmed call count only at or after its ledger', async () => {
+  const f = fixture();
+  await openPosition({ run: f.run, save: f.save }, f.deps);
+  f.control.lag = 2;
+  const reads = [];
+  const observe = f.deps.viewCallObservation;
+  f.deps.viewCallObservation = async (...args) => { const r = await observe(...args); reads.push([args[2], r.ledger]); return r; };
+  assert.equal((await closePosition({ run: f.run, save: f.save }, f.deps)).status, 'withdrawn');
+  const w = f.run.walkthrough.position_journal.withdrawal;
+  const after = reads.filter(([fn, ledger]) => fn === 'get_positions' && ledger >= w.ledger);
+  assert.ok(after.length >= 1, 'the empty readback that closed the position was at or after the withdrawal ledger');
+  assert.ok(reads.some(([, ledger]) => ledger < w.ledger), 'lagging reads happened and were not accepted');
 });

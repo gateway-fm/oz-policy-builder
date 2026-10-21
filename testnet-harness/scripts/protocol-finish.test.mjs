@@ -165,3 +165,28 @@ for (const mode of ['null', 'array', 'string', 'dangling symlink']) {
     assert.deepEqual(result, { status: 'incomplete', reason: 'unreadable_journal' });
   });
 }
+
+test('the cleanup child writes its output to a new private cleanup-child.log, never over an existing file', async (t) => {
+  const { mkdtempSync: mk, rmSync: rm, statSync, writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+  const { tmpdir: td } = await import('node:os');
+  const { join: j } = await import('node:path');
+  const dir = mk(j(td(), 'ozpb-child-log-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const start = () => {
+    const child = new EventEmitter(); child.pid = 5;
+    let options;
+    const done = runProtocolCleanupChild(dir, { expectedRunHash: 'ab'.repeat(32), spawnProcess: (_c, _a, o) => { options = o; return child; },
+      setTimer: () => 1, clearTimer: () => {} });
+    child.emit('close', 0);
+    return done.then((result) => ({ result, options }));
+  };
+  const first = await start();
+  assert.deepEqual(first.result, { status: 'exited', code: 0 });
+  assert.equal(first.options.stdio[0], 'ignore');
+  assert.ok(Number.isInteger(first.options.stdio[1]) && first.options.stdio[1] === first.options.stdio[2]);
+  assert.equal(statSync(j(dir, 'cleanup-child.log')).mode & 0o777, 0o600);
+  wf(j(dir, 'cleanup-child.log'), 'earlier output');
+  const second = await start();
+  assert.equal(second.options.stdio, 'ignore', 'an existing log is never reopened or truncated');
+  assert.equal(rf(j(dir, 'cleanup-child.log'), 'utf8'), 'earlier output');
+});

@@ -1,6 +1,7 @@
 // Bounded caller-owned cleanup removes each known grant once, preserving partial/ambiguous results.
 // A missing installation ID is never replaced by owner rule 0 or inferred from rule order.
-// An attempt that prepared no transaction may be retried; a prepared or sent removal never is.
+// An attempt that prepared no transaction may be retried; a prepared or sent removal is never
+// sent again: its hash is reconciled, and only one that definitively did not land is replaced.
 import assert from 'node:assert/strict';
 import { Address, Operation, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { inspectBundleGrant } from './bundle-grant.mjs';
@@ -49,37 +50,103 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
   requireThat(new Set(ids).size === ids.length, 'duplicate installed rule ID');
   bundle.cleanup = { status: 'attempting' };
   save();
+  const payerKey = () => {
+    const payer = deps.loadKey('payer');
+    same(payer.publicKey(), run.payer, 'fee payer');
+    return payer;
+  };
+  // Confirmed removal: event, then readbacks at or after its ledger. Throws at the failing stage.
+  async function verifyRemoval(entry, id, receipt, progress) {
+    progress('removal event');
+    deps.removalEvent(receipt, { hash: entry.removal.transaction, account: run.account, ruleId: id });
+    entry.removal.event = 'verified';
+    save();
+    const payer = payerKey();
+    const floor = entry.removal.ledger ?? 0;
+    const read = (contract, fn, args) => rpc.observeAtOrAfter(floor,
+      () => deps.viewCallObservation(payer, contract, fn, args), { delay: deps.delay });
+    const args = [xdr.ScVal.scvU32(id)];
+    progress('rule readback');
+    try {
+      await read(run.account, 'get_context_rule', args);
+      entry.removal.rule_readback = 'still_present';
+      save();
+      throw new Error('removed bundle rule remains present');
+    } catch (error) {
+      if (!absent(error, run.account)) throw error;
+      entry.removal.rule_readback = 'absent';
+      save();
+    }
+    progress('policy readback');
+    const installed = scValToNative((await read(entry.policy, 'is_installed', [xdr.ScVal.scvU32(id),
+      new Address(run.account).toScVal()])).value);
+    requireThat(typeof installed === 'boolean', 'malformed policy cleanup observation');
+    entry.removal.policy_cleanup = installed ? 'still_installed' : 'not_installed';
+    entry.cleanup_attempt.status = installed ? 'incomplete' : 'removed';
+    save();
+  }
   for (const entry of [...bundle.entries].reverse()) {
-    if (!entry.installation || entry.installation.rule_id === null || entry.pending_removal || entry.removal) continue;
+    if (!entry.installation || entry.installation.rule_id === null || entry.removal) continue;
+    const id = entry.installation.rule_id;
+    let stage = 'identity checks';
+    const progress = (next) => { stage = next; };
     entry.cleanup_attempt = { status: 'attempting', attempts: (entry.cleanup_attempt?.attempts ?? 0) + 1 };
     save();
     try {
-      const id = entry.installation.rule_id;
+      // A prepared removal is never sent again. Its hash decides: landed, it is verified like any
+      // confirmed removal; definitively not landed (failed, or unseen after its validity window),
+      // it is kept by hash and one fresh removal may follow; otherwise it stays pending.
+      if (entry.pending_removal) {
+        progress('pending removal outcome');
+        const prepared = entry.pending_removal;
+        const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null);
+        if (outcome?.status === 'SUCCESS') {
+          entry.removal = { transaction: prepared.transaction, ledger: Number.isSafeInteger(outcome.ledger) ? outcome.ledger : null,
+            event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked', confirmation: 'reconciled',
+            before: prepared.before ?? { configuration: 'mismatch_or_unavailable' } };
+          delete entry.pending_removal;
+          save();
+          await verifyRemoval(entry, id, outcome, progress);
+          continue;
+        }
+        const landed = outcome?.status === 'FAILED' ? 'failed'
+          : outcome?.status === 'NOT_FOUND' && outcome.after_window === true && Number.isSafeInteger(prepared.max_time) ? 'expired_unseen' : null;
+        if (landed === null) throw new Error('prepared removal has no final outcome yet');
+        (entry.failed_removals ??= []).push({ transaction: prepared.transaction, status: landed });
+        delete entry.pending_removal;
+        save();
+        if (entry.failed_removals.length > 1) throw new Error('a fresh removal was already tried once');
+      }
       // The pinned account assigns rule IDs from a monotonic counter, so the ID from our
       // confirmed install names only that grant. That holds only for the pinned code on the
       // expected network: those checks must pass before signing. A changed or unreadable grant
       // or policy is still removed.
+      progress('identity checks');
       await deps.assertTestnet();
       same(await deps.contractCodeHash(run.account), run.account_code_hash, 'live account code');
+      progress('pre-removal readback');
       let before;
       try { before = await deps.inspectGrant(run, spec, entry, deps); }
       catch { before = { configuration: 'mismatch_or_unavailable' }; }
-      const payer = deps.loadKey('payer');
-      same(payer.publicKey(), run.payer, 'fee payer');
+      const payer = payerKey();
       const args = [xdr.ScVal.scvU32(id)];
       const operation = (auth = []) => Operation.invokeContractFunction({
         contract: run.account, function: 'remove_context_rule', args, auth,
       });
+      progress('recording authorization');
       const recorded = await deps.recordAuth(payer, operation(), 'bundle remove_context_rule');
       requireThat(recorded.length === 1 && entryAddress(recorded[0]) === run.account, 'unexpected cleanup authorization entries');
+      progress('owner signature');
       const owner = await deps.ownerSigner(run);
       const signed = await signForSmartAccount({ entry: recorded[0], expect: contractCall(run.account, 'remove_context_rule', args),
         signer: owner, ruleIds: [0], validUntilLedger: (await deps.latestLedger()) + 100,
         networkPassphrase: rpc.NETWORK_PASSPHRASE });
+      progress('submission');
       const sent = await deps.submit(payer, operation([signed.accountEntry, signed.delegateEntry].filter(Boolean)), {
-        stage: `bundle remove rule ${id}`, onSubmitting: (transaction) => {
+        stage: `bundle remove rule ${id}`, onSubmitting: (transaction, window = {}) => {
           requireThat(hash(transaction), 'invalid prepared removal identity');
-          entry.pending_removal = { transaction, status: 'prepared_for_submission' };
+          entry.pending_removal = { transaction, status: 'prepared_for_submission', before,
+            ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}) };
           save();
         },
       });
@@ -88,27 +155,11 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
         event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked', before };
       delete entry.pending_removal;
       save();
-      deps.removalEvent(sent.receipt, { hash: sent.hash, account: run.account, ruleId: id });
-      entry.removal.event = 'verified';
-      save();
-      try {
-        await deps.viewCall(payer, run.account, 'get_context_rule', args);
-        entry.removal.rule_readback = 'still_present';
-        save();
-        throw new Error('removed bundle rule remains present');
-      } catch (error) {
-        if (!absent(error, run.account)) throw error;
-        entry.removal.rule_readback = 'absent';
-        save();
-      }
-      const installed = scValToNative(await deps.viewCall(payer, entry.policy, 'is_installed',
-        [xdr.ScVal.scvU32(id), new Address(run.account).toScVal()]));
-      requireThat(typeof installed === 'boolean', 'malformed policy cleanup observation');
-      entry.removal.policy_cleanup = installed ? 'still_installed' : 'not_installed';
-      entry.cleanup_attempt.status = installed ? 'incomplete' : 'removed';
-      save();
-    } catch {
-      // Preserve the precise journal stage and known hash; never save free-form RPC errors.
+      await verifyRemoval(entry, id, sent.receipt, progress);
+    } catch (error) {
+      // Preserve the precise journal stage and known hash; the reason goes to stderr (the
+      // cleanup log), never into the journal, with this run's secrets redacted.
+      console.error(rpc.redactSecrets(`bundle cleanup rule ${id}: ${stage} failed: ${error?.message ?? error}`));
       entry.cleanup_attempt.status = 'incomplete';
       save();
     }

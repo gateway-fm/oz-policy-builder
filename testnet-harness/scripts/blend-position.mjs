@@ -145,14 +145,18 @@ async function submitStep({ step, save }, send) {
   return sent;
 }
 
-async function usdcBalance(run, payer, deps) {
-  const value = scValToNative(await deps.viewCall(payer, p.blend_asset, 'balance', [A(run.account)]));
+// A read after a confirmed transaction counts only from an endpoint at or after its ledger.
+const observe = (deps, payer, contract, fn, args, minimum) => rpc.observeAtOrAfter(minimum ?? 0,
+  () => deps.viewCallObservation(payer, contract, fn, args), { delay: deps.delay });
+
+async function usdcBalance(run, payer, deps, minimum) {
+  const value = scValToNative((await observe(deps, payer, p.blend_asset, 'balance', [A(run.account)], minimum)).value);
   requireThat(typeof value === 'bigint' && value >= 0n, 'invalid USDC balance');
   return value;
 }
 
-async function livePositions(run, payer, deps) {
-  return positionsOf(await deps.viewCall(payer, p.blend_pool, 'get_positions', [A(run.account)]));
+async function livePositions(run, payer, deps, minimum) {
+  return positionsOf((await observe(deps, payer, p.blend_pool, 'get_positions', [A(run.account)], minimum)).value);
 }
 
 /**
@@ -246,7 +250,7 @@ export async function openPosition({ run, save }, overrides = {}) {
     const amounts = scValToNative(swap.returnValue);
     requireThat(Array.isArray(amounts) && amounts.length === 2 && amounts[0] === BigInt(plan.funding.amount_in)
       && typeof amounts[1] === 'bigint' && amounts[1] >= BigInt(plan.funding.minimum_out), 'funding swap output is below the supply amount');
-    const usdcAfter = await usdcBalance(run, payer, deps);
+    const usdcAfter = await usdcBalance(run, payer, deps, journal.funding_swap.ledger);
     Object.assign(journal.funding_swap, { returned_amount: amounts[1].toString(), usdc_before: usdcBefore.toString(),
       usdc_after: usdcAfter.toString() });
     save();
@@ -258,8 +262,8 @@ export async function openPosition({ run, save }, overrides = {}) {
     save();
     const supply = await ownerCall({ run, step: journal.supply, invocation: supplyInvocation(plan), stage: 'blend supply', save }, deps);
     const returned = positionsOf(supply.returnValue);
-    const supplied = await usdcBalance(run, payer, deps);
-    const live = await livePositions(run, payer, deps);
+    const supplied = await usdcBalance(run, payer, deps, journal.supply.ledger);
+    const live = await livePositions(run, payer, deps, journal.supply.ledger);
     requireThat(supplyOnly(returned) && supplyOnly(live) && live.supply[0][1] === returned.supply[0][1],
       'supply did not leave exactly one USDC supply position');
     Object.assign(journal.supply, { b_tokens: returned.supply[0][1].toString(), usdc_spent: (usdcAfter - supplied).toString() });
@@ -336,10 +340,10 @@ export async function closePosition({ run, save }, overrides = {}) {
     try {
       const before = await usdcBalance(run, payer, deps);
       const sent = await ownerCall({ run, step: journal.withdrawal, invocation: withdrawInvocation(plan), stage: 'blend withdrawal', save }, deps);
-      const after = await usdcBalance(run, payer, deps);
+      const after = await usdcBalance(run, payer, deps, journal.withdrawal.ledger);
       journal.withdrawal.usdc_returned = (after - before).toString();
       const returned = positionsOf(sent.returnValue);
-      const readback = await livePositions(run, payer, deps);
+      const readback = await livePositions(run, payer, deps, journal.withdrawal.ledger);
       journal.withdrawal.readback = isEmpty(readback) && isEmpty(returned) ? 'empty' : 'still_open';
       journal.withdrawal.status = 'confirmed';
       save();

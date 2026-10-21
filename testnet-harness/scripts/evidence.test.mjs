@@ -1084,6 +1084,61 @@ test('a gulp sent before the Blend plan existed is still exported', (t) => {
   assert.equal(exportEvidence(setup(t, fixture())).blend_emission_refresh, undefined);
 });
 
+const provenanceRecord = (exit) => ({ schema_version: 1, started_at: '2026-10-21T18:06:42.737Z',
+  finished_at: '2026-10-21T18:34:33.283Z', exit_code: exit, checkout_commit: 'ab'.repeat(20), checkout_dirty: false,
+  node_version: '24.15.0', cli: { mode: 'cargo', binary_sha256: null } });
+for (const status of ['open', 'incomplete', 'no_position']) {
+  test(`a Blend run that exited 0 with its position ${status} is refused`, (t) => {
+    const run = blendFixture();
+    run.walkthrough.position_journal.status = status;
+    if (status !== 'incomplete') delete run.walkthrough.position_journal.withdrawal;
+    if (status === 'no_position') delete run.walkthrough.position_journal.supply;
+    const dir = setup(t, run);
+    writeFileSync(join(dir, 'provenance.json'), JSON.stringify(provenanceRecord(0)));
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+    writeFileSync(join(dir, 'provenance.json'), JSON.stringify(provenanceRecord(1)));
+    assert.equal(exportEvidence(dir).walkthrough.position.status, status);
+  });
+}
+test('an exit-0 Blend run with its position withdrawn exports normally', (t) => {
+  const dir = setup(t, blendFixture());
+  writeFileSync(join(dir, 'provenance.json'), JSON.stringify(provenanceRecord(0)));
+  assert.equal(exportEvidence(dir).walkthrough.position.status, 'withdrawn');
+});
+test('withdrawals and removals that did not land are exported by hash; a reconciled removal says so', (t) => {
+  const run = blendFixture();
+  run.walkthrough.position_journal.failed_withdrawals = [{ status: 'not_applied', transaction: 'e1'.repeat(32), ledger: 90, note: SENTINEL }];
+  const entry = run.walkthrough.bundle.entries[0];
+  entry.removal.confirmation = 'reconciled';
+  entry.failed_removals = [{ transaction: 'e2'.repeat(32), status: 'expired_unseen' }];
+  const report = exportEvidence(setup(t, run));
+  assert.deepEqual(report.walkthrough.position.failed_withdrawals, [{ transaction: 'e1'.repeat(32), status: 'not_applied' }]);
+  assert.equal(report.walkthrough.bundle.entries[0].removal.confirmation, 'reconciled');
+  assert.deepEqual(report.walkthrough.bundle.entries[0].failed_removals, [{ transaction: 'e2'.repeat(32), status: 'expired_unseen' }]);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+  const plain = exportEvidence(setup(t, blendFixture()));
+  assert.equal(Object.hasOwn(plain.walkthrough.position, 'failed_withdrawals'), false, 'absent unless recorded');
+  assert.equal(Object.hasOwn(plain.walkthrough.bundle.entries[0].removal, 'confirmation'), false);
+});
+test('a W2 removal reconciled from its hash, and one that did not land, are exported', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [{ rule_id: run.rule_id, transaction: HASH, ledger: 20, event: 'verified', rule_readback: 'absent',
+    policy_cleanup: 'not_installed', confirmation: 'reconciled' }],
+  failed_removals: [{ rule_id: run.rule_id, transaction: 'e3'.repeat(32), status: 'failed' }] };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.lifecycle.removals[0].confirmation, 'reconciled');
+  assert.deepEqual(report.lifecycle.failed_removals, [{ rule_id: run.rule_id, transaction: 'e3'.repeat(32), status: 'failed' }]);
+});
+test('run.sh withdraws the Blend supply after the controls and before reporting done', () => {
+  const script = readFileSync(join(ROOT, 'testnet-harness/run.sh'), 'utf8');
+  const branch = script.slice(script.indexOf('if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then'));
+  const controls = branch.indexOf('protocol-controls.mjs" --run-dir');
+  const close = branch.indexOf('blend-position.mjs" close --run-dir');
+  const done = branch.indexOf('say "done"');
+  assert.ok(controls > 0 && close > controls && done > close, 'step 6 closes the position on the success path');
+  assert.match(branch.slice(controls, close), /if \[ "\$WALKTHROUGH" = blend \]; then/);
+});
+
 test('a Soroswap walkthrough has no Blend position field', (t) => {
   assert.equal(exportEvidence(setup(t, protocolFixture())).walkthrough.position, undefined);
 });

@@ -9,7 +9,7 @@ import { installPermissionBundle } from './bundle-install.mjs';
 import { inspectBundleGrant } from './bundle-grant.mjs';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { walletTrust } from './wallet-decision.mjs';
-import { args, writeJson } from './rpc.mjs';
+import { args, redactSecrets, writeJson } from './rpc.mjs';
 const requireThat = (ok, text) => { if (!ok) throw new Error(text); };
 
 export function loadBundleFiles(directory, expectedRunHash) {
@@ -81,7 +81,13 @@ export async function bundleCommand(command, directory, options = {}) {
 if (isMainModule(import.meta.url)) {
   const options = args(process.argv.slice(3));
   requireThat(options['run-dir'], 'usage: bundle-command.mjs install|inspect|cleanup --run-dir DIRECTORY');
-  const result = await bundleCommand(process.argv[2], options['run-dir'], options);
+  let result;
+  try { result = await bundleCommand(process.argv[2], options['run-dir'], options); } catch (error) {
+    if (process.argv[2] !== 'cleanup') throw error;
+    // The cleanup child's output is kept in cleanup-child.log: a message, no stack, no secrets.
+    console.error(redactSecrets(`bundle cleanup failed: ${error?.message ?? error}`));
+    process.exit(1);
+  }
   console.log(JSON.stringify(result));
   if (process.argv[2] === 'cleanup' && result.status === 'incomplete') process.exitCode = 1;
 }

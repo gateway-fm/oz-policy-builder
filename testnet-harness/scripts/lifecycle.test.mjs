@@ -101,6 +101,7 @@ function fixture(t, mode = '') {
   let sent = 0; let keyLoads = 0;
   const done = receipt(mode === 'missing event' ? [] : [event()]);
   const deps = {
+    transactionOutcome: async () => ({ status: 'NOT_FOUND', after_window: false }),
     assertTestnet: async () => {}, latestLedger: async () => 500,
     contractCodeHash: async (address) => address === account ? (mode === 'changed code' ? hash : PINNED_ACCOUNT_WASM) : hash,
     contractCodeObservation: async (address) => ({
@@ -239,4 +240,49 @@ test('failure cleanup refuses a changed run snapshot before loading owner keys',
   await assert.rejects(revokePolicy(f.dir, { ...f.deps, expectedRunHash: '00'.repeat(32) }), /cleanup run snapshot/);
   assert.equal(f.keyLoads(), 0);
   assert.equal(f.sent(), 0);
+});
+
+const missing = (fn) => new SimulationError(fn, `contract:${account}, topics:[error, Error(Contract, #3000)], data:["failing with contract error", 3000]`);
+function withPending(f, pending, extra = {}) {
+  const state = f.state();
+  state.lifecycle = { removals: [], pending_removal: { rule_id: ruleId, status: 'prepared_for_submission', ...pending }, ...extra };
+  writeFileSync(join(f.dir, 'run.json'), JSON.stringify(state));
+}
+test('a W2 removal that landed is reconciled from its hash, verified, and never sent again', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: f.done.txHash, max_time: 1 });
+  f.deps.transactionOutcome = async () => f.done;
+  const base = f.deps.viewCall;
+  f.deps.viewCall = async (payer, address, fn, args) => fn === 'get_context_rule' ? (() => { throw missing(fn); })() : base(payer, address, fn, args);
+  const removal = await revokePolicy(f.dir, f.deps);
+  assert.equal(f.sent(), 0);
+  assert.deepEqual([removal.transaction, removal.confirmation, removal.event, removal.rule_readback, removal.policy_cleanup],
+    [f.done.txHash, 'reconciled', 'verified', 'absent', 'not_installed']);
+  assert.equal(f.state().lifecycle.pending_removal, undefined);
+});
+test('a W2 removal that failed is kept by hash and replaced once by a fresh removal', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: 'cd'.repeat(32), max_time: 1 });
+  f.deps.transactionOutcome = async () => ({ status: 'FAILED' });
+  const removal = await revokePolicy(f.dir, f.deps);
+  assert.equal(f.sent(), 1);
+  assert.equal(removal.transaction, f.done.txHash);
+  assert.deepEqual(f.state().lifecycle.failed_removals, [{ rule_id: ruleId, transaction: 'cd'.repeat(32), status: 'failed' }]);
+});
+test('a W2 removal is rebuilt at most once after removals that did not land', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: 'cd'.repeat(32), max_time: 1 },
+    { failed_removals: [{ rule_id: ruleId, transaction: 'ce'.repeat(32), status: 'failed' }] });
+  f.deps.transactionOutcome = async () => ({ status: 'FAILED' });
+  await assert.rejects(revokePolicy(f.dir, f.deps), /already tried/);
+  assert.equal(f.sent(), 0);
+});
+test('a W2 prepared removal journals its validity window before send', async (t) => {
+  const f = fixture(t);
+  f.deps.submit = async (_payer, _op, { onSubmitting }) => {
+    await onSubmitting(hash, { max_time: 4242 });
+    throw new Error('confirmation unavailable');
+  };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /confirmation unavailable/);
+  assert.equal(f.state().lifecycle.pending_removal.max_time, 4242);
 });

@@ -136,8 +136,34 @@ export async function revokePolicy(dir, overrides = {}) {
   const spec = parseJsonExact(readFileSync(join(dir, 'spec.json'), 'utf8'));
   requireThat(run.lifecycle === undefined || (run.lifecycle && Array.isArray(run.lifecycle.removals)), 'malformed lifecycle journal');
   const previous = run.lifecycle?.removals ?? [];
-  requireThat(run.lifecycle?.pending_removal === undefined, 'a pending removal is already recorded; inspect it before retrying');
   requireThat(!previous.some((r) => r.rule_id === run.rule_id), 'a removal for this rule is already recorded; inspect it before retrying');
+  // A prepared removal is never sent again. Its hash decides: landed, it is verified like any
+  // confirmed removal; definitively not landed (failed, or unseen after its validity window), it
+  // is kept by hash and one fresh removal may follow; otherwise the run stays incomplete.
+  const prepared = run.lifecycle?.pending_removal;
+  if (prepared !== undefined) {
+    requireThat(prepared.rule_id === run.rule_id && /^[0-9a-f]{64}$/.test(prepared.transaction ?? ''), 'malformed pending removal');
+    const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null);
+    if (outcome?.status === 'SUCCESS') {
+      const removal = { rule_id: run.rule_id, transaction: prepared.transaction,
+        ledger: Number.isSafeInteger(outcome.ledger) ? outcome.ledger : null, event: 'not_verified', rule_readback: 'not_checked',
+        policy_cleanup: 'not_checked', confirmation: 'reconciled', before: prepared.before ?? { configuration: 'mismatch_or_unavailable' } };
+      run.lifecycle = { ...run.lifecycle, removals: [...previous, removal] };
+      delete run.lifecycle.pending_removal;
+      deps.writeJson(path, run);
+      const payer = deps.loadKey('payer');
+      same(payer.publicKey(), run.payer, 'fee payer');
+      return verifyRemoval({ run, path, removal, receipt: outcome, payer }, deps);
+    }
+    const status = outcome?.status === 'FAILED' ? 'failed'
+      : outcome?.status === 'NOT_FOUND' && outcome.after_window === true && Number.isSafeInteger(prepared.max_time) ? 'expired_unseen' : null;
+    requireThat(status !== null, 'a pending removal is recorded and has no final outcome yet; it is never resent');
+    run.lifecycle = { ...run.lifecycle, failed_removals: [...(run.lifecycle.failed_removals ?? []),
+      { rule_id: run.rule_id, transaction: prepared.transaction, status }] };
+    delete run.lifecycle.pending_removal;
+    deps.writeJson(path, run);
+    requireThat(run.lifecycle.failed_removals.length <= 1, 'a fresh removal was already tried once');
+  }
   const observed = await inspectInstalledGrant(run, spec, deps);
   const payer = deps.loadKey('payer');
   same(payer.publicKey(), run.payer, 'fee payer');
@@ -148,9 +174,10 @@ export async function revokePolicy(dir, overrides = {}) {
     expect: contractCall(run.account, 'remove_context_rule', ruleArg(run.rule_id)), signer: owner, ruleIds: [0],
     validUntilLedger: (await deps.latestLedger()) + 100, networkPassphrase: rpc.NETWORK_PASSPHRASE });
   const sent = await deps.submit(payer, removeOperation(run.account, run.rule_id, [signed.accountEntry, signed.delegateEntry].filter(Boolean)),
-    { stage: 'remove_context_rule', onSubmitting: (hash) => {
+    { stage: 'remove_context_rule', onSubmitting: (hash, window = {}) => {
       run.lifecycle = { ...(run.lifecycle ?? {}), removals: previous,
-        pending_removal: { rule_id: run.rule_id, transaction: hash, status: 'prepared_for_submission' } };
+        pending_removal: { rule_id: run.rule_id, transaction: hash, status: 'prepared_for_submission', before: observed,
+          ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}) } };
       deps.writeJson(path, run);
     } });
   const removal = { rule_id: run.rule_id, transaction: sent.hash, ledger: sent.receipt?.ledger ?? null,
@@ -159,7 +186,12 @@ export async function revokePolicy(dir, overrides = {}) {
   run.lifecycle = { ...(run.lifecycle ?? {}), removals: [...previous, removal] };
   delete run.lifecycle.pending_removal;
   deps.writeJson(path, run);
-  removalEvent(sent.receipt, { hash: sent.hash, account: run.account, ruleId: run.rule_id });
+  return verifyRemoval({ run, path, removal, receipt: sent.receipt, payer }, deps);
+}
+
+/** Event, rule readback and policy cleanup readbacks for a confirmed (or reconciled) removal. */
+async function verifyRemoval({ run, path, removal, receipt, payer }, deps) {
+  removalEvent(receipt, { hash: removal.transaction, account: run.account, ruleId: run.rule_id });
   removal.event = 'verified';
   deps.writeJson(path, run);
   try {

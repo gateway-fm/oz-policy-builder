@@ -160,9 +160,11 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   checkAssembly(assembled, expectedEnvelope, maxFee);
   assembled.sign(payer);
   const expectedHash = Buffer.from(assembled.hash()).toString('hex');
+  const maxTime = Number(tx.timeBounds.maxTime);
   // Persist a removal identity before the first network write. A failed checkpoint prevents send;
-  // a later transport/confirmation failure keeps the identity available for manual inspection.
-  if (onSubmitting) await onSubmitting(expectedHash);
+  // a later transport/confirmation failure keeps the identity available for reconciliation. The
+  // end of the validity window says when an unseen transaction can no longer land.
+  if (onSubmitting) await onSubmitting(expectedHash, { max_time: maxTime });
   log(`transaction prepared ${expectedHash}; expires ${tx.timeBounds.maxTime}`);
   const sent = await server.sendTransaction(assembled);
   const status = ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER', 'ERROR'].includes(sent.status) ? sent.status : 'UNKNOWN';
@@ -174,12 +176,58 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   if (!['PENDING', 'DUPLICATE'].includes(sent.status)) {
     throw new Error(`${stage}: transaction ${expectedHash} was not accepted (${status}); no automatic retry`);
   }
-  const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
+  const done = await transactionOutcome(sent.hash, maxTime);
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
   }
   if (done.txHash !== expectedHash) throw new Error(`${stage}: confirmed transaction identity differs`);
   return { hash: sent.hash, returnValue: done.returnValue, receipt: done };
+}
+
+const POLL_INTERVAL_MS = 2000;
+/** Seconds past a transaction's validity window after which "not found" means it never landed. */
+export const CONFIRMATION_MARGIN_SECONDS = 30;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The final outcome of one submitted transaction: polled until SUCCESS or FAILED, or until its
+ * validity window (`maxTime`, Unix seconds) plus a margin has passed. Transport errors are retried
+ * within that bound; they are not outcomes. A `NOT_FOUND` returned after the window means the
+ * transaction can no longer land. Without a known window, one read is made and `NOT_FOUND`
+ * proves nothing.
+ */
+export async function transactionOutcome(hash, maxTime, { now = () => Date.now(), delay = pause } = {}) {
+  const known = Number.isSafeInteger(maxTime) && maxTime > 0;
+  const deadline = known ? (maxTime + CONFIRMATION_MARGIN_SECONDS) * 1000 : now();
+  for (;;) {
+    let response = null;
+    try { response = await server.getTransaction(hash); } catch { response = null; }
+    if (response && (response.status === 'SUCCESS' || response.status === 'FAILED')) return response;
+    if (now() >= deadline) {
+      return response?.status === 'NOT_FOUND' && known ? { status: 'NOT_FOUND', after_window: true }
+        : { status: response?.status === 'NOT_FOUND' ? 'NOT_FOUND' : 'UNKNOWN', after_window: false };
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * A read accepted only when the endpoint reports a ledger at or after `minimum` (a confirmed
+ * transaction's ledger), so a lagging endpoint cannot answer for the state before it. Reads below
+ * it, and transport errors, are retried a bounded number of times. A simulation error carrying a
+ * ledger at or after `minimum` is that read's answer and is rethrown.
+ */
+export async function observeAtOrAfter(minimum, read, { delay = pause, attempts = 10 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    let result, failure, ledger;
+    try { result = await read(); ledger = result?.ledger; } catch (error) { failure = error; ledger = error?.ledger; }
+    if (Number.isSafeInteger(ledger) && ledger >= minimum) {
+      if (failure) throw failure;
+      return result;
+    }
+    if (attempt >= attempts) throw new Error(`readback endpoint did not reach the confirmed ledger ${minimum}`);
+    await delay(POLL_INTERVAL_MS);
+  }
 }
 
 /** Run a recording simulation and return the auth entries the network says the call needs. */
@@ -221,7 +269,8 @@ export async function viewCallObservation(payer, contract, fn, fnArgs = []) {
     .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
     .setTimeout(60).build();
   const sim = await server.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
+  // The ledger an error answered at lets a caller require it to follow a confirmed write.
+  if (rpc.Api.isSimulationError(sim)) throw Object.assign(new SimulationError(fn, sim.error), { ledger: sim.latestLedger });
   return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
 }
 
@@ -234,7 +283,7 @@ export async function readOnlyView(contract, fn, fnArgs = []) {
     .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
     .setTimeout(60).build();
   const sim = await server.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
+  if (rpc.Api.isSimulationError(sim)) throw Object.assign(new SimulationError(fn, sim.error), { ledger: sim.latestLedger });
   return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
 }
 
@@ -347,6 +396,23 @@ export function loadSecret(name) {
 
 export function loadKey(name) {
   return Keypair.fromSecret(loadSecret(name));
+}
+
+/**
+ * Diagnostic text with this run's secrets removed: every string value of the secrets file (seeds
+ * and passkey credential fields), and anything shaped like a Stellar seed. Used for cleanup
+ * output that is written to a file; addresses and transaction hashes are kept.
+ */
+export function redactSecrets(text) {
+  let out = String(text);
+  const values = [];
+  const collect = (v) => {
+    if (typeof v === 'string' && v.length >= 16) values.push(v);
+    else if (v && typeof v === 'object') Object.values(v).forEach(collect);
+  };
+  try { collect(JSON.parse(readFileSync(secretsPath(), 'utf8'))); } catch { /* no readable secrets file: patterns only */ }
+  for (const value of values.sort((a, b) => b.length - a.length)) out = out.split(value).join('<redacted>');
+  return out.replace(/\bS[A-Z2-7]{55}\b/g, '<redacted seed>');
 }
 
 /** Parse `--name value` pairs; positional arguments are not used, and a value may not be a flag. */
