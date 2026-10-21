@@ -100,8 +100,8 @@ export function accountEntry(root, ruleIds, signers, { expiry = PROBE.expiry, v1
   });
 }
 
-/** `sha256(sha256(preimage) || xdr(rule ids))`, the preimage derived by hand for either credential. */
-export function authDigest(entry, ruleIds) {
+/** The host's `signature_payload` for an entry: sha256 of its preimage, derived by hand for either credential. */
+export function signaturePayload(entry) {
   const networkId = sha256(Buffer.from(Networks.TESTNET));
   const c = entry.credentials.addressV2 ?? entry.credentials.address;
   const preimage = entry.credentials.addressV2
@@ -111,8 +111,11 @@ export function authDigest(entry, ruleIds) {
     : xdr.HashIdPreimage.envelopeTypeSorobanAuthorization(new xdr.HashIdPreimageSorobanAuthorization({
       networkId, nonce: c.nonce, signatureExpirationLedger: c.signatureExpirationLedger, invocation: entry.rootInvocation,
     }));
-  return sha256(Buffer.concat([sha256(preimage.toXDR()), vec(ruleIds.map(u32)).toXDR()]));
+  return sha256(preimage.toXDR());
 }
+
+/** `sha256(signature_payload || xdr(rule ids))`: what a delegated signer authorizes. */
+export const authDigest = (entry, ruleIds) => sha256(Buffer.concat([signaturePayload(entry), vec(ruleIds.map(u32)).toXDR()]));
 
 /**
  * A delegated signer's own entry for `account.__check_auth(digest)`, with classic credentials as the
@@ -190,11 +193,11 @@ export const accountEntryOf = (g, balance, seqNum = 21474836480n) => new xdr.Led
 });
 export const change = (key, before, after) => ({ type: before ? (after ? 'updated' : 'deleted') : 'created', key, before, after });
 export const keyed = (name, ...rest) => vec([sym(name), ...rest]);
-export const sacBalance = (amount) => nativeToScVal({ amount, authorized: true, clawback: false },
+export const sacBalance = (amount, { authorized = true, clawback = false } = {}) => nativeToScVal({ amount, authorized, clawback },
   { type: { amount: ['symbol', 'i128'], authorized: ['symbol'], clawback: ['symbol'] } });
 const instanceKey = xdr.ScVal.scvLedgerKeyContractInstance();
-export const instance = (storage) => xdr.ScVal.scvContractInstance(new xdr.ScContractInstance({
-  executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(PROBE.accountCodeHash, 'hex')),
+export const instance = (storage, wasmHex = PROBE.accountCodeHash) => xdr.ScVal.scvContractInstance(new xdr.ScContractInstance({
+  executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(wasmHex, 'hex')),
   storage: Object.entries(storage).map(([name, value]) => new xdr.ScMapEntry({ key: keyed(name), val: u32(value) })),
 }));
 const RECIPIENT_BALANCE = 100_000_000_000n;
@@ -273,13 +276,87 @@ export function rawChange({ key, before, after }) {
   return { type: before ? (after ? 2 : 3) : 1, key: key.toXDR('base64'), before: at(before, PROBE.simulationLedger - 1000), after: at(after, 0) };
 }
 
-/** The RPC's raw result of a successful enforce-mode simulation. */
-export function permitSimulation(changes, { retval = returnedRule(), latestLedger = PROBE.simulationLedger, archived = [] } = {}) {
+// --- diagnostic events, as soroban-env-host 29 records them -----------------------------------------------
+
+/** One diagnostic event: `by` the emitting contract (null at top level), base64 as the RPC returns it. */
+export function diagnostic(by, topics, data, inSuccessfulContractCall = true) {
+  return new xdr.DiagnosticEvent({
+    inSuccessfulContractCall,
+    event: new xdr.ContractEvent({
+      ext: xdr.ExtensionPoint.v0(), contractId: by ? new Address(by).toScAddress().contractId : null,
+      type: xdr.ContractEventType.diagnostic, body: xdr.ContractEventBody.v0(new xdr.ContractEventV0({ topics, data })),
+    }),
+  }).toXDR('base64');
+}
+/** `fn_call`: topics `[fn_call, Bytes(called contract ID), fn]`, data the one argument or the vector of them. */
+export const fnCall = (by, contract, fn, args, ok = true) => diagnostic(by,
+  [sym('fn_call'), xdr.ScVal.scvBytes(StrKey.decodeContract(contract)), sym(fn)], args.length === 1 ? args[0] : vec(args), ok);
+export const errorEvent = (by, error, data, ok = false) => diagnostic(by, [sym('error'), xdr.ScVal.scvError(error)], data, ok);
+const contractError = (code) => xdr.ScError.sceContract(code);
+const authInvalidAction = () => xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction);
+
+/** The `Vec<Context>` the host hands `__check_auth`: `Contract(ContractAuthorizationContext)` per call. */
+export function authContexts(entry) {
+  const fn = entry.rootInvocation.function.contractFn;
+  return vec([vec([sym('Contract'), struct({
+    args: vec(fn.args), contract: xdr.ScVal.scvAddress(fn.contractAddress), fn_name: sym(fn.functionName.toString()),
+  })])]);
+}
+/** The host calling the account's `__check_auth(signature_payload, signature, contexts)` for an entry. */
+export const checkAuthCall = (by, entry, ok = true) => fnCall(by, PROBE.account, '__check_auth',
+  [xdr.ScVal.scvBytes(signaturePayload(entry)), (entry.credentials.addressV2 ?? entry.credentials.address).signature, authContexts(entry)], ok);
+
+const rootName = (entry) => entry.rootInvocation.function.contractFn?.functionName.toString();
+const byAccount = (entry) => {
+  const c = entry.credentials.addressV2 ?? entry.credentials.address;
+  return c && Address.fromScAddress(c.address).toString() === PROBE.account;
+};
+
+/**
+ * The events of one case: the helper call, the account's installation and its `__check_auth`, the
+ * transfer and its `__check_auth`, and an ordinary contract event. A denial fails the transfer's check
+ * and adds the policy's error, the account's log, the asset's failed authentication and the helper's
+ * escalation, in the order the host records them.
+ */
+export function callEvents(entries, { amount = PROBE.permitAmount, recipient = PROBE.recipient, denial = null } = {}) {
+  const install = entries.find((e) => byAccount(e) && rootName(e) === 'add_context_rule');
+  const transfer = entries.find((e) => byAccount(e) && rootName(e) === 'transfer');
+  const ok = !denial;
+  const events = [
+    fnCall(null, PROBE.helper, 'install_and_transfer', [candidate(amount, recipient)], ok),
+    fnCall(PROBE.helper, PROBE.account, 'add_context_rule', installRoot().function.contractFn.args),
+    ...(install ? [checkAuthCall(PROBE.account, install)] : []),
+    fnCall(PROBE.helper, PROBE.asset, 'transfer', [addr(PROBE.account), addr(recipient), i128(amount)], ok),
+    ...(transfer ? [checkAuthCall(PROBE.asset, transfer, ok)] : []),
+  ];
+  if (ok) {
+    events.push(new xdr.DiagnosticEvent({ inSuccessfulContractCall: true, event: new xdr.ContractEvent({
+      ext: xdr.ExtensionPoint.v0(), contractId: new Address(PROBE.asset).toScAddress().contractId, type: xdr.ContractEventType.contract,
+      body: xdr.ContractEventBody.v0(new xdr.ContractEventV0({ topics: [sym('transfer'), addr(PROBE.account), addr(recipient)], data: i128(amount) })),
+    }) }).toXDR('base64'));
+    return events;
+  }
+  const { code = PROBE.denialCode, raisedBy = PROBE.policy, account = PROBE.account, failedAuthBy = PROBE.asset } = denial;
+  return [...events,
+    errorEvent(raisedBy, contractError(code), vec([xdr.ScVal.scvString('failing with contract error'), u32(code)])),
+    diagnostic(PROBE.account, [sym('log')], vec([xdr.ScVal.scvString('VM call trapped with HostError'), sym('__check_auth'),
+      xdr.ScVal.scvError(contractError(code))]), false),
+    errorEvent(failedAuthBy, authInvalidAction(), vec([xdr.ScVal.scvString('failed account authentication with error'), addr(account),
+      xdr.ScVal.scvError(contractError(code))]), true),
+    errorEvent(PROBE.helper, authInvalidAction(), xdr.ScVal.scvString('escalating error to VM trap from failed host function call: call'), true),
+  ];
+}
+
+/** The RPC's raw result of a successful enforce-mode simulation of `entries`. */
+export function permitSimulation(changes, {
+  entries = [], amount, recipient, events = callEvents(entries, { amount, recipient }), auth = [],
+  retval = returnedRule(), latestLedger = PROBE.simulationLedger, archived = [],
+} = {}) {
   const data = new SorobanDataBuilder().setResourceFee('100').build();
   if (archived.length) data.ext = xdr.SorobanTransactionDataExt.resourceExt(new xdr.SorobanResourcesExtV0({ archivedSorobanEntries: archived }));
   return {
-    id: '1', latestLedger, events: [], minResourceFee: '100', transactionData: data.toXDR('base64'),
-    results: [{ auth: [], xdr: retval.toXDR('base64') }], stateChanges: Object.values(changes).map(rawChange),
+    id: '1', latestLedger, events, minResourceFee: '100', transactionData: data.toXDR('base64'),
+    results: [{ auth, xdr: retval.toXDR('base64') }], stateChanges: Object.values(changes).map(rawChange),
   };
 }
 
@@ -288,13 +365,13 @@ export function permitSimulation(changes, { retval = returnedRule(), latestLedge
  * the helper frame on top, the asset's failed authentication of the account carrying the policy's
  * code, and the policy raising it.
  */
-export function denialText({ code = PROBE.denialCode, raisedBy = PROBE.policy, account = PROBE.account } = {}) {
+export function denialText({ code = PROBE.denialCode, raisedBy = PROBE.policy, account = PROBE.account, failedAuthBy = PROBE.asset } = {}) {
   return [
     'HostError: Error(Auth, InvalidAction)',
     '',
     'Event log (newest first):',
     `   0: [Diagnostic Event] contract:${PROBE.helper}, topics:[error, Error(Auth, InvalidAction)], data:"escalating error to VM trap from failed host function call: call"`,
-    `   1: [Diagnostic Event] contract:${PROBE.asset}, topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #${code})]`,
+    `   1: [Diagnostic Event] contract:${failedAuthBy}, topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #${code})]`,
     `   2: [Failed Diagnostic Event (not emitted)] contract:${PROBE.account}, topics:[log], data:["VM call trapped with HostError", __check_auth, Error(Contract, #${code})]`,
     `   3: [Failed Diagnostic Event (not emitted)] contract:${raisedBy}, topics:[error, Error(Contract, #${code})], data:["failing with contract error", ${code}]`,
   ].join('\n');
@@ -307,10 +384,15 @@ export function helperRefusalText(code) {
 
 export const failedSimulation = (error, extra = {}) => ({ id: '1', latestLedger: PROBE.simulationLedger, events: [], error, ...extra });
 
+/** The RPC's raw result of the adjacent amount's failed simulation of `entries`: its error text and events. */
+export function denialSimulation(entries, { amount = PROBE.denialAmount, ...denial } = {}) {
+  return failedSimulation(denialText(denial), { events: callEvents(entries, { amount, denial }) });
+}
+
 /** The probe's permit case end to end: the approved intent, the simulated envelope and its result. */
 export function permitSample() {
   const entries = caseEntries();
-  return { intent: intent(), envelopeXdr: envelopeXdr(entries), simulation: permitSimulation(permitChanges(entries)) };
+  return { intent: intent(), envelopeXdr: envelopeXdr(entries), simulation: permitSimulation(permitChanges(entries), { entries }), entries };
 }
 
 /** The probe's denial case end to end. */
@@ -319,6 +401,7 @@ export function denialSample() {
   return {
     intent: intent({ amount: PROBE.denialAmount.toString() }),
     envelopeXdr: envelopeXdr(entries, { amount: PROBE.denialAmount }),
-    simulation: failedSimulation(denialText()),
+    simulation: denialSimulation(entries),
+    entries,
   };
 }

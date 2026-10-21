@@ -159,20 +159,26 @@ with a reason. Only `permit` and `deny` are evidence:
   every entry, consumed once. The helper must return the rule the account stored. A simulation
   that would restore archived entries is refused.
 
-A denial needs the `NoTupleMatched` error attributed to the candidate policy, read from the host's
-diagnostic events as the harness reads them, with no ledger changes; a helper refusal such as
-`CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy, and
-neither is an account error. The policy's error is matched only where the event log starts an
-event, so a value the log prints verbatim, such as the rule name, cannot pass for one. Nothing in
-a response fully binds it to the envelope: a permit's nonces tie it only to the entries' address
-and nonce pairs, and a failed simulation reports no ledger changes at all. The caller must pass
-only the response to its own request for exactly that envelope. The validator does not verify
-signatures, which the simulation's host did, and it neither signs nor simulates anything. Its
-tests use the addresses, amounts, rule and ledgers of the [testnet probe](#testnet-deployment)
-with entries, ledger changes and errors constructed in the shapes the probe used, since the probe
-kept no raw simulation; the exact set of ledger changes has not yet been compared with a real
-response. The owner must never be asked to sign the transfer: an owner-signed transfer under
-rule 0 is a real transfer that no policy checks, should the signatures ever be submitted.
+A denial needs the `NoTupleMatched` error attributed to the candidate policy inside the asset's
+failed authentication of the account, with no ledger changes. It is read twice: from the printed
+event log as the harness reads it, matched only where the log starts an event so that a value it
+prints verbatim, such as the rule name, cannot pass for one, and from the structured diagnostic
+events. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial and settles
+nothing about the policy, and neither is an account error.
+
+A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
+address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
+which the RPC returns for a failed simulation too: they must record one helper call with exactly
+the approved candidate, and `__check_auth` calls into the account for exactly the envelope's two
+account entries, each with that entry's signature payload (which covers its nonce and expiry), its
+signature and its contexts. The authorization entries a result echoes must be absent or exactly
+the envelope's. The validator does not verify signatures, which the simulation's host did, and it
+neither signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
+[testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed
+in the shapes the probe and the host use, since the probe kept no raw simulation; neither the
+exact set of ledger changes nor the events have yet been compared with a real response. The owner
+must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real transfer
+that no policy checks, should the signatures ever be submitted.
 
 ## Signatures are real and usable without the helper
 

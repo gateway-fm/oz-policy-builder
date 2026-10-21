@@ -20,8 +20,12 @@
 //   - a permit's ledger changes are exactly the transfer's two balances, the account's bookkeeping
 //     for the new rule, the candidate's installation marker, its counter used once, and every
 //     entry's nonce;
-//   - a denial is the candidate policy's own `NoTupleMatched` (6) inside the account's failed
-//     authentication. A helper refusal (7001–7009) or an account error is a failed case.
+//   - a denial is the candidate policy's own `NoTupleMatched` (6) inside the asset's failed
+//     authentication of the account, in the printed log and in the structured events alike. A helper
+//     refusal (7001–7009) or an account error is a failed case;
+//   - either way the response's diagnostic events record exactly this envelope: one helper call
+//     with the approved candidate, and the account's `__check_auth` calls for exactly the envelope's
+//     two account entries, each with its signature payload, signature and contexts.
 //
 // Pure: no signing, no network, no clock. The result is state-dependent simulation evidence about
 // testnet at the simulation ledger, never a submitted transaction.
@@ -151,10 +155,14 @@ function authPayload(credentials) {
   };
 }
 
+/** The `signature_payload` the host hands the account for an entry: the hash of its signature preimage. */
+function signaturePayload({ entry, credentials }) {
+  return sha256(buildAuthorizationEntryPreimage(entry, credentials.signatureExpirationLedger, Networks.TESTNET).toXDR());
+}
+
 /** What a delegated signer authorizes for an account entry: `sha256(payload || xdr(rule ids))`. */
-function accountDigest({ entry, credentials, ruleIds }) {
-  const preimage = buildAuthorizationEntryPreimage(entry, credentials.signatureExpirationLedger, Networks.TESTNET);
-  return sha256(Buffer.concat([sha256(preimage.toXDR()), bytes(vec(ruleIds.map(u32)))]));
+function accountDigest(record) {
+  return sha256(Buffer.concat([signaturePayload(record), bytes(vec(record.ruleIds.map(u32)))]));
 }
 
 const sameIds = (ids, expected) => ids.length === expected.length && ids.every((id, i) => id === expected[i]);
@@ -214,6 +222,7 @@ function checkAuthorizations(c, entries) {
       fail('signer_entry', `${signer}'s authorization is not one signed entry for exactly its account entry`);
     }
   }
+  return { install: owned[0], transfer: transfers[0] };
 }
 
 function simulatedAuthorizations(c, envelopeXdr) {
@@ -423,13 +432,14 @@ function permitChanges(c, rawChanges, entries) {
 const EVENT = '^ *\\d+: \\[(?:Failed )?Diagnostic Event[^\\]\\n]*\\] ';
 
 /**
- * As testnet-harness/scripts/lib.mjs `policyDenial`, anchored to the start of an event: the code `policy` refused an authorization of
- * `account` with, or null. Both the host's failed authentication of the account and the policy
+ * As testnet-harness/scripts/lib.mjs `policyDenial`, anchored to the start of an event: the code
+ * `policy` refused an authorization of `account` with, or null. Both the asset's failed
+ * authentication of the account (raised while `transfer` required its authorization) and the policy
  * contract raising that same code must be present; the same number from another contract means
  * something else (the native asset's #6 is `AccountMissingError`).
  */
-function policyDenial(text, account, policy) {
-  const authFailed = new RegExp(`${EVENT}(?:contract:[A-Z0-9]{56}, )?topics:\\[error, Error\\(Auth, InvalidAction\\)\\], `
+function policyDenial(text, asset, account, policy) {
+  const authFailed = new RegExp(`${EVENT}contract:${asset}, topics:\\[error, Error\\(Auth, InvalidAction\\)\\], `
     + `data:\\["failed account authentication with error", ${account}, Error\\(Contract, #(\\d+)\\)\\]`, 'm').exec(text);
   const raised = new RegExp(`${EVENT}contract:${policy}, topics:\\[error, Error\\(Contract, #(\\d+)\\)\\], `
     + 'data:\\["failing with contract error", (\\d+)\\]', 'm').exec(text);
@@ -437,26 +447,94 @@ function policyDenial(text, account, policy) {
   return Number(raised[1]);
 }
 
-function denial(c, simulation) {
+// --- the response's own record of the call --------------------------------------------------------------
+
+/**
+ * The response's diagnostic events, as `{ by, topics, data }` with `by` the emitting contract's
+ * 32-byte ID in hex (or null). The RPC returns them for a failed simulation too, including events of
+ * the calls that failed.
+ */
+function diagnosticEvents(simulation) {
+  const raw = simulation.events;
+  if (!Array.isArray(raw) || !raw.length || raw.length > 4096) {
+    fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
+  }
+  return raw.map((text) => decoded(xdr.DiagnosticEvent, text, 'a diagnostic event').event)
+    .filter((event) => event.type.name === 'diagnostic' && event.body.v0)
+    .map((event) => ({
+      by: event.contractId ? bytes(event.contractId).toString('hex') : null,
+      topics: event.body.v0.topics, data: event.body.v0.data,
+    }));
+}
+const contractHex = (address) => Buffer.from(StrKey.decodeContract(address)).toString('hex');
+const errorVal = (error) => xdr.ScVal.scvError(error);
+const contractError = (code) => errorVal(xdr.ScError.sceContract(code));
+const raisedBy = (events, address) => events
+  .filter((e) => e.by === contractHex(address) && e.topics.length === 2 && same(e.topics[0], sym('error'))
+    && e.topics[1].type === 'scvError' && e.topics[1].error.type === 'sceContract')
+  .map((e) => e.topics[1].error.contractCode);
+/** `fn_call` diagnostic events into `contract.fn`: topics `[fn_call, contract ID, fn]`, data the arguments. */
+const callsInto = (events, contract, fn) => events.filter((e) => e.topics.length === 3 && same(e.topics[0], sym('fn_call'))
+  && e.topics[1].type === 'scvBytes' && Buffer.from(e.topics[1].bytes.value).toString('hex') === contractHex(contract)
+  && same(e.topics[2], sym(fn)));
+
+/** The `Vec<Context>` the host passes `__check_auth` for an entry without sub-invocations. */
+function authContexts(entry) {
+  const fn = entry.rootInvocation.function.contractFn;
+  return vec([vec([sym('Contract'), struct({
+    args: vec(fn.args), contract: xdr.ScVal.scvAddress(fn.contractAddress), fn_name: sym(fn.functionName.toString()),
+  })])]);
+}
+
+/**
+ * Tie the response to this envelope: its record of the helper call must carry exactly the approved
+ * candidate, and every `__check_auth` call into the account must be the host checking one of the
+ * envelope's two account entries — that entry's signature payload (which covers its nonce and
+ * expiry), its signature and its contexts — with both entries checked.
+ */
+function requireBinding(c, events, { install, transfer }) {
+  const helper = callsInto(events, c.helper, 'install_and_transfer');
+  if (helper.length !== 1 || !same(helper[0].data, helperCall(c).args[0])) {
+    fail('unbound_response', 'the response does not record one helper call with exactly the approved candidate');
+  }
+  const expected = [install, transfer].map((record) => vec([xdr.ScVal.scvBytes(signaturePayload(record)),
+    record.credentials.signature, authContexts(record.entry)]));
+  const checks = callsInto(events, c.account, '__check_auth');
+  if (checks.some((call) => !expected.some((e) => same(call.data, e))) || !expected.every((e) => checks.some((call) => same(call.data, e)))) {
+    fail('unbound_response', 'the account\'s recorded authorization checks are not exactly those of the envelope\'s entries');
+  }
+}
+
+function denial(c, simulation, records) {
   const text = simulation.error;
   if (typeof text !== 'string' || text.length > 1024 * 1024) fail('simulation', 'the failed simulation carries no host error');
   if (simulation.stateChanges?.length || simulation.results?.length) fail('simulation', 'a failed simulation reported effects');
   const host = text.split('\n')[0].slice(0, 200);
+  const events = Array.isArray(simulation.events) && simulation.events.length ? diagnosticEvents(simulation) : [];
   // Attributed by the contract ID of the diagnostic error event, never by the code alone.
   const raisedByHelper = [...text.matchAll(new RegExp(`${EVENT}contract:${c.helper}, topics:\\[error, Error\\(Contract, #(\\d+)\\)\\]`, 'gm'))]
-    .map((m) => Number(m[1])).find((code) => HELPER_ERROR_CODES.includes(code));
+    .map((m) => Number(m[1])).concat(raisedBy(events, c.helper)).find((code) => HELPER_ERROR_CODES.includes(code));
   if (raisedByHelper !== undefined) {
     fail('helper_refusal', 'the helper refused the case; that settles nothing about the policy', { code: raisedByHelper, host });
   }
-  const code = policyDenial(text, c.account, c.policy);
+  const code = policyDenial(text, c.asset, c.account, c.policy);
   if (code === null) fail('not_a_policy_denial', 'the candidate policy did not refuse the account\'s authorization', { host });
   if (code !== POLICY_NO_TUPLE_MATCHED) {
     fail('policy_code', `the candidate policy refused with ${code}, not NoTupleMatched (${POLICY_NO_TUPLE_MATCHED})`, { code, host });
   }
+  // The same attribution, read from the structured events rather than their printed log.
+  if (!events.length) fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
+  const authFailed = vec([xdr.ScVal.scvString('failed account authentication with error'), addressVal(c.account), contractError(code)]);
+  if (!raisedBy(events, c.policy).includes(code) || !events.some((e) => e.by === contractHex(c.asset) && e.topics.length === 2
+    && same(e.topics[0], sym('error')) && same(e.topics[1], errorVal(xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction)))
+    && same(e.data, authFailed))) {
+    fail('not_a_policy_denial', 'the structured events do not show the candidate policy refusing the account\'s authorization', { host });
+  }
+  requireBinding(c, events, records);
   return { outcome: 'deny', reason: 'policy_denied', enforcer: c.policy, code, host };
 }
 
-function permit(c, simulation, entries) {
+function permit(c, simulation, entries, records) {
   // Protocol 23 restores archived entries inside the invocation and reports them as created; such a
   // simulation describes a different state transition than the one approved.
   const data = decoded(xdr.SorobanTransactionData, simulation.transactionData, 'the transaction data');
@@ -472,6 +550,14 @@ function permit(c, simulation, entries) {
     signers: vec([signerScVal({ kind: 'delegated', address: c.delegate })]), valid_until: u32(c.valid_until_ledger),
   });
   if (!same(retval, expected)) fail('returned_rule', `the helper did not return the approved rule ${c.expected_rule_id} as stored`);
+  // In enforce mode the host hands back the supplied entries unchanged (soroban-env-host
+  // `invoke_host_function_in_recording_mode`); the RPC may also omit them. Anything else is refused.
+  const auth = simulation.results[0].auth ?? [];
+  if (!Array.isArray(auth) || (auth.length && (auth.length !== entries.length
+    || auth.some((text, i) => text !== entries[i].toXDR('base64'))))) {
+    fail('unbound_response', 'the result\'s authorization entries are neither absent nor exactly the envelope\'s');
+  }
+  requireBinding(c, diagnosticEvents(simulation), records);
   return {
     outcome: 'permit', reason: 'candidate_permitted', enforcer: c.policy, returned_rule_id: c.expected_rule_id,
     balance_changes: { account: (-BigInt(c.amount)).toString(), recipient: c.amount },
@@ -483,22 +569,23 @@ function permit(c, simulation, entries) {
  * Validate one live case: `intent` is the approved case (see `liveCase`), `envelopeXdr` the exact
  * transaction that was simulated, and `simulation` the RPC's raw enforce-mode `simulateTransaction`
  * result for it, its XDR still base64 as everywhere else in the wallet (the SDK's parsed form is
- * refused: it drops the effects a failed simulation would report). Pass only the response to this
- * envelope's own request: a permit's nonces tie it to the entries' (address, nonce) pairs only, and
- * a denial reports no ledger changes at all, so nothing in it binds it to the envelope. Returns a frozen verdict: `permit` or `deny` only when everything above holds; otherwise
- * `failed`, with a `reason` and a `detail`, which is no evidence about the policy at all.
+ * refused: it drops the effects a failed simulation would report). Its diagnostic events tie it to
+ * the envelope: the recorded helper call and the account's recorded authorization checks must be
+ * exactly this envelope's. Returns a frozen verdict: `permit` or `deny` only when everything above
+ * holds; otherwise `failed`, with a `reason` and a `detail`, which is no evidence about the policy.
  */
-export function validateLiveCase({ intent, envelopeXdr, simulation } = {}) {
+export function validateLiveCase(input) {
   try {
+    const { intent, envelopeXdr, simulation } = input ?? {};
     let c;
     try { c = liveCase(intent); } catch { fail('intent', 'the approved case is malformed'); }
     const entries = simulatedAuthorizations(c, envelopeXdr);
-    checkAuthorizations(c, entries);
+    const records = checkAuthorizations(c, entries);
     if (!simulation || typeof simulation !== 'object' || simulation._parsed || simulation.restorePreamble
       || !integer(simulation.latestLedger, 1, c.signature_expiration_ledger)) {
       fail('simulation', 'the simulation needs restoration, is later than the signatures, or is malformed');
     }
-    const verdict = simulation.error !== undefined ? denial(c, simulation) : permit(c, simulation, entries);
+    const verdict = simulation.error !== undefined ? denial(c, simulation, records) : permit(c, simulation, entries, records);
     return freezeCopy({ ...verdict, amount: c.amount, envelope_xdr_sha256: sha256(Buffer.from(envelopeXdr, 'base64')).toString('hex'),
       simulation_ledger: simulation.latestLedger, signature_expiration_ledger: c.signature_expiration_ledger });
   } catch (e) {

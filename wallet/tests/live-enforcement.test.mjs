@@ -29,7 +29,7 @@ const delegateOnly = [[F.delegated(PROBE.delegate), EMPTY]];
 const sample = (entries, { amount = PROBE.permitAmount, changes, simulation } = {}) => ({
   intent: F.intent({ amount: amount.toString() }),
   envelopeXdr: F.envelopeXdr(entries, { amount }),
-  simulation: simulation ?? F.permitSimulation(changes ?? F.permitChanges(entries, { amount })),
+  simulation: simulation ?? F.permitSimulation(changes ?? F.permitChanges(entries, { amount }), { entries, amount }),
 });
 
 // --- what counts -------------------------------------------------------------------------------------
@@ -195,7 +195,7 @@ test('refuses a simulation that needs restoration or that is later than the sign
   refused({ ...base, simulation: { ...base.simulation, latestLedger: PROBE.expiry + 1 } }, 'simulation');
   // Protocol 23 restores archived entries inside the invocation and reports them as created.
   const entries = F.caseEntries();
-  refused(sample(entries, { simulation: F.permitSimulation(F.permitChanges(entries), { archived: [0] }) }), 'simulation');
+  refused(sample(entries, { simulation: F.permitSimulation(F.permitChanges(entries), { entries, archived: [0] }) }), 'simulation');
 });
 
 test('takes the raw RPC result only, as canonical base64 XDR', () => {
@@ -218,7 +218,8 @@ test('takes the raw RPC result only, as canonical base64 XDR', () => {
   refused({ ...base, simulation: { ...base.simulation, stateChanges: [{ ...first, after: xdr.LedgerKey.fromXDR(first.key, 'base64') }, ...rest] } }, 'simulation');
   refused({ ...base, simulation: { ...base.simulation, results: [] } }, 'returned_rule');
   refused({ ...base, simulation: { ...base.simulation, transactionData: undefined } }, 'simulation');
-  refused({ ...F.denialSample(), simulation: F.failedSimulation(F.denialText(), { results: base.simulation.results }) }, 'simulation');
+  const denial = F.denialSample();
+  refused({ ...denial, simulation: { ...denial.simulation, results: base.simulation.results } }, 'simulation');
 });
 
 test('every authorization\'s nonce is consumed in the reported changes, and only once', () => {
@@ -298,16 +299,16 @@ test('permit requires exact delta and counter drop', () => {
   for (const [name, changes, reason] of cases) refused(sample(entries, { changes }), reason, name);
   // The helper must return the candidate rule, as approved.
   const changes = F.permitChanges(entries);
-  refused(sample(entries, { simulation: F.permitSimulation(changes, { retval: F.returnedRule({ id: 2 }) }) }), 'returned_rule');
-  refused(sample(entries, { simulation: F.permitSimulation(changes, { retval: F.returnedRule({ name: 'other' }) }) }), 'returned_rule');
-  refused(sample(entries, { simulation: F.permitSimulation([]) }), 'balance_delta');
+  refused(sample(entries, { simulation: F.permitSimulation(changes, { entries, retval: F.returnedRule({ id: 2 }) }) }), 'returned_rule');
+  refused(sample(entries, { simulation: F.permitSimulation(changes, { entries, retval: F.returnedRule({ name: 'other' }) }) }), 'returned_rule');
+  refused(sample(entries, { simulation: F.permitSimulation([], { entries }) }), 'balance_delta');
 });
 
 // --- failures -----------------------------------------------------------------------------------------
 
 test('denial requires code 6 from the policy contract id', () => {
   const base = F.denialSample();
-  const failedWith = (text) => ({ ...base, simulation: F.failedSimulation(text) });
+  const failedWith = (text) => ({ ...base, simulation: { ...base.simulation, error: text } });
   // The same number raised by another contract (the asset's #6 is AccountMissingError) is not the policy.
   refused(failedWith(F.denialText({ raisedBy: PROBE.asset })), 'not_a_policy_denial');
   // A policy error with no failed authentication of this account is no decision on it.
@@ -317,6 +318,11 @@ test('denial requires code 6 from the policy contract id', () => {
   // Text without the event log, or no failure at all.
   refused(failedWith('HostError: Error(Auth, InvalidAction)'), 'not_a_policy_denial');
   refused(failedWith(42), 'simulation');
+  // The asset's failed authentication of the account is what places the denial in the transfer.
+  refused(failedWith(F.denialText({ failedAuthBy: PROBE.helper })), 'not_a_policy_denial');
+  // The account's failure code and the policy's raised code must be one and the same.
+  refused(failedWith(F.denialText().replace(`${PROBE.account}, Error(Contract, #6)]`, `${PROBE.account}, Error(Contract, #7)]`)), 'not_a_policy_denial');
+  refused(failedWith(F.denialText().replace('"failing with contract error", 6]', '"failing with contract error", 7]')), 'not_a_policy_denial');
   // A failed simulation carries no ledger changes.
   refused({ ...base, simulation: F.failedSimulation(F.denialText(), { stateChanges: [F.rawChange(F.permitChanges([]).counter)] }) }, 'simulation');
   // Structure is checked for a denial too: an unexecuted context could otherwise be what the policy refused.
@@ -392,10 +398,10 @@ test('a contract recipient is credited in the asset contract, on a new or an exi
   for (const recipientBefore of [null, 5n]) {
     const input = {
       intent: F.intent({ recipient }), envelopeXdr: F.envelopeXdr(entries, { recipient }),
-      simulation: F.permitSimulation(F.permitChanges(entries, { recipient, recipientBefore })),
+      simulation: F.permitSimulation(F.permitChanges(entries, { recipient, recipientBefore }), { entries, recipient }),
     };
     assert.equal(validateLiveCase(input).outcome, 'permit', String(recipientBefore));
-    const short = { ...input, simulation: F.permitSimulation(F.permitChanges(entries, { recipient, recipientBefore, received: PROBE.permitAmount - 1n })) };
+    const short = { ...input, simulation: F.permitSimulation(F.permitChanges(entries, { recipient, recipientBefore, received: PROBE.permitAmount - 1n }), { entries, recipient }) };
     refused(short, 'balance_delta');
   }
 });
@@ -409,5 +415,205 @@ test('an event is matched only where the log starts one, never inside a printed 
   refused({ ...F.denialSample(), simulation: F.failedSimulation(text) }, 'not_a_policy_denial');
   const helper = `contract:${PROBE.helper}, topics:[error, Error(Contract, #7009)]`;
   const quoted = [F.denialText(), `   4: [Diagnostic Event] contract:${PROBE.account}, topics:[log], data:"${helper}"`].join('\n');
-  assert.equal(validateLiveCase({ ...F.denialSample(), simulation: F.failedSimulation(quoted) }).outcome, 'deny');
+  const base = F.denialSample();
+  assert.equal(validateLiveCase({ ...base, simulation: { ...base.simulation, error: quoted } }).outcome, 'deny');
+});
+
+// --- binding the response to the envelope ---------------------------------------------------------
+
+test('a response is bound to its envelope: swapped permit and denial responses are refused', () => {
+  const permitCase = F.permitSample();
+  const denialCase = F.denialSample();
+  // The permit case's intent and envelope with the denial case's response: the recorded helper call
+  // and the account's recorded checks are the other envelope's.
+  refused({ ...permitCase, simulation: denialCase.simulation }, 'unbound_response');
+  // The other way round the balances already disagree with the approved amount.
+  assert.equal(validateLiveCase({ ...denialCase, simulation: permitCase.simulation }).outcome, 'failed');
+  // Two permits of the same case with different entries: the changes of one, the events of the other.
+  const a = F.caseEntries();
+  const b = F.caseEntries();
+  refused(sample(b, { simulation: F.permitSimulation(F.permitChanges(b), { entries: b, events: F.callEvents(a) }) }), 'unbound_response');
+  refused(sample(b, { simulation: F.permitSimulation(F.permitChanges(b), { entries: b, events: [] }) }), 'unbound_response');
+});
+
+test('a denial is evidence only with its own events: the helper call and the account checks of this envelope', () => {
+  const { entries, ...base } = F.denialSample();
+  const withEvents = (events) => ({ ...base, simulation: { ...base.simulation, events } });
+  refused(withEvents([]), 'unbound_response');
+  refused(withEvents(undefined), 'unbound_response');
+  // Its own events, rebuilt for another envelope of the same amount.
+  refused(withEvents(F.callEvents(F.caseEntries({ amount: PROBE.denialAmount }), { amount: PROBE.denialAmount, denial: {} })), 'unbound_response');
+  const own = F.callEvents(entries, { amount: PROBE.denialAmount, denial: {} });
+  // The helper call recorded twice, or not at all.
+  refused(withEvents([own[0], ...own]), 'unbound_response');
+  refused(withEvents(own.slice(1)), 'unbound_response');
+  // Each account entry's check must be recorded: the installation's, and the transfer's.
+  const isCheck = (text) => {
+    const data = xdr.DiagnosticEvent.fromXDR(text, 'base64').event.body.v0.data;
+    return data.type === 'scvVec' && data.vec?.length === 3 && data.vec[0].type === 'scvBytes';
+  };
+  const checks = own.filter(isCheck);
+  assert.equal(checks.length, 2);
+  for (const missing of checks) refused(withEvents(own.filter((text) => text !== missing)), 'unbound_response');
+  // An authorization check of something the envelope does not carry.
+  const stranger = F.accountEntry(F.transferRoot(PROBE.denialAmount), [PROBE.ruleId], [[F.delegated(PROBE.delegate), EMPTY]]);
+  refused(withEvents([...own, F.checkAuthCall(PROBE.asset, stranger)]), 'unbound_response');
+  // A check of the transfer entry with other contexts, as for an entry with a sub-invocation.
+  const nested = own.map((text) => {
+    const event = xdr.DiagnosticEvent.fromXDR(text, 'base64');
+    const data = event.event.body.v0.data;
+    if (data.type === 'scvVec' && data.vec.length === 3 && data.vec[2].type === 'scvVec') {
+      data.vec[2] = xdr.ScVal.scvVec([...data.vec[2].vec, ...data.vec[2].vec]);
+    }
+    return event.toXDR('base64');
+  });
+  refused(withEvents(nested), 'unbound_response');
+  // Events that are not canonical XDR.
+  refused(withEvents([`${own[0]}\n`, ...own.slice(1)]), 'simulation');
+});
+
+test('the denial must be in the structured events too, not only in the printed log', () => {
+  const { entries, ...base } = F.denialSample();
+  const withEvents = (denial) => ({ ...base, simulation: { ...base.simulation, events: F.callEvents(entries, { amount: PROBE.denialAmount, denial }) } });
+  assert.equal(validateLiveCase(withEvents({})).outcome, 'deny');
+  refused(withEvents({ raisedBy: PROBE.asset }), 'not_a_policy_denial');
+  refused(withEvents({ code: 7 }), 'not_a_policy_denial');
+  refused(withEvents({ account: PROBE.helper }), 'not_a_policy_denial');
+  refused(withEvents({ failedAuthBy: PROBE.account }), 'not_a_policy_denial');
+  // A helper refusal is found in the structured events even when the printed log lacks it.
+  const refusal = { ...base.simulation, events: [...base.simulation.events,
+    F.errorEvent(PROBE.helper, xdr.ScError.sceContract(7009), xdr.ScVal.scvVoid())] };
+  assert.equal(refused({ ...base, simulation: refusal }, 'helper_refusal').code, 7009);
+});
+
+test('the result\'s authorization entries are absent or exactly the envelope\'s', () => {
+  const entries = F.caseEntries();
+  const own = entries.map((e) => e.toXDR('base64'));
+  const at = (auth) => sample(entries, { simulation: F.permitSimulation(F.permitChanges(entries), { entries, auth }) });
+  assert.equal(validateLiveCase(at([])).outcome, 'permit');
+  assert.equal(validateLiveCase(at(own)).outcome, 'permit');
+  const noAuth = at([]);
+  delete noAuth.simulation.results[0].auth;
+  assert.equal(validateLiveCase(noAuth).outcome, 'permit');
+  refused(at([...own].reverse()), 'unbound_response');
+  refused(at(own.slice(1)), 'unbound_response');
+  refused(at(F.caseEntries().map((e) => e.toXDR('base64'))), 'unbound_response');
+  refused(at('none'), 'unbound_response');
+});
+
+test('the validator answers with a verdict whatever it is given', () => {
+  for (const input of [null, undefined, {}, 42, { intent: null }]) {
+    const verdict = validateLiveCase(input);
+    assert.equal(verdict.outcome, 'failed');
+    assert.equal(verdict.reason, 'intent');
+  }
+  assert.equal(validateLiveCase().reason, 'intent');
+});
+
+// --- every guard, one negative test each --------------------------------------------------------------
+
+test('the account registry entries must be exactly the delegate\'s and the policy\'s', () => {
+  const entries = F.caseEntries();
+  const u32 = xdr.ScVal.scvU32;
+  const variant = (name, value) => {
+    const changes = F.permitChanges(entries);
+    changes[name] = F.change(changes[name].key, changes[name].before, F.dataEntry(PROBE.account, changes[name].after.data.contractData.key, value));
+    return changes;
+  };
+  for (const [name, changes] of [
+    ['another signer', variant('signer', F.struct({ count: u32(1), signer: F.delegated(OTHER) }))],
+    ['a signer counted twice', variant('signer', F.struct({ count: u32(2), signer: F.delegated(PROBE.delegate) }))],
+    ['a signer lookup to another id', variant('signerLookup', u32(0))],
+    ['another policy', variant('policyData', F.struct({ count: u32(1), policy: F.delegated(PROBE.helper).vec[1] }))],
+    ['a policy lookup to another id', variant('policyLookup', u32(3))],
+  ]) refused(sample(entries, { changes }), 'account_bookkeeping', name);
+  // An existing registration must be counted exactly once more.
+  const signerKey = F.keyed('SignerData', u32(1));
+  const signer = (count) => F.dataEntry(PROBE.account, signerKey, F.struct({ count: u32(count), signer: F.delegated(PROBE.delegate) }));
+  const changes = F.permitChanges(entries);
+  changes.signer = F.change(F.dataKey(PROBE.account, signerKey), signer(1), signer(3));
+  delete changes.signerLookup;
+  const instanceKey = xdr.ScVal.scvLedgerKeyContractInstance();
+  changes.instance = F.change(F.dataKey(PROBE.account, instanceKey),
+    F.dataEntry(PROBE.account, instanceKey, F.instance({ Count: 1, NextId: 1, NextSignerId: 2 })),
+    F.dataEntry(PROBE.account, instanceKey, F.instance({ Count: 2, NextId: 2, NextPolicyId: 1, NextSignerId: 2 })));
+  refused(sample(entries, { changes }), 'account_bookkeeping');
+  changes.signer = F.change(F.dataKey(PROBE.account, signerKey), signer(1), signer(2));
+  assert.equal(validateLiveCase(sample(entries, { changes })).outcome, 'permit');
+});
+
+test('a balance changes by its amount alone, and every change is reported under its own key', () => {
+  const entries = F.caseEntries();
+  const key = F.keyed('Balance', F.delegated(PROBE.account).vec[1]);
+  const flipped = F.permitChanges(entries);
+  flipped.sender = F.change(flipped.sender.key, flipped.sender.before,
+    F.dataEntry(PROBE.asset, key, F.sacBalance(PROBE.accountBalance - PROBE.permitAmount, { authorized: false })));
+  refused(sample(entries, { changes: flipped }), 'balance_delta');
+  const mislabeled = F.permitChanges(entries);
+  mislabeled.installed = F.change(mislabeled.installed.key, null, mislabeled.counter.after);
+  refused(sample(entries, { changes: mislabeled }), 'ledger_changes');
+});
+
+test('the installation is fresh: new rule, new marker set to true, unchanged account code', () => {
+  const entries = F.caseEntries();
+  const instanceKey = xdr.ScVal.scvLedgerKeyContractInstance();
+  const upgraded = F.permitChanges(entries);
+  upgraded.instance = F.change(upgraded.instance.key, upgraded.instance.before,
+    F.dataEntry(PROBE.account, instanceKey, F.instance({ Count: 2, NextId: 2, NextPolicyId: 1, NextSignerId: 2 }, 'ee'.repeat(32))));
+  refused(sample(entries, { changes: upgraded }), 'account_bookkeeping');
+  const existingRule = F.permitChanges(entries);
+  existingRule.rule = F.change(existingRule.rule.key, existingRule.rule.after, existingRule.rule.after);
+  refused(sample(entries, { changes: existingRule }), 'rule_not_stored');
+  const existingMarker = F.permitChanges(entries);
+  existingMarker.installed = F.change(existingMarker.installed.key, existingMarker.installed.after, existingMarker.installed.after);
+  refused(sample(entries, { changes: existingMarker }), 'install_marker');
+  const falseMarker = F.permitChanges(entries);
+  falseMarker.installed = F.change(falseMarker.installed.key, null,
+    F.dataEntry(PROBE.policy, falseMarker.installed.after.data.contractData.key, xdr.ScVal.scvBool(false)));
+  refused(sample(entries, { changes: falseMarker }), 'install_marker');
+});
+
+test('owner proofs have the owner\'s shape, and there is one owner entry', () => {
+  const [, , transfer, delegateProof] = F.caseEntries();
+  const install = F.accountEntry(F.installRoot(), [0], [[F.delegated(PROBE.owner), Buffer.from([1])]]);
+  refused(sample([install, F.signerEntry(PROBE.owner, F.authDigest(install, [0])), transfer, delegateProof]), 'owner_signers');
+  const passkey = { owner_rule_id: 4, owner_signer: { kind: 'external', verifier: F.PASSKEY.verifier, key_hex: F.PASSKEY.keyHex } };
+  const unproven = F.accountEntry(F.installRoot(), [4], [[F.external(F.PASSKEY.verifier, F.PASSKEY.keyHex), EMPTY]]);
+  refused({ ...sample([unproven, transfer, delegateProof]), intent: F.intent(passkey) }, 'owner_signers');
+  const [first, ...rest] = F.passkeyEntries({ ownerRule: 4 });
+  const second = F.accountEntry(F.installRoot(), [4], [[F.external(F.PASSKEY.verifier, F.PASSKEY.keyHex), Buffer.alloc(96, 3)]]);
+  refused({ ...sample([first, second, ...rest]), intent: F.intent(passkey) }, 'owner_entry_count');
+});
+
+test('signer entries are signed, flat and for the account\'s digest', () => {
+  const [install, ownerProof, transfer, delegateProof] = F.caseEntries();
+  const unsigned = xdr.SorobanAuthorizationEntry.fromXDR(delegateProof.toXDR());
+  unsigned.credentials.address.signature = xdr.ScVal.scvVoid();
+  refused(sample([install, ownerProof, transfer, unsigned]), 'signer_entry');
+  const nested = xdr.SorobanAuthorizationEntry.fromXDR(delegateProof.toXDR());
+  nested.rootInvocation.subInvocations = [F.transferRoot()];
+  refused(sample([install, ownerProof, transfer, nested]), 'signer_entry');
+});
+
+test('an account entry\'s signature is exactly an AuthPayload', () => {
+  const [install, ownerProof, transfer, delegateProof] = F.caseEntries();
+  const sym = xdr.ScVal.scvSymbol;
+  const ids = xdr.ScVal.scvVec([xdr.ScVal.scvU32(PROBE.ruleId)]);
+  const signers = xdr.ScVal.scvMap([new xdr.ScMapEntry({ key: F.delegated(PROBE.delegate), val: xdr.ScVal.scvBytes(EMPTY) })]);
+  const map = (entries) => xdr.ScVal.scvMap(entries.map(([key, val]) => new xdr.ScMapEntry({ key: sym(key), val })));
+  for (const [name, signature] of [
+    ['a third field', map([['context_rule_ids', ids], ['extra', ids], ['signers', signers]])],
+    ['fields swapped', map([['signers', signers], ['context_rule_ids', ids]])],
+    ['a misnamed field', map([['context_rule_id', ids], ['signers', signers]])],
+    ['rule ids not a vector', map([['context_rule_ids', xdr.ScVal.scvU32(1)], ['signers', signers]])],
+    ['a rule id not a u32', map([['context_rule_ids', xdr.ScVal.scvVec([xdr.ScVal.scvU64(xdr.Uint64.fromString('1'))])], ['signers', signers]])],
+    ['signers not a map', map([['context_rule_ids', ids], ['signers', ids]])],
+    ['no signers', map([['context_rule_ids', ids], ['signers', xdr.ScVal.scvMap([])]])],
+    ['a proof not bytes', map([['context_rule_ids', ids], ['signers',
+      xdr.ScVal.scvMap([new xdr.ScMapEntry({ key: F.delegated(PROBE.delegate), val: xdr.ScVal.scvVoid() })])]])],
+  ]) {
+    const bad = xdr.SorobanAuthorizationEntry.fromXDR(transfer.toXDR());
+    bad.credentials.addressV2.signature = signature;
+    refused(sample([install, ownerProof, bad, delegateProof]), 'auth_payload', name);
+  }
 });

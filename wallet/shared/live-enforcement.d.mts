@@ -52,7 +52,7 @@ export type FailureReason =
   | 'transfer_signers' | 'transfer_root' | 'transfer_rule_ids' | 'transfer_entry_count'
   | 'unexpected_signer' | 'signer_entry' | 'simulation' | 'ledger_changes' | 'balance_delta'
   | 'rule_not_stored' | 'account_bookkeeping' | 'install_marker' | 'counter_not_dropped'
-  | 'nonces' | 'unexpected_ledger_change' | 'returned_rule' | 'helper_refusal' | 'not_a_policy_denial'
+  | 'nonces' | 'unbound_response' | 'unexpected_ledger_change' | 'returned_rule' | 'helper_refusal' | 'not_a_policy_denial'
   | 'policy_code' | 'malformed';
 export interface FailedVerdict {
   readonly outcome: 'failed';
@@ -67,6 +67,8 @@ export interface RawLiveSimulation {
   readonly latestLedger: number;
   readonly error?: string;
   readonly transactionData?: string;
+  /** Base64 `DiagnosticEvent`s, which the RPC returns for a failed simulation too. */
+  readonly events?: readonly string[];
   readonly results?: readonly { readonly xdr: string; readonly auth?: readonly string[] }[];
   readonly stateChanges?: readonly {
     readonly type: number;
