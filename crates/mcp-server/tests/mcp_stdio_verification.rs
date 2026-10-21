@@ -25,14 +25,12 @@ fn verification_tools_are_listed_with_schemas() {
             "{name} has no output schema"
         );
     }
-    // These names carry stronger claims than the available evidence: a layer-1 reference run
-    // is not a full dry run.
-    for unavailable in ["dry_run", "check_against_policy"] {
-        assert!(
-            tools.iter().all(|tool| tool["name"] != unavailable),
-            "{unavailable} must not be advertised without its trusted evidence"
-        );
-    }
+    // A layer-1 reference run is still not a full dry run. The separately tested policy
+    // check now has its own conditional live-state evidence and is advertised by its router.
+    assert!(
+        tools.iter().all(|tool| tool["name"] != "dry_run"),
+        "dry_run must not be advertised without its full execution evidence"
+    );
 }
 
 #[test]

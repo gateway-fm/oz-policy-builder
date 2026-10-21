@@ -26,7 +26,11 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod dry_run;
+pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
+#[cfg(test)]
+mod dry_run_tests;
 pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{
@@ -39,8 +43,14 @@ pub use call_surface_live::{
 };
 mod install_intent;
 pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
+mod install_assembly;
+pub use install_assembly::{install_assembly_output, install_assembly_request};
 mod preflight;
 pub use preflight::preflight_transaction_output;
+mod policy_check;
+pub use policy_check::{
+    finish_policy_check, plan_policy_check_read, policy_check_unavailable, PolicyCheckReadPlan,
+};
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
@@ -232,17 +242,10 @@ pub fn synthesize_policy(
     //    lowers a label — `incomplete` evidence stays `incomplete`, because a bundle that
     //    was missing evidence when it was recorded is still missing it here.
     //
-    // What this does *not* do, stated so nobody reads more into it: `trust` is an
-    // admission-time claim, like `execution`, and neither is re-derivable from the raw
-    // evidence the artifact carries (`RawEvidence` has no transaction result). So a caller
-    // who edits an `incomplete` bundle's `trust` to `self_supplied` is not caught here — the
-    // weakening is monotone in the *supplied* label, and `self_supplied` is synthesizable by
-    // design. What the boundary does enforce is the ceiling (no wire bundle earns more than
-    // `self_supplied`) and coherence (decoded views must be what the raw evidence derives).
-    // Making the outcome itself checkable from the artifact needs the transaction result
-    // inside the recording — a `recording/v2` change, because it moves every recording hash
-    // including published testnet evidence that cannot honestly be regenerated once those
-    // transactions leave RPC retention.
+    // Wire trust remains an acquisition claim, so this boundary caps it at self_supplied.
+    // V2 also rechecks execution against preserved transaction-result XDR and refuses
+    // executed evidence without that XDR unless its label remains incomplete.
+    // Internal coherence still does not prove ledger inclusion.
     for (index, bundle) in bundles.iter().enumerate() {
         bundle.verify().map_err(|error| {
             let mapped = map_record_err(&error);
@@ -333,6 +336,35 @@ pub fn synthesize_policy(
         None => None,
     };
 
+    let mut adapters = BTreeMap::new();
+    for bundle in &bundles {
+        let mut pending: Vec<_> = bundle
+            .authorizations
+            .iter()
+            .filter(|auth| auth.authorizer == selected_authorizer)
+            .map(|auth| &auth.root)
+            .collect();
+        while let Some(node) = pending.pop() {
+            pending.extend(&node.sub_invocations);
+            let ozpb_recorder_core::AuthorizedCall::Contract { contract, .. } = &node.call else {
+                continue;
+            };
+            let Some(observation) = bundle.contract_executables.get(contract) else {
+                continue;
+            };
+            if let ObservedExecutable::Wasm { code_hash } = observation.executable {
+                if let Some(semantics) = registry
+                    .resolve_target_adapter(&code_hash)
+                    .map_err(map_registry_err)?
+                {
+                    adapters.insert(
+                        code_hash,
+                        ozpb_synthesizer::adapters::Adapter::from_semantics(code_hash, semantics),
+                    );
+                }
+            }
+        }
+    }
     let syn_input = SynthesisInput {
         bundles,
         selected_authorizer: selected_authorizer.clone(),
@@ -341,10 +373,9 @@ pub fn synthesize_policy(
         spending_limit_capability,
         template_family: input.template_family.clone(),
         template_capability_schema,
-        // Reviewed, code-hash-bound adapters would be resolved from the registry here (by the
-        // target's observed code hash). No adapter capability is pinned in the current snapshot
-        // schema, so synthesis stays exact-by-default + explicit user widenings.
-        adapters: Vec::new(),
+        // The signature binds the governance assertion to this exact observed code hash.
+        // Recording observations remain self-supplied, not chain attestations.
+        adapters: adapters.into_values().collect(),
     };
 
     let out = synthesize(&syn_input, &decisions).map_err(map_synth_errs)?;
@@ -730,6 +761,7 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::UnknownVerifier(_) | RegistryError::VerifierCapabilityIncomplete(_) => {
             EC::EUnregisteredVerifier
         }
+        RegistryError::TargetAdapterUnsupported(_) => EC::ETargetAdapterUnsupported,
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,
         RegistryError::Internal(_) => EC::EInternal,
@@ -1592,3 +1624,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod target_adapter_tests;

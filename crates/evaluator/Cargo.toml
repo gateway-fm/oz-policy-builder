@@ -12,6 +12,7 @@ hex = { workspace = true }
 ozpb-domain = { workspace = true }
 ozpb-policy-spec = { workspace = true }
 serde = { workspace = true }
+stellar-xdr = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

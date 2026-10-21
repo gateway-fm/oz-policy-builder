@@ -7,7 +7,7 @@ resolver = "2"
 # [profile.release] so it builds standalone via `stellar contract build` (as it ships to
 # users). `differential` still path-depends on them. Keeping them as members would make
 # cargo ignore their profiles ("profiles for the non-root package will be ignored").
-members = ["differential", "authorized-target-fixture"]
+members = ["differential", "authorized-target-fixture", "atomic-live-helper"]
 exclude = ["golden-transfer-policy", "soroswap-swap-policy"]
 
 [profile.release]
@@ -16,3 +16,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+# `stellar contract build` (27.x) refuses a release profile without it, and the helper is built
+# that way. The target fixture's reviewed Wasm hash is the same with or without it.
+overflow-checks = true

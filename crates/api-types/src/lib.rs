@@ -105,6 +105,7 @@ error_codes! {
     ERegistryRevoked => "E_REGISTRY_REVOKED",
     EIncompatibleAccount => "E_INCOMPATIBLE_ACCOUNT",
     EUnregisteredVerifier => "E_UNREGISTERED_VERIFIER",
+    ETargetAdapterUnsupported => "E_TARGET_ADAPTER_UNSUPPORTED",
     EUnregisteredTemplate => "E_UNREGISTERED_TEMPLATE",
     ERegistryEmpty => "E_REGISTRY_EMPTY",
     // policy recognition / authority surface
@@ -352,6 +353,10 @@ pub(crate) mod test_support;
 /// Wire types for evaluation, verification, live checks, and install intent.
 pub mod policy_operations;
 pub use policy_operations::*;
+mod install_assembly;
+pub use install_assembly::*;
+pub mod dry_run;
+pub use dry_run::*;
 
 #[cfg(test)]
 mod tests {

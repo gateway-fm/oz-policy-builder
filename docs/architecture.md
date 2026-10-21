@@ -207,11 +207,11 @@ classification for display and audit:
    `RESTORED`) from operation meta, or `stateChanges` from simulation.
 4. **Anchors:** ledger sequence + close time (`ledger`, `createdAt`), network ID (hash of the
    passphrase from `getNetwork`), and target-contract executable hashes observed at recording
-   time. The meta version is self-describing inside the preserved raw meta XDR rather than
-   duplicated as a decoded field. A per-transaction protocol-version anchor is **not** captured
-   in Phase 1: the historical ledger's protocol version is not part of the transaction evidence
-   itself, and the RPC's current `getNetwork.protocolVersion` would describe the wrong ledger —
-   recording a plausible-but-wrong anchor would be worse than recording none.
+   time. Live acquisition also records the endpoint's current protocol and decoder identity,
+   separately from historical transaction anchors. Contract-instance observations retain their
+   last-modified and live-until ledgers. The meta version is self-describing in raw meta XDR.
+   The acquisition protocol is **not** the protocol of the transaction's historical ledger.
+   See [recording evidence](RECORDING-EVIDENCE.md) for v2 result verification and migration.
 
 **Evidence vs enforcement.** Only the authorization tree is an enforcement fact. Events and
 state diffs are *explanatory evidence*: they help the user and the synthesizer understand
@@ -221,8 +221,7 @@ their meta/simulation source; token movements are typed only from well-formed to
 of the selected operation for meta V4, or the transaction-level event list for meta V3, which
 predates per-operation attribution; anything that cannot be confidently decoded and
 attributed stays in the raw meta and is surfaced as a labeled unattributed note, never
-guessed into a typed effect. (A per-effect numeric confidence field is not part of the v1
-recording schema.)
+guessed into a typed effect. (A per-effect numeric confidence field is not part of the recording schema.)
 
 **Authorizer selection and account recognition.** A transaction may contain several
 authorizing addresses (including ordinary G-accounts). Recording requires selecting *which*
@@ -687,6 +686,11 @@ deterministic offline verdicts from live preflight verdicts. The suite is also t
 
 ### 4.6 MCP server (`crates/mcp-server`)
 
+The recognition-scoped installed-rule operation is implemented in
+[`LIVE-POLICY-CHECK.md`](LIVE-POLICY-CHECK.md). Its predictions are conditional on later
+authentication of the candidate identities and carry endpoint-reported ledger evidence;
+they require a fresh check and enforce simulation before signing.
+
 > **Scope: Tranche 1 for `record` and `synthesize`; later milestones for the rest.** The first milestone contracts an MCP server v0 exposing recording and synthesis. The remaining tools described below — dry-run, authority-surface and install-intent — belong to the milestones that deliver the components behind them.
 
 One codebase and executable image built on the official Rust MCP SDK (`rmcp` 2.x), exposing
@@ -1082,6 +1086,13 @@ back or equivocate on is not a root.
   can change the account, reach a bound policy or call the target (`E_UNSUPPORTED_AUTHORITY`,
   `contract_signer`) rather than accept it under an unexamined nested account; the reader
   reports one elsewhere as observed.
+
+- **Target adapter bindings — keyed by exact observed target Wasm hash.** Optional signed
+  `target_adapters` entries bind a locally implemented, versioned argument-semantic descriptor
+  to reviewed target code. The digest covers function identity, exact arity, types and roles.
+  Missing bindings preserve exact synthesis; revoked or inconsistent bindings are refused.
+  [Target adapters](TARGET-ADAPTERS.md) documents the supported Soroswap descriptor and the
+  distinction between a governance assertion, caller-carried observations and live code.
 
 **Two verification paths — reviewed vs generated (they are different problems):** a static
 registry keyed by exact wasm hash cannot pre-recognize per-grant generated wasm that does
