@@ -145,6 +145,8 @@ runs separately and gives the field-by-field review procedure for a new summary.
   [subscription mode](../docs/WALKTHROUGH-SEP41.md) requires the full authority-check path and
   exactly one generated policy plus the pinned reviewed spending-limit policy, with both
   instances bound to their spec indices. Other compositions are refused before deployment.
+  The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
+  each of its two independent scope+count rules separately through `bundle-command.mjs`.
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -338,8 +340,9 @@ October 15 observations described below.
   manual workflow; the wrapper does not call them.
 - **Reproduction is not a complete dry run.** The default wrapper requires matching source,
   Wasm and manifest and complete layer-1 coverage for its single scope+count policy. It does
-  not establish arbitrary captured-target execution, a wallet product's consent, or the three
-  protocol walkthroughs. Enforcing network simulations remain a separate later observation.
+  not establish arbitrary captured-target execution or a wallet product's consent. The Blend
+  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend still lacks
+  its position setup. Enforcing network simulations remain a separate later observation.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.
