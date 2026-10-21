@@ -172,26 +172,27 @@ which the RPC returns for a failed simulation too. In the order the host records
 show one helper call with exactly the approved candidate, then the account's `__check_auth` for the
 installation and then for the transfer, once each, with that entry's signature payload (which
 covers its nonce and expiry), its signature and its contexts. Only the host's diagnostic events
-count; a contract can emit any topics as a contract event. For a permit those calls succeeded, and
-the result must echo exactly the envelope's four entries, which is what binds the classic signers'
-own entries. For a denial every event comes from a failed call, and the policy's error follows the
-transfer's check. A failed response echoes nothing, so a denial vouches for the helper call and the
-account's two entries but not for the classic signers' entries, although `envelope_xdr_sha256`
-covers their bytes. The validator does not verify signatures, which the simulation's host did, and
-it neither signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
-[testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed
-in the shapes the probe and the host use. They also run it over real responses: a second,
+count; a contract can emit any topics as a contract event. For a permit every event comes from a
+successful call, and the result must echo exactly the envelope's four entries, which is what binds
+the classic signers' own entries. For a denial every event comes from a failed call, the helper
+never returns, and the policy's error follows the transfer's check and precedes any return of it. A
+failed response echoes nothing, so a denial vouches for the helper call and the account's two
+entries but not for the classic signers' entries, although `envelope_xdr_sha256` covers their
+bytes. The validator does not verify signatures, which the simulation's host did, and it neither
+signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
+[testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed in
+the shapes the probe and the host use. They also run it over real responses: a second,
 simulation-only probe the same day reused the deployed helper with a fresh throwaway account,
 automation keys and a new candidate, `CDTRH2NIFBKASKAF3FA2NCEYJ65O4XXI6NUPWDW6J4T3JYBHOLEYCHKF`,
 and kept the RPC's raw responses as
-[`wallet/tests/live-enforcement-testnet.json`](../wallet/tests/live-enforcement-testnet.json),
-with the two classic signer entries' Ed25519 signatures zeroed. On them the permit validates as
+[`wallet/tests/live-enforcement-testnet.json`](../wallet/tests/live-enforcement-testnet.json), with
+the two classic signer entries' Ed25519 signatures zeroed. On them the permit validates as
 `permit`, the adjacent amount as `deny`, and each case with the other's response as `failed`. The
-real responses matched the shapes the validator expects: the permit result echoes the four
-supplied entries, the fresh account's permit writes fourteen entries including the four nonces,
-and the denial's events, all from failed calls, are returned alongside its error. The owner
-must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real transfer
-that no policy checks, should the signatures ever be submitted.
+real responses matched the shapes the validator expects: the permit result echoes the four supplied
+entries, the fresh account's permit writes fourteen entries including the four nonces, and the
+denial's events, all from failed calls, are returned alongside its error. The owner must never be
+asked to sign the transfer: an owner-signed transfer under rule 0 is a real transfer that no policy
+checks, should the signatures ever be submitted.
 
 ## Signatures are real and usable without the helper
 

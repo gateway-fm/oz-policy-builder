@@ -802,3 +802,55 @@ test('the structured denial is the policy\'s own code, followed by the asset\'s 
   moved.splice(15, 0, failure);
   refused(realCase('denial', { ...REAL.denial.simulation, events: moved }), 'not_a_policy_denial');
 });
+
+test('a denial\'s calls never returned: no helper return, and the policy\'s error before any return of the transfer\'s check', () => {
+  const { helper, account } = REAL.provenance;
+  const fnReturn = (by, fn) => F.diagnostic(by, [xdr.ScVal.scvSymbol('fn_return'), xdr.ScVal.scvSymbol(fn)], xdr.ScVal.scvVoid(), false);
+  // The permit's own events, every one marked failed, followed by the denial's failure tail.
+  const failedPermit = realEvents('permit');
+  for (const event of failedPermit) event.inSuccessfulContractCall = false;
+  const spliced = [...encode(failedPermit), ...REAL.denial.simulation.events.slice(16)];
+  refused(realCase('permit', { ...REAL.denial.simulation, events: spliced }), 'unbound_response');
+  // The helper returning in a denial.
+  refused(realCase('denial', { ...REAL.denial.simulation, events: [...REAL.denial.simulation.events, fnReturn(helper, 'install_and_transfer')] }),
+    'unbound_response');
+  // The transfer's check returning before the policy raised its error.
+  const returned = [...REAL.denial.simulation.events];
+  returned.splice(15, 0, fnReturn(account, '__check_auth'));
+  refused(realCase('denial', { ...REAL.denial.simulation, events: returned }), 'not_a_policy_denial');
+  // A return of the transfer's check after the policy's error does not change the denial.
+  const after = [...REAL.denial.simulation.events];
+  after.splice(18, 0, fnReturn(account, '__check_auth'));
+  assert.equal(validateLiveCase(realCase('denial', { ...REAL.denial.simulation, events: after })).outcome, 'deny');
+});
+
+test('a permit\'s events all come from successful calls', () => {
+  for (const index of [3, 16, 23]) {
+    const events = realEvents('permit');
+    events[index].inSuccessfulContractCall = false;
+    refused(realCase('permit', { ...REAL.permit.simulation, events: encode(events) }), 'unbound_response', `event ${index}`);
+  }
+});
+
+test('only the host\'s returns of exactly those calls count against a denial', () => {
+  const { helper, account } = REAL.provenance;
+  const fnReturn = (by, fn, type = xdr.ContractEventType.diagnostic) => {
+    const event = xdr.DiagnosticEvent.fromXDR(F.diagnostic(by, [xdr.ScVal.scvSymbol('fn_return'), xdr.ScVal.scvSymbol(fn)],
+      xdr.ScVal.scvVoid(), false), 'base64');
+    event.event.type = type;
+    return event.toXDR('base64');
+  };
+  const at = (index, event) => {
+    const events = [...REAL.denial.simulation.events];
+    events.splice(index, 0, event);
+    return realCase('denial', { ...REAL.denial.simulation, events });
+  };
+  for (const [name, input] of [
+    ['a contract event shaped like the helper\'s return', at(26, fnReturn(helper, 'install_and_transfer', xdr.ContractEventType.contract))],
+    ['another contract returning a function of that name', at(26, fnReturn(account, 'install_and_transfer'))],
+    ['the helper returning another function', at(26, fnReturn(helper, 'remaining_calls'))],
+    ['a contract event shaped like the check\'s return', at(15, fnReturn(account, '__check_auth', xdr.ContractEventType.contract))],
+    ['another contract returning __check_auth', at(15, fnReturn(helper, '__check_auth'))],
+    ['the account returning another function', at(15, fnReturn(account, 'add_context_rule'))],
+  ]) assert.equal(validateLiveCase(input).outcome, 'deny', name);
+});

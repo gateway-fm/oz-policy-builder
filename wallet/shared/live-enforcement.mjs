@@ -26,8 +26,9 @@
 //   - either way the response's diagnostic events record exactly this envelope, in order: one helper
 //     call with the approved candidate, then the account's `__check_auth` calls for the envelope's two
 //     account entries, once each, with their signature payloads, signatures and contexts; from
-//     successful calls for a permit, and every event from a failed call for a denial, whose policy
-//     error follows the transfer's check. A permit also echoes all four entries, which binds the
+//     successful calls for a permit, whose every event succeeded, and every event from a failed call
+//     for a denial, where the helper never returned and the policy's error follows the transfer's check
+//     and precedes any return of it. A permit also echoes all four entries, which binds the
 //     classic signers' entries; a denial does not bind those.
 //
 // Pure: no signing, no network, no clock. The result is state-dependent simulation evidence about
@@ -480,6 +481,9 @@ const contractError = (code) => errorVal(xdr.ScError.sceContract(code));
 const errorsBy = (events, address) => events.filter((e) => e.host && e.by === contractHex(address) && e.topics.length === 2
   && same(e.topics[0], sym('error')) && e.topics[1].type === 'scvError' && e.topics[1].error.type === 'sceContract');
 const raisedBy = (events, address) => errorsBy(events, address).map((e) => e.topics[1].error.contractCode);
+/** `fn_return` diagnostic events of `contract.fn`: topics `[fn_return, fn]`, emitted by the returning contract. */
+const returnsOf = (events, contract, fn) => events.filter((e) => e.host && e.by === contractHex(contract) && e.topics.length === 2
+  && same(e.topics[0], sym('fn_return')) && same(e.topics[1], sym(fn)));
 /** `fn_call` diagnostic events into `contract.fn`: topics `[fn_call, contract ID, fn]`, data the arguments. */
 const callsInto = (events, contract, fn) => events.filter((e) => e.host && e.topics.length === 3 && same(e.topics[0], sym('fn_call'))
   && e.topics[1].type === 'scvBytes' && Buffer.from(e.topics[1].bytes.value).toString('hex') === contractHex(contract)
@@ -498,11 +502,10 @@ function authContexts(entry) {
  * candidate, and the account's `__check_auth` calls must be the host checking the envelope's two
  * account entries, once each — that entry's signature payload (which covers its nonce and expiry),
  * its signature and its contexts — in the order the helper makes them: the call, the installation's
- * check, the transfer's check. With `succeeded`, all three come from successful calls. Returns the
- * position of the transfer's check. The classic signers' own entries leave no such record: a permit
+ * check, the transfer's check. Returns the position of the transfer's check. The classic signers' own entries leave no such record: a permit
  * binds them through its echoed entries, a denial not at all.
  */
-function requireBinding(c, events, { install, transfer }, { succeeded }) {
+function requireBinding(c, events, { install, transfer }) {
   const helper = callsInto(events, c.helper, 'install_and_transfer');
   if (helper.length !== 1 || !same(helper[0].data, helperCall(c).args[0])) {
     fail('unbound_response', 'the response does not record one helper call with exactly the approved candidate');
@@ -517,9 +520,6 @@ function requireBinding(c, events, { install, transfer }, { succeeded }) {
   }
   if (!(helper[0].index < installCheck.index && installCheck.index < transferCheck.index)) {
     fail('unbound_response', 'the recorded helper call and authorization checks are out of order');
-  }
-  if (succeeded && ![helper[0], installCheck, transferCheck].every((e) => e.ok)) {
-    fail('unbound_response', 'a permit\'s recorded helper call or authorization check comes from a failed call');
   }
   return transferCheck.index;
 }
@@ -545,11 +545,15 @@ function denial(c, simulation, records) {
   // Everything a failed simulation records was rolled back: an event from a successful call is
   // another response's.
   if (events.some((e) => e.ok)) fail('unbound_response', 'a denial\'s events include some from successful calls');
-  const transferCheck = requireBinding(c, events, records, { succeeded: false });
+  const transferCheck = requireBinding(c, events, records);
+  if (returnsOf(events, c.helper, 'install_and_transfer').length) fail('unbound_response', 'a denial\'s helper call returned');
   // The same attribution, read from the structured events rather than their printed log: the policy
-  // raises the code after the transfer's check began, and the asset then reports the account's failure.
+  // raises the code after the transfer's check began and before that check returned, if it ever did,
+  // and the asset then reports the account's failure.
   const authFailed = vec([xdr.ScVal.scvString('failed account authentication with error'), addressVal(c.account), contractError(code)]);
-  const policyError = errorsBy(events, c.policy).find((e) => e.topics[1].error.contractCode === code && e.index > transferCheck);
+  const checkReturned = returnsOf(events, c.account, '__check_auth').find((e) => e.index > transferCheck);
+  const policyError = errorsBy(events, c.policy).find((e) => e.topics[1].error.contractCode === code && e.index > transferCheck
+    && (!checkReturned || e.index < checkReturned.index));
   if (!policyError || !events.some((e) => e.host && e.index > policyError.index && e.by === contractHex(c.asset) && e.topics.length === 2
     && same(e.topics[0], sym('error')) && same(e.topics[1], errorVal(xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction)))
     && same(e.data, authFailed))) {
@@ -581,7 +585,10 @@ function permit(c, simulation, entries, records) {
   if (!Array.isArray(auth) || auth.length !== entries.length || auth.some((text, i) => text !== entries[i].toXDR('base64'))) {
     fail('unbound_response', 'the result does not echo exactly the envelope\'s authorization entries');
   }
-  requireBinding(c, responseEvents(simulation), records, { succeeded: true });
+  // Nothing in a successful simulation was rolled back: an event from a failed call is another response's.
+  const events = responseEvents(simulation);
+  if (events.some((e) => !e.ok)) fail('unbound_response', 'a permit\'s events include some from failed calls');
+  requireBinding(c, events, records);
   return {
     outcome: 'permit', reason: 'candidate_permitted', enforcer: c.policy, returned_rule_id: c.expected_rule_id,
     balance_changes: { account: (-BigInt(c.amount)).toString(), recipient: c.amount },
