@@ -217,6 +217,44 @@ const SUBMITTED = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
 const SIMULATED = ['started', 'verified_denial', 'unexpected_permit', 'unattributed_denial',
   'verified_independent_permission', 'independent_permission_not_observed'];
 
+const POSITION_STEP = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
+/** W1's Blend supply position: each submission's identity and the withdrawal readback, nothing else. */
+function blendPositionRecord(w) {
+  let refresh = null;
+  if (w.emission_refresh !== undefined && w.emission_refresh !== null) {
+    const r = object(w.emission_refresh);
+    const status = choice(r.status, ['not_needed', 'gulped']);
+    refresh = { status, transaction: status === 'gulped' ? hash(r.transaction) : null };
+  }
+  if (w.position_journal === undefined) return { status: 'not_recorded', emission_refresh: refresh };
+  const j = object(w.position_journal);
+  const status = choice(j.status, ['opening', 'open', 'withdrawing', 'withdrawn', 'no_position', 'incomplete']);
+  const step = (value) => {
+    if (value === undefined) return null;
+    const s = object(value);
+    const state = choice(s.status, POSITION_STEP);
+    return { status: state, transaction: state === 'started' ? (s.transaction === undefined ? null : fail()) : hash(s.transaction),
+      ledger: s.ledger === undefined || s.ledger === null ? null : uint(s.ledger) };
+  };
+  const supply = step(j.supply);
+  const withdrawal = step(j.withdrawal);
+  const readback = j.withdrawal?.readback === undefined ? null : choice(j.withdrawal.readback, ['empty', 'still_open']);
+  // Only an empty readback after a sent withdrawal closes a position, and only a supply that was
+  // never sent means none was opened.
+  if (status === 'withdrawn' && (withdrawal?.transaction == null || readback !== 'empty')) fail();
+  if (status === 'no_position' && supply !== null && supply.transaction !== null) fail();
+  return { status, reason: j.reason === undefined ? null : match(j.reason, /^[a-z][a-z_]{0,39}$/), emission_refresh: refresh,
+    funding_transfer: step(j.funding_transfer), funding_swap: step(j.funding_swap),
+    supply: supply && { ...supply, amount: amount(j.supply.amount) }, withdrawal: withdrawal && { ...withdrawal, readback } };
+}
+
+/** W1's emission refresh as journaled before any plan exists: its status and transaction only. */
+function emissionRefreshRecord(value) {
+  const r = object(value);
+  const status = choice(r.status, ['started', 'pending', 'confirmed_unverified', 'not_needed', 'gulped', 'gulped_still_not_live', 'refused']);
+  return { status, transaction: optional(r.transaction, hash) };
+}
+
 /** W1/W3 bundle journal: typed fields only; RPC readbacks, plans and host errors stay local. */
 function walkthroughRecord(value, run) {
   if (value === undefined) return { status: 'not_recorded' };
@@ -321,7 +359,10 @@ function walkthroughRecord(value, run) {
     if (bundle.cleanup === 'removed' && (bundle.entries.some(unresolved) || !bundle.entries.some(removed))) fail();
     if (bundle.cleanup === 'no_installed_grants' && bundle.entries.some(installed)) fail();
   }
-  if (w.controls === undefined) return { kind, owner_transaction: owner, invocations, bundle, controls: { status: 'not_recorded', steps: [] } };
+  const position = kind === 'blend_claim' ? { position: blendPositionRecord(w) } : {};
+  if (w.controls === undefined) {
+    return { kind, owner_transaction: owner, invocations, bundle, ...position, controls: { status: 'not_recorded', steps: [] } };
+  }
   const c = object(w.controls);
   const status = choice(c.status, ['running', 'incomplete', 'completed']);
   const set = c.control_set === undefined ? 1 : choice(c.control_set, [2]);
@@ -373,7 +414,7 @@ function walkthroughRecord(value, run) {
       } else if (s.result !== 'verified_denial' || s.enforcer !== expected[s.name][0] || s.code !== expected[s.name][1]) fail();
     }
   }
-  return { kind, owner_transaction: owner, invocations, bundle, controls: { status,
+  return { kind, owner_transaction: owner, invocations, bundle, ...position, controls: { status,
     control_set: kind === 'blend_claim' ? 'single_rule'
       : set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
 }
@@ -535,6 +576,8 @@ export function exportEvidence(runDir) {
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   const pipeline = pipelineRecord(decode(artifact('pipeline', join(runDir, 'pipeline.json'))), run);
   const walkthrough = walkthroughRecord(rawRun?.walkthrough, run);
+  const refresh = rawRun?.blend_emission_refresh === undefined ? {}
+    : { blend_emission_refresh: emissionRefreshRecord(rawRun.blend_emission_refresh) };
   const protocolPipeline = protocolPipelineRecord(
     decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
   if (run === null && source.status === 'unavailable') fail();
@@ -588,7 +631,7 @@ export function exportEvidence(runDir) {
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
     provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup,
-    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), artifacts,
+    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), ...refresh, artifacts,
   };
 }
 

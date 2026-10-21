@@ -54,7 +54,7 @@ function fixture(kind = 'soroswap_swap') {
       sends.push(op);
       if (controls.ambiguous) throw new Error('send unconfirmed');
       return { hash: 'bb'.repeat(32), receipt: { ledger: 101 },
-        returnValue: kind === 'blend_claim' ? i128(150000) : xdr.ScVal.scvVec([i128(1000000), i128(150000)]) };
+        returnValue: kind === 'blend_claim' ? i128(controls.zeroOutput ? 0 : 150000) : xdr.ScVal.scvVec([i128(1000000), i128(150000)]) };
     },
   };
   const execute = ({ deny, ...options } = {}) => {
@@ -182,4 +182,14 @@ test('a delegate call refuses a key that is not the run delegate', async () => {
   await assert.rejects(f.execute(), /delegate key/);
   assert.equal(f.run.walkthrough.invocations[0].status, 'started');
   assert.equal(f.sends.length, 0);
+});
+
+test('a delegated Blend claim that pays zero BLND fails the run instead of counting as the positive', async () => {
+  const f = fixture('blend_claim'); f.controls.zeroOutput = true;
+  await assert.rejects(f.execute({ name: 'delegate_claim', mode: 'execute', expected: undefined }), /no nonzero amount/);
+  assert.equal(f.sends.length, 1);
+  const observed = f.run.walkthrough.invocations[0];
+  assert.equal(observed.signer, 'delegate');
+  assert.equal(observed.status, 'confirmed_unverified');
+  assert.equal(observed.returned_amount, undefined);
 });

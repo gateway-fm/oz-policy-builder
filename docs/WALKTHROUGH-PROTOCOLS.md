@@ -9,8 +9,8 @@ not establish a wallet's protected human approval.
 **Status.** W3 is executable through `run.sh`. A controlled run on 20 October 2026 completed every
 step below; an earlier run that day predates the two transfer-rule denials
 ([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-runs-20-october-2026)).
-W1 has its pipeline, bundle installation and controls, but no setup for the Blend position its
-claim needs; `run.sh` refuses it (see [W1](#w1-blend)), and no W1 run exists.
+W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
+withdraws it before the keys are discarded (see [W1](#w1-blend)). No W1 run exists yet.
 
 ## W3 Soroswap
 
@@ -125,6 +125,15 @@ cleanup `incomplete`, so the wrapper warns that grants may remain.
 
 ## W1 Blend
 
+```bash
+OZPB_HARNESS_WALKTHROUGH=blend \
+OZPB_HARNESS_AUTHORITY_CHECK=cli \
+OZPB_HARNESS_CONFIRM=operator \
+bash testnet-harness/run.sh
+```
+
+It needs the same authority-check configuration as W3.
+
 The pipeline, bundle installation and controls accept `blend_claim`: the exact
 `claim(from = self, reserve_token_ids = [3], to = self)` on the Blend v2 pool
 `CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW`. Reserve 1 of that pool is Circle's
@@ -155,9 +164,58 @@ also reads the run's account and payer and writes the plan. It refuses:
 
 These are fixed controlled-test values, not a yield, price or slippage model.
 
-What is missing is the position. A claim pays only on a position in an emitting reserve, and the
-harness does not yet open one, so `OZPB_HARNESS_WALKTHROUGH=blend` still refuses. A zero-reward
-claim or a mocked pool is not a substitute.
+### Emission refresh
+
+Blend emissions run in seven-day schedules. Before the preflight, `blend-position.mjs refresh`
+reads the schedule on ID 3. If it has expired or would expire within the run window, the
+harness calls the pool's permissionless `gulp_emissions` once, as the payer, and records the
+transaction, the amount gulped and the new expiration. Otherwise it sends nothing and records
+`not_needed`. A missing or zero schedule, a gulp the pool refuses, or a schedule still not live
+afterwards stops the run with that reason. The preflight copies the refresh into the plan.
+A read-only simulation of `gulp_emissions` on 21 October 2026 was refused (`#1200`,
+`BadRequest`), so a run after the current schedule ends (26 October 2026, 04:23 UTC, refused by
+the preflight from about 02:23) may not be able to refresh it.
+
+### The position
+
+A claim pays only on a position in an emitting reserve. `blend-position.mjs open` creates one
+for this run's fresh account, journaling each transaction before it is sent:
+
+1. The payer transfers 200 XLM to the account.
+2. The owner swaps it through the pinned Soroswap router for at least 10 USDC, with the account
+   as both payer and recipient (`swap_exact_tokens_for_tokens` and its native-XLM `transfer` to
+   the pair, through rule 0).
+3. The owner supplies exactly 10 USDC: `submit(self, self, self, [Supply USDC])` and its USDC
+   `transfer` to the pool, through rule 0. It is a plain supply (request type 0), not
+   collateral; nothing is borrowed, so no oracle price or health factor is involved.
+4. The harness waits 12 ledgers so the owner's recorded claim is nonzero.
+
+Each owner call is signed only after the recorded authorization equals the exact intended tree,
+and the plan's amounts must equal the fixed values above. The swap output, the supply's balance
+effect and the account's position (exactly one USDC supply) are checked before the claim.
+
+`protocol-invoke.mjs` then makes the owner's claim, and every later step is the same as W3. A
+claim that returns zero BLND, from the owner or the delegate, fails the run: the positive is
+counted only with a nonzero return and an equal BLND balance increase.
+
+### Withdrawal
+
+After the controls, `blend-position.mjs close` withdraws the supply through rule 0 (a
+`submit` withdrawing twice the supplied amount, which the pool caps at the account's whole
+balance) and reads the account's positions back. Only an empty readback records `withdrawn`.
+On failure, the wrapper runs the same close, bounded to 180 seconds, before the bundle cleanup
+and before discarding the keys. It never signs when the network, the account code or the pool
+code differs. A prepared withdrawal is never resubmitted; it is rebuilt, at most once, only
+when the network rejected it, never queued it or applied it as failed. A position still open, a
+withdrawal or supply whose outcome is unknown, or an unexpected position is recorded as
+`incomplete` with its reason; the wrapper then exits nonzero and warns that a position may
+remain open.
+
+What the run leaves on its throwaway account is not recovered or recorded: the swap output
+beyond the supplied 10 USDC (about 11 USDC at the 21 October quote), the withdrawn USDC and the
+claimed BLND. Each run therefore takes about 21 USDC out of the testnet pair.
+
+A zero-reward claim or a mocked pool is not a substitute for any of this.
 
 ## Evidence
 
@@ -167,6 +225,12 @@ authority answer, readback, pending submissions and removals, and the control st
 `protocol_pipeline`. The native setup's transfer target, recipient and amount are exported as
 `null` for these runs: they only fund the account. A Soroswap journal without the
 transfer-rule denials is labelled `router_rule_denials_only`, and a Blend journal `single_rule`.
+A Blend walkthrough also exports `position`: the emission refresh, the funding, supply and
+withdrawal transactions with their status and ledger, the withdrawal readback, and the
+position's final status and reason. `withdrawn` is refused without a sent withdrawal and an
+empty readback, and `no_position` after a supply that was sent. The run's own emission-refresh
+record is exported as top-level `blend_emission_refresh` (status and transaction), so a gulp
+sent before a later failure is not lost.
 A removal made after a mismatched or unreadable pre-removal readback carries
 `pre_removal_readback`. A `completed` control
 journal is accepted only with every required step in order, its expected enforcers and codes,

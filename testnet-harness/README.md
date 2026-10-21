@@ -344,8 +344,8 @@ October 15 observations described below.
 - **Reproduction is not a complete dry run.** The default wrapper requires matching source,
   Wasm and manifest and complete layer-1 coverage for its single scope+count policy. It does
   not establish arbitrary captured-target execution or a wallet product's consent. The Blend
-  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend still lacks
-  its position setup. Enforcing network simulations remain a separate later observation.
+  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend opens and
+  withdraws its own USDC supply position. Enforcing network simulations remain a separate later observation.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.

@@ -738,6 +738,37 @@ test('a failed protocol walkthrough removes its bundle grants before discarding 
   assert.match(result.stderr, /cleanup incomplete/i);
 });
 
+for (const closeStatus of [0, 1]) {
+  test(`a failed Blend walkthrough closes its position, then removes its grants, before discarding keys (close exit ${closeStatus})`, (t) => {
+    const dir = setup(t, null);
+    startRun(dir, {});
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+    const secrets = join(dir, 'temporary-keys');
+    mkdirSync(secrets);
+    writeFileSync(join(secrets, 'keys.json'), 'test-only');
+    const prelude = `node() {
+      if [[ "$1" == */failure-cleanup.mjs ]]; then return 98; fi
+      if [[ "$1" == */blend-position.mjs ]]; then
+        test "$2" = close && test -f "$SECRETS/keys.json" || return 99
+        printf close >> "$RUN/cleanup-attempt"
+        return ${closeStatus}
+      fi
+      if [[ "$1" == */protocol-finish.mjs ]]; then
+        test -f "$SECRETS/keys.json" || return 99
+        printf ,bundle >> "$RUN/cleanup-attempt"
+        return 0
+      fi
+      command node "$@"
+    }`;
+    const result = exitHandler(dir, 42, prelude, secrets, { WALKTHROUGH: 'blend' });
+    assert.equal(result.status, 42, result.stderr);
+    assert.equal(readFileSync(join(dir, 'cleanup-attempt'), 'utf8'), 'close,bundle');
+    assert.equal(existsSync(secrets), false);
+    if (closeStatus) assert.match(result.stderr, /cleanup incomplete/i);
+    else assert.doesNotMatch(result.stderr, /cleanup incomplete/i);
+  });
+}
+
 for (const change of ['matching', 'account code', 'installation', 'reviewed address', 'reviewed code', 'reviewed period', 'missing reviewed', 'unexpected reviewed']) {
   test(`verified failure cleanup binds its original installation: ${change}`, (t) => {
     const run = fixture();
@@ -953,6 +984,78 @@ test('a single-rule Blend journal is not labelled with transfer-rule denials', (
     steps: [{ name: 'reserve_ids', result: 'verified_denial', ledger: 100, enforcer: ROOT_POLICY, code: 6 }] };
   const report = exportEvidence(setup(t, run));
   assert.equal(report.walkthrough.controls.control_set, 'single_rule');
+});
+
+function blendFixture() {
+  const run = protocolFixture();
+  run.walkthrough.kind = 'blend_claim';
+  run.walkthrough.invocations = run.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  run.walkthrough.invocations[0].rule_ids = [0];
+  run.walkthrough.bundle.entries.pop();
+  run.walkthrough.controls = { status: 'incomplete', control_set: 2,
+    steps: [{ name: 'reserve_ids', result: 'verified_denial', ledger: 100, enforcer: ROOT_POLICY, code: 6 }] };
+  run.walkthrough.emission_refresh = { status: 'gulped', transaction: 'ab'.repeat(32), ledger: 80 };
+  const step = (n, ledger) => ({ status: 'confirmed', transaction: String(n).repeat(64), ledger });
+  run.walkthrough.position_journal = { status: 'withdrawn', note: SENTINEL,
+    funding_transfer: step(1, 81), funding_swap: { ...step(2, 82), returned_amount: '213000000', usdc_before: '0', usdc_after: '213000000' },
+    supply: { ...step(3, 83), amount: '100000000', b_tokens: '99888800', usdc_spent: '100000000' },
+    owner_wait: { target_ledger: 95, ledger: 96 },
+    withdrawal: { ...step(4, 300), usdc_returned: '100000005', readback: 'empty' } };
+  return run;
+}
+
+test('a Blend walkthrough exports its typed position journal and emission refresh', (t) => {
+  const report = exportEvidence(setup(t, blendFixture()));
+  const position = report.walkthrough.position;
+  assert.equal(position.status, 'withdrawn');
+  assert.deepEqual(position.emission_refresh, { status: 'gulped', transaction: 'ab'.repeat(32) });
+  assert.deepEqual(position.supply, { status: 'confirmed', transaction: '3'.repeat(64), ledger: 83, amount: '100000000' });
+  assert.deepEqual(position.withdrawal, { status: 'confirmed', transaction: '4'.repeat(64), ledger: 300, readback: 'empty' });
+  assert.equal(position.reason, null);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('a Blend position still open at export is reported with its reason', (t) => {
+  const run = blendFixture();
+  Object.assign(run.walkthrough.position_journal, { status: 'incomplete', reason: 'position_still_open' });
+  run.walkthrough.position_journal.withdrawal.readback = 'still_open';
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.position.status, 'incomplete');
+  assert.equal(report.walkthrough.position.reason, 'position_still_open');
+});
+
+for (const [name, mutate] of Object.entries({
+  'a withdrawn position without an empty readback': (r) => { r.walkthrough.position_journal.withdrawal.readback = 'still_open'; },
+  'a withdrawn position without a withdrawal': (r) => { delete r.walkthrough.position_journal.withdrawal; },
+  'a pending step without its transaction': (r) => { delete r.walkthrough.position_journal.supply.transaction; },
+  'an unknown position status': (r) => { r.walkthrough.position_journal.status = 'closed'; },
+  'a refresh that did not complete': (r) => { r.walkthrough.emission_refresh = { status: 'refused' }; },
+  'a withdrawn position whose withdrawal was never sent': (r) => {
+    r.walkthrough.position_journal.withdrawal = { status: 'started', readback: 'empty' };
+  },
+  'no position after a confirmed supply': (r) => {
+    r.walkthrough.position_journal.status = 'no_position'; delete r.walkthrough.position_journal.withdrawal;
+  },
+})) {
+  test(`Blend position summary refuses ${name}`, (t) => {
+    const run = blendFixture();
+    mutate(run);
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+
+test('a gulp sent before the Blend plan existed is still exported', (t) => {
+  const run = fixture();
+  run.blend_emission_refresh = { status: 'gulped_still_not_live', reason: 'emission_expired', transaction: 'ab'.repeat(32),
+    ledger: 80, gulped: '1', note: SENTINEL };
+  const report = exportEvidence(setup(t, run));
+  assert.deepEqual(report.blend_emission_refresh, { status: 'gulped_still_not_live', transaction: 'ab'.repeat(32) });
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+  assert.equal(exportEvidence(setup(t, fixture())).blend_emission_refresh, undefined);
+});
+
+test('a Soroswap walkthrough has no Blend position field', (t) => {
+  assert.equal(exportEvidence(setup(t, protocolFixture())).walkthrough.position, undefined);
 });
 
 test('a removal after a mismatched or unreadable pre-removal readback says so', (t) => {
