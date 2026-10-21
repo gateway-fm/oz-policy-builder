@@ -97,3 +97,7 @@ grep -qx 'test signed_candidate_executes_captured_target_and_denies_adjacent_amo
 # candidate fixture and require actual protocol-29 authorization and framing.
 OZPB_ACCOUNT_WASM="$account_wasm" bash scripts/test-native-execution.sh
 OZPB_ACCOUNT_WASM="$account_wasm" bash scripts/test-atomic-live-helper.sh
+
+# The same artifact against captured native-SAC target state: a locally built capture and
+# the recorded testnet responses, replayed offline.
+OZPB_ACCOUNT_WASM="$account_wasm" bash scripts/test-captured-target.sh
