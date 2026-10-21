@@ -4,11 +4,10 @@
 //   node write-spec.mjs --run-dir <dir> [--registry-root <hex>]
 //                                            (reads run.json and recording.json, writes spec.json)
 //
-// This is the step `ozpb synthesize` exists to do, done by hand, and the reason is not a
-// shortcut. On this tree synthesis cannot run against testnet at all: the RPC recorder refuses
-// protocol 29 (`crates/source-rpc` decodes at most 28), and a recording imported from raw XDR
-// carries no observation of the account's executable, which synthesis rightly requires. So the
-// spec is written here, under rules that keep it from claiming more than happened:
+// Historical manual workflow, retained for inspecting the October 15 runs. The default wrapper
+// now records through RPC and runs synthesis-flow.mjs. This helper does not run synthesis:
+// raw-XDR imports have no recorder-observed account executable, which synthesis requires.
+// Its manual spec therefore remains limited by these explicit checks:
 //
 //   * the template must have exactly the expected shape — one rule, one allowed call with three
 //     exact arguments, one signer, one generated policy — so nothing outside what is filled in

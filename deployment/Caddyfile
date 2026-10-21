@@ -1,0 +1,43 @@
+{
+	admin off
+	auto_https off
+	log default {
+		output discard
+	}
+	servers {
+		protocols h1 h2
+		strict_sni_host on
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 120s
+		}
+	}
+}
+
+https://{$OZPB_HOSTNAME}:8443 {
+	tls /run/tls/tls.crt /run/tls/tls.key
+	# This endpoint serves native MCP clients. Browser origins are not authorized.
+	@browser header Origin *
+	@versioned path /v1/mcp
+	# route preserves this order; otherwise Caddy sorts handle before respond.
+	route {
+		respond @browser 403
+		handle @versioned {
+			reverse_proxy 127.0.0.1:8080 {
+				# rmcp retains its loopback Host allowlist; this proxy checks external Host/SNI.
+				header_up Host 127.0.0.1:8080
+				flush_interval -1
+				transport http {
+					dial_timeout 3s
+					# Build deadlines belong to the server; an earlier proxy cutoff can
+					# discard a legitimate cold build while it still owns its build slot.
+				}
+			}
+		}
+		handle {
+			respond 404
+		}
+	}
+}

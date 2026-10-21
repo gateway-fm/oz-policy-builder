@@ -58,6 +58,141 @@ test('selects public observations and labels transactions separately from simula
   assert.ok(!JSON.stringify(report).includes(dir));
 });
 
+test('exports unresolved removal and failure cleanup without claiming revocation', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [], pending_removal: { rule_id: 1, transaction: HASH, status: 'prepared_for_submission', secret: SENTINEL } };
+  run.failure_cleanup = { status: 'incomplete', reason: 'removal_already_recorded', network: run.network,
+    account: C, account_code_hash: HASH, rule_id: 1, installation: HASH,
+    policy: C, policy_wasm_hash: wasmHash, subscription: null, secret: SENTINEL };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.lifecycle.pending_removal.transaction, HASH);
+  assert.equal(report.failure_cleanup.status, 'incomplete');
+  assert.equal(report.failure_cleanup.reason, 'removal_already_recorded');
+  assert.equal(report.failure_cleanup.transaction, null);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('exports a recorded synthesis and reproduction chain without upgrading its evidence trust', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify({
+    schema_version: 1, account: C, recorded_transaction: HASH, recording_hash: HASH,
+    acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+    spec_hash: HASH, normalized_input_hash: HASH, reference_cases: 20,
+    artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here', private_note: SENTINEL,
+  }));
+  const report = exportEvidence(dir);
+  assert.equal(report.pipeline.status, 'recorded');
+  assert.equal(report.pipeline.synthesis_trust, 'self_supplied');
+  assert.equal(report.pipeline.current_network_preflight, 'not_checked_here');
+  assert.ok(report.artifacts.pipeline);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('old runs do not acquire synthesized or verified status', (t) => {
+  assert.deepEqual(exportEvidence(setup(t)).pipeline, { status: 'not_recorded' });
+});
+
+test('exports confirmed removal separately from installation and best-effort policy cleanup', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 20,
+    event: 'verified', rule_readback: 'absent', policy_cleanup: 'still_installed', secret: SENTINEL }],
+  configuration_checks: [{ configuration: 'matched', observation: 'non_atomic',
+    read_ledgers: { account_code: 17, policy_code: 18, rule: 19 }, rule_id: 1,
+    account_code_hash: HASH, policy_code_hash: wasmHash, private_note: SENTINEL }] };
+  run.invocations.push({ signer: 'delegate', rule: 1, amount: run.amount, to: run.recipient,
+    result: 'deny', code: 3000, enforcer: run.account, control: 'post_revocation' });
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.run.installation, 'recorded');
+  assert.equal(report.lifecycle.removals[0].policy_cleanup, 'still_installed');
+  assert.equal(report.lifecycle.removals[0].rule_readback, 'absent');
+  assert.equal(report.run.invocations.at(-1).control, 'post_revocation');
+  assert.equal(report.lifecycle.configuration_checks[0].configuration, 'matched');
+  assert.deepEqual(report.lifecycle.configuration_checks[0].read_ledgers, { account_code: 17, policy_code: 18, rule: 19 });
+  assert.equal(Object.hasOwn(report.lifecycle.configuration_checks[0], 'ledger'), false);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+  run.lifecycle.configuration_checks[0].ledger = 19;
+  assert.throws(() => exportEvidence(setup(t, run)), 'a synthetic common ledger is refused');
+});
+
+test('retains incomplete removal observations but rejects contradictory cleanup states', (t) => {
+  const run = fixture();
+  run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 20,
+    event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked' }] };
+  const dir = setup(t, run);
+  assert.equal(exportEvidence(dir).lifecycle.removals[0].event, 'not_verified');
+  run.lifecycle.removals[0].policy_cleanup = 'not_installed';
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir));
+});
+
+test('subscription summary preserves known coverage gap, actual controls and separate reviewed cleanup', (t) => {
+  const run = fixture(); run.payer = G;
+  run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+    policy_address: C, policy_code_hash: HASH, other_token: C, installation_readback: 'matched',
+    controls: { status: 'incomplete', steps: [{ name: 'early_repeat', result: 'inconclusive_window_elapsed',
+      ledger: 112, before_ledger: 112, token: run.sac, to: run.recipient, amount: run.amount, signer: 'delegate',
+      enforcer: C, code: 3221, private_note: SENTINEL }] } };
+  run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 120,
+    event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed', reviewed_policy_cleanup: 'still_installed' }] };
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  const pipeline = { schema_version: 1, account: run.account, recorded_transaction: HASH,
+    recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH,
+    synthesis_trust: 'self_supplied', spec_hash: HASH, normalized_input_hash: HASH,
+    reference_cases: 30, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+    models_all_policies: false, unmodeled_reviewed_policies: ['rule[0]: oz:spending_limit'] };
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(pipeline));
+  const report = exportEvidence(dir);
+  assert.equal(report.pipeline.models_all_policies, false);
+  assert.equal(report.run.subscription.controls.steps[0].result, 'inconclusive_window_elapsed');
+  assert.equal(report.lifecycle.removals[0].reviewed_policy_cleanup, 'still_installed');
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+  pipeline.models_all_policies = true;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(pipeline));
+  assert.throws(() => exportEvidence(dir), 'cannot upgrade the known missing model');
+  pipeline.models_all_policies = false;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(pipeline));
+  run.subscription.controls.steps[0].result = 'verified_denial';
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir), 'late repeat cannot be a verified window denial');
+});
+
+test('refuses a pipeline claiming stronger synthesis trust or a different account', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  const path = join(dir, 'pipeline.json');
+  const p = { schema_version: 1, account: C, recorded_transaction: HASH, recording_hash: HASH,
+    acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'rpc_reported',
+    spec_hash: HASH, normalized_input_hash: HASH, reference_cases: 20,
+    artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here' };
+  writeFileSync(path, JSON.stringify(p));
+  assert.throws(() => exportEvidence(dir));
+  p.synthesis_trust = 'self_supplied'; p.account = G;
+  writeFileSync(path, JSON.stringify(p));
+  assert.throws(() => exportEvidence(dir));
+});
+
+test('refuses a pipeline transaction absent from, or duplicated in, the owner transfer records', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  const dir = setup(t, run);
+  const p = { schema_version: 1, account: C, recorded_transaction: 'cd'.repeat(32), recording_hash: HASH,
+    acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+    spec_hash: HASH, normalized_input_hash: HASH, reference_cases: 20,
+    artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here' };
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(p));
+  assert.throws(() => exportEvidence(dir));
+  p.recorded_transaction = HASH;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify(p));
+  assert.equal(exportEvidence(dir).pipeline.status, 'recorded');
+  run.invocations.push({ ...run.invocations.at(-1) });
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir));
+});
+
 test('a refused run retains deployment evidence without claiming installation or exposing reasons', (t) => {
   const run = fixture();
   delete run.rule_id;
@@ -171,13 +306,14 @@ test('an explicit null invocation list is malformed', (t) => {
 });
 
 // Run the actual wrapper's EXIT handler without executing its live testnet steps.
-function exitHandler(dir, code = 0) {
+function exitHandler(dir, code = 0, prelude = '', secrets = '', extraEnv = {}) {
   const script = readFileSync(join(ROOT, 'testnet-harness/run.sh'), 'utf8');
   const start = script.indexOf('finish_run() {');
   const end = script.indexOf('trap finish_run EXIT', start) + 'trap finish_run EXIT'.length;
   assert.ok(start >= 0 && end > start);
-  return spawnSync('bash', ['-c', `set -euo pipefail\n${script.slice(start, end)}\nexit "$HARNESS_TEST_EXIT"\n`], {
-    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: '', HARNESS_TEST_EXIT: String(code) },
+  return spawnSync('bash', ['-c', `set -euo pipefail\n${prelude}\n${script.slice(start, end)}\nexit "$HARNESS_TEST_EXIT"\n`], {
+    env: { ...process.env, RUN: dir, SCRIPTS: join(ROOT, 'testnet-harness/scripts'), SECRETS: secrets, HARNESS_TEST_EXIT: String(code),
+      ...extraEnv },
     encoding: 'utf8', timeout: 20000,
   });
 }
@@ -554,4 +690,363 @@ test('CLI publication failure preserves the previous output and removes its temp
   assert.ok(!result.stderr.includes(SENTINEL));
   assert.equal(readFileSync(join(output, 'keep'), 'utf8'), SENTINEL);
   assert.ok(!readdirSync(dir).some((name) => name.startsWith('.evidence-')));
+});
+
+
+test('failed exit attempts cleanup before discarding keys and retains original status', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const secrets = join(dir, 'temporary-keys');
+  mkdirSync(secrets);
+  writeFileSync(join(secrets, 'keys.json'), 'test-only');
+  const prelude = `node() {
+    if [[ "$1" == */failure-cleanup.mjs ]]; then
+      test -f "$SECRETS/keys.json" || return 99
+      printf checked > "$RUN/cleanup-attempt"
+      return 17
+    fi
+    command node "$@"
+  }`;
+  const result = exitHandler(dir, 42, prelude, secrets);
+  assert.equal(result.status, 42, result.stderr);
+  assert.equal(readFileSync(join(dir, 'cleanup-attempt'), 'utf8'), 'checked');
+  assert.equal(existsSync(secrets), false);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'provenance.json'))).exit_code, 42);
+});
+
+test('a failed protocol walkthrough removes its bundle grants before discarding keys', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const secrets = join(dir, 'temporary-keys');
+  mkdirSync(secrets);
+  writeFileSync(join(secrets, 'keys.json'), 'test-only');
+  const prelude = `node() {
+    if [[ "$1" == */failure-cleanup.mjs ]]; then return 98; fi
+    if [[ "$1" == */protocol-finish.mjs ]]; then
+      test -f "$SECRETS/keys.json" || return 99
+      printf bundle > "$RUN/cleanup-attempt"
+      return 1
+    fi
+    command node "$@"
+  }`;
+  const result = exitHandler(dir, 42, prelude, secrets, { WALKTHROUGH: 'soroswap' });
+  assert.equal(result.status, 42, result.stderr);
+  assert.equal(readFileSync(join(dir, 'cleanup-attempt'), 'utf8'), 'bundle');
+  assert.equal(existsSync(secrets), false);
+  assert.match(result.stderr, /cleanup incomplete/i);
+});
+
+for (const change of ['matching', 'account code', 'installation', 'reviewed address', 'reviewed code', 'reviewed period', 'missing reviewed', 'unexpected reviewed']) {
+  test(`verified failure cleanup binds its original installation: ${change}`, (t) => {
+    const run = fixture();
+    if (change !== 'unexpected reviewed') run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+      policy_address: C, policy_code_hash: HASH };
+    run.lifecycle = { removals: [{ rule_id: 1, transaction: HASH, ledger: 20,
+      event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed' }] };
+    run.failure_cleanup = { status: 'removed', reason: 'verified_removal', transaction: HASH,
+      network: run.network, account: C, account_code_hash: HASH, rule_id: 1, installation: HASH,
+      policy: C, policy_wasm_hash: wasmHash, subscription: structuredClone(run.subscription ?? null) };
+    const c = run.failure_cleanup;
+    if (change === 'account code') c.account_code_hash = 'cd'.repeat(32);
+    if (change === 'installation') c.installation = 'cd'.repeat(32);
+    if (change === 'reviewed address') c.subscription.policy_address = 'C' + 'B'.repeat(55);
+    if (change === 'reviewed code') c.subscription.policy_code_hash = 'cd'.repeat(32);
+    if (change === 'reviewed period') c.subscription.period_ledgers = 13;
+    if (change === 'missing reviewed') c.subscription = null;
+    if (change === 'unexpected reviewed') c.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+      policy_address: C, policy_code_hash: HASH };
+    const dir = setup(t, run);
+    if (change === 'matching') assert.equal(exportEvidence(dir).failure_cleanup.status, 'removed');
+    else assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+  });
+}
+
+
+test('an unexpectedly permitted negative simulation is retained without a transaction identity', (t) => {
+  const run = fixture();
+  run.invocations.push({ signer: 'delegate', rule: 1, amount: run.amount, to: run.recipient,
+    result: 'permit', observation: 'enforcing_simulation', ledger: 100 });
+  const dir = setup(t, run);
+  const observation = exportEvidence(dir).run.invocations.at(-1);
+  assert.equal(observation.observation, 'enforcing_simulation');
+  assert.equal(observation.result, 'permit');
+  assert.equal(observation.transaction, null);
+  run.invocations.at(-1).hash = HASH;
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run));
+  assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+});
+
+
+test('unreaped cleanup keeps original exit and discards keys without finalizing child-owned files', (t) => {
+  const dir = setup(t, null);
+  startRun(dir, {});
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(fixture()));
+  const before = readFileSync(join(dir, 'provenance.json'), 'utf8');
+  const secrets = join(dir, 'temporary-keys');
+  mkdirSync(secrets); writeFileSync(join(secrets, 'keys.json'), 'test-only');
+  const prelude = `node() {
+    if [[ "$1" == */failure-cleanup.mjs ]]; then return 2; fi
+    command node "$@"
+  }`;
+  const result = exitHandler(dir, 42, prelude, secrets);
+  assert.equal(result.status, 42);
+  assert.equal(existsSync(secrets), false);
+  assert.equal(readFileSync(join(dir, 'provenance.json'), 'utf8'), before);
+  assert.equal(existsSync(join(dir, 'evidence.json')), false);
+  assert.match(result.stderr, /termination.*unconfirmed/i);
+});
+
+const ROOT_POLICY = 'C' + 'D'.repeat(55);
+const CHILD_POLICY = 'C' + 'E'.repeat(55);
+const LEGACY_SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+  'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+const SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+  'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+function protocolFixture(names = SWAP_STEPS) {
+  const run = fixture();
+  delete run.policy; delete run.policy_wasm_hash; delete run.rule_id; delete run.tx.add_context_rule;
+  run.invocations = []; run.valid_until_ledger = 200;
+  const denial = { enforcer: ROOT_POLICY, code: 6 };
+  const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial,
+    wrong_signer: { enforcer: C, code: 3016 }, zero_signers: { enforcer: ROOT_POLICY, code: 1 },
+    count_cap: { enforcer: ROOT_POLICY, code: 7 }, expired_rule: { enforcer: C, code: 3002 }, post_revocation: { enforcer: C, code: 3000 },
+    token_cap: { enforcer: CHILD_POLICY, code: 6 }, token_count_cap: { enforcer: CHILD_POLICY, code: 7 } };
+  const steps = names.map((name, i) => {
+    const ledger = name === 'expired_rule' || name === 'post_revocation' ? 201 + i : 100 + i;
+    if (name === 'cleanup') return { name, result: 'removed' };
+    if (name === 'expiry_wait') return { name, result: 'ledger_reached', target_ledger: 201, ledger: 201 };
+    if (name === 'delegate_swap') return { name, result: 'confirmed', ledger, transaction: 'cd'.repeat(32) };
+    if (name === 'independent_token') return { name, result: 'verified_independent_permission', ledger };
+    return { name, result: 'verified_denial', ledger, ...expected[name] };
+  });
+  const invocations = [{ name: 'owner_record', control: 'baseline', signer: 'owner', rule_ids: [0, 0], status: 'confirmed',
+    observation: 'submitted_transaction', transaction: HASH, ledger: 90, returned_amount: '150000', output_token: C,
+    balance_before: '0', balance_after: '150000' },
+  ...steps.filter((s) => !['cleanup', 'expiry_wait'].includes(s.name)).map((s) => ({ name: s.name, control: 'baseline',
+    signer: 'delegate', rule_ids: [8, 9], status: s.result, ledger: s.ledger,
+    observation: s.transaction ? 'submitted_transaction' : 'enforcing_simulation',
+    ...(s.transaction ? { transaction: s.transaction, returned_amount: '150000' } : {}),
+    ...(s.code ? { enforcer: s.enforcer, code: s.code } : {}), host_error: SENTINEL }))];
+  const entry = (rule_index, policy) => ({ rule_index, wasm_hash: wasmHash, spec_hash: HASH, policy,
+    authority: { trust_basis: 'operator-supplied test configuration', authority_commitment: 'ef'.repeat(32),
+      checked_at_ledger: 92 + rule_index, rechecked_at_ledger: 93 + rule_index, accepted_entries: [{ label: SENTINEL }], status: 'rechecked' },
+    readback: { rule_index, rule_id: 8 + rule_index, configuration: 'matched', observation: 'non_atomic',
+      read_ledgers: { account: 95, policy: 95, rule: 95, installed: 95 } },
+    installation: { rule_id: 8 + rule_index, transaction: HASH, ledger: 95 }, tx: { upload: HASH, create: HASH, install: HASH },
+    removal: { transaction: HASH, ledger: 206, event: 'verified', rule_readback: 'absent', policy_cleanup: 'not_installed',
+      before: { configuration: 'matched', private_note: SENTINEL } } });
+  run.walkthrough = { kind: 'soroswap_swap', account: C, amount_in: '1000000', minimum_out: '100000', deadline: 1,
+    owner_transaction: { hash: HASH, ledger: 90, output_token: C, balance_before: '0', balance_after: '150000', returned_amount: '150000' },
+    invocations, bundle: { status: 'installed', account: C, spec_hash: HASH, registry_root: HASH,
+      entries: [entry(0, ROOT_POLICY), entry(1, CHILD_POLICY)], cleanup: { status: 'removed' } },
+    controls: { status: 'completed', ...(names === SWAP_STEPS ? { control_set: 2 } : {}), steps }, prerequisites: { note: SENTINEL } };
+  return run;
+}
+const protocolPipeline = { schema_version: 1, account: C, kind: 'soroswap_swap', recorded_transaction: HASH,
+  recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+  spec_hash: HASH, reference_cases: 40, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+  artifacts: [0, 1].map((rule_index) => ({ rule_index, wasm_hash: wasmHash, normalized_input_hash: HASH })) };
+
+test('protocol walkthrough summary keeps typed bundle, controls and per-rule artifacts only', (t) => {
+  const dir = setup(t, protocolFixture());
+  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(protocolPipeline));
+  for (const i of [0, 1]) {
+    mkdirSync(join(dir, 'policies', `rule-${i}`), { recursive: true });
+    writeFileSync(join(dir, 'policies', `rule-${i}`, 'policy.wasm'), wasm);
+    writeFileSync(join(dir, 'policies', `rule-${i}`, 'build-manifest.json'), '{}');
+  }
+  const report = exportEvidence(dir);
+  assert.equal(report.walkthrough.kind, 'soroswap_swap');
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.deepEqual(report.walkthrough.bundle.entries.map((e) => e.rule_id), [8, 9]);
+  assert.equal(report.walkthrough.bundle.entries[1].removal.rule_readback, 'absent');
+  assert.equal(report.walkthrough.invocations.find((i) => i.name === 'delegate_swap').transaction, 'cd'.repeat(32));
+  assert.equal(report.walkthrough.invocations.find((i) => i.name === 'input_cap').transaction, null);
+  assert.equal(report.protocol_pipeline.reference_cases, 40);
+  assert.equal(report.artifacts.policy_wasm_rule_1.sha256, wasmHash);
+  assert.equal(report.run.installation, 'not_recorded');
+  assert.equal(report.walkthrough.controls.control_set, 'transfer_rule_denials_included');
+  assert.deepEqual(report.walkthrough.bundle.entries[1].authority, { status: 'rechecked',
+    authority_commitment: 'ef'.repeat(32), checked_at_ledger: 93, rechecked_at_ledger: 94 });
+  assert.deepEqual(report.walkthrough.bundle.entries[0].readback, { configuration: 'matched', observation: 'non_atomic',
+    read_ledgers: { account: 95, policy: 95, rule: 95, installed: 95 } });
+  // Native-setup funding fields say nothing about the swap; they are not exported as its target or amount.
+  assert.deepEqual([report.run.target, report.run.recipient, report.run.amount], [null, null, null]);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('a run with the earlier control set exports its actual steps and says which set it was', (t) => {
+  const report = exportEvidence(setup(t, protocolFixture(LEGACY_SWAP_STEPS)));
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.equal(report.walkthrough.controls.control_set, 'router_rule_denials_only');
+  assert.equal(report.walkthrough.controls.steps.some((s) => s.name === 'token_cap'), false);
+});
+
+test('per-rule Wasm bytes must be the journaled deployed Wasm', (t) => {
+  const dir = setup(t, protocolFixture());
+  mkdirSync(join(dir, 'policies', 'rule-1'), { recursive: true });
+  writeFileSync(join(dir, 'policies', 'rule-1', 'policy.wasm'), 'other bytes');
+  assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+});
+
+const protocolInvalid = {
+  'missing control step': (r) => r.walkthrough.controls.steps.splice(1, 1),
+  'reordered control steps': (r) => r.walkthrough.controls.steps.reverse(),
+  'denial from the wrong enforcer': (r) => { r.walkthrough.controls.steps[0].enforcer = CHILD_POLICY; },
+  'expiry denial before expiry': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'expired_rule').ledger = 150; },
+  'tuple denial after expiry': (r) => { r.walkthrough.controls.steps[0].ledger = 250; },
+  'positive without its confirmed invocation': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'delegate_swap').transaction = 'ef'.repeat(32); },
+  'owner output without balance effect': (r) => { r.walkthrough.owner_transaction.balance_after = '1'; },
+  'owner output without its invocation': (r) => { r.walkthrough.owner_transaction.hash = 'ef'.repeat(32); },
+  'simulation with a transaction': (r) => { r.walkthrough.invocations[1].transaction = HASH; },
+  'other account': (r) => { r.walkthrough.account = 'C' + 'F'.repeat(55); },
+  'removed without readback': (r) => { r.walkthrough.bundle.entries[0].removal.rule_readback = 'not_checked'; },
+  'completed controls with incomplete cleanup': (r) => { r.walkthrough.bundle.cleanup.status = 'incomplete'; },
+  'completed controls with an incomplete cleanup step': (r) => {
+    r.walkthrough.controls.steps.find((s) => s.name === 'cleanup').result = 'incomplete';
+  },
+  'bundle removed while a policy stays installed': (r) => {
+    r.walkthrough.bundle.entries[1].removal.policy_cleanup = 'still_installed';
+  },
+  'independent authority recorded as a positive': (r) => {
+    r.walkthrough.controls.steps.find((s) => s.name === 'independent_token').result = 'confirmed';
+  },
+  'transfer-rule denial from the router policy': (r) => {
+    r.walkthrough.controls.steps.find((s) => s.name === 'token_count_cap').enforcer = ROOT_POLICY;
+  },
+  'transfer-rule steps without control set 2': (r) => { delete r.walkthrough.controls.control_set; },
+  'installed rule without a rechecked authority answer': (r) => { r.walkthrough.bundle.entries[0].authority = { status: 'refused' }; },
+  'recheck before the check': (r) => { r.walkthrough.bundle.entries[0].authority.rechecked_at_ledger = 91; },
+  'readback of another rule ID': (r) => { r.walkthrough.bundle.entries[0].readback.rule_id = 9; },
+  'mismatched readback on a completed run': (r) => { r.walkthrough.bundle.entries[0].readback.configuration = 'drift_or_unavailable'; },
+};
+for (const [name, mutate] of Object.entries(protocolInvalid)) {
+  test(`protocol walkthrough summary refuses ${name}`, (t) => {
+    const run = protocolFixture();
+    mutate(run);
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+
+test('an incomplete protocol walkthrough exports its partial journal without completion claims', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls = { status: 'incomplete', steps: run.walkthrough.controls.steps.slice(0, 2) };
+  delete run.walkthrough.bundle.entries[1].removal;
+  run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
+  run.walkthrough.bundle.cleanup = { status: 'incomplete' };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.controls.status, 'incomplete');
+  assert.equal(report.walkthrough.bundle.entries[1].removal, null);
+  assert.equal(report.walkthrough.bundle.entries[1].pending_removal.transaction, 'ef'.repeat(32));
+  assert.equal(report.walkthrough.bundle.cleanup, 'incomplete');
+});
+
+test('a single-rule Blend journal is not labelled with transfer-rule denials', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.kind = 'blend_claim';
+  run.walkthrough.invocations = run.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  run.walkthrough.invocations[0].rule_ids = [0];
+  run.walkthrough.bundle.entries.pop();
+  run.walkthrough.controls = { status: 'incomplete', control_set: 2,
+    steps: [{ name: 'reserve_ids', result: 'verified_denial', ledger: 100, enforcer: ROOT_POLICY, code: 6 }] };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.controls.control_set, 'single_rule');
+});
+
+test('a removal after a mismatched or unreadable pre-removal readback says so', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.bundle.entries[1].removal.before = { configuration: 'mismatch_or_unavailable' };
+  const report = exportEvidence(setup(t, run));
+  assert.equal(report.walkthrough.bundle.entries[1].removal.pre_removal_readback, 'mismatch_or_unavailable');
+  // A matching pre-removal readback adds nothing, so earlier summaries keep their exact bytes.
+  assert.equal(Object.hasOwn(report.walkthrough.bundle.entries[0].removal, 'pre_removal_readback'), false);
+  run.walkthrough.bundle.entries[1].removal.before = { configuration: 'something_else' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+
+const unresolved = {
+  'install still pending': (e) => { delete e.installation; delete e.tx.install; delete e.authority; delete e.readback; delete e.removal;
+    e.pending = { operation: 'install', transaction: 'ef'.repeat(32), status: 'prepared_for_submission' }; },
+  'confirmed install with unknown rule ID': (e) => { e.installation.rule_id = null; delete e.readback; delete e.removal; },
+  'removal still pending': (e) => { delete e.removal; e.pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' }; },
+};
+for (const [name, mutate] of Object.entries(unresolved)) {
+  test(`a bundle is not exported as removed while a grant is unresolved: ${name}`, (t) => {
+    const run = protocolFixture();
+    run.walkthrough.controls.status = 'incomplete';
+    mutate(run.walkthrough.bundle.entries[1]);
+    run.walkthrough.bundle.cleanup = { status: 'incomplete' };
+    assert.equal(exportEvidence(setup(t, run)).walkthrough.bundle.cleanup, 'incomplete');
+    run.walkthrough.bundle.cleanup = { status: 'removed' };
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+test('no_installed_grants is refused while an installation was confirmed', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+const contradictions = {
+  'unexpected permit behind a denial step': (i) => { i.status = 'unexpected_permit'; delete i.enforcer; delete i.code; },
+  'invocation at another ledger': (i) => { i.ledger += 1; },
+  'invocation attributed elsewhere': (i) => { i.enforcer = CHILD_POLICY; },
+  'invocation with another code': (i) => { i.code = 7; },
+  'missing invocation': (i, list) => { list.splice(list.indexOf(i), 1); },
+  'duplicate invocation': (i, list) => { list.push({ ...i }); },
+};
+for (const [name, mutate] of Object.entries(contradictions)) {
+  test(`completed controls must match exactly one invocation record: ${name}`, (t) => {
+    const run = protocolFixture();
+    const list = run.walkthrough.invocations;
+    mutate(list.find((i) => i.name === 'input_cap'), list);
+    assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+  });
+}
+test('the independent permit step must match its invocation too', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.invocations.find((i) => i.name === 'independent_token').status = 'independent_permission_not_observed';
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+
+test('the positive step and its own record must name the same transaction', (t) => {
+  // Another confirmed delegate record carrying the step's transaction must not stand in for it.
+  const run = protocolFixture();
+  const list = run.walkthrough.invocations;
+  const own = list.find((i) => i.name === 'delegate_swap');
+  list.push({ ...own, name: 'other_swap' });
+  own.transaction = 'ab'.repeat(32);
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+test('removed is refused when nothing was installed or removed', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  for (const e of run.walkthrough.bundle.entries) {
+    for (const key of ['installation', 'authority', 'readback', 'removal']) delete e[key];
+    delete e.tx.install;
+  }
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  assert.equal(exportEvidence(setup(t, run)).walkthrough.bundle.cleanup, 'no_installed_grants');
+  run.walkthrough.bundle.cleanup = { status: 'removed' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+test('a pending removal alone keeps a removed bundle unresolved', (t) => {
+  // Entry 1 completed its removal and also journals a later pending one; only that clause refuses.
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+test('no_installed_grants is refused while a removal is pending', (t) => {
+  const run = protocolFixture();
+  run.walkthrough.controls.status = 'incomplete';
+  for (const e of run.walkthrough.bundle.entries) {
+    for (const key of ['installation', 'authority', 'readback', 'removal']) delete e[key];
+    delete e.tx.install;
+  }
+  run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
 });

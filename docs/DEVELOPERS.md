@@ -357,6 +357,10 @@ and their own size and time limits. Terminate TLS and add per-client authorizati
 at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
 per-tool quotas are still owed before genuine multi-tenant public hosting.
 
+The [self-hosting package](SELF-HOSTING.md) supplies a pinned container build, TLS proxy,
+operator configuration and disposable endpoint/offline-build checks for one operator with
+trusted clients. Its service resource limits do not establish the separate worker boundary.
+
 ## 2. How the synthesizer decides scope
 
 `crates/synthesizer` is a pure function `RecordingBundle(s) + UserDecisions → PolicySpec`.
