@@ -27,6 +27,28 @@
 # not independently re-fetched by the offline gate or by the evidence exporter.
 89c5c181f108682c4f19e1908f17f8926ceae3e16bfa04ba657107a380cc8da6|testnet-tx|passkey-authorized add_context_rule from the accepted authority-check harness run
 
+# Controlled October 20 subscription run in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
+# public testnet outcomes, not recomputed or independently fetched by the offline gate.
+5fcaab10e09e28a0bad514683962cfd01827d0846ea3f3a2a744aeb123d3d615|testnet-tx|passkey-authorized rule 1 installation for the October 20 subscription run
+2538c174dfbbd730c4ccaa8cdf52fd9ed03156af8b22531836db3bbd55156ec9|testnet-tx|first delegated subscription charge at ledger 5293653
+4a33492fb9ad6d65a73e07e428a8470fb46c085a1f2e3c1d5d510a6f2252c347|testnet-tx|second delegated subscription charge at ledger 5293681
+b924cc544bc958077990718d8c10728f0cd8f4f88a98e748a31020486f3261e6|testnet-tx|owner-authorized rule 1 removal at ledger 5293707
+
+# Controlled October 20 Soroswap run in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
+# public testnet outcomes, not recomputed or independently fetched by the offline gate.
+8e075309901d4508b6d12929cd3aa1b93c22b8279a81505029612796760175f7|testnet-tx|owner swap recorded for the October 20 Soroswap run, ledger 5294812
+d20dabfd95bb1bfcb341749be65d450a7af4c62bfb8e55603b01cb61625e523c|testnet-tx|owner-authorized installation of the router rule (account rule ID 1) for the October 20 Soroswap run
+02bf33a1b07bf699778ff1703c676f638bc9af1054629d1763fe0cbf44a12b61|testnet-tx|owner-authorized installation of the transfer rule (account rule ID 2) for the October 20 Soroswap run
+868a99476333c25620f6f1e725a1c55d625eeef7b6386cacdd9ed07d193aa9c7|testnet-tx|delegated swap at ledger 5294830
+ea7ac2b0a21688bc86dd78a5e531d9b53ef7ce0bed715b0c356aeadf869ed1d2|testnet-tx|owner-authorized transfer-rule (ID 2) removal at ledger 5294996
+26970d5b278688bc82e9aa3ff667a19634234b010c36b89032a565d4c850e800|testnet-tx|owner-authorized router-rule (ID 1) removal at ledger 5294997
+05d8fa675d2578346154c4babaf5b24ee81ab95fd83d815f39687951284b3292|testnet-tx|owner swap recorded for the second October 20 Soroswap run, ledger 5295640
+133442ee26839673fa77a59dd1d976a0d0784ca119116be64cd295c4e7906229|testnet-tx|owner-authorized installation of the router rule (account rule ID 1), second Soroswap run
+05799950a7ee894e96f49aec0abadc75efde257c35fa45692d6c0eb82f7e1dea|testnet-tx|owner-authorized installation of the transfer rule (account rule ID 2), second Soroswap run
+146cd502db654587d1d62d6f1434e74d79c9d95013d2762390885c7dc1cb1b7e|testnet-tx|delegated swap at ledger 5295663, second Soroswap run
+41caba90fbcb5c22a3bca6c445ba250d9e0aa39393d886fee78786744d504def|testnet-tx|owner-authorized transfer-rule (ID 2) removal at ledger 5295825
+a7f56018934690ca6454641d4ebeb69f063241f9d2b8267bb0ff0ce80cc06987|testnet-tx|owner-authorized router-rule (ID 1) removal at ledger 5295829
+
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.

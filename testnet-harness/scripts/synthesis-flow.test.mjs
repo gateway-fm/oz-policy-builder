@@ -14,6 +14,7 @@ const normalized = 'cd'.repeat(32);
 const acquisition = 'ef'.repeat(32);
 const template = JSON.parse(readFileSync(new URL('../native-sac-policy-spec.json', import.meta.url), 'utf8'));
 const network = 'Test SDF Network ; September 2015';
+const spendingPin = '4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c';
 
 function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-synthesis '));
@@ -93,6 +94,51 @@ test('runs recording, synthesis, reference, generation and verification through 
   assert.equal(ready.synthesis_trust, 'self_supplied');
   assert.equal(ready.current_network_preflight, 'not_checked_here');
 });
+
+function subscriptionFixture(t) {
+  const f = setup(t);
+  const run = f.files['run.json'];
+  run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12,
+    policy_address: 'CCWIX4Z7WDOTMGLLE3DJ3ZMC57NZAEDNSFRRX72B5VFDMLX3KX6FQ7ZR', policy_code_hash: spendingPin };
+  const spec = f.files['synthesize.json'].spec;
+  spec.name = 'subscription';
+  spec.rules[0].state[0].call_count_per_installation.max_calls = 2;
+  spec.rules[0].policies.unshift({ reviewed: { kind: 'oz:spending_limit', capability: spendingPin,
+    params: { spending_limit: { limit: run.amount, period_ledgers: 12 } } } });
+  f.files['reference-suite.json'].unmodeled_reviewed_policies = ['rule[0]: oz:spending_limit'];
+  Object.assign(f.files['verify.json'], { models_all_policies: false,
+    unmodeled_reviewed_policies: ['rule[0]: oz:spending_limit'],
+    offline_behavioral_conformance: 'pass (scope+count only): 20 cases agree; 1 composed reviewed policies are enforced on-chain and not modeled here' });
+  return f;
+}
+
+test('subscription synthesis binds the exact reviewed cap and reports only its known model gap', (t) => {
+  const f = subscriptionFixture(t);
+  const result = f.execute();
+  assert.equal(result.status, 0, result.stderr);
+  const decisions = JSON.parse(readFileSync(join(f.dir, 'decisions.json')));
+  assert.equal(decisions.max_calls, 2);
+  assert.deepEqual(decisions.spending_limit, { limit: f.files['run.json'].amount, period_ledgers: 12 });
+  assert.ok(f.commands()[1].args.includes(spendingPin));
+  const pipeline = JSON.parse(readFileSync(join(f.dir, 'pipeline.json')));
+  assert.deepEqual(pipeline.unmodeled_reviewed_policies, ['rule[0]: oz:spending_limit']);
+  assert.equal(pipeline.models_all_policies, false);
+});
+for (const [name, mutate] of Object.entries({
+  'missing cadence cap': (f) => { f.files['synthesize.json'].spec.rules[0].policies.shift(); },
+  'different reviewed code': (f) => { f.files['synthesize.json'].spec.rules[0].policies[0].reviewed.capability = hash; },
+  'larger spending cap': (f) => { f.files['synthesize.json'].spec.rules[0].policies[0].reviewed.params.spending_limit.limit = '10000001'; },
+  'different period': (f) => { f.files['synthesize.json'].spec.rules[0].policies[0].reviewed.params.spending_limit.period_ledgers++; },
+  'another model gap': (f) => { f.files['verify.json'].unmodeled_reviewed_policies.push('rule[0]: unknown'); },
+  'false complete model claim': (f) => { f.files['verify.json'].models_all_policies = true; },
+  'missing reference gap': (f) => { f.files['reference-suite.json'].unmodeled_reviewed_policies = []; },
+})) {
+  test(`subscription refuses ${name}`, (t) => {
+    const f = subscriptionFixture(t); mutate(f);
+    assert.notEqual(f.execute().status, 0);
+    assert.equal(existsSync(join(f.dir, 'pipeline.json')), false);
+  });
+}
 
 const corruptions = {
   'false verification despite zero exit': (f) => { f['verify.json'].matches = false; },

@@ -1,0 +1,313 @@
+{
+  "plan": {
+    "kind": "soroswap_swap",
+    "account": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
+    "amount_in": "1000000",
+    "minimum_out": "100000",
+    "deadline": 1792495419
+  },
+  "record": {
+    "trust": "rpc_reported",
+    "recording_hash": "34c33feee7790cd59e294e8247ded849315a67b9ccec2ecc5244fbcef7f45cd2",
+    "bundle": {
+      "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+      "execution": "simulated",
+      "ledger": 5293646,
+      "contract_executables": {
+        "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD": {
+          "executable": {
+            "wasm": {
+              "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
+            }
+          },
+          "observed_ledger": 5293646
+        },
+        "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL": {
+          "executable": {
+            "wasm": {
+              "code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289"
+            }
+          },
+          "observed_ledger": 5293646
+        },
+        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": {
+          "executable": "stellar_asset",
+          "observed_ledger": 5293646
+        }
+      },
+      "authorizations": [
+        {
+          "authorizer": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
+          "root": {
+            "call": {
+              "contract": {
+                "args": [
+                  {
+                    "i128": 1000000
+                  },
+                  {
+                    "i128": 100000
+                  },
+                  {
+                    "other": {
+                      "xdr_base64": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+                    }
+                  },
+                  {
+                    "address": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL"
+                  },
+                  {
+                    "u64": 1792495419
+                  }
+                ],
+                "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+                "fn_name": "swap_exact_tokens_for_tokens"
+              }
+            },
+            "sub_invocations": [
+              {
+                "call": {
+                  "contract": {
+                    "args": [
+                      {
+                        "address": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL"
+                      },
+                      {
+                        "address": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
+                      },
+                      {
+                        "i128": 1000000
+                      }
+                    ],
+                    "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+                    "fn_name": "transfer"
+                  }
+                },
+                "sub_invocations": []
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "synthesis": {
+    "spec": {
+      "evidence": {
+        "recordings": [
+          {
+            "hash": "7326909293d28a408512e871ac4be80c753be1977f93bd17ad63c6f6d075ac14",
+            "trust": "self_supplied"
+          }
+        ]
+      },
+      "name": "soroswap-swap",
+      "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+      "registry_snapshot": "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f",
+      "rules": [
+        {
+          "allowed_calls": [
+            {
+              "args": [
+                {
+                  "c": {
+                    "le_i128": {
+                      "max": "1000000"
+                    }
+                  },
+                  "i": 0,
+                  "prov": {
+                    "user_widened": {
+                      "blast_radius": "medium",
+                      "intent": "Bound this swap input at the recorded amount"
+                    }
+                  }
+                },
+                {
+                  "c": {
+                    "ge_i128": {
+                      "min": "100000"
+                    }
+                  },
+                  "i": 1,
+                  "prov": {
+                    "user_widened": {
+                      "blast_radius": "medium",
+                      "intent": "Use the explicitly selected absolute output floor"
+                    }
+                  }
+                },
+                {
+                  "c": {
+                    "eq_scval": {
+                      "xdr_base64": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+                    }
+                  },
+                  "i": 2,
+                  "prov": "observed_exact"
+                },
+                {
+                  "c": {
+                    "eq_address": {
+                      "value": "SELF"
+                    }
+                  },
+                  "i": 3,
+                  "prov": "observed_exact"
+                },
+                {
+                  "c": {
+                    "eq_scval": {
+                      "xdr_base64": "AAAABQAAAABq1087"
+                    }
+                  },
+                  "i": 4,
+                  "prov": "observed_exact"
+                }
+              ],
+              "fn": "swap_exact_tokens_for_tokens",
+              "justified_by": [
+                "recordings[0]/auth[0]"
+              ]
+            }
+          ],
+          "authorization": {
+            "kind": "any_of",
+            "signers": [
+              {
+                "delegated": {
+                  "address": "GA6LQDHSGPDM5AKP26FNZN6MLNYX4Z4VAOOFEDTRHLPUSWNCQ67PZV3X"
+                }
+              }
+            ],
+            "strict_signer_set": true
+          },
+          "context": {
+            "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+            "target_code_hash": {
+              "hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c",
+              "observed_ledger": 5293646,
+              "on_drift": "warn",
+              "role": "evidence_only"
+            },
+            "type": "CallContract"
+          },
+          "policies": [
+            {
+              "generated": {
+                "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+                "kind": "gen:scope+count",
+                "template_family": "policy-templates/scope@1"
+              }
+            }
+          ],
+          "state": [
+            {
+              "call_count_per_installation": {
+                "max_calls": 1
+              }
+            }
+          ],
+          "valid_until": {
+            "approx_time": null,
+            "ledger": 5294646
+          }
+        },
+        {
+          "allowed_calls": [
+            {
+              "args": [
+                {
+                  "c": {
+                    "eq_address": {
+                      "value": "SELF"
+                    }
+                  },
+                  "i": 0,
+                  "prov": "observed_exact"
+                },
+                {
+                  "c": {
+                    "eq_address": {
+                      "value": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
+                    }
+                  },
+                  "i": 1,
+                  "prov": "observed_exact"
+                },
+                {
+                  "c": {
+                    "le_i128": {
+                      "max": "1000000"
+                    }
+                  },
+                  "i": 2,
+                  "prov": {
+                    "user_widened": {
+                      "blast_radius": "medium",
+                      "intent": "Permit the bounded token transfer to the exact pair as an independent capability"
+                    }
+                  }
+                }
+              ],
+              "fn": "transfer",
+              "justified_by": [
+                "recordings[0]/auth[0]/sub[0]"
+              ]
+            }
+          ],
+          "authorization": {
+            "kind": "any_of",
+            "signers": [
+              {
+                "delegated": {
+                  "address": "GA6LQDHSGPDM5AKP26FNZN6MLNYX4Z4VAOOFEDTRHLPUSWNCQ67PZV3X"
+                }
+              }
+            ],
+            "strict_signer_set": true
+          },
+          "context": {
+            "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+            "target_code_hash": null,
+            "type": "CallContract"
+          },
+          "policies": [
+            {
+              "generated": {
+                "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+                "kind": "gen:scope+count",
+                "template_family": "policy-templates/scope@1"
+              }
+            }
+          ],
+          "state": [
+            {
+              "call_count_per_installation": {
+                "max_calls": 1
+              }
+            }
+          ],
+          "valid_until": {
+            "approx_time": null,
+            "ledger": 5294646
+          }
+        }
+      ],
+      "schema": "policy-spec/v1",
+      "smart_account": {
+        "address": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
+        "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
+        "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
+      }
+    },
+    "spec_hash": "865edc88e32b2c88eebca57a3dcec31e4232460eea13f4ab681e098118ecbf3e",
+    "rationale": [
+      "permission bundle: 2 independent rules (one per contract); ordering and dependency between them are NOT enforced",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: user-widened (Bound this swap input at the recorded amount), blast radius Medium",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 1: user-widened (Use the explicitly selected absolute output floor), blast radius Medium",
+      "target CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC is the built-in Stellar Asset contract; it has no Wasm code hash",
+      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded token transfer to the exact pair as an independent capability), blast radius Medium"
+    ]
+  }
+}

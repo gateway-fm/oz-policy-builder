@@ -371,7 +371,8 @@ test('a tool summary that claims "safe" is treated as malformed output', () => {
 
 test('the check request binds the generated policy by its own build manifest', () => {
   const manifest = { spec_hash: '11'.repeat(32), wasm_hash: '99'.repeat(32), rule_index: 0, registry_snapshot: 'a0'.repeat(32) };
-  const spec = { name: 'native-sub', network_id: EXPECT.networkId, registry_snapshot: 'a0'.repeat(32), smart_account: { address: EXPECT.account } };
+  const spec = { name: 'native-sub', network_id: EXPECT.networkId, registry_snapshot: 'a0'.repeat(32), smart_account: { address: EXPECT.account },
+    rules: [{ policies: [{ generated: { kind: 'gen:scope+count' } }] }] };
   const req = checkRequest({
     spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'deploy tx ab12',
     signedRegistrySnapshot: new RawJson('{"signed": true}'), rpcSource: 'testnet',
@@ -406,4 +407,22 @@ test('the check request binds the generated policy by its own build manifest', (
   assert.throws(() => checkRequest({ ...base, spec: { ...spec, registry_snapshot: 'b0'.repeat(32) } }), /manifest/);
   assert.throws(() => checkRequest({ ...base, manifest: { ...manifest, spec_hash: 'AB'.repeat(32) } }), /hash/);
   assert.throws(() => checkRequest({ ...base, policyAddress: EXPECT.account }), /account/);
+});
+
+test('composed check binds every spec policy at its exact index and refuses omitted or duplicate instances', () => {
+  const reviewedAddress = 'CCWIX4Z7WDOTMGLLE3DJ3ZMC57NZAEDNSFRRX72B5VFDMLX3KX6FQ7ZR';
+  const capability = '4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c';
+  const manifest = { spec_hash: '11'.repeat(32), wasm_hash: '99'.repeat(32), rule_index: 0, registry_snapshot: 'a0'.repeat(32) };
+  const spec = { network_id: EXPECT.networkId, registry_snapshot: manifest.registry_snapshot, smart_account: { address: EXPECT.account },
+    rules: [{ policies: [{ reviewed: { kind: 'oz:spending_limit', capability } }, { generated: { kind: 'gen:scope+count' } }] }] };
+  const reviewed = { policy_index: 0, contract_address: reviewedAddress, observed_wasm_hash: capability, resolution_reference: 'configured reviewed instance' };
+  const input = { spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'generated deploy',
+    signedRegistrySnapshot: new RawJson('{}'), rpcSource: 'testnet', reviewedPolicies: [reviewed] };
+  const bindings = checkRequest(input).binding_set.bindings;
+  assert.deepEqual(bindings.map((b) => [b.policy_index, b.recognition.kind]), [[0, 'reviewed_registry'], [1, 'verified_generated_manifest']]);
+  assert.equal(bindings[0].observed_wasm_hash, capability);
+  assert.throws(() => checkRequest({ ...input, reviewedPolicies: [] }), /reviewed binding/);
+  assert.throws(() => checkRequest({ ...input, reviewedPolicies: [reviewed, reviewed] }), /duplicate or extra/);
+  assert.throws(() => checkRequest({ ...input, reviewedPolicies: [{ ...reviewed, contract_address: EXPECT.boundPolicies[0] }] }), /duplicate or extra/);
+  assert.throws(() => checkRequest({ ...input, reviewedPolicies: [{ ...reviewed, observed_wasm_hash: 'cc'.repeat(32) }] }), /reviewed binding/);
 });

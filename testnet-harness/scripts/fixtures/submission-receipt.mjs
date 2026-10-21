@@ -6,7 +6,7 @@ import * as sdk from '@stellar/stellar-sdk';
 
 const mode = process.argv[2];
 const payer = sdk.Keypair.fromRawEd25519Seed(Buffer.alloc(32, 9));
-let expectedHash; let polls = 0; let signatures = 0;
+let expectedHash; let checkpointHash; let polls = 0; let signatures = 0;
 const signDecorated = payer.signDecorated.bind(payer);
 payer.signDecorated = (...args) => { signatures++; return signDecorated(...args); };
 const simulationModes = [];
@@ -28,7 +28,7 @@ class Server {
     }
     if (mode === 'upload no auth') assert.equal(_tx.operations[0].auth.length, 0);
     if (mode === 'existing auth') assert.deepEqual(Buffer.from(_tx.operations[0].auth[0].toXDR()), savedExistingAuth);
-    return { latestLedger: mode === 'missing read ledger' ? undefined : 31, result: { retval: sdk.xdr.ScVal.scvU32(42) } };
+    return { latestLedger: mode === 'missing read ledger' ? undefined : 31, result: { retval: sdk.xdr.ScVal.scvU32(42), auth: [] } };
   }
   async getLedgerEntries(key) {
     const wanted = key.contractData;
@@ -56,7 +56,8 @@ class Server {
     // Model the RPC wire identity independently of the SDK's Uint8Array digest API.
     expectedHash = createHash('sha256').update(tx.signatureBase()).digest('hex');
     assert.match(expectedHash, /^[0-9a-f]{64}$/);
-    return { status: 'PENDING', hash: mode === 'submitted hash differs' ? 'ab'.repeat(32) : expectedHash };
+    if (mode === 'submission checkpoint') assert.equal(checkpointHash, expectedHash);
+    return { status: mode === 'send backpressure' ? 'TRY_AGAIN_LATER' : mode === 'unknown send status' ? 'unexpected' : 'PENDING', hash: mode === 'submitted hash differs' ? 'ab'.repeat(32) : expectedHash };
   }
   async pollTransaction() {
     polls++;
@@ -138,7 +139,33 @@ if (mode === 'existing auth') {
   savedExistingAuth = Buffer.from(entry.toXDR());
   operation.body.invokeHostFunctionOp.auth.push(entry);
 }
-if (mode === 'read ledgers') {
+if (mode === 'send backpressure' || mode === 'unknown send status') {
+  await assert.rejects(source.namespace.submit(payer, operation), /not accepted/);
+  assert.equal(polls, 0, 'an unaccepted send is not confirmation');
+} else if (mode === 'submission checkpoint' || mode === 'checkpoint failure') {
+  const pending = source.namespace.submit(payer, operation, { onSubmitting: async (hash) => {
+    assert.equal(expectedHash, undefined, 'checkpoint precedes send');
+    assert.equal(signatures, 1);
+    assert.match(hash, /^[0-9a-f]{64}$/);
+    checkpointHash = hash;
+    if (mode === 'checkpoint failure') throw new Error('journal unavailable');
+  } });
+  if (mode === 'checkpoint failure') {
+    await assert.rejects(pending, /journal unavailable/);
+    assert.equal(expectedHash, undefined);
+    assert.equal(polls, 0);
+  } else {
+    const sent = await pending;
+    assert.equal(sent.hash, checkpointHash);
+  }
+} else if (mode === 'explicit auth modes') {
+  await source.namespace.recordAuth(payer, operation, 'test');
+  const simulated = await source.namespace.enforceSimulation(payer, operation);
+  assert.deepEqual(simulationModes, ['record', 'enforce']);
+  assert.equal(simulated.ledger, 31);
+  assert.equal(simulated.result, 'permit');
+  assert.equal(expectedHash, undefined, 'no transaction sent');
+} else if (mode === 'read ledgers') {
   const code = await source.namespace.contractCodeObservation(sdk.StrKey.encodeContract(Buffer.alloc(32, 1)));
   assert.equal(code.value, '05'.repeat(32));
   assert.equal(code.ledger, 29);

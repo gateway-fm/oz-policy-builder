@@ -17,7 +17,7 @@ authenticator, behind the pinned OpenZeppelin WebAuthn verifier: the kind of acc
 wallet such as pollywallet creates. Everything else is the same in both runs, the delegate
 included.
 
-One run, on fresh throwaway keys:
+The default native-transfer run, on fresh throwaway keys:
 
 1. **setup** deploys the pinned OpenZeppelin account example from its wasm hash. It checks that
    the code hash the network reports is the pin in `ozpb_domain::pinned_upstream`, reads rule 0
@@ -102,6 +102,19 @@ Lifecycle records likewise distinguish a confirmed removal transaction, its chec
 the rule readback and best-effort policy cleanup. A later readback failure does not erase the
 confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
 
+A failed run with a confirmed installation attempts owner removal before discarding its
+temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
+policy configuration. Its entire child process group has a fixed 180-second deadline and a
+five-second termination grace. A requested kill must be followed by the child's close event
+before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
+`cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
+leaves the child-owned run/provenance files unfinalized. The original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
+remain; secret deletion does not revoke it. A `run.json` that exists but cannot be read is
+reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
+since it may have been cut short after recording an installation. The journal records a removal hash before send,
+so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
+automatically. A confirmed removal with incomplete readbacks likewise requires inspection.
+
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
 
@@ -128,8 +141,12 @@ runs separately and gives the field-by-field review procedure for a new summary.
   registry root. This runs on both install paths with the same `OZPB_BIN` (or local Cargo CLI)
   as generation. It catches stale artifacts; it trusts the local generator's manifest rather
   than reproducing the Wasm. The default wrapper also runs `ozpb verify` and requires successful artifact reproduction.
-- The installer accepts exactly one generated scope+count policy. Composed rules, including
-  a reviewed spending limit, are refused before deployment rather than installed incompletely.
+- The default installer accepts exactly one generated scope+count policy. The explicit
+  [subscription mode](../docs/WALKTHROUGH-SEP41.md) requires the full authority-check path and
+  exactly one generated policy plus the pinned reviewed spending-limit policy, with both
+  instances bound to their spec indices. Other compositions are refused before deployment.
+  The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
+  each of its two independent scope+count rules separately through `bundle-command.mjs`.
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -323,8 +340,9 @@ October 15 observations described below.
   manual workflow; the wrapper does not call them.
 - **Reproduction is not a complete dry run.** The default wrapper requires matching source,
   Wasm and manifest and complete layer-1 coverage for its single scope+count policy. It does
-  not establish arbitrary captured-target execution, a wallet product's consent, or the three
-  protocol walkthroughs. Enforcing network simulations remain a separate later observation.
+  not establish arbitrary captured-target execution or a wallet product's consent. The Blend
+  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend still lacks
+  its position setup. Enforcing network simulations remain a separate later observation.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.
