@@ -73,6 +73,8 @@ function assemble(tx) {
   if (mode === 'fee zero') wire.fee = 0;
   if (mode === 'fee above ceiling') wire.fee = 10_000_001;
   if (mode === 'upload fee ceiling') wire.fee = 100_000_000;
+  if (mode === 'named fee ceiling') wire.fee = 30_000_000;
+  if (mode === 'named fee above ceiling') wire.fee = 30_000_001;
   if (mode === 'upload fee above ceiling') wire.fee = 100_000_001;
   if (mode === 'upload bytes replaced') wire.operations[0] = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109, 1]) });
   if (mode === 'replacement upload bypass') {
@@ -179,19 +181,26 @@ if (mode === 'send backpressure' || mode === 'unknown send status') {
   'expired instance', 'future modified', 'missing modified', 'missing TTL'].includes(mode)) {
   await assert.rejects(source.namespace.contractCodeObservation(sdk.StrKey.encodeContract(Buffer.alloc(32, 1))), /instance|ledger/);
 } else if (['matching', 'fee ceiling', 'resource fee', 'submit enforce mode', 'source auth', 'create source auth',
-  'upload no auth', 'upload fee ceiling', 'existing auth'].includes(mode)) {
-  const sent = await source.namespace.submit(payer, operation);
+  'upload no auth', 'upload fee ceiling', 'existing auth', 'named fee ceiling'].includes(mode)) {
+  const sent = await source.namespace.submit(payer, operation, mode === 'named fee ceiling' ? { maxFee: 30_000_000n } : {});
   assert.equal(sent.hash, expectedHash);
   assert.equal(sent.receipt.txHash, expectedHash);
   if (mode === 'submit enforce mode') assert.deepEqual(simulationModes, ['enforce']);
 } else if (['fee zero', 'fee above ceiling', 'negative resource fee', 'resource fee exceeds total', 'replacement operation',
   'replacement source', 'replacement sequence', 'replacement network', 'replacement timeout', 'replacement memo',
   'replacement signatures', 'extra operation', 'extra auth', 'wrong fetched source', 'wrong create source',
-  'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass'].includes(mode)) {
-  await assert.rejects(source.namespace.submit(payer, operation), /submission refused/);
+  'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass', 'named fee above ceiling'].includes(mode)) {
+  await assert.rejects(source.namespace.submit(payer, operation, mode === 'named fee above ceiling' ? { maxFee: 30_000_000n } : {}),
+    /submission refused/);
   assert.equal(signatures, 0, 'nothing signed');
   assert.equal(expectedHash, undefined, 'nothing submitted');
   assert.equal(polls, 0);
+} else if (mode === 'named ceiling out of range') {
+  for (const maxFee of [9_999_999n, 100_000_001n, 30_000_000]) {
+    await assert.rejects(source.namespace.submit(payer, operation, { maxFee }), /fee ceiling/);
+  }
+  assert.equal(signatures, 0, 'nothing signed');
+  assert.equal(expectedHash, undefined, 'nothing submitted');
 } else {
   await assert.rejects(source.namespace.submit(payer, operation), mode === 'failed result' ? /ended FAILED/ : /identity/);
   if (mode === 'submitted hash differs') assert.equal(polls, 0);

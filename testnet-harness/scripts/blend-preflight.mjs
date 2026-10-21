@@ -27,6 +27,12 @@ export const BLEND_FUNDING = Object.freeze({
   amount_in: 2_000_000_000n, // 200 XLM, sent by the payer to the account first
   payer_reserve: 1_000_000_000n, // 100 XLM left to the payer for fees
 });
+/**
+ * Fee ceiling for the pool, swap and claim calls. Their resource fee includes rent for the entries
+ * a fresh position creates: the supply simulated at 1.0147 XLM on 21 October 2026, above the
+ * harness's default one-XLM ceiling. The payer is a Friendbot testnet account.
+ */
+export const BLEND_FEE_CEILING = 30_000_000n; // 3 XLM
 /** Ledgers between the confirmed supply and the owner's recorded claim, and before the delegated one. */
 export const OWNER_WAIT_LEDGERS = 12;
 export const ACCRUAL_LEDGERS = 12;

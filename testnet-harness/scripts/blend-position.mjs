@@ -13,7 +13,7 @@ import { isMainModule } from './cli-entry.mjs';
 import { contractCall, entryAddress, i128, signForSmartAccount } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
 import { PROTOCOL_TARGETS } from './protocol-calls.mjs';
-import { BLEND_FUNDING, BLEND_POSITION, emissionStatus, readEmission } from './blend-preflight.mjs';
+import { BLEND_FEE_CEILING, BLEND_FUNDING, BLEND_POSITION, emissionStatus, readEmission } from './blend-preflight.mjs';
 import * as rpc from './rpc.mjs';
 
 const p = PROTOCOL_TARGETS;
@@ -127,7 +127,7 @@ async function ownerCall({ run, step, invocation, stage, save }, deps) {
   const signed = await signForSmartAccount({ entry: recorded[0], expect: invocation, signer: key,
     ruleIds: new Array(contexts(invocation)).fill(0), validUntilLedger: until, networkPassphrase: rpc.NETWORK_PASSPHRASE });
   return submitStep({ step, save, stage }, () => deps.submit(payer, operationOf(invocation,
-    [signed.accountEntry, signed.delegateEntry].filter(Boolean)), { stage, onSubmitting: prepared(step, save) }));
+    [signed.accountEntry, signed.delegateEntry].filter(Boolean)), { stage, onSubmitting: prepared(step, save), maxFee: BLEND_FEE_CEILING }));
 }
 
 const prepared = (step, save) => (transaction) => {
@@ -194,7 +194,7 @@ export async function refreshEmission({ run, save }, overrides = {}) {
   let sent;
   try {
     sent = await submitStep({ step: record, save }, () => deps.submit(payer, Operation.invokeContractFunction({
-      contract: p.blend_pool, function: 'gulp_emissions', args: [] }), { stage: 'blend gulp_emissions', onSubmitting: prepared(record, save) }));
+      contract: p.blend_pool, function: 'gulp_emissions', args: [] }), { stage: 'blend gulp_emissions', onSubmitting: prepared(record, save), maxFee: BLEND_FEE_CEILING }));
   } catch (error) {
     if (record.transaction === undefined) {
       Object.assign(record, { status: 'refused' });

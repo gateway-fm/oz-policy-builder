@@ -8,6 +8,7 @@ import { contractCall, entryAddress, i128, policyDenial, signForSmartAccount } f
 import { ownerSigner } from './owner.mjs';
 import { protocolInvocation, PROTOCOL_TARGETS } from './protocol-calls.mjs';
 import { recheckSoroswapTargets } from './soroswap-preflight.mjs';
+import { BLEND_FEE_CEILING } from './blend-preflight.mjs';
 import * as rpc from './rpc.mjs';
 const BLND = 'CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF';
 const same = (a, b, field) => assert.deepEqual(a, b, `unexpected protocol ${field}`);
@@ -138,7 +139,9 @@ export async function invokeProtocol({ run, name, mode, signer = 'delegate', con
     requireThat(attributed, 'unexpected simulation result; no transaction was submitted');
     return observed;
   }
-  const sent = await deps.submit(payer, operation(auth), { stage: `protocol ${name}`, onSubmitting: (transaction) => {
+  // A claim pays rent for the BLND balance and emission entries it creates; it names the Blend ceiling.
+  const fee = run.walkthrough.kind === 'blend_claim' ? { maxFee: BLEND_FEE_CEILING } : {};
+  const sent = await deps.submit(payer, operation(auth), { ...fee, stage: `protocol ${name}`, onSubmitting: (transaction) => {
     requireThat(/^[0-9a-f]{64}$/.test(transaction), 'invalid prepared protocol transaction');
     Object.assign(observed, { status: 'pending', transaction });
     save();

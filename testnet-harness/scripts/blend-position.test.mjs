@@ -3,7 +3,7 @@ import test from 'node:test';
 import { Address, Keypair, StrKey, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { closePosition, fundingSwapInvocation, openPosition, refreshEmission, supplyInvocation, withdrawInvocation }
   from './blend-position.mjs';
-import { BLEND_FUNDING, BLEND_POSITION, EMISSION_MARGIN_SECONDS } from './blend-preflight.mjs';
+import { BLEND_FEE_CEILING, BLEND_FUNDING, BLEND_POSITION, EMISSION_MARGIN_SECONDS } from './blend-preflight.mjs';
 import { PROTOCOL_TARGETS } from './protocol-calls.mjs';
 import { i128 } from './lib.mjs';
 import { NETWORK_PASSPHRASE, PINNED_ACCOUNT_WASM, SimulationError } from './rpc.mjs';
@@ -30,7 +30,7 @@ function fixture({ withPlan = true } = {}) {
   const run = { network: NETWORK_PASSPHRASE, account, account_code_hash: PINNED_ACCOUNT_WASM, payer: payer.publicKey(),
     owner: { kind: 'passkey' }, ...(withPlan ? { walkthrough: plan(account) } : {}) };
   const control = {}, state = { usdc: 0n, supply: 0n, ledger: 1000, expiration: CLOSE + 4 * 86400, eps: 3_620_045_854_265n };
-  const sends = [], signatures = [], saved = [];
+  const sends = [], signatures = [], saved = [], fees = [];
   let txn = 0;
   const positions = () => map({ collateral: idMap([]), liabilities: idMap([]), supply: idMap(state.supply ? [[1, state.supply]] : []) });
   const deps = {
@@ -77,6 +77,7 @@ function fixture({ withPlan = true } = {}) {
       const hash = (++txn).toString(16).padStart(64, '0');
       await options.onSubmitting(hash);
       sends.push(fn === 'submit' ? `submit:${scValToNative(host.args[3])[0].request_type}` : fn);
+      fees.push(options.maxFee);
       if (control.ambiguous === sends.at(-1)) throw new Error('send unconfirmed');
       if (control.failedOnce === sends.at(-1)) { delete control.failedOnce; throw new Error(`blend withdrawal: transaction ${hash} ended FAILED`); }
       state.ledger += 2;
@@ -94,7 +95,7 @@ function fixture({ withPlan = true } = {}) {
     },
   };
   const save = () => saved.push(structuredClone(run));
-  return { run, control, state, deps, sends, signatures, saved, save };
+  return { run, control, state, deps, sends, signatures, saved, save, fees };
 }
 
 test('Blend position calls are the exact owner trees: swap with its input transfer, supply with its deposit, bare withdrawal', () => {
@@ -296,4 +297,13 @@ test('a gulp that leaves the emission short of the run window stops the run and 
   await assert.rejects(refreshEmission({ run: f.run, save: f.save }, f.deps), /still expiring after gulp_emissions/);
   assert.equal(f.run.blend_emission_refresh.status, 'gulped_still_not_live');
   assert.match(f.run.blend_emission_refresh.transaction, /^[0-9a-f]{64}$/);
+});
+
+test('pool and swap calls name the Blend fee ceiling; the plain XLM transfer keeps the default', async () => {
+  const f = fixture();
+  await openPosition({ run: f.run, save: f.save }, f.deps);
+  await closePosition({ run: f.run, save: f.save }, f.deps);
+  assert.deepEqual(f.sends, ['transfer', 'swap_exact_tokens_for_tokens', 'submit:0', 'submit:1']);
+  assert.deepEqual(f.fees, [undefined, BLEND_FEE_CEILING, BLEND_FEE_CEILING, BLEND_FEE_CEILING]);
+  assert.ok(BLEND_FEE_CEILING > 10_000_000n && BLEND_FEE_CEILING <= 100_000_000n);
 });

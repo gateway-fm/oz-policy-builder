@@ -107,13 +107,13 @@ function withSourceAuthorization(operation, payer) {
 }
 
 /** Assembly may add resource data and a bounded fee, never change the call we will sign. */
-function checkAssembly(assembled, expectedEnvelope) {
+function checkAssembly(assembled, expectedEnvelope, namedCeiling = MAX_TRANSACTION_FEE) {
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
     const intended = expected.v1.tx.operations;
     const maximumFee = intended.length === 1
       && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
-      ? MAX_WASM_UPLOAD_FEE : MAX_TRANSACTION_FEE;
+      ? MAX_WASM_UPLOAD_FEE : namedCeiling;
     const envelope = assembled.toEnvelope();
     if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'
       || envelope.v1.signatures.length !== 0) throw new Error();
@@ -143,7 +143,12 @@ function checkAssembly(assembled, expectedEnvelope) {
  * what makes a denial observable without spending a fee: the enforcing simulation runs
  * `__check_auth` and the installed policies exactly as the network would.
  */
-export async function submit(payer, operation, { stage = 'submit', onSubmitting } = {}) {
+export async function submit(payer, operation, { stage = 'submit', onSubmitting, maxFee = MAX_TRANSACTION_FEE } = {}) {
+  // A caller whose call is known to cost more than one XLM in resources (rent for new entries)
+  // names its own ceiling; it can never exceed the upload ceiling.
+  if (typeof maxFee !== 'bigint' || maxFee < MAX_TRANSACTION_FEE || maxFee > MAX_WASM_UPLOAD_FEE) {
+    throw new Error('submission refused: invalid fee ceiling');
+  }
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
     .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
@@ -152,7 +157,7 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting 
   const sim = await server.simulateTransaction(tx, undefined, 'enforce');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error);
   const assembled = rpc.assembleTransaction(tx, sim).build();
-  checkAssembly(assembled, expectedEnvelope);
+  checkAssembly(assembled, expectedEnvelope, maxFee);
   assembled.sign(payer);
   const expectedHash = Buffer.from(assembled.hash()).toString('hex');
   // Persist a removal identity before the first network write. A failed checkpoint prevents send;
