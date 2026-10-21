@@ -336,10 +336,12 @@ This list separates tools the server exposes from operations still under develop
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
-`check_policy_call_surface` and `prepare_install_intent` read through a source the operator
-names in `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
+`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction` and
+`check_against_policy` read through a source the operator names in `OZPB_RPC_SOURCES_JSON` —
+`{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
-source; it never carries a URL.
+source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
+source, but reads nothing through it.
 The source must be for the request's network, a hosted server also requires its URL on
 `OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
 `OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same
@@ -360,9 +362,10 @@ stream before the tool runs and a build outlives a client that disconnects:
 | `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
 | `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks and install-intent planning. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
 
-Zero or a malformed value stops startup. Authority checks and install-intent planning also
-share a separate one-operation limit across all sessions, held until their blocking work
-ends even if a client disconnects. That limit is independent of build capacity; their binding
+Zero or a malformed value stops startup. Authority checks, install-intent planning, unsigned
+install assembly, installed-rule checks and dry-run preparation also share a separate
+one-operation limit across all sessions, held until their blocking work ends even if a
+client disconnects. That limit is independent of build capacity; their binding
 rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
 `preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits

@@ -42,9 +42,10 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   script, the testnet harness and the local wallet backend do, on testnet only, with
   disposable keys they generate; the wallet's owner signs with the user's own passkey.
 - No independent third-party audit has been performed. The evidence that has actually been
-  run is in `docs/TESTNET-EVIDENCE.md`, and `docs/SCOPE.md` says what deliberately has not been
-  run; test counts are not treated
-  as assurance.
+  run is in `docs/TESTNET-EVIDENCE.md` and, for the second milestone's controlled testnet
+  harness runs, `docs/TESTNET-EVIDENCE-TRANCHE-2.md`; those runs are local RPC observations,
+  not ledger proofs or wallet approval. `docs/SCOPE.md` says what deliberately has not been
+  run; test counts are not treated as assurance.
 
 A report that one of the above is true is a report we already agree with. A report that one of
 them is *false* — that a claimed fail-closed path can be made to open — is the one we want.
