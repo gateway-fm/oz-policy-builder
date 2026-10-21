@@ -80,6 +80,23 @@ function GrantSummary({ spec }: { spec: unknown }) {
   </div>;
 }
 
+const LAYER_NAMES: Record<string, string> = { reference: "Reference evaluation", account_wasm: "Account Wasm execution",
+  captured_target: "Captured target execution", live_enforcement: "Live enforcement" };
+
+function VerificationLayers({ verification }: { verification: unknown }) {
+  const layers = items(object(verification).layers);
+  if (!layers.length) return null;
+  return <ul className="space-y-2 text-sm">
+    {layers.map((raw, index) => {
+      const layer = object(raw);
+      return <li key={index} className="rounded border border-slate-700 p-3">
+        <span className="font-medium">{LAYER_NAMES[label(layer.layer)] ?? label(layer.layer)}: {label(layer.status)}</span>
+        <p className="mt-1 text-slate-400">{label(layer.detail)}</p>
+      </li>;
+    })}
+  </ul>;
+}
+
 function PolicyBuilder() {
   const controller = useRef<WalletController | null>(null);
   const creatingRef = useRef(false);
@@ -121,6 +138,9 @@ function PolicyBuilder() {
   useEffect(() => {
     setTransactionHash(state?.sampleTransactionHash ?? "");
   }, [state?.sampleTransactionHash, state?.wallet?.contractId]);
+  useEffect(() => {
+    if (state?.delegate?.address) setDelegateAddress(state.delegate.address);
+  }, [state?.delegate?.address]);
   const busy = creating || state?.busy || !state?.status;
   const run = async (action: (value: WalletController) => Promise<void> | void) => {
     if (!controller.current || busy) return;
@@ -221,6 +241,12 @@ function PolicyBuilder() {
         <Evidence title="Recorded authorization and evidence" value={state?.record} />
         <label htmlFor="delegate" className="block text-sm">Restricted delegate address</label>
         <input id="delegate" className={input} value={delegateAddress} onChange={(event) => setDelegateAddress(event.target.value)} />
+        {state?.status?.capabilities.accountCheck && <div className="space-y-2 text-sm">
+          <button className={button} disabled={busy || !!state.delegate}
+            onClick={() => void run((value) => value.createDelegate())}>Create local automation delegate</button>
+          <p className="text-slate-400">The backend creates an Ed25519 delegate key held only in its memory and discarded when it stops.
+            It signs offline candidate-execution checks only. It is automation, not your owner passkey, and no key leaves the backend.</p>
+        </div>}
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="text-sm">Grant name<input className={input} maxLength={20} value={grantName} onChange={(event) => setGrantName(event.target.value)} /></label>
           <label className="text-sm">Expires at ledger<input className={input} type="number" min="1" max="4294967295"
@@ -250,12 +276,18 @@ function PolicyBuilder() {
           onClick={() => void run((value) => value.review())}>Refresh authority and review exact grant</button>
         {state?.review && <GrantSummary spec={state?.artifact?.spec} />}
         <Evidence title="Exact grant, owner authority and evidence" value={state?.review} />
+        <VerificationLayers verification={state?.review?.verification} />
+        {state?.status?.capabilities.accountCheck && <button className={button}
+          disabled={busy || !state?.review || !state?.delegate}
+          onClick={() => void run((value) => value.checkAccount())}>Run account-Wasm check with the local delegate</button>}
         <p className="text-sm text-slate-300">Local verification: {gate.localReady ? "three required layers passed" : "incomplete"}.
           {" "}Full acceptance: {gate.acceptanceReady ? "all four required layers passed" : "incomplete; signing is disabled"}.</p>
         <button className={button} disabled={busy || !state?.review || !gate.acceptanceReady || !state?.status?.capabilities.install}
           onClick={() => void run((value) => value.install())}>Approve exact grant with owner passkey and install</button>
         <p className="text-sm text-slate-400">A refreshed unsigned envelope is checked against this review before the authenticator prompt.
-          Missing live-enforcement evidence remains unavailable. A virtual authenticator does not establish human approval.</p>
+          Missing live-enforcement evidence remains unavailable. A virtual authenticator does not establish human approval.
+          The account-Wasm check runs in fresh synthetic local state with an offline signing domain; it is not captured-state,
+          live-enforcement or installation evidence.</p>
       </section>
       <Evidence title="Transaction receipts and installation result" value={{ receipt: state?.receipt, installation: state?.installation }} open />
       <Evidence title="Backend capabilities, recognized code and verification limitations" value={state?.status} />

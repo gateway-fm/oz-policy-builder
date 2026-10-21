@@ -3,7 +3,7 @@ import { isAbsolute, normalize } from 'node:path';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
-const OPTIONAL = ['stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs'];
+const OPTIONAL = ['stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
 const integer = (value, max) => Number.isSafeInteger(value) && value >= 1 && value <= max;
 
@@ -72,8 +72,10 @@ export function loadWalletConfig(path) {
         buildEnvironment[env] = String(value[field]);
       }
     }
+    // The native worker is optional; without it the account-Wasm layer stays unavailable.
+    const nativeExecutable = Object.hasOwn(value, 'nativeExecutable') ? executable(value.nativeExecutable) : null;
     return Object.freeze({ executable: executable(value.executable), workRoot: directory(value.workRoot, true),
       rpcUrl: url.href, registrySnapshot, registryRoots, registryMinimumVersion: value.registryMinimumVersion,
-      buildEnvironment: Object.freeze(buildEnvironment) });
+      buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable });
   } catch { refused(); }
 }

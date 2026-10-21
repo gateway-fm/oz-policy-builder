@@ -19,6 +19,7 @@ export interface WalletState {
   readonly samplePreview: Details | null;
   readonly sampleTransactionHash: string | null;
   readonly sampleAttempted: boolean;
+  readonly delegate: { readonly capabilityId: string; readonly address: string } | null;
 }
 export class WalletController {
   constructor(options: {
@@ -48,5 +49,7 @@ export class WalletController {
   prepareDeploy(): Promise<void>;
   confirmDeploy(): Promise<void>;
   review(): Promise<void>;
+  createDelegate(): Promise<void>;
+  checkAccount(): Promise<void>;
   install(): Promise<void>;
 }

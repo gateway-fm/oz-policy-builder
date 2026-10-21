@@ -308,3 +308,53 @@ test('sample preparation preserves the recorded AddressV2 arm without downgradin
   assert.equal(auth.credentials.addressV2.signature.type, 'scvVoid');
   assert.ok(!f.calls.some((call) => call.sent));
 });
+
+function nativeSourceServer(mode = 'valid') {
+  const code = Buffer.from([0,97,115,109,1,0,0,0, mode === 'wrong code bytes' ? 1 : 0]);
+  const wasmHash = Buffer.from(hash(Buffer.from([0,97,115,109,1,0,0,0,0]))).toString('hex');
+  const zero = Buffer.alloc(32);
+  const header = new xdr.LedgerHeader({ ledgerVersion: mode === 'header protocol' ? 30 : 29, previousLedgerHash: zero,
+    scpValue: new xdr.StellarValue({ txSetHash: zero, closeTime: 18446744073709551615n, upgrades: [],
+      ext: xdr.StellarValueExt.stellarValueBasic() }), txSetResultHash: zero, bucketListHash: zero,
+    ledgerSeq: mode === 'header sequence' ? 999 : 1000, totalCoins: 0n, feePool: 0n, inflationSeq: 0, idPool: 0n,
+    baseFee: 100, baseReserve: 5000000, maxTxSetSize: 100, skipList: [zero, zero, zero, zero], ext: xdr.LedgerHeaderExt.v0() });
+  const id = mode === 'header hash' ? 'ab'.repeat(32) : Buffer.from(hash(header.toXDR())).toString('hex');
+  const server = {
+    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: mode === 'network protocol' ? 30 : 29 }),
+    getLatestLedger: async () => ({ id, sequence: 1000, protocolVersion: 29, headerXdr: xdr.LedgerHeader.fromXDR(header.toXDR()) }),
+    getLedgerEntries: async (requested) => {
+      const key = xdr.LedgerKey.fromXDR(requested.toXDR());
+      if (requested.type === 'contractCode') {
+        const val = xdr.LedgerEntryData.contractCode(new xdr.ContractCodeEntry({ ext: xdr.ContractCodeEntryExt.v0(),
+          hash: Buffer.from(wasmHash, 'hex'), code }));
+        return { latestLedger: mode === 'late code' ? 1013 : 1001, entries: [{ key, val: xdr.LedgerEntryData.fromXDR(val.toXDR()),
+          lastModifiedLedgerSeq: 90, liveUntilLedgerSeq: 5000 }] };
+      }
+      const settings = new xdr.StateArchivalSettings({ maxEntryTtl: 3110400, minTemporaryTtl: mode === 'ttl order' ? 4000000 : 720,
+        minPersistentTtl: 120960, persistentRentRateDenominator: 1n, tempRentRateDenominator: 1n, maxEntriesToArchive: 1,
+        liveSorobanStateSizeWindowSampleSize: 1, liveSorobanStateSizeWindowSamplePeriod: 1, evictionScanSize: 1, startingEvictionScanLevel: 1 });
+      const val = mode === 'wrong config'
+        ? xdr.LedgerEntryData.configSetting(xdr.ConfigSettingEntry.configSettingContractMaxSizeBytes(1))
+        : xdr.LedgerEntryData.configSetting(xdr.ConfigSettingEntry.configSettingStateArchival(settings));
+      return { latestLedger: mode === 'stale config' ? 999 : 1000, entries: [{ key, val: xdr.LedgerEntryData.fromXDR(val.toXDR()),
+        lastModifiedLedgerSeq: 900 }] };
+    },
+  };
+  return { server, wasmHash, code };
+}
+test('native source reads one coherent protocol-29 ledger, archival limits and exact account code', async (t) => {
+  const { server, wasmHash, code } = nativeSourceServer();
+  const { network } = networkFixture(t, (stub) => Object.assign(stub, server));
+  assert.deepEqual(await network.nativeSource(wasmHash), {
+    ledger: { protocol_version: 29, sequence: 1000, timestamp: '18446744073709551615', base_reserve: 5000000,
+      min_temp_entry_ttl: 720, min_persistent_entry_ttl: 120960, max_entry_ttl: 3110400 },
+    accountWasmBase64: code.toString('base64') });
+});
+for (const mode of ['network protocol', 'header protocol', 'header sequence', 'header hash', 'wrong config', 'stale config',
+  'ttl order', 'wrong code bytes', 'late code']) {
+  test(`native source refuses ${mode}`, async (t) => {
+    const { server, wasmHash } = nativeSourceServer(mode);
+    const { network } = networkFixture(t, (stub) => Object.assign(stub, server));
+    await assert.rejects(() => network.nativeSource(wasmHash), /refused/);
+  });
+}

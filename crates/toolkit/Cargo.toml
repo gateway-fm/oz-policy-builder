@@ -32,6 +32,3 @@ hex = { workspace = true }
 base64 = { workspace = true }
 stellar-strkey = { workspace = true }
 stellar-xdr = { workspace = true }
-
-[dev-dependencies]
-# Canned getLedgerEntries replies for the plan → scan → finish test through the real scanner.

@@ -5,6 +5,7 @@ import { decodeBase64Url } from '../shared/base64url.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { validateSignedAuthorization } from '../shared/signature.mjs';
+import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const HASH = /^[a-f0-9]{64}$/;
@@ -42,22 +43,25 @@ function freshOwner(value, signer) {
     || !equal(native.signer_ids, xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]))
     || native.valid_until.type !== 'scvVoid') refuse();
 }
-function missingVerification(artifact, bindingSetHash) {
+function missingVerification(artifact, bindingSetHash, accountLayer) {
   return freezeCopy({ runId: id(), specHash: artifact?.specHash ?? null, wasmHash: artifact?.wasmHash ?? null,
     bindingSetHash: bindingSetHash ?? null, complete: false, layers: [
       { layer: 'reference', status: artifact ? 'passed' : 'unavailable', detail: artifact
         ? 'Constraint-derived reference cases passed; artifact reproduced separately.' : 'No candidate prepared.' },
-      { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
+      accountLayer ?? { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
       { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
       { layer: 'live_enforcement', status: 'unavailable', detail: 'Wallet-authorized candidate behavioral preflight has not run.' },
     ] });
 }
+const accountLayer = (status, detail) => ({ layer: 'account_wasm', status, detail });
 
 /** Closed HTTP operations. Every privileged input comes from retained state or operator configuration. */
-export function createWalletActions({ session, toolchain, network }) {
+export function createWalletActions({ session, toolchain, network, native = null }) {
   const deployments = new Map();
   const attemptedArtifacts = new Set();
   const reviews = new Map();
+  const delegates = new DelegateCapabilities();
+  let accountCheckRunning = false;
   let accountAttempted = false;
   let sampleAccount = null;
   let sampleSubmitted = false;
@@ -77,7 +81,8 @@ export function createWalletActions({ session, toolchain, network }) {
       exact(input, []);
       return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
-        capabilities: { record: true, generate: true, deploy: true, sampleTransfer: true, install: false, lifecycle: false },
+        capabilities: { record: true, generate: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+          install: false, lifecycle: false },
         verification: missingVerification() };
     },
     'prepare-account': async (input) => {
@@ -224,8 +229,64 @@ export function createWalletActions({ session, toolchain, network }) {
       const approval = reviewIntent({ intent, expected, wallet, ownerRuleXdr });
       const reviewId = id();
       const verification = missingVerification(artifact, deployment.response.bindingSetHash);
-      reviews.set(reviewId, { approval, deploymentId: input.deploymentId, verification });
+      // The proposed chain ID for local execution; a later installation must read NextId again.
+      const enumeration = intent.authority.verdict.evidence?.enumeration_evidence;
+      const nextRuleId = enumeration?.method === 'bounded_next_id' && Number.isSafeInteger(enumeration.next_id)
+        && enumeration.next_id >= 0 && enumeration.next_id <= 0xffffffff ? enumeration.next_id : null;
+      reviews.set(reviewId, { approval, deploymentId: input.deploymentId, verification, nextRuleId });
       return freezeCopy({ reviewId, intent, expected, wallet, ownerRuleXdr, verification });
+    },
+    // A local automation delegate: the key stays in this process; it never becomes an owner signer.
+    'create-delegate': async (input) => {
+      exact(input, []);
+      if (!native) refuse();
+      return delegates.create();
+    },
+    'check-account': async (input) => {
+      exact(input, ['reviewId', 'capabilityId']);
+      if (!native || accountCheckRunning) refuse();
+      const review = get(reviews, input.reviewId);
+      const deployment = get(deployments, review.deploymentId);
+      const { response: artifact } = toolchain.artifact(deployment.artifactId);
+      const rule = artifact.spec.rules[0];
+      const signers = rule.authorization?.signers;
+      const delegate = signers?.length === 1 ? signers[0].delegated?.address : undefined;
+      const signer = delegates.signer(input.capabilityId, delegate);
+      const maxCalls = rule.state?.[0]?.call_count_per_installation?.max_calls;
+      let layer;
+      if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > NATIVE_LIMITS.maxCalls) {
+        layer = accountLayer('unsupported', `The native worker supports call caps up to ${NATIVE_LIMITS.maxCalls}; it did not run.`);
+      } else if (review.nextRuleId === null) {
+        layer = accountLayer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID.');
+      } else {
+        accountCheckRunning = true;
+        try {
+          let prepared, source;
+          try {
+            prepared = await toolchain.prepareDryRun({ artifactId: deployment.artifactId,
+              candidate: deployment.request, candidateContextRuleId: review.nextRuleId });
+            source = await network.nativeSource(ACCOUNT_WASM);
+          } catch {
+            // Infrastructure, not the candidate: the CLI preparation or operator RPC read did not complete.
+            layer = accountLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
+          }
+          if (!layer) {
+            try {
+              const checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
+                bindingSetHash: deployment.response.bindingSetHash, accountAddress: artifact.spec.smart_account.address,
+                delegateAddress: delegate, policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
+                candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence });
+              layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls,
+                jobText: nativeJobText(prepared.request, source.accountWasmBase64, source.ledger), ...checked });
+            } catch {
+              layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
+            }
+          }
+        } finally { accountCheckRunning = false; }
+      }
+      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer);
+      reviews.set(input.reviewId, { ...review, verification });
+      return freezeCopy({ reviewId: input.reviewId, verification });
     },
     // These handlers cannot be enabled by caller-supplied evidence. They will be
     // connected only to the actual wallet-owned execution and lifecycle backends.

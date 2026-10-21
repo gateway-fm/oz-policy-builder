@@ -686,6 +686,11 @@ deterministic offline verdicts from live preflight verdicts. The suite is also t
 
 ### 4.6 MCP server (`crates/mcp-server`)
 
+The recognition-scoped installed-rule operation is implemented in
+[`LIVE-POLICY-CHECK.md`](LIVE-POLICY-CHECK.md). Its predictions are conditional on later
+authentication of the candidate identities and carry endpoint-reported ledger evidence;
+they require a fresh check and enforce simulation before signing.
+
 > **Scope: Tranche 1 for `record` and `synthesize`; later milestones for the rest.** The first milestone contracts an MCP server v0 exposing recording and synthesis. The remaining tools described below — dry-run, authority-surface and install-intent — belong to the milestones that deliver the components behind them.
 
 One codebase and executable image built on the official Rust MCP SDK (`rmcp` 2.x), exposing
