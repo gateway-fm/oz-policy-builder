@@ -228,6 +228,11 @@ fn delegates_signed(delegates: &[SorobanDelegateSignature]) -> bool {
     })
 }
 
+/// What preflight and target capture say about an envelope that does not decode.
+pub(crate) const ENVELOPE_DECODE_REFUSAL: &str =
+    "invalid transaction envelope: not base64 XDR of one transaction envelope within the decode \
+     limits";
+
 /// The caller's envelope, refused with an input code when it is too large, is not one unbroken
 /// base64 string, does not decode, or has a shape simulation does not take. Each is the
 /// caller's input rather than an endpoint reply, and nothing is sent for any of them.
@@ -252,10 +257,10 @@ pub(crate) fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnv
                 .to_string(),
         ));
     }
+    // A fixed description: the decoder's own message names an input byte and its offset, and
+    // the input is a confidential envelope.
     let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
-        .map_err(|error| {
-            RpcError::EnvelopeParse(format!("invalid transaction envelope: {error}"))
-        })?;
+        .map_err(|_| RpcError::EnvelopeParse(ENVELOPE_DECODE_REFUSAL.to_string()))?;
     simulation_shape(&envelope).map_err(RpcError::UnsupportedEnvelope)?;
     Ok(envelope)
 }

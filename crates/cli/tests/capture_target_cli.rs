@@ -142,6 +142,11 @@ fn refusals_name_their_code_before_the_network() {
         assert!(!output.status.success(), "{name}: {stderr}");
         assert!(output.stdout.is_empty(), "{name}: printed a capture");
         assert!(stderr.contains(code), "{name}: {stderr}");
+        // One code, as the preflight command prints it, not the code and then the message's.
+        assert!(
+            !stderr.contains(&format!("{code}{code}")),
+            "{name}: {stderr}"
+        );
         assert_eq!(endpoint.connections(), 0, "{name}: reached the network");
         if let Some(envelope) = request["envelope_xdr_base64"].as_str() {
             assert_not_echoed(&output, envelope);
@@ -163,7 +168,8 @@ fn an_endpoint_echoing_the_envelope_never_reaches_the_output() {
     endpoint.finish();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("E_RPC: "), "{stderr}");
+    assert!(stderr.contains("Error: E_RPC: rpc error: "), "{stderr}");
+    assert!(!stderr.contains("E_RPC: E_RPC: "), "{stderr}");
     assert!(stderr.contains("withheld"), "{stderr}");
     assert_not_echoed(&output, &envelope);
 }

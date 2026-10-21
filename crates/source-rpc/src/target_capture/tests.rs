@@ -599,3 +599,31 @@ fn native_target_capture_withholds_endpoint_text() {
         );
     }
 }
+
+/// An envelope that does not decode is refused with one fixed description. The decoder's own
+/// message names an input byte and its offset, which is envelope content.
+#[test]
+fn native_target_capture_parse_refusals_are_fixed_descriptions() {
+    let fixture = fixture();
+    let (head, tail) = fixture.envelope.split_at(fixture.envelope.len() / 2);
+    for candidate in [
+        // Not base64 at a distinctive byte.
+        format!("{head}!{tail}"),
+        // Base64 that is not a transaction envelope.
+        "AAAA".to_string(),
+        // A truncated envelope.
+        head.chars().take(head.len() / 4 * 4).collect(),
+    ] {
+        let error = capture_native_target(&fixture, NETWORK, &candidate)
+            .expect_err("an undecodable envelope was accepted");
+        assert!(matches!(error, RpcError::EnvelopeParse(_)), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "E_ENVELOPE_PARSE: {}",
+                crate::preflight::ENVELOPE_DECODE_REFUSAL
+            )
+        );
+        assert!(fixture.calls.borrow().is_empty());
+    }
+}
