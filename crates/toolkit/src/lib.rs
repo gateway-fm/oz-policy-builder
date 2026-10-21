@@ -26,7 +26,11 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, verify_with_build_config};
+mod dry_run;
+pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
+#[cfg(test)]
+mod dry_run_tests;
 pub use authority_text::render_authority_text;
 mod call_surface;
 pub use call_surface::{
@@ -43,6 +47,10 @@ mod install_assembly;
 pub use install_assembly::{install_assembly_output, install_assembly_request};
 mod preflight;
 pub use preflight::preflight_transaction_output;
+mod policy_check;
+pub use policy_check::{
+    finish_policy_check, plan_policy_check_read, policy_check_unavailable, PolicyCheckReadPlan,
+};
 
 /// Build configuration, re-exported so the shells configure the builder through this facade
 /// rather than depending on `ozpb-build-runner` directly. Operator-side only — the wire
@@ -234,17 +242,10 @@ pub fn synthesize_policy(
     //    lowers a label — `incomplete` evidence stays `incomplete`, because a bundle that
     //    was missing evidence when it was recorded is still missing it here.
     //
-    // What this does *not* do, stated so nobody reads more into it: `trust` is an
-    // admission-time claim, like `execution`, and neither is re-derivable from the raw
-    // evidence the artifact carries (`RawEvidence` has no transaction result). So a caller
-    // who edits an `incomplete` bundle's `trust` to `self_supplied` is not caught here — the
-    // weakening is monotone in the *supplied* label, and `self_supplied` is synthesizable by
-    // design. What the boundary does enforce is the ceiling (no wire bundle earns more than
-    // `self_supplied`) and coherence (decoded views must be what the raw evidence derives).
-    // Making the outcome itself checkable from the artifact needs the transaction result
-    // inside the recording — a `recording/v2` change, because it moves every recording hash
-    // including published testnet evidence that cannot honestly be regenerated once those
-    // transactions leave RPC retention.
+    // Wire trust remains an acquisition claim, so this boundary caps it at self_supplied.
+    // V2 also rechecks execution against preserved transaction-result XDR and refuses
+    // executed evidence without that XDR unless its label remains incomplete.
+    // Internal coherence still does not prove ledger inclusion.
     for (index, bundle) in bundles.iter().enumerate() {
         bundle.verify().map_err(|error| {
             let mapped = map_record_err(&error);

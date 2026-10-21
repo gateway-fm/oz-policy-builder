@@ -114,6 +114,7 @@ jobs:
         run: |
           npm ci --prefix testnet-harness/scripts --no-audit --no-fund
           npm ci --prefix testnet-harness/browser --no-audit --no-fund
+          npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
       - name: offline harness suites (no browser launch or testnet access)
         env:
           OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
@@ -121,6 +122,8 @@ jobs:
         run: |
           npm test --prefix testnet-harness/scripts
           npm test --prefix testnet-harness/browser
+          npm test --prefix wallet
+          python3 scripts/test-apply-pollywallet.py
 
   contracts:
     name: contracts (differential suite · generated code compiles)
@@ -203,6 +206,18 @@ jobs:
           rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
           ( cd contracts/golden-transfer-policy && cargo "+$NIGHTLY" fmt --all --check )
           ( cd contracts/soroswap-swap-policy && cargo "+$NIGHTLY" fmt --all --check )
+
+  native-execution:
+    name: native execution (protocol 29 · framing · ABI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: format, lint and offline protocol tests
+        run: |
+          cargo fmt --manifest-path execution-runtime/Cargo.toml --all --check
+          cargo clippy --manifest-path execution-runtime/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path execution-runtime/Cargo.toml --locked
 
   publication-guard:
     name: publication allowlist (no confidential material leaks)

@@ -354,6 +354,8 @@ pub mod policy_operations;
 pub use policy_operations::*;
 mod install_assembly;
 pub use install_assembly::*;
+pub mod dry_run;
+pub use dry_run::*;
 
 #[cfg(test)]
 mod tests {

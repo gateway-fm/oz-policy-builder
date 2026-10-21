@@ -1235,6 +1235,7 @@ dependencies = [
  "ozpb-policy-spec",
  "proptest",
  "serde",
+ "stellar-xdr",
  "thiserror",
 ]
 

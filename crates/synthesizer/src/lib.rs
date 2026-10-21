@@ -1080,6 +1080,8 @@ mod tests {
                     code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         bundle.contract_executables.insert(
@@ -1087,6 +1089,8 @@ mod tests {
             ExecutableObservation {
                 executable: ObservedExecutable::StellarAsset,
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         bundle
@@ -1213,6 +1217,8 @@ mod tests {
                     code_hash: sha256(b"different-account-wasm"),
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
 
@@ -1233,6 +1239,8 @@ mod tests {
                     code_hash: target_hash,
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
 
@@ -1267,6 +1275,8 @@ mod tests {
                     ExecutableObservation {
                         executable: ObservedExecutable::Wasm { code_hash },
                         observed_ledger: LedgerSeq(ledger),
+                        last_modified_ledger: None,
+                        live_until_ledger: None,
                     },
                 );
                 bundle
@@ -1381,6 +1391,8 @@ mod tests {
             ExecutableObservation {
                 executable: ObservedExecutable::Wasm { code_hash },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         // `amount` (arg 2) is a MaxInput → the reviewed adapter caps it from above; from/to
@@ -1633,7 +1645,9 @@ mod tests {
             state_changes: vec![],
             contract_executables: input().bundles[0].contract_executables.clone(),
             evidence_notes: vec![],
+            acquisition: None,
             raw: RawEvidence {
+                result_xdr_base64: None,
                 envelope_xdr_base64: "x".to_string(),
                 result_meta_xdr_base64: None,
                 simulated_auth_xdr_base64: vec![],
@@ -2421,6 +2435,8 @@ pub mod fixtures {
                             code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                         },
                         observed_ledger: LedgerSeq(4_200_100),
+                        last_modified_ledger: None,
+                        live_until_ledger: None,
                     },
                 );
                 bundle.contract_executables.insert(
@@ -2428,6 +2444,8 @@ pub mod fixtures {
                     ozpb_recorder_core::ExecutableObservation {
                         executable: ozpb_recorder_core::ObservedExecutable::StellarAsset,
                         observed_ledger: LedgerSeq(4_200_100),
+                        last_modified_ledger: None,
+                        live_until_ledger: None,
                     },
                 );
                 bundle
