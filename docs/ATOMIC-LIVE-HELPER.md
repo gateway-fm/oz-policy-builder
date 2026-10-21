@@ -8,11 +8,13 @@ one invocation installs the candidate rule through the account's own `add_contex
 makes one native-asset transfer under it. An enforce-mode simulation of that invocation runs the
 generated policy on live state, and nothing is installed because nothing is submitted.
 
-This package is the helper contract, its real-Wasm host tests, and a testnet deployment probed
-by the harness. **The `live_enforcement` layer remains `unavailable`.** The helper is deployed on
-testnet and the harness has simulated one permit and one denial through it with automation keys
-([Testnet deployment](#testnet-deployment)), but the wallet-side preparation, consent and result
-validation the layer needs are not built yet (see [Outstanding](#outstanding)).
+This package is the helper contract, its real-Wasm host tests, a testnet deployment probed by
+the harness, and the wallet's validators of a live case. **The `live_enforcement` layer remains
+`unavailable`.** The helper is deployed on testnet and the harness has simulated one permit and one
+denial through it with automation keys ([Testnet deployment](#testnet-deployment)), and the
+validators decide what such a simulation must show to count
+([How live use is meant to work](#how-live-use-is-meant-to-work)). The wallet-side preparation,
+consent, signing and simulation the layer needs are not built yet (see [Outstanding](#outstanding)).
 
 ## What the helper does
 
@@ -136,20 +138,61 @@ the expiry and the replay warning and gets explicit consent before any signature
 `simulateTransaction` in enforce mode is used, never `sendTransaction`. A recording-mode
 simulation only discovers the authorization shape and is never evidence.
 
-Helper success is evidence only together with what the orchestrator checks itself:
+Helper success is evidence only together with what the orchestrator checks itself.
+`validateLiveCase` in [`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs)
+makes these checks from the approved case, the exact transaction that was simulated and the RPC's
+raw enforce-mode simulation result, its XDR still base64. It returns `permit`, `deny` or `failed`
+with a reason. Only `permit` and `deny` are evidence:
 
-- the simulation's ledger changes include the installed rule, the candidate policy's counter
-  write for that rule and account, and exactly the expected balance changes;
+- the simulated transaction is one call of the helper for exactly the approved case, on the
+  testnet native asset, which the validator derives rather than accepts;
 - the account's authorization entry for the transfer has the exact transfer as its root and no
   sub-invocations, its `context_rule_ids` are exactly `[expected_rule_id]`, and its signers are
   exactly `{Delegated(delegate)}`;
-- the owner's entries cover only the installation.
+- the owner's entries cover only the installation, with the approved arguments and under the
+  owner's rule. Each delegated signer's own entry authorizes exactly the digest of its account
+  entry, and there is no other entry. Every entry expires at the approved ledger;
+- a permit's ledger changes are exactly these and nothing else: the account's and the recipient's
+  balances, by the amount; the installed rule with the account's bookkeeping for it (next rule ID,
+  rule count, and the delegate's and policy's registry entries); the candidate policy's
+  installation marker and its call counter for that rule and account, used once; and the nonce of
+  every entry, consumed once. The helper must return the rule the account stored. A simulation
+  that would restore archived entries is refused.
 
-A denial needs the
-`NoTupleMatched` error attributed to the candidate policy; a helper refusal such as
-`CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy. The
-owner must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real
-transfer that no policy checks, should the signatures ever be submitted.
+A denial needs the `NoTupleMatched` error attributed to the candidate policy inside the asset's
+failed authentication of the account, with no ledger changes. It is read twice: from the printed
+event log as the harness reads it, matched only where the log starts an event so that a value it
+prints verbatim, such as the rule name, cannot pass for one, and from the structured diagnostic
+events. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial and settles
+nothing about the policy, and neither is an account error.
+
+A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
+address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
+which the RPC returns for a failed simulation too. In the order the host records them, they must
+show one helper call with exactly the approved candidate, then the account's `__check_auth` for the
+installation and then for the transfer, once each, with that entry's signature payload (which
+covers its nonce and expiry), its signature and its contexts. Only the host's diagnostic events
+count; a contract can emit any topics as a contract event. For a permit every event comes from a
+successful call, and the result must echo exactly the envelope's four entries, which is what binds
+the classic signers' own entries. For a denial every event comes from a failed call, the helper
+never returns, and the policy's error follows the transfer's check and precedes any return of it. A
+failed response echoes nothing, so a denial vouches for the helper call and the account's two
+entries but not for the classic signers' entries, although `envelope_xdr_sha256` covers their
+bytes. The validator does not verify signatures, which the simulation's host did, and it neither
+signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
+[testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed in
+the shapes the probe and the host use. They also run it over real responses: a second,
+simulation-only probe the same day reused the deployed helper with a fresh throwaway account,
+automation keys and a new candidate, `CDTRH2NIFBKASKAF3FA2NCEYJ65O4XXI6NUPWDW6J4T3JYBHOLEYCHKF`,
+and kept the RPC's raw responses as
+[`wallet/tests/live-enforcement-testnet.json`](../wallet/tests/live-enforcement-testnet.json), with
+the two classic signer entries' Ed25519 signatures zeroed. On them the permit validates as
+`permit`, the adjacent amount as `deny`, and each case with the other's response as `failed`. The
+real responses matched the shapes the validator expects: the permit result echoes the four supplied
+entries, the fresh account's permit writes fourteen entries including the four nonces, and the
+denial's events, all from failed calls, are returned alongside its error. The owner must never be
+asked to sign the transfer: an owner-signed transfer under rule 0 is a real transfer that no policy
+checks, should the signatures ever be submitted.
 
 ## Signatures are real and usable without the helper
 
@@ -257,6 +300,6 @@ tried.
 
 ## Outstanding
 
-- The wallet-side preparation, consent, signing, enforce-mode simulation and result validation,
-  with its interface agreed before implementation.
+- The wallet-side preparation, consent, signing and enforce-mode simulation, with its interface
+  agreed before implementation. Their result goes through `validateLiveCase`.
 - A live run of both cases through the wallet, with the owner's consent.
