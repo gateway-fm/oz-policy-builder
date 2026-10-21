@@ -235,7 +235,7 @@ fn delegates_signed(delegates: &[SorobanDelegateSignature]) -> bool {
 /// Whitespace is refused rather than skipped. The XDR decoder skips ASCII whitespace, so a
 /// spaced-out string decodes to the same bytes as the canonical one; refusing it keeps the
 /// CLI and MCP tool to one rule and leaves no second spelling of an envelope to forward.
-fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
+pub(crate) fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
     if envelope_xdr_base64.len() > MAX_XDR_BASE64_BYTES {
         return Err(RpcError::EnvelopeTooLarge(format!(
             "transaction envelope is {} encoded bytes, over the {MAX_XDR_BASE64_BYTES}-byte XDR \

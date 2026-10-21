@@ -357,6 +357,8 @@ mod install_assembly;
 pub use install_assembly::*;
 pub mod dry_run;
 pub use dry_run::*;
+pub mod target_capture;
+pub use target_capture::*;
 
 #[cfg(test)]
 mod tests {

@@ -23,6 +23,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 mod authority;
+mod capture;
 mod http;
 mod policy_check;
 mod preflight;
@@ -107,7 +108,8 @@ impl PolicyBuilderServer {
                 + Self::verification_tool_router()
                 + Self::preflight_tool_router()
                 + Self::authority_tool_router()
-                + Self::policy_check_tool_router(),
+                + Self::policy_check_tool_router()
+                + Self::capture_tool_router(),
             authority_slots: rpc_policy
                 .as_ref()
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1))),
@@ -345,10 +347,13 @@ impl ServerHandler for PolicyBuilderServer {
              add_context_rule arguments only when nothing is refused and nothing is \
              unresolved. check_against_policy predicts one recognized installed rule, \
              conditional on candidate identities authenticating later; repeat the check and \
-             enforce-simulate the actual authorization before signing. Pure tools are \
-             deterministic; record_transaction, record_simulation, preflight_transaction, \
-             check_policy_call_surface, prepare_install_intent and check_against_policy read \
-             Stellar RPC, and their results depend on ledger state. Fail-closed: this \
+             enforce-simulate the actual authorization before signing. capture_target reads, \
+             through an operator-configured source, the target state of one unsigned native \
+             asset transfer for the native worker's captured-target layer; it does not run \
+             that layer. Pure tools are deterministic; record_transaction, record_simulation, \
+             preflight_transaction, check_policy_call_surface, prepare_install_intent, \
+             check_against_policy and capture_target read Stellar RPC, and their results \
+             depend on ledger state. Fail-closed: this \
              server never deploys, signs, submits, or holds keys — code-first, deploy-second. \
              Signed authorization entries given to preflight_transaction stay live \
              authorizations until they expire. Widening a grant beyond exactly what was \

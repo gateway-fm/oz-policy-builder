@@ -65,8 +65,54 @@ fixture capture carries nontrivial liabilities and sponsorship counts for that r
 
 [Recorded testnet responses](../crates/source-rpc/tests/captured-testnet/target-capture/) for
 one transfer from the public Pollywallet sample account replay through the real capture code.
-The only edit to them is dropping `getLedgers`' unused `metadataXdr`. No CLI or MCP command
-produces a capture or runs this layer yet.
+The only edit to them is dropping `getLedgers`' unused `metadataXdr`.
+
+## Producing a capture
+
+`ozpb capture-target` and the MCP tool `capture_target` run this capture through an
+operator-configured RPC source and return the `TargetCapture` unchanged: it is the `capture` of
+a `CapturedTargetJob`. The request names the source and its network and carries the unsigned
+envelope; it never carries a URL.
+
+```bash
+cat > capture-request.json <<'JSON'
+{"network_id": "<hex network ID>", "rpc_source": "testnet",
+ "envelope_xdr_base64": "<unsigned envelope>"}
+JSON
+ozpb capture-target --request capture-request.json --rpc-sources rpc-sources.json > capture.json
+```
+
+The source map is the one the authority commands read: `--rpc-sources` or
+`OZPB_RPC_SOURCES_FILE` for the CLI, `OZPB_RPC_SOURCES_JSON` for the MCP server, each
+`{"<name>": {"rpc_url": …, "network_passphrase": …}}`. The named source must be for the
+request's network. A hosted MCP server also requires the source's URL on `OZPB_RPC_ALLOWLIST`
+and runs one read through an operator source at a time.
+
+The envelope is confidential input (architecture §6.5). The CLI reads it from a file, so it
+stays out of process arguments. It reaches the configured endpoint and, over MCP, the
+conversation and the server carrying the request; prefer the CLI or a local stdio server. No
+result or error echoes it: refusals of its shape are fixed descriptions, and endpoint errors keep
+their code but lose the endpoint's text, because after simulation the endpoint holds the
+envelope and could quote it in any later reply. The capture itself repeats the call (account,
+recipient and amount), so it is as confidential as the envelope.
+
+Only the shape above is captured. The refusals:
+
+| Refusal | When | Code |
+|---|---|---|
+| larger than the XDR size bound | before any request | `E_RESOURCE_LIMIT` |
+| not one unbroken, canonical base64 XDR envelope | before any request | `E_ENVELOPE_PARSE` |
+| signed; carrying authorization entries; not one v1 `InvokeHostFunction` operation without a memo; or any call other than the native SAC's `transfer(contract account, G recipient, amount)` with `0 < amount < i64::MAX` | before any request | `E_UNSUPPORTED_ENVELOPE` |
+| a source name that is not configured | before any request | `E_RPC` |
+| a source configured for another network | before any request | `E_NETWORK_MISMATCH` |
+| hosted server: the source's URL is not on `OZPB_RPC_ALLOWLIST` | before any request | `E_RPC` |
+| hosted server: another read through an operator source is running | before any request | `E_RESOURCE_LIMIT` |
+| the endpoint reports another network | during the capture | `E_NETWORK_MISMATCH` |
+| any answer the capture above refuses: a failed, non-void or restoring simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing, archived or expiring entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
+| hosted server: not finished within 300 s | during the capture | `E_RESOURCE_LIMIT` |
+
+Producing a capture does not run this layer. No CLI or MCP command runs it yet, and
+`prepare_dry_run` still reports `captured_target` as unavailable.
 
 ## Preparation
 
@@ -137,7 +183,10 @@ live authorization after owner consent.
 
 `cargo test --manifest-path execution-runtime/Cargo.toml --locked` runs the strict-source and
 change-classification unit tests and argument refusal. `cargo test -p ozpb-source-rpc` replays
-the recorded testnet capture and the mocked refusal cases. `bash scripts/test-captured-target.sh`
+the recorded testnet capture and the mocked refusal cases, including endpoint replies that quote
+the envelope. `cargo test -p ozpb-cli --test capture_target_cli` and
+`cargo test -p ozpb-mcp-server --test mcp_stdio_capture` replay the same recorded responses over
+a local HTTP endpoint through each shell's operator source configuration. `bash scripts/test-captured-target.sh`
 generates four real policies and requires every actual-Wasm test to run and pass: the fixture
 capture (a real SDK-29 SAC deployment built locally), the same with an uncapped rule, a capture
 whose sender cannot cover the amount, a rule paying the delegate itself (refused as overlapping

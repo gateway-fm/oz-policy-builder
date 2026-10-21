@@ -82,8 +82,8 @@ Because they are what a reviewer will ask:
 ## 2. What each tool needs
 
 `evaluate_spec`, `reference_suite`, `synthesize_policy`, and `import_recording` run offline;
-network recording and exact-envelope preflight read RPC, while generation and verification
-build Wasm. Knowing which is which saves a confusing failure.
+network recording, exact-envelope preflight and target capture read RPC, while generation and
+verification build Wasm. Knowing which is which saves a confusing failure.
 
 | Tool | Needs |
 |---|---|
@@ -92,6 +92,7 @@ build Wasm. Knowing which is which saves a confusing failure.
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
 | `record_simulation` | the network, but no signature and no custody: record mode asks what an *unsigned* envelope would require. This is the path the demo script uses |
 | `preflight_transaction` | the network and an exact envelope carrying its intended authorization entries; enforcement mode returns the endpoint-reported simulation outcome and ledger, names each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and lists declared instructions or fee below the endpoint's padded estimate as advice that never changes the outcome. It does not prove that a particular installed policy was selected, and writes are discarded. Discarded writes do not make it harmless: signed authorization entries are live authorizations that anyone who sees the envelope — the RPC endpoint, this transcript — can submit until their `signatureExpirationLedger`, and simulation does not consume their nonce. Use testnet or a short expiration, a trusted endpoint, and the stdio server; a hosted server refuses signed envelopes |
+| `capture_target` | an RPC source the operator configured in `OZPB_RPC_SOURCES_JSON` (the request names it and its network, never a URL; `scripts/mcp-server-dev.sh` configures none), and an unsigned envelope whose only call is a native Stellar Asset Contract `transfer` from the contract account to an existing G recipient. Returns the `rpc_reported` target capture the native worker's captured-target layer reads; its record-mode simulation is acquisition only, not evidence that a policy permits the call. Any other call is refused with `E_UNSUPPORTED_ENVELOPE`. The envelope is confidential input: no result or error echoes it, but it reaches the endpoint and this transcript, and the capture repeats its call (account, recipient, amount), so prefer the CLI or a local stdio server. It does not run the captured-target layer |
 | `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap. Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
 | `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |

@@ -457,3 +457,145 @@ fn native_target_capture_refuses_unsupported_envelopes_before_any_rpc() {
         assert!(fixture.calls.borrow().is_empty());
     }
 }
+
+/// The caller's own envelope is refused locally under the input codes the shells map
+/// (`E_RESOURCE_LIMIT`, `E_ENVELOPE_PARSE`, `E_UNSUPPORTED_ENVELOPE`), never as an endpoint
+/// fault, and nothing is sent.
+#[test]
+fn native_target_capture_names_input_refusals_by_code() {
+    let fixture = fixture();
+    let envelope = TransactionEnvelope::from_xdr_base64(&fixture.envelope, xdr_limits()).unwrap();
+    let edited = |edit: fn(&mut TransactionV1Envelope)| {
+        let mut changed = envelope.clone();
+        let TransactionEnvelope::Tx(v1) = &mut changed else {
+            panic!()
+        };
+        edit(v1);
+        encode(&changed)
+    };
+    let signed = edited(|v1| {
+        v1.signatures = vec![DecoratedSignature {
+            hint: SignatureHint([0; 4]),
+            signature: Signature(vec![1; 64].try_into().unwrap()),
+        }]
+        .try_into()
+        .unwrap();
+    });
+    let approve = edited(|v1| {
+        let mut operations = v1.tx.operations.to_vec();
+        let OperationBody::InvokeHostFunction(op) = &mut operations[0].body else {
+            panic!()
+        };
+        let HostFunction::InvokeContract(call) = &mut op.host_function else {
+            panic!()
+        };
+        call.function_name = "approve".try_into().unwrap();
+        v1.tx.operations = operations.try_into().unwrap();
+    });
+    let with_memo = edited(|v1| v1.tx.memo = Memo::Id(7));
+    let (head, tail) = fixture.envelope.split_at(fixture.envelope.len() / 2);
+    let spaced = format!("{head} {tail}");
+    let oversized = "A".repeat(crate::MAX_XDR_BASE64_BYTES + 1);
+    for (candidate, expected) in [
+        (
+            signed,
+            "E_UNSUPPORTED_ENVELOPE: native target capture refused",
+        ),
+        (
+            approve,
+            "E_UNSUPPORTED_ENVELOPE: native target capture refused",
+        ),
+        (with_memo, "E_UNSUPPORTED_ENVELOPE: "),
+        ("not-an-envelope".to_string(), "E_ENVELOPE_PARSE: "),
+        (spaced, "E_ENVELOPE_PARSE: "),
+        (oversized, "E_RESOURCE_LIMIT: "),
+    ] {
+        let error = capture_native_target(&fixture, NETWORK, &candidate)
+            .expect_err("an unsupported envelope was accepted");
+        assert!(error.to_string().starts_with(expected), "{error}");
+        assert!(fixture.calls.borrow().is_empty(), "{error}");
+    }
+}
+
+/// Answers the `nth` call of a method in place of the endpoint, or declines with `None`.
+type FaultFn<'a> = dyn Fn(&str, usize) -> Option<Result<Value, RpcError>> + 'a;
+
+/// A transport that answers through the fixture except where `fault` answers first.
+struct Faulty<'a> {
+    inner: &'a Fixture,
+    fault: Box<FaultFn<'a>>,
+    seen: RefCell<std::collections::BTreeMap<String, usize>>,
+}
+impl RpcTransport for Faulty<'_> {
+    fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+        let nth = {
+            let mut seen = self.seen.borrow_mut();
+            let count = seen.entry(method.to_string()).or_default();
+            *count += 1;
+            *count - 1
+        };
+        match (self.fault)(method, nth) {
+            Some(reply) => reply,
+            None => self.inner.call(method, params),
+        }
+    }
+}
+
+/// Once simulation has run, the endpoint holds the envelope and can put it in any later reply:
+/// an error message, a reported network name, a response ID. No endpoint text reaches the
+/// error, whichever request carried it.
+#[test]
+fn native_target_capture_withholds_endpoint_text() {
+    let fixture = fixture();
+    let secret = fixture.envelope.clone();
+    type Fault = fn(&str) -> Result<Value, RpcError>;
+    let echo: Fault = |s| Err(RpcError::Rpc(s.into()));
+    let named: Fault = |s| Ok(json!({"passphrase": s, "protocolVersion": 29}));
+    let gateway: Fault = |s| {
+        Err(RpcError::Transport(format!(
+            "HTTP 500 from the endpoint: {s}"
+        )))
+    };
+    let foreign_id: Fault = |s| {
+        Err(RpcError::Malformed(format!(
+            "response id \"{s}\" does not match"
+        )))
+    };
+    // (method, its nth call, the fault, whether the error must stay a network mismatch)
+    let cases: Vec<(&str, usize, Fault, bool)> = vec![
+        ("getNetwork", 0, echo, false),
+        ("getNetwork", 0, named, true),
+        ("simulateTransaction", 0, echo, false),
+        ("simulateTransaction", 0, gateway, false),
+        ("simulateTransaction", 0, foreign_id, false),
+        ("getNetwork", 1, echo, false),
+        ("getNetwork", 1, named, true),
+        ("getLedgerEntries", 0, echo, false),
+        ("getLedgers", 0, echo, false),
+        ("getLedgers", 0, gateway, false),
+    ];
+    for (method, nth, fault, mismatch) in cases {
+        let secret = secret.clone();
+        let transport = Faulty {
+            inner: &fixture,
+            fault: Box::new(move |called, seen| {
+                (called == method && seen == nth).then(|| fault(&secret))
+            }),
+            seen: RefCell::new(Default::default()),
+        };
+        let error = capture_native_target(&transport, NETWORK, &fixture.envelope)
+            .expect_err("an endpoint fault was accepted");
+        for text in [error.to_string(), format!("{error:?}")] {
+            assert!(
+                !text.contains(&fixture.envelope),
+                "{method}#{nth} reached the error: {text}"
+            );
+        }
+        // The category survives: a different network is still a network mismatch.
+        assert_eq!(
+            matches!(error, RpcError::NetworkMismatch { .. }),
+            mismatch,
+            "{method}#{nth}: {error}"
+        );
+    }
+}

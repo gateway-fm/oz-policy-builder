@@ -237,7 +237,8 @@ The source-reviewed account method inventory and its limits are described in
    an unsigned call must be refused by the policy with unchanged state. Recorded testnet
    responses for the public Pollywallet sample account replay offline through the same path.
    It is offline and counterfactual, covers no other target, and no CLI or MCP command runs it
-   yet.
+   yet. `ozpb capture-target` and the MCP `capture_target` tool only produce its captured input
+   through an operator-configured RPC source.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
