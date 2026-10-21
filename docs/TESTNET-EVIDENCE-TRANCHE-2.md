@@ -179,13 +179,90 @@ its configured expiry is ledger 5310498. The completed run above does not revoke
 grant. The current wrapper attempts bounded owner removal before discarding keys after a
 failure, retaining pending or incomplete removal evidence without automatic resubmission.
 
-## 9. Evidence still needed
+## 9. Controlled Soroswap swap runs, 20 October 2026
 
-The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 now provide current
-live harness observations for composed scope/count plus spending limits, ledger-bounded
-repeats and separate cleanup checks. The known reference-model gap remains explicit.
+Two complete [W3 harness executions](WALKTHROUGH-PROTOCOLS.md) ran that day. The second adds
+the transfer rule's own denials; the first predates them.
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, the Blend and
-Soroswap walkthroughs, the remaining harness layers with their actual evidence boundaries,
-hosted-service deployment evidence, and the public demonstration/video. The controlled W2
-run does not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.
+### Earlier attempt
+
+An attempt before both runs, on `CDAPJPE5Y4LL5CSSKAHSRWVRDFEQDGOD7AKHNQBF7T5HF55AGJZU5CYD`,
+deployed both policies but installed neither: the harness wallet refused the first rule because
+it expected only that rule's policy in an answer covering the whole bundle. The wrapper's cleanup
+reported no installed grants. Both runs below include the installer fix.
+
+### First run: router-rule denials only
+
+The [allowlisted run summary](evidence/testnet-soroswap-2026-10-20.json) records a complete
+[W3 harness execution](WALKTHROUGH-PROTOCOLS.md) from 12:00:08 to 12:16:14 UTC, with a clean
+checkout at `610a196fc7543126a914c20ba583291178d90636`. The external CLI digest is retained in its
+provenance. The owner was a throwaway ed25519 key, and both rules were approved in the explicit
+operator mode without a human prompt.
+
+The selected account was `CBSCLOU6CGH5DVIFL2K7KZHOPZNSQRKLI4ZIESVAMOG6S3D6XXZ27Z7E`. The grant
+was two independent one-call rules from one spec, both valid until ledger 5294992: the router
+rule (account rule ID 1) for the swap, and the transfer rule (ID 2) for the native-XLM transfer
+to the exact pair. The account's owner rule is ID 0.
+
+| Observation | Recorded result |
+| --- | --- |
+| Owner recording and artifact chain | [Owner swap](https://stellar.expert/explorer/testnet/tx/8e075309901d4508b6d12929cd3aa1b93c22b8279a81505029612796760175f7) of 0.1 XLM confirmed at 5294812 with 175656 output units and a matching balance increase. It went through the real RPC recorder, synthesis, the 63-case reference suite, and generation/build with matching source/Wasm/manifest reproduction for both rules. |
+| Install | The [router rule](https://stellar.expert/explorer/testnet/tx/d20dabfd95bb1bfcb341749be65d450a7af4c62bfb8e55603b01cb61625e523c) was checked at 5294817, rechecked before signing at 5294818 and read back matched at 5294819. The [transfer rule](https://stellar.expert/explorer/testnet/tx/02bf33a1b07bf699778ff1703c676f638bc9af1054629d1763fe0cbf44a12b61) was checked and rechecked at 5294822 and read back matched at 5294824. Each answer covered both bound policies. |
+| Swap controls | A larger input, a lower output floor and a different deadline each returned the router-rule policy's code 6. A wrong signer returned the account's 3016; an empty signer set returned the router-rule policy's code 1. |
+| Independent transfer authority | A direct transfer to the pair under the transfer rule alone was permitted in simulation at 5294828, as disclosed. It was not submitted. |
+| Delegated swap and count cap | [Delegated swap](https://stellar.expert/explorer/testnet/tx/868a99476333c25620f6f1e725a1c55d625eeef7b6386cacdd9ed07d193aa9c7) confirmed at 5294830 with 175656 output units. The repeat returned the router-rule policy's code 7 at 5294833. |
+| Expiry | After the wait reached ledger 5294993, the account returned `UnvalidatedContext` (3002) at 5294995. |
+| Owner removal | [Transfer-rule removal](https://stellar.expert/explorer/testnet/tx/ea7ac2b0a21688bc86dd78a5e531d9b53ef7ce0bed715b0c356aeadf869ed1d2) and [router-rule removal](https://stellar.expert/explorer/testnet/tx/26970d5b278688bc82e9aa3ff667a19634234b010c36b89032a565d4c850e800) confirmed at 5294996 and 5294997. Each event matched, each rule read back absent, and each policy reported uninstalled. |
+| Post-removal control | The account's missing-rule code 3000 at 5294997. No negative-control fee transaction was submitted. |
+
+All 12 control steps of that run completed and the wrapper finalized with exit 0. The run
+predates the two transfer-rule denials (a direct transfer above the cap, and one after the swap),
+so no denial in it is attributed to the transfer rule's own policy; the summary labels its
+control set `router_rule_denials_only`. The widenings were fixed by the harness's synthesis inputs,
+with no per-run acknowledgment; no reviewed Soroswap adapter was involved. These remain editable
+local RPC observations, with non-atomic reads and no ledger proof or protected wallet-approval
+claim.
+
+The committed summary was re-exported offline from the retained run directory after the exporter
+gained per-rule authority and readback fields; the wrapper's own export at the time omitted them.
+The run files, provenance and exit status are unchanged.
+
+### Second run: full control set
+
+The [allowlisted run summary](evidence/testnet-soroswap-transfer-controls-2026-10-20.json) records a
+complete W3 harness execution from 13:08:57 to 13:25:34 UTC, with a clean checkout at
+`fea559868fa957576993d6112439ec5fd5ac6d98` and control set `transfer_rule_denials_included`. The
+owner was again a throwaway ed25519 key, and both rules were approved in the explicit operator
+mode without a human prompt. The summary is the wrapper's own export.
+
+The selected account was `CD5KAVYCDHMS4D6QQ2BCF5646J3KMYMAWUDXAGV6SBDFULKGLC4PFL3H`. Both rules
+were valid until ledger 5295820: the router rule (account rule ID 1) and the transfer rule (ID 2).
+
+| Observation | Recorded result |
+| --- | --- |
+| Owner recording and artifact chain | [Owner swap](https://stellar.expert/explorer/testnet/tx/05d8fa675d2578346154c4babaf5b24ee81ab95fd83d815f39687951284b3292) of 0.1 XLM confirmed at 5295640 with 175274 output units and a matching balance increase, then the real RPC recorder, synthesis, the 63-case reference suite and matching source/Wasm/manifest reproduction for both rules. |
+| Install | The [router rule](https://stellar.expert/explorer/testnet/tx/133442ee26839673fa77a59dd1d976a0d0784ca119116be64cd295c4e7906229) was checked at 5295649, rechecked at 5295650 and read back matched at 5295651. The [transfer rule](https://stellar.expert/explorer/testnet/tx/05799950a7ee894e96f49aec0abadc75efde257c35fa45692d6c0eb82f7e1dea) was checked at 5295651, rechecked at 5295655 and read back matched at 5295656. |
+| Router-rule and signer controls | A larger input, a lower output floor and a different deadline each returned the router-rule policy's code 6; an empty signer set its code 1. A wrong signer returned the account's 3016. |
+| Transfer rule alone | A direct transfer to the pair was permitted in simulation at 5295661, as disclosed, and not submitted. A direct transfer one unit above the cap returned the transfer-rule policy's code 6 at 5295662. |
+| Delegated swap and count caps | [Delegated swap](https://stellar.expert/explorer/testnet/tx/146cd502db654587d1d62d6f1434e74d79c9d95013d2762390885c7dc1cb1b7e) confirmed at 5295663 with 175274 output units. At 5295663 a repeat swap returned the router-rule policy's code 7, and a direct transfer returned the transfer-rule policy's code 7: the swap had spent both rules' one call. |
+| Expiry | After the wait reached ledger 5295823 (target 5295821), the account returned `UnvalidatedContext` (3002) at 5295823. |
+| Owner removal | [Transfer-rule removal](https://stellar.expert/explorer/testnet/tx/41caba90fbcb5c22a3bca6c445ba250d9e0aa39393d886fee78786744d504def) and [router-rule removal](https://stellar.expert/explorer/testnet/tx/a7f56018934690ca6454641d4ebeb69f063241f9d2b8267bb0ff0ce80cc06987) confirmed at 5295825 and 5295829. Each event matched, each rule read back absent, and each policy reported uninstalled. |
+| Post-removal control | The account's missing-rule code 3000 at 5295829. No negative-control fee transaction was submitted. |
+
+All 14 control steps completed and the wrapper finalized with exit 0, deleting the throwaway keys.
+The same limits apply as for the first run: fixed harness widenings, no reviewed adapter,
+editable local RPC observations, non-atomic reads, no ledger proof and no protected
+wallet-approval claim.
+
+## 10. Evidence still needed
+
+The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
+harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
+separate cleanup checks; the known reference-model gap remains explicit. Section 9 adds two
+two-rule Soroswap swap runs with expiry and per-rule removal; the second includes denials by the
+transfer rule's own policy.
+
+Phase 2 still needs a delivered wallet's protected approval and revoke flow, the Blend
+walkthrough (its position setup is not implemented), a reviewed Soroswap adapter rather than fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
+hosted-service deployment evidence, and the public demonstration/video. The controlled W2 and
+W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

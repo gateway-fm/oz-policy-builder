@@ -131,8 +131,11 @@ function runRecord(value) {
   if (!Array.isArray(invocations) || invocations.length > 1000) fail();
   return {
     network: 'testnet', protocol: uint(r.protocol), account: address(r.account),
-    account_code_hash: hash(r.account_code_hash), target: address(r.sac), owner: ownerSummary,
-    delegate: address(r.delegate), recipient: address(r.recipient), amount: amount(r.amount),
+    // A protocol walkthrough reuses the native setup only to fund the account; its transfer
+    // target, recipient and amount describe nothing the walkthrough does.
+    account_code_hash: hash(r.account_code_hash), owner: ownerSummary, delegate: address(r.delegate),
+    ...(r.walkthrough === undefined ? { target: address(r.sac), recipient: address(r.recipient), amount: amount(r.amount) }
+      : { target: null, recipient: null, amount: null }),
     valid_until_ledger: optional(r.valid_until_ledger, uint), registry_root: optional(r.registry_root, hash),
     policy, policy_wasm_hash: policyHash, rule_id: rule,
     installation: rule === null ? 'not_recorded' : 'recorded', transactions, authority,
@@ -199,6 +202,202 @@ function subscriptionRecord(value, run) {
       || steps[6].transaction === steps[9].transaction) fail();
   }
   return { ...result, controls: { status, steps } };
+}
+
+// Control set 1 (no `control_set` field) predates the transfer rule's own cap and count denials.
+const WALKTHROUGH_STEPS = {
+  1: { soroswap_swap: ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+    'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
+  2: { soroswap_swap: ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
+    'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'],
+  blend_claim: ['reserve_ids', 'claim_recipient', 'pool_function', 'wrong_signer', 'zero_signers', 'accrual_wait',
+    'delegate_claim', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
+};
+const SUBMITTED = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
+const SIMULATED = ['started', 'verified_denial', 'unexpected_permit', 'unattributed_denial',
+  'verified_independent_permission', 'independent_permission_not_observed'];
+
+/** W1/W3 bundle journal: typed fields only; RPC readbacks, plans and host errors stay local. */
+function walkthroughRecord(value, run) {
+  if (value === undefined) return { status: 'not_recorded' };
+  const w = object(value);
+  const kind = choice(w.kind, ['soroswap_swap', 'blend_claim']);
+  if (!run || w.account !== run.account) fail();
+  const rawInvocations = w.invocations ?? [];
+  if (!Array.isArray(rawInvocations) || rawInvocations.length > 100) fail();
+  const invocations = rawInvocations.map((item) => {
+    const i = object(item);
+    const observation = choice(i.observation, ['submitted_transaction', 'enforcing_simulation']);
+    const status = choice(i.status, observation === 'submitted_transaction' ? SUBMITTED : SIMULATED);
+    const ids = Array.isArray(i.rule_ids) && i.rule_ids.length >= 1 && i.rule_ids.length <= 2 ? i.rule_ids.map(uint) : fail();
+    const transaction = observation === 'submitted_transaction' && status !== 'started' ? hash(i.transaction)
+      : i.transaction === undefined ? null : fail();
+    const denial = status === 'verified_denial';
+    if (denial !== (i.code !== undefined) || denial !== (i.enforcer !== undefined)) fail();
+    return { name: match(i.name, /^[a-z][a-z0-9_]{0,63}$/),
+      control: choice(i.control, ['baseline', 'input_cap', 'output_floor', 'deadline', 'direct_token', 'direct_token_cap',
+        'reserve_ids', 'claim_recipient', 'pool_function']),
+      signer: choice(i.signer, ['owner', 'delegate', 'payer', 'none']), rule_ids: ids, observation, status, transaction,
+      ledger: optional(i.ledger, uint), enforcer: denial ? address(i.enforcer) : null, code: denial ? uint(i.code) : null,
+      returned_amount: optional(i.returned_amount, amount) };
+  });
+  let owner = null;
+  if (w.owner_transaction !== undefined) {
+    const o = object(w.owner_transaction);
+    const returned = amount(o.returned_amount);
+    if (returned === '0' || BigInt(amount(o.balance_after)) - BigInt(amount(o.balance_before)) !== BigInt(returned)
+      || invocations.filter((i) => i.signer === 'owner' && i.status === 'confirmed' && i.transaction === o.hash
+        && i.returned_amount === returned).length !== 1) fail();
+    owner = { transaction: hash(o.hash), ledger: uint(o.ledger), output_token: address(o.output_token), returned_amount: returned };
+  }
+  let bundle = null;
+  if (w.bundle !== undefined) {
+    const b = object(w.bundle);
+    if (b.account !== run.account || !Array.isArray(b.entries) || b.entries.length < 1 || b.entries.length > 2) fail();
+    bundle = { status: choice(b.status, ['preparing', 'installed', 'incomplete']), spec_hash: hash(b.spec_hash),
+      registry_root: hash(b.registry_root),
+      cleanup: b.cleanup === undefined ? 'not_attempted'
+        : choice(object(b.cleanup).status, ['attempting', 'removed', 'incomplete', 'no_installed_grants']),
+      entries: b.entries.map((item, index) => {
+        const e = object(item);
+        if (e.rule_index !== index) fail();
+        const installed = e.installation === undefined ? null : object(e.installation);
+        const rule = installed === null || installed.rule_id === null ? null : uint(installed.rule_id);
+        if (installed !== null && installed.transaction !== e.tx?.install) fail();
+        let removal = null;
+        if (e.removal !== undefined) {
+          const r = object(e.removal);
+          const event = choice(r.event, ['not_verified', 'verified']);
+          const readback = choice(r.rule_readback, ['not_checked', 'absent', 'still_present']);
+          const cleanup = choice(r.policy_cleanup, ['not_checked', 'not_installed', 'still_installed']);
+          if (rule === null || (readback !== 'not_checked' && event !== 'verified')
+            || (cleanup !== 'not_checked' && readback !== 'absent')) fail();
+          // Cleanup removes by the confirmed install's rule ID even when its pre-removal readback
+          // no longer matched; say so. A matching one adds no field.
+          const prior = r.before === undefined ? 'matched'
+            : choice(object(r.before).configuration, ['matched', 'mismatch_or_unavailable']);
+          removal = { transaction: hash(r.transaction), ledger: r.ledger === null ? null : uint(r.ledger),
+            event, rule_readback: readback, policy_cleanup: cleanup,
+            ...(prior === 'matched' ? {} : { pre_removal_readback: prior }) };
+        }
+        // A prepared but unconfirmed submission may still land; keep its identity visible.
+        const pending = e.pending === undefined ? null : { operation: choice(object(e.pending).operation, ['upload', 'create', 'install']),
+          transaction: hash(e.pending.transaction) };
+        const pendingRemoval = e.pending_removal === undefined ? null : { transaction: hash(object(e.pending_removal).transaction) };
+        // Each rule's own authority answer and its install-time readback; trust labels stay local.
+        let authority = null;
+        if (e.authority !== undefined) {
+          const a = object(e.authority);
+          if (choice(a.status, ['rechecked', 'refused']) === 'refused') authority = { status: 'refused' };
+          else {
+            const checked = uint(a.checked_at_ledger), rechecked = uint(a.rechecked_at_ledger);
+            if (rechecked < checked) fail();
+            authority = { status: 'rechecked', authority_commitment: hash(a.authority_commitment),
+              checked_at_ledger: checked, rechecked_at_ledger: rechecked };
+          }
+        }
+        if (rule !== null && authority?.status !== 'rechecked') fail();
+        let readback = null;
+        if (e.readback !== undefined) {
+          const r = object(e.readback);
+          const ledgers = object(r.read_ledgers);
+          if (rule === null || r.rule_id !== rule || r.rule_index !== index) fail();
+          readback = { configuration: choice(r.configuration, ['matched', 'drift_or_unavailable']),
+            observation: choice(r.observation, ['non_atomic']), read_ledgers: { account: uint(ledgers.account),
+              policy: uint(ledgers.policy), rule: uint(ledgers.rule), installed: uint(ledgers.installed) } };
+        }
+        return { rule_index: index, wasm_hash: hash(e.wasm_hash), policy: optional(e.policy, address), rule_id: rule,
+          installation_transaction: installed === null ? null : hash(installed.transaction), pending,
+          authority, readback, removal, pending_removal: pendingRemoval };
+      }) };
+    // A grant is unresolved while its install or removal is pending, or while a confirmed
+    // install (even one whose rule ID is unknown) lacks a complete removal.
+    const removed = (e) => e.removal?.event === 'verified' && e.removal.rule_readback === 'absent'
+      && e.removal.policy_cleanup === 'not_installed';
+    const installed = (e) => e.installation_transaction !== null || e.pending?.operation === 'install'
+      || e.pending_removal !== null;
+    const unresolved = (e) => e.pending_removal !== null || e.pending?.operation === 'install'
+      || (e.installation_transaction !== null && !removed(e));
+    if (bundle.cleanup === 'removed' && (bundle.entries.some(unresolved) || !bundle.entries.some(removed))) fail();
+    if (bundle.cleanup === 'no_installed_grants' && bundle.entries.some(installed)) fail();
+  }
+  if (w.controls === undefined) return { kind, owner_transaction: owner, invocations, bundle, controls: { status: 'not_recorded', steps: [] } };
+  const c = object(w.controls);
+  const status = choice(c.status, ['running', 'incomplete', 'completed']);
+  const set = c.control_set === undefined ? 1 : choice(c.control_set, [2]);
+  const names = WALKTHROUGH_STEPS[set][kind] ?? fail();
+  if (!Array.isArray(c.steps) || c.steps.length > 20) fail();
+  const steps = c.steps.map((item) => {
+    const step = object(item);
+    const name = choice(step.name, names);
+    if (name === 'cleanup') return { name, result: choice(step.result, ['removed', 'incomplete', 'no_installed_grants', 'missing']) };
+    const ledger = uint(step.ledger);
+    if (!ledger) fail();
+    if (name === 'accrual_wait' || name === 'expiry_wait') {
+      const target = uint(step.target_ledger);
+      if (ledger < target) fail();
+      return { name, ledger, target_ledger: target, result: choice(step.result, ['ledger_reached']) };
+    }
+    const result = choice(step.result, ['verified_denial', 'verified_independent_permission', 'confirmed', 'inconclusive_expiry_window']);
+    const denial = step.code !== undefined;
+    if (denial !== (step.enforcer !== undefined)) fail();
+    return { name, ledger, result, transaction: optional(step.transaction, hash),
+      enforcer: denial ? address(step.enforcer) : null, code: denial ? uint(step.code) : null };
+  });
+  if (status === 'completed') {
+    const root = bundle?.entries[0]?.policy, transfer = bundle?.entries[1]?.policy;
+    const valid = run.valid_until_ledger;
+    const positive = kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap';
+    const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], reserve_ids: [root, 6],
+      claim_recipient: [root, 6], pool_function: [root, 6], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
+      count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000],
+      token_cap: [transfer, 6], token_count_cap: [transfer, 7] };
+    if (!bundle || bundle.status !== 'installed' || bundle.cleanup !== 'removed' || valid === null
+      || bundle.entries.some((e) => e.readback?.configuration !== 'matched')
+      || JSON.stringify(steps.map((s) => s.name)) !== JSON.stringify(names)) fail();
+    for (const s of steps) {
+      if (s.name === 'cleanup') { if (s.result !== 'removed') fail(); continue; }
+      if (s.name === 'expiry_wait' && s.target_ledger !== valid + 1) fail();
+      if (s.name.endsWith('_wait')) continue;
+      if (s.name === 'expired_rule' ? s.ledger <= valid : s.name !== 'post_revocation' && s.ledger > valid) fail();
+      // Each completed step is backed by exactly one invocation record with the same outcome,
+      // ledger and attribution; a contradictory record (e.g. an unexpected permit) refuses.
+      const records = invocations.filter((i) => i.name === s.name);
+      if (records.length !== 1 || records[0].status !== s.result || records[0].ledger !== s.ledger
+        || records[0].enforcer !== s.enforcer || records[0].code !== s.code || records[0].transaction !== s.transaction) fail();
+      if (s.name === positive) {
+        if (s.result !== 'confirmed' || invocations.filter((i) => i.signer === 'delegate' && i.status === 'confirmed'
+          && i.transaction === s.transaction && i.ledger === s.ledger).length !== 1) fail();
+      } else if (s.name === 'independent_token') {
+        if (s.result !== 'verified_independent_permission') fail();
+      } else if (s.result !== 'verified_denial' || s.enforcer !== expected[s.name][0] || s.code !== expected[s.name][1]) fail();
+    }
+  }
+  return { kind, owner_transaction: owner, invocations, bundle, controls: { status,
+    control_set: kind === 'blend_claim' ? 'single_rule'
+      : set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
+}
+
+function protocolPipelineRecord(value, run, walkthrough) {
+  if (value === undefined) return { status: 'not_recorded' };
+  const p = object(value);
+  if (p.schema_version !== 1 || !run || p.account !== run.account || walkthrough.status === 'not_recorded'
+    || p.kind !== walkthrough.kind || p.recorded_transaction !== walkthrough.owner_transaction?.transaction
+    || !Array.isArray(p.artifacts) || p.artifacts.length < 1 || p.artifacts.length > 2) fail();
+  const cases = uint(p.reference_cases);
+  if (cases === 0) fail();
+  return {
+    status: 'recorded', kind: p.kind, recorded_transaction: hash(p.recorded_transaction),
+    recording_hash: hash(p.recording_hash), acquisition_trust: choice(p.acquisition_trust, ['rpc_reported']),
+    synthesis_recording_hash: hash(p.synthesis_recording_hash), synthesis_trust: choice(p.synthesis_trust, ['self_supplied']),
+    spec_hash: hash(p.spec_hash), reference_cases: cases, artifact_reproduction: choice(p.artifact_reproduction, ['matched']),
+    current_network_preflight: choice(p.current_network_preflight, ['not_checked_here']),
+    artifacts: p.artifacts.map((item, index) => {
+      const a = object(item);
+      if (a.rule_index !== index) fail();
+      return { rule_index: index, wasm_hash: hash(a.wasm_hash), normalized_input_hash: hash(a.normalized_input_hash) };
+    }),
+  };
 }
 
 function pipelineRecord(value, run) {
@@ -335,6 +534,9 @@ export function exportEvidence(runDir) {
   const failureCleanup = failureCleanupRecord(rawRun?.failure_cleanup, run, lifecycle);
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   const pipeline = pipelineRecord(decode(artifact('pipeline', join(runDir, 'pipeline.json'))), run);
+  const walkthrough = walkthroughRecord(rawRun?.walkthrough, run);
+  const protocolPipeline = protocolPipelineRecord(
+    decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
   if (run === null && source.status === 'unavailable') fail();
   for (const [key, file] of [['spec', 'spec.json'], ['recording', 'recording.json'], ['import_bundle', 'import-bundle.json'],
     ['synthesis', 'synthesis.json'], ['decisions', 'decisions.json'], ['reference_suite', 'reference-suite.json'],
@@ -358,6 +560,21 @@ export function exportEvidence(runDir) {
     if (wasms.length === 1) artifact('policy_wasm', join(policyDir, wasms[0]));
   }
   if (run?.policy_wasm_hash && artifacts.policy_wasm && run.policy_wasm_hash !== artifacts.policy_wasm.sha256) fail();
+  // A protocol bundle keeps one generated policy per rule under policies/rule-N.
+  for (const [index, entry] of (walkthrough.bundle?.entries ?? []).entries()) {
+    // Operator-selected local run directory plus constant names, as above.
+    // nosemgrep
+    const ruleDir = join(runDir, 'policies', `rule-${index}`);
+    let names;
+    try { if (!lstatSync(ruleDir).isDirectory()) fail(); names = readdirSync(ruleDir); }
+    catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    artifact(`build_manifest_rule_${index}`, join(ruleDir, 'build-manifest.json'));
+    artifact(`verification_rule_${index}`, join(runDir, `verification-${index}.json`));
+    const wasms = names.filter((name) => name.endsWith('.wasm'));
+    if (wasms.length > 1) fail();
+    if (wasms.length === 1 && artifact(`policy_wasm_rule_${index}`, join(ruleDir, wasms[0])) !== null
+      && artifacts[`policy_wasm_rule_${index}`].sha256 !== entry.wasm_hash) fail();
+  }
   return {
     schema_version: 1,
     evidence_kind: 'local_harness_record',
@@ -370,7 +587,8 @@ export function exportEvidence(runDir) {
       'Authority trust, when used, is operator-supplied test configuration.',
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
-    provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup, artifacts,
+    provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup,
+    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), artifacts,
   };
 }
 
