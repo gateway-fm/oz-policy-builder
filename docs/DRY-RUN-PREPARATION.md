@@ -61,4 +61,6 @@ The separately configured [native execution worker](NATIVE-EXECUTION.md) can pro
 local account-Wasm evidence after this preparation. It does not change this operation's
 meaning or complete the captured-target and live-enforcement layers. The worker's separate
 [captured-target mode](CAPTURED-TARGET-EXECUTION.md) does not either: this operation still
-reports `captured_target` as unavailable.
+reports `captured_target` as unavailable. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md)
+is a tested building block for the live layer only, limited to generated policies with a call
+cap; `live_enforcement` stays `unavailable`.

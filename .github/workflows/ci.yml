@@ -130,6 +130,11 @@ jobs:
       - name: differential suite (reference evaluator vs real compiled policy)
         working-directory: contracts
         run: cargo test -p ozpb-differential
+      # The live helper's wire mirrors against the shared ABI vector. Its real-Wasm tests need
+      # freshly built artifacts and run in the scheduled pinned-account job instead.
+      - name: atomic live helper (wire types match the shared ABI vector)
+        working-directory: contracts
+        run: cargo test -p ozpb-atomic-live-helper
       - name: Phase 2 partial layer-2 evidence (each named test must run)
         run: bash scripts/check-phase2-evidence.sh --contracts-only
 
