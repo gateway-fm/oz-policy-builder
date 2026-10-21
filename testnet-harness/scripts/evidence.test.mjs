@@ -1004,6 +1004,36 @@ function blendFixture() {
   return run;
 }
 
+const BLEND_STEPS = ['reserve_ids', 'claim_recipient', 'pool_function', 'wrong_signer', 'zero_signers', 'accrual_wait',
+  'delegate_claim', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+function completedBlend(poolFunctionCode) {
+  const run = blendFixture();
+  const base = protocolFixture(BLEND_STEPS.map((n) => n === 'accrual_wait' ? 'expiry_wait' : n));
+  const steps = base.walkthrough.controls.steps.map((s, i) => {
+    if (BLEND_STEPS[i] === 'accrual_wait') return { name: 'accrual_wait', result: 'ledger_reached', target_ledger: 104, ledger: 105 };
+    if (['reserve_ids', 'claim_recipient'].includes(s.name)) return { ...s, enforcer: ROOT_POLICY, code: 6 };
+    if (s.name === 'pool_function') return { ...s, enforcer: ROOT_POLICY, code: poolFunctionCode };
+    if (s.name === 'delegate_claim') return { name: s.name, result: 'confirmed', ledger: s.ledger, transaction: 'cd'.repeat(32) };
+    return s;
+  });
+  const owner = run.walkthrough.invocations[0];
+  run.walkthrough.invocations = [owner, ...steps.filter((s) => !['cleanup', 'expiry_wait', 'accrual_wait'].includes(s.name))
+    .map((s) => ({ name: s.name, control: ['reserve_ids', 'claim_recipient', 'pool_function'].includes(s.name) ? s.name : 'baseline',
+      signer: 'delegate', rule_ids: [8], status: s.result, ledger: s.ledger,
+      observation: s.transaction ? 'submitted_transaction' : 'enforcing_simulation',
+      ...(s.transaction ? { transaction: s.transaction, returned_amount: '150' } : {}),
+      ...(s.code ? { enforcer: s.enforcer, code: s.code } : {}) }))];
+  run.walkthrough.controls = { status: 'completed', control_set: 2, steps };
+  return run;
+}
+
+test('a completed Blend journal attributes another pool function to FunctionNotAllowed (#5), not #6', (t) => {
+  const report = exportEvidence(setup(t, completedBlend(5)));
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.equal(report.walkthrough.controls.steps.find((s) => s.name === 'pool_function').code, 5);
+  assert.throws(() => exportEvidence(setup(t, completedBlend(6))), /invalid or inconsistent/);
+});
+
 test('a Blend walkthrough exports its typed position journal and emission refresh', (t) => {
   const report = exportEvidence(setup(t, blendFixture()));
   const position = report.walkthrough.position;

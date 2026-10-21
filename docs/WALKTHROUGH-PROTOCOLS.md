@@ -139,8 +139,10 @@ The pipeline, bundle installation and controls accept `blend_claim`: the exact
 `CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW`. Reserve 1 of that pool is Circle's
 testnet USDC (`CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`), and ID 3 is its
 bToken (supply) ID, `1 * 2 + 1`. The pool, its code, the claimed ID, the BLND token and the
-backstop are pinned in `protocol-calls.mjs`. Its controls are a changed reserve list, a foreign
-recipient and another pool function (`#6` from the generated policy), the signer controls, one
+backstop are pinned in `protocol-calls.mjs`. Its controls are a changed reserve list and a
+foreign recipient (`NoTupleMatched`, `#6` from the generated policy), another pool function
+(`FunctionNotAllowed`, `#5`: the policy checks the function name before any argument), the
+signer controls, one
 delegated claim after an explicit 1–120 ledger accrual wait, the count cap, expiry, removal and
 the post-removal denial. The foreign recipient is a contract address derived from a fixed label
 (`BLEND_FOREIGN_RECIPIENT` in `protocol-invoke.mjs`): the pool pays the accrued BLND while the

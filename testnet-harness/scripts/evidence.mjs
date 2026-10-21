@@ -390,7 +390,7 @@ function walkthroughRecord(value, run) {
     const valid = run.valid_until_ledger;
     const positive = kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap';
     const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], reserve_ids: [root, 6],
-      claim_recipient: [root, 6], pool_function: [root, 6], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
+      claim_recipient: [root, 6], pool_function: [root, 5], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
       count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000],
       token_cap: [transfer, 6], token_count_cap: [transfer, 7] };
     if (!bundle || bundle.status !== 'installed' || bundle.cleanup !== 'removed' || valid === null
