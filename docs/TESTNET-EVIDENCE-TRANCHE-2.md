@@ -254,15 +254,81 @@ The same limits apply as for the first run: fixed harness widenings, no reviewed
 editable local RPC observations, non-atomic reads, no ledger proof and no protected
 wallet-approval claim.
 
-## 10. Evidence still needed
+## 10. Controlled Blend claim run, 21 October 2026
+
+The [allowlisted run summary](evidence/testnet-blend-claim-2026-10-21.json) records a complete
+[W1 harness execution](WALKTHROUGH-PROTOCOLS.md#w1-blend) from 18:06:42 to 18:34:33 UTC, with a
+clean checkout at `8772eddb83bbf16bcd59fc6b8114a3499c3fa884`. The CLI was an external binary
+built from this branch's Rust sources, which are unchanged through that commit; its digest is
+retained in the provenance. The owner was a throwaway
+ed25519 key, and the single rule was approved in the explicit operator mode without a human
+prompt. The summary is the wrapper's own export.
+
+The selected account was `CDFLU7GBCURFJC6RA4XP2ZOZHUTJ6CETXBFSBGBNCWJUKKI56EE4GUDS`. The grant
+was one one-call rule (account rule ID 1) for `claim(self, [3], self)` on the Blend v2 pool
+`CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW`, valid until ledger 5316809. ID 3 is
+the bToken (supply) ID of the pool's Circle testnet USDC reserve. The owner rule is ID 0.
+
+| Observation | Recorded result |
+| --- | --- |
+| Emission and preflight | The emission on ID 3 was live until 26 October 2026, 04:23:27 UTC, so no `gulp_emissions` was sent. The read-only preflight passed at 5316491, including an expected owner claim of 210 BLND base units and a quote of 213647060 USDC base units for 200 XLM. |
+| Position | The payer sent 200 XLM to the account; the owner swapped them on the pinned Soroswap router for 213647060 USDC base units, then [supplied](https://stellar.expert/explorer/testnet/tx/48475f8d7ff5128e7a23292331f8bd1562e4742d2847c59592c8ae511c34a433) exactly 100000000 (10 USDC, request type 0) at 5316494. The readback showed one USDC supply position of 99888711 bTokens. |
+| Owner recording and artifact chain | After a 12-ledger wait, the [owner claim](https://stellar.expert/explorer/testnet/tx/81954cb3585bd5b26a373d37fa0c9502e3464bc2436b49a74c8421c6099c4fbf) confirmed at 5316509 with 262 BLND base units and a matching balance increase. It went through the real RPC recorder, synthesis, the 25-case reference suite, and generation/build with matching source/Wasm/manifest reproduction. |
+| Install | The [rule](https://stellar.expert/explorer/testnet/tx/c0c3c10cccb1f423efffcd1c6c1e32fd4af8b3a05946a7c5ef0f0b626f5ff6d7) was checked and rechecked at 5316515, installed at 5316517 and read back matched. |
+| Claim controls | A different reserve token list and a foreign recipient each returned the generated policy's code 6 (`NoTupleMatched`); another pool function (`submit`) returned its code 5 (`FunctionNotAllowed`). A wrong signer returned the account's 3016; an empty signer set returned the policy's code 1. The foreign recipient is a contract address that holds nothing; nothing was sent to it. |
+| Delegated claim and count cap | After the accrual wait, the [delegated claim](https://stellar.expert/explorer/testnet/tx/4e987cf5f5d3030afe9d044518c26c18edfdb5aa111a07b19419dfc84a3e504f) confirmed at 5316526 with 298 BLND base units and a matching balance increase. The repeat returned the policy's code 7 at 5316526. |
+| Expiry | After the wait reached ledger 5316810, the account returned `UnvalidatedContext` (3002) at 5316811. |
+| Owner removal | The [removal](https://stellar.expert/explorer/testnet/tx/ec505ff30a03aef18cf2c91a68f09b371b74641e074891a11d8e1d365c088a24) confirmed at 5316813. Its event matched, the rule read back absent, and the policy reported uninstalled. |
+| Post-removal control | The account's missing-rule code 3000 at 5316816. No negative-control fee transaction was submitted. |
+| Withdrawal | The owner [withdrew](https://stellar.expert/explorer/testnet/tx/3e7caed05c8793f5411250ce6aebb0b952e33346447ea6bab38a6a2a323c78ce) the supply at 5316817 (99999999 USDC base units returned), and the account's positions read back empty. |
+
+All 12 control steps completed, the position was withdrawn, and the wrapper finalized with exit
+0, deleting the throwaway keys. The claimed BLND (560 base units), the swap's surplus USDC and
+the withdrawn USDC stay on the throwaway account. No reviewed Blend adapter was involved: the
+pool's code hash in the spec is an `evidence_only` observation. These remain editable local RPC
+observations, with non-atomic reads and no ledger proof or protected wallet-approval claim.
+
+### Earlier attempts
+
+Four attempts that day, each on its own fresh account, stopped before completing; each led to a
+harness fix or was a transient refusal. None left a Blend position or an installed grant, as
+far as the checks below show.
+
+1. `CCZPKB2CMQNPTVQ2NV4UKSWTZBNRKYSG6R7PUWTA75FDJ2WCNKA46ZIT`: after the funding swap, the
+   supply transaction was refused before it was signed or sent, because its assembled fee
+   exceeded the harness's one-XLM ceiling. A later read-only simulation reported a minimum
+   resource fee of 1.0147 XLM for it. No position was opened and no rule was installed. Fixed by
+   a named three-XLM ceiling for Blend calls.
+2. `CC37QB7DXY33UIRUBP67G3GB3BI3WMAEU7H7LYLBDNP4Z6RHHR62FK5Y`: the owner claim returned 280 BLND
+   base units, but the authority check refused the install (`E_INCOMPLETE_ACCOUNT_STATE: endpoint
+   ledger or account instance changed during inspection`). The policy had been deployed but not
+   installed. It was a fail-closed refusal, with no harness change. The wrapper withdrew the position (empty readback) and reported no
+   installed grants.
+3. `CA4DSK7ASGR5RCWS7BWKCNBITNTNJW4A66LZRGVNLLWL7O66VTBFCRIT`: the rule was installed. The
+   foreign-recipient control then failed while recording, because the pool's BLND transfer to the
+   payer, a classic account without a BLND trustline, failed with #13 before the policy ran. The
+   wrapper withdrew the position and removed the grant, both verified. Fixed by a contract
+   recipient.
+4. `CBFH3ETF22KJXNZUXZFWJ5LUZ3VWVCHOVJ7LZ3H4HFV6SAXKR3ZBA6ES`: the rule was installed and two
+   controls passed. The other-pool-function control was refused with the policy's code 5, where
+   the harness expected 6, so it stopped as an unattributed denial. Fixed by expecting 5. The
+   wrapper withdrew the position (empty readback), but its grant cleanup ended `incomplete`: the
+   cleanup child prepared and sent the removal but did not record its confirmation, and its
+   output is not retained. A later read-only check found the removal transaction successful at
+   ledger 5316457, rule 1 absent (3000), the policy reporting it uninstalled, and no Blend
+   position. The keys had already been deleted, as designed; the rule would in any case have
+   expired at ledger 5316739.
+
+## 11. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
 separate cleanup checks; the known reference-model gap remains explicit. Section 9 adds two
 two-rule Soroswap swap runs with expiry and per-rule removal; the second includes denials by the
-transfer rule's own policy.
+transfer rule's own policy. Section 10 adds one Blend claim run on a supply position the harness
+opened and withdrew.
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, the Blend
-walkthrough (its position setup is not implemented), a reviewed Soroswap adapter rather than fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
-hosted-service deployment evidence, and the public demonstration/video. The controlled W2 and
-W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.
+Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed Blend and
+Soroswap adapters rather than `evidence_only` code observations and fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
+hosted-service deployment evidence, and the public demonstration/video. The controlled W1, W2
+and W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

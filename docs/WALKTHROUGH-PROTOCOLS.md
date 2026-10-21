@@ -10,7 +10,9 @@ not establish a wallet's protected human approval.
 step below; an earlier run that day predates the two transfer-rule denials
 ([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-runs-20-october-2026)).
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
-withdraws it before the keys are discarded (see [W1](#w1-blend)). No W1 run exists yet.
+withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
+2026 completed every W1 step after four stopped attempts
+([section 10 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#10-controlled-blend-claim-run-21-october-2026)).
 
 ## W3 Soroswap
 
