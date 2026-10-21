@@ -23,7 +23,9 @@ mod classic_account;
 mod contract_data;
 mod footprint_capture;
 mod ledger_witness;
+mod policy_state_capture;
 mod preflight;
+mod target_capture;
 pub use account_state_projection::{
     project_account_state, AccountProjectionError, AccountStateProjection,
 };
@@ -46,10 +48,12 @@ pub use footprint_capture::{
     read_invocation_footprint, CapturedFootprintEntry, CapturedInvocation, FootprintCaptureError,
     FootprintList, InvocationFootprintCapture,
 };
+pub use policy_state_capture::{capture_policy_state, CapturedPolicyEntry, PolicyStateCapture};
 pub use preflight::{
     envelope_carries_signatures, preflight_transaction, DeclaredResource, EstimatedResource,
     PreflightObservation, PreflightOutcome, SimulationAuthMode,
 };
+pub use target_capture::{capture_native_target, native_asset_contract};
 
 use ozpb_recorder_core::{
     referenced_contract_addresses, EvidenceSnapshot, ExecutableObservation, ObservedExecutable,

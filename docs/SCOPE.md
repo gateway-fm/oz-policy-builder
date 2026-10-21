@@ -17,6 +17,7 @@ feature or an automated check is not by itself evidence that the whole milestone
 | Agent workflow | The policy-builder skill, plugin and MCP recording/synthesis tools. | An exercised clarification, permission review and wallet confirmation flow. |
 | Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification and [candidate-bound preparation](DRY-RUN-PREPARATION.md). | Complete layer-by-layer execution evidence, state invariants and adversarial direct-call coverage; preparation explicitly reports missing runtime layers and cannot authorize installation. |
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
+| Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |
 | Testnet installation | The harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. | A wallet-product install and revoke flow, protected human approval, safe reconfiguration, and monitoring. Composed rules are refused. |
 | Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
 | Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; the live harness uses the native SAC. | All three end-to-end protocol walkthroughs, including the relevant denials and adapter/code-hash evidence. |
@@ -225,6 +226,16 @@ The source-reviewed account method inventory and its limits are described in
    demonstrate only these fixed-key calls. They do not establish key closure or authorization
    for arbitrary target code, reconstruct actual network account state, or provide a public
    complete dry-run report.
+   The native worker's [captured-target mode](CAPTURED-TARGET-EXECUTION.md) runs one supported
+   shape end to end: an exact-amount native SAC transfer from the candidate account, captured
+   by a record-mode simulation, one `getLedgerEntries` read and a self-consistent `getLedgers`
+   header. The real built-in SAC executes through the pinned account and generated policy Wasm
+   over a strict snapshot source; the original must move exactly the amount between the two
+   captured balances and, for a capped rule, advance the counter, and an amount-plus-one and
+   an unsigned call must be refused by the policy with unchanged state. Recorded testnet
+   responses for the public Pollywallet sample account replay offline through the same path.
+   It is offline and counterfactual, covers no other target, and no CLI or MCP command runs it
+   yet.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.

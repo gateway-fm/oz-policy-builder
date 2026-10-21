@@ -478,7 +478,7 @@ fn supported_rule_enumeration(method: &str) -> Result<Enumeration, ToolError> {
     }
 }
 
-fn validate_bindings(
+pub(crate) fn validate_bindings(
     spec: &ValidatedSpec,
     binding_set: &PolicyBindingSet,
     registry: &Registry,
