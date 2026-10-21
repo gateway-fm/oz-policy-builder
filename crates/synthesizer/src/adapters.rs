@@ -9,9 +9,14 @@
 //! only "effect-minimal" while the target's on-chain code hash still matches.
 
 use crate::WideningBound;
-use ozpb_domain::Hash32;
+use ozpb_domain::{
+    target_adapters::{AdapterSemantics, ArgumentRole, ArgumentType},
+    Hash32,
+};
+use ozpb_recorder_core::ArgSummary;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use stellar_xdr::{Limits, ReadXdr, ScVal};
 
 /// The declared role of an argument, which fixes the safe widening direction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,6 +56,7 @@ impl ArgRole {
 #[serde(deny_unknown_fields)]
 pub struct FnRoles {
     pub fn_name: String,
+    pub arg_types: Vec<ArgumentType>,
     /// Role per argument index (0..n-1).
     pub arg_roles: Vec<ArgRole>,
 }
@@ -65,6 +71,56 @@ pub struct Adapter {
 }
 
 impl Adapter {
+    pub fn from_semantics(target_code_hash: Hash32, semantics: AdapterSemantics) -> Self {
+        Self {
+            name: semantics.name,
+            target_code_hash,
+            functions: semantics
+                .functions
+                .into_iter()
+                .map(|(name, f)| {
+                    (
+                        name,
+                        FnRoles {
+                            fn_name: f.fn_name,
+                            arg_types: f.arg_types,
+                            arg_roles: f
+                                .arg_roles
+                                .into_iter()
+                                .map(|role| match role {
+                                    ArgumentRole::MaxInput => ArgRole::MaxInput,
+                                    ArgumentRole::MinOutput => ArgRole::MinOutput,
+                                    ArgumentRole::CallerChosen => ArgRole::CallerChosen,
+                                    ArgumentRole::ExactOnly => ArgRole::ExactOnly,
+                                })
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Semantic roles are meaningful only for the complete recognized function signature.
+    /// A partial prefix or differently typed call must not inherit automatic widenings.
+    pub fn matches_call(&self, name: &str, args: &[ArgSummary]) -> bool {
+        let Some(f) = self.functions.get(name) else {
+            return false;
+        };
+        f.fn_name == name && args.len() == f.arg_roles.len() && args.len() == f.arg_types.len()
+            && args.iter().zip(&f.arg_types).all(|(arg, kind)| match (arg, kind) {
+                (ArgSummary::I128(_), ArgumentType::I128)
+                | (ArgSummary::U64(_), ArgumentType::U64)
+                | (ArgSummary::Address(_), ArgumentType::Address) => true,
+                (ArgSummary::Other { xdr_base64 }, ArgumentType::AddressVector) => {
+                    if xdr_base64.len() > 1024 * 1024 { return false; }
+                    matches!(ScVal::from_xdr_base64(xdr_base64, Limits { depth: 64, len: 1024 * 1024 }),
+                        Ok(ScVal::Vec(Some(values))) if values.iter().all(|v| matches!(v, ScVal::Address(_))))
+                }
+                _ => false,
+            })
+    }
+
     pub fn role(&self, fn_name: &str, arg_index: usize) -> Option<&ArgRole> {
         self.functions
             .get(fn_name)
@@ -76,25 +132,10 @@ impl Adapter {
 /// if the router is upgraded, the adapter no longer applies and the report falls back to
 /// exact-only + user decisions.
 pub fn soroswap_router_adapter(target_code_hash: Hash32) -> Adapter {
-    let mut functions = BTreeMap::new();
-    functions.insert(
-        "swap_exact_tokens_for_tokens".to_string(),
-        FnRoles {
-            fn_name: "swap_exact_tokens_for_tokens".to_string(),
-            arg_roles: vec![
-                ArgRole::MaxInput,     // amount_in — cap from above
-                ArgRole::MinOutput,    // amount_out_min — user-supplied absolute floor only
-                ArgRole::ExactOnly,    // path — whitelisted route
-                ArgRole::ExactOnly,    // to — recipient (SELF)
-                ArgRole::CallerChosen, // deadline — caller-chosen, may be left unconstrained
-            ],
-        },
-    );
-    Adapter {
-        name: "soroswap-router@1".to_string(),
+    Adapter::from_semantics(
         target_code_hash,
-        functions,
-    }
+        ozpb_domain::target_adapters::soroswap_router(),
+    )
 }
 
 #[cfg(test)]

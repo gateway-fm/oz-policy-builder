@@ -1087,6 +1087,13 @@ back or equivocate on is not a root.
   `contract_signer`) rather than accept it under an unexamined nested account; the reader
   reports one elsewhere as observed.
 
+- **Target adapter bindings — keyed by exact observed target Wasm hash.** Optional signed
+  `target_adapters` entries bind a locally implemented, versioned argument-semantic descriptor
+  to reviewed target code. The digest covers function identity, exact arity, types and roles.
+  Missing bindings preserve exact synthesis; revoked or inconsistent bindings are refused.
+  [Target adapters](TARGET-ADAPTERS.md) documents the supported Soroswap descriptor and the
+  distinction between a governance assertion, caller-carried observations and live code.
+
 **Two verification paths — reviewed vs generated (they are different problems):** a static
 registry keyed by exact wasm hash cannot pre-recognize per-grant generated wasm that does
 not exist yet, so the paths are split:

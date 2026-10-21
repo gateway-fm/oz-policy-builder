@@ -53,11 +53,24 @@ pub struct RegistrySnapshot {
     pub accounts: BTreeMap<String, AccountCapability>,
     /// Trusted signature verifiers, keyed by exact wasm hash (hex).
     pub verifiers: BTreeMap<String, VerifierCapability>,
+    /// Governance-reviewed target implementations bound to locally implemented argument
+    /// semantics. Empty is omitted to preserve existing signed snapshot roots.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub target_adapters: BTreeMap<String, TargetAdapterCapability>,
     /// Audited template families (pre-build identity of generated policies).
     pub templates: BTreeMap<String, TemplateCapability>,
     /// Permanently recorded capability revocations, keyed as `policy/<hash>`,
-    /// `account/<hash>`, `verifier/<hash>`, or `template/<family>`.
+    /// `account/<hash>`, `verifier/<hash>`, `target_adapter/<hash>`, or `template/<family>`.
     pub revocations: BTreeMap<String, Revocation>,
+}
+
+/// A governance assertion about an exact target code hash, not a ledger attestation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetAdapterCapability {
+    pub implementation: String,
+    pub semantics_digest: Hash32,
+    pub review_reference: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,6 +332,8 @@ pub enum RegistryError {
          immutable, stateless implementation with a known key scheme"
     )]
     VerifierCapabilityIncomplete(String),
+    #[error("E_TARGET_ADAPTER_UNSUPPORTED: target adapter for wasm {0} has unknown or inconsistent semantics")]
+    TargetAdapterUnsupported(String),
     #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
     UnknownTemplate(String),
     #[error("E_REGISTRY_REVOKED: capability {capability} is revoked: {reason}")]
@@ -828,6 +843,29 @@ impl Registry {
         }
     }
 
+    /// No binding preserves exact synthesis. A revoked binding remains refused even if
+    /// its entry was removed from the current snapshot.
+    pub fn resolve_target_adapter(
+        &self,
+        wasm_hash: &Hash32,
+    ) -> Result<Option<ozpb_domain::target_adapters::AdapterSemantics>, RegistryError> {
+        let loaded = self.loaded()?;
+        self.ensure_active("target_adapter", &wasm_hash.to_hex())?;
+        let Some(binding) = loaded.snapshot.target_adapters.get(&wasm_hash.to_hex()) else {
+            return Ok(None);
+        };
+        let unsupported = || RegistryError::TargetAdapterUnsupported(wasm_hash.to_hex());
+        let semantics = ozpb_domain::target_adapters::implemented(&binding.implementation)
+            .ok_or_else(unsupported)?;
+        let digest = semantics
+            .digest()
+            .map_err(|e| RegistryError::Internal(e.to_string()))?;
+        if digest != binding.semantics_digest || binding.review_reference.trim().is_empty() {
+            return Err(unsupported());
+        }
+        Ok(Some(semantics))
+    }
+
     pub fn resolve_template(&self, family: &str) -> Result<&TemplateCapability, RegistryError> {
         let l = self.loaded()?;
         self.ensure_active("template", family)?;
@@ -880,6 +918,10 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
         ("policy", snapshot.policies.keys().collect::<Vec<_>>()),
         ("account", snapshot.accounts.keys().collect::<Vec<_>>()),
         ("verifier", snapshot.verifiers.keys().collect::<Vec<_>>()),
+        (
+            "target_adapter",
+            snapshot.target_adapters.keys().collect::<Vec<_>>(),
+        ),
     ] {
         for key in keys {
             if !is_canonical_hash(key) {
@@ -889,7 +931,7 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
             }
         }
     }
-    // The three code-hash maps are role-separated so a hash resolves to exactly one kind; a
+    // The code-hash maps are role-separated so a hash resolves to exactly one kind; a
     // hash listed under two roles would let `resolve_*` hand back a capability of the wrong
     // kind for the same wasm. Governance signs the snapshot, so this guards against ambiguous
     // reviewed metadata rather than an untrusted request, but the confusion it prevents is one
@@ -897,7 +939,7 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
     // for the shipped dev fixture.
     // Probed rather than collected into sets: the maps are already keyed and sorted, so a
     // membership probe needs no allocation on a path that runs on every load. `or_else` keeps
-    // the pairs lazy, so a first-pair collision never scans the other two.
+    // the pairs lazy, so the first collision stops further scans.
     let collision = first_shared_key(&snapshot.policies, &snapshot.accounts)
         .map(|hash| (hash, "policy", "account"))
         .or_else(|| {
@@ -907,6 +949,18 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
         .or_else(|| {
             first_shared_key(&snapshot.accounts, &snapshot.verifiers)
                 .map(|hash| (hash, "account", "verifier"))
+        })
+        .or_else(|| {
+            first_shared_key(&snapshot.policies, &snapshot.target_adapters)
+                .map(|hash| (hash, "policy", "target_adapter"))
+        })
+        .or_else(|| {
+            first_shared_key(&snapshot.accounts, &snapshot.target_adapters)
+                .map(|hash| (hash, "account", "target_adapter"))
+        })
+        .or_else(|| {
+            first_shared_key(&snapshot.verifiers, &snapshot.target_adapters)
+                .map(|hash| (hash, "verifier", "target_adapter"))
         });
     if let Some((shared, left_kind, right_kind)) = collision {
         // Phrased without indefinite articles so no kind needs "a"/"an" agreement — the
@@ -926,9 +980,10 @@ fn validate_capability_keys(snapshot: &RegistrySnapshot) -> Result<(), RegistryE
             ))
         })?;
         match kind {
-            "policy" | "account" | "verifier" if is_canonical_hash(identity) => {}
+            "policy" | "account" | "verifier" | "target_adapter" if is_canonical_hash(identity) => {
+            }
             "template" => validate_template_family(identity)?,
-            "policy" | "account" | "verifier" => {
+            "policy" | "account" | "verifier" | "target_adapter" => {
                 return Err(RegistryError::Parse(format!(
                     "revocation {capability} must contain a canonical wasm hash"
                 )))
@@ -1208,6 +1263,7 @@ pub mod dev {
             policies,
             accounts,
             verifiers,
+            target_adapters: BTreeMap::new(),
             templates,
             revocations: BTreeMap::new(),
         }
@@ -1229,6 +1285,17 @@ mod tests {
             snapshot_root(&old).unwrap().to_hex(),
             "2957b9b07f55b960a58711c1935cb341dc5fe0b3f568b9bce85bbebfb9af0807"
         );
+    }
+
+    #[test]
+    fn target_adapter_map_is_preserved_in_signed_snapshot_payload() {
+        let mut wire = serde_json::to_value(dev::dev_snapshot(network(), 1)).unwrap();
+        wire["target_adapters"] = serde_json::json!({
+            "11".repeat(32): {"implementation":"soroswap-router@1", "semantics_digest":"22".repeat(32),
+                "review_reference":"https://example.invalid/synthetic-fixture-review"}
+        });
+        let parsed: RegistrySnapshot = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
     }
 
     /// The committed signed example is published: an operator may have persisted a checkpoint
@@ -2388,3 +2455,6 @@ mod tests {
         r.load_json(&json).unwrap();
     }
 }
+
+#[cfg(test)]
+mod target_adapter_tests;

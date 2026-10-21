@@ -105,6 +105,7 @@ error_codes! {
     ERegistryRevoked => "E_REGISTRY_REVOKED",
     EIncompatibleAccount => "E_INCOMPATIBLE_ACCOUNT",
     EUnregisteredVerifier => "E_UNREGISTERED_VERIFIER",
+    ETargetAdapterUnsupported => "E_TARGET_ADAPTER_UNSUPPORTED",
     EUnregisteredTemplate => "E_UNREGISTERED_TEMPLATE",
     ERegistryEmpty => "E_REGISTRY_EMPTY",
     // policy recognition / authority surface

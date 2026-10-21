@@ -70,6 +70,7 @@ two as separate and so does this.
 | `ozpb:v1:captured-initialization` | capture hash, candidate state hash, local rule ID and bootstrap owner |
 | `ozpb:v1:account-state` | the enumerated account rule-set an authority result was computed over |
 | `ozpb:v1:account-ledger-witness` | the raw entries one account scan read; its own byte layout, below |
+| `ozpb:v1:target-adapter-semantics` | a versioned target adapter descriptor, including exact signature and roles |
 | `ozpb:v1:account-method-inventory` | the source-reviewed method table for one exact account Wasm hash |
 | `ozpb:v1:generated-source` | a generated crate's source files, lockfile excluded |
 | `ozpb:v1:generated-crate-files` | a generated crate's complete emitted file set |
@@ -107,6 +108,13 @@ The account method inventory hash covers `AccountMethodInventory`
 (`crates/registry/src/account_methods.rs`) by the ordinary rules. A signed account entry commits
 to it as `method_inventory_digest`; `reviewed_table_digest_is_a_known_answer` pins the value of
 the current reviewed table.
+
+The `ozpb:v1:target-adapter-semantics` domain hashes `AdapterSemantics`
+(`crates/domain/src/target_adapters.rs`) with the ordinary rules: implementation name and a
+function map containing each function's name, ordered argument types and ordered roles.
+The lengths fix exact arity. A registry target-adapter entry commits to this digest separately
+from the target Wasm hash used as its map key. Existing signed snapshots omit the empty
+`target_adapters` map, preserving their original roots.
 
 ## The encoding
 

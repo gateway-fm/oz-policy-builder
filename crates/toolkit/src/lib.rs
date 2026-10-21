@@ -336,6 +336,35 @@ pub fn synthesize_policy(
         None => None,
     };
 
+    let mut adapters = BTreeMap::new();
+    for bundle in &bundles {
+        let mut pending: Vec<_> = bundle
+            .authorizations
+            .iter()
+            .filter(|auth| auth.authorizer == selected_authorizer)
+            .map(|auth| &auth.root)
+            .collect();
+        while let Some(node) = pending.pop() {
+            pending.extend(&node.sub_invocations);
+            let ozpb_recorder_core::AuthorizedCall::Contract { contract, .. } = &node.call else {
+                continue;
+            };
+            let Some(observation) = bundle.contract_executables.get(contract) else {
+                continue;
+            };
+            if let ObservedExecutable::Wasm { code_hash } = observation.executable {
+                if let Some(semantics) = registry
+                    .resolve_target_adapter(&code_hash)
+                    .map_err(map_registry_err)?
+                {
+                    adapters.insert(
+                        code_hash,
+                        ozpb_synthesizer::adapters::Adapter::from_semantics(code_hash, semantics),
+                    );
+                }
+            }
+        }
+    }
     let syn_input = SynthesisInput {
         bundles,
         selected_authorizer: selected_authorizer.clone(),
@@ -344,10 +373,9 @@ pub fn synthesize_policy(
         spending_limit_capability,
         template_family: input.template_family.clone(),
         template_capability_schema,
-        // Reviewed, code-hash-bound adapters would be resolved from the registry here (by the
-        // target's observed code hash). No adapter capability is pinned in the current snapshot
-        // schema, so synthesis stays exact-by-default + explicit user widenings.
-        adapters: Vec::new(),
+        // The signature binds the governance assertion to this exact observed code hash.
+        // Recording observations remain self-supplied, not chain attestations.
+        adapters: adapters.into_values().collect(),
     };
 
     let out = synthesize(&syn_input, &decisions).map_err(map_synth_errs)?;
@@ -733,6 +761,7 @@ fn map_registry_err(error: RegistryError) -> ToolError {
         RegistryError::UnknownVerifier(_) | RegistryError::VerifierCapabilityIncomplete(_) => {
             EC::EUnregisteredVerifier
         }
+        RegistryError::TargetAdapterUnsupported(_) => EC::ETargetAdapterUnsupported,
         RegistryError::UnknownTemplate(_) => EC::EUnregisteredTemplate,
         RegistryError::NotLoaded => EC::ERegistryEmpty,
         RegistryError::Internal(_) => EC::EInternal,
@@ -1595,3 +1624,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod target_adapter_tests;

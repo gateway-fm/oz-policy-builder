@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 mod canonical;
+pub mod target_adapters;
 mod target_capture;
 pub use canonical::{
     canonical_hash, canonical_hash_of, canonical_preimage_bytes, canonical_preimage_bytes_of,
@@ -39,6 +40,7 @@ pub const CANONICALIZATION_VERSION: u32 = 2;
 /// `all_domains_are_declared_in_all` fails otherwise, so the list cannot silently fall behind
 /// the constants.
 pub mod domains {
+    pub const TARGET_ADAPTER_SEMANTICS: &str = "ozpb:v1:target-adapter-semantics";
     pub const AUTH_FINGERPRINT: &str = "ozpb:v1:auth-fingerprint";
     pub const RECORDING: &str = "ozpb:v1:recording";
     pub const POLICY_SPEC: &str = "ozpb:v1:policy-spec";
@@ -97,6 +99,7 @@ pub mod domains {
     /// Every domain declared above, so the invariants can be asserted over the whole set
     /// rather than over whichever pair a test happened to name.
     pub const ALL: &[&str] = &[
+        TARGET_ADAPTER_SEMANTICS,
         AUTH_FINGERPRINT,
         RECORDING,
         POLICY_SPEC,
