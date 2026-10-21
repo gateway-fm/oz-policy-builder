@@ -52,7 +52,7 @@ pub use preflight::preflight_transaction_output;
 /// a caller cannot silently bypass operator configuration by picking the shorter name.
 pub use ozpb_build_runner::{
     BuildConfig, BuildSlots, ENV_BUILD_CACHE_DIR, ENV_BUILD_JOBS, ENV_BUILD_TIMEOUT_SECS,
-    ENV_STELLAR_BINARY,
+    ENV_BUILD_WORKER_LAUNCHER, ENV_STELLAR_BINARY,
 };
 
 /// The two names a shell needs to read an import document itself, re-exported for the same
