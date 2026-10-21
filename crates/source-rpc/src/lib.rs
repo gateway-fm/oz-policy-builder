@@ -196,8 +196,10 @@ pub enum RpcError {
     /// a transport fault. Fixed text only: the endpoint could quote the envelope.
     #[error("E_TARGET_REFUSED: {0}")]
     TargetRefused(String),
-    /// A record-mode simulation reported that the call's footprint needs archival restoration
-    /// first. Fixed text only, as for [`RpcError::TargetRefused`].
+    /// The captured call's state is archived: a restoration preamble, a simulation that
+    /// restored archived entries (how endpoints report them since protocol 23), or a footprint
+    /// entry archived or expiring at the captured ledger. Fixed text only, as for
+    /// [`RpcError::TargetRefused`].
     #[error("E_TARGET_ARCHIVED: {0}")]
     TargetArchived(String),
 }

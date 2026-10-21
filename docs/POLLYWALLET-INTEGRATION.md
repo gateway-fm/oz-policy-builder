@@ -245,12 +245,15 @@ other outcome carries no evidence:
   envelope or `capture-target` did not complete; the captured ledger is older than the backend's
   read immediately before the capture or more than twelve ledgers newer; or the grant expires at
   or before the captured ledger. The worker does not run.
-- `failed`: the target refused the exact call in the record-mode simulation
-  (`E_TARGET_REFUSED`, for example an insufficient balance or a missing recipient; the
-  endpoint's simulator failing reports the same code, its text being withheld) or its state
-  needs restoration (`E_TARGET_ARCHIVED`), so the worker does not run; or the preparation
-  evidence, a capture for another call, network or account code, the worker or its report was
-  refused. The backend reads only that code from the CLI's error output, never its text.
+- `failed`: `capture-target` reports that the record-mode simulation failed
+  (`E_TARGET_REFUSED`: the target refused the exact transfer, for example for an insufficient
+  balance or a missing recipient, or the endpoint's simulator failed, which its withheld text
+  does not distinguish), or that the call's state is archived (`E_TARGET_ARCHIVED`: a
+  restoration preamble, a simulation that restored archived entries, or a footprint entry
+  archived at or expiring at the captured ledger), so the worker does not run; or the
+  preparation evidence, a capture for another call, network or account code, the worker or its
+  report was refused. The backend reads only that code from the CLI's error output, never its
+  text, and only from `capture-target`'s own refusal.
 
 A passing layer records the captured ledger as `evidence.observedLedger`, and stored evidence
 does not age: nothing re-checks it later. Installation is disabled; when it is enabled, its
@@ -259,11 +262,12 @@ gate must require that ledger to be recent relative to the installation's own re
 A new review starts again without local execution evidence. Each worker run has a 120-second
 deadline, `capture-target` 120 seconds, and the backend serves one request at a time. If the
 browser disconnects during the checks, the backend records no evidence for that attempt and
-accepts requests again once the running step stops. It kills the process group of a running
-`ozpb` call or native worker at once. Two things are not stopped that way: a policy build that
-CLI preparation started runs in its own process group until it finishes or reaches the build
-deadline (`buildTimeoutSecs`), and an operator RPC read the backend itself is making completes
-or reaches its 15-second timeout before the check settles.
+accepts requests again once the running step stops; it checks for the disconnect before every
+step, so nothing new starts. It kills the process group of a running `ozpb` call or native
+worker at once. Two things are not stopped that way. A policy build that CLI preparation
+started runs in its own process group until it finishes or reaches the build deadline
+(`buildTimeoutSecs`). An operator RPC step the backend itself has started completes first: it
+makes at most four requests (the ledger and account-code read), each bounded by 15 seconds.
 
 `bash scripts/test-wallet-native-execution.sh` runs both layers against the actual CLI and
 worker with the runtime test's public delegate seed. For the captured layer, the actual

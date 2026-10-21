@@ -106,7 +106,7 @@ for (const failure of ['envelopeFails', 'captureFails']) {
   });
 }
 
-for (const [code, detail] of [['E_TARGET_REFUSED', /target refused the exact call/], ['E_TARGET_ARCHIVED', /restoration/]]) {
+for (const [code, detail] of [['E_TARGET_REFUSED', /target refused the exact transfer, or the operator RPC's simulator failed/], ['E_TARGET_ARCHIVED', /restoration/]]) {
   test(`a capture the target itself refused (${code}) fails the captured layer, attributed to the target`, async () => {
     const f = await reviewed({ captureFails: true, captureCode: code });
     const result = await check(f);
@@ -114,6 +114,16 @@ for (const [code, detail] of [['E_TARGET_REFUSED', /target refused the exact cal
     assert.match(result.verification.layers[2].detail, detail);
     assert.equal(result.verification.layers[2].evidence, undefined);
     assert.equal(capturedRuns(f).length, 0);
+  });
+}
+
+for (const method of ['targetEnvelope', 'latestLedger']) {
+  test(`a target code on an error from ${method} is not the target's outcome: unavailable`, async () => {
+    const f = await reviewed();
+    f.network[method] = async () => { throw Object.assign(new Error('endpoint error'), { code: 'E_TARGET_REFUSED' }); };
+    const result = await check(f);
+    assert.equal(status(result).captured_target, 'unavailable');
+    assert.equal(f.captures.length + capturedRuns(f).length, 0);
   });
 }
 
@@ -150,43 +160,70 @@ for (const failure of [{ prepareFails: true }, { intentChange: (evidence) => { d
 // check, so no layer is recorded, and the signal reaches whatever child process is running.
 const pending = (signal) => new Promise((_resolve, reject) => signal.addEventListener('abort',
   () => reject(new Error('native process refused; no execution evidence accepted')), { once: true }));
-for (const stage of ['CLI preparation', 'capture-target', 'captured worker', 'account worker']) {
-  test(`an aborted check-account rejects at the ${stage} and records no evidence`, async () => {
+// Child-process stages receive the signal and are held until it aborts; operator RPC reads
+// cannot be aborted, so they are held briefly and the backend must not start the next step.
+const STAGES = [
+  { stage: 'CLI preparation', child: true, before: 'prepare' },
+  // A step that completes just as the client leaves still must not lead to the next one.
+  { stage: 'CLI preparation finishing as the client leaves', child: false, before: 'prepare' },
+  { stage: 'native source read', child: false, before: 'source' },
+  { stage: 'account worker preparation', child: true, before: 'account', worker: { captured: false, prepareOnly: true } },
+  { stage: 'account worker signing run', child: true, before: 'account', worker: { captured: false, prepareOnly: false } },
+  { stage: 'capture envelope read', child: false, before: 'envelope' },
+  { stage: 'capture ledger read', child: false, before: 'ledger' },
+  { stage: 'capture-target', child: true, before: 'capture' },
+  { stage: 'captured worker preparation', child: true, before: 'worker', worker: { captured: true, prepareOnly: true } },
+  { stage: 'captured worker signing run', child: true, before: 'worker', worker: { captured: true, prepareOnly: false } },
+];
+const ORDER = ['prepare', 'source', 'account', 'envelope', 'ledger', 'capture', 'worker'];
+for (const { stage, child, before, worker } of STAGES) {
+  test(`an aborted check-account rejects at the ${stage}, starts nothing after it and records no evidence`, async () => {
     const controller = new AbortController();
     const f = await reviewed();
     let held = false;
     const seen = [];
-    const reached = new Promise((resolve) => {
-      if (stage === 'CLI preparation') {
-        const prepare = f.toolchain.prepareDryRun;
-        f.toolchain.prepareDryRun = async (input) => {
-          if (held) return prepare(input);
-          held = true; seen.push(input.signal); resolve(); return pending(input.signal);
-        };
-      } else if (stage === 'capture-target') {
-        const capture = f.toolchain.captureTarget;
-        f.toolchain.captureTarget = async (envelope, options) => {
-          if (held) return capture(envelope, options);
-          held = true; seen.push(options?.signal); resolve(); return pending(options.signal);
-        };
-      } else {
-        const run = f.native.run;
-        f.native.run = async (executable, jobText, options) => {
-          if (held || (stage === 'captured worker') !== (options.captured === true)) return run(executable, jobText, options);
-          held = true; seen.push(options.signal); resolve(); return pending(options.signal);
-        };
+    const started = [];
+    let resolveReached;
+    const reached = new Promise((resolve) => { resolveReached = resolve; });
+    const hold = (signal) => {
+      held = true; resolveReached();
+      if (!child) return new Promise((resolve) => setTimeout(resolve, 20));
+      seen.push(signal);
+      return pending(signal);
+    };
+    const wrap = (target, name, step, select = () => true, signalOf = () => undefined) => {
+      const original = target[name];
+      target[name] = async (...args) => {
+        started.push(step);
+        if (!held && step === before && select(...args)) {
+          await hold(signalOf(...args));
+          if (!child) return original(...args);
+        }
+        return original(...args);
+      };
+    };
+    wrap(f.toolchain, 'prepareDryRun', 'prepare', () => true, (input) => input.signal);
+    wrap(f.network, 'nativeSource', 'source');
+    wrap(f.network, 'targetEnvelope', 'envelope');
+    wrap(f.network, 'latestLedger', 'ledger');
+    wrap(f.toolchain, 'captureTarget', 'capture', () => true, (_envelope, options) => options?.signal);
+    const run = f.native.run;
+    f.native.run = async (executable, jobText, options) => {
+      const step = options.captured ? 'worker' : 'account';
+      started.push(step);
+      if (!held && step === before && (options.prepareOnly === true) === worker.prepareOnly) {
+        await hold(options.signal);
       }
-    });
+      return run(executable, jobText, options);
+    };
     const checking = f.actions['check-account']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId },
       { signal: controller.signal });
     await reached;
     controller.abort();
     await assert.rejects(checking, /refused/);
-    assert.deepEqual(seen, [controller.signal], 'the signal reaches the running child process');
-    // Nothing starts after the abort: no capture once a step before it was aborted.
-    if (stage !== 'capture-target' && stage !== 'captured worker') {
-      assert.equal(f.envelopes.length + f.captures.length + capturedRuns(f).length, 0);
-    }
+    if (child) assert.deepEqual(seen, [controller.signal], 'the signal reaches the running child process');
+    const later = ORDER.slice(ORDER.indexOf(before) + 1);
+    assert.deepEqual(started.filter((step) => later.includes(step)), [], 'nothing starts after the aborted step');
     // The check lock is free again: the next check runs both layers to completion.
     const next = await check(f);
     assert.equal(status(next).account_wasm, 'passed');

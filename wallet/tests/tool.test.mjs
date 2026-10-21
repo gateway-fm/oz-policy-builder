@@ -61,3 +61,21 @@ test('wallet CLI runner surfaces only an allowlisted refusal code from the CLI, 
     (error) => error.code === undefined, 'a killed process carries no code');
   await assert.rejects(runTool(process.execPath, refusing('Error: E_TARGET_REFUSED: x'), { codes: ['not a code'] }), /tool failed/);
 });
+
+test('a refusal code counts only from a process that exited by itself, within the stderr prefix bound', async () => {
+  // Killed by a signal after writing a well-formed refusal: no exit status, so no code.
+  await assert.rejects(runTool(process.execPath, ['-e',
+    "process.stderr.write('Error: E_TARGET_REFUSED: x\\n', () => process.kill(process.pid, 'SIGKILL'))"],
+  { codes: ['E_TARGET_REFUSED'] }), (error) => error.code === undefined);
+  // The same refusal with an ordinary failing exit does carry it (control).
+  await assert.rejects(runTool(process.execPath, ['-e',
+    "process.stderr.write('Error: E_TARGET_REFUSED: x\\n', () => process.exit(2))"], { codes: ['E_TARGET_REFUSED'] }),
+  (error) => error.code === 'E_TARGET_REFUSED');
+  // Only the first 256 bytes are read: an allowlisted code ending beyond them is not surfaced.
+  const long = `E_${'A'.repeat(300)}`;
+  await assert.rejects(runTool(process.execPath, ['-e', `process.stderr.write('Error: ${long}: x');process.exit(1)`],
+    { codes: [long] }), (error) => error.code === undefined);
+  const short = `E_${'A'.repeat(200)}`;
+  await assert.rejects(runTool(process.execPath, ['-e', `process.stderr.write('Error: ${short}: x');process.exit(1)`],
+    { codes: [short] }), (error) => error.code === short, 'a code within the bound is read (control)');
+});

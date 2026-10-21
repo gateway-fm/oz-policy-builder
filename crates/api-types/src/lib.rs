@@ -128,7 +128,9 @@ error_codes! {
     /// (for example an insufficient balance or a missing recipient), or the endpoint's
     /// simulator failed, which its withheld text cannot distinguish. Not a transport fault.
     ETargetRefused => "E_TARGET_REFUSED",
-    /// The captured call's footprint needs archival restoration, which capture never performs.
+    /// The captured call's state is archived: a restoration preamble, a simulation that restored
+    /// archived entries, or a footprint entry archived or expiring at the captured ledger.
+    /// Capture never performs a restoration.
     ETargetArchived => "E_TARGET_ARCHIVED",
     // rpc / transport
     ERpc => "E_RPC",

@@ -284,7 +284,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1),
-            "is archived at reported ledger",
+            "is archived at the reported ledger",
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER),
@@ -628,49 +628,129 @@ fn native_target_capture_parse_refusals_are_fixed_descriptions() {
     }
 }
 
-/// A simulation the target itself refused, or one whose footprint needs restoration, is the
-/// call's outcome rather than an endpoint fault: each has its own variant, and neither carries
-/// the endpoint's text, which could quote the envelope.
+/// The simulation is classified as preflight classifies it: only a non-empty string error, with
+/// no results or restoration and a ledger the endpoint read, is the target refusing the call;
+/// a preamble, a success that restored archived entries, or an archived or expiring footprint
+/// entry is archived target state. Everything else stays an endpoint answer (`E_RPC`). No
+/// classification carries the endpoint's text, which could quote the envelope.
 #[test]
-fn native_target_capture_names_target_refusal_and_archived_state() {
-    for (field, expected) in [
-        ("error", "E_TARGET_REFUSED: "),
-        ("restorePreamble", "E_TARGET_ARCHIVED: "),
-    ] {
+fn native_target_capture_classifies_the_simulation_like_preflight() {
+    #[derive(Debug, PartialEq)]
+    enum Kind {
+        Refused,
+        Archived,
+        Rpc,
+    }
+    type Mutation = Box<dyn Fn(&mut Fixture)>;
+    let quoted = fixture().envelope;
+    let failed = |error: Value| -> Mutation {
+        Box::new(move |f: &mut Fixture| {
+            f.simulation["error"] = error.clone();
+            f.simulation.as_object_mut().unwrap().remove("results");
+        })
+    };
+    let archived = |indices: Vec<u32>| -> Mutation {
+        Box::new(move |f: &mut Fixture| {
+            let mut data = SorobanTransactionData::from_xdr_base64(
+                f.simulation["transactionData"].as_str().unwrap(),
+                xdr_limits(),
+            )
+            .unwrap();
+            data.ext = SorobanTransactionDataExt::V1(SorobanResourcesExtV0 {
+                archived_soroban_entries: indices.clone().try_into().unwrap(),
+            });
+            f.simulation["transactionData"] = json!(encode(&data));
+        })
+    };
+    let refusal = format!("HostError: Error(Contract, #10) balance is not sufficient: {quoted}");
+    let cases: Vec<(&str, Mutation, Kind)> = vec![
+        ("a failed simulation", failed(json!(refusal)), Kind::Refused),
+        ("an empty error", failed(json!("")), Kind::Rpc),
+        ("a null error", failed(Value::Null), Kind::Rpc),
+        (
+            "a non-string error",
+            failed(json!({ "message": refusal })),
+            Kind::Rpc,
+        ),
+        (
+            "an error alongside results",
+            Box::new(|f: &mut Fixture| f.simulation["error"] = json!("refused")),
+            Kind::Rpc,
+        ),
+        (
+            "an error alongside a restoration preamble",
+            Box::new(move |f: &mut Fixture| {
+                failed(json!("refused"))(f);
+                f.simulation["restorePreamble"] = json!({ "transactionData": "AAAA" });
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "an error before the endpoint read its ledger",
+            Box::new(move |f: &mut Fixture| {
+                failed(json!("refused"))(f);
+                f.simulation["latestLedger"] = json!(0);
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "a restoration preamble",
+            Box::new(move |f: &mut Fixture| {
+                f.simulation["restorePreamble"] =
+                    json!({ "transactionData": quoted.clone(), "minResourceFee": "1" })
+            }),
+            Kind::Archived,
+        ),
+        (
+            "a malformed restoration preamble",
+            Box::new(|f: &mut Fixture| f.simulation["restorePreamble"] = json!("restore")),
+            Kind::Rpc,
+        ),
+        (
+            "a success that restored archived entries",
+            archived(vec![2]),
+            Kind::Archived,
+        ),
+        (
+            "an archived index outside the footprint",
+            archived(vec![9]),
+            Kind::Rpc,
+        ),
+        (
+            "an archived footprint entry",
+            Box::new(|f: &mut Fixture| {
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1)
+            }),
+            Kind::Archived,
+        ),
+        (
+            "a footprint entry expiring at the captured ledger",
+            Box::new(|f: &mut Fixture| {
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER)
+            }),
+            Kind::Archived,
+        ),
+    ];
+    for (name, mutate, expected) in cases {
         let mut fixture = fixture();
-        let quoted = fixture.envelope.clone();
-        fixture.simulation[field] = if field == "error" {
-            json!(format!(
-                "HostError: Error(Contract, #10) balance is not sufficient for {quoted}"
-            ))
-        } else {
-            json!({"transactionData": quoted, "minResourceFee": "1"})
-        };
+        mutate(&mut fixture);
         let error = capture_native_target(&fixture, NETWORK, &fixture.envelope)
             .expect_err("a refused simulation was accepted");
-        assert!(
-            match field {
-                "error" => matches!(error, RpcError::TargetRefused(_)),
-                _ => matches!(error, RpcError::TargetArchived(_)),
-            },
-            "{field}: {error:?}"
-        );
-        assert!(error.to_string().starts_with(expected), "{field}: {error}");
+        let kind = match error {
+            RpcError::TargetRefused(_) => Kind::Refused,
+            RpcError::TargetArchived(_) => Kind::Archived,
+            _ => Kind::Rpc,
+        };
+        assert_eq!(kind, expected, "{name}: {error}");
+        let code = match kind {
+            Kind::Refused => "E_TARGET_REFUSED: ",
+            Kind::Archived => "E_TARGET_ARCHIVED: ",
+            Kind::Rpc => "E_RPC: ",
+        };
+        assert!(error.to_string().starts_with(code), "{name}: {error}");
         for text in [error.to_string(), format!("{error:?}")] {
-            assert!(
-                !text.contains(&quoted),
-                "{field}: the endpoint text reached the error"
-            );
-            assert!(
-                !text.contains("HostError"),
-                "{field}: the endpoint text reached the error"
-            );
+            assert!(!text.contains(&fixture.envelope), "{name}: {text}");
+            assert!(!text.contains("HostError"), "{name}: {text}");
         }
-        // Nothing is read after the refused simulation.
-        assert_eq!(
-            *fixture.calls.borrow(),
-            ["getNetwork", "simulateTransaction"],
-            "{field}"
-        );
     }
 }

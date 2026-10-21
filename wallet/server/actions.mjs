@@ -273,14 +273,19 @@ export function createWalletActions({ session, toolchain, network, native = null
         captured ??= targetLayer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID.');
       } else {
         accountCheckRunning = true;
+        // Checked before every step: a step already running is killed (a child process) or runs
+        // to its own timeout (an operator RPC read), and nothing starts after a disconnect.
         const stopped = () => { if (signal?.aborted) refuse(); };
         try {
           let prepared, source, checked;
           try {
             prepared = await toolchain.prepareDryRun({ artifactId: deployment.artifactId,
               candidate: deployment.request, candidateContextRuleId: review.nextRuleId, signal });
+            stopped();
             source = await network.nativeSource(ACCOUNT_WASM);
+            stopped();
           } catch {
+            stopped();
             // Infrastructure, not the candidate: the CLI preparation or operator RPC read did not complete.
             layer = accountLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
             captured ??= targetLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
@@ -305,23 +310,35 @@ export function createWalletActions({ session, toolchain, network, native = null
             }
           }
           stopped();
-          let capture;
+          let capture, envelope, notBefore;
+          const incomplete = () => targetLayer('unavailable',
+            'capture-target or the operator RPC read did not complete; the worker did not run.');
           if (!captured) {
+            try { envelope = await network.targetEnvelope(target.call); } catch { captured = incomplete(); }
+            stopped();
+          }
+          if (!captured) {
+            try { notBefore = await network.latestLedger(); } catch { captured = incomplete(); }
+            stopped();
+          }
+          if (!captured) {
+            // Only this call's rejection may carry a target code: the toolchain surfaces it from
+            // capture-target's own refusal and from nothing else.
             try {
-              const envelope = await network.targetEnvelope(target.call);
-              const notBefore = await network.latestLedger();
               capture = { notBefore, value: await toolchain.captureTarget(envelope, { signal }) };
             } catch (error) {
+              stopped();
               // The call's own outcome in the operator RPC's record-mode simulation, before the
-              // worker: the target, not an infrastructure fault, decided it. No candidate evidence.
+              // worker: the target, or the simulator, not the candidate's policy. No evidence.
               if (error?.code === 'E_TARGET_REFUSED') {
-                captured = targetLayer('failed', 'The target refused the exact call in the operator RPC\'s record-mode simulation, '
-                  + 'for example for an insufficient balance or a missing recipient; the worker did not run.');
+                captured = targetLayer('failed', 'The target refused the exact transfer, or the operator RPC\'s simulator failed, '
+                  + 'in record-mode simulation, for example for an insufficient balance or a missing recipient; the endpoint '
+                  + 'does not say which. The worker did not run.');
               } else if (error?.code === 'E_TARGET_ARCHIVED') {
                 captured = targetLayer('failed', 'The exact call\'s target state is archived and needs restoration, which capture '
                   + 'does not perform; the worker did not run.');
               } else {
-                captured = targetLayer('unavailable', 'capture-target or the operator RPC read did not complete; the worker did not run.');
+                captured = incomplete();
               }
             }
           }
