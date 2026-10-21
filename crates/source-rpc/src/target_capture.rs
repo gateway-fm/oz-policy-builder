@@ -6,11 +6,16 @@
 //! The footprint is then re-read in one bounded `getLedgerEntries` batch together with the
 //! network's state-archival configuration, and the exact ledger header comes from `getLedgers`.
 //! Every value is endpoint-reported (`rpc_reported`); none of it is an inclusion proof.
+//!
+//! The envelope is confidential input. A shape this capture does not take is refused locally
+//! under the same input errors as preflight, and nothing is sent. Once simulation has run the
+//! endpoint holds the envelope and could quote it in any later reply, so no endpoint-controlled
+//! text reaches an error: the category survives, the words do not.
 
+use crate::preflight::local_envelope;
 use crate::{
-    envelope_carries_signatures, read_invocation_footprint, validate_simulation_envelope,
-    verify_network, xdr_limits, CapturedFootprintEntry, RpcError, RpcTransport,
-    MAX_XDR_BASE64_BYTES,
+    envelope_carries_signatures, read_invocation_footprint, verify_network, xdr_limits,
+    CapturedFootprintEntry, FootprintCaptureError, RpcError, RpcTransport, MAX_XDR_BASE64_BYTES,
 };
 use ozpb_domain::{sha256, NetworkId, TargetCapture, TargetEntry};
 use serde_json::{json, Value};
@@ -32,6 +37,45 @@ const MAX_CAPTURED_ENTRY_BYTES: usize = 2 * 1024 * 1024;
 
 fn refuse(reason: &str) -> RpcError {
     RpcError::Malformed(format!("native target capture refused: {reason}"))
+}
+
+/// The caller's envelope decodes but is not a call this capture takes. Refused before any
+/// request, under the input code preflight uses for an envelope shape it does not take.
+fn unsupported(reason: &str) -> RpcError {
+    RpcError::UnsupportedEnvelope(format!("native target capture refused: {reason}"))
+}
+
+/// An endpoint error with its endpoint-controlled text removed. A network mismatch keeps the
+/// configured passphrase, which is the caller's, and loses the reported one; a protocol
+/// refusal carries only numbers.
+fn withhold(error: RpcError) -> RpcError {
+    match error {
+        RpcError::NetworkMismatch { expected, .. } => RpcError::NetworkMismatch {
+            expected,
+            actual: "withheld".to_string(),
+        },
+        error @ RpcError::UnsupportedProtocol { .. } => error,
+        RpcError::Transport(_) => RpcError::Transport(
+            "the RPC source could not be reached or did not answer in JSON-RPC (endpoint \
+             detail withheld)"
+                .to_string(),
+        ),
+        RpcError::Rpc(_) => {
+            RpcError::Rpc("the RPC source refused a request (endpoint detail withheld)".to_string())
+        }
+        _ => RpcError::Malformed(
+            "the RPC source returned an invalid response (endpoint detail withheld)".to_string(),
+        ),
+    }
+}
+
+/// The caller's transport with every error passed through [`withhold`].
+struct Withheld<'a, T>(&'a T);
+
+impl<T: RpcTransport> RpcTransport for Withheld<'_, T> {
+    fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+        self.0.call(method, params).map_err(withhold)
+    }
 }
 
 /// Decode canonical base64 XDR, refusing any encoding that does not round-trip byte for byte.
@@ -100,6 +144,10 @@ fn target_entry(entry: &CapturedFootprintEntry) -> Result<TargetEntry, RpcError>
 /// is accepted or created and nothing is submitted. The caller binds the returned invocation to
 /// its independently prepared candidate; this function does not know the candidate.
 ///
+/// An envelope this capture does not take is refused before any request as
+/// `EnvelopeTooLarge`, `EnvelopeParse` or `UnsupportedEnvelope`. Endpoint errors keep their
+/// category without the endpoint's text, which could quote the envelope.
+///
 /// Record-mode footprints also name the account's own instance, its code and the recorded
 /// authorization's fresh nonce. The nonce key is new by construction and is not read; instance
 /// and code are read only to bind the account's executable hash. None of them become target
@@ -109,30 +157,34 @@ pub fn capture_native_target<T: RpcTransport>(
     network_passphrase: &str,
     envelope_xdr_base64: &str,
 ) -> Result<TargetCapture, RpcError> {
-    let envelope = validate_simulation_envelope(envelope_xdr_base64)?;
+    let envelope = local_envelope(envelope_xdr_base64)?;
     if encode(&envelope, "envelope")? != envelope_xdr_base64 {
-        return Err(refuse("the envelope is not canonical XDR"));
+        return Err(RpcError::EnvelopeParse(
+            "native target capture refused: the envelope is not canonical XDR".to_string(),
+        ));
     }
     if envelope_carries_signatures(envelope_xdr_base64)? {
-        return Err(refuse("the envelope carries signatures"));
+        return Err(unsupported("the envelope carries signatures"));
     }
     let TransactionEnvelope::Tx(v1) = &envelope else {
-        return Err(refuse("only an unwrapped v1 transaction is supported"));
+        return Err(unsupported("only an unwrapped v1 transaction is supported"));
     };
     let OperationBody::InvokeHostFunction(operation) = &v1.tx.operations[0].body else {
-        return Err(refuse("the operation is not InvokeHostFunction"));
+        return Err(unsupported("the operation is not InvokeHostFunction"));
     };
     if !operation.auth.is_empty() {
-        return Err(refuse("the envelope already carries authorization entries"));
+        return Err(unsupported(
+            "the envelope already carries authorization entries",
+        ));
     }
     let HostFunction::InvokeContract(call) = &operation.host_function else {
-        return Err(refuse("the host function is not InvokeContract"));
+        return Err(unsupported("the host function is not InvokeContract"));
     };
     let network = NetworkId::from_passphrase(network_passphrase);
     let [ScVal::Address(account @ ScAddress::Contract(_)), ScVal::Address(ScAddress::Account(_)), ScVal::I128(amount)] =
         call.args.as_slice()
     else {
-        return Err(refuse(
+        return Err(unsupported(
             "only transfer(contract account, G recipient, i128) is supported",
         ));
     };
@@ -142,7 +194,7 @@ pub fn capture_native_target<T: RpcTransport>(
         || amount <= 0
         || amount >= i128::from(i64::MAX)
     {
-        return Err(refuse(
+        return Err(unsupported(
             "only a positive native-asset transfer below i64::MAX is supported",
         ));
     }
@@ -150,7 +202,8 @@ pub fn capture_native_target<T: RpcTransport>(
         config_setting_id: ConfigSettingId::StateArchival,
     });
     let encoded_config_key = encode(&config_key, "state-archival key")?;
-    verify_network(transport, network_passphrase)?;
+    let transport = Withheld(transport);
+    verify_network(&transport, network_passphrase).map_err(withhold)?;
     for _ in 0..CAPTURE_ATTEMPTS {
         let simulation = transport.call(
             "simulateTransaction",
@@ -247,11 +300,18 @@ pub fn capture_native_target<T: RpcTransport>(
         };
         acquisition_v1.tx.ext = TransactionExt::V1(resources);
         let mut capture = read_invocation_footprint(
-            transport,
+            &transport,
             network_passphrase,
             &encode(&acquisition, "acquisition envelope")?,
         )
-        .map_err(|error| refuse(&error.to_string()))?;
+        .map_err(|error| match error {
+            // Its reported network is the endpoint's text. The transport has already withheld
+            // every endpoint error, and the reader's own refusals are fixed descriptions, so
+            // both keep their variant.
+            FootprintCaptureError::Rpc(error @ RpcError::NetworkMismatch { .. }) => withhold(error),
+            FootprintCaptureError::Rpc(error) => error,
+            error => refuse(&error.to_string()),
+        })?;
         if capture.reported_ledger.0 != observed {
             continue;
         }

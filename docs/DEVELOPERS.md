@@ -46,7 +46,11 @@ record → synthesize → reference_suite (layer 1) → generate → verify
 The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
 check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
 built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
-advisory wherever they run. `reference_suite` is layer-1 evidence only;
+advisory wherever they run. `ozpb capture-target` and `capture_target` read, through the same
+kind of operator-configured source, the target state of one unsigned native Stellar Asset
+Contract transfer for the native worker's
+[captured-target layer](CAPTURED-TARGET-EXECUTION.md#producing-a-capture); they do not run that
+layer, and `prepare_dry_run` still reports it unavailable. `reference_suite` is layer-1 evidence only;
 `verify` reproduces source and Wasm but does not perform live preflight. `evaluate_spec` is
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
@@ -137,6 +141,12 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
   --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015"
+
+# Optional: capture the target state of one unsigned native SAC transfer for the native
+# worker's captured-target layer. The request names an operator source and network and carries
+# the confidential envelope: {"network_id", "rpc_source", "envelope_xdr_base64"}.
+# Record-mode simulation here is acquisition only, never evidence that a policy permits the call.
+ozpb capture-target --request capture-request.json --rpc-sources rpc-sources.json > capture.json
 
 ```
 
@@ -329,6 +339,13 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   artifact and derives the selected-rule reference suite. It reports the account-Wasm,
   captured-target and live layers as unavailable
   ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md)).
+- **Target capture (read-only)** — `capture_target` reads, through an operator-configured
+  RPC source, the `rpc_reported` target state of one unsigned native Stellar Asset Contract
+  transfer: the capture the native worker's captured-target layer reads
+  ([CAPTURED-TARGET-EXECUTION.md](CAPTURED-TARGET-EXECUTION.md#producing-a-capture)). It does
+  not run that layer. The envelope is confidential input that no result or error echoes, but
+  over MCP it passes through the conversation, and the capture repeats its call; prefer the CLI
+  or a local stdio server.
 - **Scheduled, not exposed** — the full four-layer `dry_run`. The full dry-run harness needs
   its own evidence before exposure.
 
@@ -336,15 +353,16 @@ This list separates tools the server exposes from operations still under develop
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
-`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction` and
-`check_against_policy` read through a source the operator names in `OZPB_RPC_SOURCES_JSON` —
-`{"testnet": {"rpc_url": "https://…",
+`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction`,
+`check_against_policy` and `capture_target` read through a source the operator names in
+`OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
 source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
 source, but reads nothing through it.
-The source must be for the request's network, a hosted server also requires its URL on
-`OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
-`OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same
+The source must be for the request's network, and a hosted server also requires its URL on
+`OZPB_RPC_ALLOWLIST`. For every one of them except `capture_target`, which needs no registry
+trust, the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`, `OZPB_REGISTRY_MIN_VERSION`)
+bounds the read and recognizes the code. The CLI takes the same
 map from `--rpc-sources` (or `OZPB_RPC_SOURCES_FILE`).
 
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
@@ -363,11 +381,12 @@ stream before the tool runs and a build outlives a client that disconnects:
 | `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks, install-intent planning, unsigned install assembly, installed-rule checks and dry-run preparation. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
 
 Zero or a malformed value stops startup. Authority checks, install-intent planning, unsigned
-install assembly, installed-rule checks and dry-run preparation also share a separate
-one-operation limit across all sessions, held until their blocking work ends even if a
-client disconnects. That limit is independent of build capacity; their binding
-rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
-`preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
+install assembly, installed-rule checks, dry-run preparation and target capture, every tool
+that names an operator-configured source, also share a separate one-operation limit across
+all sessions, held until their blocking work ends even if a client disconnects. That limit is
+independent of build capacity; their binding rebuilds acquire the same build slots as other
+tools. The RPC reads that take a caller-named endpoint (`record_*`, `preflight_transaction`)
+and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
 at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
 supplies OS-level compile isolation and a no-secrets worker role; per-tool quotas and request

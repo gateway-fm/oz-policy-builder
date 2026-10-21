@@ -34,6 +34,9 @@ pub const AUTHORITY_TOOLS: &[&str] = &[
 ];
 pub const POLICY_CHECK_TOOLS: &[&str] = &["check_against_policy"];
 
+/// Read-only target-state capture through an operator-configured RPC source.
+pub const CAPTURE_TOOLS: &[&str] = &["capture_target"];
+
 /// Drive the server over stdio with a batch of newline-delimited JSON-RPC requests,
 /// close stdin (which ends the transport and exits the server), and return the parsed
 /// responses keyed by id.
