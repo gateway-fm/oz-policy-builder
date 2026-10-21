@@ -4,6 +4,7 @@ on:
     paths:
       - deployment/**
       - scripts/*hosted*
+      - scripts/*worker*
       - .github/workflows/self-hosted.yml
       - .github/workflows/nightly-live.yml
       - Cargo.toml
@@ -23,13 +24,14 @@ jobs:
   image:
     name: self-hosted (TLS guards · offline generate and verify)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: build-context publication boundary
         run: |
           python3 scripts/test-hosted-context.py
           python3 scripts/test-hosted-mcp.py
+          python3 scripts/test-worker-launcher.py
       - name: build immutable source context (no image publication)
         run: |
           set -euo pipefail
@@ -42,3 +44,17 @@ jobs:
           export OZPB_IMAGE="$(docker image inspect ozpb-self-host:check --format '{{.Id}}')"
           export OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:check --format '{{.Id}}')"
           bash scripts/test-hosted-container.sh
+      - name: rootless worker containment and independent lifecycle
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes podman uidmap
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          docker save ozpb-self-host:check | podman load >/dev/null
+          worker_image=$(podman image inspect ozpb-self-host:check --format '{{.Id}}')
+          case "$worker_image" in sha256:*) ;; *) worker_image="sha256:$worker_image" ;; esac
+          systemd-run --user --scope --quiet -p Delegate=yes \
+            python3 scripts/test-worker-containment.py --image "$worker_image"

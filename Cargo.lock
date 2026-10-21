@@ -1153,12 +1153,14 @@ dependencies = [
 name = "ozpb-build-runner"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "nix",
  "ozpb-codegen",
  "ozpb-domain",
  "ozpb-policy-spec",
  "ozpb-synthesizer",
  "serde",
+ "serde_json",
  "stellar-xdr",
  "tempfile",
  "thiserror",

@@ -1,0 +1,20 @@
+# User unit for a dedicated unprivileged Linux service account with rootless Podman.
+[Unit]
+Description=Policy Builder MCP API with disposable build workers
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/ozpb-api serve-host
+EnvironmentFile=/etc/ozpb/http.env
+Environment=OZPB_HTTP_CONFIG_DIR=/etc/ozpb/http
+Environment=OZPB_BUILD_WORKER_LAUNCHER=/usr/local/libexec/ozpb-worker-launcher
+Delegate=yes
+UMask=0077
+Restart=no
+KillMode=control-group
+TimeoutStopSec=20
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target
