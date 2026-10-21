@@ -328,9 +328,12 @@ when the WebAuthn verifier contract raised it.
 - It refuses the call with a changed amount, with a changed recipient, and past the call cap.
   Each refusal is the policy's own published error code.
 
-The new default wrapper also exercises owner removal and a post-removal denial, but those
-steps still need a reviewed live run at this revision. They are not part of the historical
-October 15 observations described below.
+The default native wrapper also exercises owner removal and a post-removal denial, but in that
+mode those steps still need a reviewed live run at this revision. They are not part of the
+historical October 15 observations described below. The
+[subscription](../docs/WALKTHROUGH-SEP41.md) and [Soroswap](../docs/WALKTHROUGH-PROTOCOLS.md)
+modes ran them live on 20 October 2026, at the commits recorded in
+[the testnet evidence](../docs/TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9.
 
 **Not shown, or not as you might assume:**
 
@@ -441,8 +444,10 @@ bash testnet-harness/run.sh
   None of this shows that a human approved the install, or that an agent with the same access
   could not approve itself. That claim needs a real wallet's protected approval screen.
   `run.json` records the decision under that label, with the exact operator-trusted identities.
-- It ran on testnet once per path, on 2026-10-15. Both runs used a passkey owner and an `ozpb`
-  built from the authority-check branch before those commands were integrated into this tree.
+- It ran on testnet once per path, on 2026-10-15; the later W2 and W3 runs also took the
+  accepted path (see the testnet evidence, sections 8 and 9). Both 15 October runs used a
+  passkey owner and an `ozpb` built from the authority-check branch before those commands
+  were integrated into this tree.
   One run was accepted: the intent, the
   decision, the screen, the re-check and the install all ran, and then the delegate's permit and
   denials. The other was refused: a second owner rule for an account the wallet does not trust,
@@ -473,8 +478,10 @@ and what does not.
   bundle separately. The historical runs documented above used offline imports instead.
 - **generate.** The wrapper now runs real synthesis with explicit test decisions and a signed
   registry, followed by code generation, the reference suite and artifact reproduction.
-  Synthesis admits the serialized recording as `self_supplied`. This executable path needs
-  a reviewed new live run before it is evidence at the delivered revision.
+  Synthesis admits the serialized recording as `self_supplied`. In the default native mode
+  this path needs a reviewed new live run before it is evidence at the delivered revision.
+  The subscription and Soroswap modes ran it live on 20 October 2026, at earlier commits
+  recorded in the testnet evidence.
 - **simulate.**
   - Runs: every transaction that carries the account's authorization is simulated in enforcing
     mode, with the signed entries, before the transaction is signed. Every denial is observed

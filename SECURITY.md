@@ -38,7 +38,9 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
 - The local build runner bounds environment, inputs, outputs and time, and on a hosted
   (`--http`) server the number of builds running at once. It is not a multi-tenant sandbox
   and is not offered as one.
-- Nothing in this toolkit signs, submits, or deploys, and it holds no keys.
+- The library and the MCP server never sign, submit, or deploy, and hold no keys. The demo
+  script, the testnet harness and the local wallet backend do, on testnet only, with
+  disposable keys they generate; the wallet's owner signs with the user's own passkey.
 - No independent third-party audit has been performed. The evidence that has actually been
   run is in `docs/TESTNET-EVIDENCE.md`, and `docs/SCOPE.md` says what deliberately has not been
   run; test counts are not treated

@@ -317,8 +317,20 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   exact `add_context_rule` arguments derived from the grant the commitment covers, with the
   answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
   or submits.
-- **Scheduled, not exposed** — `dry_run`, `check_against_policy`. The full dry-run harness
-  needs its own evidence before exposure.
+- **Unsigned install assembly (advisory)** — `assemble_install_transaction` reruns that check
+  and returns bounded unsigned XDR with current sequence and fees. It never signs or
+  submits; the wallet must validate it, recheck authority and enforce-simulate before signing
+  ([INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md)).
+- **Installed-rule prediction (advisory)** — `check_against_policy` predicts permit, deny or
+  `unsupported` for one call against one explicitly selected installed rule at one reported
+  ledger. It is recognition-scoped and does not verify signatures
+  ([LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md)).
+- **Dry-run preparation** — `prepare_dry_run` recognizes the candidate, reproduces its
+  artifact and derives the selected-rule reference suite. It reports the account-Wasm,
+  captured-target and live layers as unavailable
+  ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md)).
+- **Scheduled, not exposed** — the full four-layer `dry_run`. The full dry-run harness needs
+  its own evidence before exposure.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
@@ -354,8 +366,9 @@ ends even if a client disconnects. That limit is independent of build capacity; 
 rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
 `preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
-at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
-per-tool quotas are still owed before genuine multi-tenant public hosting.
+at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
+supplies OS-level compile isolation and a no-secrets worker role; per-tool quotas and request
+cancellation are still owed before genuine multi-tenant public hosting.
 
 The [self-hosting package](SELF-HOSTING.md) supplies a pinned container build, TLS proxy,
 operator configuration and disposable endpoint/offline-build checks for one operator with

@@ -8,9 +8,11 @@ synthesizes a context rule plus a small, validated composition of policies that 
 exactly what you approved — and denies everything else it can observe. Output is
 human-readable Rust implementing the OpenZeppelin `Policy` trait, produced by a
 deterministic, auditable pipeline. **Code-first, deploy-second:** the toolkit itself never
-deploys anything. Two scripts do: `scripts/demo-tranche1.sh` and the Tranche 2
-[testnet harness](testnet-harness/README.md). Both deploy only to testnet, with throwaway keys,
-and only when you run them.
+deploys anything. Three components do: `scripts/demo-tranche1.sh`, the Tranche 2
+[testnet harness](testnet-harness/README.md), and the local wallet backend of the
+[Pollywallet integration](docs/POLLYWALLET-INTEGRATION.md), which creates an account, submits
+an owner-signed sample transfer and deploys a generated policy. All three act only on testnet,
+with throwaway fee-payer keys, and only when you run them.
 
 The full technical architecture (v0.8) lives in `docs/architecture.md`. The Tranche 1
 release surface is the core pipeline — recorder → PolicySpec → synthesizer → codegen —
@@ -87,16 +89,22 @@ crates/
   policy-spec       PolicySpec v1: schema, validation (typestate), canonical hashing
   synthesizer       pure: RecordingBundle(s) + user decisions -> PolicySpec
   evaluator         independent reference evaluator (never depends on codegen)
+  harness           dry-run layer 1: constraint-derived permit/deny suite over the evaluator
   codegen           pure: ValidatedSpec -> Rust policy crate source
-  build-runner      bounded local builds + BuildManifest attestation of the wasm
-  registry          signed capability registries (policy / account / verifier)
+  build-runner      bounded local or worker builds + BuildManifest attestation of the wasm
+  registry          signed registries (policy / account / verifier / template / target adapter)
+  call-surface-core pure account authority check over a modeled rule set
   api-types         MCP DTOs + stable machine-readable error codes
   toolkit           the operations both shells call, and the only place they live
-  mcp-server        rmcp stdio shell over the library (no domain logic)
+  mcp-server        rmcp shell over the library, stdio or streamable HTTP (no domain logic)
   cli               human-oriented shell over the same library
 contracts/          separate cargo workspace: golden generated policy + soroban tests
+execution-runtime/  separate cargo workspace: native account-Wasm and captured-target worker
 scripts/            dependency-rule check, determinism check
 testnet-harness/    Tranche 2: install a generated policy into an OZ account on testnet (node)
+wallet/             Tranche 2: local wallet backend for the Pollywallet integration (node)
+deployment/         Tranche 2: self-hosted MCP image, TLS proxy and disposable build workers
+skills/             the policy-builder Claude skill; .claude-plugin/ packages it with the server
 ```
 
 The security-critical cores have unit, property, differential, and real-toolchain
