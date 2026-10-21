@@ -56,6 +56,8 @@ fn bundle_for(target: &str, fn_name: &str, args: Vec<ArgSummary>, tag: &[u8]) ->
                 code_hash: account_record().observed_code_hash,
             },
             observed_ledger: ozpb_domain::LedgerSeq(4_200_000),
+            last_modified_ledger: None,
+            live_until_ledger: None,
         },
     );
     contract_executables.insert(
@@ -65,6 +67,8 @@ fn bundle_for(target: &str, fn_name: &str, args: Vec<ArgSummary>, tag: &[u8]) ->
                 code_hash: sha256(tag),
             },
             observed_ledger: ozpb_domain::LedgerSeq(4_200_000),
+            last_modified_ledger: None,
+            live_until_ledger: None,
         },
     );
     RecordingBundle {
@@ -96,7 +100,9 @@ fn bundle_for(target: &str, fn_name: &str, args: Vec<ArgSummary>, tag: &[u8]) ->
         state_changes: vec![],
         contract_executables,
         evidence_notes: vec![],
+        acquisition: None,
         raw: RawEvidence {
+            result_xdr_base64: None,
             envelope_xdr_base64: format!("fixture-envelope-{}", hex::encode(tag)),
             result_meta_xdr_base64: None,
             simulated_auth_xdr_base64: vec![],

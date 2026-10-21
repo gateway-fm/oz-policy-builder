@@ -10,8 +10,9 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use ozpb_api_types::{
-    CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput, ErrorCode,
-    PrepareInstallIntentInput, PrepareInstallIntentOutput, ToolError,
+    AssembleInstallTransactionInput, AssembleInstallTransactionOutput, CheckPolicyCallSurfaceInput,
+    CheckPolicyCallSurfaceOutput, ErrorCode, PrepareInstallIntentInput, PrepareInstallIntentOutput,
+    ToolError,
 };
 use ozpb_source_rpc::{scan_authority_state, HttpTransport};
 
@@ -34,6 +35,57 @@ fn capped(bounds: ozpb_source_rpc::AccountScanBounds) -> ozpb_source_rpc::Accoun
 
 #[tool_router(router = authority_tool_router, vis = "pub(crate)")]
 impl PolicyBuilderServer {
+    /// Assemble an unsigned installation or separate restoration transaction.
+    #[tool(
+        name = "assemble_install_transaction",
+        description = "Runs the authority check and derives the install arguments itself, then \
+                       reads the fee payer sequence and fees and records unsigned authorization \
+                       to assemble bounded unsigned XDR. Never signs or submits. Recording mode \
+                       does not enforce owner authorization: the wallet must independently \
+                       validate all returned fields, recheck authority, obtain protected user \
+                       approval, construct owner authorization and enforce-simulate before signing. \
+                       A separate restoration response contains only a restore transaction and \
+                       requires a fresh intent and assembly after execution. Uses only an \
+                       operator-configured RPC source; may rebuild generated policies.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn assemble_install_transaction(
+        &self,
+        Parameters(input): Parameters<AssembleInstallTransactionInput>,
+    ) -> Result<Json<AssembleInstallTransactionOutput>, CallToolResult> {
+        let (trust, source, rpc_url, deadline, slot) =
+            self.authority_setup(&input.intent_request, 0)?;
+        let build_config = self.build_config.clone();
+        let work = tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            let plan = ozpb_toolkit::plan_install_intent_read(
+                &input.intent_request,
+                &trust,
+                &build_config,
+            )?;
+            let scan = read(&plan, &source, rpc_url.clone())?;
+            let intent = ozpb_toolkit::prepare_install_intent_from_scan(
+                &plan,
+                &input.intent_request.rpc_source,
+                &scan,
+            )?;
+            let request = ozpb_toolkit::install_assembly_request(&input, &intent)?;
+            let observed = ozpb_source_rpc::assemble_install_transaction(
+                &HttpTransport::new(rpc_url),
+                &source.network_passphrase,
+                &request,
+            )
+            .map_err(crate::rpc_tool_err)?;
+            ozpb_toolkit::install_assembly_output(&input, intent, observed)
+        });
+        Ok(Json(finish(work, deadline).await?))
+    }
+
     /// Read who can change the account or reset the policies being installed.
     #[tool(
         name = "check_policy_call_surface",
@@ -60,7 +112,7 @@ impl PolicyBuilderServer {
         &self,
         Parameters(input): Parameters<CheckPolicyCallSurfaceInput>,
     ) -> Result<Json<CheckPolicyCallSurfaceOutput>, CallToolResult> {
-        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input)?;
+        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input, 0)?;
         let build_config = self.build_config.clone();
         let work = tokio::task::spawn_blocking(move || {
             let _slot = slot;
@@ -94,7 +146,7 @@ impl PolicyBuilderServer {
         &self,
         Parameters(input): Parameters<PrepareInstallIntentInput>,
     ) -> Result<Json<PrepareInstallIntentOutput>, CallToolResult> {
-        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input)?;
+        let (trust, source, rpc_url, deadline, slot) = self.authority_setup(&input, 0)?;
         let build_config = self.build_config.clone();
         let work = tokio::task::spawn_blocking(move || {
             let _slot = slot;
@@ -119,9 +171,10 @@ impl PolicyBuilderServer {
     /// (resolved first, so an unknown name or another network fails before any build or
     /// read), its allowlisted URL, a deadline that leaves room for the builds, and on a hosted
     /// server a work slot.
-    fn authority_setup(
+    pub(crate) fn authority_setup(
         &self,
         input: &CheckPolicyCallSurfaceInput,
+        additional_builds: u32,
     ) -> Result<Setup, CallToolResult> {
         let trust = self.registry_trust.clone().ok_or_else(|| {
             tool_err(ToolError::new(
@@ -153,7 +206,11 @@ impl PolicyBuilderServer {
         let deadline = self
             .build_config
             .timeout
-            .saturating_mul(u32::try_from(generated_rules).unwrap_or(u32::MAX))
+            .saturating_mul(
+                u32::try_from(generated_rules)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(additional_builds),
+            )
             .saturating_add(READ_DEADLINE);
         let slot = match &self.authority_slots {
             Some(slots) => Some(slots.clone().try_acquire_owned().map_err(|_| {

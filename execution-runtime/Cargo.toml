@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "ozpb-execution-runtime"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[dependencies]
+# The execution host follows the captured network protocol. Contract generation
+# remains pinned independently to SDK 26; only canonical XDR crosses this boundary.
+soroban-sdk = { version = "=29.0.1", features = ["testutils"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+base64 = "0.22"
+ed25519-dalek = "2"
+stellar-strkey = "0.0.18"
+ozpb-domain = { path = "../crates/domain" }
+ozpb-policy-spec = { path = "../crates/policy-spec" }
+ozpb-evaluator = { path = "../crates/evaluator" }
+ozpb-harness = { path = "../crates/harness" }
+ozpb-api-types = { path = "../crates/api-types" }
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
