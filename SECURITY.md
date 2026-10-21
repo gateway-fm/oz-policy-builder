@@ -38,9 +38,10 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
 - The local build runner bounds environment, inputs, outputs and time, and on a hosted
   (`--http`) server the number of builds running at once. It is not a multi-tenant sandbox
   and is not offered as one.
-- The library and the MCP server never sign, submit, or deploy, and hold no keys. The demo
-  script, the testnet harness and the local wallet backend do, on testnet only, with
-  disposable keys they generate; the wallet's owner signs with the user's own passkey.
+- The library and the MCP server never sign, submit, or deploy, and hold no account, owner or
+  fee-payer keys. The demo script, the testnet harness and the local wallet backend do, on
+  testnet only, with disposable keys they generate; the wallet's owner signs with the user's
+  own passkey.
 - No independent third-party audit has been performed. The evidence that has actually been
   run is in `docs/TESTNET-EVIDENCE.md` and, for the second milestone's controlled testnet
   harness runs, `docs/TESTNET-EVIDENCE-TRANCHE-2.md`; those runs are local RPC observations,

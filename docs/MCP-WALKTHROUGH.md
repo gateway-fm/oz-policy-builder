@@ -66,8 +66,9 @@ hash and no signature.
 **Going further than one command is better done with the skill.** The flow needs decisions
 only you can make — how long the grant lives, a call cap, a spend limit, which signer.
 The skill asks for them and guides the available record, synthesize, reference, generate,
-and verify tools, with optional exact-envelope preflight. It stops before deployment or
-installation (§4.7).
+and verify tools, with optional exact-envelope preflight. Once the policies are deployed, it
+continues to the advisory authority check and install intent; it never deploys, signs or
+installs (§4.7).
 
 ### Two more things worth trying
 
@@ -276,6 +277,8 @@ evaluator answering about a spec —
 not a smart account executing a policy, which is a different and stronger claim that belongs
 with the harness.
 
-The `policy-builder` skill guides the available tools and stops at an artifact and evidence
-summary. Its layer-1 reference suite is not the full contract/live dry run. The complete
-dry-run report, wallet install flow, and a deployed hosted endpoint remain scheduled work.
+The `policy-builder` skill guides the available tools through an artifact and evidence
+summary and, once the policies are deployed, the advisory authority check and install intent;
+it never signs or installs. Its layer-1 reference suite is not the full contract/live dry run.
+The complete dry-run report, wallet install flow, and a deployed hosted endpoint remain
+scheduled work.

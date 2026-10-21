@@ -7,8 +7,8 @@ remain in [TESTNET-EVIDENCE.md](TESTNET-EVIDENCE.md), sections 1–3.
 
 The [testnet harness](../testnet-harness/README.md) is the executable source for the install
 flow. Its run records are local observations, not authenticated ledger proofs. The
-[scope map](SCOPE.md) names the remaining requirements. The 15 October observations predate later installer fixes; section 8 records a separate
-20 October run against the reviewed subscription harness.
+[scope map](SCOPE.md) names the remaining requirements. The 15 October observations predate
+later installer fixes; sections 8 and 9 record the controlled 20 October W2 and W3 runs.
 
 ## 4. Pinned account, passkey owner, and generated policy
 

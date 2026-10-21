@@ -444,10 +444,10 @@ bash testnet-harness/run.sh
   None of this shows that a human approved the install, or that an agent with the same access
   could not approve itself. That claim needs a real wallet's protected approval screen.
   `run.json` records the decision under that label, with the exact operator-trusted identities.
-- It ran on testnet once per path, on 2026-10-15; the later W2 and W3 runs also took the
-  accepted path (see the testnet evidence, sections 8 and 9). Both 15 October runs used a
-  passkey owner and an `ozpb` built from the authority-check branch before those commands
-  were integrated into this tree.
+- The refused path ran on testnet once, on 2026-10-15. The accepted path ran that day and
+  again in the 20 October W2 and W3 runs (see the testnet evidence, sections 8 and 9). Both
+  15 October runs used a passkey owner and an `ozpb` built from the authority-check branch
+  before those commands were integrated into this tree.
   One run was accepted: the intent, the
   decision, the screen, the re-check and the install all ran, and then the delegate's permit and
   denials. The other was refused: a second owner rule for an account the wallet does not trust,
