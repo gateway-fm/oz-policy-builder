@@ -9,6 +9,8 @@ not establish a wallet's protected human approval.
 **Status.** W3 is executable through `run.sh`. A controlled run on 20 October 2026 completed every
 step below; an earlier run that day predates the two transfer-rule denials
 ([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-runs-20-october-2026)).
+A run on 22 October 2026 repeated every W3 step with the [derived denials](#derived-denials) and
+passed ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
 2026 completed every W1 step after four stopped attempts
@@ -115,9 +117,9 @@ derived denials from that spec's suite are refused by the predicted enforcer. Th
 confirmed delegated positive, plus the suite's originals permitted in simulation, plus denials
 identified by the suite hash. All of these are enforcing simulations after installation, at their
 reported ledgers; nothing is submitted. The hand-written controls below do not count toward the
-five. **Status:** W1 passed live on 22 October 2026, at exactly the minimum of five denials
-([section 12 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)).
-W3 has no passing live report yet.
+five. **Status:** both passed live on 22 October 2026: W1 at exactly the minimum of five denials
+([section 12 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)),
+W3 with ten ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
 
 ### Required observations
 

@@ -74,6 +74,15 @@ eba348c235c510bef6f619f4132f0c4efb60b212bdd944f0c51b3278be58109b|testnet-tx|owne
 2e019c91a1919dd37e634b7ff55cb1b1726f40719c13a5b346f15feb14b2b603|testnet-tx|owner-authorized claim-rule (ID 1) removal at ledger 5328861
 3e109c59d6e00d4ebc7e0aaae2139382ebe9c380428c1b961471fcdb4456db72|testnet-tx|owner-authorized Blend withdrawal at ledger 5328866 for the October 22 derived-denial Blend run
 
+# Controlled October 22 Soroswap run with derived denials in docs/TESTNET-EVIDENCE-TRANCHE-2.md
+# section 13; public testnet outcomes, not recomputed or independently fetched by the offline gate.
+5ff1093ff365c824d1e6ff2d26cc6b52a86afae38116c5c52bb944d52c471ac6|testnet-tx|owner swap recorded for the October 22 derived-denial Soroswap run, ledger 5329068
+49c3e2ba804e140042cda37a8d7a625fb61fec590478ed899f1c764af0f54e0d|testnet-tx|owner-authorized installation of the router rule (account rule ID 1), October 22 derived-denial Soroswap run
+ff7bd39b8634a50dedf35babdccddfe30841b744a2ed6d9edf4eda4515c5bc42|testnet-tx|owner-authorized installation of the transfer rule (account rule ID 2), October 22 derived-denial Soroswap run
+33b4717212eab0b9d46d117e1b9b16c8fab37272c65a9d1733e249903ffc3d28|testnet-tx|delegated swap at ledger 5329098, October 22 derived-denial Soroswap run
+cb91fafb2544bd0e58238257ecc6de6d6e04bb0a2d61bcf7e42a285c50fe0df2|testnet-tx|owner-authorized transfer-rule (ID 2) removal at ledger 5329252
+c16b10fd54019a80caad6c3e2e7bfeba144ab7ef99a6b5258dccbed68a5896ef|testnet-tx|owner-authorized router-rule (ID 1) removal at ledger 5329253
+
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.

@@ -469,7 +469,82 @@ Its journal records the same five derived denials meeting their enforcers, a ver
 an empty withdrawal readback. Its summary is not committed; this record uses the later run, made with
 a freshly built CLI.
 
-## 13. Evidence still needed
+## 13. Controlled Soroswap swap run with derived denials, 22 October 2026
+
+The [allowlisted run summary](evidence/testnet-soroswap-derived-2026-10-22.json) records a
+complete [W3 harness execution](WALKTHROUGH-PROTOCOLS.md#w3-soroswap) from 11:34:35 to 11:51:09
+UTC. The checkout was clean at `2d16dfe1c9722a3c593d69a71c5de2f7a7016b2e`, the commit that lets a
+policy upload name a 15-XLM fee ceiling. The external CLI was the section 12 binary, built from
+`4feb59ea733dff70db6a8309d6078153ea735fc2`; no Rust source changed between the two commits. Its
+byte digest is retained in the provenance; it identifies the executable, not its source. The owner
+was a throwaway ed25519 key, and both rules were approved in the explicit operator mode without a
+human prompt. The keys were deleted when the run ended. The summary is the wrapper's own export.
+
+The selected account was `CAYI3PJNRFKCH44YCFLLTMURZURAV44KWMWG2ZD3NS3H7YLMP5HN54K6`. Both rules
+were valid until ledger 5329248: the router rule (account rule ID 1) and the transfer rule (ID 2).
+
+| Observation | Recorded result |
+| --- | --- |
+| Owner recording and artifact chain | [Owner swap](https://stellar.expert/explorer/testnet/tx/5ff1093ff365c824d1e6ff2d26cc6b52a86afae38116c5c52bb944d52c471ac6) of 0.1 XLM confirmed at 5329068 with 177477 output units and a matching balance increase, then the real RPC recorder, synthesis, the 63-case reference suite and matching source/Wasm/manifest reproduction for both rules. |
+| Policy uploads | Read back from the network after the run (not part of the summary): the router-rule policy's upload carried a fee of 101,536,121 stroops (10.15 XLM), above the former ten-XLM ceiling and within the new 15-XLM one, and was charged 87,423,577. The transfer-rule policy's carried 99,478,611. |
+| Install | The [router rule](https://stellar.expert/explorer/testnet/tx/49c3e2ba804e140042cda37a8d7a625fb61fec590478ed899f1c764af0f54e0d) was checked at 5329079, rechecked at 5329080, installed at 5329081 and read back matched at 5329081. The [transfer rule](https://stellar.expert/explorer/testnet/tx/ff7bd39b8634a50dedf35babdccddfe30841b744a2ed6d9edf4eda4515c5bc42) was checked at 5329084, rechecked at 5329085, installed at 5329086 and read back matched at 5329086. |
+| Derived denials | The CLI emitted the installed spec's 63-case suite and the replay verified its suite hash. Both recorded calls (`case-0`, the swap, and `case-34`, the transfer) were permitted in simulation at 5329090. All ten live-realizable deny cases were refused at 5329090–5329091 by the predicted enforcer. The 32 deny cases that stay offline are listed by class and reason, and the 19 other permit cases stay layer-1 only. Nothing was submitted. |
+| Router-rule and signer controls | A larger input, a lower output floor and a different deadline each returned the router-rule policy's code 6; an empty signer set its code 1. A wrong signer returned the account's 3016. All at 5329092–5329096. |
+| Transfer rule alone | A direct transfer to the pair was permitted in simulation at 5329096, as disclosed, and not submitted. A direct transfer one unit above the cap returned the transfer-rule policy's code 6 at 5329096. |
+| Delegated swap and count caps | [Delegated swap](https://stellar.expert/explorer/testnet/tx/33b4717212eab0b9d46d117e1b9b16c8fab37272c65a9d1733e249903ffc3d28) confirmed at 5329098 with 177477 output units. At 5329101 a repeat swap returned the router-rule policy's code 7, and a direct transfer the transfer-rule policy's code 7. |
+| Expiry | After the wait reached ledger 5329249 (the grants' last valid ledger plus one), the account returned `UnvalidatedContext` (3002) at 5329249. |
+| Owner removal | [Transfer-rule removal](https://stellar.expert/explorer/testnet/tx/cb91fafb2544bd0e58238257ecc6de6d6e04bb0a2d61bcf7e42a285c50fe0df2) and [router-rule removal](https://stellar.expert/explorer/testnet/tx/c16b10fd54019a80caad6c3e2e7bfeba144ab7ef99a6b5258dccbed68a5896ef) confirmed at 5329252 and 5329253. Each event matched, each rule read back absent, and each policy reported uninstalled. |
+| Post-removal control | The account's missing-rule code 3000 at 5329256. |
+
+The derived denials, by enforcer:
+
+| Cases | Class | Enforcer and code |
+| --- | --- | --- |
+| `case-5`, `case-8` | router rule: input above the cap; output below the floor | router-rule policy `NoTupleMatched` #6 |
+| `case-19` | router rule: empty signer set | router-rule policy `ZeroSigners` #1 |
+| `case-39`, `case-43` | transfer rule: stranger recipient; amount above the cap | transfer-rule policy `NoTupleMatched` #6 |
+| `case-48` | transfer rule: empty signer set | transfer-rule policy `ZeroSigners` #1 |
+| `case-20`, `case-22`, `case-49`, `case-51` | each rule: unrecognized signer; delegate plus an unrecognized signer (one account check per rule) | account `UnauthorizedSigner` 3016 |
+
+Offline, not replayed, for each rule: the undeployed contract and the absent function (no live
+stand-in); the mutation of the argument that asks the account to authorize (the swap `to`, the
+transfer `from`); type confusions, arity and, for the router, the route and deadline value
+changes (rejected before authorization); strict-set, call-count and missing-state cases
+(installation state); and the time boundary.
+
+This is W3's first passing report under [§7's definition](#what-a-passing-permitdeny-report-is):
+both recorded calls were permitted, the delegated swap was confirmed, and ten derived denials,
+five per rule, were refused by their predicted enforcers. Each rule's two unrecognized-signer
+cases stop at the same account check. All 14 control steps completed, and the wrapper finalized
+with exit 0. The same limits apply as in section 9: fixed harness widenings, no reviewed adapter,
+editable local RPC observations, non-atomic reads, no ledger proof and no protected
+wallet-approval claim.
+
+### Earlier attempts
+
+Two W3 attempts earlier that day stopped before completing.
+
+1. `CD4JERDBPZW3CDCXV2MI54XZVE4SHEQIK5XL6N2533TUZH2E2PFJFVSS`, from 10:00:57 UTC at
+   `4feb59ea733dff70db6a8309d6078153ea735fc2` with an earlier build of the CLI. Both rules were
+   installed (IDs 1 and 2, valid until ledger 5328121). Its journal records the derived-denial
+   step completing, with both originals permitted and ten denials refused as predicted, and the
+   controls through the delegated swap and both count caps. The process was then ended during
+   the expiry wait, and the wrapper's exit handling did not complete: the provenance was never
+   finalized, no summary was exported, and the journal records no removal or cleanup. The
+   throwaway keys are no longer available, so **neither rule can be removed**. A read-only check
+   at ledger 5329062 found both rules still present with `valid_until` 5328121, so the account's
+   expiry check refuses them, and both policies reporting themselves installed with zero
+   remaining calls. They remain on that throwaway account as expired, spent rules. This attempt
+   is not counted as a report.
+2. `CCARUZYNM7LL6NKB27URAVGZ4KVUZSODBPEPXWMY3KCH2HLNWOLCOOKR`, from 11:18:54 to 11:20:03 UTC at
+   the same commit with the section 12 CLI. The harness refused to sign the router-rule policy's
+   upload because its assembled fee exceeded the ten-XLM upload ceiling then in force; a
+   read-only simulation a few ledgers later put it at 101,220,139 stroops. Nothing was uploaded,
+   deployed or installed. The cleanup recorded `no_installed_grants`, a read-only check found only
+   the owner rule, and the keys were deleted at exit. Fixed by the 15-XLM policy upload ceiling
+   ([harness README](../testnet-harness/README.md#keys)).
+
+## 14. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -478,9 +553,10 @@ two-rule Soroswap swap runs with expiry and per-rule removal; the second include
 transfer rule's own policy. Section 10 adds one Blend claim run on a supply position the harness
 opened and withdrew.
 
-Sections 11 and 12 add a W2 and a W1 run with the derived-denial step; both pass under
-[§7's definition](#what-a-passing-permitdeny-report-is), W1 at exactly the minimum of five. The
-section 8–10 runs predate that step, so W3 has no passing report yet.
+Sections 11, 12 and 13 add a W2, a W1 and a W3 run with the derived-denial step; all three pass
+under [§7's definition](#what-a-passing-permitdeny-report-is), W1 at exactly the minimum of five.
+The section 8–10 runs predate that step. Two rules from an interrupted W3 attempt remain installed,
+expired and spent, on a throwaway account (section 13).
 
 Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed Blend and
 Soroswap adapters rather than `evidence_only` code observations and fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
