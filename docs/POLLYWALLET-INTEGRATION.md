@@ -176,7 +176,9 @@ for this owner-passkey flow.
 With `nativeExecutable` or `liveHelper` configured, the route can create a local automation
 delegate. The backend generates an Ed25519 key in process memory and returns only its public
 address and an opaque capability ID; at most eight exist per backend, and they disappear when it
-stops. Use that address as the grant's restricted delegate. The owner passkey never stands in for
+stops. It also creates the key's classic testnet account through Friendbot, a testnet write that
+costs the fee payer nothing: the authority review refuses a grant whose delegate account does not
+exist, and the host checks the delegate's signatures against that account. Use that address as the grant's restricted delegate. The owner passkey never stands in for
 it, and a grant naming any other delegate address cannot run these checks. The key never signs
 supplied bytes. It signs through two capabilities only, each refusing the other's network: the
 offline capability signs authorization preimages in the derived offline execution network, and
@@ -312,9 +314,9 @@ two named cases, not the derived deny suite.
    deployed candidate's code, which must be the reviewed Wasm; that the recipient exists and the
    account's balance covers the amount; and the account's `NextId` and `Count`, every rule below
    `NextId`, and the candidate's installation marker for the next rule ID, which must be the one
-   the review established. It creates the delegate's classic testnet account through Friendbot if
-   it does not exist, because the host checks a classic signer against its account entry; this is
-   a testnet write that costs the fee payer nothing. It then fixes the expiry ledger N, 30 ledgers
+   the review established. It reads back the delegate's classic testnet account, which must be
+   signable by its master key alone, and creates it through Friendbot if it is missing. It then
+   fixes the expiry ledger N, 30 ledgers
    (about two and a half minutes) after the ledger it read, and returns the consent statement.
    Nothing is signed, and nothing signable has been released.
 2. **Consent.** The browser derives the statement itself from the reviewed grant and the

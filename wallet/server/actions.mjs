@@ -244,10 +244,15 @@ export function createWalletActions({ session, toolchain, network, native = null
       return freezeCopy({ reviewId, intent, expected, wallet, ownerRuleXdr, verification });
     },
     // A local automation delegate: the key stays in this process; it never becomes an owner signer.
+    // Its classic testnet account is created at once through Friendbot: the authority review
+    // refuses a grant whose delegate account does not exist, and the host checks its signatures
+    // against that account.
     'create-delegate': async (input) => {
       exact(input, []);
       if (!native && !live) refuse();
-      return delegates.create();
+      const created = delegates.create();
+      await network.ensureDelegateAccount(created.address);
+      return created;
     },
     // Both local execution layers for one reviewed grant, from one CLI preparation (one run hash).
     // `signal` aborts when the HTTP client disconnects: every child process group is killed and

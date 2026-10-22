@@ -13,6 +13,7 @@ export function setup({ native = null, live = null, delegates } = {}) {
     assertTestnet: async () => { calls.push('network'); },
     requireCode: async (hash) => { calls.push(['code', hash]); },
     fundPayer: async () => { calls.push('fund'); },
+    ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
     latestLedger: async () => 123,
     requireInstance: async (address, hash) => { calls.push(['instance', address, hash]); },
     create: async (_hash, _args, stage) => {

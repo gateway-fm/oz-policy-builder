@@ -275,7 +275,8 @@ function PolicyBuilder() {
         {(state?.status?.capabilities.accountCheck || state?.status?.capabilities.liveCheck) && <div className="space-y-2 text-sm">
           <button className={button} disabled={busy || !!state.delegate}
             onClick={() => void run((value) => value.createDelegate())}>Create local automation delegate</button>
-          <p className="text-slate-400">The backend creates an Ed25519 delegate key held only in its memory and discarded when it stops.
+          <p className="text-slate-400">The backend creates an Ed25519 delegate key held only in its memory and discarded when it stops,
+            and creates its testnet account through Friendbot so that a grant can name it.
             It signs offline candidate-execution checks and, only after you consent, the live check's two testnet transfers, which
             the backend simulates and never submits. It is automation, not your owner passkey, and no key leaves the backend.</p>
         </div>}

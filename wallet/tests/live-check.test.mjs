@@ -263,3 +263,13 @@ test('the delegate signs nothing when the fee payer cannot be read for the envel
   assert.equal(layerOf(await f.actions['run-live'](input)).status, 'unavailable');
   assert.equal(f.delegates.liveSignatures, 0);
 });
+
+test('a created delegate exists on testnet before any review names it', async () => {
+  const f = setup({ live: { helper: HELPER } });
+  const funded = [];
+  f.network.ensureDelegateAccount = async (address) => { funded.push(address); return { ledger: 1, createdNow: true }; };
+  const delegate = await f.actions['create-delegate']({});
+  assert.deepEqual(funded, [delegate.address], 'the authority check refuses a grant whose delegate account does not exist');
+  f.network.ensureDelegateAccount = async () => { throw new Error('wallet network operation refused'); };
+  await assert.rejects(() => f.actions['create-delegate']({}), /refused/);
+});
