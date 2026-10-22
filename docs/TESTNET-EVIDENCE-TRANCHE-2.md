@@ -135,7 +135,8 @@ Review these fields before sharing the summary:
 | `run.invocations` | Separate owner controls from delegate calls; inspect arguments, selected rule, result and error attribution. A null denial code is not an attributed policy refusal. Simulation denials have no transaction ID. |
 | `pipeline` | A `recorded` completion record describes the new CLI chain. Check the distinct RPC acquisition and `self_supplied` synthesis identities; trust downgrade changes the recording hash. Artifact reproduction remains separate from current-network preflight. Older runs say `not_recorded`. |
 | `lifecycle` | Check removal transaction, event, absent-rule and policy-cleanup observations separately. Configuration reads carry distinct RPC ledger numbers and are non-atomic; a match covers the recorded rule and code pins, not the whole authority surface. `post_revocation` invocation controls retain their actual result, including a failure to obtain the expected denial. |
-| `artifacts` | Digests of available run, provenance, spec, recording, import bundle, manifest and Wasm bytes. Missing artifacts remain missing. JSON file digests are not canonical spec hashes. |
+| `derived_denials` | W1, W2 and W3 only. Check that `suite.spec_hash` is the pipeline's, that each original is `permitted` and each case's `observed` enforcer and code equal its `expected` ones, and read `offline` for what was not replayed and why. `live_stand_in` marks a case realized by a control's live equivalent (W1's pool `submit`, W2's control token). Labels say post-install, state-dependent, simulation-only, never submitted. |
+| `artifacts` | Digests of available run, provenance, spec, recording, import bundle, manifest and Wasm bytes, and the emitted suite (`derived_cases`). Missing artifacts remain missing. JSON file digests are not canonical spec hashes. |
 
 No field makes the summary an acceptance verdict. The exporter checks types and selected
 consistency relationships, not the truth of a file supplied by another person. It does not
@@ -144,6 +145,35 @@ historical invocation against the current installed policy. Retain the raw artif
 for deeper review. Do not publish the secrets file or a whole run directory: free-form logs,
 raw errors and operator configuration are outside the export's allowlist. The summary still
 exposes public account relationships and must be reviewed before publication.
+
+### What a passing permit/deny report is
+
+A walkthrough's permit/deny report passes when both of these hold:
+
+- **The original call is permitted.** The delegated positive is confirmed, and the spec's suite
+  original, replayed on the recorded call, is permitted in simulation.
+- **At least five denials are refused.** They come from that spec's own layer-1 suite,
+  identified by its suite hash and emitted from the installed spec, not from hand-written
+  controls. Each is refused in an enforcing simulation against the installed rule by the
+  enforcer its class predicts, attributed by contract id. The report names the expected and
+  observed enforcer for every replayed case and lists every other case as offline (layer 1).
+
+The scope is narrower than "the suite":
+
+- The denials are simulations after installation, observed at their reported ledgers; nothing is
+  submitted.
+- Time, call-count, missing-state and strict-signer-set cases need ledger or installation state
+  the live grant does not have, so they stay offline (layer 1).
+- So do mutations the target rejects before the account is asked to authorize: arity, type
+  confusion, or a value of another type.
+- So does replacing the argument that asks the account to authorize, which moves the
+  authorization off the account.
+- The suite's undeployed contract address and absent function name are realized live only where
+  a control has already shown a live equivalent.
+- An unrecognized signer alone and the delegate plus an unrecognized signer stop at the same
+  account check. Both count toward the five, so W1's five suite cases are four distinct checks.
+- The report lists every offline case by class and reason. The
+  [harness README](../testnet-harness/README.md#derived-denials) gives the selection rule.
 
 ## 8. Controlled SEP-41 subscription run, 20 October 2026
 
@@ -335,6 +365,9 @@ separate cleanup checks; the known reference-model gap remains explicit. Section
 two-rule Soroswap swap runs with expiry and per-rule removal; the second includes denials by the
 transfer rule's own policy. Section 10 adds one Blend claim run on a supply position the harness
 opened and withdrew.
+
+The section 8–10 runs predate the derived-denial step, so none of them is a passing report under
+[§7's definition](#what-a-passing-permitdeny-report-is).
 
 Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed Blend and
 Soroswap adapters rather than `evidence_only` code observations and fixed harness widenings, the remaining harness layers with their actual evidence boundaries,

@@ -287,6 +287,7 @@ node synthesis-flow.mjs --run-dir R          # real record/synthesis/reference/b
 node install.mjs --run-dir R --wasm R/policy/<name>.wasm
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect permit
 node monitor.mjs --run-dir R                  # read-only grant/code observation; no signing key
+node derived-denials.mjs --run-dir R          # W1/W2/W3 only: this spec's suite, enforcing simulations
 node lifecycle.mjs --run-dir R                # owner signs removal; needs the run's keys
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
@@ -323,6 +324,59 @@ The same number from another contract does not count. The native SAC's #6, for e
 `AccountMissingError`. The passkey's negative control,
 `invoke.mjs --signer owner --rule 0 --wrong-challenge yes --expect deny:3114`, counts the code only
 when the WebAuthn verifier contract raised it.
+
+## Derived denials
+
+`derived-denials.mjs --run-dir R` runs right after installation in the W1, W2 and W3 modes,
+before any delegated call. It replays the spec's own layer-1 suite against the installed rules:
+
+- `ozpb reference-suite --spec R/spec.json --emit-cases` writes `R/derived-cases.json`. The
+  script requires three things of the emitted list:
+  - its spec hash is the installed artifacts' (`pipeline.json` or `protocol-pipeline.json`);
+  - its `suite_hash` recomputes over exactly those cases;
+  - its labels, classes and expectations are the ones the pre-install reference report agreed with.
+
+  The suite hash is a checksum, not a signature. What binds the cases to the grant is that the
+  script runs the CLI on the installed spec itself. To check a report, re-run that command on
+  the retained `spec.json` and compare.
+- Each rule's recorded call (the call the grant was synthesized from) must be permitted.
+- Every deny case of a live-realizable class is then replayed in suite order, not chosen by name:
+  argument and cross-product mutations applied to the recorded call, the function and contract
+  classes, and the signer sets. Fewer than five such cases refuses the run before anything is
+  simulated.
+- Some cases cannot be carried by a live call. They are listed under `offline` with a reason
+  and are not counted:
+  - `ledger_time`: time boundaries;
+  - `installation_state`: call-count, missing-state and strict-set cases;
+  - `host_rejects_before_authorization`: arity, type confusion, or a value of another type;
+  - `authorizer_replaced`: a mutation of the argument that asks the account to authorize, i.e.
+    the transfer or claim `from` or the swap `to`;
+  - `no_live_stand_in`: the suite's undeployed contract or absent function, unless a control has
+    already shown a live equivalent. W1 uses the pool's `submit`; W2 uses the funded control
+    token. Both are labeled `live_stand_in`.
+- Each case must be refused by the enforcer its class predicts, attributed by contract id as for
+  `invoke.mjs`:
+  - the account's `UnvalidatedContext` (3002) for another contract;
+  - the account's `UnauthorizedSigner` (3016) for an unrecognized signer;
+  - otherwise the first policy in the live rule's own order that refuses: generated `#1`, `#5`
+    or `#6`, or W2's spending policy `3223` or `3221`.
+- A permit or any other attribution fails the run, and the failure cleanup removes the grant.
+
+The suite's unrecognized signer sorts before any real delegate, so "authorized set plus an
+unrecognized signer" stops at the same account check as "unrecognized signer" alone. That is two
+suite cases but one live check.
+
+The account's authorization entries are built from the realized call, with a random nonce. The
+delegate signs them, and they are sent only to the RPC simulation. A signed original is a valid
+authorization of the real call until it expires, and the endpoint sees it, so it expires five
+ledgers after the latest one read. The journal (`run.json` → `derived_denials`, exported as `derived_denials`) records:
+
+- the suite and spec hashes;
+- the live policy order;
+- each case's id, class, realization, expected and observed enforcer and code, and ledger;
+- the offline list.
+
+Its labels say what it is: post-install, state-dependent, simulation-only, never submitted.
 
 ## What a run does and does not show
 

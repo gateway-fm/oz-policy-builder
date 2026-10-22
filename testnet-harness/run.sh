@@ -149,9 +149,13 @@ if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then
     ( cd contracts/golden-transfer-policy && cargo fetch --locked >/dev/null )
     node "$SCRIPTS/protocol-flow.mjs" --run-dir "$RUN"
 
-    say "4. install each rule separately after its own authority check, then read each back"
+    say "4. install each rule separately after its own authority check, read each back, replay derived denials"
     node "$SCRIPTS/bundle-command.mjs" install --run-dir "$RUN" --confirm operator
     node "$SCRIPTS/bundle-command.mjs" inspect --run-dir "$RUN"
+    # This spec's own reference suite (by suite hash), replayed against the installed rules:
+    # the recorded originals must permit and at least five derived denials must be refused by the
+    # enforcer each class predicts. Enforcing simulations only, before any delegated call.
+    node "$SCRIPTS/derived-denials.mjs" --run-dir "$RUN"
 
     say "5. tuple and signer controls, one delegated call, count cap, expiry, removal and post-removal denial"
     node "$SCRIPTS/protocol-controls.mjs" --run-dir "$RUN"
@@ -197,6 +201,11 @@ WASMS=("$RUN"/policy/*.wasm)
 say "4. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"
+if [ "$WALKTHROUGH" = subscription ]; then
+    # Derived denials from this spec's own suite, against the installed composition, before any
+    # charge (the spending policy must still be unexercised). Enforcing simulations only.
+    node "$SCRIPTS/derived-denials.mjs" --run-dir "$RUN"
+fi
 
 if [ "$WALKTHROUGH" = subscription ]; then
     say "5. verify subscription tuple, signer, rolling window and total call cap controls"

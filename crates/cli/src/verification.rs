@@ -28,6 +28,10 @@ pub enum Command {
     ReferenceSuite {
         #[arg(long)]
         spec: PathBuf,
+        /// Print the suite's cases (invocation and context per case, i128 as decimal strings)
+        /// under the hash that names them, instead of the evaluated report.
+        #[arg(long)]
+        emit_cases: bool,
     },
     /// Reproduce a generated crate and Wasm, reporting each verification dimension.
     Verify {
@@ -79,11 +83,15 @@ impl Command {
                 )?;
                 print_json(&output)?;
             }
-            Self::ReferenceSuite { spec } => {
-                let result = ozpb_toolkit::reference_suite(&ReferenceSuiteInput {
+            Self::ReferenceSuite { spec, emit_cases } => {
+                let input = ReferenceSuiteInput {
                     spec: read_json(&spec)?,
-                })?;
-                print_json(&result)?;
+                };
+                if emit_cases {
+                    print_json(&ozpb_toolkit::reference_suite_cases(&input)?)?;
+                } else {
+                    print_json(&ozpb_toolkit::reference_suite(&input)?)?;
+                }
             }
             Self::Verify {
                 spec,
@@ -241,7 +249,25 @@ mod tests {
             .expect("reference suite command");
         assert!(matches!(
             suite.command,
-            CliCommand::Verification(Command::ReferenceSuite { .. })
+            CliCommand::Verification(Command::ReferenceSuite {
+                emit_cases: false,
+                ..
+            })
+        ));
+        let cases = Cli::try_parse_from([
+            "ozpb",
+            "reference-suite",
+            "--spec",
+            "spec.json",
+            "--emit-cases",
+        ])
+        .expect("reference suite cases");
+        assert!(matches!(
+            cases.command,
+            CliCommand::Verification(Command::ReferenceSuite {
+                emit_cases: true,
+                ..
+            })
         ));
 
         let verify = Cli::try_parse_from([

@@ -118,6 +118,13 @@ python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)
 
 ozpb reference-suite --spec spec.json
 
+# The same suite as replayable cases rather than outcomes: every case's invocation (i128 values as
+# decimal strings) and evaluation context, in suite order, with the spec hash and a `suite_hash`
+# over exactly that list (format `ozpb-reference-suite-cases/v1`; the hash is
+# sha256("ozpb-reference-suite-cases/v1\n" + spec_hash + "\n" + compact JSON of `cases`)). The
+# testnet harness replays its live-realizable denials against an installed rule from this output.
+ozpb reference-suite --spec spec.json --emit-cases > cases.json
+
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
 ozpb generate --spec spec.json --rule 0 --out ./generated
 

@@ -74,6 +74,33 @@ export function authPayload(signers, ruleIds) {
   ]);
 }
 
+/**
+ * `AuthPayload` naming any number of `Delegated` ed25519-account signers, none of which carries
+ * proof bytes in the account's entry (each proves itself with its own entry, or is refused before
+ * that). Zero signers is an empty map.
+ *
+ * The host requires map keys in ascending order. Two `Delegated` keys over ed25519 accounts encode
+ * identically except for the 32-byte key, so ascending XDR bytes is the host's order for them.
+ * That argument fails across variants (the XDR length prefix of the variant symbol orders
+ * differently from the symbol itself), so anything but an ed25519 account is refused rather than
+ * ordered by a guess, and so is a repeated signer, which a map cannot hold.
+ */
+export function delegatedSignersPayload(addresses, ruleIds) {
+  if (addresses.some((address) => !StrKey.isValidEd25519PublicKey(address))) {
+    throw new Error('only Delegated ed25519 account signers are ordered here');
+  }
+  if (new Set(addresses).size !== addresses.length) throw new Error('a signer map cannot repeat a signer');
+  const signers = addresses.map((address) => new xdr.ScMapEntry({ key: delegatedSigner(address), val: xdr.ScVal.scvBytes(Buffer.alloc(0)) }))
+    .sort((a, b) => Buffer.compare(Buffer.from(a.key.toXDR()), Buffer.from(b.key.toXDR())));
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('context_rule_ids'),
+      val: xdr.ScVal.scvVec(ruleIds.map((id) => xdr.ScVal.scvU32(id))),
+    }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('signers'), val: xdr.ScVal.scvMap(signers) }),
+  ]);
+}
+
 // --- External signers: a passkey behind the OpenZeppelin WebAuthn verifier ----------------------
 
 /** `Signer::External(Address, Bytes)`: a contracttype enum variant, `Vec[Symbol, Address, Bytes]`. */
