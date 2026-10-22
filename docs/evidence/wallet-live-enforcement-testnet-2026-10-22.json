@@ -166,8 +166,8 @@
     "confirm-deploy",
     "review",
     "prepare-live",
-    "run-live",
     "consent-live",
+    "run-live",
     "check-replay",
     "check-replay"
   ],
