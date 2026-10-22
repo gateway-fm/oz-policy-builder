@@ -13,7 +13,9 @@ A run on 22 October 2026 repeated every W3 step with the [derived denials](#deri
 passed ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
 Those runs used widenings the harness wrote itself. W3 now takes the router's input bound and
 open deadline from the registry's reviewed adapter, the floor and transfer cap from an operator
-decisions file, and adds route, recipient and function controls. No live run has exercised that yet.
+decisions file, and adds route, recipient and function controls. The adapter binding is a
+development-registry assertion, and the router's Wasm was not reproduced from source
+([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)). No live run has exercised that yet.
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
 2026 completed every W1 step after four stopped attempts
@@ -107,8 +109,10 @@ expiry and each signature's own expiry ledger still do. Synthesis says so in its
 pipeline record flags it, and the operator's decisions file must accept it explicitly.
 
 The rules are independent capabilities, not an atomic workflow. The transfer rule alone lets the
-delegate move up to the input amount to the pair. **XLM sent to the pair that way is lost to the
-account:** a direct transfer is not a swap, and the pair's surplus balance can be taken by anyone.
+delegate move up to the operator's `transfer_cap` to the pair. **XLM sent to the pair that way is
+lost to the account:** a direct transfer is not a swap, and the pair's surplus balance can be taken
+by anyone. A cap equal to the recorded input is a `medium` blast-radius decision; a cap above it
+grants transfer authority the swap never used, and synthesis records it as `high`.
 The controls observe that authority only by simulation (`independent_token`), never by submitting
 it, and then check that the transfer rule's own policy still bounds it. Rule IDs are signed in the
 account's context order, router first. The harness's `protocolInputs` refuses a recorded call

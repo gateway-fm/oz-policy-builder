@@ -79,7 +79,8 @@ export function protocolInputs(run, recording) {
   }
   walk(root, `recordings[0]/auth[${selected[0].index}]`);
   orderRootFirst(calls);
-  const widen = (contract, fn_name, arg_index, bound, intent) => ({ contract, fn_name, arg_index, bound, intent, blast_radius: 'medium' });
+  const widen = (contract, fn_name, arg_index, bound, intent, blast_radius = 'medium') => ({ contract, fn_name, arg_index, bound,
+    intent, blast_radius });
   let widenings = [];
   if (plan.kind === 'soroswap_swap') {
     // Only the operator's two decisions. The router's input bound and its any-value deadline come
@@ -89,7 +90,10 @@ export function protocolInputs(run, recording) {
     requireThat(BigInt(decided.transfer_cap.max) >= BigInt(plan.amount_in), 'transfer cap below the recorded input');
     widenings = [
       widen(PROTOCOL_TARGETS.router, 'swap_exact_tokens_for_tokens', 1, { ge_i128: { min: decided.output_floor.min } }, decided.output_floor.intent),
-      widen(PROTOCOL_TARGETS.native, 'transfer', 2, { le_i128: { max: decided.transfer_cap.max } }, decided.transfer_cap.intent),
+      // A direct transfer to the pair is lost to the account. Allowing more than the recorded swap
+      // moved is authority the walkthrough never exercised, so it is high blast radius.
+      widen(PROTOCOL_TARGETS.native, 'transfer', 2, { le_i128: { max: decided.transfer_cap.max } }, decided.transfer_cap.intent,
+        BigInt(decided.transfer_cap.max) > BigInt(plan.amount_in) ? 'high' : 'medium'),
     ];
   }
   return { calls, account: { address: run.account, observed_code_hash: run.account_code_hash,

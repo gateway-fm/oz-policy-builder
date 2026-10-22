@@ -140,3 +140,17 @@ test('the adapter identity and its high-blast-radius deadline are read from the 
   noAdapter.rules[0].allowed_calls[0].args[0].prov = { user_widened: { intent: 'x', blast_radius: 'medium' } };
   assert.equal(adapterDisclosure(noAdapter).adapter, null);
 });
+
+test('a transfer cap above the recorded input is a high-blast-radius decision', () => {
+  // The direct transfer is lost to the account, so authority beyond what the swap itself moved is
+  // the larger risk; a cap equal to the recorded input stays medium, like the floor.
+  const radius = (max) => {
+    const f = fixture();
+    f.plan.operator_decisions.transfer_cap.max = max;
+    const widenings = protocolInputs(f.run, f.record).decisions.widenings;
+    return widenings.map((w) => [w.fn_name, w.blast_radius]);
+  };
+  assert.deepEqual(radius(capture.plan.amount_in), [['swap_exact_tokens_for_tokens', 'medium'], ['transfer', 'medium']]);
+  assert.deepEqual(radius('1000001'), [['swap_exact_tokens_for_tokens', 'medium'], ['transfer', 'high']]);
+  assert.deepEqual(radius('10000000'), [['swap_exact_tokens_for_tokens', 'medium'], ['transfer', 'high']]);
+});
