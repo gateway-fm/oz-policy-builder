@@ -372,7 +372,10 @@ signs, or holds keys.
 `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
 source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
-source, but reads nothing through it.
+source, but reads nothing through it. `scripts/mcp-server-dev.sh` configures exactly one source,
+`testnet` (SDF's public testnet RPC unless `OZPB_DEV_TESTNET_RPC_URL` names another `https://`
+endpoint), and replaces any map already in the environment; it never configures another
+network.
 The source must be for the request's network, and a hosted server also requires its URL on
 `OZPB_RPC_ALLOWLIST`. For every one of them except `capture_target`, which needs no registry
 trust, the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`, `OZPB_REGISTRY_MIN_VERSION`)
