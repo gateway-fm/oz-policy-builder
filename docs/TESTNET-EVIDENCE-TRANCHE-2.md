@@ -405,7 +405,71 @@ replay predicts that policy's refusals from its pinned source and its live, unex
 These remain editable local RPC observations, with non-atomic reads and no ledger proof or
 protected wallet-approval claim.
 
-## 12. Evidence still needed
+## 12. Controlled Blend claim run with derived denials, 22 October 2026
+
+The [allowlisted run summary](evidence/testnet-blend-claim-derived-2026-10-22.json) records a
+complete [W1 harness execution](WALKTHROUGH-PROTOCOLS.md#w1-blend) from 10:50:55 to 11:18:39 UTC.
+The checkout was clean at `4feb59ea733dff70db6a8309d6078153ea735fc2`, and the external CLI was
+built from it just before the run. Its byte digest is retained in the provenance; it identifies
+the executable, not its source. The owner was a throwaway ed25519 key, and the single rule was
+approved in the explicit operator mode without a human prompt. The keys were deleted when the run
+ended. The summary is the wrapper's own export.
+
+The selected account was `CABC2NCFR3KDIJY44QB3ONK67FAAX22JX2LYT7B4RJ3AMMT3HAX27ROW`. The grant
+was one one-call rule (account rule ID 1) for `claim(self, [3], self)` on the same Blend v2 pool
+as section 10, valid until ledger 5328859.
+
+Values marked *(journal)* come from the run's retained local `run.json`, not the published
+summary.
+
+| Observation | Recorded result |
+| --- | --- |
+| Emission and preflight | The refresh recorded `not_needed`, so no `gulp_emissions` was sent. *(journal)* The emission on ID 3 was live until 26 October 2026, 04:23:27 UTC; the preflight passed at 5328541, with an expected owner claim of 210 BLND base units and a quote of 213603475 USDC base units for 200 XLM. |
+| Position | The payer sent 200 XLM to the account, the owner swapped them on the pinned Soroswap router, then [supplied](https://stellar.expert/explorer/testnet/tx/b49f66b81a2abe391ffe22278e6ee1b33b87d639bb3a3541f08d6dc491331c1a) exactly 100000000 USDC base units at 5328544. *(journal)* The swap returned 213603475 USDC base units, and the supply showed 99888705 bTokens. |
+| Owner recording and artifact chain | After the 12-ledger wait, the [owner claim](https://stellar.expert/explorer/testnet/tx/34428e7cf5a1bc6f97629d252e3e0f782f0fec14ae5b0d3d02b7454145115824) confirmed at 5328559 with 262 BLND base units and a matching balance increase. It went through the real RPC recorder, synthesis, the 25-case reference suite, and generation/build with matching source/Wasm/manifest reproduction. |
+| Install | The [rule](https://stellar.expert/explorer/testnet/tx/eba348c235c510bef6f619f4132f0c4efb60b212bdd944f0c51b3278be58109b) was checked at 5328569, rechecked at 5328573, installed at 5328575 and read back matched at 5328575. |
+| Derived denials | The CLI emitted the installed spec's 25-case suite and the replay verified its suite hash. The recorded claim (`case-0`) was permitted in simulation at 5328576. All five live-realizable deny cases were refused at 5328576 by the predicted enforcer. The 14 deny cases that stay offline are listed by class and reason, and the 5 other permit cases stay layer-1 only. Nothing was submitted. |
+| Claim controls | A different reserve token list and a foreign recipient each returned the generated policy's code 6; the pool's `submit` returned its code 5. A wrong signer returned the account's 3016; an empty signer set returned the policy's code 1. All at 5328580–5328581. |
+| Delegated claim and count cap | After the accrual wait, the [delegated claim](https://stellar.expert/explorer/testnet/tx/559d9c5cb053faaf1fe8b055453a6f54e2334b550a70ce634ebc9e4976c12650) confirmed at 5328585 with 455 BLND base units and a matching balance increase. The repeat returned the policy's code 7 at 5328585. |
+| Expiry | After the wait reached ledger 5328860 (the grant's last valid ledger plus one), the account returned `UnvalidatedContext` (3002) at 5328860. |
+| Owner removal | The [removal](https://stellar.expert/explorer/testnet/tx/2e019c91a1919dd37e634b7ff55cb1b1726f40719c13a5b346f15feb14b2b603) confirmed at 5328861. Its event matched, the rule read back absent, and the policy reported uninstalled. |
+| Post-removal control | The account's missing-rule code 3000 at 5328861. |
+| Withdrawal | The owner [withdrew](https://stellar.expert/explorer/testnet/tx/3e109c59d6e00d4ebc7e0aaae2139382ebe9c380428c1b961471fcdb4456db72) the supply at 5328866, and the account's positions read back empty. *(journal)* 99999999 USDC base units were returned. |
+
+The derived denials, by enforcer:
+
+| Cases | Class | Enforcer and code |
+| --- | --- | --- |
+| `case-2` | another function: the suite's absent `claim_x`, realized as the pool's `submit` (`live_stand_in`) | generated policy `FunctionNotAllowed` #5 |
+| `case-6` | stranger `to` | generated policy `NoTupleMatched` #6 |
+| `case-10` | empty signer set | generated policy `ZeroSigners` #1 |
+| `case-11`, `case-13` | unrecognized signer; delegate plus an unrecognized signer (one account check) | account `UnauthorizedSigner` 3016 |
+
+Offline, not replayed: the undeployed contract (no live stand-in); the `from` mutation (it
+replaces the authorizer); an `i128` in place of `from` or `to`, the changed reserve list and the
+two arity cases (the pool rejects them before authorization); two strict-set mutations, three
+call-count cases and the missing-state case (installation state); and the time boundary.
+
+This is W1's first passing report under [§7's definition](#what-a-passing-permitdeny-report-is),
+and it passes at exactly the minimum. The W1 suite has five live-realizable deny cases and all
+five were replayed, so there is no margin: losing any one of them to an offline class would
+refuse the run before anything is simulated. The five are four distinct live checks, because
+`case-11` and `case-13` stop at the same account 3016 check. `case-2` is a stand-in: the suite's
+function does not exist on the pool, so the pool's `submit`, which the `pool_function` control
+also observes, carries it. Only `case-2` and `case-6` reach the policy's function or argument
+checks. All 12 control steps completed, the
+position was withdrawn, and the wrapper finalized with exit 0. The claimed BLND (717 base units),
+the swap's surplus USDC and the withdrawn USDC stay on the throwaway account. No reviewed Blend
+adapter was involved. These remain editable local RPC observations, with non-atomic reads and no
+ledger proof or protected wallet-approval claim.
+
+An earlier W1 run that day, from 09:32 to 10:00 UTC at the same commit with an earlier build of
+the CLI, on `CDK2QVDV2TVFIVBAZQU4L7SLF7MR7WH3ZTQXDOT2MBI2VKSF655WFG7N`, also finalized with exit 0.
+Its journal records the same five derived denials meeting their enforcers, a verified removal and
+an empty withdrawal readback. Its summary is not committed; this record uses the later run, made with
+a freshly built CLI.
+
+## 13. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -414,9 +478,9 @@ two-rule Soroswap swap runs with expiry and per-rule removal; the second include
 transfer rule's own policy. Section 10 adds one Blend claim run on a supply position the harness
 opened and withdrew.
 
-Section 11 adds a W2 run with the derived-denial step, which passes under
-[§7's definition](#what-a-passing-permitdeny-report-is). The section 8–10 runs predate that step,
-so W1 and W3 have no passing report yet.
+Sections 11 and 12 add a W2 and a W1 run with the derived-denial step; both pass under
+[§7's definition](#what-a-passing-permitdeny-report-is), W1 at exactly the minimum of five. The
+section 8–10 runs predate that step, so W3 has no passing report yet.
 
 Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed Blend and
 Soroswap adapters rather than `evidence_only` code observations and fixed harness widenings, the remaining harness layers with their actual evidence boundaries,

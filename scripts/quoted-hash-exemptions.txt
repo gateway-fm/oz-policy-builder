@@ -65,6 +65,15 @@ c0c3c10cccb1f423efffcd1c6c1e32fd4af8b3a05946a7c5ef0f0b626f5ff6d7|testnet-tx|owne
 ec505ff30a03aef18cf2c91a68f09b371b74641e074891a11d8e1d365c088a24|testnet-tx|owner-authorized claim-rule (ID 1) removal at ledger 5316813
 3e7caed05c8793f5411250ce6aebb0b952e33346447ea6bab38a6a2a323c78ce|testnet-tx|owner-authorized Blend withdrawal at ledger 5316817 for the October 21 Blend run
 
+# Controlled October 22 Blend claim run with derived denials in docs/TESTNET-EVIDENCE-TRANCHE-2.md
+# section 12; public testnet outcomes, not recomputed or independently fetched by the offline gate.
+b49f66b81a2abe391ffe22278e6ee1b33b87d639bb3a3541f08d6dc491331c1a|testnet-tx|owner-authorized 10 USDC Blend supply at ledger 5328544 for the October 22 derived-denial Blend run
+34428e7cf5a1bc6f97629d252e3e0f782f0fec14ae5b0d3d02b7454145115824|testnet-tx|owner claim recorded for the October 22 derived-denial Blend run, ledger 5328559
+eba348c235c510bef6f619f4132f0c4efb60b212bdd944f0c51b3278be58109b|testnet-tx|owner-authorized installation of the claim rule (account rule ID 1) for the October 22 derived-denial Blend run
+559d9c5cb053faaf1fe8b055453a6f54e2334b550a70ce634ebc9e4976c12650|testnet-tx|delegated Blend claim at ledger 5328585
+2e019c91a1919dd37e634b7ff55cb1b1726f40719c13a5b346f15feb14b2b603|testnet-tx|owner-authorized claim-rule (ID 1) removal at ledger 5328861
+3e109c59d6e00d4ebc7e0aaae2139382ebe9c380428c1b961471fcdb4456db72|testnet-tx|owner-authorized Blend withdrawal at ledger 5328866 for the October 22 derived-denial Blend run
+
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.

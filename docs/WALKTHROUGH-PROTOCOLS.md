@@ -13,6 +13,8 @@ W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
 2026 completed every W1 step after four stopped attempts
 ([section 10 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#10-controlled-blend-claim-run-21-october-2026)).
+A run on 22 October 2026 repeated every W1 step with the [derived denials](#derived-denials) and
+passed ([section 12](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)).
 
 ## W3 Soroswap
 
@@ -113,8 +115,9 @@ derived denials from that spec's suite are refused by the predicted enforcer. Th
 confirmed delegated positive, plus the suite's originals permitted in simulation, plus denials
 identified by the suite hash. All of these are enforcing simulations after installation, at their
 reported ledgers; nothing is submitted. The hand-written controls below do not count toward the
-five. **Status:** the derived-denial step is implemented and tested offline for W1 and W3. A live
-W1 or W3 run with it has not yet been recorded.
+five. **Status:** W1 passed live on 22 October 2026, at exactly the minimum of five denials
+([section 12 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)).
+W3 has no passing live report yet.
 
 ### Required observations
 
