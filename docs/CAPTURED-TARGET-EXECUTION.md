@@ -115,8 +115,12 @@ The CLI sets no overall deadline: each of its at most eight requests is bounded 
 transport's 30 s timeout. On an MCP server the 300 s deadline ends the wait, not the read; a
 hosted server's slot stays held until the read itself stops.
 
-Producing a capture does not run this layer. No CLI or MCP command runs it yet, and
-`prepare_dry_run` still reports `captured_target` as unavailable.
+Producing a capture does not run this layer, and `prepare_dry_run` still reports
+`captured_target` as unavailable. `ozpb dry-run --capture-request` runs it: it captures through
+the same code and operator source, builds the job at the capture's ledger, runs
+`--prepare-captured` and `--captured` with its own offline-domain signer, and reports the layer
+([running the layers from the CLI](NATIVE-EXECUTION.md#running-the-layers-from-the-cli)). No MCP
+command runs it.
 
 ## Preparation
 

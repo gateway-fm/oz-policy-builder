@@ -43,7 +43,10 @@ Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
 record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
+`ozpb dry-run` runs the native worker's account-Wasm layer and, with a capture request, its
+captured-target layer, signing only offline-domain requests with the spec delegate's key from a
+0600 file; its live layer stays unavailable, so its report is never complete. It is a CLI
+command only: the MCP server holds no keys and has no signing dry run. The live authority
 check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
 built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
 advisory wherever they run. `ozpb capture-target` and `capture_target` read, through the same
@@ -141,6 +144,15 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
   --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015"
+
+# Optional: run the account-Wasm layer through the operator's native worker and print a
+# four-layer report. The delegate key is read only from a 0600 file and signs only requests for
+# the run's derived offline network; the live layer is reported unavailable. Exits 0 only when
+# the report's `acceptance` meets the permit/deny bar.
+ozpb dry-run --request dry-run-request.json --registry-roots registry-roots.json \
+  --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --native-worker /abs/path/ozpb-execution-runtime --delegate-key-file delegate.key \
+  --account-wasm pinned-account.wasm --source-ledger ledger.json > dry-run.json
 
 # Optional: capture the target state of one unsigned native SAC transfer for the native
 # worker's captured-target layer. The request names an operator source and network and carries
@@ -346,8 +358,10 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   not run that layer. The envelope is confidential input that no result or error echoes, but
   over MCP it passes through the conversation, and the capture repeats its call; prefer the CLI
   or a local stdio server.
-- **Scheduled, not exposed** — the full four-layer `dry_run`. The full dry-run harness needs
-  its own evidence before exposure.
+- **CLI only, not exposed** — the signing dry run. `ozpb dry-run` runs the account-Wasm and
+  supported captured-target layers with an offline-domain delegate key; this server holds no
+  keys, so it serves `prepare_dry_run` and `capture_target` instead. A complete four-layer run
+  needs the wallet's live layer.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,

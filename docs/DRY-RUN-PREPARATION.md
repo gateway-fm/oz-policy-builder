@@ -58,8 +58,9 @@ The [canonical hashing specification](CANONICAL-HASHING.md) defines both new has
 This preparation package adds no complete acceptance claim.
 
 The separately configured [native execution worker](NATIVE-EXECUTION.md) can produce
-local account-Wasm evidence after this preparation. It does not change this operation's
-meaning or complete the captured-target and live-enforcement layers. The worker's separate
+local account-Wasm evidence after this preparation; `ozpb dry-run` runs this preparation and
+then that worker ([running the layers from the CLI](NATIVE-EXECUTION.md#running-the-layers-from-the-cli)).
+Neither changes this operation's meaning or completes the live-enforcement layer. The worker's separate
 [captured-target mode](CAPTURED-TARGET-EXECUTION.md) does not either: this operation still
 reports `captured_target` as unavailable. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md)
 is a tested building block for the live layer only, limited to generated policies with a call
@@ -91,6 +92,11 @@ the preparation, the worker's raw reports and exit statuses, and identities it d
   `unsupported`; what a preparation says about the runtime layers is ignored. Outside the
   wallet, `live_enforcement` is always `unavailable` with reason
   `wallet_owner_consent_required`, and `complete` stays `false`.
+
+`ozpb dry-run` is the CLI coordinator that fills these fields. It reports the live layer as
+above, `captured_target` as `unavailable` with `captured_target_not_requested` unless given a
+capture request, and a selected rule outside the native worker's scope as `unsupported` with
+`selected_rule_outside_native_scope`, without reading the key.
 
 `acceptance` counts only executed layers that passed. For each executed layer it records whether
 the original call was permitted and how many derived denials reverted: refused with the

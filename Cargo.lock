@@ -1186,6 +1186,9 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "ed25519-dalek",
+ "hex",
+ "nix",
  "ozpb-api-types",
  "ozpb-domain",
  "ozpb-recorder-core",
@@ -1194,8 +1197,10 @@ dependencies = [
  "ozpb-toolkit",
  "serde",
  "serde_json",
+ "stellar-strkey 0.0.18",
  "stellar-xdr",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
