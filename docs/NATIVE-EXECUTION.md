@@ -16,11 +16,16 @@ The synthetic fixture script tests execution only and is not a preparation trust
 
 ## Supported scope and execution evidence
 
-Initial support is one rule with one explicit delegated Ed25519 G signer, one generated policy,
-and `any_of`, `all_of` or threshold-one authorization. The specification is at most 64 KiB,
-with at most eight allowed calls, sixteen arguments per call and 256 derived boundary cases.
-A call cap may be at most 512. Larger valid grants and other signer/policy compositions are
-unsupported; there is no substitute signer or passing fallback.
+The worker runs the request's selected rule, `candidate.rule_index`, of a specification that may
+hold other rules. Only that rule is installed, with only its own policy binding; an index past
+the last rule is refused. The selected rule must have one explicit delegated Ed25519 G signer,
+exactly one generated policy and `any_of`, `all_of` or threshold-one authorization. A selected
+rule composed with any other policy, such as a reviewed spending limit, is refused: it would run
+here without that policy. The specification is at most 64 KiB, every rule has at most eight
+allowed calls and sixteen arguments per call, because the suite is derived for every rule
+before the selected rule's cases are kept, and the selected rule has at most 256 derived
+boundary cases. A call cap may be at most 512. Larger valid grants and other signer/policy
+compositions are unsupported; there is no substitute signer or passing fallback.
 
 Each boundary case starts from a fresh local installation at the exact candidate account and
 policy addresses. A distinct deterministic bootstrap owner signs the setup invocation in the

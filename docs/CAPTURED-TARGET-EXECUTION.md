@@ -11,8 +11,8 @@ resource check, or live-network acceptance, and its result is always `complete: 
 
 ## Supported scope
 
-The native worker's scope applies (one rule, one delegated Ed25519 G signer, one generated
-policy). In addition the rule must have exactly one allowed call, `transfer(SELF, recipient,
+The native worker's scope applies (the selected rule only, with one delegated Ed25519 G signer
+and exactly one generated policy). In addition the rule must have exactly one allowed call, `transfer(SELF, recipient,
 amount)` on the source network's native SAC, with the amount fixed by `eq_i128`. The captured
 call must be exactly the candidate's derived original call: the candidate account as sender, an
 existing G recipient, and a positive amount below `i64::MAX`. Other targets, functions, argument

@@ -25,6 +25,7 @@ for test in \
     worker_rejects_protocol_identity_and_expansion_mismatches_before_signing \
     real_candidate_account_path_cannot_substitute_a_missing_delegate \
     real_candidate_account_path_runs_the_derived_suite_and_commits_state \
+    native_prepare_accepts_selected_rule_of_two_rule_spec \
     process_runs_the_complete_interactive_protocol; do
     grep -qx "test $test ... ok" "$work/result.log" || {
         echo "required native execution test did not run and pass: $test" >&2
