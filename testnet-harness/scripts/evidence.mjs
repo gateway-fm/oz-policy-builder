@@ -7,6 +7,9 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isMainModule } from './cli-entry.mjs';
+import {
+  CASES_FORMAT, MIN_DERIVED_DENIALS, SELECTION, liveRules, liveStandIns, planDerivedDenials, predictEnforcer, suiteHash,
+} from './derived-plan.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const ADDRESS = /^[CG][A-Z2-7]{55}$/;
@@ -430,100 +433,73 @@ function walkthroughRecord(value, run) {
       : set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
 }
 
-// Mirrors derived-denials.mjs, which this exporter does not import (it loads no network code).
-export const DERIVED_LIVE_CLASSES = Object.freeze({
-  arg_equality: 'argument', numeric_boundary: 'argument', different_address_arg: 'argument',
-  tuple_cross_product: 'cross_product', different_function: 'function', different_contract: 'contract',
-  zero_signers: 'signer', wrong_signer: 'signer', signer_boundary: 'signer',
-});
-export const DERIVED_OFFLINE_REASONS = Object.freeze(['ledger_time', 'installation_state', 'host_rejects_before_authorization',
-  'authorizer_replaced', 'no_live_stand_in', 'signer_key_not_held', 'repeated_signer_unrepresentable']);
-export const DERIVED_OFFLINE_CLASSES = Object.freeze({ time_boundary: 'ledger_time', call_count_boundary: 'installation_state',
-  missing_state: 'installation_state', strict_set_mutation: 'installation_state', arg_arity: 'host_rejects_before_authorization',
-  type_confusion: 'host_rejects_before_authorization' });
-// Reasons a case of a live class can still stay offline (derived-denials.mjs `realizeDenial`).
-const DERIVED_CASE_REASONS = ['installation_state', 'host_rejects_before_authorization', 'authorizer_replaced',
-  'no_live_stand_in', 'signer_key_not_held', 'repeated_signer_unrepresentable'];
-const DERIVED_SELECTION = 'every deny case of a live-realizable class that the recorded call can carry, in suite order';
-const DERIVED_STAND_INS = { blend_pool_submit: ['blend_claim', 'different_function'], w2_control_token: ['subscription', 'different_contract'] };
-const CASES_FORMAT = 'ozpb-reference-suite-cases/v1';
 const caseId = (v) => match(v, /^case-(0|[1-9][0-9]{0,3})$/);
 
 /**
- * The live derived-denial replay, reconciled with the emitted suite it replayed
- * (`derived-cases.json`, whose suite hash is recomputed here): every case is accounted for as a
- * replayed original, a replayed denial, an offline case with its class's reason, or a permit that
- * is not replayed, and the counts must equal the suite's and the pipeline's reference count. Each
- * prediction is rechecked against its class and the rule's live policy order: the account for a
- * foreign contract (3002) or an unrecognized signer (3016), otherwise the first policy in that
- * order that refuses. The suite hash is a checksum, not a signature: what binds the cases to the
- * spec is that the replay ran the CLI on the installed spec; a reviewer can re-run
- * `ozpb reference-suite --spec spec.json --emit-cases` and compare.
+ * The live derived-denial replay, rechecked by recomputing its plan. The plan is pure: it is
+ * rebuilt here from the retained run, spec and emitted suite (`derived-cases.json`, whose suite
+ * hash is recomputed), so the journal must name exactly the originals, denials and offline cases
+ * (with their ids and reasons) that plan selects, and each expected enforcer must be the one the
+ * plan predicts under the journal's live policy order. A journal edited to drop, move or
+ * re-attribute a case no longer matches.
+ *
+ * The suite hash is a checksum, not a signature: what binds the cases to the spec is that the
+ * replay ran the CLI on the installed spec; a reviewer can re-run `ozpb reference-suite --spec
+ * spec.json --emit-cases` and compare.
  */
-function derivedDenialsRecord(value, emittedBytes, run, kind, pipeline, rulePolicies) {
+function derivedDenialsRecord(value, emittedBytes, specBytes, rawRun, run, pipeline) {
   const d = object(value);
-  if (d.schema_version !== 1 || !run || d.selection !== DERIVED_SELECTION || pipeline?.status !== 'recorded' || emittedBytes === null) fail();
+  if (d.schema_version !== 1 || !run || d.selection !== SELECTION || pipeline?.status !== 'recorded'
+    || emittedBytes === null || specBytes === null) fail();
   const status = choice(d.status, ['running', 'incomplete', 'completed']);
   const labels = object(d.labels);
   if (Object.keys(labels).length !== 4 || labels.post_install !== true || labels.state_dependent !== true
     || labels.simulation_only !== true || labels.submitted !== false) fail();
   const s = object(d.suite);
   const total = uint(s.total);
-  if (!total || s.minimum_denials !== 5 || s.spec_hash !== pipeline.spec_hash || total !== pipeline.reference_cases) fail();
-  const suite = { spec_hash: hash(s.spec_hash), suite_hash: hash(s.suite_hash), total, minimum_denials: 5 };
-  // The emitted suite itself: same spec, same hash recomputed over its cases, same size.
+  if (!total || s.minimum_denials !== MIN_DERIVED_DENIALS || s.spec_hash !== pipeline.spec_hash || total !== pipeline.reference_cases) fail();
+  const suite = { spec_hash: hash(s.spec_hash), suite_hash: hash(s.suite_hash), total, minimum_denials: MIN_DERIVED_DENIALS };
   const emitted = object(JSON.parse(emittedBytes.toString('utf8')));
   if (emitted.format !== CASES_FORMAT || emitted.spec_hash !== suite.spec_hash || emitted.suite_hash !== suite.suite_hash
     || emitted.total !== total || !Array.isArray(emitted.cases) || emitted.cases.length !== total
-    || createHash('sha256').update(`${CASES_FORMAT}\n${emitted.spec_hash}\n${JSON.stringify(emitted.cases)}`).digest('hex') !== suite.suite_hash
+    || suiteHash(emitted.spec_hash, emitted.cases) !== suite.suite_hash
     || emitted.cases.some((c, i) => object(c).index !== i || c.id !== `case-${i}`)) fail();
-  const emittedCase = (id) => emitted.cases[Number(caseId(id).slice(5))] ?? fail();
-  if (!Array.isArray(d.offline) || d.offline.length > 64 || !Array.isArray(d.originals) || d.originals.length > 2
-    || !Array.isArray(d.cases) || d.cases.length > 128 || !Array.isArray(d.policy_order) || d.policy_order.length > 4) fail();
-  // The live order covers exactly the installed policies; each rule is enforced in that order.
+  let rules, plan;
+  try {
+    rules = liveRules(rawRun, JSON.parse(specBytes.toString('utf8')));
+    plan = planDerivedDenials({ cases: emitted.cases, rules, account: rawRun.account, delegate: rawRun.delegate,
+      standIns: (rule) => liveStandIns(rawRun, rule) });
+  } catch { fail(); }
+  const offline = plan.offline.map(({ rule_index, class: cls, reason, cases, ids }) => ({ rule_index, class: cls, reason, cases, ids }));
+  if (!Array.isArray(d.offline) || JSON.stringify(d.offline) !== JSON.stringify(offline)
+    || d.permits_not_replayed !== plan.permits_not_replayed) fail();
+  // The live order covers exactly the installed policies; each rule's are enforced in that order.
+  if (!Array.isArray(d.policy_order) || d.policy_order.length > 4) fail();
   const policyOrder = d.policy_order.map(address);
-  const installed = [0, 1].map(rulePolicies).filter(Boolean).flatMap((p) => [p.generated, ...(p.spending ? [p.spending] : [])]);
-  if (new Set(policyOrder).size !== policyOrder.length || policyOrder.length !== new Set(installed).size
+  const installed = [...new Set(rules.flatMap((rule) => rule.policies.map((p) => p.address)))];
+  if (new Set(policyOrder).size !== policyOrder.length || policyOrder.length !== installed.length
     || installed.some((a) => !policyOrder.includes(a))) fail();
-  const offline = d.offline.map((item) => {
-    const o = object(item);
-    const n = uint(o.cases);
-    const cls = choice(o.class, [...Object.keys(DERIVED_LIVE_CLASSES), ...Object.keys(DERIVED_OFFLINE_CLASSES)]);
-    const reason = choice(o.reason, DERIVED_OFFLINE_REASONS);
-    if (!n || rulePolicies(uint(o.rule_index)) === null
-      || (DERIVED_OFFLINE_CLASSES[cls] ? reason !== DERIVED_OFFLINE_CLASSES[cls] : !DERIVED_CASE_REASONS.includes(reason))) fail();
-    return { rule_index: o.rule_index, class: cls, reason, cases: n };
-  });
-  const originals = d.originals.map((item) => {
+  // Replayed in plan order, so a journal holds a prefix of the plan, all of it once completed.
+  if (!Array.isArray(d.originals) || d.originals.length > plan.originals.length
+    || !Array.isArray(d.cases) || d.cases.length > plan.denials.length) fail();
+  const originals = d.originals.map((item, i) => {
     const o = object(item);
     const state = choice(o.status, ['started', 'permitted', 'unexpected_denial']);
-    const source = emittedCase(o.id);
-    if (rulePolicies(uint(o.rule_index)) === null || source.class !== 'original' || source.rule_index !== o.rule_index
-      || (state !== 'started' && !uint(o.ledger))) fail();
-    return { id: o.id, rule_index: o.rule_index, status: state, ledger: optional(o.ledger, uint) };
+    if (o.id !== plan.originals[i].id || o.rule_index !== plan.originals[i].rule_index || (state !== 'started' && !uint(o.ledger))) fail();
+    return { id: caseId(o.id), rule_index: o.rule_index, status: state, ledger: optional(o.ledger, uint) };
   });
-  const cases = d.cases.map((item) => {
+  const cases = d.cases.map((item, i) => {
     const c = object(item);
-    const source = emittedCase(c.id);
-    const policies = rulePolicies(uint(c.rule_index));
-    if (policies === null) fail();
-    const cls = choice(c.class, Object.keys(DERIVED_LIVE_CLASSES));
-    if (c.family !== DERIVED_LIVE_CLASSES[cls] || source.class !== cls || source.label !== c.label
-      || source.rule_index !== c.rule_index || source.expect_permit !== false) fail();
-    const realization = choice(c.realization, ['mutation_on_recorded_call', 'literal_tuple', 'live_stand_in']);
-    const standIn = c.stand_in === null ? null : choice(c.stand_in, Object.keys(DERIVED_STAND_INS));
-    if ((realization === 'live_stand_in') !== (standIn !== null)
-      || (standIn !== null && (DERIVED_STAND_INS[standIn][0] !== kind || DERIVED_STAND_INS[standIn][1] !== cls))) fail();
+    const planned = plan.denials[i];
+    if (c.id !== planned.id || c.rule_index !== planned.rule_index || c.class !== planned.class || c.family !== planned.family
+      || c.label !== planned.label || c.realization !== planned.realization || c.stand_in !== planned.stand_in) fail();
+    const rule = rules[planned.rule_index];
+    const order = policyOrder.filter((a) => rule.policies.some((p) => p.address === a))
+      .map((a) => ({ ...rule.policies.find((p) => p.address === a), limit: BigInt(amount(rawRun.amount)), spent: 0n }));
+    const predicted = predictEnforcer(planned, rule, order, rawRun.account);
     const e = object(c.expected);
     const expected = { enforcer: address(e.enforcer), code: uint(e.code) };
-    const { generated, spending } = policies;
-    const first = policyOrder.find((a) => a === generated || a === spending);
-    const allowed = cls === 'different_contract' ? [[run.account, 3002]]
-      : cls === 'wrong_signer' || cls === 'signer_boundary' ? [[run.account, 3016]]
-        : cls === 'zero_signers' ? [first === spending ? [spending, 3223] : [generated, 1]]
-          : cls === 'different_function' ? [first === spending ? [spending, 3223] : [generated, 5]]
-            : first === spending ? [[spending, 3221], [spending, 3226], [generated, 6]] : [[generated, 6]];
-    if (!allowed.some(([enforcer, code]) => enforcer === expected.enforcer && code === expected.code)) fail();
+    if (predicted.permit || predicted.enforcer !== expected.enforcer || predicted.code !== expected.code) fail();
     const state = choice(c.status, ['started', 'verified_denial', 'unexpected_permit', 'unattributed_denial']);
     let observed = null;
     if (state !== 'started') {
@@ -535,25 +511,14 @@ function derivedDenialsRecord(value, emittedBytes, run, kind, pipeline, rulePoli
           || observed.code !== expected.code))
         || (state === 'unattributed_denial' && observed.enforcer === expected.enforcer && observed.code === expected.code)) fail();
     }
-    return { id: c.id, rule_index: c.rule_index, class: cls, family: c.family, label: source.label, realization,
-      stand_in: standIn, expected, status: state, ledger: optional(c.ledger, uint), observed };
+    return { id: caseId(c.id), rule_index: c.rule_index, class: planned.class, family: planned.family, label: planned.label,
+      realization: planned.realization, stand_in: planned.stand_in, expected, status: state,
+      ledger: optional(c.ledger, uint), observed };
   });
-  const ids = [...originals, ...cases].map((c) => c.id);
-  if (new Set(ids).size !== ids.length) fail();
-  const notReplayed = uint(d.permits_not_replayed);
-  if (status === 'completed') {
-    const rules = [0, 1].filter((i) => rulePolicies(i) !== null);
-    if (cases.length < 5 || cases.some((c) => c.status !== 'verified_denial')
-      || originals.some((o) => o.status !== 'permitted') || rules.some((i) => !originals.some((o) => o.rule_index === i))) fail();
-    // Every case of the suite is accounted for, class by class: nothing was silently dropped.
-    const tally = (list, n = () => 1) => list.reduce((m, x) => m.set(`${x.rule_index}|${x.class}`, (m.get(`${x.rule_index}|${x.class}`) ?? 0) + n(x)), new Map());
-    const denials = tally(emitted.cases.filter((c) => !c.expect_permit));
-    const accounted = tally([...cases, ...offline], (x) => x.cases ?? 1);
-    if (denials.size !== accounted.size || [...denials].some(([key, n]) => accounted.get(key) !== n)
-      || emitted.cases.filter((c) => c.expect_permit).length !== originals.length + notReplayed) fail();
-  }
+  if (status === 'completed' && (originals.length !== plan.originals.length || cases.length !== plan.denials.length
+    || originals.some((o) => o.status !== 'permitted') || cases.some((c) => c.status !== 'verified_denial'))) fail();
   return { status, labels: { post_install: true, state_dependent: true, simulation_only: true, submitted: false }, suite,
-    selection: DERIVED_SELECTION, policy_order: policyOrder, offline, permits_not_replayed: notReplayed, originals, cases,
+    selection: SELECTION, policy_order: policyOrder, offline, permits_not_replayed: plan.permits_not_replayed, originals, cases,
     denials_verified: cases.filter((c) => c.status === 'verified_denial').length };
 }
 
@@ -728,20 +693,18 @@ export function exportEvidence(runDir) {
   // Operator-selected local run directory plus a constant basename, as for the artifacts below.
   // nosemgrep
   const emittedCases = artifact('derived_cases', join(runDir, 'derived-cases.json'));
+  // nosemgrep
+  const specBytes = artifact('spec', join(runDir, 'spec.json'));
   let derived = {};
   if (rawRun?.derived_denials !== undefined) {
     const protocol = walkthrough.status !== 'not_recorded';
     if (!protocol && rawRun.subscription === undefined) fail();
-    const entries = walkthrough.bundle?.entries ?? [];
-    const rulePolicies = (index) => protocol
-      ? (entries[index]?.policy ? { generated: entries[index].policy, spending: null } : null)
-      : (index === 0 && run?.policy ? { generated: run.policy, spending: run.subscription.policy_address } : null);
-    derived = { derived_denials: derivedDenialsRecord(rawRun.derived_denials, emittedCases, run,
-      protocol ? walkthrough.kind : 'subscription', protocol ? protocolPipeline : pipeline, rulePolicies) };
+    derived = { derived_denials: derivedDenialsRecord(rawRun.derived_denials, emittedCases, specBytes, rawRun, run,
+      protocol ? protocolPipeline : pipeline) };
   }
   // A Blend run cannot have succeeded while its supply position was not withdrawn.
   if (walkthrough.kind === 'blend_claim' && source.status === 'exited_zero' && walkthrough.position?.status !== 'withdrawn') fail();
-  for (const [key, file] of [['spec', 'spec.json'], ['recording', 'recording.json'], ['import_bundle', 'import-bundle.json'],
+  for (const [key, file] of [['recording', 'recording.json'], ['import_bundle', 'import-bundle.json'],
     ['synthesis', 'synthesis.json'], ['decisions', 'decisions.json'], ['reference_suite', 'reference-suite.json'],
     ['verification', 'verification.json']]) {
     // Local CLI-selected directory plus a constant basename, not a backend request path.

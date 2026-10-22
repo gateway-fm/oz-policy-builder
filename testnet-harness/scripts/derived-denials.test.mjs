@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Address, Keypair, StrKey, scValToNative, xdr } from '@stellar/stellar-sdk';
 import {
-  MIN_DERIVED_DENIALS, OFFLINE_CLASSES, liveRules, liveStandIns, planDerivedDenials, predictEnforcer,
+  MIN_DERIVED_DENIALS, OFFLINE_CLASSES, cliRunner, liveRules, liveStandIns, planDerivedDenials, predictEnforcer,
   runDerivedDenials, suiteHash, verifySuite,
 } from './derived-denials.mjs';
 import { PROTOCOL_TARGETS } from './protocol-calls.mjs';
@@ -57,9 +57,10 @@ const denialText = (account, contract, code) => `topics:[error, Error(Auth, Inva
   + `contract:${contract}, topics:[error, Error(Contract, #${code})], data:["failing with contract error", ${code}]`;
 
 /** A run directory with the pre-install artifacts derived-denials reads, plus network doubles. */
-function harness(walkthrough, { policyOrder, observe, emittedText, specHash, standIns } = {}) {
+function harness(walkthrough, { policyOrder, observe, emittedText, specHash, standIns, mutateRun = () => {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-derived-'));
   const run = runFor(walkthrough);
+  mutateRun(run);
   const { emitted, reference } = suiteFor(walkthrough);
   run.spec = join(dir, 'spec.json');
   writeFileSync(join(dir, 'spec.json'), fixture(`${walkthrough}-spec.json`));
@@ -348,8 +349,8 @@ test('a completed journal labels the evidence and never records a transaction', 
   assert.deepEqual(journal.originals.map((o) => [o.id, o.status]), [['case-0', 'permitted']]);
   assert.ok(journal.cases.every((c) => c.status === 'verified_denial' && c.ledger === 101 && !('transaction' in c)));
   assert.deepEqual(journal.policy_order, [GENERATED, SPENDING]);
-  // A second attempt on the same grant is refused.
-  await assert.rejects(runDerivedDenials(h.dir, h.deps), /already/);
+  // A second attempt on the same grant is refused by the journal guard, before anything else.
+  await assert.rejects(runDerivedDenials(h.dir, h.deps), /derived denials already started; use a fresh isolated grant/);
 });
 
 test('a recorded call that is not the suite original is refused before replaying', () => {
@@ -367,4 +368,114 @@ test('a recorded call that is not the suite original is refused before replaying
   const over = { ...w3, walkthrough: { ...w3.walkthrough, amount_in: '1000001' } };
   assert.throws(() => planDerivedDenials({ cases: protocol.emitted.cases, rules: liveRules(over, protocol.spec), account: over.account,
     delegate: over.delegate }), /recorded call differs from the suite original at arg\[0\]/);
+});
+
+// --- what must fail the run -----------------------------------------------------------------------
+
+/** Faithful except for one case, which the network answers with `answer`. */
+const exceptCase7 = (answer) => (operation) => {
+  const args = operation.body.invokeHostFunctionOp.hostFunction.invokeContract.args;
+  if (args.length === 3 && args[2].type === 'scvI128' && scValToNative(args[2]) === 10000001n) return answer;
+  return faithful(ACCOUNT, predictFromOperation)(operation);
+};
+
+test('only the predicted enforcer with the predicted code counts as an attributed denial', async () => {
+  // case-7 (amount + 1) is predicted as the generated policy's #6 with that policy first.
+  for (const [name, answer] of [
+    ['right enforcer, wrong code', { result: 'deny', error: denialText(ACCOUNT, GENERATED, 7) }],
+    ['right code, wrong enforcer', { result: 'deny', error: denialText(ACCOUNT, SPENDING, 6) }],
+    ['the account, not a policy', { result: 'deny', error: denialText(ACCOUNT, ACCOUNT, 6) }],
+    ['an unrelated host error', { result: 'deny', error: 'HostError: Error(Storage, MissingValue)' }],
+  ]) {
+    const h = harness('w2', { observe: exceptCase7(answer) });
+    await assert.rejects(runDerivedDenials(h.dir, h.deps), /case-7: unattributed_denial/, name);
+    const journal = h.read().derived_denials;
+    assert.equal(journal.status, 'incomplete', name);
+    assert.equal(journal.cases.at(-1).status, 'unattributed_denial', name);
+    assert.equal(journal.cases.filter((c) => c.status === 'verified_denial').length, 2, name);
+  }
+});
+
+test('a denied original fails the run and is not recorded as permitted', async () => {
+  const h = harness('w2', { observe: (_op, n) => (n === 1
+    ? { result: 'deny', error: denialText(ACCOUNT, GENERATED, 6) } : faithful(ACCOUNT, predictFromOperation)(_op)) });
+  await assert.rejects(runDerivedDenials(h.dir, h.deps), /case-0: unexpected_denial; the recorded original must permit/);
+  const journal = h.read().derived_denials;
+  assert.deepEqual(journal.originals.map((o) => [o.id, o.status]), [['case-0', 'unexpected_denial']]);
+  assert.equal(journal.cases.length, 0);
+  assert.equal(h.calls.simulations.length, 1);
+});
+
+test('the replay refuses a grant that is not the installed, unexercised, pinned one', async () => {
+  const live = faithful(ACCOUNT, predictFromOperation);
+  const refusals = [
+    ['a delegated call already happened', { mutateRun: (r) => { r.invocations = [{ signer: 'delegate' }]; } },
+      /after installation and before any delegated call/],
+    ['the controls already started', { mutateRun: (r) => { r.subscription.controls = { status: 'running' }; } },
+      /after installation and before any delegated call/],
+    ['the composed installation was not read back', { mutateRun: (r) => { delete r.subscription.installation_readback; } },
+      /checked composed installation/],
+    ['the network check fails', { deps: { assertTestnet: async () => { throw new Error('not testnet'); } } }, /not testnet/],
+    ['the account code moved', { deps: { contractCodeHash: async () => 'ff'.repeat(32) } }, /live account code differs from its pin/],
+    ['a policy code moved', { deps: (d) => ({ contractCodeHash: async (a) => (a === GENERATED ? 'ff'.repeat(32) : d.contractCodeHash(a)) }) },
+      /live policy code differs from the installed artifact/],
+    ['the live rule names other policies', { policyOrder: [GENERATED, OTHER_TOKEN] }, /live rule policies differ from the installed composition/],
+    ['the spending policy was already exercised', { deps: (d) => ({ viewCallObservation: async (...args) => {
+      const seen = await d.viewCallObservation(...args);
+      if (args[2] !== 'get_spending_limit_data') return seen;
+      seen.value.map[0].val = xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 1n }));
+      return seen;
+    } }) }, /spending policy is not in its unexercised installed state/],
+    ['the delegate key is another key', { deps: { loadKey: () => Keypair.fromRawEd25519Seed(Buffer.alloc(32, 3)) } },
+      /delegate key differs from the installed signer/],
+  ];
+  for (const [name, { mutateRun, policyOrder, deps }, message] of refusals) {
+    const h = harness('w2', { observe: live, mutateRun, policyOrder });
+    if (deps) Object.assign(h.deps, typeof deps === 'function' ? deps({ ...h.deps }) : deps);
+    await assert.rejects(runDerivedDenials(h.dir, h.deps), message, name);
+    assert.equal(h.calls.simulations.length, 0, name);
+  }
+});
+
+test('signer sets the run cannot sign for, and other installation state, stay offline', () => {
+  const { emitted, spec } = suiteFor('w2');
+  const run = runFor('w2');
+  const plan = (cases) => planDerivedDenials({ cases, rules: liveRules(run, spec), account: run.account, delegate: run.delegate,
+    standIns: (rule) => liveStandIns(run, rule) });
+  const reasonOf = (p, id) => p.offline.find((o) => o.ids.includes(id))?.reason;
+  // case-16 is "unrecognized signer authenticates". Make it a second rule signer the run holds no key for.
+  const other = structuredClone(emitted.cases);
+  const stranger = other[16].context.authenticated_signers[0];
+  other[16].context.rule_live_signers.push(stranger);
+  assert.equal(reasonOf(plan(other), 'case-16'), 'installation_state');
+  const held = structuredClone(emitted.cases);
+  held[16].context.authenticated_signers = [{ delegated: { address: G(7) } }];
+  for (const c of held) c.context.rule_live_signers = [...c.context.rule_live_signers, { delegated: { address: G(7) } }];
+  assert.equal(reasonOf(plan(held), 'case-16'), 'signer_key_not_held');
+  const repeated = structuredClone(emitted.cases);
+  repeated[18].context.authenticated_signers = [{ delegated: { address: DELEGATE } }, { delegated: { address: DELEGATE } }];
+  assert.equal(reasonOf(plan(repeated), 'case-18'), 'repeated_signer_unrepresentable');
+  // A context that differs in anything but its signers is installation state, not a live mutation.
+  const ledger = structuredClone(emitted.cases);
+  ledger[7].context.current_ledger += 1;
+  assert.equal(reasonOf(plan(ledger), 'case-7'), 'installation_state');
+});
+
+test('a rule with several allowed tuples is refused: the run recorded one call per rule', () => {
+  const { emitted, spec } = suiteFor('w2');
+  const run = runFor('w2');
+  const twice = structuredClone(emitted.cases);
+  twice.push({ ...structuredClone(twice[0]), id: `case-${twice.length}`, index: twice.length });
+  assert.throws(() => planDerivedDenials({ cases: twice, rules: liveRules(run, spec), account: run.account, delegate: run.delegate }),
+    /exactly one allowed tuple: the run recorded one call per rule/);
+});
+
+test('a CLI failure leaves its log and a rerun reports the failure, not a stale file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ozpb-derived-cli-'));
+  const bin = join(dir, 'fake-ozpb.sh');
+  writeFileSync(bin, '#!/bin/sh\necho "emit failed" >&2\nexit 3\n', { mode: 0o700 });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.throws(() => cliRunner(dir, { OZPB_BIN: bin, PATH: process.env.PATH })(['reference-suite']), /reference-suite --emit-cases failed/);
+    assert.equal(readFileSync(join(dir, 'derived-cases.log'), 'utf8'), 'emit failed\n');
+  }
 });

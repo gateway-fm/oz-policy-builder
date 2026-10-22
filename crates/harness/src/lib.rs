@@ -376,8 +376,10 @@ pub const CASES_FORMAT: &str = "ozpb-reference-suite-cases/v1";
 /// and context, in suite order, under the hash that names exactly this list.
 ///
 /// The layer-1 report carries outcomes, not invocations, so it cannot be replayed. This can.
-/// `suite_hash` binds the spec hash and the serialized cases, so a replay that recomputes it
-/// knows it holds this spec's complete suite rather than a list someone assembled.
+/// `suite_hash` is a checksum over the spec hash and the serialized cases: a replay that
+/// recomputes it knows the list was not truncated or edited after it was emitted. It is not a
+/// signature — anyone can hash a list they assembled — so what ties the cases to a spec is
+/// running this on that spec, which a reviewer can repeat.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteCases {

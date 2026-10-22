@@ -341,9 +341,11 @@ before any delegated call. It replays the spec's own layer-1 suite against the i
   the retained `spec.json` and compare.
 - Each rule's recorded call (the call the grant was synthesized from) must be permitted.
 - Every deny case of a live-realizable class is then replayed in suite order, not chosen by name:
-  argument and cross-product mutations applied to the recorded call, the function and contract
-  classes, and the signer sets. Fewer than five such cases refuses the run before anything is
-  simulated.
+  argument mutations applied to the recorded call, the function and contract classes, and the
+  signer sets. Fewer than five such cases refuses the run before anything is simulated.
+- Each rule must have exactly one allowed tuple, because mutations are applied to the one call
+  the run recorded for it. A rule with several tuples is refused. Those are the only rules with
+  cross-product cases, so cross-product cases are never replayed live.
 - Some cases cannot be carried by a live call. They are listed under `offline` with a reason
   and are not counted:
   - `ledger_time`: time boundaries;

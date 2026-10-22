@@ -1262,7 +1262,7 @@ async function derivedReplay(run, walkthrough, order) {
     schema_version: 1, status: 'completed', labels: { post_install: true, state_dependent: true, simulation_only: true, submitted: false },
     suite: { spec_hash: emitted.spec_hash, suite_hash: emitted.suite_hash, total: emitted.total, minimum_denials: 5 },
     selection: 'every deny case of a live-realizable class that the recorded call can carry, in suite order',
-    offline: plan.offline.map(({ rule_index, class: cls, reason, cases }) => ({ rule_index, class: cls, reason, cases })),
+    offline: plan.offline.map(({ rule_index, class: cls, reason, cases, ids }) => ({ rule_index, class: cls, reason, cases, ids })),
     permits_not_replayed: plan.permits_not_replayed, policy_order: order,
     originals: plan.originals.map((o) => ({ id: o.id, rule_index: o.rule_index, status: 'permitted', ledger: 100 })),
     cases: plan.denials.map((d) => {
@@ -1290,6 +1290,7 @@ async function w2Derived(t, { order = [D_SPENDING, D_GENERATED], mutate = () => 
     spec_hash: spec, normalized_input_hash: HASH, reference_cases: 30, artifact_reproduction: 'matched',
     current_network_preflight: 'not_checked_here', models_all_policies: false, unmodeled_reviewed_policies: ['rule[0]: oz:spending_limit'] }));
   if (cases !== null) writeFileSync(join(dir, 'derived-cases.json'), cases);
+  writeFileSync(join(dir, 'spec.json'), derivedFile('w2-spec.json'));
   return { dir, run };
 }
 
@@ -1331,6 +1332,14 @@ test('derived denials refuse an observation, prediction or suite that does not h
     'case outside the suite': (r) => { r.derived_denials.cases[1].id = 'case-30'; },
     'case relabelled': (r) => { r.derived_denials.cases[1].label = 'rule[0] hand-written control'; },
     'case of another class': (r) => { r.derived_denials.cases[2].id = 'case-5'; },
+    'a verified case moved into offline': (r) => { const [moved] = r.derived_denials.cases.splice(1, 1);
+      const entry = r.derived_denials.offline.find((o) => o.class === 'different_address_arg');
+      entry.cases++; entry.ids.push(moved.id); },
+    'a verified case given another rule': (r) => { r.derived_denials.cases[1].rule_index = 1; },
+    'a permit case presented as a denial': (r) => { Object.assign(r.derived_denials.cases[9], { id: 'case-17' }); },
+    'permit accounting': (r) => { r.derived_denials.permits_not_replayed++; },
+    'offline ids that are not the plan\'s': (r) => { r.derived_denials.offline[0].ids = ['case-29']; },
+    'a realization the plan did not make': (r) => { Object.assign(r.derived_denials.cases[0], { realization: 'mutation_on_recorded_call', stand_in: null }); },
     'permit labelled unattributed': (r) => { Object.assign(r.derived_denials.cases[1], { status: 'unattributed_denial',
       observed: { result: 'permit', enforcer: null, code: null } }); },
   };
@@ -1373,6 +1382,7 @@ test('protocol derived denials are attributed to the rule each case exercises', 
     writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify({ ...protocolPipeline, account: D_ACCOUNT,
       spec_hash: emitted.spec_hash, reference_cases: emitted.total }));
     writeFileSync(join(dir, 'derived-cases.json'), derivedFile('w3-cases.json'));
+    writeFileSync(join(dir, 'spec.json'), derivedFile('w3-spec.json'));
     return dir;
   };
   const d = exportEvidence(await make()).derived_denials;
@@ -1391,10 +1401,8 @@ test('protocol derived denials are attributed to the rule each case exercises', 
   assert.throws(() => exportEvidence(unpermitted), /invalid or inconsistent evidence record/);
 });
 
-test('the exporter and the replay agree on classes and offline reasons', async () => {
-  const replay = await import('./derived-denials.mjs');
-  const exporter = await import('./evidence.mjs');
-  assert.deepEqual(exporter.DERIVED_LIVE_CLASSES, replay.LIVE_CLASSES);
-  assert.deepEqual(exporter.DERIVED_OFFLINE_CLASSES, replay.OFFLINE_CLASSES);
-  assert.deepEqual(exporter.DERIVED_OFFLINE_REASONS, replay.OFFLINE_REASONS);
+test('a derived-denial journal without its spec cannot be rechecked and is refused', async (t) => {
+  const { dir } = await w2Derived(t);
+  rmSync(join(dir, 'spec.json'));
+  assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/);
 });
