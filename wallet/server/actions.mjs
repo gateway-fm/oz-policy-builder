@@ -6,6 +6,7 @@ import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
+import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const HASH = /^[a-f0-9]{64}$/;
@@ -43,17 +44,18 @@ function freshOwner(value, signer) {
     || !equal(native.signer_ids, xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]))
     || native.valid_until.type !== 'scvVoid') refuse();
 }
-function missingVerification(artifact, bindingSetHash, accountLayer) {
+function missingVerification(artifact, bindingSetHash, accountLayer, targetLayer) {
   return freezeCopy({ runId: id(), specHash: artifact?.specHash ?? null, wasmHash: artifact?.wasmHash ?? null,
     bindingSetHash: bindingSetHash ?? null, complete: false, layers: [
       { layer: 'reference', status: artifact ? 'passed' : 'unavailable', detail: artifact
         ? 'Constraint-derived reference cases passed; artifact reproduced separately.' : 'No candidate prepared.' },
       accountLayer ?? { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
-      { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
+      targetLayer ?? { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
       { layer: 'live_enforcement', status: 'unavailable', detail: 'Wallet-authorized candidate behavioral preflight has not run.' },
     ] });
 }
 const accountLayer = (status, detail) => ({ layer: 'account_wasm', status, detail });
+const targetLayer = (status, detail) => ({ layer: 'captured_target', status, detail });
 
 /** Closed HTTP operations. Every privileged input comes from retained state or operator configuration. */
 export function createWalletActions({ session, toolchain, network, native = null }) {
@@ -242,7 +244,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (!native) refuse();
       return delegates.create();
     },
-    'check-account': async (input) => {
+    // Both local execution layers for one reviewed grant, from one CLI preparation (one run hash).
+    // `signal` aborts when the HTTP client disconnects: every child process group is killed and
+    // nothing is recorded, so the backend's locks are released without accepting partial evidence.
+    'check-account': async (input, { signal } = {}) => {
       exact(input, ['reviewId', 'capabilityId']);
       if (!native || accountCheckRunning) refuse();
       const review = get(reviews, input.reviewId);
@@ -253,38 +258,121 @@ export function createWalletActions({ session, toolchain, network, native = null
       const delegate = signers?.length === 1 ? signers[0].delegated?.address : undefined;
       const signer = delegates.signer(input.capabilityId, delegate);
       const maxCalls = rule.state?.[0]?.call_count_per_installation?.max_calls;
-      let layer;
+      const target = capturedCall(artifact.spec);
+      let layer, captured;
+      // An unsupported shape is reported as such whatever else happens to this check.
+      if (!target) {
+        captured = targetLayer('unsupported', 'Captured execution supports one exact-amount native XLM transfer from the account '
+          + 'to a G account; nothing was captured and the worker did not run.');
+      }
       if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > NATIVE_LIMITS.maxCalls) {
         layer = accountLayer('unsupported', `The native worker supports call caps up to ${NATIVE_LIMITS.maxCalls}; it did not run.`);
+        captured ??= targetLayer('unsupported', `The native worker supports call caps up to ${NATIVE_LIMITS.maxCalls}; it did not run.`);
       } else if (review.nextRuleId === null) {
         layer = accountLayer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID.');
+        captured ??= targetLayer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID.');
       } else {
         accountCheckRunning = true;
+        // Checked before every step: a step already running is killed (a child process) or runs
+        // to its own timeout (an operator RPC read), and nothing starts after a disconnect.
+        const stopped = () => { if (signal?.aborted) refuse(); };
         try {
-          let prepared, source;
+          let prepared, source, checked;
           try {
             prepared = await toolchain.prepareDryRun({ artifactId: deployment.artifactId,
-              candidate: deployment.request, candidateContextRuleId: review.nextRuleId });
+              candidate: deployment.request, candidateContextRuleId: review.nextRuleId, signal });
+            stopped();
             source = await network.nativeSource(ACCOUNT_WASM);
+            stopped();
           } catch {
+            stopped();
             // Infrastructure, not the candidate: the CLI preparation or operator RPC read did not complete.
             layer = accountLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
+            captured ??= targetLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
           }
           if (!layer) {
             try {
-              const checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
+              checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
                 bindingSetHash: deployment.response.bindingSetHash, accountAddress: artifact.spec.smart_account.address,
                 delegateAddress: delegate, policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
                 candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence });
-              layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls,
+            } catch {
+              layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
+              captured ??= targetLayer('failed', 'The CLI preparation evidence was refused; the worker did not run.');
+            }
+          }
+          if (!layer) {
+            try {
+              layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls, signal,
                 jobText: nativeJobText(prepared.request, source.accountWasmBase64, source.ledger), ...checked });
             } catch {
               layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
             }
           }
+          stopped();
+          let capture, envelope, notBefore;
+          const incomplete = () => targetLayer('unavailable',
+            'capture-target or the operator RPC read did not complete; the worker did not run.');
+          if (!captured) {
+            try { envelope = await network.targetEnvelope(target.call); } catch { captured = incomplete(); }
+            stopped();
+          }
+          if (!captured) {
+            try { notBefore = await network.latestLedger(); } catch { captured = incomplete(); }
+            stopped();
+          }
+          if (!captured) {
+            // Only this call's rejection may carry a target code: the toolchain surfaces it from
+            // capture-target's own refusal and from nothing else.
+            try {
+              capture = { notBefore, value: await toolchain.captureTarget(envelope, { signal }) };
+            } catch (error) {
+              stopped();
+              // The call's own outcome in the operator RPC's record-mode simulation, before the
+              // worker: the target, or the simulator, not the candidate's policy. No evidence.
+              if (error?.code === 'E_TARGET_REFUSED') {
+                captured = targetLayer('failed', 'The target refused the exact transfer, or the operator RPC\'s simulator failed, '
+                  + 'in record-mode simulation, for example for an insufficient balance or a missing recipient; the endpoint '
+                  + 'does not say which. The worker did not run.');
+              } else if (error?.code === 'E_TARGET_ARCHIVED') {
+                captured = targetLayer('failed', 'The exact call\'s target state is archived and needs restoration, which capture '
+                  + 'does not perform; the worker did not run.');
+              } else {
+                captured = incomplete();
+              }
+            }
+            stopped();
+          }
+          const observed = capture?.value?.observed_ledger;
+          if (!captured && Number.isSafeInteger(observed)
+            && (observed < capture.notBefore || observed - capture.notBefore > FRESHNESS_LEDGERS)) {
+            // A lagging or slow endpoint: no current-state evidence was obtained, which says nothing about the candidate.
+            captured = targetLayer('unavailable', 'The capture was not from the current ledger window; the worker did not run.');
+          }
+          if (!captured) {
+            try {
+              const checkedCapture = checkTargetCapture(capture.value, { call: target.call, accountAddress: target.accountAddress,
+                recipient: target.recipient, notBefore: capture.notBefore });
+              const validUntil = rule.valid_until?.ledger;
+              // A call based on the capture lands at the next ledger or later, where such a grant no longer applies.
+              if (Number.isSafeInteger(validUntil) && checkedCapture.observedLedger >= validUntil) {
+                captured = targetLayer('unavailable', 'The grant expires at or before the captured ledger; the worker did not run.');
+              } else {
+                captured = await runCapturedExecution({ executable: native.executable, run: native.run, signer, maxCalls, signal,
+                  jobText: capturedJobText(prepared.request, source.accountWasmBase64, checkedCapture),
+                  expected: { runHash: checked.expected.runHash, accountAddress: target.accountAddress, delegateAddress: delegate,
+                    policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
+                    candidateContextRuleId: review.nextRuleId, observedLedger: checkedCapture.observedLedger,
+                    captureHash: checkedCapture.captureHash, recipient: target.recipient, amount: target.amount } });
+              }
+            } catch {
+              captured = targetLayer('failed', 'The capture, the native worker or its report was refused; no evidence accepted.');
+            }
+          }
+          stopped();
         } finally { accountCheckRunning = false; }
       }
-      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer);
+      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer, captured);
       reviews.set(input.reviewId, { ...review, verification });
       return freezeCopy({ reviewId: input.reviewId, verification });
     },

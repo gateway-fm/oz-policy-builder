@@ -108,7 +108,9 @@ Only the shape above is captured. The refusals:
 | hosted server: the source's URL is not on `OZPB_RPC_ALLOWLIST` | before any request | `E_RPC` |
 | hosted server: another read through an operator source is running | before any request | `E_RESOURCE_LIMIT` |
 | the endpoint reports another network | during the capture | `E_NETWORK_MISMATCH` |
-| any answer the capture above refuses: a failed, non-void or restoring simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing, archived or expiring entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
+| the record-mode simulation failed, as preflight classifies it: a non-empty error, with no results or restoration, at a ledger the endpoint read. The target refused the call (for example an insufficient balance or a missing recipient) or, indistinguishably once the endpoint's text is withheld, its simulator failed | during the capture | `E_TARGET_REFUSED` |
+| the call's state is archived: a well-formed restoration preamble; a simulation that restored archived entries, which since protocol 23 is how the endpoint reports them; or a footprint entry archived at, or expiring at, the captured ledger | during the capture | `E_TARGET_ARCHIVED` |
+| any other answer the capture above refuses: an error that is empty, not a string, beside results or a preamble, or at ledger 0 (the endpoint refused before simulating); a preamble preflight would not accept; an entry archived at a ledger other than the simulation's, on both attempts; a non-void simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
 | MCP server, stdio or hosted: not finished within 300 s | during the capture | `E_RESOURCE_LIMIT` |
 
 The CLI sets no overall deadline: each of its at most eight requests is bounded by the
@@ -116,7 +118,9 @@ transport's 30 s timeout. On an MCP server the 300 s deadline ends the wait, not
 hosted server's slot stays held until the read itself stops.
 
 Producing a capture does not run this layer. No CLI or MCP command runs it yet, and
-`prepare_dry_run` still reports `captured_target` as unavailable.
+`prepare_dry_run` still reports `captured_target` as unavailable. The local
+[Pollywallet backend](POLLYWALLET-INTEGRATION.md#captured-target-execution) runs it for a
+reviewed grant.
 
 ## Preparation
 
@@ -190,7 +194,9 @@ change-classification unit tests and argument refusal. `cargo test -p ozpb-sourc
 the recorded testnet capture and the mocked refusal cases, including endpoint replies that quote
 the envelope. `cargo test -p ozpb-cli --test capture_target_cli` and
 `cargo test -p ozpb-mcp-server --test mcp_stdio_capture` replay the same recorded responses over
-a local HTTP endpoint through each shell's operator source configuration. `bash scripts/test-captured-target.sh`
+a local HTTP endpoint through each shell's operator source configuration, and
+`bash scripts/test-wallet-native-execution.sh` drives the wallet backend's checks of the capture
+and of both worker modes with them. `bash scripts/test-captured-target.sh`
 generates four real policies and requires every actual-Wasm test to run and pass: the fixture
 capture (a real SDK-29 SAC deployment built locally), the same with an uncapped rule, a capture
 whose sender cannot cover the amount, a rule paying the delegate itself (refused as overlapping

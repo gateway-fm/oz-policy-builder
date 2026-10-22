@@ -99,7 +99,8 @@ The wallet keeps a registered, controlled delegate key in backend memory and exp
 address and opaque capability ID to the UI. The worker receives only the address. An arbitrary
 supplied delegate address without a matching capability is unavailable; an owner passkey does
 not stand in for the delegate. The [Pollywallet backend](POLLYWALLET-INTEGRATION.md#account-wasm-execution)
-implements this exchange.
+implements this exchange for both modes, and kills the worker's group when its HTTP client
+disconnects.
 
 ## Exact offline-domain encoding
 

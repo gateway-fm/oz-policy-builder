@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
+import { targetEnvelopeXdr } from './captured-execution.mjs';
 import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 
 export const MAX_FEE_STROOPS = 10_000_000;
@@ -319,6 +320,16 @@ export class WalletNetwork {
         base_reserve: header.baseReserve, min_temp_entry_ttl: settings.minTemporaryTtl,
         min_persistent_entry_ttl: settings.minPersistentTtl, max_entry_ttl: settings.maxEntryTtl },
       accountWasmBase64: code.toString('base64') };
+    } catch { refuse(); }
+  }
+  /**
+   * The unsigned record-mode envelope for one captured call, sourced from the fee payer at its
+   * current sequence. Read-only: it is never signed, journaled or submitted.
+   */
+  async targetEnvelope(call) {
+    try {
+      await this.assertTestnet();
+      return targetEnvelopeXdr(await this.source(), call);
     } catch { refuse(); }
   }
   async requireInstance(contractId, wasmHash) {

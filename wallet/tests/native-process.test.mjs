@@ -173,3 +173,18 @@ test('aborted execution and malformed initial job never start a worker', async (
     await assert.rejects(() => runNative(w.executable, text, hooks()), /native process refused/);
   }
 });
+test('each worker mode passes exactly its one fixed argument', async (t) => {
+  for (const [options, expected] of [[{ prepareOnly: true }, ['--prepare']], [{}, []],
+    [{ prepareOnly: true, captured: true }, ['--prepare-captured']], [{ captured: true }, ['--captured']]]) {
+    const w = worker(t, '');
+    const argvFile = join(w.dir, 'argv');
+    writeFileSync(join(w.dir, 'worker.mjs'), `import {writeFileSync} from 'node:fs';${input}${emit}`
+      + `const it=lines[Symbol.asyncIterator]();await it.next();writeFileSync(${JSON.stringify(argvFile)},JSON.stringify(process.argv.slice(2)));`
+      + `emit(${JSON.stringify(prepared)});${options.prepareOnly ? '' : `emit(${JSON.stringify(result)});`}lines.close();`);
+    const value = await runNative(w.executable, '{}', { ...hooks(), ...options, timeoutMs: 20000 });
+    assert.deepEqual(value, options.prepareOnly ? prepared : result);
+    assert.deepEqual(JSON.parse(readFileSync(argvFile, 'utf8')), expected, JSON.stringify(options));
+  }
+  const w = worker(t, 'process.exit(0)');
+  await assert.rejects(() => runNative(w.executable, '{}', { ...hooks(), captured: 'yes' }), /native process refused/);
+});

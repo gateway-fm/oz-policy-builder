@@ -203,3 +203,80 @@ fn capture_target_is_a_documented_subcommand() {
     }
     assert!(!help.contains("--rpc-url"), "{help}");
 }
+
+/// A simulation the target refused, or whose footprint needs restoration, is named by its own
+/// code, so a caller can tell the call's outcome from an endpoint fault. The endpoint's words,
+/// which could quote the envelope, still never reach the output.
+#[test]
+fn a_target_refusal_or_archived_footprint_has_its_own_code() {
+    // Since protocol 23 an endpoint restores archived entries inside the simulated call and
+    // lists them in the transaction data rather than sending a preamble.
+    let restored = |simulation: &mut serde_json::Value| {
+        use stellar_xdr::{Limits, ReadXdr, WriteXdr};
+        let mut data = stellar_xdr::SorobanTransactionData::from_xdr_base64(
+            simulation["transactionData"].as_str().unwrap(),
+            Limits::none(),
+        )
+        .unwrap();
+        data.ext = stellar_xdr::SorobanTransactionDataExt::V1(stellar_xdr::SorobanResourcesExtV0 {
+            archived_soroban_entries: vec![0].try_into().unwrap(),
+        });
+        simulation["transactionData"] = json!(data.to_xdr_base64(Limits::none()).unwrap());
+    };
+    for (field, code) in [
+        ("error", "E_TARGET_REFUSED"),
+        ("restorePreamble", "E_TARGET_ARCHIVED"),
+        ("archived", "E_TARGET_ARCHIVED"),
+    ] {
+        let envelope = envelope();
+        let echoed = envelope.clone();
+        let endpoint = ReplayEndpoint::bind(move |method, _| match method {
+            "simulateTransaction" => {
+                let mut simulation = target_capture_rpc::recorded(method);
+                let quoted = format!("balance is not sufficient: {echoed}");
+                match field {
+                    // A failed simulation reports its error and no results.
+                    "error" => {
+                        simulation["error"] = json!(quoted);
+                        simulation.as_object_mut().unwrap().remove("results");
+                    }
+                    // A well-formed preamble: transaction data whose fee is its own.
+                    "restorePreamble" => {
+                        use stellar_xdr::{Limits, WriteXdr};
+                        let data = stellar_xdr::SorobanTransactionData {
+                            resource_fee: 4321,
+                            ..Default::default()
+                        };
+                        simulation["restorePreamble"] = json!({
+                            "transactionData": data.to_xdr_base64(Limits::none()).unwrap(),
+                            "minResourceFee": "4321",
+                        })
+                    }
+                    _ => restored(&mut simulation),
+                }
+                Reply::Result(simulation)
+            }
+            other => Reply::Result(target_capture_rpc::recorded(other)),
+        });
+        let output = capture(&endpoint.url, &request(&envelope));
+        let requests = endpoint.finish();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{field}: {stderr}");
+        assert!(output.stdout.is_empty(), "{field}: printed a capture");
+        assert!(
+            stderr.starts_with(&format!("Error: {code}: ")),
+            "{field}: {stderr}"
+        );
+        assert!(!stderr.contains("E_RPC"), "{field}: {stderr}");
+        assert!(
+            !stderr.contains("balance is not sufficient"),
+            "{field}: {stderr}"
+        );
+        assert_not_echoed(&output, &envelope);
+        assert_eq!(
+            methods(&requests),
+            ["getNetwork", "simulateTransaction"],
+            "{field}"
+        );
+    }
+}

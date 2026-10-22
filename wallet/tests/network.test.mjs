@@ -358,3 +358,20 @@ for (const mode of ['network protocol', 'header protocol', 'header sequence', 'h
     await assert.rejects(() => network.nativeSource(wasmHash), /refused/);
   });
 }
+
+test('the capture envelope is the fee payer\'s unsigned call: nothing is simulated, signed, journaled or sent', async (t) => {
+  const { network, calls, root } = networkFixture(t);
+  const call = xdr.InvokeContractArgs.fromXDR(invocation(network.payerAddress).body.invokeHostFunctionOp.hostFunction.invokeContract.toXDR());
+  const envelope = await network.targetEnvelope(call);
+  const tx = TransactionBuilder.fromXDR(envelope, Networks.TESTNET);
+  assert.equal(tx.source, network.payerAddress);
+  assert.equal(tx.sequence, '8');
+  assert.equal(tx.signatures.length, 0);
+  const op = xdr.TransactionEnvelope.fromXDR(envelope, 'base64').v1.tx.operations[0].body.invokeHostFunctionOp;
+  assert.equal(op.auth.length, 0);
+  assert.equal(op.hostFunction.invokeContract.toXDR('base64'), call.toXDR('base64'));
+  assert.deepEqual(calls, []);
+  assert.deepEqual(readdirSync(root), []);
+  const other = networkFixture(t, (server) => { server.getNetwork = async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 }); });
+  await assert.rejects(() => other.network.targetEnvelope(call), /refused/);
+});

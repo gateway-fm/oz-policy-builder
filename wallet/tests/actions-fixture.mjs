@@ -34,7 +34,7 @@ export function setup({ native = null } = {}) {
     record: async (request) => { calls.push(['record', request]); return { recordId: '4'.repeat(64) }; },
     generate: async (request) => { calls.push(['generate', request]); return { artifactId: '5'.repeat(64) }; },
   };
-  return { actions: createWalletActions({ session, toolchain, network, native }), calls, f, network, toolchain };
+  return { actions: createWalletActions({ session, toolchain, network, native }), calls, f, network, toolchain, session };
 }
 
 export function deploymentFixture(change = () => {}, options = {}) {

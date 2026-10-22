@@ -46,7 +46,7 @@ export function createOfflineSigner({ prepared, caseIds, signer }) {
     const domain = offlineDomain(retained.binding);
     if (retained.execution_network_id !== domain.networkId || signer?.address !== retained.binding.delegate_address
       || typeof signer.sign !== 'function' || !Array.isArray(caseIds) || caseIds.length < 1 || caseIds.length > 10000
-      || caseIds.some((id) => typeof id !== 'string' || !/^(case:(0|[1-9][0-9]*)|control:(signature_bit|nonce_binding|payload_binding|context_rule_binding|nonce_replay)|sequence:((0|[1-9][0-9]*)|partial_rollback|overflow))$/.test(id))
+      || caseIds.some((id) => typeof id !== 'string' || !/^(case:(0|[1-9][0-9]*)|control:(signature_bit|nonce_binding|payload_binding|context_rule_binding|nonce_replay)|sequence:((0|[1-9][0-9]*)|partial_rollback|overflow)|target:(original|argument-denial):0)$/.test(id))
       || new Set(caseIds).size !== caseIds.length || !Array.isArray(retained.signature_expiration_ledgers)
       || retained.signature_expiration_ledgers.length < 1 || retained.signature_expiration_ledgers.length > 256
       || retained.signature_expiration_ledgers.some((ledger) => !integer(ledger))) refuse();
