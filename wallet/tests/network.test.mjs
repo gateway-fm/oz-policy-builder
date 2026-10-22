@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, rpc, xdr } from '@stellar/stellar-sdk';
-import { assembleTransaction, boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
+import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS, assembleTransaction, boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
@@ -436,4 +436,32 @@ test('the fee payer submits an envelope without time bounds after enforce-mode a
   assert.equal(sent.v1.tx.cond.v2.timeBounds, null);
   assert.equal(sent.v1.signatures.length, 1);
   assert.equal(result.feeChargedStroops, '2000');
+});
+
+// Testnet's resource fee for a ~21 KB policy Wasm upload passed 10 XLM (101,422,794 stroops on
+// 22 October 2026). Only the code upload may name up to 15 XLM; every other transaction keeps 1 XLM.
+function upload(fee, resourceFee = fee - 1000) {
+  const payer = Keypair.random();
+  const original = new TransactionBuilder(new Account(payer.publicKey(), '7'), { fee: '1000', networkPassphrase: Networks.TESTNET })
+    .addOperation(Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]) })).setTimeout(60).build();
+  const envelope = xdr.TransactionEnvelope.fromXDR(original.toEnvelope().toXDR());
+  envelope.v1.tx.fee = fee;
+  envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(resourceFee).build());
+  return { original, assembled: TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET) };
+}
+test('a policy Wasm upload may cost up to 15 testnet XLM; nothing else above 1', () => {
+  assert.equal(MAX_UPLOAD_FEE_STROOPS, 150_000_000);
+  assert.equal(MAX_FEE_STROOPS, 10_000_000);
+  for (const fee of [101_422_794 + 1000, 150_000_000]) {
+    const { original, assembled } = upload(fee);
+    assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR()), String(fee));
+  }
+  const over = upload(150_000_001);
+  assert.throws(() => checkPreparedEnvelope(over.assembled, over.original.toEnvelope().toXDR()), /refused/);
+  const original = transaction();
+  const envelope = xdr.TransactionEnvelope.fromXDR(original.toEnvelope().toXDR());
+  envelope.v1.tx.fee = 101_422_794;
+  envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(101_421_794).build());
+  assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET),
+    original.toEnvelope().toXDR()), /refused/, 'a contract call above 1 XLM stays refused');
 });

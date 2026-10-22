@@ -139,7 +139,10 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
    specification and generated artifact under opaque identifiers.
 3. Inspect the immutable specification, generated files, Wasm hash, build manifest and
    verification limits. Deployment confirmation concerns that exact artifact and the testnet
-   fee ceiling; it does not grant account authority.
+   fee ceiling; it does not grant account authority. The policy's Wasm upload may cost the fee
+   payer up to 15 testnet XLM. Every other transaction, installation and revocation included,
+   stays at 1 testnet XLM. The upload ceiling was 10 XLM until testnet's resource fee for a
+   policy Wasm of about 21 KB passed it (101,422,794 stroops on 22 October 2026). Testnet only.
 4. Refresh the live authority and exact installation grant. The browser independently checks
    the recognized owner rule, full credential identifier, policy address and retained bindings.
    The selected owner rule comes from that evidence; rule zero is not assumed.

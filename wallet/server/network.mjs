@@ -11,7 +11,11 @@ import { targetEnvelopeXdr } from './captured-execution.mjs';
 import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 
 export const MAX_FEE_STROOPS = 10_000_000;
-export const MAX_UPLOAD_FEE_STROOPS = 100_000_000;
+/**
+ * The code upload's ceiling only: testnet's resource fee for a ~21 KB policy Wasm passed 10 XLM in
+ * October 2026. Every other transaction keeps MAX_FEE_STROOPS.
+ */
+export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
 const refuse = () => { throw new Error('wallet network operation refused; inspect the local journal before retrying'); };
 const bytes = (value) => Buffer.from(value.toXDR());
 const same = (a, b) => a?.toXDR && b?.toXDR && bytes(a).equals(bytes(b));
