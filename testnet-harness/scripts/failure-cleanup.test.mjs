@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Networks, StrKey } from '@stellar/stellar-sdk';
-import { cleanupAfterFailure, runCleanupChild } from './failure-cleanup.mjs';
+import { CLEANUP_CHILD_DEADLINE_MS, childDeadline, cleanupAfterFailure, runCleanupChild } from './failure-cleanup.mjs';
 import { PINNED_ACCOUNT_WASM } from './rpc.mjs';
 
 const C = (n) => StrKey.encodeContract(Buffer.alloc(32, n));
@@ -163,4 +163,9 @@ test('a pending removal reaches the cleanup child, which reconciles it by hash i
   const result = await cleanupAfterFailure(f.dir, { runRevoke: async () => { called++; return { status: 'exited', code: 1 }; } });
   assert.equal(called, 1);
   assert.equal(result.status, 'incomplete');
+});
+
+test('the child stops itself 30 seconds before the parent kills it', () => {
+  assert.equal(childDeadline(1_000), 1_000 + CLEANUP_CHILD_DEADLINE_MS - 30_000);
+  assert.ok(childDeadline(1_000) < 1_000 + CLEANUP_CHILD_DEADLINE_MS);
 });

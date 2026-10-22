@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import { composedPolicies, SPENDING_LIMIT_WASM, SPENDING_MODEL_GAP, subscriptionConfig } from './subscription.mjs';
+import { writeJson } from './rpc.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const NETWORK = 'Test SDF Network ; September 2015';
@@ -188,7 +189,7 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   same(verified.current_network_preflight, 'not_checked_here: state-dependent (wallet/live)', 'verification evidence boundary');
   Object.assign(run, { spec: join(dir, 'spec.json'), valid_until_ledger: inputs.decisions.valid_until_ledger,
     registry_root: spec.registry_snapshot });
-  writeFileSync(runPath, JSON.stringify(run, null, 2) + '\n');
+  writeJson(runPath, run);
   save(join(dir, 'pipeline.json'), {
     schema_version: 1, account: run.account, recorded_transaction: permits[0].hash,
     recording_hash: record.recording_hash, acquisition_trust: 'rpc_reported',

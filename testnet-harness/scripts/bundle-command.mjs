@@ -79,13 +79,18 @@ export async function bundleCommand(command, directory, options = {}) {
   return Promise.all(input.run.walkthrough.bundle.entries.map((entry) => inspectBundleGrant(input.run, input.spec, entry)));
 }
 
-if (isMainModule(import.meta.url)) {
-  const options = args(process.argv.slice(3));
+/** The command line. As the failure-cleanup child, cleanup stops itself before the parent's kill. */
+export async function bundleMain(argv, { run = bundleCommand, now = () => Date.now() } = {}) {
+  const [command, ...rest] = argv;
+  const options = args(rest);
   requireThat(options['run-dir'], 'usage: bundle-command.mjs install|inspect|cleanup --run-dir DIRECTORY');
+  if (command === 'cleanup') options.deadline = childDeadline(now());
+  return run(command, options['run-dir'], options);
+}
+
+if (isMainModule(import.meta.url)) {
   let result;
-  // As the failure-cleanup child, cleanup stops itself before the parent's process-group kill.
-  if (process.argv[2] === 'cleanup') options.deadline = childDeadline();
-  try { result = await bundleCommand(process.argv[2], options['run-dir'], options); } catch (error) {
+  try { result = await bundleMain(process.argv.slice(2)); } catch (error) {
     if (process.argv[2] !== 'cleanup') throw error;
     // The cleanup child's output is kept in cleanup-child.log: a message, no stack, no secrets.
     console.error(redactSecrets(`bundle cleanup failed: ${error?.message ?? error}`));

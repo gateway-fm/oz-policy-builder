@@ -54,7 +54,7 @@ test('a readback is accepted only at or after the confirmed ledger, and retried 
 
 // transactionOutcome itself, against a stubbed endpoint: only ledger close times decide that an
 // unseen transaction can no longer land; the local clock only bounds how long it polls.
-async function outcomeWith(responses, { maxTime, nowSeconds = [], budgetMs } = {}) {
+async function outcomeWith(responses, { maxTime, nowSeconds = [], budgetMs, minLedger } = {}) {
   const rpcModule = await import('./rpc.mjs');
   const original = rpcModule.server.getTransaction;
   let reads = 0, clock = 0;
@@ -66,7 +66,7 @@ async function outcomeWith(responses, { maxTime, nowSeconds = [], budgetMs } = {
   try {
     const result = await rpcModule.transactionOutcome('ab'.repeat(32), maxTime, {
       now: () => (nowSeconds.length ? nowSeconds[Math.min(clock++, nowSeconds.length - 1)] : 0) * 1000,
-      delay: async () => {}, ...(budgetMs === undefined ? {} : { budgetMs }) });
+      delay: async () => {}, ...(budgetMs === undefined ? {} : { budgetMs }), ...(minLedger === undefined ? {} : { minLedger }) });
     return { result, reads };
   } finally { rpcModule.server.getTransaction = original; }
 }
@@ -120,4 +120,73 @@ test('run journals are replaced atomically through a synced temporary file in th
   writeJson(path, { value: 1 });
   assert.deepEqual(JSON.parse(rf(path, 'utf8')), { value: 1 });
   assert.deepEqual(readdirSync(dir), ['run.json'], 'no temporary file is left behind');
+});
+
+const unseen = (overrides = {}) => ({ status: 'NOT_FOUND', latestLedger: 500, latestLedgerCloseTime: String(WINDOW_END + 1),
+  oldestLedger: 100, oldestLedgerCloseTime: String(WINDOW_START), ...overrides });
+for (const field of ['latestLedgerCloseTime', 'oldestLedgerCloseTime']) {
+  for (const bad of [null, '', ' ', false, '0', 0, '-5', -5, '12a', 1.5, '1e3', undefined]) {
+    test(`a malformed ${field} (${JSON.stringify(bad)}) never makes a removal unseen`, async () => {
+      const { result } = await outcomeWith([unseen({ [field]: bad })], { maxTime: WINDOW_END, nowSeconds: [0, 10], budgetMs: 5000 });
+      assert.equal(result.after_window, false);
+    });
+  }
+}
+test('close times out of order never make a removal unseen', async () => {
+  const { result } = await outcomeWith([unseen({ oldestLedgerCloseTime: String(WINDOW_END + 2) })],
+    { maxTime: WINDOW_END, nowSeconds: [0, 10], budgetMs: 5000 });
+  assert.equal(result.after_window, false);
+});
+test('with the prepare-time ledger known, the endpoint must still retain it', async () => {
+  assert.equal((await outcomeWith([unseen({ oldestLedger: 100 })], { maxTime: WINDOW_END, minLedger: 100 })).result.after_window, true);
+  for (const oldestLedger of [101, 0, '100', null]) {
+    const { result } = await outcomeWith([unseen({ oldestLedger })], { maxTime: WINDOW_END, minLedger: 100, nowSeconds: [0, 10], budgetMs: 5000 });
+    assert.equal(result.after_window, false, `oldestLedger ${JSON.stringify(oldestLedger)}`);
+  }
+});
+
+function recordingIo(fs, overrides = {}) {
+  const calls = [];
+  const io = {};
+  for (const name of ['openSync', 'writeSync', 'fsyncSync', 'closeSync', 'renameSync', 'rmSync']) {
+    io[name] = (...args) => { calls.push([name, ...args.filter((a) => typeof a === 'string')]); return (overrides[name] ?? fs[name])(...args); };
+  }
+  return { io, calls };
+}
+test('writeJson writes a new temporary file, syncs it, then renames it over the journal', async (t) => {
+  const fs = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { writeJson } = await import('./rpc.mjs');
+  const dir = fs.mkdtempSync(join(tmpdir(), 'ozpb-atomic-io-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'run.json');
+  const { io, calls } = recordingIo(fs);
+  writeJson(path, { value: 2 }, io);
+  const names = calls.map(([name]) => name);
+  assert.equal(names[0], 'openSync');
+  const temporary = calls[0][1];
+  assert.notEqual(temporary, path);
+  assert.equal(dirname(temporary), dir);
+  assert.equal(calls[0][2], 'wx');
+  assert.ok(names.indexOf('fsyncSync') < names.indexOf('renameSync'));
+  assert.deepEqual(calls.find(([name]) => name === 'renameSync').slice(1), [temporary, path]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path, 'utf8')), { value: 2 });
+});
+test('writeJson completes short writes and refuses a write that makes no progress', async (t) => {
+  const fs = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { writeJson } = await import('./rpc.mjs');
+  const dir = fs.mkdtempSync(join(tmpdir(), 'ozpb-short-write-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'run.json');
+  const short = recordingIo(fs, { writeSync: (fd, buffer, offset, length, position) => fs.writeSync(fd, buffer, offset, Math.min(length, 7), position) });
+  writeJson(path, { value: 'a fairly long journal value that needs several short writes' }, short.io);
+  assert.equal(JSON.parse(fs.readFileSync(path, 'utf8')).value, 'a fairly long journal value that needs several short writes');
+  assert.ok(short.calls.filter(([name]) => name === 'writeSync').length > 3);
+  const stuck = recordingIo(fs, { writeSync: () => 0 });
+  assert.throws(() => writeJson(path, { value: 'replacement' }, stuck.io), /no progress/);
+  assert.equal(JSON.parse(fs.readFileSync(path, 'utf8')).value, 'a fairly long journal value that needs several short writes');
+  assert.deepEqual(fs.readdirSync(dir), ['run.json'], 'the partial temporary file is removed and never renamed');
 });

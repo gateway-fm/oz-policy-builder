@@ -29,3 +29,14 @@ for (const [script, args, prefix] of [
     assert.doesNotMatch(result.stderr, /^\s+at /m, 'no stack trace');
   });
 }
+
+test('the bundle-command entry point gives cleanup, and only cleanup, the child deadline', async () => {
+  const { bundleMain } = await import('./bundle-command.mjs');
+  const { childDeadline } = await import('./failure-cleanup.mjs');
+  const seen = [];
+  const run = async (command, dir, options) => { seen.push({ command, dir, deadline: options.deadline }); return { status: 'removed' }; };
+  await bundleMain(['cleanup', '--run-dir', '/controlled'], { run, now: () => 7_000 });
+  await bundleMain(['inspect', '--run-dir', '/controlled'], { run, now: () => 7_000 });
+  assert.deepEqual(seen, [{ command: 'cleanup', dir: '/controlled', deadline: childDeadline(7_000) },
+    { command: 'inspect', dir: '/controlled', deadline: undefined }]);
+});

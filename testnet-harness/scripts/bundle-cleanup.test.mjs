@@ -37,6 +37,7 @@ function fixture() {
   const deps = {
     delay: async () => {},
     transactionOutcome: async (hash, maxTime, options = {}) => { outcomes.push([hash, maxTime]); controls.budgets = [...(controls.budgets ?? []), options.budgetMs];
+      controls.minLedgers = [...(controls.minLedgers ?? []), options.minLedger];
       return controls.outcome ?? { status: 'NOT_FOUND', after_window: false }; },
     viewCallObservation: async (payer, contract, name, args) => {
       const ledger = controls.readLedgers?.length ? controls.readLedgers.shift() : 111;
@@ -69,7 +70,7 @@ function fixture() {
     submit: async (_payer, op, options) => {
       const id = op.body.invokeHostFunctionOp.hostFunction.invokeContract.args[0].u32;
       const hash = H(100 + id);
-      await options.onSubmitting(hash, { max_time: 999 });
+      await options.onSubmitting(hash, { max_time: 999, min_ledger: 77 });
       const latest = history.at(-1).walkthrough.bundle.entries.find((e) => e.installation?.rule_id === id);
       assert.equal(latest.pending_removal.transaction, hash, 'hash retained before send');
       sends.push(id);
@@ -315,4 +316,13 @@ test('cleanup budgets reconciliation against its deadline and prepares no remova
   assert.deepEqual(f.sends, [9]);
   assert.equal(result.status, 'incomplete');
   assert.equal(f.run.walkthrough.bundle.entries[0].pending_removal, undefined, 'nothing was prepared for rule 8');
+});
+
+test('a prepared removal journals the ledger before which it cannot land, and reconciliation uses it', async () => {
+  const f = fixture();
+  f.controls.ambiguous = 9;
+  await f.execute();
+  assert.equal(f.run.walkthrough.bundle.entries[1].pending_removal.min_ledger, 77);
+  await f.execute();
+  assert.deepEqual(f.controls.minLedgers, [77]);
 });

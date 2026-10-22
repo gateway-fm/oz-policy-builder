@@ -8,7 +8,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { addContextRuleArgs, contractCall } from './lib.mjs';
-import { removalEvent, revokePolicy } from './lifecycle.mjs';
+import { lifecycleMain, removalEvent, revokePolicy } from './lifecycle.mjs';
+import { childDeadline } from './failure-cleanup.mjs';
 import { monitorGrant } from './monitor.mjs';
 import { PINNED_ACCOUNT_WASM, SimulationError } from './rpc.mjs';
 import { composedPolicies, SPENDING_LIMIT_WASM } from './subscription.mjs';
@@ -337,4 +338,24 @@ test('W2 cleanup budgets reconciliation against its deadline and prepares no rem
   await assert.rejects(revokePolicy(f.dir, { ...f.deps, deadline: 200_000, now: () => 0 }), /too little time/);
   assert.equal(budget, 0);
   assert.equal(f.sent(), 0);
+});
+
+test('the lifecycle entry point passes the child deadline and the snapshot to the removal', async () => {
+  let seen;
+  await lifecycleMain(['--run-dir', '/controlled', '--expected-run-sha256', 'ab'.repeat(32)],
+    { revoke: async (dir, options) => { seen = { dir, ...options }; return {}; }, now: () => 5_000 });
+  assert.deepEqual(seen, { dir: '/controlled', expectedRunHash: 'ab'.repeat(32), deadline: childDeadline(5_000) });
+});
+test('a W2 prepared removal journals the ledger before which it cannot land, and reconciliation uses it', async (t) => {
+  const f = fixture(t);
+  f.deps.submit = async (_payer, _op, { onSubmitting }) => {
+    await onSubmitting(hash, { max_time: 4242, min_ledger: 77 });
+    throw new Error('confirmation unavailable');
+  };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /confirmation unavailable/);
+  assert.equal(f.state().lifecycle.pending_removal.min_ledger, 77);
+  let options;
+  f.deps.transactionOutcome = async (_h, _m, o) => { options = o; return { status: 'NOT_FOUND', after_window: false }; };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /pending/);
+  assert.equal(options.minLedger, 77);
 });

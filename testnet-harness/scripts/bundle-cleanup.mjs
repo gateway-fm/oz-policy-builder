@@ -106,7 +106,8 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
         progress('pending removal outcome');
         const prepared = entry.pending_removal;
         const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null,
-          { budgetMs: Math.max(0, Math.min(rpc.OUTCOME_POLL_BUDGET_MS, remaining() - rpc.REMOVAL_RESERVE_MS)) });
+          { budgetMs: Math.max(0, Math.min(rpc.OUTCOME_POLL_BUDGET_MS, remaining() - rpc.REMOVAL_RESERVE_MS)),
+            minLedger: prepared.min_ledger ?? null });
         if (outcome?.status === 'SUCCESS') {
           entry.removal = { transaction: prepared.transaction, ledger: Number.isSafeInteger(outcome.ledger) ? outcome.ledger : null,
             event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked', confirmation: 'reconciled',
@@ -155,7 +156,8 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
         stage: `bundle remove rule ${id}`, onSubmitting: (transaction, window = {}) => {
           requireThat(hash(transaction), 'invalid prepared removal identity');
           entry.pending_removal = { transaction, status: 'prepared_for_submission', before,
-            ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}) };
+            ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}),
+            ...(Number.isSafeInteger(window.min_ledger) ? { min_ledger: window.min_ledger } : {}) };
           save();
         },
       });

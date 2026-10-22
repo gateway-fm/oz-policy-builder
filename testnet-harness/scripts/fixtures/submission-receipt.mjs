@@ -206,6 +206,7 @@ if (mode === 'send backpressure' || mode === 'unknown send status') {
   await source.namespace.submit(payer, operation, { onSubmitting: (hash, prepared) => { seen = { hash, ...prepared }; } });
   assert.equal(seen.hash, expectedHash);
   assert.ok(Number.isSafeInteger(seen.max_time) && seen.max_time > Math.floor(Date.now() / 1000), 'validity window end is journaled');
+  assert.equal(seen.min_ledger, 31, 'the simulation ledger before which it cannot land is journaled');
 } else if (mode === 'readback error ledger') {
   await assert.rejects(source.namespace.viewCallObservation(payer, sdk.StrKey.encodeContract(Buffer.alloc(32, 1)), 'missing'),
     (error) => error instanceof source.namespace.SimulationError && error.ledger === 31);

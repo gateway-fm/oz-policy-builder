@@ -162,10 +162,11 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   assembled.sign(payer);
   const expectedHash = Buffer.from(assembled.hash()).toString('hex');
   const maxTime = Number(tx.timeBounds.maxTime);
+  const minLedger = ledgerOf(sim.latestLedger);
   // Persist a removal identity before the first network write. A failed checkpoint prevents send;
   // a later transport/confirmation failure keeps the identity available for reconciliation. The
   // end of the validity window says when an unseen transaction can no longer land.
-  if (onSubmitting) await onSubmitting(expectedHash, { max_time: maxTime });
+  if (onSubmitting) await onSubmitting(expectedHash, { max_time: maxTime, ...(minLedger === null ? {} : { min_ledger: minLedger }) });
   log(`transaction prepared ${expectedHash}; expires ${tx.timeBounds.maxTime}`);
   const sent = await server.sendTransaction(assembled);
   const status = ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER', 'ERROR'].includes(sent.status) ? sent.status : 'UNKNOWN';
@@ -177,7 +178,7 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   if (!['PENDING', 'DUPLICATE'].includes(sent.status)) {
     throw new Error(`${stage}: transaction ${expectedHash} was not accepted (${status}); no automatic retry`);
   }
-  const done = await transactionOutcome(sent.hash, maxTime);
+  const done = await transactionOutcome(sent.hash, maxTime, { minLedger });
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
   }
@@ -205,8 +206,13 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * start, so it would have seen it. Only ledger close times decide that; the local clock only
  * bounds polling. Without a known window, one read is made and `NOT_FOUND` proves nothing.
  */
+const closeTimeOf = (v) => typeof v === 'string'
+  ? (/^[1-9][0-9]{0,15}$/.test(v) && Number.isSafeInteger(Number(v)) ? Number(v) : null)
+  : Number.isSafeInteger(v) && v > 0 ? v : null;
+const ledgerOf = (v) => Number.isSafeInteger(v) && v > 0 ? v : null;
+
 export async function transactionOutcome(hash, maxTime, { now = () => Date.now(), delay = pause,
-  budgetMs = OUTCOME_POLL_BUDGET_MS } = {}) {
+  budgetMs = OUTCOME_POLL_BUDGET_MS, minLedger = null } = {}) {
   const known = Number.isSafeInteger(maxTime) && maxTime > 0;
   const stopAt = now() + (known ? budgetMs : 0);
   for (;;) {
@@ -214,9 +220,15 @@ export async function transactionOutcome(hash, maxTime, { now = () => Date.now()
     try { response = await server.getTransaction(hash); } catch { response = null; }
     if (response?.status === 'SUCCESS' || response?.status === 'FAILED') return response;
     if (known && response?.status === 'NOT_FOUND') {
-      const latest = Number(response.latestLedgerCloseTime), oldest = Number(response.oldestLedgerCloseTime);
-      if (Number.isFinite(latest) && latest > maxTime) {
-        return { status: 'NOT_FOUND', after_window: Number.isFinite(oldest) && oldest <= maxTime - SUBMIT_TIMEOUT_SECONDS };
+      // Only well-formed, ordered close times can show that a ledger closed after the window.
+      const latest = closeTimeOf(response.latestLedgerCloseTime), oldest = closeTimeOf(response.oldestLedgerCloseTime);
+      if (latest !== null && oldest !== null && latest >= oldest && latest > maxTime) {
+        // The endpoint must still retain the window's start: by close time, and, when the
+        // prepare-time simulation ledger is known, by ledger number too.
+        const prepared = ledgerOf(minLedger), retainedFrom = ledgerOf(response.oldestLedger);
+        const retains = oldest <= maxTime - SUBMIT_TIMEOUT_SECONDS
+          && (prepared === null || (retainedFrom !== null && retainedFrom <= prepared));
+        return { status: 'NOT_FOUND', after_window: retains };
       }
     }
     if (!known || now() >= stopAt) return { status: response?.status === 'NOT_FOUND' ? 'NOT_FOUND' : 'UNKNOWN', after_window: false };
@@ -361,14 +373,24 @@ export function readJson(path) {
  * then renamed over the path, so a process killed mid-write leaves either the old or the new
  * journal, never a truncated one.
  */
-export function writeJson(path, value) {
+const journalIo = { openSync, writeSync, fsyncSync, closeSync, renameSync, rmSync };
+export function writeJson(path, value, io = journalIo) {
   const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`;
-  const fd = openSync(temporary, 'wx');
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+  const fd = io.openSync(temporary, 'wx');
   try {
-    try { writeSync(fd, `${JSON.stringify(value, null, 2)}\n`); fsyncSync(fd); } finally { closeSync(fd); }
-    renameSync(temporary, path);
+    try {
+      // A short write (a full disk) must not leave a truncated journal to be renamed into place.
+      for (let written = 0; written < bytes.length;) {
+        const count = io.writeSync(fd, bytes, written, bytes.length - written, written);
+        if (!(count > 0)) throw new Error('journal write made no progress');
+        written += count;
+      }
+      io.fsyncSync(fd);
+    } finally { io.closeSync(fd); }
+    io.renameSync(temporary, path);
   } catch (error) {
-    rmSync(temporary, { force: true });
+    io.rmSync(temporary, { force: true });
     throw error;
   }
 }

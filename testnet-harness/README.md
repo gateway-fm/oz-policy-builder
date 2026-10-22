@@ -116,8 +116,9 @@ so an interrupted or unconfirmed submission remains `pending_removal` and is nev
 The next cleanup checks the network first, then reconciles it from its hash. One that landed
 is verified and marked `reconciled`. One that failed is kept by hash under `failed_removals`, and
 so is one the endpoint has not seen. The second case counts only when the endpoint's latest
-ledger closed after the transaction's validity window and it still retains the window's start;
-the local clock never decides it. One fresh removal may then follow, never a third; anything else
+ledger closed after the transaction's validity window and it still retains the window's start,
+both by close time and by the ledger the submission was simulated at. The close times must be
+well-formed and ordered; the local clock never decides it. One fresh removal may then follow, never a third; anything else
 stays pending. Polling is bounded, and the cleanup child prepares a removal only while 240
 seconds remain before its deadline, so it stops before the kill. Removal readbacks count only
 from an endpoint at or after the removal's ledger; a stale read is retried, never recorded.

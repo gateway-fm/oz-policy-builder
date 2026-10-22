@@ -148,7 +148,8 @@ export async function revokePolicy(dir, overrides = {}) {
     requireThat(prepared.rule_id === run.rule_id && /^[0-9a-f]{64}$/.test(prepared.transaction ?? ''), 'malformed pending removal');
     await deps.assertTestnet();
     const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null,
-      { budgetMs: Math.max(0, Math.min(rpc.OUTCOME_POLL_BUDGET_MS, remaining() - rpc.REMOVAL_RESERVE_MS)) });
+      { budgetMs: Math.max(0, Math.min(rpc.OUTCOME_POLL_BUDGET_MS, remaining() - rpc.REMOVAL_RESERVE_MS)),
+        minLedger: prepared.min_ledger ?? null });
     if (outcome?.status === 'SUCCESS') {
       const removal = { rule_id: run.rule_id, transaction: prepared.transaction,
         ledger: Number.isSafeInteger(outcome.ledger) ? outcome.ledger : null, event: 'not_verified', rule_readback: 'not_checked',
@@ -185,7 +186,8 @@ export async function revokePolicy(dir, overrides = {}) {
     { stage: 'remove_context_rule', onSubmitting: (hash, window = {}) => {
       run.lifecycle = { ...(run.lifecycle ?? {}), removals: previous,
         pending_removal: { rule_id: run.rule_id, transaction: hash, status: 'prepared_for_submission', before: observed,
-          ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}) } };
+          ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}),
+          ...(Number.isSafeInteger(window.min_ledger) ? { min_ledger: window.min_ledger } : {}) } };
       deps.writeJson(path, run);
     } });
   const removal = { rule_id: run.rule_id, transaction: sent.hash, ledger: sent.receipt?.ledger ?? null,
@@ -240,11 +242,16 @@ async function verifyRemoval({ run, path, removal, receipt, payer }, deps) {
   return removal;
 }
 
-if (isMainModule(import.meta.url)) {
-  const opts = rpc.args();
+/** The command line: as the failure-cleanup child it stops itself before the parent's kill. */
+export async function lifecycleMain(argv, { revoke = revokePolicy, now = () => Date.now() } = {}) {
+  const opts = rpc.args(argv);
   requireThat(opts['run-dir'], 'usage: lifecycle.mjs --run-dir DIRECTORY');
+  return revoke(opts['run-dir'], { expectedRunHash: opts['expected-run-sha256'], deadline: childDeadline(now()) });
+}
+
+if (isMainModule(import.meta.url)) {
   let removed;
-  try { removed = await revokePolicy(opts['run-dir'], { expectedRunHash: opts['expected-run-sha256'], deadline: childDeadline() }); } catch (error) {
+  try { removed = await lifecycleMain(process.argv.slice(2)); } catch (error) {
     // This also runs as the failure-cleanup child, whose output is kept in cleanup-child.log:
     // a message, no stack, no secrets.
     console.error(rpc.redactSecrets(`lifecycle removal failed: ${error?.message ?? error}`));
