@@ -136,6 +136,13 @@ test('installation verification refuses each difference on its own', () => {
     'a returned rule for another target': (v) => { v.returnValue = ruleWith('context_type', xdr.ScVal.scvVec([sym('Default')])); },
     'a returned rule with another name': (v) => { v.returnValue = ruleWith('name', xdr.ScVal.scvString('other')); },
     'a returned rule with another expiry': (v) => { v.returnValue = ruleWith('valid_until', u32(1)); },
+    // The same change in the returned rule and in the event data: only the comparison with the reviewed grant refuses.
+    'a rule and event for another target': (v) => { v.returnValue = ruleWith('context_type', xdr.ScVal.scvVec([sym('Default')]));
+      v.events[1] = addedEvent(account, v.returnValue); },
+    'a rule and event with another name': (v) => { v.returnValue = ruleWith('name', xdr.ScVal.scvString('other'));
+      v.events[1] = addedEvent(account, v.returnValue); },
+    'a rule and event with another expiry': (v) => { v.returnValue = ruleWith('valid_until', u32(1));
+      v.events[1] = addedEvent(account, v.returnValue); },
     'a returned rule with other signers': (v) => { v.returnValue = ruleWith('signers', xdr.ScVal.scvVec([])); },
     'a returned rule with other policies': (v) => { v.returnValue = ruleWith('policies', xdr.ScVal.scvVec([])); },
     'a returned rule with too few policy IDs': (v) => { v.returnValue = ruleWith('policy_ids', xdr.ScVal.scvVec([])); },
