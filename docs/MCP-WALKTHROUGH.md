@@ -82,8 +82,8 @@ from tool outputs: what the grant permits and what it leaves unconstrained, ever
 radius choice (an `any_value` argument, including one an adapter derives for a caller-chosen
 deadline, a `high` widening, no expiry, no cap), the signer, expiry, cap and policies, the build
 verdict and target code identity, all four dry-run layers with their status, and the authority
-list or why it has not been read. It then waits for a reply that is just `confirm`. A later synthesis or a new authority or dry-run result needs a new
-card and a new confirmation.
+list or why it has not been read. It then waits for a reply that is just `confirm`. A later
+synthesis or a new authority or dry-run result needs a new card and a new confirmation.
 
 The handoff is a separate skill, `/oz-policy-builder:policy-builder-install`, which only the
 user can start: its `disable-model-invocation: true` keeps the agent from invoking it. It
@@ -92,25 +92,26 @@ checks that the current grant was confirmed and then prints one of two things:
 - **An `ozpb-grant-proposal/v1` document**, for a grant of the shape the wallet integration
   supports (recorded from the wallet account's confirmed testnet transaction; one rule, one
   delegated signer, an expiry and a call cap; exact arguments; the generated policy only). It
-  carries the network ID, that transaction's hash, the wallet-supported decisions
-  (`grant_name`, `delegate`, `valid_until_ledger`, `max_calls`, `unlimited_calls_acknowledged`),
-  `expected_grant` and the agent's `spec_hash`. `expected_grant` is the spec's grant
-  projection: the account and, per rule, the context type, contract and target code hash
-  (`null` for a Stellar Asset contract, so an upgraded target is refused), each allowed call's
-  function and argument constraints, the authorization, the expiry ledger, the call cap and the
-  policy kinds. It leaves out when the target code was observed, its role and drift policy, and
-  constraint provenance, which an honest re-acquisition can observe differently. A wallet import is designed to treat it as untrusted:
-  record the transaction again by hash through its own RPC, synthesize again with its own
-  toolchain from its own decisions document, refuse any projection difference, widening or
-  spending limit, and show the delegate, expiry and cap for approval. Spec hashes are shown,
-  not required to match. The skill's text is the exact field-by-field definition, and
-  `scripts/check-agent-transcript.py` checks a printed proposal against the tool calls it came
-  from. The wallet integration does not import proposals yet.
+  carries the network ID, that transaction's hash, the wallet-supported decisions (`grant_name`,
+  `delegate`, `valid_until_ledger`, `max_calls`, `unlimited_calls_acknowledged`),
+  `expected_grant` and the agent's `spec_hash`. `expected_grant` is the spec's grant projection:
+  the account and, per rule, the context type, contract and target code hash (`null` for a
+  Stellar Asset contract, so an upgraded target is refused), each allowed call's function and
+  argument constraints, the authorization, the expiry ledger, the call cap and the policy kinds.
+  It leaves out when the target code was observed, its role and drift policy, and constraint
+  provenance, which an honest re-acquisition can observe differently. A wallet import is
+  designed to treat it as untrusted: record the transaction again by hash through its own RPC,
+  synthesize again with its own toolchain from its own decisions document, refuse any projection
+  difference, widening or spending limit, and show the delegate, expiry and cap for approval.
+  Spec hashes are shown, not required to match. The skill's text is the exact field-by-field
+  definition, and `scripts/check-agent-transcript.py` checks a printed proposal against the tool
+  calls it came from. The wallet integration does not import proposals yet.
 - **A user-run path** for every other grant: generate and verify the policy locally, upload it
   and deploy it by its verified Wasm hash with the user's own key, bind it, rerun the authority
-  check, confirm a new card that includes the authority list, then `assemble_install_transaction`
-  for an unsigned draft. That draft still needs a wallet that validates it, builds the owner
-  authorization and enforce-simulates before signing ([`docs/INSTALL-ASSEMBLY.md`](INSTALL-ASSEMBLY.md)).
+  check, confirm a new card that includes the authority list, then
+  `assemble_install_transaction` for an unsigned draft. That draft still needs a wallet that
+  validates it, builds the owner authorization and enforce-simulates before signing
+  ([`docs/INSTALL-ASSEMBLY.md`](INSTALL-ASSEMBLY.md)).
 
 **Do not pre-approve `prepare_install_intent`, `assemble_install_transaction` or
 `capture_target`** — not with a Claude Code permission rule, `--allowedTools`, or a skill's
@@ -122,12 +123,13 @@ a confidential envelope.
 stream-json --verbose` output (with `--input-format stream-json --replay-user-messages` for a
 multi-turn run, so the user's turns are in it) or a session log. It works on the structured
 sequence of user turns, tool calls and results, and exits 1 on a synthesis whose decisions were
-not restated to the user and answered, a delegate the user never wrote, a handoff without a
-complete card and confirmation, the agent invoking the install skill, a signing, submission,
-deployment or key-reading command it recognises, a secret seed, an affirmative "safe" about the
-account or grant, or a proposal whose values are not the tools' latest. "Not safe" passes. Its
-card, confirmation and safety checks read English, as the skill asks. A pass says the session
-kept these rules, not that the grant is what the user wanted.
+not restated to the user and plainly accepted, a delegate the user never wrote, a handoff
+without a complete card and confirmation, the agent invoking the install skill, a command naming
+the Stellar CLI with a signing, submitting, deploying or key verb (a search for them included),
+a tool touching the CLI's key store, a secret seed, an affirmative "safe" about the account or
+grant, or a proposal whose values are not the tools' latest. "Not safe" passes. Its card,
+confirmation and safety checks read English, as the skill asks. A pass says the session kept
+these rules, not that the grant is what the user wanted.
 
 ### Two more things worth trying
 

@@ -23,7 +23,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TESTNET_RPC_URL="${OZPB_DEV_TESTNET_RPC_URL:-https://soroban-testnet.stellar.org}"
 # Strict enough that the value cannot leave its JSON string: host, optional port and path only.
 if [[ ! "$TESTNET_RPC_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]]; then
-    echo "mcp-server-dev.sh: OZPB_DEV_TESTNET_RPC_URL must be a plain https:// URL (host, port, path)" >&2
+    echo "mcp-server-dev.sh: OZPB_DEV_TESTNET_RPC_URL must be a plain https:// URL" \
+        "(host, port, path)" >&2
     exit 2
 fi
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${CLAUDE_PLUGIN_DATA:-$HERE}/target}"

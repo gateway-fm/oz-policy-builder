@@ -248,8 +248,9 @@ grant does not limit; "nothing" only when every argument is exact
 **Call cap:** <N> calls per installation, or "unlimited (acknowledged)"
 **Policies:** every composed policy: the generated scope policy, and the reviewed spending
 limit with its limit and period if composed
-**Build:** the `verify` verdict for each generated policy and its `wasm_hash`, or "not built";
-and each target's code identity: its code hash in full, or "built-in Stellar Asset contract"
+**Build:** the `verify` verdict for each generated policy and its `wasm_hash`, or "not
+built"; and each target's code identity: its code hash in full, or "built-in Stellar Asset
+contract"
 **Dry-run layers:** reference — <status and source>; account_wasm — …; captured_target — …;
 live_enforcement — …
 **Authority list:** each rule that can change the account or reset these policies, with who
@@ -272,9 +273,11 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
   deployed; it is read before installation". A refusal in it means the install must not
   proceed, whatever the user replies.
 
-Only a reply that is just `confirm` (or "yes, I confirm") after this card counts. A question,
-a change, a confirmation with anything added ("confirm, and set the cap to 5"), or approval in
-other words is not a confirmation: answer it, and show a new card if anything changed. A confirmation covers only the card it answers. After any later
+Only a reply that is just `confirm` (or "yes, I confirm") after this card counts. A question, a
+change, a confirmation with anything added ("confirm, and set the cap to 5"), or approval in
+other words is not a confirmation: answer it, and show a new card if anything changed. A
+confirmation covers only the card it answers, and only until the user says anything else: after
+any later message from the user other than starting the install skill, any later
 `synthesize_policy` call, or a new authority or dry-run result, show a new card and ask again.
 
 ## Hand off

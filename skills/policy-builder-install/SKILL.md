@@ -21,8 +21,8 @@ Look back through this conversation. Continue only if all of these hold:
 - after that call you showed the complete Confirm-before-deploy card for that spec (every
   label of the policy-builder skill's card, with every address and hash in full);
 - after that card the user replied with just `confirm` (or "yes, I confirm"), nothing added;
-- nothing changed after the confirmation: no new `synthesize_policy` call, decision, dry-run
-  report or authority result.
+- nothing happened after the confirmation: no other message from the user (starting this skill
+  aside), no new `synthesize_policy` call, decision, dry-run report or authority result.
 
 Otherwise show the card again for the current spec, ask for `confirm`, and wait. Anything other
 than an explicit confirmation is not one. An authority refusal on the card stops the handoff
@@ -127,12 +127,19 @@ the spec's `network_id` (`testnet` in the development setup); stop if you cannot
 2. For each rule `i`: `ozpb generate --spec spec.json --rule <i> --out generated-r<i>`, then
    `ozpb verify` on that output (`docs/DEVELOPERS.md`). In `generated-r<i>/build-manifest.json`,
    `spec_hash` must equal the confirmed spec hash; note its `wasm_hash`.
-3. Upload the verified Wasm with the user's own key:
-   `stellar contract upload --wasm generated-r<i>/<the .wasm file> --source-account <your key name> --network <network>`.
-   The hash it prints must equal `wasm_hash`.
+3. Upload the verified Wasm with the user's own key. The hash it prints must equal `wasm_hash`:
+
+   ```sh
+   stellar contract upload --wasm generated-r<i>/<the .wasm file> \
+     --source-account <your key name> --network <network>
+   ```
 4. Deploy by that hash, so the instance runs exactly the verified code (no constructor
    arguments):
-   `stellar contract deploy --wasm-hash <wasm_hash> --source-account <your key name> --network <network>`.
+
+   ```sh
+   stellar contract deploy --wasm-hash <wasm_hash> \
+     --source-account <your key name> --network <network>
+   ```
 5. A composed spending limit needs an instance of the reviewed policy whose code hash is the
    spec's `capability`, for example `stellar contract deploy --wasm-hash <capability> …` when
    that code is on the network. Its limit and period are set at installation.
