@@ -80,9 +80,9 @@ before assembly. It never deploys, signs or installs (§4.7).
 Before anything leaves the conversation, the skill shows a **Confirm before deploy** card built
 from tool outputs: what the grant permits and what it leaves unconstrained, every high-blast-
 radius choice (an `any_value` argument, including one an adapter derives for a caller-chosen
-deadline, a `high` widening, no expiry, no cap), the signer, expiry, cap and policies, all four
-dry-run layers with their status, and the authority list or why it has not been read. It then
-waits for the word `confirm`. A later synthesis or a new authority or dry-run result needs a new
+deadline, a `high` widening, no expiry, no cap), the signer, expiry, cap and policies, the build
+verdict and target code identity, all four dry-run layers with their status, and the authority
+list or why it has not been read. It then waits for a reply that is just `confirm`. A later synthesis or a new authority or dry-run result needs a new
 card and a new confirmation.
 
 The handoff is a separate skill, `/oz-policy-builder:policy-builder-install`, which only the
@@ -95,10 +95,11 @@ checks that the current grant was confirmed and then prints one of two things:
   carries the network ID, that transaction's hash, the wallet-supported decisions
   (`grant_name`, `delegate`, `valid_until_ledger`, `max_calls`, `unlimited_calls_acknowledged`),
   `expected_grant` and the agent's `spec_hash`. `expected_grant` is the spec's grant
-  projection: the account and, per rule, the context type and contract, each allowed call's
+  projection: the account and, per rule, the context type, contract and target code hash
+  (`null` for a Stellar Asset contract, so an upgraded target is refused), each allowed call's
   function and argument constraints, the authorization, the expiry ledger, the call cap and the
-  policy kinds. It leaves out the target code hash and constraint provenance, which an honest
-  re-acquisition can observe differently. A wallet import is designed to treat it as untrusted:
+  policy kinds. It leaves out when the target code was observed, its role and drift policy, and
+  constraint provenance, which an honest re-acquisition can observe differently. A wallet import is designed to treat it as untrusted:
   record the transaction again by hash through its own RPC, synthesize again with its own
   toolchain from its own decisions document, refuse any projection difference, widening or
   spending limit, and show the delegate, expiry and cap for approval. Spec hashes are shown,

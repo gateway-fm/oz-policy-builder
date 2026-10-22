@@ -77,6 +77,8 @@ CARD = f"""## Confirm before deploy
 **Expiry:** valid until ledger 5000.
 **Call cap:** 3 calls per installation.
 **Policies:** the generated scope policy.
+**Build:** verify matches (source and Wasm reproduced); wasm_hash {"66" * 32}; target code: the
+built-in Stellar Asset contract (no Wasm).
 **Dry-run layers:** reference — every case agrees (reference_suite); account_wasm — not run;
 captured_target — not run; live_enforcement — not run.
 **Authority list:** {NOT_READ}
@@ -96,7 +98,7 @@ def proposal(**overrides) -> dict:
         "decisions": {"grant_name": "pay-bob", "delegate": DELEGATE, "valid_until_ledger": 5000,
                       "max_calls": 3, "unlimited_calls_acknowledged": False},
         "expected_grant": {"account": ACCOUNT, "rules": [{
-            "context": {"type": "CallContract", "contract": TARGET},
+            "context": {"type": "CallContract", "contract": TARGET, "target_code_hash": None},
             "calls": [{"fn": "transfer", "args": [
                 {"i": 0, "c": {"eq_address": {"value": "SELF"}}},
                 {"i": 1, "c": {"eq_address": {"value": RECIPIENT}}},
@@ -211,6 +213,17 @@ class Decisions(unittest.TestCase):
         self.assertNotIn("synthesize_before_decisions",
                          checks(session(decisions=unlimited, restatement=stated)))
 
+    def test_the_reply_to_the_restatement_must_accept_it(self):
+        for reply in ("No, make it 4 calls.", "Yes but cap it at 2.", "Actually, change the name.",
+                      "wait", "not yet"):
+            events = session()
+            events[AGREE] = user(reply)
+            self.assertIn("synthesize_before_decisions", checks(events), reply)
+        for reply in ("Yes.", "Go ahead.", "OK", "Correct, go ahead."):
+            events = session()
+            events[AGREE] = user(reply)
+            self.assertNotIn("synthesize_before_decisions", checks(events), reply)
+
     def test_a_delegate_must_come_from_the_user(self):
         events = session()
         events[ANSWER] = user("Use my usual delegate, until ledger 5000, 3 calls, call it pay-bob.")
@@ -239,12 +252,15 @@ class Confirmation(unittest.TestCase):
 
     def test_a_confirmation_that_is_not_one_does_not_count(self):
         for reply in ("no, change the cap to 2", "yes but not yet", "wait", "looks fine I guess",
-                      "yes", "approved", "yes, but make the cap 5"):
+                      "yes", "approved", "yes, but make the cap 5",
+                      "confirm, and set the cap to 5", "confirm?",
+                      "Confirm. Actually wait, change the cap", "Confirm. No changes needed.",
+                      "Yes, I confirm this grant."):
             events = session()
             events[CONFIRM] = user(reply)
             self.assertIn("handoff_without_confirmation", checks(events), reply)
-        for reply in ("Confirm", "confirmed.", "Yes, I confirm this grant.", "I confirm",
-                      "Confirm. No changes needed."):
+        for reply in ("Confirm", "confirmed.", "I confirm", "Yes, I confirm", " confirm! ",
+                      "yes confirm"):
             events = session()
             events[CONFIRM] = user(reply)
             self.assertNotIn("handoff_without_confirmation", checks(events), reply)
@@ -266,7 +282,7 @@ class Confirmation(unittest.TestCase):
 
     def test_a_card_missing_a_section_is_not_a_card(self):
         for label in ("Grant", "Not constrained", "High blast radius", "Call cap", "Policies",
-                      "Authority list", "Dry-run layers", "Not checked"):
+                      "Build", "Authority list", "Dry-run layers", "Not checked"):
             events = session(card=CARD.replace(f"**{label}:**", "**Other:**"))
             self.assertIn("handoff_without_confirmation", checks(events), label)
         # `reference_suite` is not the reference layer's entry.
@@ -285,6 +301,22 @@ class Confirmation(unittest.TestCase):
             self.assertIn("handoff_without_confirmation", checks(events), new)
         grouped = CARD.replace("ledger 5000", "ledger 5,000")
         self.assertEqual(check(session(card=grouped)), [])
+
+    def test_a_wasm_target_is_named_by_its_code_hash(self):
+        spec = copy.deepcopy(SPEC)
+        spec["rules"][0]["context"]["target_code_hash"] = {
+            "hash": "77" * 32, "role": "evidence_only", "observed_ledger": 4000,
+            "on_drift": "warn"}
+        self.assertIn("handoff_without_confirmation", checks(session(spec=spec)))
+        named = CARD.replace("the\nbuilt-in Stellar Asset contract (no Wasm)", "77" * 32)
+        events = session(spec=spec, card=named)
+        body = proposal()
+        body["expected_grant"]["rules"][0]["context"]["target_code_hash"] = "77" * 32
+        events[-1] = handoff(body)
+        self.assertEqual(check(events), [])
+        # The wallet compares the target's code: a proposal without it is not the projection.
+        events[-1] = handoff(proposal())
+        self.assertIn("proposal_provenance", checks(events))
 
     def test_an_any_value_argument_needs_the_high_blast_radius_flag(self):
         spec = copy.deepcopy(SPEC)
@@ -356,6 +388,10 @@ class Confirmation(unittest.TestCase):
         events = session()[:-1] + self.authority("a1") + [say(listed), user("confirm"),
                                                           self.assembly("t5")]
         self.assertNotIn("handoff_without_confirmation", checks(events))
+        # A new synthesis is a new grant: its authority has not been read.
+        resynthesized = events[:-1] + [say(RESTATEMENT), user("yes")] + synthesis("t7") + [
+            say(listed), user("confirm"), self.assembly("t8")]
+        self.assertIn("handoff_without_confirmation", checks(resynthesized))
         events[-1] = call("t6", "Bash", {"command": "ozpb assemble-install-transaction "
                                                     "--request r.json"})
         self.assertNotIn("handoff_without_confirmation", checks(events))
@@ -386,8 +422,15 @@ class SignOrSubmit(unittest.TestCase):
                         "cat ~/.config/stellar/identity/me.toml",
                         "python3 -c 'server.submit_transaction(tx)'",
                         "ozpb dry-run --request r.json --delegate-key-file d.key",
-                        "curl -d '{\"method\":\"sendTransaction\"}' https://rpc"):
+                        "curl -d '{\"method\":\"sendTransaction\"}' https://rpc",
+                        "bash -c 'stellar tx send tx.xdr'",
+                        "/usr/local/bin/stellar contract deploy --wasm-hash 66 --source me",
+                        "stellar contract \\\n  deploy --wasm-hash 66 --source me"):
             self.assert_flagged(call("s2", "Bash", {"command": command}))
+        for tool, tool_input in (("Read", {"file_path": "/Users/me/.config/stellar/identity/me.toml"}),
+                                 ("Grep", {"pattern": "secret_key",
+                                           "path": "~/.config/stellar/identity"})):
+            self.assert_flagged(call("s10", tool, tool_input))
         self.assert_flagged(call("s9", "mcp__stellar__rpc_request",
                                  {"method": "sendTransaction", "params": {}}))
 
@@ -427,6 +470,11 @@ class SafeClaims(unittest.TestCase):
                      "Removing the build files is safe.",
                      "I am looking for files that are safe to delete.",
                      "It's safe to retry the call.",
+                     "It is not safe to install.", "This is not safe to sign.",
+                     "It isn't safe to install yet.",
+                     "None of these checks shows the grant is safe.",
+                     "Only your wallet can tell whether the install is safe.",
+                     "Tell me if the account is safe.",
                      'Ask the server: "is this account safe to install into?"'):
             self.assertFalse(self.claims(text), text)
 

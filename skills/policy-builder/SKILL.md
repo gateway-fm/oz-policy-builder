@@ -120,8 +120,10 @@ Supply the user-selected `selected_authorizer` when the recordings leave a choic
 submit the illustrative values unchanged.
 
 Even when the user gave some decisions up front, restate the complete decisions you are about
-to send, with every address in full, and wait for the user's answer before calling
-`synthesize_policy`. Copy delegate addresses exactly as the user wrote them.
+to send (every delegate address in full, the grant name, the expiry ledger or "no expiry", the
+cap or "unlimited", each widening and any spending limit) and wait for the user to accept them
+before calling `synthesize_policy`. If the reply changes or refuses anything, restate again.
+Copy delegate addresses exactly as the user wrote them.
 
 `synthesize_policy` returns no list of questions. A missing decision is refused with
 `E_NEEDS_DECISION` and an invalid or contradictory one with `E_SPEC_INVALID`; the refusal's
@@ -246,6 +248,8 @@ grant does not limit; "nothing" only when every argument is exact
 **Call cap:** <N> calls per installation, or "unlimited (acknowledged)"
 **Policies:** every composed policy: the generated scope policy, and the reviewed spending
 limit with its limit and period if composed
+**Build:** the `verify` verdict for each generated policy and its `wasm_hash`, or "not built";
+and each target's code identity: its code hash in full, or "built-in Stellar Asset contract"
 **Dry-run layers:** reference — <status and source>; account_wasm — …; captured_target — …;
 live_enforcement — …
 **Authority list:** each rule that can change the account or reset these policies, with who
@@ -268,9 +272,9 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
   deployed; it is read before installation". A refusal in it means the install must not
   proceed, whatever the user replies.
 
-Only the user's explicit `confirm` (or "yes, I confirm") after this card counts. A question,
-a change, or approval in other words is not a confirmation: answer it, and show a new card if
-anything changed. A confirmation covers only the card it answers. After any later
+Only a reply that is just `confirm` (or "yes, I confirm") after this card counts. A question,
+a change, a confirmation with anything added ("confirm, and set the cap to 5"), or approval in
+other words is not a confirmation: answer it, and show a new card if anything changed. A confirmation covers only the card it answers. After any later
 `synthesize_policy` call, or a new authority or dry-run result, show a new card and ask again.
 
 ## Hand off

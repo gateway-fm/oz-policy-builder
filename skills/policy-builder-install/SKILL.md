@@ -20,7 +20,7 @@ Look back through this conversation. Continue only if all of these hold:
 - the last `synthesize_policy` call succeeded, and its spec is the grant being handed off;
 - after that call you showed the complete Confirm-before-deploy card for that spec (every
   label of the policy-builder skill's card, with every address and hash in full);
-- after that card the user replied `confirm` (or "yes, I confirm");
+- after that card the user replied with just `confirm` (or "yes, I confirm"), nothing added;
 - nothing changed after the confirmation: no new `synthesize_policy` call, decision, dry-run
   report or authority result.
 
@@ -73,7 +73,11 @@ Print exactly one fenced `json` block in this shape:
     "account": "<spec.smart_account.address>",
     "rules": [
       {
-        "context": { "type": "<rule.context.type>", "contract": "<rule.context.contract>" },
+        "context": {
+          "type": "<rule.context.type>",
+          "contract": "<rule.context.contract>",
+          "target_code_hash": null
+        },
         "calls": [{ "fn": "<call.fn>", "args": [{ "i": 0, "c": {} }] }],
         "authorization": {},
         "valid_until_ledger": 0,
@@ -95,7 +99,9 @@ memory, shorten it, or fill one in:
 - `decisions`: the decisions passed to that `synthesize_policy` call. `delegate` is the one
   delegated address; `unlimited_calls_acknowledged` is `false` when the field was absent.
 - `expected_grant`: the spec's grant projection. `account` is `smart_account.address`. For each
-  rule, in order: `context` is the rule's `type` and `contract` only (no `target_code_hash`);
+  rule, in order: `context` is the rule's `type` and `contract`, and `target_code_hash` is the
+  rule's `target_code_hash.hash`, or `null` when it has none (a Stellar Asset contract), so the
+  wallet can refuse a target whose code changed;
   `calls` is `allowed_calls` with each call's `fn` and each argument's `i` and `c` only (no
   `prov`, no `justified_by`); `authorization` is the rule's `authorization` unchanged;
   `valid_until_ledger` is `valid_until.ledger` or `null`; `max_calls` is the
@@ -114,18 +120,19 @@ wallet import is designed to treat the proposal:
 ## 4. The user-run path
 
 For a grant the wallet does not take, print these steps for the user to run with their own keys
-and tools. You run none of them.
+and tools. You run none of them. `<network>` is the network the user recorded on, whose ID is
+the spec's `network_id` (`testnet` in the development setup); stop if you cannot tell which.
 
 1. Offer to write the confirmed `spec` to `spec.json` unchanged.
 2. For each rule `i`: `ozpb generate --spec spec.json --rule <i> --out generated-r<i>`, then
    `ozpb verify` on that output (`docs/DEVELOPERS.md`). In `generated-r<i>/build-manifest.json`,
    `spec_hash` must equal the confirmed spec hash; note its `wasm_hash`.
 3. Upload the verified Wasm with the user's own key:
-   `stellar contract upload --wasm generated-r<i>/<the .wasm file> --source-account <your key name> --network testnet`.
+   `stellar contract upload --wasm generated-r<i>/<the .wasm file> --source-account <your key name> --network <network>`.
    The hash it prints must equal `wasm_hash`.
 4. Deploy by that hash, so the instance runs exactly the verified code (no constructor
    arguments):
-   `stellar contract deploy --wasm-hash <wasm_hash> --source-account <your key name> --network testnet`.
+   `stellar contract deploy --wasm-hash <wasm_hash> --source-account <your key name> --network <network>`.
 5. A composed spending limit needs an instance of the reviewed policy whose code hash is the
    spec's `capability`, for example `stellar contract deploy --wasm-hash <capability> …` when
    that code is on the network. Its limit and period are set at installation.
