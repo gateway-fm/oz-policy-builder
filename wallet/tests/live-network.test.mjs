@@ -149,3 +149,44 @@ test('the live obligation is journaled with public data only', async (t) => {
   assert.match(name, /^0001\.live-check\.json$/);
   assert.deepEqual(JSON.parse(readFileSync(join(f.root, name))), { signatureExpirationLedger: 530, snapshot: { account: ACCOUNT, nextId: 1 } });
 });
+
+test('Friendbot is asked at most once per delegate address', async (t) => {
+  const delegate = Keypair.random().publicKey();
+  const f = fixture(t);
+  await assert.rejects(() => f.network.ensureDelegateAccount(delegate), /refused/, 'the account never appeared');
+  await assert.rejects(() => f.network.ensureDelegateAccount(delegate), /refused/);
+  assert.equal(f.calls.filter((c) => c.url.startsWith('https://friendbot.stellar.org/')).length, 1);
+});
+
+test('the delegate account and the raw simulation refuse anything but testnet before any request', async (t) => {
+  const f = fixture(t, { fetchImpl: async () => assert.fail('nothing may be sent off testnet') });
+  const envelope = unsigned(f.network);
+  f.network.assertTestnet = async () => { throw new Error('wallet network operation refused'); };
+  await assert.rejects(() => f.network.ensureDelegateAccount(Keypair.random().publicKey()), /refused/);
+  await assert.rejects(() => f.network.simulateRaw(envelope), /refused/);
+  assert.equal(f.requests.length, 0);
+  const g = fixture(t);
+  const server = { getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 }) };
+  const offTestnet = new WalletNetwork({ rpcUrl: RPC, journalRoot: g.root, server, fetchImpl: async () => assert.fail('nothing may be sent') });
+  await assert.rejects(() => offTestnet.ensureDelegateAccount(Keypair.random().publicKey()), /refused/);
+  await assert.rejects(() => offTestnet.simulateRaw(unsigned(offTestnet)), /refused/);
+});
+
+test('the ledger clock is the latest header, bound to its sequence and hash', async (t) => {
+  const header = (sequence, closeTime) => new xdr.LedgerHeader({ ledgerVersion: 29, previousLedgerHash: Buffer.alloc(32),
+    scpValue: new xdr.StellarValue({ txSetHash: Buffer.alloc(32), closeTime: BigInt(closeTime), upgrades: [], ext: xdr.StellarValueExt.stellarValueBasic() }),
+    txSetResultHash: Buffer.alloc(32), bucketListHash: Buffer.alloc(32), ledgerSeq: sequence, totalCoins: 0n, feePool: 0n, inflationSeq: 0,
+    idPool: 0n, baseFee: 100, baseReserve: 5000000, maxTxSetSize: 100, skipList: [Buffer.alloc(32), Buffer.alloc(32), Buffer.alloc(32), Buffer.alloc(32)],
+    ext: xdr.LedgerHeaderExt.v0() });
+  const { root } = fixture(t);
+  let latest;
+  const network = new WalletNetwork({ rpcUrl: RPC, journalRoot: root, server: {
+    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 29 }), getLatestLedger: async () => latest } });
+  const id = (h) => Buffer.from(hash(h.toXDR())).toString('hex');
+  latest = { sequence: 500, id: id(header(500, 1792655637)), headerXdr: header(500, 1792655637) };
+  assert.deepEqual(await network.ledgerClock(), { sequence: 500, closeTime: 1792655637 });
+  latest = { ...latest, id: 'ab'.repeat(32) };
+  await assert.rejects(() => network.ledgerClock(), /refused/, 'a header that does not hash to the reported ID');
+  latest = { sequence: 501, id: id(header(500, 1792655637)), headerXdr: header(500, 1792655637) };
+  await assert.rejects(() => network.ledgerClock(), /refused/, 'a header for another ledger');
+});

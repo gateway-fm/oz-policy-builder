@@ -62,6 +62,8 @@ export class DelegateCapabilities {
     return key;
   }
   offline(capabilityId, address) { return offlineCapability(this.#key(capabilityId, address)); }
+  /** Forget a key that never became usable, so that its slot can be used again. */
+  release(capabilityId) { this.#keys.delete(capabilityId); }
   /** Throws unless `capabilityId` holds the key for `address`; signs nothing. */
   check(capabilityId, address) { this.#key(capabilityId, address); return true; }
   /** One live capability per consented statement (`consent`, its SHA-256), for exactly that check. */

@@ -7,7 +7,7 @@ import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
 import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
-import { consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, runLive } from './live-check.mjs';
+import { clockedLedger, consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, runLive } from './live-check.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const HASH = /^[a-f0-9]{64}$/;
@@ -251,7 +251,8 @@ export function createWalletActions({ session, toolchain, network, native = null
       exact(input, []);
       if (!native && !live) refuse();
       const created = delegates.create();
-      await network.ensureDelegateAccount(created.address);
+      // A key whose account could not be created is dropped, so a retry does not use up a slot.
+      try { await network.ensureDelegateAccount(created.address); } catch { delegates.release(created.capabilityId); refuse(); }
       return created;
     },
     // Both local execution layers for one reviewed grant, from one CLI preparation (one run hash).
@@ -399,7 +400,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       session.invalidate('live');
       session.invalidate('live_sign');
       // Earlier signatures still valid: a new check would add more before the replay check can run.
-      if (liveRecords.length && await network.latestLedger() <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) refuse();
+      if (liveRecords.length && (await clockedLedger(network)) <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) refuse();
       const result = await prepareLive({ network, helper: live.helper, approval: review.approval, spec: artifact.spec,
         policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash, nextRuleId: review.nextRuleId });
       if (result.layer) {

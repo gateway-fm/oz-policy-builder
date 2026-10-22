@@ -146,6 +146,20 @@ export class WalletNetwork {
     return network;
   }
   async latestLedger() { await this.assertTestnet(); return ledger((await this.#server.getLatestLedger()).sequence); }
+  /**
+   * The latest ledger and its close time (seconds), from the header the RPC returns with it: the
+   * header must describe that ledger and hash to its reported ID.
+   */
+  async ledgerClock() {
+    try {
+      await this.assertTestnet();
+      const latest = await this.#server.getLatestLedger();
+      const sequence = ledger(latest.sequence);
+      const header = latest.headerXdr;
+      if (header?.ledgerSeq !== sequence || digest(bytes(header)) !== latest.id || typeof header.scpValue?.closeTime !== 'bigint') refuse();
+      return { sequence, closeTime: Number(header.scpValue.closeTime) };
+    } catch { refuse(); }
+  }
   async sourceCapture() {
     const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: this.#payer.xdrPublicKey() }));
     const response = await this.#server.getLedgerEntries(key);

@@ -58,7 +58,7 @@ export async function passkeySign({ privateKey, wallet, ownerRuleId, ownerEntryX
  * `respond(kind, entries, P)` may replace the simulated response: `kind` is `permit` or `denial`,
  * `entries` the envelope's authorization entries and `P` the identities to build with.
  */
-export async function liveReviewed({ maxCalls = 1, respond, helperState, policyHash, readiness, nextId = 1, live = { helper: HELPER },
+export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, helperState, policyHash, readiness, nextId = 1, live = { helper: HELPER },
   liveUntil = START_LEDGER + 100_000, onSimulate = () => {} } = {}) {
   const keys = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
   const publicKey = Buffer.from(await webcrypto.subtle.exportKey('raw', keys.publicKey)).toString('hex');
@@ -77,23 +77,25 @@ export async function liveReviewed({ maxCalls = 1, respond, helperState, policyH
   rule.state = maxCalls === null ? [] : [{ call_count_per_installation: { max_calls: maxCalls } }];
   rule.allowed_calls = [{ fn: 'transfer', args: [
     { i: 0, c: { eq_address: { value: 'SELF' } } }, { i: 1, c: { eq_address: { value: RECIPIENT } } },
-    { i: 2, c: { eq_i128: { value: '1000000' } } }] }];
+    { i: 2, c: { eq_i128: { value: amount } } }] }];
   const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
   const deployed = await f.actions['confirm-deploy']({ id: preview.action.id });
   const review = await f.actions.review({ deploymentId: deployed.deploymentId, wallet: f.f.wallet });
 
-  const state = { ledger: START_LEDGER, nextId, count: 1, installed: false, rules: [{ id: 0, xdr: 'owner rule' }] };
+  // `closeTime` (seconds) is the latest ledger's close time; `readLedger` the ledger a lagging node's state read reports.
+  const state = { ledger: START_LEDGER, nextId, count: 1, installed: false, rules: [{ id: 0, xdr: 'owner rule' }], closeTime: null, readLedger: null };
   const simulations = [];
   const records = [];
   const funded = [];
   const n = f.network;
   n.latestLedger = async () => state.ledger;
+  n.ledgerClock = async () => ({ sequence: state.ledger, closeTime: state.closeTime ?? Math.floor(Date.now() / 1000) });
   n.contractLiveness = async (contract) => {
     if (contract === HELPER) return helperState ?? { found: true, wasmHash: LIVE_HELPER_WASM, instanceLiveUntil: liveUntil, codeLiveUntil: liveUntil, ledger: state.ledger };
     return { found: true, wasmHash: policyHash ?? f.artifact.wasmHash, instanceLiveUntil: liveUntil, codeLiveUntil: liveUntil, ledger: state.ledger };
   };
   n.transferReadiness = async () => readiness ?? { ledger: state.ledger, recipientExists: true, covered: true };
-  n.liveState = async ({ account, policy, ruleId }) => ({ ledger: state.ledger, account, policy, ruleId, nextId: state.nextId,
+  n.liveState = async ({ account, policy, ruleId }) => ({ ledger: state.readLedger ?? state.ledger, account, policy, ruleId, nextId: state.nextId,
     count: state.count, accountWasmHash: ACCOUNT_WASM, rules: state.rules, installed: state.installed });
   n.ensureDelegateAccount = async (address) => { funded.push(address); return { ledger: state.ledger, createdNow: true }; };
   n.recordLiveObligation = (record) => { records.push(structuredClone(record)); };

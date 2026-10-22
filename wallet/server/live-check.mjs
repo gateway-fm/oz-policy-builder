@@ -27,6 +27,30 @@ const refuse = () => { throw new Error('live check refused; prepare it again'); 
 const int64 = () => randomBytes(8).readBigInt64BE().toString();
 const layer = (status, detail, evidence) => freezeCopy({ layer: 'live_enforcement', status, detail, ...(evidence ? { evidence } : {}) });
 const sha256 = (bytes) => Buffer.from(hash(bytes)).toString('hex');
+/**
+ * How far the operator RPC's latest ledger may have closed from this machine's clock. The RPC is
+ * trusted for the ledger clock within this bound: it fixes N, decides whether consent and each
+ * simulation still fit before N, and whether N has passed for the replay check. An RPC answering
+ * from a stale or invented ledger outside the bound is refused, so it cannot stretch the
+ * signatures' real validity by more than about this long.
+ */
+export const LIVE_MAX_CLOCK_SKEW_SECONDS = 60;
+class ClockSkew extends Error {
+  constructor(sequence, closeTime, skew) {
+    super('live check refused; the operator RPC ledger clock is outside the bound');
+    Object.assign(this, { sequence, closeTime, skew });
+  }
+}
+
+/** The operator RPC's latest ledger, refused unless it closed within the skew bound of `now()` (ms). */
+export async function clockedLedger(network, now = Date.now) {
+  const { sequence, closeTime } = await network.ledgerClock();
+  const skew = closeTime - Math.floor(now() / 1000);
+  if (Math.abs(skew) > LIVE_MAX_CLOCK_SKEW_SECONDS) {
+    throw new ClockSkew(sequence, closeTime, skew);
+  }
+  return sequence;
+}
 
 /**
  * Everything the live check reads before the owner sees anything: the shape, the helper and its
@@ -48,8 +72,12 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
     policyState = await network.contractLiveness(policyAddress);
     readiness = await network.transferReadiness({ account: grant.account, recipient: grant.recipient, amount: grant.amount });
     snapshot = await network.liveState({ account: grant.account, policy: policyAddress, ruleId: nextRuleId });
-    currentLedger = await network.latestLedger();
-  } catch {
+    currentLedger = await clockedLedger(network);
+  } catch (error) {
+    if (error instanceof ClockSkew) {
+      return { layer: layer('unavailable', `The operator RPC's latest ledger ${error.sequence} closed at ${error.closeTime}, ${error.skew} s `
+        + `from this machine's clock, beyond ${LIVE_MAX_CLOCK_SKEW_SECONDS} s; its ledger clock is not trusted. Nothing was signed.`) };
+    }
     return { layer: layer('unavailable', 'The operator RPC reads of the helper, the candidate or the account did not complete; nothing was signed.') };
   }
   if (!readiness.recipientExists || !readiness.covered) {
@@ -119,7 +147,7 @@ export function replayRecord(prepared) {
 
 /** Consent is accepted only while enough of the signatures' validity remains to finish the check. */
 export async function consentWindow({ network, prepared }) {
-  const latest = await network.latestLedger();
+  const latest = await clockedLedger(network);
   const expiry = prepared.cases[0].signature_expiration_ledger;
   if (latest + LIVE_CONSENT_MIN_LEDGERS > expiry) refuse();
   return latest;
@@ -150,8 +178,8 @@ export async function runLive({ network, mintCapability, prepared, approval, own
   for (const [index, intent] of prepared.cases.entries()) {
     stopped();
     let latest;
-    try { latest = await network.latestLedger(); } catch {
-      return layer('unavailable', 'The operator RPC did not report the current ledger; no evidence was accepted.');
+    try { latest = await clockedLedger(network); } catch {
+      return layer('unavailable', 'The operator RPC did not report a current ledger within the clock bound; no evidence was accepted.');
     }
     stopped();
     if (latest + LIVE_RUN_MIN_LEDGERS > expiry) {
@@ -223,7 +251,7 @@ export async function runLive({ network, mintCapability, prepared, approval, own
 export async function replayStatus({ network, records }) {
   if (!Array.isArray(records) || !records.length) refuse();
   const until = Math.max(...records.map((r) => r.signatureExpirationLedger));
-  const latest = await network.latestLedger();
+  const latest = await clockedLedger(network);
   if (latest <= until) return freezeCopy({ status: 'waiting', latestLedger: latest, signaturesValidUntil: until });
   const changes = [];
   for (const record of records) {

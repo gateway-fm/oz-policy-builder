@@ -178,7 +178,8 @@ delegate. The backend generates an Ed25519 key in process memory and returns onl
 address and an opaque capability ID; at most eight exist per backend, and they disappear when it
 stops. It also creates the key's classic testnet account through Friendbot, a testnet write that
 costs the fee payer nothing: the authority review refuses a grant whose delegate account does not
-exist, and the host checks the delegate's signatures against that account. Use that address as the grant's restricted delegate. The owner passkey never stands in for
+exist, and the host checks the delegate's signatures against that account. If that account cannot
+be created, the key is dropped and its slot freed, so the step can be retried. Use that address as the grant's restricted delegate. The owner passkey never stands in for
 it, and a grant naming any other delegate address cannot run these checks. The key never signs
 supplied bytes. It signs through two capabilities only, each refusing the other's network: the
 offline capability signs authorization preimages in the derived offline execution network, and
@@ -317,7 +318,7 @@ two named cases, not the derived deny suite.
    the review established. It reads back the delegate's classic testnet account, which must be
    signable by its master key alone, and creates it through Friendbot if it is missing. It then
    fixes the expiry ledger N, 30 ledgers
-   (about two and a half minutes) after the ledger it read, and returns the consent statement.
+   (about two and a half minutes) after the latest ledger, and returns the consent statement.
    Nothing is signed, and nothing signable has been released.
 2. **Consent.** The browser derives the statement itself from the reviewed grant and the
    backend's inputs (helper, candidate hash, rule ID, ledgers) and shows it: both exact calls,
@@ -382,6 +383,21 @@ preparing another check. `requireNoReplay` in
 [`wallet/server/live-check.mjs`](../wallet/server/live-check.mjs) is the guard the installation
 flow must call before it signs anything; it refuses unless the check reports `unchanged`, and
 without any record. Installation itself is still disabled.
+
+**Ledger clock.** The operator RPC is trusted for the ledger clock, within a bound. Its latest
+ledger fixes N, decides whether consent and each simulation still fit before N, and decides whether
+N has passed for the replay check. Each of those reads takes the header the RPC returns with the
+latest ledger, which must describe that ledger and hash to its reported ID. Its close time must
+be within 60 seconds of the backend machine's clock, or the step is refused, and preparation
+reports `unavailable`. An endpoint answering from a stale or invented ledger outside that bound
+cannot stretch the signatures' real validity by more than about that long. One that keeps its
+invented ledger numbers and close times consistent within the bound is not detected: the operator
+chooses the endpoint, and the backend trusts it within the bound.
+
+A passed live layer stays passed in the report even if a later replay check reports `changed`: the
+replay check speaks about the account, not the candidate. That is acceptable only while
+installation is disabled. The installation flow must call `requireNoReplay` before it signs, and
+refuse on anything but `unchanged`.
 
 If the browser disconnects during the run, the backend checks for that before each step: it
 signs and simulates nothing further, and records no layer. Signatures already created stay valid

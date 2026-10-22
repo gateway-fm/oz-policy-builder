@@ -188,8 +188,9 @@ export function checkLiveOwnerEntry({ approval, cases, ownerEntryXdr }) {
     const [permit] = cases;
     if (typeof ownerEntryXdr !== 'string' || ownerEntryXdr.length > 32 * 1024) refuse();
     const entry = xdr.SorobanAuthorizationEntry.fromXDR(ownerEntryXdr, 'base64');
-    if (entry.toXDR('base64') !== ownerEntryXdr || entry.credentials.type !== 'sorobanCredentialsAddressV2') refuse();
-    const c = entry.credentials.addressV2;
+    if (entry.toXDR('base64') !== ownerEntryXdr) refuse();
+    // Address-bound credentials only: the one form whose preimage names the account.
+    const c = entry.credentials.type === 'sorobanCredentialsAddressV2' ? entry.credentials.addressV2 : refuse();
     const root = entry.rootInvocation;
     if (Address.fromScAddress(c.address).toString() !== approval.wallet.contractId || c.signature.type !== 'scvVoid'
       || c.signatureExpirationLedger !== permit.signature_expiration_ledger || root.subInvocations.length

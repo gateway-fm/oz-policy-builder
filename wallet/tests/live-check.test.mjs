@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { xdr } from '@stellar/stellar-sdk';
 import { LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_SIGNATURE_LEDGERS, consentDisplay, liveCases, statementHash } from '../shared/live-consent.mjs';
-import { requireNoReplay } from '../server/live-check.mjs';
+import { LIVE_MAX_CLOCK_SKEW_SECONDS, requireNoReplay } from '../server/live-check.mjs';
 import { setup } from './actions-fixture.mjs';
 import { HELPER, START_LEDGER, consented, liveReviewed } from './live-check-fixture.mjs';
 import { denialSimulation, permitChanges, permitSimulation, withProbe } from './live-enforcement-fixture.mjs';
@@ -161,7 +161,10 @@ test('the helper must read back with the reviewed code hash, and the candidate w
 
 test('state the transfer cannot run against, or a moved NextId, is unavailable rather than a policy outcome', async () => {
   const f = await liveReviewed({ readiness: { ledger: START_LEDGER, recipientExists: false, covered: true } });
-  assert.equal(layerOf(await f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId })).status, 'unavailable');
+  const unready = await f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+  assert.equal(unready.live, null);
+  assert.equal(layerOf(unready).status, 'unavailable');
+  assert.match(layerOf(unready).detail, /recipient account does not exist/);
   const g = await liveReviewed({ nextId: 2 });
   const moved = layerOf(await g.actions['prepare-live']({ reviewId: g.review.reviewId, capabilityId: g.delegate.capabilityId }));
   assert.equal(moved.status, 'unavailable');
@@ -272,4 +275,73 @@ test('a created delegate exists on testnet before any review names it', async ()
   assert.deepEqual(funded, [delegate.address], 'the authority check refuses a grant whose delegate account does not exist');
   f.network.ensureDelegateAccount = async () => { throw new Error('wallet network operation refused'); };
   await assert.rejects(() => f.actions['create-delegate']({}), /refused/);
+});
+
+test('each simulation needs at least 3 ledgers before the signatures expire; the next case is not signed otherwise', async () => {
+  let f;
+  f = await liveReviewed({ onSimulate: (count) => { if (count === 1) f.state.ledger = START_LEDGER + LIVE_SIGNATURE_LEDGERS - 2; } });
+  const { input } = await consented(f);
+  const live = layerOf(await f.actions['run-live'](input));
+  assert.equal(live.status, 'unavailable');
+  assert.match(live.detail, /too soon after ledger/);
+  assert.equal(f.simulations.length, 1);
+  assert.equal(f.delegates.liveSignatures, 1);
+});
+
+test('the replay check judges expiry by its own read: a lagging node is still waiting', async () => {
+  const f = await liveReviewed();
+  const { input } = await consented(f);
+  await f.actions['run-live'](input);
+  f.state.ledger = START_LEDGER + LIVE_SIGNATURE_LEDGERS + 5;
+  f.state.readLedger = START_LEDGER + LIVE_SIGNATURE_LEDGERS;
+  assert.equal((await f.actions['check-replay']({})).replay.status, 'waiting');
+  await assert.rejects(() => requireNoReplay({ network: f.network, records: f.records }), /refused/);
+  f.state.readLedger = null;
+  assert.equal((await f.actions['check-replay']({})).replay.status, 'unchanged');
+});
+
+test('a grant that expires before the check could install it is unavailable', async () => {
+  const f = await liveReviewed({ liveUntil: 10_000_000 });
+  f.state.ledger = f.f.intent.valid_until_ledger - LIVE_SIGNATURE_LEDGERS - 1;
+  const result = await f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+  assert.equal(result.live, null);
+  assert.match(layerOf(result).detail, /The grant expires at ledger/);
+});
+
+test('a permit amount above 1,000,000 stroops is unsupported', async () => {
+  const f = await liveReviewed({ amount: '1000001' });
+  const result = await f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+  assert.equal(layerOf(result).status, 'unsupported');
+  assert.match(layerOf(result).detail, /at most 1,000,000/);
+});
+
+test('the operator RPC is trusted for the ledger clock only within a bounded skew from this machine', async () => {
+  const skewed = Math.floor(Date.now() / 1000) - LIVE_MAX_CLOCK_SKEW_SECONDS - 5;
+  const f = await liveReviewed();
+  f.state.closeTime = skewed;
+  const result = await f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+  assert.equal(result.live, null);
+  assert.match(layerOf(result).detail, /closed at .* from this machine's clock/);
+  // A clock that drifts after preparation stops consent and each simulation, before anything is signed.
+  const g = await liveReviewed();
+  const prepared = await g.actions['prepare-live']({ reviewId: g.review.reviewId, capabilityId: g.delegate.capabilityId });
+  g.state.closeTime = Math.floor(Date.now() / 1000) + LIVE_MAX_CLOCK_SKEW_SECONDS + 5;
+  await assert.rejects(() => g.actions['consent-live']({ id: prepared.live.action.id, statementSha256: prepared.live.statementSha256 }), /refused/);
+  const h = await liveReviewed();
+  const { input } = await consented(h);
+  h.state.closeTime = skewed;
+  assert.equal(layerOf(await h.actions['run-live'](input)).status, 'unavailable');
+  assert.equal(h.delegates.liveSignatures, 0);
+  h.state.ledger = START_LEDGER + LIVE_SIGNATURE_LEDGERS + 1;
+  await assert.rejects(() => h.actions['check-replay']({}), /refused/, 'nor is the replay check judged against that clock');
+});
+
+test('a delegate whose testnet account cannot be created gives its slot back', async () => {
+  const f = setup({ live: { helper: HELPER } });
+  let fail = true;
+  f.network.ensureDelegateAccount = async () => { if (fail) throw new Error('wallet network operation refused'); return { ledger: 1 }; };
+  for (let i = 0; i < 9; i++) await assert.rejects(() => f.actions['create-delegate']({}), /refused/);
+  fail = false;
+  for (let i = 0; i < 8; i++) await f.actions['create-delegate']({});
+  await assert.rejects(() => f.actions['create-delegate']({}), /refused/, 'still at most eight');
 });

@@ -128,7 +128,8 @@ test('live capability signs only the bounded transfer it can describe, for exact
   delete missing.nonce;
   assert.throws(() => live.authorizeTransfer(missing), /refused/);
   // The consented check itself is bounded: a short expiry after the read ledger and the adjacent amount.
-  for (const change of [{ read_ledger: 5399969 }, { read_ledger: 5400000 }, { amounts: ['1000000', '1000002'] },
+  for (const change of [{ read_ledger: 5399969 }, { read_ledger: 5400000 }, { amounts: ['5', '7'] }, { amounts: ['7', '6'] },
+    { amounts: ['1000000', '1000002'] },
     { amounts: ['1000001', '1000002'] }, { amounts: ['1000000'] }, { expected_rule_id: 0 }, { consent: 'a'.repeat(64) }]) {
     assert.throws(() => createLiveCapability(counted.key, approved(change)), /refused/, JSON.stringify(change));
   }
