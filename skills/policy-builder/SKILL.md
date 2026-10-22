@@ -14,12 +14,11 @@ Use the `ozpb` MCP server for every policy artifact and verdict. You explain the
 and ask for decisions; you do not invent a PolicySpec, edit generated Rust, or infer that an
 offline result is safe to install. Discover the server's current tool schemas before calling it.
 
-The tools that read the account or prepare an installation (`check_policy_call_surface`,
-`prepare_install_intent`, `assemble_install_transaction`, `check_against_policy`,
-`capture_target`) should ask the user each time they are called. Never suggest pre-approving
-them (a Claude Code permission rule, `--allowedTools`, or a skill's `allowed-tools`): the
-per-call prompt is how the user sees each one. Whatever the conversation's language, keep the
-card labels below in English and ask for the word `confirm`.
+Never suggest pre-approving `prepare_install_intent`, `assemble_install_transaction` or
+`capture_target` (a Claude Code permission rule, `--allowedTools`, or a skill's
+`allowed-tools`): each call should prompt, because the per-call prompt is how the user sees a
+request that prepares an installation or carries a confidential envelope. Whatever the
+conversation's language, keep the card labels below in English and ask for the word `confirm`.
 
 ## Record the authorization
 
@@ -261,9 +260,10 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
   deadline; its provenance names the adapter but carries no blast-radius field, and accepting
   any value is still a high-blast-radius decision. Name the argument and the adapter. Also list
   every widening the user rated `high`, no expiry, and no call cap.
-- **Dry-run layers** names all four layers. Before deployment the reference layer reads
-  "passed (reference_suite)" or what that tool reported, and the other three "not run". Copy
-  statuses and reasons from a dry-run report when there is one.
+- **Dry-run layers** names all four layers. Before deployment the reference layer reads what
+  `reference_suite` reported (whether every case agrees, any missing or permit-only class, any
+  unmodeled reviewed policy), labelled as `reference_suite`, not as a layer status; the other
+  three read "not run". Copy statuses and reasons from a dry-run report when there is one.
 - **Authority list** before the policies are deployed reads "not read: the policies are not
   deployed; it is read before installation". A refusal in it means the install must not
   proceed, whatever the user replies.
@@ -278,8 +278,9 @@ anything changed. A confirmation covers only the card it answers. After any late
 After the user confirms, stop. Tell the user that they hand the grant off by running
 `/oz-policy-builder:policy-builder-install`. That skill is for the user to start; do not try
 to start it yourself or continue into it. Generated code is a review artifact, not an installed
-permission: the user's wallet, with its own authority check, review and the user's own
-signature, installs. Do not deploy, sign, submit, or ask for secret keys.
+permission: installation belongs to the user's wallet, with its own authority check, review
+and the user's own signature, never to this conversation. Do not deploy, sign, submit, or ask
+for secret keys.
 
 ## After installation
 

@@ -35,17 +35,21 @@ Use the wallet proposal only when every one of these holds for the confirmed spe
 - it came from `record_transaction` on a confirmed transaction of the user's wallet account,
   on testnet;
 - one rule; one delegated `G…` signer; predicate `any_of`;
-- an expiry ledger and a call cap (the wallet does not take unlimited calls or no expiry);
+- an expiry ledger and a call cap of 1 to 10,000 calls (the wallet does not take unlimited
+  calls or no expiry);
 - every argument constraint is exact (`eq_*`): no widening, no adapter-derived constraint;
 - the only policy is the generated scope policy (no spending limit);
 - the target is the built-in Stellar Asset contract's `transfer` to a `G…` recipient;
 - the grant name is lowercase letters, digits and hyphens, starting with a letter, at most 20
   characters.
 
-Tell the user what the wallet will also require: the account must be the wallet's own account;
-it records the transaction again by hash, which works only while RPC still holds it (a few
-days); and the expiry must fall within about a day (17,280 ledgers) of the ledger at import.
-The wallet decides; a refusal there is final, not something to work around.
+No wallet imports `ozpb-grant-proposal/v1` yet: the proposal records the confirmed grant in
+the form the wallet integration's planned import takes, and the user-run path in section 4 is
+the way to an install draft today. Tell the user so. Also tell them what that import is
+designed to require: the account must be the wallet's own account, running the account code the
+wallet recognises; it records the transaction again by hash, which works only while RPC still
+holds it (a few days); and the expiry must fall within about a day (17,280 ledgers) of the
+ledger at import. The wallet decides; a refusal there is final, not something to work around.
 
 For anything else, use the user-run path in section 4.
 
@@ -97,15 +101,15 @@ memory, shorten it, or fill one in:
   `valid_until_ledger` is `valid_until.ledger` or `null`; `max_calls` is the
   `call_count_per_installation` cap or `null`; `policy_kinds` is each policy's `kind`, in order.
 
-No other field. Then tell the user, briefly:
+No other field. Then tell the user, briefly, that nothing is installed, and how the planned
+wallet import is designed to treat the proposal:
 
-- import it in their wallet's proposal import. The wallet treats it as untrusted: it records
-  the transaction again through its own RPC, synthesizes again with its own toolchain from its
-  own decisions document, compares the grant projection, and refuses any difference, any
-  widening and any spending limit. Spec hashes are shown, but need not match, because two
-  acquisitions can observe different context;
-- the wallet shows the delegate, expiry and cap for approval and owns deployment consent, the
-  owner signature and submission. Nothing is installed yet.
+- as untrusted: it records the transaction again through its own RPC, synthesizes again with
+  its own toolchain from its own decisions document, compares the grant projection, and
+  refuses any difference, any widening and any spending limit. Spec hashes are shown but need
+  not match, because two acquisitions can observe different context;
+- it shows the delegate, expiry and cap for approval and owns deployment consent, the owner
+  signature and submission.
 
 ## 4. The user-run path
 
@@ -131,7 +135,11 @@ and tools. You run none of them.
    a new Confirm-before-deploy card with its authority list. Only after the user confirms that
    card, call `assemble_install_transaction` with the user's fee payer, fee ceiling and a validity
    window of at most 120 ledgers.
-7. Its unsigned XDR is a draft for a wallet, not something to sign as is: it carries the owner's
-   authorization unsigned, as recorded. A wallet must validate every field, recheck authority,
-   build the owner authorization and enforce-simulate before signing
-   (`docs/INSTALL-ASSEMBLY.md`); `stellar tx sign` alone does none of that. Say so, and stop.
+7. Read its `restoration` field first. `separate_transaction_reassemble_required` means the
+   response holds only a restore transaction, not an installation: after the user's wallet has
+   run that restoration, the authority check and assembly start again, with a new card. For
+   `none` or `automatic_within_invocation`, the unsigned XDR is an installation draft for a
+   wallet, not something to sign as is: it carries the owner's authorization unsigned, as
+   recorded. A wallet must validate every field, recheck authority, build the owner
+   authorization and enforce-simulate before signing (`docs/INSTALL-ASSEMBLY.md`);
+   `stellar tx sign` alone does none of that. Say so, and stop.

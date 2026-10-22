@@ -70,9 +70,10 @@ hash and no signature.
 **Going further than one command is better done with the skill.** The flow needs decisions
 only you can make — how long the grant lives, a call cap, a spend limit, which signer.
 The skill asks for them and guides the available record, synthesize, reference, generate,
-and verify tools, with optional exact-envelope preflight. Once the policies are deployed, it
-continues to the advisory authority check, install intent and dry-run preparation. It then
-shows a confirmation card and stops; it never deploys, signs or installs (§4.7).
+and verify tools, with optional exact-envelope preflight, then shows a confirmation card and
+stops. When policies are already deployed it can also run the advisory authority check,
+install intent and dry-run preparation; otherwise the authority check comes in the handoff,
+before assembly. It never deploys, signs or installs (§4.7).
 
 ### Confirm, then hand off
 
@@ -97,10 +98,10 @@ checks that the current grant was confirmed and then prints one of two things:
   projection: the account and, per rule, the context type and contract, each allowed call's
   function and argument constraints, the authorization, the expiry ledger, the call cap and the
   policy kinds. It leaves out the target code hash and constraint provenance, which an honest
-  re-acquisition can observe differently. A wallet importing it treats it as untrusted: it
-  records the transaction again by hash through its own RPC, synthesizes again with its own
-  toolchain from its own decisions document, refuses any projection difference, widening or
-  spending limit, and shows the delegate, expiry and cap for approval. Spec hashes are shown,
+  re-acquisition can observe differently. A wallet import is designed to treat it as untrusted:
+  record the transaction again by hash through its own RPC, synthesize again with its own
+  toolchain from its own decisions document, refuse any projection difference, widening or
+  spending limit, and show the delegate, expiry and cap for approval. Spec hashes are shown,
   not required to match. The skill's text is the exact field-by-field definition, and
   `scripts/check-agent-transcript.py` checks a printed proposal against the tool calls it came
   from. The wallet integration does not import proposals yet.
