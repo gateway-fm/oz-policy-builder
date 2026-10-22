@@ -101,8 +101,9 @@ checks that the current grant was confirmed and then prints one of two things:
   records the transaction again by hash through its own RPC, synthesizes again with its own
   toolchain from its own decisions document, refuses any projection difference, widening or
   spending limit, and shows the delegate, expiry and cap for approval. Spec hashes are shown,
-  not required to match. The skill's text is the exact field-by-field definition. The wallet
-  integration does not import proposals yet.
+  not required to match. The skill's text is the exact field-by-field definition, and
+  `scripts/check-agent-transcript.py` checks a printed proposal against the tool calls it came
+  from. The wallet integration does not import proposals yet.
 - **A user-run path** for every other grant: generate and verify the policy locally, upload it
   and deploy it by its verified Wasm hash with the user's own key, bind it, rerun the authority
   check, confirm a new card that includes the authority list, then `assemble_install_transaction`
@@ -111,8 +112,20 @@ checks that the current grant was confirmed and then prints one of two things:
 
 **Do not pre-approve `prepare_install_intent`, `assemble_install_transaction` or
 `capture_target`** — not with a Claude Code permission rule, `--allowedTools`, or a skill's
-`allowed-tools`. Neither the plugin nor the skills do. Each call should prompt, so a person
-sees every request that reads the account for an install or carries a confidential envelope.
+`allowed-tools`. Neither the plugin nor the skills do, and a test keeps it that way. Each call
+should prompt, so a person sees every request that reads the account for an install or carries
+a confidential envelope.
+
+`scripts/check-agent-transcript.py` reads a session's JSON lines: `claude -p --output-format
+stream-json --verbose` output (with `--input-format stream-json --replay-user-messages` for a
+multi-turn run, so the user's turns are in it) or a session log. It works on the structured
+sequence of user turns, tool calls and results, and exits 1 on a synthesis whose decisions were
+not restated to the user and answered, a delegate the user never wrote, a handoff without a
+complete card and confirmation, the agent invoking the install skill, a signing, submission,
+deployment or key-reading command it recognises, a secret seed, an affirmative "safe" about the
+account or grant, or a proposal whose values are not the tools' latest. "Not safe" passes. Its
+card, confirmation and safety checks read English, as the skill asks. A pass says the session
+kept these rules, not that the grant is what the user wanted.
 
 ### Two more things worth trying
 
