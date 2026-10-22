@@ -71,8 +71,48 @@ hash and no signature.
 only you can make — how long the grant lives, a call cap, a spend limit, which signer.
 The skill asks for them and guides the available record, synthesize, reference, generate,
 and verify tools, with optional exact-envelope preflight. Once the policies are deployed, it
-continues to the advisory authority check and install intent; it never deploys, signs or
-installs (§4.7).
+continues to the advisory authority check, install intent and dry-run preparation. It then
+shows a confirmation card and stops; it never deploys, signs or installs (§4.7).
+
+### Confirm, then hand off
+
+Before anything leaves the conversation, the skill shows a **Confirm before deploy** card built
+from tool outputs: what the grant permits and what it leaves unconstrained, every high-blast-
+radius choice (an `any_value` argument, including one an adapter derives for a caller-chosen
+deadline, a `high` widening, no expiry, no cap), the signer, expiry, cap and policies, all four
+dry-run layers with their status, and the authority list or why it has not been read. It then
+waits for the word `confirm`. A later synthesis or a new authority or dry-run result needs a new
+card and a new confirmation.
+
+The handoff is a separate skill, `/oz-policy-builder:policy-builder-install`, which only the
+user can start: its `disable-model-invocation: true` keeps the agent from invoking it. It
+checks that the current grant was confirmed and then prints one of two things:
+
+- **An `ozpb-grant-proposal/v1` document**, for a grant of the shape the wallet integration
+  supports (recorded from the wallet account's confirmed testnet transaction; one rule, one
+  delegated signer, an expiry and a call cap; exact arguments; the generated policy only). It
+  carries the network ID, that transaction's hash, the wallet-supported decisions
+  (`grant_name`, `delegate`, `valid_until_ledger`, `max_calls`, `unlimited_calls_acknowledged`),
+  `expected_grant` and the agent's `spec_hash`. `expected_grant` is the spec's grant
+  projection: the account and, per rule, the context type and contract, each allowed call's
+  function and argument constraints, the authorization, the expiry ledger, the call cap and the
+  policy kinds. It leaves out the target code hash and constraint provenance, which an honest
+  re-acquisition can observe differently. A wallet importing it treats it as untrusted: it
+  records the transaction again by hash through its own RPC, synthesizes again with its own
+  toolchain from its own decisions document, refuses any projection difference, widening or
+  spending limit, and shows the delegate, expiry and cap for approval. Spec hashes are shown,
+  not required to match. The skill's text is the exact field-by-field definition. The wallet
+  integration does not import proposals yet.
+- **A user-run path** for every other grant: generate and verify the policy locally, upload it
+  and deploy it by its verified Wasm hash with the user's own key, bind it, rerun the authority
+  check, confirm a new card that includes the authority list, then `assemble_install_transaction`
+  for an unsigned draft. That draft still needs a wallet that validates it, builds the owner
+  authorization and enforce-simulates before signing ([`docs/INSTALL-ASSEMBLY.md`](INSTALL-ASSEMBLY.md)).
+
+**Do not pre-approve `prepare_install_intent`, `assemble_install_transaction` or
+`capture_target`** — not with a Claude Code permission rule, `--allowedTools`, or a skill's
+`allowed-tools`. Neither the plugin nor the skills do. Each call should prompt, so a person
+sees every request that reads the account for an install or carries a confidential envelope.
 
 ### Two more things worth trying
 
@@ -291,7 +331,8 @@ not a smart account executing a policy, which is a different and stronger claim 
 with the harness.
 
 The `policy-builder` skill guides the available tools through an artifact and evidence
-summary and, once the policies are deployed, the advisory authority check and install intent;
-it never signs or installs. Its layer-1 reference suite is not the full contract/live dry run.
-The complete dry-run report, wallet install flow, and a deployed hosted endpoint remain
-scheduled work.
+summary and, once the policies are deployed, the advisory authority check, install intent and
+dry-run preparation, then asks for confirmation; the install skill hands the confirmed grant
+off. Neither signs or installs. Its layer-1 reference suite is not the full contract/live dry
+run. The complete dry-run report, wallet install flow and proposal import, and a deployed
+hosted endpoint remain scheduled work.

@@ -14,7 +14,7 @@ feature or an automated check is not by itself evidence that the whole milestone
 
 | Area | Available evidence or implementation | Still required |
 | --- | --- | --- |
-| Agent workflow | The policy-builder skill, plugin and MCP recording/synthesis tools. | An exercised clarification, permission review and wallet confirmation flow. |
+| Agent workflow | The policy-builder skill with its confirm-before-deploy card, the human-invoked install skill and its `ozpb-grant-proposal/v1` handoff, the plugin and the MCP tools. | An exercised clarification, permission review and confirmation session, and the wallet's proposal import. |
 | Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification, [candidate-bound preparation](DRY-RUN-PREPARATION.md) and the CLI `dry-run`, which runs the account-Wasm and supported captured-target layers. | Live-layer execution evidence, state invariants and adversarial direct-call coverage; preparation explicitly reports missing runtime layers, and no report authorizes installation. |
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
 | Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |

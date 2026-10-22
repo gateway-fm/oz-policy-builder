@@ -307,8 +307,10 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
-`docs/MCP-WALKTHROUGH.md` covers the server and the `policy-builder` Claude skill. The
-repository's `.mcp.json` exposes the server for local tool use; `claude --plugin-dir .` loads
+`docs/MCP-WALKTHROUGH.md` covers the server, the `policy-builder` Claude skill and the
+human-invoked `policy-builder-install` skill that hands a confirmed grant off. Do not
+pre-approve `prepare_install_intent`, `assemble_install_transaction` or `capture_target` in
+Claude Code permissions; each call should prompt. The repository's `.mcp.json` exposes the server for local tool use; `claude --plugin-dir .` loads
 the packaged skill and its server entry. The wrapper refreshes a plugin binary from source
 in Claude's persistent plugin data directory and launches a stdio server per session. The
 walkthrough also covers tool inputs and raw JSON-RPC.

@@ -3,7 +3,9 @@ name: policy-builder
 description: >-
   Help a user turn a recorded Stellar authorization into a scoped OpenZeppelin smart-account
   policy. Ask for the grant decisions, use the OZ Policy Builder MCP tools, review the generated
-  Rust and labeled evidence, and stop before deployment or installation.
+  Rust and labeled evidence, then show a Confirm-before-deploy card and wait for the user's
+  explicit confirmation. Never deploy, sign or submit; the user hands off with the separate
+  install skill.
 ---
 
 # Policy Builder
@@ -11,6 +13,13 @@ description: >-
 Use the `ozpb` MCP server for every policy artifact and verdict. You explain the tools' output
 and ask for decisions; you do not invent a PolicySpec, edit generated Rust, or infer that an
 offline result is safe to install. Discover the server's current tool schemas before calling it.
+
+The tools that read the account or prepare an installation (`check_policy_call_surface`,
+`prepare_install_intent`, `assemble_install_transaction`, `check_against_policy`,
+`capture_target`) should ask the user each time they are called. Never suggest pre-approving
+them (a Claude Code permission rule, `--allowedTools`, or a skill's `allowed-tools`): the
+per-call prompt is how the user sees each one. Whatever the conversation's language, keep the
+card labels below in English and ask for the word `confirm`.
 
 ## Record the authorization
 
@@ -28,6 +37,10 @@ behavior, not an executed transaction. A raw-XDR import with result XDR can be l
 `self_supplied` when the result agrees with the claimed outcome; without result XDR it is
 `incomplete` and cannot drive synthesis. Treat a server refusal as a refusal and explain
 what evidence is missing.
+
+A grant that may be handed to the user's wallet must come from `record_transaction` on the
+wallet account's confirmed transaction: the wallet records it again by that hash, and RPC
+retention keeps a transaction only a few days.
 
 Show the recorded account, target contracts, functions, relevant arguments, observed code
 identities, and evidence trust level. If a recording includes several independent calls, explain
@@ -107,8 +120,16 @@ Put each `RecordOutput.bundle` into the outer `bundles` array, not the whole rec
 Supply the user-selected `selected_authorizer` when the recordings leave a choice. Do not
 submit the illustrative values unchanged.
 
-Use the tool's questions and `E_*` errors to resolve remaining decisions with the user. Keep
-signer identities, spending limits, and policy composition visible in the proposed grant.
+Even when the user gave some decisions up front, restate the complete decisions you are about
+to send, with every address in full, and wait for the user's answer before calling
+`synthesize_policy`. Copy delegate addresses exactly as the user wrote them.
+
+`synthesize_policy` returns no list of questions. A missing decision is refused with
+`E_NEEDS_DECISION` and an invalid or contradictory one with `E_SPEC_INVALID`; the refusal's
+`details` name each one (`E_NEEDS_DECISION: …`, `E_INVALID_DECISION: …`), possibly behind
+another error code. Ask the user about exactly those and call the tool again only with their
+answer. Any other change to the decisions also goes back to the user first. Keep signer
+identities, spending limits, and policy composition visible in the proposed grant.
 
 ## Check and generate
 
@@ -159,9 +180,11 @@ signer identities, spending limits, and policy composition visible in the propos
 ## Who can change the account
 
 Once the policies are deployed and bound, `check_policy_call_surface` can read, through an RPC
-source the server's operator configured (ask the user which source name; never supply a URL),
-who can change the account or reset those policies for the rule to be installed. Relay its
-`summary` and the structured lists faithfully:
+source the server's operator configured (ask the user which source name; never supply a URL;
+the development server names its only source `testnet`), who can change the account or reset
+those policies for the rule to be installed. It needs the signed registry snapshot the server
+trusts; in the development setup that is `docs/examples/registry.signed.json`, passed unchanged.
+Relay its `summary` and the structured lists faithfully:
 
 - `refusals`: the install must not proceed; explain each reason and its remediation. Nobody's
   approval overrides one.
@@ -178,14 +201,91 @@ match every listed rule against the user's keys and trusted identities, and ask 
 
 `prepare_install_intent` takes the same request, runs that check itself, and returns the exact
 `add_context_rule` arguments only when nothing is refused and nothing is unresolved. Show them
-with the authority answer and hand them to the user's wallet; never assemble, sign or submit,
-and never present them as approval to install.
+with the authority answer; never assemble, sign or submit, and never present them as approval
+to install. `assemble_install_transaction` belongs to the install skill, after a confirmation.
+
+## Dry-run layers
+
+A dry run has four layers: `reference`, `account_wasm`, `captured_target` and
+`live_enforcement`.
+
+- Before any policy is deployed, `reference_suite` is the reference layer's evidence and the
+  other three have not run.
+- Once the policies are deployed and bound, `prepare_dry_run` takes the authority-check request,
+  the artifact `verify` takes, the proposed context-rule ID and a fresh run nonce (64 lowercase
+  hex characters). It reproduces the artifact, derives the selected rule's suite and reports
+  `account_wasm`, `captured_target` and `live_enforcement` as `unavailable`, with
+  `complete: false`. It reads nothing through the source.
+- The account-Wasm and captured-target layers sign with the delegate's key, so only the user's
+  CLI runs them: `ozpb dry-run` (see `docs/DEVELOPERS.md`). Its `--capture-request` takes
+  `{"network_id", "rpc_source", "envelope_xdr_base64"}` with the user's unsigned envelope and
+  captures for itself. The live layer runs only in the user's wallet. When the user shares a
+  report, relay each layer's `status` and `reason` and the `acceptance` block as written.
+- `capture_target` returns the target state the captured-target layer reads. `ozpb dry-run`
+  does not need it. Call it only when the user asks to see that capture, after saying that the
+  envelope is confidential and reaches the RPC endpoint and this conversation.
+
+A layer is `passed` only when a report says so. A layer with no report has not run; say so.
+
+## Confirm before deploy
+
+Before anything is handed off, show this card, built only from tool outputs in this conversation
+(the latest `synthesize_policy` spec and rationale, `reference_suite`, `verify`, any dry-run
+report, and `check_policy_call_surface`). Keep the labels exactly as written. Write every
+address and hash in full: an abbreviated address can be swapped for a look-alike.
+
+```markdown
+## Confirm before deploy
+
+**Grant:** <grant name> on <network> for account <C… in full>; spec hash <spec_hash>
+**Permitted:** each allowed call: contract, function, and every argument's constraint
+**Not constrained:** every argument that accepts any value or a range, and everything the
+grant does not limit; "nothing" only when every argument is exact
+**High blast radius:** each item below, or "none"
+**Signer:** the predicate and every delegate address
+**Expiry:** valid until ledger <N>, or "never (acknowledged)"
+**Call cap:** <N> calls per installation, or "unlimited (acknowledged)"
+**Policies:** every composed policy: the generated scope policy, and the reviewed spending
+limit with its limit and period if composed
+**Dry-run layers:** reference — <status and source>; account_wasm — …; captured_target — …;
+live_enforcement — …
+**Authority list:** each rule that can change the account or reset these policies, with who
+must sign, plus every refusal and unresolved item; or "not read: <why>"
+**Not checked:** what no check above covers
+
+Reply "confirm" to hand off exactly this grant, or tell me what to change.
+```
+
+- **High blast radius** lists every `any_value` argument, whether user-widened or
+  adapter-derived. An adapter derives `any_value` for a caller-chosen argument such as a swap
+  deadline; its provenance names the adapter but carries no blast-radius field, and accepting
+  any value is still a high-blast-radius decision. Name the argument and the adapter. Also list
+  every widening the user rated `high`, no expiry, and no call cap.
+- **Dry-run layers** names all four layers. Before deployment the reference layer reads
+  "passed (reference_suite)" or what that tool reported, and the other three "not run". Copy
+  statuses and reasons from a dry-run report when there is one.
+- **Authority list** before the policies are deployed reads "not read: the policies are not
+  deployed; it is read before installation". A refusal in it means the install must not
+  proceed, whatever the user replies.
+
+Only the user's explicit `confirm` (or "yes, I confirm") after this card counts. A question,
+a change, or approval in other words is not a confirmation: answer it, and show a new card if
+anything changed. A confirmation covers only the card it answers. After any later
+`synthesize_policy` call, or a new authority or dry-run result, show a new card and ask again.
 
 ## Hand off
 
-Summarize exactly what the grant permits, what it does not constrain, the signer and expiry
-choices, the evidence trust level, and the limits of the checks that ran. Generated code is a
-review artifact, not an installed permission. The MCP server does not provide a wallet
-installation flow. Tell the user that their wallet's own authority check and review, and their
-own signature, are required before installation. Do not deploy, sign, submit, or ask for secret
-keys.
+After the user confirms, stop. Tell the user that they hand the grant off by running
+`/oz-policy-builder:policy-builder-install`. That skill is for the user to start; do not try
+to start it yourself or continue into it. Generated code is a review artifact, not an installed
+permission: the user's wallet, with its own authority check, review and the user's own
+signature, installs. Do not deploy, sign, submit, or ask for secret keys.
+
+## After installation
+
+When a grant is installed, `check_against_policy` predicts one proposed call against that
+installed rule: its on-chain rule ID, the spec, the exact bindings, the signed snapshot, the
+account, the source name, the candidate signers and the invocation. Report `permit`, `deny` or
+`unsupported` as a prediction at the reported ledger. It assumes the candidate signers
+authenticate later, does not check signatures, and is not a statement about the account's
+safety. The wallet repeats it and enforce-simulates before signing.
