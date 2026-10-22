@@ -11,7 +11,7 @@ test('without an operator worker, delegate creation and account checks are unava
   await assert.rejects(() => actions['check-account']({ reviewId: 'a'.repeat(64), capabilityId: 'b'.repeat(64) }), /refused/);
 });
 
-test('a backend-held delegate drives a validated account-Wasm layer while installation stays disabled', async () => {
+test('a backend-held delegate drives a validated account-Wasm layer while installation stays unavailable without the live layer', async () => {
   const f = await reviewed();
   assert.deepEqual(Object.keys(f.delegate).sort(), ['address', 'capabilityId']);
   assert.equal((await f.actions.status({})).capabilities.accountCheck, true);

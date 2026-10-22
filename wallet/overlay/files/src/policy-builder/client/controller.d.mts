@@ -25,6 +25,12 @@ export interface WalletState {
   readonly delegate: { readonly capabilityId: string; readonly address: string } | null;
   readonly livePreview: (Details & { display: ConsentDisplay; statementSha256: string; cases: readonly LiveCase[] }) | null;
   readonly replay: Details | null;
+  readonly installPreview: (Details & { display: Details }) | null;
+  readonly installAttempted: boolean;
+  readonly installOwner?: Details | null;
+  readonly revokePreview: (Details & { display: Details }) | null;
+  readonly revokeAttempted: boolean;
+  readonly removal: Details | null;
 }
 export class WalletController {
   constructor(options: {
@@ -40,6 +46,10 @@ export class WalletController {
       statementHash(display: ConsentDisplay): string;
       checkLiveOwnerEntry(input: unknown): LiveOwnerChecked;
       validateLiveOwnerSignature(input: unknown): Promise<LiveOwnerSignature>;
+      installConsent(input: unknown): Details;
+      reviewRemoval(input: unknown): Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>;
+      validateRemovalAssembly(input: unknown): CheckedAssembly;
+      revokeConsent(input: unknown): Details;
     };
     sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly | LiveOwnerChecked }): Promise<string[]>;
     origin: string;
@@ -65,5 +75,10 @@ export class WalletController {
   cancelLive(): void;
   consentLive(): Promise<void>;
   checkReplay(): Promise<void>;
+  prepareInstall(): Promise<void>;
+  cancelInstall(): void;
   install(): Promise<void>;
+  prepareRevoke(): Promise<void>;
+  cancelRevoke(): void;
+  revoke(): Promise<void>;
 }

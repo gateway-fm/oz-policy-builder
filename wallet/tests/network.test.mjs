@@ -3,8 +3,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
-import { boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
+import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, rpc, xdr } from '@stellar/stellar-sdk';
+import { assembleTransaction, boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
@@ -72,7 +72,7 @@ test('RPC transport uses only fixed endpoint and rejects oversized responses and
   await assert.rejects(() => server.getNetwork(), /refused/);
 });
 
-function networkFixture(t, change = () => {}) {
+function networkFixture(t, change = () => {}, options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wallet-network-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const calls = [];
@@ -109,7 +109,7 @@ function networkFixture(t, change = () => {}) {
   change(server);
   const network = new WalletNetwork({ rpcUrl: 'https://rpc.example/testnet', journalRoot: root, server,
     fetchImpl: async (url) => { calls.push({ funded: url }); return new Response('{}'); },
-    assemble: (tx) => ({ build: () => prepared(tx) }), pause: async () => {} });
+    assemble: (tx) => ({ build: () => prepared(tx) }), pause: async () => {}, ...options });
   return { network, server, root, calls };
 }
 
@@ -388,4 +388,52 @@ test('policy upload reads the stored Wasm hash from the receipt as the RPC decod
   assert.equal((await network.upload(wasm, wasmHash)).ledger, 101);
   stored = 'b'.repeat(64);
   await assert.rejects(() => network.upload(wasm, wasmHash), /refused/);
+});
+
+// The CLI's unsigned installation has ledger bounds and no time bounds. The SDK's builder refuses to
+// build such a transaction, so its enforce-mode assembly must not go through the builder.
+function cliShaped(payer, sequence = '7') {
+  const call = new xdr.InvokeContractArgs({ contractAddress: new Address(contract).toScAddress(), functionName: 'add_context_rule', args: [] });
+  const entry = new xdr.SorobanAuthorizationEntry({
+    credentials: xdr.SorobanCredentials.sorobanCredentialsAddressV2(new xdr.SorobanAddressCredentials({
+      address: new Address(contract).toScAddress(), nonce: 9n, signatureExpirationLedger: 219, signature: xdr.ScVal.scvU32(1) })),
+    rootInvocation: new xdr.SorobanAuthorizedInvocation({
+      function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call), subInvocations: [] }) });
+  const envelope = new TransactionBuilder(new Account(payer, sequence), { fee: '100', networkPassphrase: Networks.TESTNET })
+    .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [entry] }))
+    .setLedgerbounds(100, 220).setTimeout(0).setSorobanData(new SorobanDataBuilder().setResourceFee(300).build()).build().toEnvelope();
+  envelope.v1.tx.cond.v2.timeBounds = null;
+  return envelope;
+}
+const enforced = (resourceFee) => ({ latestLedger: 101, minResourceFee: String(resourceFee),
+  transactionData: new SorobanDataBuilder().setResourceFee(resourceFee).build().toXDR('base64'),
+  results: [{ auth: [], xdr: xdr.ScVal.scvVoid().toXDR('base64') }] });
+
+test('enforcing assembly of an envelope without time bounds changes only its resources and fee', () => {
+  const payer = Keypair.random().publicKey();
+  const envelope = cliShaped(payer);
+  const original = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
+  assert.throws(() => rpc.assembleTransaction(original, enforced(4000)).build(), /TimeBounds/, 'the SDK builder alone cannot');
+  const assembled = assembleTransaction(original, enforced(4000)).build();
+  checkPreparedEnvelope(assembled, envelope.toXDR());
+  const tx = assembled.toEnvelope().v1.tx;
+  assert.equal(tx.fee, 100 + 4000, 'the inclusion bid plus the enforced resource fee');
+  assert.equal(tx.ext.sorobanData.resourceFee, 4000n);
+  assert.equal(tx.cond.v2.timeBounds, null);
+  assert.equal(tx.operations[0].body.invokeHostFunctionOp.auth[0].toXDR('base64'),
+    envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth[0].toXDR('base64'), 'the signed entry is untouched');
+});
+
+test('the fee payer submits an envelope without time bounds after enforce-mode assembly', async (t) => {
+  const { network, server, calls } = networkFixture(t, () => {}, { assemble: undefined });
+  // The SDK server returns the parsed simulation.
+  server.simulateTransaction = async (tx, _resources, mode) => { calls.push({ mode, tx }); return rpc.parseRawSimulation(enforced(4000)); };
+  await network.fundPayer();
+  const envelope = cliShaped(network.payerAddress, '7');
+  const result = await network.submitEnvelope(envelope.toXDR('base64'), 'install-policy');
+  assert.match(result.hash, /^[0-9a-f]{64}$/);
+  const sent = calls.find((call) => call.sent).sent.toEnvelope();
+  assert.equal(sent.v1.tx.cond.v2.timeBounds, null);
+  assert.equal(sent.v1.signatures.length, 1);
+  assert.equal(result.feeChargedStroops, '2000');
 });

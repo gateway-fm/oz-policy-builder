@@ -10,6 +10,7 @@ export function setup({ native = null, live = null, delegates } = {}) {
   let creates = 0;
   const network = {
     payerAddress: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)),
+    canSubmit: true,
     assertTestnet: async () => { calls.push('network'); },
     requireCode: async (hash) => { calls.push(['code', hash]); },
     fundPayer: async () => { calls.push('fund'); },
@@ -35,7 +36,8 @@ export function setup({ native = null, live = null, delegates } = {}) {
     record: async (request) => { calls.push(['record', request]); return { recordId: '4'.repeat(64) }; },
     generate: async (request) => { calls.push(['generate', request]); return { artifactId: '5'.repeat(64) }; },
   };
-  return { actions: createWalletActions({ session, toolchain, network, native, live, ...(delegates ? { delegates } : {}) }),
+  return { actions: createWalletActions({ session, toolchain, network, native, live, pause: async () => {},
+    ...(delegates ? { delegates } : {}) }),
     calls, f, network, toolchain, session };
 }
 

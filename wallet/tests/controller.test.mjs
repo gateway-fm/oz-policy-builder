@@ -5,6 +5,10 @@ import { WalletController } from '../overlay/files/src/policy-builder/client/con
 const hash = (c) => c.repeat(64);
 const pins = { networkId: hash('1'), accountWasm: hash('2'), verifierWasm: hash('3') };
 const wallet = { contractId: 'account', credentialId: 'AQ', publicKey: '04key', verifier: 'verifier' };
+const INSTALL_DISPLAY = { owner_signs: { function: 'add_context_rule' }, grant: { rule_id: 1, delegate: 'delegate' },
+  fee: { prepared_fee_stroops: 1100, max_fee_stroops: 10000000 }, warning: 'Once installed, the delegate can act without your passkey.' };
+const REVOKE_DISPLAY = { owner_signs: { function: 'remove_context_rule', args: [1] }, warning: 'Policy cleanup is best effort.' };
+const INSTALLATION = { installationId: hash('6'), status: 'installed', transactionHash: hash('e'), ruleId: 1, account: 'account' };
 function fixture() {
   const verification = { complete: true, runId: hash('9'), specHash: hash('a'), wasmHash: hash('b'),
     bindingSetHash: hash('c'), layers: ['reference', 'account_wasm', 'captured_target', 'live_enforcement']
@@ -21,17 +25,30 @@ function fixture() {
     'confirm-deploy': { deploymentId: 'deployment1', policyAddress: 'policy1', wasmHash: hash('b'), bindingSetHash: hash('c') },
     review: { reviewId: 'review1', wallet, verification, expected: { specHash: hash('a'), bindingSetHash: hash('c') },
       intent: { policies: [{ address: 'policy1', wasm_hash: hash('b') }] }, ownerRuleXdr: 'owner' },
-    assemble: { pendingId: 'pending1', verification, assembly: {}, ownerRuleXdr: 'owner', limits: {} },
-    submit: { receipt: { hash: hash('e') }, installation: { installationId: 'install1' } },
+    assemble: { action: { id: hash('5'), expires_in_seconds: 120 }, verification, assembly: {}, ownerRuleXdr: 'owner', limits: {},
+      display: INSTALL_DISPLAY },
+    submit: { receipt: { hash: hash('e') }, installation: INSTALLATION },
+    'prepare-revoke': { action: { id: hash('7'), expires_in_seconds: 120 }, assembly: {}, ownerRuleXdr: 'owner', limits: {},
+      display: REVOKE_DISPLAY, installation: INSTALLATION },
+    'confirm-revoke': { receipt: { hash: hash('f') }, removal: { status: 'removed', ruleId: 1, transactionHash: hash('f'),
+      event: 'verified', ruleReadback: 'absent', policyCleanup: 'not_installed' } },
   };
   const calls = [];
   const validators = {
     reviewIntent: (value) => ({ ...value, ownerRuleId: 7 }),
     validateAssembly: () => ({ authEntriesXdr: ['unsigned'], ownerRuleId: 7, expirationLedger: 123 }),
     validateSignedAuthorization: async ({ signedAuthEntriesXdr }) => ({ signedAuthEntriesXdr }),
+    installConsent: () => INSTALL_DISPLAY,
+    reviewRemoval: ({ wallet: owner, ownerRuleId, ownerRuleXdr }) => ({ wallet: owner, ownerRuleId, ownerRuleXdr, commitment: hash('9') }),
+    validateRemovalAssembly: () => ({ authEntriesXdr: ['unsigned-removal'], ownerRuleId: 7, expirationLedger: 200 }),
+    revokeConsent: () => REVOKE_DISPLAY,
   };
   const controller = new WalletController({
-    pins, request: async (name, data) => { calls.push([name, data]); return replies[name]; },
+    pins, request: async (name, data) => {
+      calls.push([name, data]);
+      if (replies[name] instanceof Error) throw replies[name];
+      return replies[name];
+    },
     validators, sign: async () => { calls.push(['sign']); return ['signed']; }, origin: 'http://localhost:3000',
   });
   return { controller, replies, calls, validators };
@@ -46,21 +63,100 @@ async function prepared(f) {
   await f.controller.review();
 }
 
-test('deploy consent is separate and install validates before requesting a passkey', async () => {
+test('deploy consent is separate and install validates and shows its consent before requesting a passkey', async () => {
   const f = fixture();
   await prepared(f);
   assert.equal(f.calls.some(([name]) => name === 'sign'), false);
+  await f.controller.prepareInstall();
+  assert.deepEqual(f.calls.slice(-2).map(([name]) => name), ['status', 'assemble']);
+  assert.deepEqual(f.calls.at(-1)[1], { reviewId: 'review1' });
+  assert.deepEqual(f.controller.state.installPreview.display, INSTALL_DISPLAY);
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false, 'preparing signs nothing');
   await f.controller.install();
-  assert.deepEqual(f.calls.slice(-3).map(([name]) => name), ['assemble', 'sign', 'submit']);
-  assert.equal(f.controller.state.installation.installationId, 'install1');
+  assert.deepEqual(f.calls.slice(-3).map(([name]) => name), ['sign', 'submit', 'status']);
+  assert.deepEqual(f.calls.find(([name]) => name === 'submit')[1], { id: hash('5'), signedAuthEntriesXdr: ['signed'] });
+  assert.equal(f.controller.state.installation.installationId, hash('6'));
+  assert.equal(f.controller.state.installPreview, null);
   await assert.rejects(f.controller.install(), /wallet action refused/);
+  await assert.rejects(f.controller.prepareInstall(), /wallet action refused/, 'one installation attempt per review');
+});
+test('install consent the browser derives must equal the backend display, or no passkey is asked', async () => {
+  for (const change of [
+    (f) => { f.validators.installConsent = () => ({ ...INSTALL_DISPLAY, grant: { rule_id: 2, delegate: 'delegate' } }); },
+    (f) => { f.replies.assemble = { ...f.replies.assemble, action: { id: 'short' } }; },
+    (f) => { f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, install: false } }; },
+    (f) => { f.replies.assemble = { ...f.replies.assemble, limits: { maxFeeStroops: 100_000_000 } }; },
+  ]) {
+    const f = fixture();
+    await prepared(f);
+    change(f);
+    await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
+    await assert.rejects(f.controller.install(), /wallet action refused/);
+    assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false);
+  }
+});
+test('a lost install response cannot cause an automatic or manual retry', async () => {
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  f.replies.submit = null;
+  await assert.rejects(f.controller.install(), /wallet action refused/);
+  assert.equal(f.controller.state.installAttempted, true);
+  await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
+  await assert.rejects(f.controller.install(), /wallet action refused/);
+  assert.equal(f.calls.filter(([name]) => name === 'submit').length, 1);
+});
+test('cancelling the install consent asks no passkey and keeps the review', async () => {
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  f.controller.cancelInstall();
+  assert.equal(f.controller.state.installPreview, null);
+  assert.notEqual(f.controller.state.review, null);
+  await assert.rejects(f.controller.install(), /wallet action refused/);
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false);
+});
+test('revoke shows the removal consent, then the passkey, then confirms only an absent readback', async () => {
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  await f.controller.install();
+  f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, lifecycle: true } };
+  await f.controller.prepareRevoke();
+  assert.deepEqual(f.calls.slice(-2).map(([name]) => name), ['status', 'prepare-revoke']);
+  assert.deepEqual(f.calls.at(-1)[1], { installationId: hash('6') });
+  assert.deepEqual(f.controller.state.revokePreview.display, REVOKE_DISPLAY);
+  await f.controller.revoke();
+  assert.deepEqual(f.calls.slice(-3).map(([name]) => name), ['sign', 'confirm-revoke', 'status']);
+  assert.equal(f.controller.state.removal.ruleReadback, 'absent');
+  await assert.rejects(f.controller.prepareRevoke(), /wallet action refused/, 'one removal attempt');
+  for (const change of [{ ruleReadback: 'still_present' }, { status: 'unverified' }, { ruleId: 2 }]) {
+    const g = fixture();
+    await prepared(g);
+    await g.controller.prepareInstall();
+    await g.controller.install();
+    g.replies.status = { ...g.replies.status, capabilities: { ...g.replies.status.capabilities, lifecycle: true } };
+    g.replies['confirm-revoke'] = { ...g.replies['confirm-revoke'], removal: { ...g.replies['confirm-revoke'].removal, ...change } };
+    await g.controller.prepareRevoke();
+    await assert.rejects(g.controller.revoke(), /wallet action refused/, JSON.stringify(change));
+    assert.equal(g.controller.state.removal, null);
+  }
+});
+test('revoke needs the lifecycle capability and an installation from this session', async () => {
+  const f = fixture();
+  await prepared(f);
+  await assert.rejects(f.controller.prepareRevoke(), /wallet action refused/);
+  await f.controller.prepareInstall();
+  await f.controller.install();
+  await assert.rejects(f.controller.prepareRevoke(), /wallet action refused/, 'status says no lifecycle');
+  assert.equal(f.calls.some(([name]) => name === 'prepare-revoke'), false);
 });
 test('missing real layer4 blocks signing even when the service advertises install capability', async () => {
   const f = fixture();
   f.replies.review.verification.layers[3].status = 'unavailable';
   await prepared(f);
-  await assert.rejects(f.controller.install(), /wallet action refused/);
-  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false);
+  await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
+  assert.equal(f.calls.some(([name]) => name === 'assemble' || name === 'sign' || name === 'submit'), false);
 });
 test('changed report identity or assembly refusal consumes the review before signing', async () => {
   for (const kind of ['run', 'validation']) {
@@ -68,8 +164,8 @@ test('changed report identity or assembly refusal consumes the review before sig
     await prepared(f);
     if (kind === 'run') f.replies.assemble = { ...f.replies.assemble, verification: { ...f.replies.assemble.verification, runId: hash('8') } };
     else f.validators.validateAssembly = () => { throw new Error('secret diagnostic'); };
-    await assert.rejects(f.controller.install(), /wallet action refused/);
-    await assert.rejects(f.controller.install(), /wallet action refused/);
+    await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
+    await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
     assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false);
   }
 });
@@ -81,7 +177,7 @@ test('new account or recording invalidates the immutable prior artifact and revi
   f.controller.attachWallet({ ...wallet, contractId: 'different' });
   assert.equal(f.controller.state.artifact, null);
   assert.equal(f.controller.state.review, null);
-  await assert.rejects(f.controller.install(), /wallet action refused/);
+  await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
 });
 test('generation refuses a grant that differs from the user-selected limits or identity', async () => {
   for (const mutate of [
@@ -241,7 +337,8 @@ test('account check uses the explicit backend delegate and updates only the matc
   assert.equal(f.controller.state.review.verification.layers[1].status, 'passed');
   assert.equal(f.controller.state.review.approval.ownerRuleId, 7, 'the reviewed approval is retained');
   assert.equal(f.calls.some(([name]) => name === 'sign'), false);
-  await assert.rejects(f.controller.install(), /wallet action refused/, 'three local layers do not enable installation');
+  await assert.rejects(f.controller.prepareInstall(), /wallet action refused/, 'three local layers do not enable installation');
+  assert.equal(f.calls.some(([name]) => name === 'assemble'), false);
 });
 for (const change of ['other review', 'other spec', 'other binding set', 'missing layers']) {
   test(`account check refuses a response for ${change} and keeps the earlier evidence`, async () => {
@@ -316,6 +413,7 @@ test('the live check shows the browser\'s own statement, then consent, then the 
   assert.equal(f.controller.state.livePreview, null);
   await f.controller.checkReplay();
   assert.equal(f.controller.state.replay.status, 'waiting');
+  assert.equal(f.calls.at(-1)[0], 'status', 'the replay answer refreshes the backend capabilities');
 });
 
 test('consent required before any live signature: no preview, a different statement or a changed entry asks no passkey', async () => {
@@ -346,4 +444,49 @@ test('the automation delegate is available for the live check without the native
   g.replies['create-delegate'] = { capabilityId: hash('5'), address: `G${'A'.repeat(55)}` };
   await g.controller.connect();
   await assert.rejects(g.controller.createDelegate(), /wallet action refused/);
+});
+
+test('a backend refusal to assemble keeps the review; only a refused validation consumes it', async () => {
+  const f = fixture();
+  await prepared(f);
+  f.replies.assemble = new Error('wallet action unavailable');
+  await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
+  assert.notEqual(f.controller.state.review, null, 'the backend released nothing; the layers need not run again');
+  f.replies.assemble = fixture().replies.assemble;
+  await f.controller.prepareInstall();
+  assert.deepEqual(f.controller.state.installPreview.display, INSTALL_DISPLAY);
+});
+test('after a failed submission the browser adopts the installation the backend confirmed, so it can be revoked', async () => {
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  const unverified = { installationId: hash('6'), status: 'confirmed_unverified', account: wallet.contractId, ruleId: 1,
+    transactionHash: hash('e'), ledger: 9, removal: null };
+  f.replies.submit = new Error('wallet action unavailable');
+  f.replies.status = { ...f.replies.status, installations: [unverified],
+    capabilities: { ...f.replies.status.capabilities, lifecycle: true } };
+  await assert.rejects(f.controller.install(), /wallet action refused/);
+  assert.deepEqual(f.controller.state.installation, unverified);
+  f.replies['prepare-revoke'] = { ...f.replies['prepare-revoke'], installation: unverified };
+  await f.controller.prepareRevoke();
+  await f.controller.revoke();
+  assert.equal(f.controller.state.removal.ruleReadback, 'absent');
+});
+test('a removal the backend refused before submitting can be prepared again; a submitted one cannot', async () => {
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  await f.controller.install();
+  f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, lifecycle: true },
+    installations: [{ ...INSTALLATION, ledger: 9, removal: null }] };
+  await f.controller.prepareRevoke();
+  f.replies['confirm-revoke'] = new Error('wallet action unavailable');
+  await assert.rejects(f.controller.revoke(), /wallet action refused/);
+  assert.equal(f.controller.state.revokeAttempted, false, 'the backend lists no removal');
+  await f.controller.prepareRevoke();
+  f.replies.status = { ...f.replies.status, installations: [{ ...INSTALLATION, ledger: 9,
+    removal: { status: 'confirmed_unverified', transactionHash: hash('f') } }] };
+  await assert.rejects(f.controller.revoke(), /wallet action refused/);
+  assert.equal(f.controller.state.revokeAttempted, true);
+  await assert.rejects(f.controller.prepareRevoke(), /wallet action refused/);
 });

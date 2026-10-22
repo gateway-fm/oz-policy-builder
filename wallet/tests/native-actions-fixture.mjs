@@ -16,18 +16,15 @@ const transfer = () => ({ fn: 'transfer', args: [
   { i: 2, c: { eq_i128: { value: '1000000' } }, prov: 'observed_exact' }], justified_by: ['recordings[0]/auth[0]/root'] });
 
 /**
- * A deployed, reviewed native-transfer grant whose delegate is a backend-created capability.
- * The CLI preparation, capture and worker are faked unless `native` names a real executable.
+ * A fake native worker answering from `holder.frames` and `holder.captured`, which the stubs set once
+ * the grant is deployed and reviewed. Every run is appended to `holder.runs`.
  */
-export async function reviewed({ maxCalls = 2, runFails = false, intentChange = () => {}, prepareFails = false, sourceFails = false,
-  allowedCalls = [transfer()], captureChange = () => {}, capturedChange = () => {}, capturedPreparedChange = () => {},
-  captureFails = false, captureCode = undefined, envelopeFails = false, capturedRunFails = false, notBefore = CAPTURE_LEDGER - 2, native: realNative } = {}) {
-  const runs = [];
-  const prepares = [];
-  const captures = [];
-  let frames, captured, capture;
-  const native = realNative ?? { executable: '/fixed/ozpb-execution-runtime', run: async (executable, jobText, options) => {
-    runs.push({ executable, jobText, prepareOnly: options.prepareOnly === true, captured: options.captured === true });
+export function fakeNative(holder, { runFails = false, capturedRunFails = false, capturedChange = () => {},
+  capturedPreparedChange = () => {} } = {}) {
+  holder.runs ??= [];
+  return { executable: '/fixed/ozpb-execution-runtime', run: async (executable, jobText, options) => {
+    holder.runs.push({ executable, jobText, prepareOnly: options.prepareOnly === true, captured: options.captured === true });
+    const { frames, captured } = holder;
     if (options.captured) {
       if (capturedRunFails) throw new Error('native process refused; no execution evidence accepted');
       const prepared = clone(captured.prepared);
@@ -52,24 +49,29 @@ export async function reviewed({ maxCalls = 2, runFails = false, intentChange = 
       Buffer.from(signRequest(frames.prepared).digest_hex, 'hex'), Buffer.from(answer.signature_hex, 'hex')));
     return options.validateResult(structuredClone(frames.result));
   } };
-  const f = deploymentFixture(() => {}, { native });
-  const delegate = await f.actions['create-delegate']({});
-  f.artifact.spec.rules[0].authorization = { signers: [{ delegated: { address: delegate.address } }] };
-  f.artifact.spec.rules[0].state = [{ call_count_per_installation: { max_calls: maxCalls } }];
-  if (allowedCalls) f.artifact.spec.rules[0].allowed_calls = allowedCalls;
-  const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
-  const deployed = await f.actions['confirm-deploy']({ id: preview.action.id });
-  intentChange(f.f.intent.authority.verdict.evidence);
-  const review = await f.actions.review({ deploymentId: deployed.deploymentId, wallet: f.f.wallet });
-  frames = nativeFixture({ maxCalls, accountAddress: f.f.wallet.contractId, delegateAddress: delegate.address,
+}
+
+/**
+ * The CLI preparation, operator reads and capture for a deployed grant whose delegate is `delegate`,
+ * with the worker frames `fakeNative` answers from. `notBefore`, when given, fixes the ledger the
+ * backend reads before the capture; otherwise the fixture's own `latestLedger` stays.
+ */
+export function stubNativeChecks(f, delegate, holder, { maxCalls = 2, captureChange = () => {}, captureFails = false,
+  captureCode = undefined, envelopeFails = false, prepareFails = false, sourceFails = false, notBefore,
+  captureLedger = CAPTURE_LEDGER } = {}) {
+  holder.prepares = [];
+  holder.captures = [];
+  holder.envelopes = [];
+  holder.frames = nativeFixture({ maxCalls, accountAddress: f.f.wallet.contractId, delegateAddress: delegate.address,
     policyAddress: f.policy, policyCodeHash: f.artifact.wasmHash, candidateContextRuleId: 1 });
-  capture = captureFixture({ account: f.f.wallet.contractId, observedLedger: CAPTURE_LEDGER });
-  captureChange(capture, { account: f.f.wallet.contractId });
-  captured = capturedFrames({ capture, captureHash: captureHash(capture), account: f.f.wallet.contractId, delegate: delegate.address,
-    policyAddress: f.policy, policyCodeHash: f.artifact.wasmHash, candidateContextRuleId: 1, maxCalls,
-    runHash: frames.expected.runHash });
+  holder.capture = captureFixture({ account: f.f.wallet.contractId, observedLedger: captureLedger });
+  captureChange(holder.capture, { account: f.f.wallet.contractId });
+  holder.captured = capturedFrames({ capture: holder.capture, captureHash: captureHash(holder.capture), account: f.f.wallet.contractId,
+    delegate: delegate.address, policyAddress: f.policy, policyCodeHash: f.artifact.wasmHash, candidateContextRuleId: 1, maxCalls,
+    runHash: holder.frames.expected.runHash });
+  const { frames } = holder;
   f.toolchain.prepareDryRun = async (input) => {
-    prepares.push(input);
+    holder.prepares.push(input);
     if (prepareFails) throw new Error('wallet pipeline refused; refresh and review again');
     return { request: { candidate: input.candidate, run_nonce: 'e'.repeat(64) }, output: {
       schema: 'ozpb:dry-run:v1', run_hash: frames.expected.runHash, binding: { spec_hash: f.artifact.specHash,
@@ -85,19 +87,41 @@ export async function reviewed({ maxCalls = 2, runFails = false, intentChange = 
   f.network.nativeSource = async (hash) => { assert.equal(hash, ACCOUNT_WASM);
     if (sourceFails) throw new Error('wallet network operation refused; inspect the local journal before retrying');
     return { ledger: LEDGER, accountWasmBase64: 'AGFzbQEAAAA=' }; };
-  const envelopes = [];
-  f.network.latestLedger = async () => notBefore;
+  if (notBefore !== undefined) f.network.latestLedger = async () => notBefore;
   f.network.targetEnvelope = async (call) => {
     if (envelopeFails) throw new Error('wallet network operation refused; inspect the local journal before retrying');
     // A real unsigned envelope from a throwaway source, so a test can search every output for it.
-    envelopes.push(targetEnvelopeXdr(new Account(Keypair.random().publicKey(), '41'), call));
-    return envelopes.at(-1);
+    holder.envelopes.push(targetEnvelopeXdr(new Account(Keypair.random().publicKey(), '41'), call));
+    return holder.envelopes.at(-1);
   };
   f.toolchain.captureTarget = async (envelope, options) => {
-    captures.push({ envelope, signal: options?.signal });
-    assert.equal(envelope, envelopes.at(-1), 'the capture receives exactly the envelope the backend built');
+    holder.captures.push({ envelope, signal: options?.signal });
+    assert.equal(envelope, holder.envelopes.at(-1), 'the capture receives exactly the envelope the backend built');
     if (captureFails) throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), { code: captureCode });
-    return clone(capture);
+    return clone(holder.capture);
   };
-  return { ...f, delegate, deployed, review, runs, prepares, captures, envelopes, native, capture, captured };
+}
+
+/**
+ * A deployed, reviewed native-transfer grant whose delegate is a backend-created capability.
+ * The CLI preparation, capture and worker are faked unless `native` names a real executable.
+ */
+export async function reviewed({ maxCalls = 2, runFails = false, intentChange = () => {}, prepareFails = false, sourceFails = false,
+  allowedCalls = [transfer()], captureChange = () => {}, capturedChange = () => {}, capturedPreparedChange = () => {},
+  captureFails = false, captureCode = undefined, envelopeFails = false, capturedRunFails = false, notBefore = CAPTURE_LEDGER - 2, native: realNative } = {}) {
+  const holder = { runs: [] };
+  const native = realNative ?? fakeNative(holder, { runFails, capturedRunFails, capturedChange, capturedPreparedChange });
+  const f = deploymentFixture(() => {}, { native });
+  const delegate = await f.actions['create-delegate']({});
+  f.artifact.spec.rules[0].authorization = { signers: [{ delegated: { address: delegate.address } }] };
+  f.artifact.spec.rules[0].state = [{ call_count_per_installation: { max_calls: maxCalls } }];
+  if (allowedCalls) f.artifact.spec.rules[0].allowed_calls = allowedCalls;
+  const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  const deployed = await f.actions['confirm-deploy']({ id: preview.action.id });
+  intentChange(f.f.intent.authority.verdict.evidence);
+  const review = await f.actions.review({ deploymentId: deployed.deploymentId, wallet: f.f.wallet });
+  stubNativeChecks(f, delegate, holder, { maxCalls, captureChange, captureFails, captureCode, envelopeFails, prepareFails,
+    sourceFails, notBefore });
+  return { ...f, delegate, deployed, review, runs: holder.runs, prepares: holder.prepares, captures: holder.captures,
+    envelopes: holder.envelopes, native, capture: holder.capture, captured: holder.captured };
 }

@@ -16,9 +16,11 @@ reproduction, artifact deployment, live authority review and, when the operator 
 the [native worker](NATIVE-EXECUTION.md), local account-Wasm and captured-target execution of
 the reviewed grant. When the operator names the deployed [atomic live helper](ATOMIC-LIVE-HELPER.md),
 the owner can also consent to a [live-enforcement check](#live-enforcement-check): two
-enforce-mode simulations on testnet, never submitted. Policy installation, revocation and
-replacement remain disabled. The signing validators below are tested foundations, not a
-completed installation or wallet acceptance claim.
+enforce-mode simulations on testnet, never submitted. When all four layers passed on recent
+evidence and the live check's signatures expired unused, the owner can [install](#installation)
+the reviewed grant with one passkey-signed transaction and later [revoke](#revocation) it with
+another. Replacement and monitoring remain unavailable. A virtual authenticator's signature is
+automation evidence, not a human acceptance decision.
 
 ## Apply to the supported upstream revision
 
@@ -148,10 +150,11 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
    statement, and consent with the owner passkey. It is the only step in which the automation
    delegate signs for testnet, and its signatures, the owner's included, are simulated and never
    submitted.
-7. Only when the required verification report is complete does the route enable owner signing.
-   It checks the fresh unsigned envelope against the immutable display before asking Pollywallet
-   for a passkey signature. It then independently checks the signed XDR, origin, challenge,
-   user verification, full signer identity and exact owner rule before submission.
+7. Only when the required verification report is complete does the route offer
+   [installation](#installation). It checks the fresh unsigned envelope against the immutable
+   display and shows its own consent statement before asking Pollywallet for a passkey signature.
+   It then independently checks the signed XDR, origin, challenge, user verification, full signer
+   identity and exact owner rule before submission. [Revocation](#revocation) works the same way.
 
 Account and policy deployment confirmations are distinct from owner authorization. A cancelled
 or refused signing attempt consumes the prepared review. Sample preparation is available only
@@ -272,8 +275,8 @@ other outcome carries no evidence:
   text, and only from `capture-target`'s own refusal.
 
 A passing layer records the captured ledger as `evidence.observedLedger`, and stored evidence
-does not age: nothing re-checks it later. Installation is disabled; when it is enabled, its
-gate must require that ledger to be recent relative to the installation's own reads.
+does not age by itself. The [installation gate](#installation) requires that ledger to lie at
+most 360 ledgers before the installation's own ledger reads, and not after them.
 
 A new review starts again without local execution evidence. Each worker run has a 120-second
 deadline, `capture-target` 120 seconds, and the backend serves one request at a time. If the
@@ -367,7 +370,8 @@ expected rule ID, the expiry ledger, the statement hash, each case's outcome, si
 and envelope hash. It also carries the owner's `webauthn_user_verified` with
 `human_approval_attested: false`, and the labels `state_dependent`, `simulation_only`,
 `signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key`. It is
-evidence about testnet state at the simulation ledgers, and stored evidence does not age.
+evidence about testnet state at the simulation ledgers. Stored evidence does not age by itself; the
+[installation gate](#installation) bounds the simulation ledgers as it bounds the captured one.
 
 **Replay check.** The prepared reads of `NextId`, `Count`, the rules and the installation
 marker are the state before any signature existed. At consent, before the owner entry is
@@ -382,7 +386,8 @@ not read an earlier session's journal. After a restart, wait until the earlier N
 preparing another check. `requireNoReplay` in
 [`wallet/server/live-check.mjs`](../wallet/server/live-check.mjs) is the guard the installation
 flow must call before it signs anything; it refuses unless the check reports `unchanged`, and
-without any record. Installation itself is still disabled.
+without any record. [Installation](#installation) calls it before it releases an entry for the
+passkey and again before the fee payer submits.
 
 **Ledger clock.** The operator RPC's latest ledger fixes N, decides whether consent and each
 simulation still fit before N, and decides whether N has passed for the replay check. Each of those
@@ -395,14 +400,129 @@ a bound. A header with a current close time and an invented sequence passes, and
 past the real ledger. The operator chooses that endpoint.
 
 A passed live layer stays passed in the report even if a later replay check reports `changed`: the
-replay check speaks about the account, not the candidate. That is acceptable only while
-installation is disabled. The installation flow must call `requireNoReplay` before it signs, and
-refuse on anything but `unchanged`.
+replay check speaks about the account, not the candidate. Installation therefore refuses unless
+`requireNoReplay` reports `unchanged`, whatever the layer says.
 
 If the browser disconnects during the run, the backend checks for that before each step: it
 signs and simulates nothing further, and records no layer. Signatures already created stay valid
 until N, and the replay obligation stays recorded. The backend serves one live check at a time
 and runs no local execution check alongside it.
+
+## Installation
+
+Installation needs the native worker and the live helper, so that all four layers can run. It is
+offered for one review at a time, and once per backend session. Status reports `install: true`
+only while some review has a complete report and no installation was attempted in this backend,
+and `installOpensAfterLedger` while an earlier released signature is still valid. Nothing is
+released or spent while the fee payer cannot submit, for example after an uncertain result.
+`Prepare installation` (`assemble`) and the passkey approval (`submit`) are two steps. A backend
+refusal to prepare keeps the browser's review, since nothing was released; an answer the browser
+itself refuses consumes it.
+
+**Gate.** Before anything is released, and again before the fee payer submits, the backend
+re-establishes the same conditions:
+
+- The stored report for this exact review has the four layers, `reference`, `account_wasm`,
+  `captured_target` and `live_enforcement`, all `passed`, about this artifact, deployment and
+  binding set.
+- The account and captured layers ran with this policy, its code hash, the grant's delegate and
+  the rule ID the review established, from one CLI preparation (same run hash). The live layer
+  names this account, policy, code hash and rule ID.
+- The captured ledger and both live simulation ledgers lie at most 360 ledgers (about 30 minutes)
+  before the latest ledger, read through the [ledger clock](#live-enforcement-check), and not
+  after it.
+- `requireNoReplay` reports `unchanged` for every replay obligation still open: the live check's,
+  and those of earlier installation entries. While a signature is still valid it answers
+  `waiting`, which refuses too. Without any obligation it refuses.
+
+**Prepare.**
+
+1. `ozpb assemble-install-transaction` re-runs the authority check for the retained deployment
+   request and returns the unsigned `add_context_rule` transaction from the local fee payer. Its
+   validity is 60 ledgers from the CLI's sequence read, and its fee ceiling is 1 testnet XLM.
+2. The backend reads the owner rule again, which must be byte-identical to the reviewed one, and
+   reads the fee payer's sequence. Both reads must lie within 12 ledgers of the CLI's authority
+   read.
+3. `validateAssembly` checks every field against the review, as the browser does again: the
+   authority commitment, owner rule and grant, network, fee payer, sequence, fee, ledger bounds,
+   the exact `add_context_rule` arguments, one address-bound owner entry with no
+   sub-invocations, and the declared resources. Testnet records `AddressV2` credentials; either
+   direct arm is kept as recorded.
+4. The backend reads the account state the live check's replay obligation reads and journals the
+   entry's expiry with it as a new obligation, before the entry leaves the backend. From then on a
+   passkey may have signed it. Until it expires, no other installation entry is released. After it
+   expires, the replay check compares the account with that state. Like the live check's, these
+   obligations live in the running backend: the journal keeps them for the operator, but a
+   restarted backend does not read it. After a restart, wait until the earlier expiry has passed.
+5. The browser derives the consent statement itself from the review and the validated assembly and
+   requires it to equal the backend's. The statement shows the exact `add_context_rule` call, what
+   installing grants (delegate, target, allowed calls, call cap, expiry, rule ID), the
+   transaction's ledger window and the signature's expiry, and the fee prepared and at most. The
+   delegate's key is the backend's automation key.
+
+**Submit.**
+
+1. Consuming the prepared action spends the review, whatever follows: a refused attempt is never
+   re-released for the same review.
+2. The gate runs again. A fresh `prepare-install-intent` must return the approved commitment and
+   grant. Then the owner rule must read back unchanged and the fee payer's sequence unmoved, both
+   within 12 ledgers of that authority read, and the transaction's ledger window must still be
+   open.
+3. The owner's signature is checked as for every owner signature: exact entry, origin, challenge,
+   user verification, full credential and owner rule.
+4. The fee payer enforce-simulates the signed transaction. Only fee and resource fields may change,
+   and the fee stays at most 1 testnet XLM. The CLI's transaction has no time bounds, which the
+   SDK's assembly cannot rebuild, so the simulated resources are set on its own XDR. The payer then
+   signs, journals the intended hash, submits once and waits for the receipt. An uncertain
+   result blocks every later write in the session, as for every other submission.
+5. A confirmed transaction is listed in `status` at once, as `confirmed_unverified`, with its hash
+   and ledger. It becomes an InstallationRecord only when all of the following hold:
+   - `add_context_rule` returned exactly the reviewed rule with the expected ID;
+   - the account emitted exactly one `context_rule_added` for that ID, whose data repeats the
+     returned rule;
+   - the rule reads back identical from a node at or past the transaction's ledger;
+   - the policy's installation marker for the rule is set, read from such a node too.
+
+   A lagging node is asked again, up to five times.
+
+The record binds the transaction hash, ledger, account and rule ID to the policy and its code
+hash, the spec and binding-set hashes, the authority commitment, the report's run ID and layers,
+the evidence ledgers and the live check's consent hash. It also carries the owner's
+`webauthn_user_verified` with `human_approval_attested: false`. Once it exists, it closes every
+open replay obligation, so the replay check then reports `closed`. A confirmed installation whose
+verification failed stays listed, and leaves the obligations open. The browser adopts the listed
+installation after a failed or lost `submit` response. It can still be revoked when its own
+event named one rule ID.
+
+An installation that needs a separate restoration transaction is refused. Restore the archived
+entries, then review again.
+
+## Revocation
+
+`Prepare revocation` (`prepare-revoke`) is offered for an installation from this session:
+
+1. The backend reads the owner rule, which must be unchanged.
+2. It reads the installed rule, which must still be present and identical to the recorded one.
+3. The fee payer's record-mode simulation drafts `remove_context_rule(rule_id)`. It must record
+   exactly the account's own authorization of exactly that call, as for the sample transfer.
+4. Browser and backend validate the draft (`validateRemovalAssembly`) against a removal approval
+   bound to the wallet's owner rule and the installation's account, rule ID and transaction. The
+   browser shows its own consent statement.
+
+`confirm-revoke` repeats those reads, checks the owner's signature and submits once, as
+installation does. A removal refused before submission can be prepared again. Once the fee payer
+has started submitting it, the installation is never offered for removal again. The confirmed
+removal's identity is kept before anything is verified. It is reported `removed` only when both
+of these hold:
+
+- the account emitted exactly one `context_rule_removed` for the rule, with the empty data map the
+  pinned account emits;
+- `get_context_rule` for that ID, simulated from a node at or past the removal's ledger, fails with
+  the account's own contract error 3000 (no such rule).
+
+A rule that still reads back, or any other answer, refuses success. Policy cleanup is reported
+separately, from the policy's installation marker: `not_installed`, `still_installed`, or
+`not_checked`. The pinned account removes a rule's policies on a best effort basis.
 
 ## Report layers
 
@@ -410,13 +530,15 @@ The four report layers are `reference`, `account_wasm`, `captured_target` and
 `live_enforcement`. The UI distinguishes the first three local checks from full acceptance.
 Missing, unsupported, failed, duplicated or mismatched evidence keeps acceptance closed.
 An installation preflight is not counted as behavioral live-enforcement evidence. Backend
-capabilities keep installation signing and lifecycle actions unavailable until their required checks exist.
+capabilities keep installation unavailable until a review's report is complete, and lifecycle
+actions until an installation exists.
 
 The `live_enforcement` layer comes only from the consented [live-enforcement
 check](#live-enforcement-check), and each of its two responses must pass the validators in
 [`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs). The report is
-`complete` only when all four layers passed. Installation stays disabled in this backend whatever
-the report says: the installation flow, with its replay check, is not built yet.
+`complete` only when all four layers passed. A complete report alone does not install anything:
+[installation](#installation) adds its own evidence-age bound, replay check and authority
+recheck.
 
 Authentication with a virtual authenticator is automation evidence. The signature result
 explicitly reports `human_approval_attested: false`; it does not establish a human acceptance
@@ -442,7 +564,10 @@ unchanged. The owner was a virtual authenticator, so this is automation evidence
 and nothing was installed.
 
 Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR
-and signature checks, and the client controller's refusal paths. The apply-script tests cover
+and signature checks, and the client controller's refusal paths. The installation and
+revocation tests drive all four layers with a fake worker and RPC, then the gate, the replay
+obligations, the authority recheck, single submission, and the event and read-back checks
+against receipts in the shapes testnet returns. They are fixture evidence, not a testnet run. The apply-script tests cover
 immutable inputs, dirty/different upstream checkouts, symlinks, missing lock metadata, and
 binary/rename patches that omit ordinary text headers.
 

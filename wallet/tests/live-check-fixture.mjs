@@ -59,7 +59,7 @@ export async function passkeySign({ privateKey, wallet, ownerRuleId, ownerEntryX
  * `entries` the envelope's authorization entries and `P` the identities to build with.
  */
 export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, helperState, policyHash, readiness, nextId = 1, live = { helper: HELPER },
-  liveUntil = START_LEDGER + 100_000, onSimulate = () => {} } = {}) {
+  ledger = START_LEDGER, liveUntil = ledger + 100_000, onSimulate = () => {}, native = null, intentChange = () => {} } = {}) {
   const keys = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
   const publicKey = Buffer.from(await webcrypto.subtle.exportKey('raw', keys.publicKey)).toString('hex');
   const delegates = new CountingCapabilities();
@@ -67,7 +67,8 @@ export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, 
     d.f.wallet.publicKey = publicKey;
     d.f.intent.authority.verdict.authority_list[0].requirement.signers[0].public_key = publicKey;
     d.f.ownerRuleXdr = d.f.ruleXdr();
-  }, { live, delegates });
+    intentChange(d.f.intent);
+  }, { live, delegates, native });
   const delegate = await f.actions['create-delegate']({});
   const grantSigners = [{ kind: 'delegated', address: delegate.address }];
   f.f.intent.delegate_signers = grantSigners;
@@ -83,7 +84,7 @@ export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, 
   const review = await f.actions.review({ deploymentId: deployed.deploymentId, wallet: f.f.wallet });
 
   // `closeTime` (seconds) is the latest ledger's close time; `readLedger` the ledger a lagging node's state read reports.
-  const state = { ledger: START_LEDGER, nextId, count: 1, installed: false, rules: [{ id: 0, xdr: 'owner rule' }], closeTime: null, readLedger: null };
+  const state = { ledger, nextId, count: 1, installed: false, rules: [{ id: 0, xdr: 'owner rule' }], closeTime: null, readLedger: null };
   const simulations = [];
   const records = [];
   const funded = [];
