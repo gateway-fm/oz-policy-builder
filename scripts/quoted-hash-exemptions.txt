@@ -48,6 +48,8 @@ ea7ac2b0a21688bc86dd78a5e531d9b53ef7ce0bed715b0c356aeadf869ed1d2|testnet-tx|owne
 146cd502db654587d1d62d6f1434e74d79c9d95013d2762390885c7dc1cb1b7e|testnet-tx|delegated swap at ledger 5295663, second Soroswap run
 41caba90fbcb5c22a3bca6c445ba250d9e0aa39393d886fee78786744d504def|testnet-tx|owner-authorized transfer-rule (ID 2) removal at ledger 5295825
 a7f56018934690ca6454641d4ebeb69f063241f9d2b8267bb0ff0ce80cc06987|testnet-tx|owner-authorized router-rule (ID 1) removal at ledger 5295829
+9b8bcbaacbb361f968f27c5e2114f7c1664260c688661aac114ca51da535cf7d|testnet-tx|wallet passkey-authorized rule 1 installation at ledger 5331779, 22 October install-and-revoke run
+a6646c5d06f7e17ff3de5b56b4bd01bf114a244cad332e104521515f210148ec|testnet-tx|wallet passkey-authorized rule 1 removal at ledger 5331783, 22 October install-and-revoke run
 
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is

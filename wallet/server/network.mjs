@@ -5,11 +5,17 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
+import { removalCall } from '../shared/revoke.mjs';
+import { ruleReadbackResult } from './install.mjs';
 import { targetEnvelopeXdr } from './captured-execution.mjs';
 import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 
 export const MAX_FEE_STROOPS = 10_000_000;
-export const MAX_UPLOAD_FEE_STROOPS = 100_000_000;
+/**
+ * The code upload's ceiling only: testnet's resource fee for a ~21 KB policy Wasm passed 10 XLM in
+ * October 2026. Every other transaction keeps MAX_FEE_STROOPS.
+ */
+export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
 const refuse = () => { throw new Error('wallet network operation refused; inspect the local journal before retrying'); };
 const bytes = (value) => Buffer.from(value.toXDR());
 const same = (a, b) => a?.toXDR && b?.toXDR && bytes(a).equals(bytes(b));
@@ -106,6 +112,32 @@ export function checkPreparedEnvelope(assembled, expectedBytes) {
   } catch { refuse(); }
 }
 
+/**
+ * `rpc.assembleTransaction`, also for an envelope without time bounds, such as the CLI's unsigned
+ * installation (ledger bounds only): the SDK's builder refuses to build one. For that envelope the
+ * enforced simulation's resources and fee are set on its own XDR, so every other byte, the signed
+ * authorization included, stays as it was; `checkPreparedEnvelope` then compares them.
+ */
+export function assembleTransaction(raw, simulation) {
+  if (raw.timeBounds) return rpc.assembleTransaction(raw, simulation);
+  const success = rpc.parseRawSimulation(simulation);
+  if (!rpc.Api.isSimulationSuccess(success) || !success.transactionData) refuse();
+  const envelope = xdr.TransactionEnvelope.fromXDR(raw.toEnvelope().toXDR());
+  if (envelope.type !== 'envelopeTypeTx') refuse();
+  const tx = envelope.v1.tx;
+  if (tx.operations.length !== 1 || tx.operations[0].body.type !== 'invokeHostFunction'
+    || !tx.operations[0].body.invokeHostFunctionOp.auth.length) refuse();
+  const previous = tx.ext.type === 'sorobanData' ? tx.ext.sorobanData.resourceFee : 0n;
+  const classic = BigInt(tx.fee) - previous > 0n ? BigInt(tx.fee) - previous : BigInt(tx.fee);
+  const data = success.transactionData.build();
+  const fee = classic + data.resourceFee;
+  if (fee > 0xffffffffn) refuse();
+  tx.fee = Number(fee);
+  tx.ext = xdr.TransactionExt.sorobanData(data);
+  const assembled = TransactionBuilder.fromXDR(envelope.toXDR('base64'), raw.networkPassphrase);
+  return { build: () => assembled };
+}
+
 function confirmed(receipt, sent) {
   if (receipt.status !== 'SUCCESS' || !same(receipt.envelopeXdr, sent.toEnvelope())
     || receipt.resultXdr?.result.type !== 'txSuccess' || receipt.feeBump === true) refuse();
@@ -127,19 +159,21 @@ function confirmed(receipt, sent) {
   const observed = ledger(receipt.ledger);
   if (ledger(receipt.latestLedger) < observed || receipt.resultXdr.feeCharged < 0n
     || receipt.resultXdr.feeCharged > BigInt(sent.fee)) refuse();
-  return { returned, events, observed };
+  return { returned, events, observed, feeCharged: receipt.resultXdr.feeCharged.toString() };
 }
 
 /** Trusted backend only. No HTTP route exposes operations, envelopes or this fee payer. */
 export class WalletNetwork {
   #server; #payer = Keypair.random(); #fetch; #journal; #assemble; #pause; #rpcUrl;
   #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #delegatesFunded = new Set();
-  constructor({ rpcUrl, journalRoot, server, fetchImpl = fetch, assemble = rpc.assembleTransaction, pause = sleep }) {
+  constructor({ rpcUrl, journalRoot, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep }) {
     this.#server = server ?? boundedRpcServer(rpcUrl, fetchImpl);
     this.#rpcUrl = rpcUrl;
     this.#fetch = fetchImpl; this.#journal = journalRoot; this.#assemble = assemble; this.#pause = pause;
   }
   get payerAddress() { return this.#payer.publicKey(); }
+  /** Whether a submission could start now: the payer is funded and no earlier result is uncertain. */
+  get canSubmit() { return this.#funded && !this.#ambiguous; }
   async assertTestnet() {
     const network = await this.#server.getNetwork();
     if (network.passphrase !== Networks.TESTNET || !Number.isSafeInteger(network.protocolVersion) || network.protocolVersion < 26) refuse();
@@ -280,7 +314,7 @@ export class WalletNetwork {
         this.#save(serial, 'confirmed', { ...result, stage, envelopeXdr: receipt.envelopeXdr.toXDR('base64'),
           resultXdr: receipt.resultXdr.toXDR('base64'), resultMetaXdr: receipt.resultMetaXdr.toXDR('base64') });
         this.#ambiguous = false;
-        return { ...result, returnValue: checked.returned, events: checked.events };
+        return { ...result, feeChargedStroops: checked.feeCharged, returnValue: checked.returned, events: checked.events };
       }
       refuse();
     } catch { refuse(); }
@@ -516,6 +550,72 @@ export class WalletNetwork {
   /** The live check's replay obligation, kept in the session journal: public addresses, ledgers and reads only. */
   recordLiveObligation(record) {
     this.#save(++this.#serial, 'live-check', record);
+  }
+  /** The same obligation for an unsigned installation entry released to the browser for the passkey. */
+  recordInstallObligation(record) {
+    this.#save(++this.#serial, 'install-release', record);
+  }
+  /**
+   * The owner's unsigned `remove_context_rule(ruleId)` for `wallet`, drafted as the sample transfer
+   * is: the fee payer's record-mode simulation must record exactly the account's own authorization of
+   * exactly that call. Nothing is signed or sent.
+   */
+  async prepareRemoval({ wallet, ruleId, ownerReadLedger }) {
+    try {
+      if (!this.#funded || this.#ambiguous || !StrKey.isValidContract(wallet?.contractId)) refuse();
+      await this.assertTestnet();
+      const captured = await this.sourceCapture();
+      if (captured.ledger < ledger(ownerReadLedger) || captured.ledger - ownerReadLedger > 12) refuse();
+      const maximum = ledger(captured.ledger + 120);
+      const call = removalCall(wallet.contractId, ruleId);
+      const tx = new TransactionBuilder(new Account(this.payerAddress, captured.sourceSequence),
+        { fee: '1000000', networkPassphrase: Networks.TESTNET })
+        .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [] }))
+        .setLedgerbounds(captured.ledger, maximum).setTimeout(0).build();
+      const simulation = await this.#server.simulateTransaction(tx, undefined, 'record');
+      if (rpc.Api.isSimulationError(simulation) || simulation.restorePreamble || !simulation.result
+        || simulation.result.retval?.type !== 'scvVoid' || simulation.result.auth?.length !== 1
+        || ledger(simulation.latestLedger) < captured.ledger) refuse();
+      const entry = xdr.SorobanAuthorizationEntry.fromXDR(simulation.result.auth[0].toXDR());
+      const credentials = directAddressCredentials(entry.credentials);
+      if (Address.fromScAddress(credentials.address).toString() !== wallet.contractId || credentials.signature.type !== 'scvVoid'
+        || entry.rootInvocation.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
+        || !same(entry.rootInvocation.function.contractFn, call) || entry.rootInvocation.subInvocations.length) refuse();
+      credentials.signatureExpirationLedger = maximum - 1;
+      const envelope = tx.toEnvelope();
+      envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
+      const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
+      const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
+      checkPreparedEnvelope(assembled, bytes(envelope));
+      const final = assembled.toEnvelope();
+      const restored = final.v1.tx.ext.sorobanData.ext;
+      return { assembly: {
+        envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: NETWORK_ID,
+        fee_payer: this.payerAddress, source_sequence: captured.sourceSequence, fee_stroops: final.v1.tx.fee,
+        sequence_read_ledger: captured.ledger, simulation_ledger: simulation.latestLedger, min_ledger: captured.ledger, max_ledger: maximum,
+        restoration: restored.type === 'resourceExt' && restored.resourceExt.archivedSorobanEntries.length
+          ? 'automatic_within_invocation' : 'none',
+        simulation_auth_mode: 'record', evidence_trust: 'rpc_reported', state_dependent: true, writes_committed: false,
+      }, limits: { feePayer: this.payerAddress, sourceSequence: captured.sourceSequence, currentLedger: await this.latestLedger(),
+        ownerReadLedger, maxFeeStroops: MAX_FEE_STROOPS, validityLedgers: 120 } };
+    } catch { refuse(); }
+  }
+  /**
+   * `account.get_context_rule(ruleId)` in one enforce-mode simulation from the fee payer, judged from
+   * the raw response (`ruleReadbackResult`): `present` with the rule, or `absent` only on the
+   * account's own contract error 3000. Nothing is signed or sent.
+   */
+  async ruleReadback(account, ruleId) {
+    try {
+      if (!StrKey.isValidContract(account) || !Number.isSafeInteger(ruleId) || ruleId < 0 || ruleId > 0xffffffff) refuse();
+      await this.assertTestnet();
+      const source = await this.source();
+      const envelope = new TransactionBuilder(new Account(source.accountId(), source.sequenceNumber()),
+        { fee: '100', networkPassphrase: Networks.TESTNET })
+        .addOperation(Operation.invokeContractFunction({ contract: account, function: 'get_context_rule', args: [xdr.ScVal.scvU32(ruleId)] }))
+        .setTimeout(0).build().toEnvelope().toXDR('base64');
+      return ruleReadbackResult(await this.simulateRaw(envelope), { account });
+    } catch { refuse(); }
   }
   async requireInstance(contractId, wasmHash) {
     if (!StrKey.isValidContract(contractId)) refuse();

@@ -10,6 +10,8 @@ PATCH_PATHS = {"src/lib/passkey.ts", "src/components/Header.tsx", "vite.config.t
 REQUIRED = {"wallet/package.json", "wallet/package-lock.json", "wallet/overlay/upstream.patch",
             "wallet/overlay/UPSTREAM.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE"}
 FILE = re.compile(r"[A-Za-z0-9_-]+\.(?:mjs|d\.mts|ts|tsx|css)$")
+# The upstream bridge test only: its `.test` suffix is the one dot allowed in a file stem.
+TEST_FILE = re.compile(r"policy-builder-[A-Za-z0-9_-]+\.test\.ts$")
 
 
 class Refused(Exception):
@@ -40,7 +42,8 @@ def destination(path):
         parts = PurePosixPath(relative).parts
         if (relative == "src/routes/policy-builder.tsx"
                 or (len(parts) == 4 and parts[:3] == ("src", "policy-builder", "client") and FILE.fullmatch(parts[-1]))
-                or (relative.startswith("src/lib/__tests__/policy-builder") and len(parts) == 4 and FILE.fullmatch(parts[-1]))):
+                or (relative.startswith("src/lib/__tests__/policy-builder") and len(parts) == 4
+                    and (FILE.fullmatch(parts[-1]) or TEST_FILE.fullmatch(parts[-1])))):
             return relative
     return None
 

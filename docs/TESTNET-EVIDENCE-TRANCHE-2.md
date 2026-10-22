@@ -260,7 +260,41 @@ The same limits apply as for the first run: fixed harness widenings, no reviewed
 editable local RPC observations, non-atomic reads, no ledger proof and no protected
 wallet-approval claim.
 
-## 10. Evidence still needed
+## 10. Wallet installation and revocation, 22 October 2026
+
+One automation run went through the Pollywallet route's
+[installation](POLLYWALLET-INTEGRATION.md#installation) and
+[revocation](POLLYWALLET-INTEGRATION.md#revocation) on testnet. It used a fresh account
+`CAS6KU6W2MO57MVR7BMY4OE7P4STCXDMSSNRABDB2Z3GEZ6OL3QUPXGE` and a one-call grant for the fixed 0.1-XLM
+sample transfer. The [evidence file](evidence/wallet-install-revoke-testnet-2026-10-22.json) keeps
+public addresses, hashes, ledgers and verdicts only.
+
+| Step | Recorded observation | Limit |
+| --- | --- | --- |
+| Four layers | Reference, account-Wasm, captured-target (captured at ledger 5331737) and live enforcement (simulated at 5331741, signatures valid until 5331770) all passed; the report was complete. | State-dependent evidence for one grant shape; the native worker was built from another revision (stated in the file). |
+| Replay check | `waiting` until ledger 5331770, then `unchanged` at 5331772. | The account's counters, rules and the candidate's marker, as the operator RPC reported them. |
+| Installation | The browser showed its own consent (rule ID 1, fee at most 1 testnet XLM). The owner's passkey signed `add_context_rule`, and the fee payer submitted it once: [`9b8bcbaa…`](https://stellar.expert/explorer/testnet/tx/9b8bcbaacbb361f968f27c5e2114f7c1664260c688661aac114ca51da535cf7d), ledger 5331779. The record required exactly one `context_rule_added` for rule 1. The rule read back identical at 5331779, and the policy's marker was set. | The passkey was a Chrome virtual authenticator driven by Playwright: automation, `human_approval_attested: false`. |
+| Revocation | The owner's passkey signed `remove_context_rule(1)`: [`a6646c5d…`](https://stellar.expert/explorer/testnet/tx/a6646c5d06f7e17ff3de5b56b4bd01bf114a244cad332e104521515f210148ec), ledger 5331783. One `context_rule_removed` was observed, and `get_context_rule(1)` failed with the account's error 3000 at 5331783. Policy cleanup reported `not_installed`. | Receipts, events and reads are `rpc_reported`, not ledger proofs. |
+
+Read afterwards from the public RPC, outside the wallet, both transactions were `SUCCESS`. The
+account's `NextId` was 2 and its `Count` 1 at ledger 5331788. No delegated call was made under the
+installed rule: the delegate's key exists only inside the wallet backend, which has no
+delegate-call control. Delegated permits and denials under installed generated policies are
+exercised by the harness walkthroughs ([#85](https://github.com/gateway-fm/oz-policy-builder/pull/85),
+[#88](https://github.com/gateway-fm/oz-policy-builder/pull/88)).
+
+Four attempts the same day stopped earlier:
+
+- The first stopped at deployment, because the policy upload's fee was 101,422,794 stroops, above
+  the then 10-XLM upload ceiling, which is now 15 XLM.
+- The second stopped at preparing the installation, when the CLI's assembly exited with an error
+  the backend does not keep. The same request succeeded when re-run.
+- The third and fourth stopped when another local service took the wildcard port 3000 from under
+  the browser.
+
+Each earlier account read back with its owner rule only (`NextId` 1): nothing was installed.
+
+## 11. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -268,7 +302,8 @@ separate cleanup checks; the known reference-model gap remains explicit. Section
 two-rule Soroswap swap runs with expiry and per-rule removal; the second includes denials by the
 transfer rule's own policy.
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, the Blend
+Phase 2 still needs a human owner's protected approval in the wallet's install and revoke flow
+(section 10 is an automation run), the Blend
 walkthrough (its position setup is not implemented), a reviewed Soroswap adapter rather than fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
 hosted-service deployment evidence, and the public demonstration/video. The controlled W2 and
 W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.
