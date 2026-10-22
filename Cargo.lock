@@ -1363,6 +1363,7 @@ name = "ozpb-toolkit"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ed25519-dalek",
  "hex",
  "ozpb-api-types",
  "ozpb-build-runner",

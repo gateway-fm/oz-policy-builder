@@ -64,3 +64,39 @@ meaning or complete the captured-target and live-enforcement layers. The worker'
 reports `captured_target` as unavailable. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md)
 is a tested building block for the live layer only, limited to generated policies with a call
 cap; `live_enforcement` stays `unavailable`.
+
+## Executed layers and acceptance
+
+A coordinator that runs the runtime layers returns the same report type with two additions that
+a preparation never carries: an `execution` block on each layer it executed, and an
+`acceptance` block. The pure assembler in `ozpb_toolkit::dry_run_report` builds that report from
+the preparation, the worker's raw reports and exit statuses, and identities it derives itself.
+
+- **Bindings.** Before any case is read, the worker's offline binding (run, job, suite and
+  initialization hashes, source network and ledger, account, delegate), its execution network,
+  account and policy code identities and proposed rule ID must equal the preparation's and the
+  locally derived ones. The account-Wasm job and initialization hashes and the execution network
+  ID are derived without the worker. A report from another run is `failed` with
+  `worker_binding_mismatch`, and none of its cases is accepted.
+- **Agreement.** Each case's expectation is the preparation's reference expectation, not the
+  worker's. A permitted case agrees only when the expectation is permit, nothing was attributed
+  as a refusal and any counter advanced by exactly one. A denial agrees only when the refusal is
+  the error its class predicts, raised by the contract that owns that error (`account` or
+  `policy`), with local state and counter unchanged. The worker's own `agree` and `passed` are
+  necessary, never sufficient. Controls and, for a capped rule, the call-cap sequence must pass.
+- **Exit status.** A nonzero worker exit or a signal fails the layer even with a passing report.
+  A run the coordinator stopped (deadline, output bound, refused frame or signature request) is
+  `failed` with that reason and no evidence.
+- **Missing layers stay missing.** A layer that did not run keeps `unavailable` or
+  `unsupported`; what a preparation says about the runtime layers is ignored. Outside the
+  wallet, `live_enforcement` is always `unavailable` with reason
+  `wallet_owner_consent_required`, and `complete` stays `false`.
+
+`acceptance` counts only executed layers that passed. For each executed layer it records whether
+the original call was permitted and how many derived denials reverted: refused with the
+predicted error from the predicted contract, with state unchanged. `meets_minimum` holds when
+the reference layer passed, at least one layer executed, every executed layer passed and
+permitted the original, and one executed layer reverted at least `required_reverted_denials`
+(five) derived denials. The captured-target layer has two denials, so it never meets the bar
+alone. `meets_minimum` is a statement about the executed cases only, never about untested inputs,
+live behavior or installation safety.

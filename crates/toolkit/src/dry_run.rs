@@ -142,6 +142,7 @@ pub fn prepare_dry_run_with_build_config(
                 cases: reference.total,
                 state_dependent: false,
                 writes_committed: false,
+                execution: None,
             },
             unavailable(Layer::AccountWasm, "account_execution_backend_unavailable"),
             unavailable(
@@ -154,6 +155,7 @@ pub fn prepare_dry_run_with_build_config(
             ),
         ],
         complete: false,
+        acceptance: None,
         disclaimer: "Constraint-derived evidence is not proof about untested inputs. \
                      Runtime layers have not executed. This report does not authorize \
                      installation, establish ownership, or claim current deployed code."
@@ -175,5 +177,6 @@ fn unavailable(id: Layer, reason: &str) -> DryRunLayer {
         cases: 0,
         state_dependent: id == Layer::LiveEnforcement,
         writes_committed: false,
+        execution: None,
     }
 }

@@ -29,6 +29,7 @@ pub use verification::{reference_suite, verify_with_build_config};
 mod dry_run;
 pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
+pub mod dry_run_report;
 #[cfg(test)]
 mod dry_run_tests;
 pub use authority_text::render_authority_text;
