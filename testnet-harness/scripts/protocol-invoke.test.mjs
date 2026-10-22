@@ -4,6 +4,7 @@ import { Address, Keypair, StrKey, scValToNative, xdr } from '@stellar/stellar-s
 import { invokeProtocol } from './protocol-invoke.mjs';
 import { protocolInvocation, PROTOCOL_TARGETS } from './protocol-calls.mjs';
 import { i128 } from './lib.mjs';
+import { BLEND_FEE_CEILING } from './blend-preflight.mjs';
 import { NETWORK_PASSPHRASE, PINNED_ACCOUNT_WASM } from './rpc.mjs';
 const C = (n) => StrKey.encodeContract(Buffer.alloc(32, n));
 function fixture(kind = 'soroswap_swap') {
@@ -52,9 +53,10 @@ function fixture(kind = 'soroswap_swap') {
       await options.onSubmitting('bb'.repeat(32));
       assert.equal(saved.at(-1).walkthrough.invocations.at(-1).transaction, 'bb'.repeat(32));
       sends.push(op);
+      controls.fees = [...(controls.fees ?? []), options.maxFee];
       if (controls.ambiguous) throw new Error('send unconfirmed');
       return { hash: 'bb'.repeat(32), receipt: { ledger: 101 },
-        returnValue: kind === 'blend_claim' ? i128(150000) : xdr.ScVal.scvVec([i128(1000000), i128(150000)]) };
+        returnValue: kind === 'blend_claim' ? i128(controls.zeroOutput ? 0 : 150000) : xdr.ScVal.scvVec([i128(1000000), i128(150000)]) };
     },
   };
   const execute = ({ deny, ...options } = {}) => {
@@ -181,5 +183,35 @@ test('a delegate call refuses a key that is not the run delegate', async () => {
   const f = fixture(); f.controls.wrongDelegate = true;
   await assert.rejects(f.execute(), /delegate key/);
   assert.equal(f.run.walkthrough.invocations[0].status, 'started');
+  assert.equal(f.sends.length, 0);
+});
+
+test('a delegated Blend claim that pays zero BLND fails the run instead of counting as the positive', async () => {
+  const f = fixture('blend_claim'); f.controls.zeroOutput = true;
+  await assert.rejects(f.execute({ name: 'delegate_claim', mode: 'execute', expected: undefined }), /no nonzero amount/);
+  assert.equal(f.sends.length, 1);
+  const observed = f.run.walkthrough.invocations[0];
+  assert.equal(observed.signer, 'delegate');
+  assert.equal(observed.status, 'confirmed_unverified');
+  assert.equal(observed.returned_amount, undefined);
+});
+
+test('a Blend claim names the Blend fee ceiling; a swap keeps the default', async () => {
+  for (const [kind, fee] of [['blend_claim', BLEND_FEE_CEILING], ['soroswap_swap', undefined]]) {
+    const f = fixture(kind);
+    await f.execute({ name: 'owner', signer: 'owner', mode: 'execute', expected: undefined });
+    assert.deepEqual(f.controls.fees, [fee]);
+  }
+});
+
+test('the foreign-recipient claim control names a contract, which needs no BLND trustline to be recorded', async () => {
+  const f = fixture('blend_claim');
+  const result = await f.execute({ name: 'claim_recipient', control: 'claim_recipient' });
+  assert.equal(result.status, 'verified_denial');
+  const call = f.simulated[0].body.invokeHostFunctionOp.hostFunction.invokeContract;
+  const recipient = scValToNative(call.args[2]);
+  assert.ok(StrKey.isValidContract(recipient), 'a classic account without a trustline would fail the recording first');
+  assert.notEqual(recipient, f.run.account);
+  assert.notEqual(recipient, f.run.payer);
   assert.equal(f.sends.length, 0);
 });

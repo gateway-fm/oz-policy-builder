@@ -8,7 +8,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { addContextRuleArgs, contractCall } from './lib.mjs';
-import { removalEvent, revokePolicy } from './lifecycle.mjs';
+import { lifecycleMain, removalEvent, revokePolicy } from './lifecycle.mjs';
+import { childDeadline } from './failure-cleanup.mjs';
 import { monitorGrant } from './monitor.mjs';
 import { PINNED_ACCOUNT_WASM, SimulationError } from './rpc.mjs';
 import { composedPolicies, SPENDING_LIMIT_WASM } from './subscription.mjs';
@@ -98,9 +99,11 @@ function fixture(t, mode = '') {
   if (mode === 'changed rule') fields.valid_until = xdr.ScVal.scvU32(1);
   const liveRule = xdr.ScVal.scvMap(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))
     .map(([name, value]) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(name), val: value })));
-  let sent = 0; let keyLoads = 0;
+  let sent = 0; let keyLoads = 0; let removed = false;
+  const staleReads = [];
   const done = receipt(mode === 'missing event' ? [] : [event()]);
   const deps = {
+    transactionOutcome: async () => ({ status: 'NOT_FOUND', after_window: false }),
     assertTestnet: async () => {}, latestLedger: async () => 500,
     contractCodeHash: async (address) => address === account ? (mode === 'changed code' ? hash : PINNED_ACCOUNT_WASM) : hash,
     contractCodeObservation: async (address) => ({
@@ -108,12 +111,22 @@ function fixture(t, mode = '') {
         : address === spending ? (mode === 'subscription wrong code' ? hash : SPENDING_LIMIT_WASM) : hash,
       ledger: address === account ? 497 : 498,
     }),
-    viewCallObservation: async (_payer, _address, fn) => ({ value: fn === 'get_spending_limit_data'
-      ? nativeToScVal({ spending_limit: 100n, period_ledgers: mode === 'subscription wrong params' ? 13 : 12 },
-        { type: { spending_limit: ['symbol', 'i128'], period_ledgers: ['symbol', 'u32'] } }) : liveRule, ledger: 499 }),
+    delay: async () => {},
+    viewCallObservation: async (payer, address, fn, args) => {
+      // Before the removal, and for any stale read after it, the endpoint answers from ledger 499
+      // with the state before the removal; the removal itself is at ledger 500.
+      if (!removed || staleReads.length && staleReads.shift()) {
+        return { value: fn === 'get_spending_limit_data'
+          ? nativeToScVal({ spending_limit: 100n, period_ledgers: mode === 'subscription wrong params' ? 13 : 12 },
+            { type: { spending_limit: ['symbol', 'i128'], period_ledgers: ['symbol', 'u32'] } })
+          : fn === 'is_installed' ? xdr.ScVal.scvBool(true) : liveRule, ledger: 499 };
+      }
+      try { return { value: await deps.viewCall(payer, address, fn, args), ledger: 501 }; }
+      catch (error) { if (error instanceof SimulationError) error.ledger = 501; throw error; }
+    },
     loadKey: () => { keyLoads++; return key; }, ownerSigner: async () => key,
     viewCall: async (_payer, address, fn) => {
-      if (fn === 'get_context_rule' && sent === 0) return liveRule;
+      if (fn === 'get_context_rule' && !removed) return liveRule;
       if (fn === 'get_context_rule') {
         if (mode === 'rule remains') return liveRule;
         throw new SimulationError(fn, `contract:${account}, topics:[error, Error(Contract, #3000)], data:["failing with contract error", 3000]`);
@@ -135,13 +148,15 @@ function fixture(t, mode = '') {
     })],
     submit: async (_payer, op) => {
       sent++;
+      removed = true;
       assert.equal(asHex(op.body.invokeHostFunctionOp.hostFunction), asHex(Operation.invokeContractFunction({
         contract: account, function: 'remove_context_rule', args: [xdr.ScVal.scvU32(ruleId)],
       }).body.invokeHostFunctionOp.hostFunction));
       return { hash: done.txHash, returnValue: xdr.ScVal.scvVoid(), receipt: done };
     },
   };
-  return { dir, deps, done, sent: () => sent, keyLoads: () => keyLoads,
+  return { dir, deps, done, sent: () => sent, keyLoads: () => keyLoads, markRemoved: () => { removed = true; },
+    stale: (...reads) => staleReads.push(...reads),
     state: () => JSON.parse(readFileSync(join(dir, 'run.json'))) };
 }
 
@@ -239,4 +254,108 @@ test('failure cleanup refuses a changed run snapshot before loading owner keys',
   await assert.rejects(revokePolicy(f.dir, { ...f.deps, expectedRunHash: '00'.repeat(32) }), /cleanup run snapshot/);
   assert.equal(f.keyLoads(), 0);
   assert.equal(f.sent(), 0);
+});
+
+const missing = (fn) => new SimulationError(fn, `contract:${account}, topics:[error, Error(Contract, #3000)], data:["failing with contract error", 3000]`);
+function withPending(f, pending, extra = {}) {
+  const state = f.state();
+  state.lifecycle = { removals: [], pending_removal: { rule_id: ruleId, status: 'prepared_for_submission', ...pending }, ...extra };
+  writeFileSync(join(f.dir, 'run.json'), JSON.stringify(state));
+}
+test('a W2 removal that landed is reconciled from its hash, verified, and never sent again', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: f.done.txHash, max_time: 1 });
+  f.deps.transactionOutcome = async () => f.done;
+  f.markRemoved();
+  const removal = await revokePolicy(f.dir, f.deps);
+  assert.equal(f.sent(), 0);
+  assert.deepEqual([removal.transaction, removal.confirmation, removal.event, removal.rule_readback, removal.policy_cleanup],
+    [f.done.txHash, 'reconciled', 'verified', 'absent', 'not_installed']);
+  assert.equal(f.state().lifecycle.pending_removal, undefined);
+});
+test('a W2 removal that failed is kept by hash and replaced once by a fresh removal', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: 'cd'.repeat(32), max_time: 1 });
+  f.deps.transactionOutcome = async () => ({ status: 'FAILED' });
+  const removal = await revokePolicy(f.dir, f.deps);
+  assert.equal(f.sent(), 1);
+  assert.equal(removal.transaction, f.done.txHash);
+  assert.deepEqual(f.state().lifecycle.failed_removals, [{ rule_id: ruleId, transaction: 'cd'.repeat(32), status: 'failed' }]);
+});
+test('a W2 removal is rebuilt at most once after removals that did not land', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: 'cd'.repeat(32), max_time: 1 },
+    { failed_removals: [{ rule_id: ruleId, transaction: 'ce'.repeat(32), status: 'failed' }] });
+  f.deps.transactionOutcome = async () => ({ status: 'FAILED' });
+  await assert.rejects(revokePolicy(f.dir, f.deps), /already tried/);
+  assert.equal(f.sent(), 0);
+});
+test('a W2 prepared removal journals its validity window before send', async (t) => {
+  const f = fixture(t);
+  f.deps.submit = async (_payer, _op, { onSubmitting }) => {
+    await onSubmitting(hash, { max_time: 4242 });
+    throw new Error('confirmation unavailable');
+  };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /confirmation unavailable/);
+  assert.equal(f.state().lifecycle.pending_removal.max_time, 4242);
+});
+
+test('a W2 pending removal is classified only after the network is confirmed to be testnet', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: 'cd'.repeat(32), max_time: 1 });
+  let classified = 0;
+  f.deps.transactionOutcome = async () => { classified++; return { status: 'FAILED' }; };
+  f.deps.assertTestnet = async () => { throw new Error('not testnet'); };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /not testnet/);
+  assert.equal(classified, 0);
+  assert.equal(f.sent(), 0);
+});
+test('after two W2 removals that did not land, no further removal is prepared, even on a later rerun', async (t) => {
+  const f = fixture(t);
+  const state = f.state();
+  state.lifecycle = { removals: [], failed_removals: [{ rule_id: ruleId, transaction: 'ce'.repeat(32), status: 'failed' },
+    { rule_id: ruleId, transaction: 'cf'.repeat(32), status: 'failed' }] };
+  writeFileSync(join(f.dir, 'run.json'), JSON.stringify(state));
+  await assert.rejects(revokePolicy(f.dir, f.deps), /failed twice/);
+  assert.equal(f.sent(), 0);
+});
+test('W2 removal readbacks count only at or after the removal ledger; a stale one is retried, never recorded', async (t) => {
+  const f = fixture(t);
+  f.stale(true, true);
+  const removal = await revokePolicy(f.dir, f.deps);
+  assert.deepEqual([removal.rule_readback, removal.policy_cleanup], ['absent', 'not_installed']);
+  const g = fixture(t);
+  g.stale(...new Array(50).fill(true));
+  await assert.rejects(revokePolicy(g.dir, g.deps), /confirmed ledger/);
+  assert.equal(g.state().lifecycle.removals[0].rule_readback, 'not_checked');
+});
+
+test('W2 cleanup budgets reconciliation against its deadline and prepares no removal it cannot finish', async (t) => {
+  const f = fixture(t);
+  withPending(f, { transaction: 'cd'.repeat(32), max_time: 1 });
+  let budget;
+  f.deps.transactionOutcome = async (_hash, _max, options = {}) => { budget = options.budgetMs; return { status: 'FAILED' }; };
+  await assert.rejects(revokePolicy(f.dir, { ...f.deps, deadline: 200_000, now: () => 0 }), /too little time/);
+  assert.equal(budget, 0);
+  assert.equal(f.sent(), 0);
+});
+
+test('the lifecycle entry point passes the child deadline and the snapshot to the removal', async () => {
+  let seen;
+  await lifecycleMain(['--run-dir', '/controlled', '--expected-run-sha256', 'ab'.repeat(32)],
+    { revoke: async (dir, options) => { seen = { dir, ...options }; return {}; }, now: () => 5_000 });
+  assert.deepEqual(seen, { dir: '/controlled', expectedRunHash: 'ab'.repeat(32), deadline: childDeadline(5_000) });
+});
+test('a W2 prepared removal journals the ledger before which it cannot land, and reconciliation uses it', async (t) => {
+  const f = fixture(t);
+  f.deps.submit = async (_payer, _op, { onSubmitting }) => {
+    await onSubmitting(hash, { max_time: 4242, min_ledger: 77 });
+    throw new Error('confirmation unavailable');
+  };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /confirmation unavailable/);
+  assert.equal(f.state().lifecycle.pending_removal.min_ledger, 77);
+  let options;
+  f.deps.transactionOutcome = async (_h, _m, o) => { options = o; return { status: 'NOT_FOUND', after_window: false }; };
+  await assert.rejects(revokePolicy(f.dir, f.deps), /pending/);
+  assert.equal(options.minLedger, 77);
 });

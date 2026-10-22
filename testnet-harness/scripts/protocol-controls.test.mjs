@@ -60,6 +60,9 @@ test('W1 controls wait for accrual before the one delegated claim and keep its o
   assert.deepEqual(f.calls.map((call) => call.name), ['reserve_ids', 'claim_recipient', 'pool_function',
     'wrong_signer', 'zero_signers', 'delegate_claim', 'count_cap', 'expired_rule', 'cleanup', 'post_revocation']);
   assert.deepEqual(expected(f, 'reserve_ids'), { enforcer: C(2), code: 6 });
+  assert.deepEqual(expected(f, 'claim_recipient'), { enforcer: C(2), code: 6 });
+  // Another pool function is refused before any argument is compared: FunctionNotAllowed.
+  assert.deepEqual(expected(f, 'pool_function'), { enforcer: C(2), code: 5 });
   assert.equal(f.calls.find((call) => call.name === 'delegate_claim').mode, 'execute');
   const steps = f.run.walkthrough.controls.steps.map((step) => step.name);
   assert.ok(steps.indexOf('accrual_wait') < steps.indexOf('delegate_claim'));

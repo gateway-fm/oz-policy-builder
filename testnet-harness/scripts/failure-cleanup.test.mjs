@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Networks, StrKey } from '@stellar/stellar-sdk';
-import { cleanupAfterFailure, runCleanupChild } from './failure-cleanup.mjs';
+import { CLEANUP_CHILD_DEADLINE_MS, childDeadline, cleanupAfterFailure, runCleanupChild } from './failure-cleanup.mjs';
 import { PINNED_ACCOUNT_WASM } from './rpc.mjs';
 
 const C = (n) => StrKey.encodeContract(Buffer.alloc(32, n));
@@ -61,7 +61,7 @@ test('a directory in place of the journal leaves cleanup incomplete', async (t) 
   const result = await cleanupAfterFailure(f.dir, { runRevoke: () => assert.fail('must not revoke') });
   assert.deepEqual(result, { status: 'incomplete', reason: 'unreadable_journal' });
 });
-for (const mode of ['owner rule', 'missing installation', 'pending removal', 'confirmed removal', 'attempted cleanup']) {
+for (const mode of ['owner rule', 'missing installation', 'confirmed removal', 'attempted cleanup']) {
   test(`failure cleanup never retries or invents authority: ${mode}`, async (t) => {
     const f = fixture(t);
     if (mode === 'owner rule') f.run.rule_id = 0;
@@ -80,7 +80,7 @@ test('cleanup child has a fixed whole-process-group deadline', async () => {
   const pending = runCleanupChild('/run', {
     expectedRunHash: 'ab'.repeat(32),
     spawnProcess: (_cmd, _args, opts) => { options = opts; return child; },
-    setTimer: (fn, ms) => { assert.equal(ms, 180_000); deadline = fn; return 1; },
+    setTimer: (fn, ms) => { assert.equal(ms, 600_000); deadline = fn; return 1; },
     clearTimer: () => {}, killGroup: (pid) => { killed = pid; child.emit('close', null, 'SIGKILL'); },
   });
   deadline();
@@ -98,7 +98,7 @@ test('cleanup deadline waits for child close before permitting journal reconcili
     setTimer: (fn, ms) => { timers.set(ms, fn); return ms; },
     clearTimer: () => {}, killGroup: (pid) => { killed = pid; },
   }).then((result) => { resolved = true; return result; });
-  timers.get(180_000)();
+  timers.get(600_000)();
   await Promise.resolve();
   assert.equal(killed, 123);
   assert.equal(resolved, false, 'a requested SIGKILL is not a reaped child');
@@ -113,7 +113,7 @@ for (const mode of ['kill fails', 'close never arrives']) {
       spawnProcess: () => child, setTimer: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimer: () => {},
       killGroup: () => { if (mode === 'kill fails') throw new Error('permission denied'); },
     });
-    timers.get(180_000)();
+    timers.get(600_000)();
     assert.ok(timers.has(5000), 'termination grace is fixed and bounded');
     timers.get(5000)();
     assert.deepEqual(await pending, { status: 'termination_unconfirmed' });
@@ -129,3 +129,43 @@ for (const mode of ['kill fails', 'close never arrives']) {
     assert.match(marker.expected_run_sha256, /^[0-9a-f]{64}$/);
   });
 }
+
+test('the cleanup child writes its output to a new private cleanup-child.log, never over an existing file', async (t) => {
+  const { mkdtempSync: mk, rmSync: rm, statSync, writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+  const { tmpdir: td } = await import('node:os');
+  const { join: j } = await import('node:path');
+  const dir = mk(j(td(), 'ozpb-child-log-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const start = () => {
+    const child = new EventEmitter(); child.pid = 5;
+    let options;
+    const done = runCleanupChild(dir, { expectedRunHash: 'ab'.repeat(32), spawnProcess: (_c, _a, o) => { options = o; return child; },
+      setTimer: () => 1, clearTimer: () => {} });
+    child.emit('close', 0);
+    return done.then((result) => ({ result, options }));
+  };
+  const first = await start();
+  assert.deepEqual(first.result, { status: 'exited', code: 0 });
+  assert.equal(first.options.stdio[0], 'ignore');
+  assert.ok(Number.isInteger(first.options.stdio[1]) && first.options.stdio[1] === first.options.stdio[2]);
+  assert.equal(statSync(j(dir, 'cleanup-child.log')).mode & 0o777, 0o600);
+  wf(j(dir, 'cleanup-child.log'), 'earlier output');
+  const second = await start();
+  assert.equal(second.options.stdio, 'ignore', 'an existing log is never reopened or truncated');
+  assert.equal(rf(j(dir, 'cleanup-child.log'), 'utf8'), 'earlier output');
+});
+
+test('a pending removal reaches the cleanup child, which reconciles it by hash instead of resending', async (t) => {
+  const f = fixture(t);
+  f.run.lifecycle = { pending_removal: { rule_id: 7, transaction: 'ef'.repeat(32) } };
+  f.save();
+  let called = 0;
+  const result = await cleanupAfterFailure(f.dir, { runRevoke: async () => { called++; return { status: 'exited', code: 1 }; } });
+  assert.equal(called, 1);
+  assert.equal(result.status, 'incomplete');
+});
+
+test('the child stops itself 30 seconds before the parent kills it', () => {
+  assert.equal(childDeadline(1_000), 1_000 + CLEANUP_CHILD_DEADLINE_MS - 30_000);
+  assert.ok(childDeadline(1_000) < 1_000 + CLEANUP_CHILD_DEADLINE_MS);
+});

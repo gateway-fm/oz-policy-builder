@@ -11,6 +11,7 @@ import { ownerSigner } from './owner.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import { composedPolicies, subscriptionConfig } from './subscription.mjs';
 import * as rpc from './rpc.mjs';
+import { childDeadline } from './failure-cleanup.mjs';
 
 const same = (actual, expected, what) => assert.deepEqual(actual, expected, `unexpected ${what}`);
 const requireThat = (condition, text) => { if (!condition) throw new Error(text); };
@@ -119,7 +120,9 @@ function contractError(error, contract, code) {
 }
 
 export async function revokePolicy(dir, overrides = {}) {
-  const deps = { ...rpc, ownerSigner, ...overrides };
+  const deps = { ...rpc, ownerSigner, now: () => Date.now(), ...overrides };
+  // As the failure-cleanup child, `deadline` (epoch ms) is just before the parent's kill.
+  const remaining = () => (deps.deadline ?? Infinity) - deps.now();
   // `dir` is the run directory `run.sh` created, or one its operator names on the command
   // line; no server or remote request reaches this function. The basename is fixed to that
   // run's own journal, whose digest can pin the revoke to the exact snapshot.
@@ -136,8 +139,40 @@ export async function revokePolicy(dir, overrides = {}) {
   const spec = parseJsonExact(readFileSync(join(dir, 'spec.json'), 'utf8'));
   requireThat(run.lifecycle === undefined || (run.lifecycle && Array.isArray(run.lifecycle.removals)), 'malformed lifecycle journal');
   const previous = run.lifecycle?.removals ?? [];
-  requireThat(run.lifecycle?.pending_removal === undefined, 'a pending removal is already recorded; inspect it before retrying');
   requireThat(!previous.some((r) => r.rule_id === run.rule_id), 'a removal for this rule is already recorded; inspect it before retrying');
+  // A prepared removal is never sent again. Its hash decides: landed, it is verified like any
+  // confirmed removal; definitively not landed (failed, or unseen after its validity window), it
+  // is kept by hash and one fresh removal may follow; otherwise the run stays incomplete.
+  const prepared = run.lifecycle?.pending_removal;
+  if (prepared !== undefined) {
+    requireThat(prepared.rule_id === run.rule_id && /^[0-9a-f]{64}$/.test(prepared.transaction ?? ''), 'malformed pending removal');
+    await deps.assertTestnet();
+    const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null,
+      { budgetMs: Math.max(0, Math.min(rpc.OUTCOME_POLL_BUDGET_MS, remaining() - rpc.REMOVAL_RESERVE_MS)),
+        minLedger: prepared.min_ledger ?? null });
+    if (outcome?.status === 'SUCCESS') {
+      const removal = { rule_id: run.rule_id, transaction: prepared.transaction,
+        ledger: Number.isSafeInteger(outcome.ledger) ? outcome.ledger : null, event: 'not_verified', rule_readback: 'not_checked',
+        policy_cleanup: 'not_checked', confirmation: 'reconciled', before: prepared.before ?? { configuration: 'mismatch_or_unavailable' } };
+      run.lifecycle = { ...run.lifecycle, removals: [...previous, removal] };
+      delete run.lifecycle.pending_removal;
+      deps.writeJson(path, run);
+      const payer = deps.loadKey('payer');
+      same(payer.publicKey(), run.payer, 'fee payer');
+      return verifyRemoval({ run, path, removal, receipt: outcome, payer }, deps);
+    }
+    const status = outcome?.status === 'FAILED' ? 'failed'
+      : outcome?.status === 'NOT_FOUND' && outcome.after_window === true && Number.isSafeInteger(prepared.max_time) ? 'expired_unseen' : null;
+    requireThat(status !== null, 'a pending removal is recorded and has no final outcome yet; it is never resent');
+    run.lifecycle = { ...run.lifecycle, failed_removals: [...(run.lifecycle.failed_removals ?? []),
+      { rule_id: run.rule_id, transaction: prepared.transaction, status }] };
+    delete run.lifecycle.pending_removal;
+    deps.writeJson(path, run);
+    requireThat(run.lifecycle.failed_removals.length < 2, 'a fresh removal was already tried once');
+  }
+  // One removal that did not land may be followed by one fresh removal; never a third.
+  requireThat((run.lifecycle?.failed_removals?.length ?? 0) < 2, 'removals already failed twice; none is prepared again');
+  requireThat(remaining() >= rpc.REMOVAL_RESERVE_MS, 'too little time before the cleanup deadline to finish a removal; nothing prepared');
   const observed = await inspectInstalledGrant(run, spec, deps);
   const payer = deps.loadKey('payer');
   same(payer.publicKey(), run.payer, 'fee payer');
@@ -148,9 +183,11 @@ export async function revokePolicy(dir, overrides = {}) {
     expect: contractCall(run.account, 'remove_context_rule', ruleArg(run.rule_id)), signer: owner, ruleIds: [0],
     validUntilLedger: (await deps.latestLedger()) + 100, networkPassphrase: rpc.NETWORK_PASSPHRASE });
   const sent = await deps.submit(payer, removeOperation(run.account, run.rule_id, [signed.accountEntry, signed.delegateEntry].filter(Boolean)),
-    { stage: 'remove_context_rule', onSubmitting: (hash) => {
+    { stage: 'remove_context_rule', onSubmitting: (hash, window = {}) => {
       run.lifecycle = { ...(run.lifecycle ?? {}), removals: previous,
-        pending_removal: { rule_id: run.rule_id, transaction: hash, status: 'prepared_for_submission' } };
+        pending_removal: { rule_id: run.rule_id, transaction: hash, status: 'prepared_for_submission', before: observed,
+          ...(Number.isSafeInteger(window.max_time) ? { max_time: window.max_time } : {}),
+          ...(Number.isSafeInteger(window.min_ledger) ? { min_ledger: window.min_ledger } : {}) } };
       deps.writeJson(path, run);
     } });
   const removal = { rule_id: run.rule_id, transaction: sent.hash, ledger: sent.receipt?.ledger ?? null,
@@ -159,11 +196,20 @@ export async function revokePolicy(dir, overrides = {}) {
   run.lifecycle = { ...(run.lifecycle ?? {}), removals: [...previous, removal] };
   delete run.lifecycle.pending_removal;
   deps.writeJson(path, run);
-  removalEvent(sent.receipt, { hash: sent.hash, account: run.account, ruleId: run.rule_id });
+  return verifyRemoval({ run, path, removal, receipt: sent.receipt, payer }, deps);
+}
+
+/** Event, rule readback and policy cleanup readbacks for a confirmed (or reconciled) removal. */
+async function verifyRemoval({ run, path, removal, receipt, payer }, deps) {
+  removalEvent(receipt, { hash: removal.transaction, account: run.account, ruleId: run.rule_id });
   removal.event = 'verified';
   deps.writeJson(path, run);
+  // Readbacks count only from an endpoint at or after the removal's ledger; a stale read is
+  // retried (bounded), never recorded as the outcome.
+  const read = (contract, fn, args) => rpc.observeAtOrAfter(removal.ledger ?? 0,
+    () => deps.viewCallObservation(payer, contract, fn, args), { delay: deps.delay });
   try {
-    await deps.viewCall(payer, run.account, 'get_context_rule', ruleArg(run.rule_id));
+    await read(run.account, 'get_context_rule', ruleArg(run.rule_id));
     removal.rule_readback = 'still_present';
     deps.writeJson(path, run);
     throw new Error('removal transaction confirmed, but the rule remains in the readback');
@@ -172,9 +218,9 @@ export async function revokePolicy(dir, overrides = {}) {
     removal.rule_readback = 'absent';
     deps.writeJson(path, run);
   }
-  const installed = scValToNative(await deps.viewCall(payer, run.policy, 'is_installed', [
+  const installed = scValToNative((await read(run.policy, 'is_installed', [
     xdr.ScVal.scvU32(run.rule_id), new Address(run.account).toScVal(),
-  ]));
+  ])).value);
   requireThat(typeof installed === 'boolean', 'removal confirmed, but policy cleanup readback is malformed');
   removal.policy_cleanup = installed ? 'still_installed' : 'not_installed';
   deps.writeJson(path, run);
@@ -183,7 +229,7 @@ export async function revokePolicy(dir, overrides = {}) {
     removal.reviewed_policy_cleanup = 'not_checked';
     deps.writeJson(path, run);
     try {
-      await deps.viewCall(payer, subscription.policy_address, 'get_spending_limit_data', [
+      await read(subscription.policy_address, 'get_spending_limit_data', [
         xdr.ScVal.scvU32(run.rule_id), new Address(run.account).toScVal(),
       ]);
       removal.reviewed_policy_cleanup = 'still_installed';
@@ -196,9 +242,20 @@ export async function revokePolicy(dir, overrides = {}) {
   return removal;
 }
 
-if (isMainModule(import.meta.url)) {
-  const opts = rpc.args();
+/** The command line: as the failure-cleanup child it stops itself before the parent's kill. */
+export async function lifecycleMain(argv, { revoke = revokePolicy, now = () => Date.now() } = {}) {
+  const opts = rpc.args(argv);
   requireThat(opts['run-dir'], 'usage: lifecycle.mjs --run-dir DIRECTORY');
-  const removed = await revokePolicy(opts['run-dir'], { expectedRunHash: opts['expected-run-sha256'] });
+  return revoke(opts['run-dir'], { expectedRunHash: opts['expected-run-sha256'], deadline: childDeadline(now()) });
+}
+
+if (isMainModule(import.meta.url)) {
+  let removed;
+  try { removed = await lifecycleMain(process.argv.slice(2)); } catch (error) {
+    // This also runs as the failure-cleanup child, whose output is kept in cleanup-child.log:
+    // a message, no stack, no secrets.
+    console.error(rpc.redactSecrets(`lifecycle removal failed: ${error?.message ?? error}`));
+    process.exit(1);
+  }
   console.log(`REMOVED rule ${removed.rule_id}, transaction ${removed.transaction}; policy cleanup: ${removed.policy_cleanup}`);
 }

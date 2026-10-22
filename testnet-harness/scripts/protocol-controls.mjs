@@ -22,7 +22,8 @@ function negatives(kind, account, root, transfer) {
   if (kind === 'blend_claim') {
     return [['reserve_ids', { control: 'reserve_ids', expected: tuple }],
       ['claim_recipient', { control: 'claim_recipient', expected: tuple }],
-      ['pool_function', { control: 'pool_function', expected: tuple }], ...signers];
+      // The generated policy checks the function name before any argument: FunctionNotAllowed.
+      ['pool_function', { control: 'pool_function', expected: { enforcer: root, code: 5 } }], ...signers];
   }
   return [['input_cap', { control: 'input_cap', expected: tuple }],
     ['output_floor', { control: 'output_floor', expected: tuple }],

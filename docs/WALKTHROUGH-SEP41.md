@@ -67,7 +67,11 @@ retry with a fresh isolated grant. Ledger waits have a finite deadline. Neither 
 elapsed time nor a missing readback is converted into a successful observation.
 
 On failure after installation, the wrapper makes one bounded owner-removal attempt before
-discarding its temporary keys. A pending or already confirmed removal is not resubmitted.
+discarding its temporary keys. A pending or already confirmed removal is not resubmitted. A
+pending one is reconciled from its hash after the network check: one that landed is verified and
+marked `reconciled`, and only one that failed, or that the endpoint has not seen although its
+latest ledger closed after the validity window, may be followed by one fresh removal, never a
+third. The cleanup child's output is kept in a new private `cleanup-child.log`.
 The failure-cleanup journal distinguishes verified removal from an unresolved live grant,
 and the run retains its original nonzero exit status. An unresolved grant may remain until
 its configured ledger expiry; disposal of the throwaway keys is not evidence of revocation.

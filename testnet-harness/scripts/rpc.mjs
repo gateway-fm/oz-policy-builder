@@ -1,9 +1,10 @@
 // Network side of the harness: one RPC client, Friendbot, and a submit loop that refuses to sign
 // what simulation rejected. Everything here talks to the live network; nothing here holds a key
 // longer than the call that signs with it.
-import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import {
-  Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
+  Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
 } from '@stellar/stellar-sdk';
 
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
@@ -60,6 +61,14 @@ export async function latestLedger() {
   return (await server.getLatestLedger()).sequence;
 }
 
+/** The latest ledger and the close time (Unix seconds) the RPC reports for it. */
+export async function latestLedgerClose() {
+  const latest = await server.getLatestLedger();
+  const closeTime = Number(latest.closeTime);
+  if (!Number.isSafeInteger(closeTime) || closeTime <= 0) throw new Error('RPC latest ledger lacks a valid close time');
+  return { ledger: readLedger(latest.sequence), close_time: closeTime };
+}
+
 /** Fixed total transaction fee, including Soroban resources: one testnet XLM. */
 export const MAX_TRANSACTION_FEE = 10_000_000n;
 /** Uploading newly generated code has a larger fixed ceiling: ten testnet XLM. */
@@ -99,13 +108,13 @@ function withSourceAuthorization(operation, payer) {
 }
 
 /** Assembly may add resource data and a bounded fee, never change the call we will sign. */
-function checkAssembly(assembled, expectedEnvelope) {
+function checkAssembly(assembled, expectedEnvelope, namedCeiling = MAX_TRANSACTION_FEE) {
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
     const intended = expected.v1.tx.operations;
     const maximumFee = intended.length === 1
       && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
-      ? MAX_WASM_UPLOAD_FEE : MAX_TRANSACTION_FEE;
+      ? MAX_WASM_UPLOAD_FEE : namedCeiling;
     const envelope = assembled.toEnvelope();
     if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'
       || envelope.v1.signatures.length !== 0) throw new Error();
@@ -135,21 +144,29 @@ function checkAssembly(assembled, expectedEnvelope) {
  * what makes a denial observable without spending a fee: the enforcing simulation runs
  * `__check_auth` and the installed policies exactly as the network would.
  */
-export async function submit(payer, operation, { stage = 'submit', onSubmitting } = {}) {
+export async function submit(payer, operation, { stage = 'submit', onSubmitting, maxFee = MAX_TRANSACTION_FEE } = {}) {
+  // A caller whose call is known to cost more than one XLM in resources (rent for new entries)
+  // names its own ceiling; it can never exceed the upload ceiling.
+  if (typeof maxFee !== 'bigint' || maxFee < MAX_TRANSACTION_FEE || maxFee > MAX_WASM_UPLOAD_FEE) {
+    throw new Error('submission refused: invalid fee ceiling');
+  }
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
-    .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
+    .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(SUBMIT_TIMEOUT_SECONDS).build();
   if (tx.source !== payer.publicKey()) throw new Error('submission refused: RPC returned another fee payer');
   const expectedEnvelope = Buffer.from(tx.toEnvelope().toXDR());
   const sim = await server.simulateTransaction(tx, undefined, 'enforce');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error);
   const assembled = rpc.assembleTransaction(tx, sim).build();
-  checkAssembly(assembled, expectedEnvelope);
+  checkAssembly(assembled, expectedEnvelope, maxFee);
   assembled.sign(payer);
   const expectedHash = Buffer.from(assembled.hash()).toString('hex');
+  const maxTime = Number(tx.timeBounds.maxTime);
+  const minLedger = ledgerOf(sim.latestLedger);
   // Persist a removal identity before the first network write. A failed checkpoint prevents send;
-  // a later transport/confirmation failure keeps the identity available for manual inspection.
-  if (onSubmitting) await onSubmitting(expectedHash);
+  // a later transport/confirmation failure keeps the identity available for reconciliation. The
+  // end of the validity window says when an unseen transaction can no longer land.
+  if (onSubmitting) await onSubmitting(expectedHash, { max_time: maxTime, ...(minLedger === null ? {} : { min_ledger: minLedger }) });
   log(`transaction prepared ${expectedHash}; expires ${tx.timeBounds.maxTime}`);
   const sent = await server.sendTransaction(assembled);
   const status = ['PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER', 'ERROR'].includes(sent.status) ? sent.status : 'UNKNOWN';
@@ -161,12 +178,81 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting 
   if (!['PENDING', 'DUPLICATE'].includes(sent.status)) {
     throw new Error(`${stage}: transaction ${expectedHash} was not accepted (${status}); no automatic retry`);
   }
-  const done = await server.pollTransaction(sent.hash, { attempts: 30, sleepStrategy: () => 2000 });
+  const done = await transactionOutcome(sent.hash, maxTime, { minLedger });
   if (done.status !== 'SUCCESS') {
     throw new Error(`${stage}: transaction ${sent.hash} ended ${done.status}`);
   }
   if (done.txHash !== expectedHash) throw new Error(`${stage}: confirmed transaction identity differs`);
   return { hash: sent.hash, returnValue: done.returnValue, receipt: done };
+}
+
+const POLL_INTERVAL_MS = 2000;
+/** Every submitted transaction is valid for this many seconds after it is built (`setTimeout`). */
+export const SUBMIT_TIMEOUT_SECONDS = 120;
+/** How long one outcome query may poll locally. Ledger close times, not this, decide outcomes. */
+export const OUTCOME_POLL_BUDGET_MS = 180_000;
+/**
+ * Time a cleanup keeps in hand before it prepares a removal: one submission's outcome polling,
+ * two bounded readbacks (10 reads, 2 s apart, each) and slack for recording and signing.
+ */
+export const REMOVAL_RESERVE_MS = OUTCOME_POLL_BUDGET_MS + 40_000 + 20_000;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The outcome of one submitted transaction. SUCCESS and FAILED are returned at once. Otherwise
+ * it polls within a local budget; transport errors are retried, not outcomes. `NOT_FOUND` with
+ * `after_window: true` means the endpoint has closed a ledger after the window (`maxTime`, Unix
+ * seconds) so the transaction can no longer land, and still retains the ledgers from the window's
+ * start, so it would have seen it. Only ledger close times decide that; the local clock only
+ * bounds polling. Without a known window, one read is made and `NOT_FOUND` proves nothing.
+ */
+const closeTimeOf = (v) => typeof v === 'string'
+  ? (/^[1-9][0-9]{0,15}$/.test(v) && Number.isSafeInteger(Number(v)) ? Number(v) : null)
+  : Number.isSafeInteger(v) && v > 0 ? v : null;
+const ledgerOf = (v) => Number.isSafeInteger(v) && v > 0 ? v : null;
+
+export async function transactionOutcome(hash, maxTime, { now = () => Date.now(), delay = pause,
+  budgetMs = OUTCOME_POLL_BUDGET_MS, minLedger = null } = {}) {
+  const known = Number.isSafeInteger(maxTime) && maxTime > 0;
+  const stopAt = now() + (known ? budgetMs : 0);
+  for (;;) {
+    let response = null;
+    try { response = await server.getTransaction(hash); } catch { response = null; }
+    if (response?.status === 'SUCCESS' || response?.status === 'FAILED') return response;
+    if (known && response?.status === 'NOT_FOUND') {
+      // Only well-formed, ordered close times can show that a ledger closed after the window.
+      const latest = closeTimeOf(response.latestLedgerCloseTime), oldest = closeTimeOf(response.oldestLedgerCloseTime);
+      if (latest !== null && oldest !== null && latest >= oldest && latest > maxTime) {
+        // The endpoint must still retain the window's start: by close time, and, when the
+        // prepare-time simulation ledger is known, by ledger number too.
+        const prepared = ledgerOf(minLedger), retainedFrom = ledgerOf(response.oldestLedger);
+        const retains = oldest <= maxTime - SUBMIT_TIMEOUT_SECONDS
+          && (prepared === null || (retainedFrom !== null && retainedFrom <= prepared));
+        return { status: 'NOT_FOUND', after_window: retains };
+      }
+    }
+    if (!known || now() >= stopAt) return { status: response?.status === 'NOT_FOUND' ? 'NOT_FOUND' : 'UNKNOWN', after_window: false };
+    await delay(POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * A read accepted only when the endpoint reports a ledger at or after `minimum` (a confirmed
+ * transaction's ledger), so a lagging endpoint cannot answer for the state before it. Reads below
+ * it, and transport errors, are retried a bounded number of times. A simulation error carrying a
+ * ledger at or after `minimum` is that read's answer and is rethrown.
+ */
+export async function observeAtOrAfter(minimum, read, { delay = pause, attempts = 10 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    let result, failure, ledger;
+    try { result = await read(); ledger = result?.ledger; } catch (error) { failure = error; ledger = error?.ledger; }
+    if (Number.isSafeInteger(ledger) && ledger >= minimum) {
+      if (failure) throw failure;
+      return result;
+    }
+    if (attempt >= attempts) throw new Error(`readback endpoint did not reach the confirmed ledger ${minimum}`);
+    await delay(POLL_INTERVAL_MS);
+  }
 }
 
 /** Run a recording simulation and return the auth entries the network says the call needs. */
@@ -208,7 +294,21 @@ export async function viewCallObservation(payer, contract, fn, fnArgs = []) {
     .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
     .setTimeout(60).build();
   const sim = await server.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(fn, sim.error);
+  // The ledger an error answered at lets a caller require it to follow a confirmed write.
+  if (rpc.Api.isSimulationError(sim)) throw Object.assign(new SimulationError(fn, sim.error), { ledger: sim.latestLedger });
+  return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
+}
+
+// A syntactically valid source that need not exist: simulation reads no account entry for it.
+const READ_ONLY_SOURCE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+/** A read-only call simulated without any harness account or key; nothing is signed or sent. */
+export async function readOnlyView(contract, fn, fnArgs = []) {
+  const tx = new TransactionBuilder(new Account(READ_ONLY_SOURCE, '0'), { fee: '100', networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(Operation.invokeContractFunction({ contract, function: fn, args: fnArgs }))
+    .setTimeout(60).build();
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) throw Object.assign(new SimulationError(fn, sim.error), { ledger: sim.latestLedger });
   return { value: sim.result.retval, ledger: readLedger(sim.latestLedger) };
 }
 
@@ -219,6 +319,12 @@ export async function contractCodeHash(contractId) {
 
 /** Retain the ledger reported by this instance-entry read. */
 export async function contractCodeObservation(contractId) {
+  const { value, ledger } = await contractInstanceObservation(contractId);
+  return { value, ledger };
+}
+
+/** The instance's code hash and its instance storage entries, from one checked entry read. */
+export async function contractInstanceObservation(contractId) {
   const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
     contract: new Address(contractId).toScAddress(),
     key: xdr.ScVal.scvLedgerKeyContractInstance(),
@@ -240,7 +346,8 @@ export async function contractCodeObservation(contractId) {
   }
   const exec = data.val.instance.executable;
   if (exec.type !== 'contractExecutableWasm') throw new Error(`${contractId} is not a wasm contract (${exec.type})`);
-  return { value: Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex'), ledger };
+  return { value: Buffer.from(exec.wasmHash.value ?? exec.wasmHash).toString('hex'), ledger,
+    storage: data.val.instance.storage ?? [] };
 }
 
 export const contractIdOf = (scv) => {
@@ -261,8 +368,31 @@ export function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-export function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+/**
+ * Replace a journal atomically: a new temporary file in the same directory, written and synced,
+ * then renamed over the path, so a process killed mid-write leaves either the old or the new
+ * journal, never a truncated one.
+ */
+const journalIo = { openSync, writeSync, fsyncSync, closeSync, renameSync, rmSync };
+export function writeJson(path, value, io = journalIo) {
+  const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`;
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+  const fd = io.openSync(temporary, 'wx');
+  try {
+    try {
+      // A short write (a full disk) must not leave a truncated journal to be renamed into place.
+      for (let written = 0; written < bytes.length;) {
+        const count = io.writeSync(fd, bytes, written, bytes.length - written, written);
+        if (!(count > 0)) throw new Error('journal write made no progress');
+        written += count;
+      }
+      io.fsyncSync(fd);
+    } finally { io.closeSync(fd); }
+    io.renameSync(temporary, path);
+  } catch (error) {
+    io.rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 export function secretsPath() {
@@ -314,6 +444,23 @@ export function loadSecret(name) {
 
 export function loadKey(name) {
   return Keypair.fromSecret(loadSecret(name));
+}
+
+/**
+ * Diagnostic text with this run's secrets removed: every string value of the secrets file (seeds
+ * and passkey credential fields), and anything shaped like a Stellar seed. Used for cleanup
+ * output that is written to a file; addresses and transaction hashes are kept.
+ */
+export function redactSecrets(text) {
+  let out = String(text);
+  const values = [];
+  const collect = (v) => {
+    if (typeof v === 'string' && v.length >= 16) values.push(v);
+    else if (v && typeof v === 'object') Object.values(v).forEach(collect);
+  };
+  try { collect(JSON.parse(readFileSync(secretsPath(), 'utf8'))); } catch { /* no readable secrets file: patterns only */ }
+  for (const value of values.sort((a, b) => b.length - a.length)) out = out.split(value).join('<redacted>');
+  return out.replace(/\bS[A-Z2-7]{55}\b/g, '<redacted seed>');
 }
 
 /** Parse `--name value` pairs; positional arguments are not used, and a value may not be a flag. */

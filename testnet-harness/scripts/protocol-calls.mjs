@@ -4,8 +4,14 @@ import { Address, Operation, StrKey, xdr } from '@stellar/stellar-sdk';
 import { contractCall, entryAddress, i128 } from './lib.mjs';
 
 export const PROTOCOL_TARGETS = Object.freeze({
-  blend_pool: 'CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF',
+  // W1: Blend v2 pool whose reserve 1 is Circle's testnet USDC; the claim names that reserve's
+  // bToken (supply) id, 1 * 2 + 1. Its pool BLND token and backstop are read back by blend-preflight.
+  blend_pool: 'CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW',
   blend_code: 'a41fc53d6753b6c04eb15b021c55052366a4c8e0e21bc72700f461264ec1350e',
+  blend_claim_id: 3,
+  blend_asset: 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
+  blnd: 'CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF',
+  blend_backstop: 'CBDVWXT433PRVTUNM56C3JREF3HIZHRBA64NB2C3B2UNCKIS65ZYCLZA',
   router: 'CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD',
   router_code: '4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c',
   native: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
@@ -20,7 +26,7 @@ export function protocolInvocation(plan) {
   requireThat(plan && StrKey.isValidContract(plan.account));
   const p = PROTOCOL_TARGETS;
   if (plan.kind === 'blend_claim') {
-    return contractCall(p.blend_pool, 'claim', [A(plan.account), xdr.ScVal.scvVec([xdr.ScVal.scvU32(6)]), A(plan.account)]);
+    return contractCall(p.blend_pool, 'claim', [A(plan.account), xdr.ScVal.scvVec([xdr.ScVal.scvU32(p.blend_claim_id)]), A(plan.account)]);
   }
   requireThat(plan.kind === 'soroswap_swap' && positive(plan.amount_in) && BigInt(plan.amount_in) <= 10_000_000n
     && positive(plan.minimum_out) && Number.isSafeInteger(plan.deadline) && plan.deadline > 0);

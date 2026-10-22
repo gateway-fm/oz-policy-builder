@@ -104,7 +104,7 @@ confirmed transaction. The observations come from the configured RPC; they are n
 
 A failed run with a confirmed installation attempts owner removal before discarding its
 temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
-policy configuration. Its entire child process group has a fixed 180-second deadline and a
+policy configuration. Its entire child process group has a fixed 600-second deadline and a
 five-second termination grace. A requested kill must be followed by the child's close event
 before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
 `cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
@@ -112,8 +112,19 @@ leaves the child-owned run/provenance files unfinalized. The original failure st
 remain; secret deletion does not revoke it. A `run.json` that exists but cannot be read is
 reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
 since it may have been cut short after recording an installation. The journal records a removal hash before send,
-so an interrupted or unconfirmed submission remains `pending_removal` and is never retried
-automatically. A confirmed removal with incomplete readbacks likewise requires inspection.
+so an interrupted or unconfirmed submission remains `pending_removal` and is never sent again.
+The next cleanup checks the network first, then reconciles it from its hash. One that landed
+is verified and marked `reconciled`. One that failed is kept by hash under `failed_removals`, and
+so is one the endpoint has not seen. The second case counts only when the endpoint's latest
+ledger closed after the transaction's validity window and it still retains the window's start,
+both by close time and by the ledger the submission was simulated at. The close times must be
+well-formed and ordered; the local clock never decides it. One fresh removal may then follow, never a third; anything else
+stays pending. Polling is bounded, and the cleanup child prepares a removal only while 240
+seconds remain before its deadline, so it stops before the kill. Removal readbacks count only
+from an endpoint at or after the removal's ledger; a stale read is retried, never recorded.
+Journals are replaced atomically (synced temporary file, then rename). The cleanup child's stdout
+and stderr go to a new private `cleanup-child.log` in the run directory: transaction hashes and,
+on failure, one line with the stage or error and the run's secrets redacted, with no stack.
 
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
@@ -344,8 +355,8 @@ October 15 observations described below.
 - **Reproduction is not a complete dry run.** The default wrapper requires matching source,
   Wasm and manifest and complete layer-1 coverage for its single scope+count policy. It does
   not establish arbitrary captured-target execution or a wallet product's consent. The Blend
-  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend still lacks
-  its position setup. Enforcing network simulations remain a separate later observation.
+  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend opens and
+  withdraws its own USDC supply position. Enforcing network simulations remain a separate later observation.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.

@@ -217,6 +217,53 @@ const SUBMITTED = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
 const SIMULATED = ['started', 'verified_denial', 'unexpected_permit', 'unattributed_denial',
   'verified_independent_permission', 'independent_permission_not_observed'];
 
+const POSITION_STEP = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
+/** Prepared transactions that definitively did not land, by hash; exported only when recorded. */
+const notLanded = (value, statuses, extra = () => ({})) => {
+  if (value === undefined) return {};
+  if (!Array.isArray(value) || value.length > 10) fail();
+  return value.map((item) => { const f = object(item); return { ...extra(f), transaction: hash(f.transaction), status: choice(f.status, statuses) }; });
+};
+const confirmation = (r) => r.confirmation === undefined ? {} : { confirmation: choice(r.confirmation, ['reconciled']) };
+/** W1's Blend supply position: each submission's identity and the withdrawal readback, nothing else. */
+function blendPositionRecord(w) {
+  let refresh = null;
+  if (w.emission_refresh !== undefined && w.emission_refresh !== null) {
+    const r = object(w.emission_refresh);
+    const status = choice(r.status, ['not_needed', 'gulped']);
+    refresh = { status, transaction: status === 'gulped' ? hash(r.transaction) : null };
+  }
+  if (w.position_journal === undefined) return { status: 'not_recorded', emission_refresh: refresh };
+  const j = object(w.position_journal);
+  const status = choice(j.status, ['opening', 'open', 'withdrawing', 'withdrawn', 'no_position', 'incomplete']);
+  const step = (value) => {
+    if (value === undefined) return null;
+    const s = object(value);
+    const state = choice(s.status, POSITION_STEP);
+    return { status: state, transaction: state === 'started' ? (s.transaction === undefined ? null : fail()) : hash(s.transaction),
+      ledger: s.ledger === undefined || s.ledger === null ? null : uint(s.ledger) };
+  };
+  const supply = step(j.supply);
+  const withdrawal = step(j.withdrawal);
+  const readback = j.withdrawal?.readback === undefined ? null : choice(j.withdrawal.readback, ['empty', 'still_open']);
+  // Only an empty readback after a sent withdrawal closes a position, and only a supply that was
+  // never sent means none was opened.
+  if (status === 'withdrawn' && (withdrawal?.transaction == null || readback !== 'empty')) fail();
+  if (status === 'no_position' && supply !== null && supply.transaction !== null) fail();
+  const failed = notLanded(j.failed_withdrawals, ['not_applied']);
+  return { status, reason: j.reason === undefined ? null : match(j.reason, /^[a-z][a-z_]{0,39}$/), emission_refresh: refresh,
+    funding_transfer: step(j.funding_transfer), funding_swap: step(j.funding_swap),
+    supply: supply && { ...supply, amount: amount(j.supply.amount) }, withdrawal: withdrawal && { ...withdrawal, readback },
+    ...(Array.isArray(failed) ? { failed_withdrawals: failed } : {}) };
+}
+
+/** W1's emission refresh as journaled before any plan exists: its status and transaction only. */
+function emissionRefreshRecord(value) {
+  const r = object(value);
+  const status = choice(r.status, ['started', 'pending', 'confirmed_unverified', 'not_needed', 'gulped', 'gulped_still_not_live', 'refused']);
+  return { status, transaction: optional(r.transaction, hash) };
+}
+
 /** W1/W3 bundle journal: typed fields only; RPC readbacks, plans and host errors stay local. */
 function walkthroughRecord(value, run) {
   if (value === undefined) return { status: 'not_recorded' };
@@ -277,7 +324,7 @@ function walkthroughRecord(value, run) {
           const prior = r.before === undefined ? 'matched'
             : choice(object(r.before).configuration, ['matched', 'mismatch_or_unavailable']);
           removal = { transaction: hash(r.transaction), ledger: r.ledger === null ? null : uint(r.ledger),
-            event, rule_readback: readback, policy_cleanup: cleanup,
+            event, rule_readback: readback, policy_cleanup: cleanup, ...confirmation(r),
             ...(prior === 'matched' ? {} : { pre_removal_readback: prior }) };
         }
         // A prepared but unconfirmed submission may still land; keep its identity visible.
@@ -306,9 +353,11 @@ function walkthroughRecord(value, run) {
             observation: choice(r.observation, ['non_atomic']), read_ledgers: { account: uint(ledgers.account),
               policy: uint(ledgers.policy), rule: uint(ledgers.rule), installed: uint(ledgers.installed) } };
         }
+        const failedRemovals = notLanded(e.failed_removals, ['failed', 'expired_unseen']);
         return { rule_index: index, wasm_hash: hash(e.wasm_hash), policy: optional(e.policy, address), rule_id: rule,
           installation_transaction: installed === null ? null : hash(installed.transaction), pending,
-          authority, readback, removal, pending_removal: pendingRemoval };
+          authority, readback, removal, pending_removal: pendingRemoval,
+          ...(Array.isArray(failedRemovals) ? { failed_removals: failedRemovals } : {}) };
       }) };
     // A grant is unresolved while its install or removal is pending, or while a confirmed
     // install (even one whose rule ID is unknown) lacks a complete removal.
@@ -321,7 +370,10 @@ function walkthroughRecord(value, run) {
     if (bundle.cleanup === 'removed' && (bundle.entries.some(unresolved) || !bundle.entries.some(removed))) fail();
     if (bundle.cleanup === 'no_installed_grants' && bundle.entries.some(installed)) fail();
   }
-  if (w.controls === undefined) return { kind, owner_transaction: owner, invocations, bundle, controls: { status: 'not_recorded', steps: [] } };
+  const position = kind === 'blend_claim' ? { position: blendPositionRecord(w) } : {};
+  if (w.controls === undefined) {
+    return { kind, owner_transaction: owner, invocations, bundle, ...position, controls: { status: 'not_recorded', steps: [] } };
+  }
   const c = object(w.controls);
   const status = choice(c.status, ['running', 'incomplete', 'completed']);
   const set = c.control_set === undefined ? 1 : choice(c.control_set, [2]);
@@ -349,7 +401,7 @@ function walkthroughRecord(value, run) {
     const valid = run.valid_until_ledger;
     const positive = kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap';
     const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], reserve_ids: [root, 6],
-      claim_recipient: [root, 6], pool_function: [root, 6], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
+      claim_recipient: [root, 6], pool_function: [root, 5], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
       count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000],
       token_cap: [transfer, 6], token_count_cap: [transfer, 7] };
     if (!bundle || bundle.status !== 'installed' || bundle.cleanup !== 'removed' || valid === null
@@ -373,7 +425,7 @@ function walkthroughRecord(value, run) {
       } else if (s.result !== 'verified_denial' || s.enforcer !== expected[s.name][0] || s.code !== expected[s.name][1]) fail();
     }
   }
-  return { kind, owner_transaction: owner, invocations, bundle, controls: { status,
+  return { kind, owner_transaction: owner, invocations, bundle, ...position, controls: { status,
     control_set: kind === 'blend_claim' ? 'single_rule'
       : set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
 }
@@ -443,7 +495,7 @@ function lifecycleRecord(value, run) {
       : choice(r.reviewed_policy_cleanup, ['not_checked', 'not_installed', 'still_installed']);
     if (reviewed !== 'not_checked' && (!run.subscription || readback !== 'absent')) fail();
     return { rule_id: rule, transaction: hash(r.transaction), ledger, event,
-      rule_readback: readback, policy_cleanup: cleanup,
+      rule_readback: readback, policy_cleanup: cleanup, ...confirmation(r),
       ...(run.subscription ? { reviewed_policy_cleanup: reviewed } : {}) };
   });
   const checks = journal.configuration_checks ?? [];
@@ -456,9 +508,15 @@ function lifecycleRecord(value, run) {
     pending = { rule_id: rule, transaction: hash(p.transaction),
       status: choice(p.status, ['prepared_for_submission']) };
   }
+  const failedRemovals = notLanded(journal.failed_removals, ['failed', 'expired_unseen'], (f) => {
+    const rule = uint(f.rule_id);
+    if (rule !== run.rule_id) fail();
+    return { rule_id: rule };
+  });
   return {
     status: 'recorded', removals,
     ...(pending ? { pending_removal: pending } : {}),
+    ...(Array.isArray(failedRemovals) ? { failed_removals: failedRemovals } : {}),
     configuration_checks: checks.map((entry) => {
       const c = object(entry);
       const configuration = choice(c.configuration, ['matched', 'drift_or_unavailable']);
@@ -535,9 +593,13 @@ export function exportEvidence(runDir) {
   const source = provenance(decode(artifact('provenance', join(runDir, 'provenance.json'))));
   const pipeline = pipelineRecord(decode(artifact('pipeline', join(runDir, 'pipeline.json'))), run);
   const walkthrough = walkthroughRecord(rawRun?.walkthrough, run);
+  const refresh = rawRun?.blend_emission_refresh === undefined ? {}
+    : { blend_emission_refresh: emissionRefreshRecord(rawRun.blend_emission_refresh) };
   const protocolPipeline = protocolPipelineRecord(
     decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
   if (run === null && source.status === 'unavailable') fail();
+  // A Blend run cannot have succeeded while its supply position was not withdrawn.
+  if (walkthrough.kind === 'blend_claim' && source.status === 'exited_zero' && walkthrough.position?.status !== 'withdrawn') fail();
   for (const [key, file] of [['spec', 'spec.json'], ['recording', 'recording.json'], ['import_bundle', 'import-bundle.json'],
     ['synthesis', 'synthesis.json'], ['decisions', 'decisions.json'], ['reference_suite', 'reference-suite.json'],
     ['verification', 'verification.json']]) {
@@ -588,7 +650,7 @@ export function exportEvidence(runDir) {
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
     provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup,
-    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), artifacts,
+    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), ...refresh, artifacts,
   };
 }
 
