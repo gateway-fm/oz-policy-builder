@@ -1045,10 +1045,10 @@ pub mod dev {
     use ozpb_domain::sha256;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
-    /// Version of the committed, signed development example. Versions 1 and 2 remain
+    /// Version of the committed, signed development example. Versions 1 to 3 remain
     /// historical parents; changing their contents would fork persisted checkpoints. The same
     /// holds for this version once published, so tests pin every root.
-    pub const SIGNED_EXAMPLE_VERSION: u64 = 3;
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 4;
 
     /// Deterministic development root key (NOT a production root; production roots are
     /// threshold-held and pinned at release time).
@@ -1072,6 +1072,7 @@ pub mod dev {
         version: u64,
     ) -> Result<(String, String), RegistryError> {
         let snapshot = match version {
+            4 => soroswap_router_successor(network_id)?,
             3 => verifier_successor(network_id)?,
             2 => account_authority_successor(network_id)?,
             other => dev_snapshot(network_id, other),
@@ -1163,6 +1164,35 @@ pub mod dev {
                 key_scheme: Some(VerifierKeyScheme::WebauthnP256),
                 stateless: Some(true),
                 review_reference: "OpenZeppelin/stellar-contracts examples/multisig-smart-account/webauthn-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 and stellar-cli 27.0.0 — provenance in ozpb_domain::pinned_upstream. No storage, constructor, upgrade or admin; Wasm imports no ledger functions. Our build of their source, not an upstream-published artifact."
+                    .to_string(),
+            },
+        );
+        Ok(snapshot)
+    }
+
+    /// Version 4: version 3 plus the reviewed Soroswap router binding, so synthesis derives the
+    /// W3 router's input bound and caller-chosen deadline from `soroswap-router@1` instead of
+    /// the harness writing them as user decisions. It binds the testnet router's exact code.
+    /// The root key is public and that code was not reproduced from source, so the entry is a
+    /// development-registry assertion and says so; governance review is not claimed.
+    pub fn soroswap_router_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        use ozpb_domain::target_adapters;
+        let previous = verifier_successor(network_id)?;
+        let mut snapshot = previous.clone();
+        snapshot.version = 4;
+        snapshot.log_index = 4;
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let semantics = target_adapters::soroswap_router();
+        snapshot.target_adapters.insert(
+            target_adapters::SOROSWAP_ROUTER_TESTNET_WASM.to_hex(),
+            TargetAdapterCapability {
+                semantics_digest: semantics
+                    .digest()
+                    .map_err(|error| RegistryError::Internal(error.to_string()))?,
+                implementation: semantics.name,
+                review_reference: "Development-registry assertion, not governance: anyone can sign with this snapshot's development root. Roles of swap_exact_tokens_for_tokens read from the public router source, soroswap/core contracts/router at tag v1.0 (unchanged since 8a35511): amount_in is the exact input taken from `to`, amount_out_min an absolute output floor, path the exact route, `to` both payer and recipient and the only address asked to authorize, deadline compared with the ledger timestamp only. The deployed testnet code (router CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD) was not reproduced byte for byte: a rebuild with rustc 1.83.0 and soroban-sdk 20.2.0, the versions its metadata names, optimized as soroban-cli 22.0.1 does, differs only in the order of seven internal functions. See docs/TARGET-ADAPTERS.md."
                     .to_string(),
             },
         );
@@ -1308,9 +1338,11 @@ mod tests {
             "4474ec405262f83c3d125cffde8f362eefcf4c90120cefa5cae74aec4e929ed9";
         const PUBLISHED_V3_ROOT: &str =
             "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f";
+        const PUBLISHED_V4_ROOT: &str =
+            "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf";
         assert_eq!(
             dev::SIGNED_EXAMPLE_VERSION,
-            3,
+            4,
             "a new signed example version must pin its own published root here"
         );
         // Version 2 is a published parent: the verifier fields it never carried must not move
@@ -1328,12 +1360,19 @@ mod tests {
             "published development example v3 changed; publish new contents as a new version"
         );
         assert_eq!(v3.previous_root, Some(snapshot_root(&v2).unwrap()));
+        let v4 = dev::soroswap_router_successor(network()).unwrap();
+        assert_eq!(
+            snapshot_root(&v4).unwrap().to_hex(),
+            PUBLISHED_V4_ROOT,
+            "published development example v4 changed; publish new contents as a new version"
+        );
+        assert_eq!(v4.previous_root, Some(snapshot_root(&v3).unwrap()));
         let committed: SignedSnapshot =
             serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
                 .unwrap();
         assert_eq!(
             snapshot_root(&committed.snapshot).unwrap().to_hex(),
-            PUBLISHED_V3_ROOT
+            PUBLISHED_V4_ROOT
         );
     }
 
@@ -1399,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_development_successor_extends_a_persisted_v2_checkpoint() {
+    fn committed_development_successor_extends_a_persisted_v3_checkpoint() {
         let roots = || RootPolicy {
             threshold: 1,
             keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
@@ -1410,21 +1449,27 @@ mod tests {
             dev::account_authority_successor(network()).unwrap(),
         )
         .unwrap();
+        let v3 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::verifier_successor(network()).unwrap(),
+        )
+        .unwrap();
         let committed: SignedSnapshot =
             serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
                 .unwrap();
         assert_eq!(committed.snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
 
-        // An operator persisted a checkpoint at v2: the committed v3 extends it directly.
+        // An operator persisted a checkpoint at v3: the committed v4 extends it directly.
         let mut registry = pinned_test_registry();
-        registry.load_at(&v1, 100).unwrap();
-        registry.load_at(&v2, 100).unwrap();
-        let v2_checkpoint = registry.checkpoint().unwrap();
-        assert_eq!(committed.snapshot.previous_root, Some(v2_checkpoint.root));
+        for signed in [&v1, &v2, &v3] {
+            registry.load_at(signed, 100).unwrap();
+        }
+        let v3_checkpoint = registry.checkpoint().unwrap();
+        assert_eq!(committed.snapshot.previous_root, Some(v3_checkpoint.root));
         let mut restored = Registry::with_pinned_roots_for_network_at_checkpoint(
             roots(),
             network(),
-            v2_checkpoint,
+            v3_checkpoint,
         )
         .unwrap();
         restored.load_at(&committed, 100).unwrap();
@@ -1434,15 +1479,20 @@ mod tests {
         restored
             .resolve_signature_verifier(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM)
             .unwrap();
+        assert!(restored
+            .resolve_target_adapter(&ozpb_domain::target_adapters::SOROSWAP_ROUTER_TESTNET_WASM)
+            .unwrap()
+            .is_some());
 
-        // One persisted at v1 cannot jump to v3: v3 does not directly extend it.
-        let mut at_v1 = pinned_test_registry();
-        at_v1.load_at(&v1, 100).unwrap();
-        let v1_checkpoint = at_v1.checkpoint().unwrap();
+        // One persisted at v2 cannot jump to v4: v4 does not directly extend it.
+        let mut at_v2 = pinned_test_registry();
+        at_v2.load_at(&v1, 100).unwrap();
+        at_v2.load_at(&v2, 100).unwrap();
+        let v2_checkpoint = at_v2.checkpoint().unwrap();
         let mut skipping = Registry::with_pinned_roots_for_network_at_checkpoint(
             roots(),
             network(),
-            v1_checkpoint,
+            v2_checkpoint,
         )
         .unwrap();
         assert!(matches!(

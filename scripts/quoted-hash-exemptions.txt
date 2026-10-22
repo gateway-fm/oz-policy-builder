@@ -99,10 +99,8 @@ b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golde
 9cf2a72a06661da7717acdc4fb83372499bfa527352956a46d99e71163b93ea3|wasm-hash|golden policy under the pinned rustc 1.91.1 and CLI 27.0.0, re-measured after the event field documentation was corrected, since the spec section carries those doc strings; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2 and scripts/recorded-build-inputs.sh, recorded here at full length
 ded75163e31e6ba146d60441e73e95ede5f9520895c69f66351db2e4009f1242|wasm-hash|the Soroswap policy under the same rustc 1.91.1 and CLI 27.0.0, measured in the same sweep as the golden; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2, recorded here at full length
 
-# The Soroswap router review in docs/TARGET-ADAPTERS.md. The deployed router's code hash is read
-# from testnet; this tree neither builds nor pins it. The image digest names the rust:1.83.0
+# The Soroswap router review in docs/TARGET-ADAPTERS.md. The image digest names the rust:1.83.0
 # environment of the rebuild, and the rebuilt Wasm hash is what that environment produced, which
-# is not the deployed router's.
-4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c|wasm-hash|code of the Soroswap router deployed on testnet at CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD, as read from the network
+# is not the deployed router's. (The deployed hash itself is the committed registry example's key.)
 540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab|upstream-release|rust:1.83.0-slim-bookworm linux/amd64 image digest used for the router rebuild, quoted abbreviated
 c2efe757871b55325e7dd10a10a9fa35b2e298afa5e99e6430973a62f5c7c9cc|wasm-hash|Soroswap router rebuilt from tag v1.0 with rustc 1.83.0 and the soroban-cli 22.0.1 optimizer settings; differs from the deployed router only in internal function order; quoted abbreviated

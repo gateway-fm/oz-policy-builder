@@ -270,6 +270,19 @@ test('W2 predictions follow the live policy order, including the spending policy
   assert.deepEqual(predictEnforcer(p.originals[0], rule, [spending, generated], ACCOUNT), { permit: true });
 });
 
+test('the adapter-bound W3 spec keeps its ten live denials and leaves the open deadline to permits', () => {
+  // The same grant synthesized through the router adapter: the input bound is adapter-derived and
+  // the deadline accepts any value, so the suite has no deadline denial to replay.
+  const p = plan('w3-adapter');
+  assert.equal(p.denials.length, 10);
+  assert.deepEqual(p.denials.map((d) => `${d.rule_index}:${d.label}`).slice(0, 2),
+    ['0:rule[0] above upper bound arg[0]', '0:rule[0] below lower bound arg[1]']);
+  assert.ok(p.denials.every((d) => !/arg\[4\]/.test(d.label)), 'no case narrows the open deadline');
+  assert.ok(p.permits_not_replayed > 0);
+  const [router] = p.originals;
+  assert.equal(router.tree.subInvocations.length, 1);
+});
+
 test('W3 replays both rules with their recorded trees and keeps type-changing mutations offline', () => {
   const p = plan('w3');
   assert.equal(p.originals.length, 2);

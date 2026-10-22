@@ -44,16 +44,21 @@ code hashes on-chain.
 The registry signature authenticates a governance assertion. Its review reference is not a
 proof that deployed code implements the declared semantics, and caller-carried recording
 observations remain `self_supplied` at the synthesis boundary. Governance must review the
-actual implementation before binding its hash. Tests use explicitly synthetic bindings; the
-shipped development registry adds no unverified live router hash. This feature alone does not
-establish a live swap walkthrough or effect guarantee.
+actual implementation before binding its hash. This feature alone does not establish a live
+swap walkthrough or effect guarantee.
 
-## The testnet Soroswap router
+## The testnet router binding (development registry, version 4)
 
-The W3 walkthrough calls the Soroswap router deployed on testnet at
-`CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD`, whose code hash is
-`4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c`. This section records the
-source review behind `soroswap-router@1` for that code, and the attempt to reproduce it.
+Version 4 of the development registry (`registry::dev::soroswap_router_successor`, committed as
+`docs/examples/registry.signed.json`) binds one hash to `soroswap-router@1`: the code of the
+Soroswap router deployed on testnet at `CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD`,
+`4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c`. It extends the published
+version 3 directly, so a checkpoint persisted at version 3 accepts it.
+
+**This is a development-registry assertion, not governance.** Anyone can sign with the
+development root key, and the deployed Wasm was not reproduced from source (below). The binding's
+own review reference says both. A production deployment supplies its own governance root and
+decides for itself whether to bind this hash.
 
 ### What the adapter relies on
 
@@ -73,7 +78,10 @@ Read from the public router source: `soroswap/core`, `contracts/router/src/lib.r
 Leaving `deadline` unconstrained is a **high-blast-radius** choice. A delegate may then name any
 deadline, including one that never passes, so the router's own time check no longer limits
 when the swap executes. The rule's `valid_until` still bounds when the account authorizes it,
-and each signed authorization carries its own expiry ledger. Reports must flag this argument.
+and each signed authorization carries its own expiry ledger. Reports must flag this argument:
+synthesis's rationale calls it unconstrained and high blast radius, and the W3 harness flags it
+in its pipeline record and requires the operator to accept it
+([protocol walkthroughs](WALKTHROUGH-PROTOCOLS.md#two-independent-rules)).
 
 The role table holds only for this code. The router's Wasm imports no
 `update_current_contract_wasm`, there is no upgrade entry point, and `initialize` refuses a
@@ -83,8 +91,8 @@ pair code before every call.
 
 ### Reproduction attempt
 
-Not reproduced. Any binding of this hash is therefore a labeled assertion about the deployed
-code, not a verified build of the reviewed source.
+Not reproduced. The development binding is therefore a labeled assertion about this exact hash,
+not a verified build of the reviewed source.
 
 - **Source.** The hash first appears in `public/testnet.contracts.json` of `soroswap/core` on
   10 December 2024 (commit `06898c9`) and is still listed there (22 December 2025). The router
@@ -107,4 +115,5 @@ code, not a verified build of the reviewed source.
   published. soroban-cli 21's optimizer (wasm-opt 0.114) gives 34 354 bytes, so it was not
   that one.
 
-A matching build would need the original builder's environment.
+A matching build would need the original builder's environment. Until a reviewer reproduces
+the hash or governance reviews it, treat the binding as what it says it is.

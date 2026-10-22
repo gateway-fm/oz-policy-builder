@@ -1,0 +1,210 @@
+{
+  "evidence": {
+    "recordings": [
+      {
+        "hash": "a16d49f2ec864617d124e42ddd0f2a08e5b671cb24ffbc4eaa366281a0b85e15",
+        "trust": "self_supplied"
+      }
+    ]
+  },
+  "name": "soroswap-swap",
+  "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+  "registry_snapshot": "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf",
+  "rules": [
+    {
+      "allowed_calls": [
+        {
+          "args": [
+            {
+              "c": {
+                "le_i128": {
+                  "max": "1000000"
+                }
+              },
+              "i": 0,
+              "prov": {
+                "adapter_derived": {
+                  "adapter": "soroswap-router@1",
+                  "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
+                }
+              }
+            },
+            {
+              "c": {
+                "ge_i128": {
+                  "min": "100000"
+                }
+              },
+              "i": 1,
+              "prov": {
+                "user_widened": {
+                  "blast_radius": "medium",
+                  "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
+                }
+              }
+            },
+            {
+              "c": {
+                "eq_scval": {
+                  "xdr_base64": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+                }
+              },
+              "i": 2,
+              "prov": "observed_exact"
+            },
+            {
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "i": 3,
+              "prov": "observed_exact"
+            },
+            {
+              "c": "any_value",
+              "i": 4,
+              "prov": {
+                "adapter_derived": {
+                  "adapter": "soroswap-router@1",
+                  "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
+                }
+              }
+            }
+          ],
+          "fn": "swap_exact_tokens_for_tokens",
+          "justified_by": [
+            "recordings[0]/auth[0]"
+          ]
+        }
+      ],
+      "authorization": {
+        "kind": "any_of",
+        "signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "strict_signer_set": true
+      },
+      "context": {
+        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+        "target_code_hash": {
+          "hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c",
+          "observed_ledger": 5295640,
+          "on_drift": "refuse",
+          "role": "adapter_required"
+        },
+        "type": "CallContract"
+      },
+      "policies": [
+        {
+          "generated": {
+            "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+            "kind": "gen:scope+count",
+            "template_family": "policy-templates/scope@1"
+          }
+        }
+      ],
+      "state": [
+        {
+          "call_count_per_installation": {
+            "max_calls": 1
+          }
+        }
+      ],
+      "valid_until": {
+        "approx_time": null,
+        "ledger": 5295820
+      }
+    },
+    {
+      "allowed_calls": [
+        {
+          "args": [
+            {
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "i": 0,
+              "prov": "observed_exact"
+            },
+            {
+              "c": {
+                "eq_address": {
+                  "value": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
+                }
+              },
+              "i": 1,
+              "prov": "observed_exact"
+            },
+            {
+              "c": {
+                "le_i128": {
+                  "max": "1000000"
+                }
+              },
+              "i": 2,
+              "prov": {
+                "user_widened": {
+                  "blast_radius": "medium",
+                  "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
+                }
+              }
+            }
+          ],
+          "fn": "transfer",
+          "justified_by": [
+            "recordings[0]/auth[0]/sub[0]"
+          ]
+        }
+      ],
+      "authorization": {
+        "kind": "any_of",
+        "signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "strict_signer_set": true
+      },
+      "context": {
+        "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "target_code_hash": null,
+        "type": "CallContract"
+      },
+      "policies": [
+        {
+          "generated": {
+            "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+            "kind": "gen:scope+count",
+            "template_family": "policy-templates/scope@1"
+          }
+        }
+      ],
+      "state": [
+        {
+          "call_count_per_installation": {
+            "max_calls": 1
+          }
+        }
+      ],
+      "valid_until": {
+        "approx_time": null,
+        "ledger": 5295820
+      }
+    }
+  ],
+  "schema": "policy-spec/v1",
+  "smart_account": {
+    "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+    "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
+    "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
+  }
+}

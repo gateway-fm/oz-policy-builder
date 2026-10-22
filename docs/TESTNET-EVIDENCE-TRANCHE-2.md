@@ -559,7 +559,15 @@ under [§7's definition](#what-a-passing-permitdeny-report-is), W1 at exactly th
 The section 8–10 runs predate that step. Two rules from an interrupted W3 attempt remain installed,
 expired and spent, on a throwaway account (section 13).
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed Blend and
-Soroswap adapters rather than `evidence_only` code observations and fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
-hosted-service deployment evidence, and the public demonstration/video. The controlled W1, W2
-and W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.
+The W3 runs in sections 9 and 13 used widenings the harness wrote itself and `evidence_only`
+router hashes. The harness now takes the router's input bound and open deadline from the
+development registry's `soroswap-router@1` binding, a development-registry assertion whose Wasm
+was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)),
+and the floor and transfer cap from an operator decisions file. No live run has exercised it yet,
+so no section above shows it.
+
+Phase 2 still needs a delivered wallet's protected approval and revoke flow, a live W3 run through
+the adapter binding, a reviewed Blend adapter rather than an `evidence_only` code observation, the
+remaining harness layers with their actual evidence boundaries, hosted-service deployment
+evidence, and the public demonstration/video. The controlled W1, W2 and W3 runs do not close
+those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

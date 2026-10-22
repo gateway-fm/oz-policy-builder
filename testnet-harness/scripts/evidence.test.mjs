@@ -835,12 +835,21 @@ const LEGACY_SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong
   'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
 const SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
   'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+const ADAPTER_SWAP_STEPS = ['input_cap', 'output_floor', 'path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient',
+  'router_function', 'any_deadline', 'wrong_signer', 'zero_signers', 'independent_token', 'token_cap', 'delegate_swap', 'count_cap',
+  'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+const ROUTER_CODE = '4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c';
+const CONSTRUCTED = ['path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient', 'router_function'];
+const ADAPTER_CONTROLS = [...CONSTRUCTED, 'any_deadline'];
+const DECISIONS = { schema: 'ozpb-soroswap-operator-decisions/v1', output_floor: { min: '100000', intent: SENTINEL },
+  transfer_cap: { max: '1000000', intent: SENTINEL }, adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) };
 function protocolFixture(names = SWAP_STEPS) {
   const run = fixture();
   delete run.policy; delete run.policy_wasm_hash; delete run.rule_id; delete run.tx.add_context_rule;
   run.invocations = []; run.valid_until_ledger = 200;
   const denial = { enforcer: ROOT_POLICY, code: 6 };
-  const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial,
+  const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial, path_reordered: denial,
+    path_extended: denial, path_truncated: denial, router_function: { enforcer: ROOT_POLICY, code: 5 },
     wrong_signer: { enforcer: C, code: 3016 }, zero_signers: { enforcer: ROOT_POLICY, code: 1 },
     count_cap: { enforcer: ROOT_POLICY, code: 7 }, expired_rule: { enforcer: C, code: 3002 }, post_revocation: { enforcer: C, code: 3000 },
     token_cap: { enforcer: CHILD_POLICY, code: 6 }, token_count_cap: { enforcer: CHILD_POLICY, code: 7 } };
@@ -850,12 +859,16 @@ function protocolFixture(names = SWAP_STEPS) {
     if (name === 'expiry_wait') return { name, result: 'ledger_reached', target_ledger: 201, ledger: 201 };
     if (name === 'delegate_swap') return { name, result: 'confirmed', ledger, transaction: 'cd'.repeat(32) };
     if (name === 'independent_token') return { name, result: 'verified_independent_permission', ledger };
+    if (name === 'any_deadline') return { name, result: 'verified_disclosed_permission', ledger };
+    if (name === 'foreign_recipient') return { name, result: 'verified_recipient_refusal', ledger };
     return { name, result: 'verified_denial', ledger, ...expected[name] };
   });
   const invocations = [{ name: 'owner_record', control: 'baseline', signer: 'owner', rule_ids: [0, 0], status: 'confirmed',
     observation: 'submitted_transaction', transaction: HASH, ledger: 90, returned_amount: '150000', output_token: C,
     balance_before: '0', balance_after: '150000' },
-  ...steps.filter((s) => !['cleanup', 'expiry_wait'].includes(s.name)).map((s) => ({ name: s.name, control: 'baseline',
+  ...steps.filter((s) => !['cleanup', 'expiry_wait'].includes(s.name)).map((s) => ({ name: s.name,
+    control: ADAPTER_CONTROLS.includes(s.name) ? s.name : 'baseline',
+    ...(CONSTRUCTED.includes(s.name) ? { authorization: 'signed_without_recording' } : {}),
     signer: 'delegate', rule_ids: [8, 9], status: s.result, ledger: s.ledger,
     observation: s.transaction ? 'submitted_transaction' : 'enforcing_simulation',
     ...(s.transaction ? { transaction: s.transaction, returned_amount: '150000' } : {}),
@@ -872,17 +885,32 @@ function protocolFixture(names = SWAP_STEPS) {
     owner_transaction: { hash: HASH, ledger: 90, output_token: C, balance_before: '0', balance_after: '150000', returned_amount: '150000' },
     invocations, bundle: { status: 'installed', account: C, spec_hash: HASH, registry_root: HASH,
       entries: [entry(0, ROOT_POLICY), entry(1, CHILD_POLICY)], cleanup: { status: 'removed' } },
-    controls: { status: 'completed', ...(names === SWAP_STEPS ? { control_set: 2 } : {}), steps }, prerequisites: { note: SENTINEL } };
+    controls: { status: 'completed', ...(names === SWAP_STEPS ? { control_set: 2 } : names === ADAPTER_SWAP_STEPS
+      ? { control_set: 3 } : {}), steps }, prerequisites: { note: SENTINEL } };
+  if (names === ADAPTER_SWAP_STEPS) {
+    run.walkthrough.operator_decisions = structuredClone(DECISIONS);
+    run.registry_root = HASH;
+  }
   return run;
 }
 const protocolPipeline = { schema_version: 1, account: C, kind: 'soroswap_swap', recorded_transaction: HASH,
   recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
   spec_hash: HASH, reference_cases: 40, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+  adapter: { name: 'soroswap-router@1', code_hash: ROUTER_CODE, rule_index: 0, registry_root: HASH, registry: 'development_root' },
+  high_blast_radius: [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4, constraint: 'any_value',
+    provenance: 'adapter_derived', blast_radius: 'high' }],
   artifacts: [0, 1].map((rule_index) => ({ rule_index, wasm_hash: wasmHash, normalized_input_hash: HASH })) };
+// The same pipeline as the published pre-adapter runs recorded it: no adapter fields at all.
+const legacyPipeline = Object.fromEntries(Object.entries(protocolPipeline).filter(([key]) => !['adapter', 'high_blast_radius'].includes(key)));
+const withPipeline = (t, run, pipeline = protocolPipeline) => {
+  const dir = setup(t, run);
+  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(pipeline));
+  return dir;
+};
 
 test('protocol walkthrough summary keeps typed bundle, controls and per-rule artifacts only', (t) => {
   const dir = setup(t, protocolFixture());
-  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(protocolPipeline));
+  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(legacyPipeline));
   for (const i of [0, 1]) {
     mkdirSync(join(dir, 'policies', `rule-${i}`), { recursive: true });
     writeFileSync(join(dir, 'policies', `rule-${i}`, 'policy.wasm'), wasm);
@@ -906,6 +934,136 @@ test('protocol walkthrough summary keeps typed bundle, controls and per-rule art
   // Native-setup funding fields say nothing about the swap; they are not exported as its target or amount.
   assert.deepEqual([report.run.target, report.run.recipient, report.run.amount], [null, null, null]);
   assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('W3 evidence refused without adapter identity', (t) => {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS);
+  assert.equal(exportEvidence(withPipeline(t, run)).protocol_pipeline.adapter.name, 'soroswap-router@1');
+  for (const [mode, change] of [
+    ['no adapter', (p) => { delete p.adapter; }],
+    ['a null adapter', (p) => { p.adapter = null; }],
+    ['another adapter', (p) => { p.adapter.name = 'soroswap-router@2'; }],
+    ['other router code', (p) => { p.adapter.code_hash = 'ef'.repeat(32); }],
+    ['another rule', (p) => { p.adapter.rule_index = 1; }],
+    ['a registry other than the installed one', (p) => { p.adapter.registry_root = 'ef'.repeat(32); }],
+    ['an unnamed registry', (p) => { p.adapter.registry = 'governance'; }],
+    ['a self-declared committed registry', (p) => { p.adapter.registry = 'committed_development'; }],
+  ]) {
+    const pipeline = structuredClone(protocolPipeline);
+    change(pipeline);
+    assert.throws(() => exportEvidence(withPipeline(t, structuredClone(run), pipeline)), /invalid or inconsistent/, mode);
+  }
+  // A Blend claim has no adapter, and claiming one is refused.
+  const blend = structuredClone(protocolPipeline);
+  Object.assign(blend, { kind: 'blend_claim', artifacts: blend.artifacts.slice(0, 1) });
+  const claim = protocolFixture();
+  claim.walkthrough.kind = 'blend_claim';
+  claim.walkthrough.invocations = claim.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  claim.walkthrough.invocations[0].rule_ids = [0];
+  claim.walkthrough.bundle.entries.pop();
+  delete claim.walkthrough.controls;
+  assert.throws(() => exportEvidence(withPipeline(t, structuredClone(claim), blend)), /invalid or inconsistent/);
+  Object.assign(blend, { adapter: null, high_blast_radius: [] });
+  assert.equal(exportEvidence(withPipeline(t, claim, blend)).protocol_pipeline.adapter, null);
+});
+
+test('report flags adapter deadline as high blast radius', (t) => {
+  const report = exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS)));
+  assert.deepEqual(report.protocol_pipeline.adapter, { name: 'soroswap-router@1', code_hash: ROUTER_CODE, rule_index: 0,
+    registry_root: HASH, registry: 'development_root', binding: 'development_registry_assertion_not_governance' });
+  assert.equal(report.protocol_pipeline.adapter_status, 'adapter_bound');
+  const operator = structuredClone(protocolPipeline);
+  operator.adapter.registry = 'operator_root';
+  assert.equal(exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS), operator)).protocol_pipeline.adapter.binding,
+    'operator_registry');
+  assert.deepEqual(report.protocol_pipeline.high_blast_radius, [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4,
+    constraint: 'any_value', provenance: 'adapter_derived', blast_radius: 'high' }]);
+  // The control that observes it is a disclosed permit, never a denial.
+  assert.equal(report.walkthrough.controls.steps.find((s) => s.name === 'any_deadline').result, 'verified_disclosed_permission');
+  for (const change of [(p) => { p.high_blast_radius = []; }, (p) => { p.high_blast_radius[0].blast_radius = 'medium'; },
+    (p) => { p.high_blast_radius[0].arg_index = 3; }, (p) => { delete p.high_blast_radius; }]) {
+    const pipeline = structuredClone(protocolPipeline);
+    change(pipeline);
+    assert.throws(() => exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS), pipeline)), /invalid or inconsistent/);
+  }
+});
+
+test('an adapter-bound W3 run exports its route, recipient, function and open-deadline controls and the operator decisions', (t) => {
+  const report = exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS)));
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.equal(report.walkthrough.controls.control_set, 'adapter_route_recipient_function_controls');
+  assert.deepEqual(report.walkthrough.controls.steps.map((s) => s.name).slice(0, 8), ADAPTER_SWAP_STEPS.slice(0, 8));
+  assert.deepEqual(report.walkthrough.controls.steps.find((s) => s.name === 'router_function').code, 5);
+  const recipient = report.walkthrough.controls.steps.find((s) => s.name === 'foreign_recipient');
+  assert.deepEqual([recipient.result, recipient.enforcer, recipient.code], ['verified_recipient_refusal', null, null]);
+  // The decisions, by value and file hash; the operator's free-text intents stay local.
+  assert.deepEqual(report.walkthrough.operator_decisions, { output_floor: '100000', transfer_cap: '1000000',
+    adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) });
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('W3 evidence from before the adapter re-exports, labeled pre-adapter', (t) => {
+  // The published 20 and 22 October runs: no operator decisions, control set 2, no adapter.
+  const legacy = structuredClone(protocolPipeline);
+  delete legacy.adapter; delete legacy.high_blast_radius;
+  const report = exportEvidence(withPipeline(t, protocolFixture(), legacy));
+  assert.deepEqual([report.protocol_pipeline.adapter, report.protocol_pipeline.adapter_status, report.protocol_pipeline.high_blast_radius],
+    [null, 'pre_adapter', []]);
+  assert.equal(report.walkthrough.controls.control_set, 'transfer_rule_denials_included');
+  // An adapter-derived pipeline next to a journal that claims an exact-deadline denial is mixed evidence.
+  assert.throws(() => exportEvidence(withPipeline(t, protocolFixture())), /invalid or inconsistent/);
+  const decided = protocolFixture();
+  decided.walkthrough.operator_decisions = structuredClone(DECISIONS);
+  assert.throws(() => exportEvidence(withPipeline(t, decided, legacy)), /invalid or inconsistent/);
+});
+
+test('constructed authorizations are exported and required for the controls signed without a recording', (t) => {
+  const report = exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS)));
+  const byName = Object.fromEntries(report.walkthrough.invocations.map((i) => [i.name, i.authorization]));
+  for (const name of CONSTRUCTED) assert.equal(byName[name], 'signed_without_recording', name);
+  for (const name of ['any_deadline', 'input_cap', 'delegate_swap']) assert.equal(byName[name], 'recorded', name);
+  for (const change of [(r) => { delete r.walkthrough.invocations.find((i) => i.name === 'path_truncated').authorization; },
+    (r) => { r.walkthrough.invocations.find((i) => i.name === 'any_deadline').authorization = 'signed_without_recording'; }]) {
+    const run = protocolFixture(ADAPTER_SWAP_STEPS);
+    change(run);
+    assert.throws(() => exportEvidence(withPipeline(t, run)), /invalid or inconsistent/);
+  }
+});
+
+const adapterInvalid = {
+  'the open deadline recorded as a denial': (r) => Object.assign(r.walkthrough.controls.steps.find((s) => s.name === 'any_deadline'),
+    { result: 'verified_denial', enforcer: ROOT_POLICY, code: 6 }),
+  'a foreign recipient attributed to a policy': (r) => Object.assign(r.walkthrough.controls.steps.find((s) => s.name === 'foreign_recipient'),
+    { result: 'verified_denial', enforcer: ROOT_POLICY, code: 6 }),
+  'another router function refused for its arguments': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'router_function').code = 6; },
+  'a route denial from the transfer rule': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'path_truncated').enforcer = CHILD_POLICY; },
+  'a missing route control': (r) => { r.walkthrough.controls.steps = r.walkthrough.controls.steps.filter((s) => s.name !== 'path_extended'); },
+  'no operator decisions': (r) => { delete r.walkthrough.operator_decisions; },
+  'operator decisions without the deadline acceptance': (r) => { r.walkthrough.operator_decisions.adapter_deadline = 'exact'; },
+  'adapter controls on a Blend claim': (r) => { r.walkthrough.kind = 'blend_claim'; },
+};
+for (const [name, mutate] of Object.entries(adapterInvalid)) {
+  test(`adapter-bound W3 summary refuses ${name}`, (t) => {
+    const run = protocolFixture(ADAPTER_SWAP_STEPS);
+    mutate(run);
+    assert.throws(() => exportEvidence(withPipeline(t, run)), /invalid or inconsistent/);
+  });
+}
+
+test('an adapter-bound control journal without its pipeline is refused, completed or not', (t) => {
+  assert.throws(() => exportEvidence(setup(t, protocolFixture(ADAPTER_SWAP_STEPS))), /invalid or inconsistent/);
+  const partial = protocolFixture(ADAPTER_SWAP_STEPS);
+  partial.walkthrough.controls = { status: 'incomplete', control_set: 3, steps: partial.walkthrough.controls.steps.slice(0, 2) };
+  assert.throws(() => exportEvidence(setup(t, partial)), /invalid or inconsistent/);
+});
+
+test('the adapter names the registry the run resolved even before anything is installed', (t) => {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS);
+  delete run.walkthrough.bundle; delete run.walkthrough.controls;
+  run.walkthrough.invocations = run.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  assert.equal(exportEvidence(withPipeline(t, structuredClone(run))).protocol_pipeline.adapter.registry_root, HASH);
+  run.registry_root = 'ef'.repeat(32);
+  assert.throws(() => exportEvidence(withPipeline(t, run)), /invalid or inconsistent/);
 });
 
 test('a run with the earlier control set exports its actual steps and says which set it was', (t) => {
@@ -1381,7 +1539,7 @@ test('protocol derived denials are attributed to the rule each case exercises', 
     mutate(run);
     const dir = setup(t, run);
     const emitted = JSON.parse(derivedFile('w3-cases.json'));
-    writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify({ ...protocolPipeline, account: D_ACCOUNT,
+    writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify({ ...legacyPipeline, account: D_ACCOUNT,
       spec_hash: emitted.spec_hash, reference_cases: emitted.total }));
     writeFileSync(join(dir, 'derived-cases.json'), derivedFile('w3-cases.json'));
     writeFileSync(join(dir, 'spec.json'), derivedFile('w3-spec.json'));

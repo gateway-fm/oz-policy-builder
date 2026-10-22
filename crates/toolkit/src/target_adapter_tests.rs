@@ -9,6 +9,12 @@ use stellar_xdr::{Limits, SorobanAuthorizedFunction, WriteXdr};
 
 fn request() -> (SynthesizeInput, Hash32) {
     let hash = sha256(b"synthetic registry adapter router");
+    (request_for(hash), hash)
+}
+
+/// A swap-shaped recording whose target is observed running `hash`, with a development
+/// registry that binds `hash` to the reviewed router descriptor.
+fn request_for(hash: Hash32) -> SynthesizeInput {
     let mut authorization = raw::auth_entry(raw::address_credentials(1));
     let SorobanAuthorizedFunction::ContractFn(call) = &mut authorization.root_invocation.function
     else {
@@ -69,21 +75,18 @@ fn request() -> (SynthesizeInput, Hash32) {
     let mut decisions = spec::golden_decisions();
     decisions.spending_limit = None;
     decisions.widenings.clear();
-    (
-        SynthesizeInput {
-            bundles: vec![recording.bundle],
-            selected_authorizer: None,
-            account: None,
-            signed_registry_snapshot: Some(
-                serde_json::to_value(sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap())
-                    .unwrap(),
-            ),
-            decisions: serde_json::to_value(decisions).unwrap(),
-            spending_limit_capability: None,
-            template_family: "policy-templates/scope@1".into(),
-        },
-        hash,
-    )
+    SynthesizeInput {
+        bundles: vec![recording.bundle],
+        selected_authorizer: None,
+        account: None,
+        signed_registry_snapshot: Some(
+            serde_json::to_value(sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap())
+                .unwrap(),
+        ),
+        decisions: serde_json::to_value(decisions).unwrap(),
+        spending_limit_capability: None,
+        template_family: "policy-templates/scope@1".into(),
+    }
 }
 
 fn output(input: &SynthesizeInput) -> PolicySpec {
@@ -117,6 +120,40 @@ fn signed_hash_binding_routes_semantics_without_inventing_a_quote() {
         .recordings
         .iter()
         .all(|r| r.trust == ozpb_domain::TrustLevel::self_supplied()));
+}
+
+/// The committed development snapshot carries the router binding, so a call recorded against
+/// the testnet router's code gets the adapter's input bound and unconstrained deadline, and
+/// the rule refuses on drift. The minimum output stays the recorded value: the adapter does
+/// not invent a floor.
+#[test]
+fn committed_development_registry_derives_the_testnet_router_bounds() {
+    let router = target_adapters::SOROSWAP_ROUTER_TESTNET_WASM;
+    let mut input = request_for(router);
+    input.signed_registry_snapshot = Some(
+        serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json")).unwrap(),
+    );
+    let spec = output(&input);
+    let rule = &spec.rules[0];
+    let args = &rule.allowed_calls[0].args;
+    assert!(matches!(&args[0].constraint, Constraint::LeI128 { max } if max == "1000"));
+    assert!(matches!(&args[1].constraint, Constraint::EqI128 { value } if value == "950"));
+    assert!(matches!(args[4].constraint, Constraint::AnyValue));
+    for i in [0, 4] {
+        assert!(
+            matches!(&args[i].provenance, Provenance::AdapterDerived { adapter, code_hash }
+            if adapter == "soroswap-router@1" && *code_hash == router)
+        );
+    }
+    let target = rule.context.target_code_hash.as_ref().unwrap();
+    assert_eq!(
+        (target.hash, target.role, target.on_drift),
+        (
+            router,
+            TargetHashRole::AdapterRequired,
+            DriftResponse::Refuse
+        )
+    );
 }
 
 #[test]
