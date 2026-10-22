@@ -455,9 +455,9 @@ pub enum StateSpec {
     /// reset by inactivity, TTL expiry or archival (§4.4).
     ///
     /// Named per-installation rather than lifetime because `uninstall` removes the counter entry
-    /// and a later `install` legitimately starts from zero. Both are gated on the account
-    /// owner's authorization, so only the owner reaches that path — but the guarantee stated to
-    /// a user is per installation, and the name has to say so.
+    /// and a later `install` starts from zero. Both need only the smart account's authorization,
+    /// which any account rule matching the policy's address grants — the owner's or another's —
+    /// so the guarantee stated to a user is per installation, and the name has to say so.
     CallCountPerInstallation { max_calls: u32 },
 }
 

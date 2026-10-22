@@ -409,9 +409,13 @@ implemented in stellar-core, so this is evidence about the path our flow takes r
 reading of every implementation of the rule.
 
 The scope of "never resets" is one installation, and that limit is real: `uninstall` removes the
-entry, after which `install` is possible and the counter starts from zero. Both require
-`smart_account.require_auth()`, so only the account's owner can reach it, and the result is a new
-grant rather than the erosion of an existing one. The architecture now states the cap that way —
+entry, after which `install` is possible and the counter starts from zero. Both require only
+`smart_account.require_auth()`, which the account grants under any rule matching the policy's
+address (`Default` or `CallContract(policy)`), not only the owner's. Whoever holds such a rule
+can therefore reset an existing grant's cap. `account_wasm_invariants.rs` demonstrates this
+through the pinned account. `check_policy_call_surface` lists such rules before installation and
+refuses one the agent's key can use alone. Rules added later are not monitored (see "full
+call-surface monitoring" in `docs/SCOPE.md`). The architecture states the cap per installation —
 `docs/architecture.md:598-600` says "within an installation" rather than "lifetime", and the
 reinstall invariant at `:586-591` is scoped to the installer flow instead of being asserted of the
 policy contract, which cannot enforce it. The generated contract enforces its half of that

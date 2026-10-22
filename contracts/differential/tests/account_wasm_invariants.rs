@@ -1428,7 +1428,7 @@ fn grant_survives_inactivity_until_its_shortest_ttl() {
     });
     assert_eq!(
         lapsed_keys,
-        BTreeSet::from([account_instance, account_code])
+        BTreeSet::from([account_instance.clone(), account_code.clone()])
     );
     assert_eq!(horizon, START + w.ledger.min_persistent_entry_ttl - 1);
     let policy_state = w.policy_state_keys(grant);
@@ -1445,6 +1445,10 @@ fn grant_survives_inactivity_until_its_shortest_ttl() {
     idle.advance_to(horizon);
     assert_eq!(idle.grant_call(grant), Outcome::Permitted);
     assert_eq!(idle.remaining(grant), Ok(MAX_CALLS - 2));
+    // Using the grant does not extend them either: an active grant reaches the same horizon.
+    for key in [&account_instance, &account_code] {
+        assert_eq!(idle.live_until(key), Some(horizon));
+    }
 
     // One ledger later it is refused until those entries are restored.
     let lapsed_keys = lapsed_keys.into_iter().collect::<Vec<_>>();

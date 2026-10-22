@@ -60,13 +60,13 @@ that authorization under any rule that matches the policy's address: `Default` o
 | Missing-state denial | `differential.rs` `missing_state_denies_in_both`; `ttl.rs` `remaining_calls_refuses_an_installation_whose_marker_is_gone`; the policy-address test above | Absent state denies; it never reads as zero. |
 | Install-only initialization, double install | `differential.rs` `install_is_the_only_initializer_and_double_install_fails` | A second install is refused with `AlreadyInstalled`. |
 | TTL and max-TTL bounds | `ttl.rs` (11 tests) | Conditional extension, the clamp to the compiled expiry and the network maximum, no rent on reads, denials or uninstall. |
-| Archival and restoration | `archived_counter_denies_until_restored` | With the marker and counter archived, the grant, a fresh install and an uninstall all fail until the entries are restored. After restoration the count continues from its archived value. |
+| Archival and restoration | `archived_counter_denies_until_restored` | With the marker and counter archived, the grant, a fresh install and an uninstall all fail until the entries are restored. The suite models restoration as keeping the archived value, so the count continues; the host and protocol evidence that the network keeps it is in [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md). |
 | Rule-expiration extension | `extended_rule_validity_does_not_outlive_the_compiled_expiry` | Without an extension the account refuses past the rule's expiry. If the owner extends the rule, the policy still refuses with `RuleExpired`, and a fresh install after the expiry is refused too. |
 | Reinstall as a new grant | `differential.rs` `uninstall_obeys_upstream_lifecycle_and_reinstall_resets_state`; `stale_policy_state_is_refused_not_adopted` | Removing and re-adding the rule through the account gives a new rule id and a fresh count. |
 | Stale-state collisions | `stale_policy_state_is_refused_not_adopted`; `differential.rs` `installation_markers_are_isolated_by_account_and_rule` | The account never reuses a rule id, and the call-surface check reads past the removed id. State created in advance for the next id, here pre-spent through a policy-address rule, makes the owner's `add_context_rule` fail with `AlreadyInstalled`; it is never adopted. Installations are isolated by account and rule. |
 | Rollback of failed compositions | `failed_composition_rolls_back_the_permitting_policy`; `generated_suite.rs` `later_policy_denial_rolls_back_an_earlier_policy_counter` | With two generated-policy instances on one rule, the first permits and the second's denial rolls back the first one's increment. |
 | N+1 and multi-context rollback | `account_wasm_auth.rs` `pinned_account_wasm_full_authorization`; the native worker's [stateful sequence](NATIVE-EXECUTION.md) | The cap holds across ledger advances; a two-context authorization that exceeds it rolls back entirely. |
-| Survival across inactivity | `grant_survives_inactivity_until_its_shortest_ttl` | An idle grant's authorization permits, with its count intact, until the first account or policy entry it reads expires; after that it is refused until restored. The target's own entries are not part of this check. In this suite the first to expire are the account's own instance and code: nothing on the authorization path extends them. The account extends its rule, signer and policy entries when it reads them. The policy extends its own entries, instance and code to the compiled expiry. |
+| Survival across inactivity | `grant_survives_inactivity_until_its_shortest_ttl` | An idle grant's authorization permits, with its count intact, until the first account or policy entry it reads expires. The target's own entries are not part of this check. After that, a transaction that does not restore the archived entries is refused. A normally simulated submission restores them automatically and pays for it, so archival is not revocation. In this suite the first to expire are the account's own instance and code: nothing on the authorization path extends them, for an active grant as for an idle one. The account extends its rule, signer and policy entries to 30 days when it reads them (stellar-accounts 0.7.2, `smart_account/mod.rs:520-521`), so with real network TTLs one of those may expire first. The policy extends its own entries, instance and code to the compiled expiry. |
 
 Not covered:
 
@@ -77,7 +77,8 @@ Not covered:
 - **The live check end to end.** The direct-call tests feed the scan, projection and pure
   call-surface check from the local test ledger and supply the generated policy's recognition
   themselves. They do not exercise the request, the registry, the artifact rebuild or a live
-  endpoint.
+  endpoint, and they scan with the reader's default bounds, not bounds declared by a signed
+  registry entry.
 - **Network durations.** The TTL values are the SDK test defaults. How long a real deployment
   survives idle depends on the TTLs its entries were deployed or extended with.
 - **The authority-surface tests in §8.** Apart from the rules above, none of them is executed
