@@ -25,7 +25,7 @@ use ozpb_synthesizer::{synthesize, SynthesisInput, UserDecisions};
 use std::collections::BTreeMap;
 
 mod verification;
-pub use verification::{reference_suite, verify_with_build_config};
+pub use verification::{reference_suite, reference_suite_cases, verify_with_build_config};
 mod dry_run;
 pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;

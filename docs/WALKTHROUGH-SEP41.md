@@ -60,6 +60,28 @@ then checks the generated policy's installation and the spending policy's stored
 | Removal | Confirmed owner removal, pinned event, absent rule, and separate cleanup observations for both policies. |
 | Post-removal call | The account's `ContextRuleNotFound`; an exhausted policy is insufficient. |
 
+Before those controls, `derived-denials.mjs` replays this spec's own layer-1 suite against the
+installed rule ([Derived denials](../testnet-harness/README.md#derived-denials)). The recorded
+transfer must be permitted in simulation, and every live-realizable deny case must be refused
+by the enforcer its class predicts, read from the live rule's policy order. That is the
+generated policy's `#6` or `#1`, the spending policy's `3221` or `3223` where it runs first and
+refuses first, or the account's `3002`/`3016`. For this spec that is ten cases: another token (the funded
+control token stands in for the suite's undeployed address), another merchant, five amounts and
+three signer sets. The spending policy must still be unexercised, so the replay runs before any
+charge.
+
+**Passing.** The W2 report passes when the recorded transfer is permitted (a confirmed delegated
+charge, and the suite's original permitted in simulation) and at least five derived denials from
+that spec's suite, identified by its suite hash, are refused with the predicted enforcer. Those
+denials are enforcing simulations after installation, observed at their reported ledgers; nothing
+is submitted. Time, call-count, missing-state and strict-signer-set cases and mutations the target
+rejects before authorization (arity, type confusion) stay offline layer-1 evidence, and the
+report lists them by class and reason. The unrecognized-signer case and the
+delegate-plus-unrecognized case stop at the same account check, so they count as two suite cases
+but only one live check. **Status:** the [22 October run](TESTNET-EVIDENCE-TRANCHE-2.md#11-controlled-sep-41-run-with-derived-denials-22-october-2026)
+permitted the original and refused all ten derived denials as predicted. The 20 October run
+(§8) predates the step.
+
 Wrong-tuple and signer controls run before the first charge. Every W2 negative control is an
 enforcing simulation, with no fee-transaction signing or submission even if unexpectedly
 permitted. A late immediate-repeat observation is marked inconclusive and fails the run;

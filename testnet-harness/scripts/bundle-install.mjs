@@ -31,9 +31,9 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
     entries: identities.map((identity) => ({ ...identity, tx: {} })),
   };
   save();
-  async function send(entry, operation, op) {
+  async function send(entry, operation, op, fee = {}) {
     requireThat(entry.pending === undefined, 'a bundle transaction is already pending');
-    const sent = await deps.submit(payer, op, { stage: `bundle rule ${entry.rule_index} ${operation}`,
+    const sent = await deps.submit(payer, op, { stage: `bundle rule ${entry.rule_index} ${operation}`, ...fee,
       onSubmitting: (transaction) => {
         requireThat(/^[0-9a-f]{64}$/.test(transaction), 'invalid pending transaction identity');
         entry.pending = { operation, transaction, status: 'prepared_for_submission' };
@@ -51,7 +51,9 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
   }
   try {
     for (const [index, entry] of journal.entries.entries()) {
-      const uploaded = await send(entry, 'upload', Operation.uploadContractWasm({ wasm: artifacts[index].wasm }));
+      // New code's rent and write fee can exceed the ten-XLM upload default (README: Keys).
+      const uploaded = await send(entry, 'upload', Operation.uploadContractWasm({ wasm: artifacts[index].wasm }),
+        { maxFee: rpc.POLICY_WASM_UPLOAD_FEE });
       same(Buffer.from(scValToNative(uploaded.returnValue)).toString('hex'), entry.wasm_hash, 'uploaded Wasm');
       const created = await send(entry, 'create', Operation.createCustomContract({
         address: new Address(payer.publicKey()), wasmHash: Buffer.from(entry.wasm_hash, 'hex'), salt: randomBytes(32),

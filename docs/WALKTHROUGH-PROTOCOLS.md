@@ -9,10 +9,14 @@ not establish a wallet's protected human approval.
 **Status.** W3 is executable through `run.sh`. A controlled run on 20 October 2026 completed every
 step below; an earlier run that day predates the two transfer-rule denials
 ([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-runs-20-october-2026)).
+A run on 22 October 2026 repeated every W3 step with the [derived denials](#derived-denials) and
+passed ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
 2026 completed every W1 step after four stopped attempts
 ([section 10 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#10-controlled-blend-claim-run-21-october-2026)).
+A run on 22 October 2026 repeated every W1 step with the [derived denials](#derived-denials) and
+passed ([section 12](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)).
 
 ## W3 Soroswap
 
@@ -89,6 +93,34 @@ interrupted bundle is recorded as `incomplete`, not as a partial success. Each r
 answer (commitment, check and pre-sign recheck ledgers) and its install-time readback are kept
 in the journal and exported. `bundle-command.mjs inspect` reads both rules back again.
 
+### Derived denials
+
+After `bundle-command.mjs inspect` and before any delegated call, `derived-denials.mjs` replays
+the spec's own layer-1 suite against both installed rules
+([harness README](../testnet-harness/README.md#derived-denials)). Each rule's recorded call must be
+permitted in simulation: the router rule's swap with its transfer child signed for both rules,
+and the transfer rule's direct transfer. Then every live-realizable deny case is replayed in
+suite order. For the W3 spec that is ten cases, five per rule:
+
+- input above the cap and output below the floor on the router rule (`#6`);
+- the transfer rule's cap and a stranger recipient (`#6` from the transfer rule's own policy);
+- for each rule, an empty signer set (`#1`), an unrecognized signer and the delegate plus an
+  unrecognized signer (the account's `3016`).
+
+The route and deadline mutations replace a `Vec` or `u64` with a bool, which the router's argument
+decoding rejects before authorization. They stay offline with the other listed classes. So do the
+`to` mutation, which moves the authorization off the account, and the suite's undeployed contract
+and absent function, which have no live equivalent here.
+
+**Passing.** A W3 or W1 report passes when the recorded calls are permitted and at least five
+derived denials from that spec's suite are refused by the predicted enforcer. That means the
+confirmed delegated positive, plus the suite's originals permitted in simulation, plus denials
+identified by the suite hash. All of these are enforcing simulations after installation, at their
+reported ledgers; nothing is submitted. The hand-written controls below do not count toward the
+five. **Status:** both passed live on 22 October 2026: W1 at exactly the minimum of five denials
+([section 12 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)),
+W3 with ten ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
+
 ### Required observations
 
 All negative controls are enforcing simulations: nothing is submitted, even after an unexpected
@@ -153,7 +185,18 @@ foreign recipient (`NoTupleMatched`, `#6` from the generated policy), another po
 (`FunctionNotAllowed`, `#5`: the policy checks the function name before any argument), the
 signer controls, one
 delegated claim after an explicit 1–120 ledger accrual wait, the count cap, expiry, removal and
-the post-removal denial. The foreign recipient is a contract address derived from a fixed label
+the post-removal denial. The derived-denial step replays five cases of the W1 suite:
+
+- a stranger `to` (`#6`);
+- an empty signer set (`#1`);
+- an unrecognized signer and the delegate plus an unrecognized signer (`3016`);
+- the suite's absent function, realized as the pool's `submit` (`#5`), which the
+  `pool_function` control already observed live.
+
+That is exactly the minimum, and only two of the five reach the policy's argument or function
+checks. The changed reserve list replaces a `Vec<u32>` with a bool, which the pool rejects before
+authorization, so it stays offline. Blend's `claim` calls `from.require_auth()` before paying out,
+so the stranger recipient is refused before the missing trustline matters. The foreign recipient is a contract address derived from a fixed label
 (`BLEND_FOREIGN_RECIPIENT` in `protocol-invoke.mjs`): the pool pays the accrued BLND while the
 call is recorded, and a classic account without a BLND trustline would fail that transfer before
 the policy could refuse it. Like every negative control, it is only simulated.

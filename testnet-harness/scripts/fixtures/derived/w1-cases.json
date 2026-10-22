@@ -1,0 +1,1067 @@
+{
+  "format": "ozpb-reference-suite-cases/v1",
+  "spec_hash": "4f148420fd9db0a4b103ad5259dda76ec58a589eb1269f485a9f95b0a5b8713a",
+  "suite_hash": "18e9e641111574dc3f6f273f2c09c785477f7d950270d7e3c9ccdb282d7de306",
+  "total": 25,
+  "cases": [
+    {
+      "id": "case-0",
+      "index": 0,
+      "rule_index": 0,
+      "class": "original",
+      "label": "rule[0] original claim",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-1",
+      "index": 1,
+      "rule_index": 0,
+      "class": "different_contract",
+      "label": "rule[0] different target contract",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CARCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEVQO",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-2",
+      "index": 2,
+      "rule_index": 0,
+      "class": "different_function",
+      "label": "rule[0] different function (claim_x)",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim_x",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-3",
+      "index": 3,
+      "rule_index": 0,
+      "class": "different_address_arg",
+      "label": "rule[0] different address arg[0]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "GAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCF6M"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-4",
+      "index": 4,
+      "rule_index": 0,
+      "class": "type_confusion",
+      "label": "rule[0] type: i128 where address arg[0]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "i128": "42"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-5",
+      "index": 5,
+      "rule_index": 0,
+      "class": "arg_equality",
+      "label": "rule[0] different scval arg[1]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAAAAAAAA="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-6",
+      "index": 6,
+      "rule_index": 0,
+      "class": "different_address_arg",
+      "label": "rule[0] different address arg[2]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "GAIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCEIRCF6M"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-7",
+      "index": 7,
+      "rule_index": 0,
+      "class": "type_confusion",
+      "label": "rule[0] type: i128 where address arg[2]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "i128": "42"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-8",
+      "index": 8,
+      "rule_index": 0,
+      "class": "arg_arity",
+      "label": "rule[0] extra argument",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "i128": "1"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-9",
+      "index": 9,
+      "rule_index": 0,
+      "class": "arg_arity",
+      "label": "rule[0] missing argument",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-10",
+      "index": 10,
+      "rule_index": 0,
+      "class": "zero_signers",
+      "label": "rule[0] zero authenticated signers",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-11",
+      "index": 11,
+      "rule_index": 0,
+      "class": "wrong_signer",
+      "label": "rule[0] unrecognized signer authenticates",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-12",
+      "index": 12,
+      "rule_index": 0,
+      "class": "signer_boundary",
+      "label": "rule[0] duplicate signer does not double-count",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          },
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-13",
+      "index": 13,
+      "rule_index": 0,
+      "class": "signer_boundary",
+      "label": "rule[0] authorized signer set plus unrecognized signer",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          },
+          {
+            "delegated": {
+              "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-14",
+      "index": 14,
+      "rule_index": 0,
+      "class": "strict_set_mutation",
+      "label": "rule[0] strict set: live rule signer set grew",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          },
+          {
+            "delegated": {
+              "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-15",
+      "index": 15,
+      "rule_index": 0,
+      "class": "strict_set_mutation",
+      "label": "rule[0] strict set: live rule signer set swapped",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-16",
+      "index": 16,
+      "rule_index": 0,
+      "class": "time_boundary",
+      "label": "rule[0] one ledger past valid_until",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316810,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-17",
+      "index": 17,
+      "rule_index": 0,
+      "class": "time_boundary",
+      "label": "rule[0] exactly at valid_until (still valid)",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316809,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-18",
+      "index": 18,
+      "rule_index": 0,
+      "class": "time_boundary",
+      "label": "rule[0] one ledger before valid_until",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-19",
+      "index": 19,
+      "rule_index": 0,
+      "class": "call_count_boundary",
+      "label": "rule[0] call count zero",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-20",
+      "index": 20,
+      "rule_index": 0,
+      "class": "call_count_boundary",
+      "label": "rule[0] call count exhausted",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 1
+      }
+    },
+    {
+      "id": "case-21",
+      "index": 21,
+      "rule_index": 0,
+      "class": "call_count_boundary",
+      "label": "rule[0] one call left (still permits)",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-22",
+      "index": 22,
+      "rule_index": 0,
+      "class": "call_count_boundary",
+      "label": "rule[0] call count above maximum",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 2
+      }
+    },
+    {
+      "id": "case-23",
+      "index": 23,
+      "rule_index": 0,
+      "class": "call_count_boundary",
+      "label": "rule[0] call count u32 maximum",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 4294967295
+      }
+    },
+    {
+      "id": "case-24",
+      "index": 24,
+      "rule_index": 0,
+      "class": "missing_state",
+      "label": "rule[0] missing state",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "fn_name": "claim",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5316808,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": null
+      }
+    }
+  ]
+}
