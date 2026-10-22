@@ -415,6 +415,16 @@ confirmed it at ledger 5294119, and recorded the transaction through the CLI. It
 actual browser integration with a virtual authenticator. This is sample-flow evidence;
 the run did not install a generated grant or complete four-layer/lifecycle acceptance.
 
+The [22 October 2026 live-check run](evidence/wallet-live-enforcement-testnet-2026-10-22.json)
+went through this route end to end on testnet: a fresh account and its sample transfer, recording,
+an automation delegate, generation, deployment and review of a one-call grant, then the
+[live-enforcement check](#live-enforcement-check). The exact transfer validated as a permit and one
+stroop more as `NoTupleMatched` (6) from the candidate policy. The layer passed against the deployed
+helper, simulation only. After the signatures expired, the replay check found the account
+unchanged. The owner was a virtual authenticator, so this is automation evidence with
+`human_approval_attested: false`. No native worker was configured, so the report was not complete,
+and nothing was installed.
+
 Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR
 and signature checks, and the client controller's refusal paths. The apply-script tests cover
 immutable inputs, dirty/different upstream checkouts, symlinks, missing lock metadata, and

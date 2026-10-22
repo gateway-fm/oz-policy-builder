@@ -16,8 +16,10 @@ simulated one permit and one denial through it with automation keys
 show to count ([How live use is meant to work](#how-live-use-is-meant-to-work)). The wallet
 prepares the two cases, gets the owner's consent and passkey signature, signs the delegate's part
 and validates both enforce-mode simulations
-([live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)). The result is
-state-dependent simulation evidence for one grant shape; installation stays disabled (see
+([live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)). Its
+[22 October 2026 automation run](evidence/wallet-live-enforcement-testnet-2026-10-22.json) passed
+against the deployed helper with a passkey owner on a fresh account. The result is state-dependent
+simulation evidence for one grant shape; installation stays disabled (see
 [Outstanding](#outstanding)).
 
 ## What the helper does
