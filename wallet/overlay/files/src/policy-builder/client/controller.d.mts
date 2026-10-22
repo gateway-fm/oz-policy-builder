@@ -2,6 +2,9 @@ import type { Approval, WalletIdentity } from '../shared/approval.mjs';
 import type { CheckedAssembly } from '../shared/assembly.mjs';
 import type { SignedAuthorization } from '../shared/signature.mjs';
 import type { SampleApproval, SampleDescriptor } from '../shared/sample.mjs';
+import type { ConsentDisplay, LiveOwnerChecked } from '../shared/live-consent.mjs';
+import type { LiveCase } from '../shared/live-enforcement.mjs';
+import type { LiveOwnerSignature } from '../shared/signature.mjs';
 type Details = Readonly<Record<string, unknown>>;
 export interface WalletState {
   readonly busy: boolean;
@@ -20,6 +23,8 @@ export interface WalletState {
   readonly sampleTransactionHash: string | null;
   readonly sampleAttempted: boolean;
   readonly delegate: { readonly capabilityId: string; readonly address: string } | null;
+  readonly livePreview: (Details & { display: ConsentDisplay; statementSha256: string; cases: readonly LiveCase[] }) | null;
+  readonly replay: Details | null;
 }
 export class WalletController {
   constructor(options: {
@@ -30,8 +35,13 @@ export class WalletController {
       reviewSample(input: unknown): SampleApproval;
       validateSampleAssembly(input: unknown): CheckedAssembly;
       validateSignedAuthorization(input: unknown): Promise<SignedAuthorization>;
+      liveCases(input: unknown): readonly LiveCase[];
+      consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number }): ConsentDisplay;
+      statementHash(display: ConsentDisplay): string;
+      checkLiveOwnerEntry(input: unknown): LiveOwnerChecked;
+      validateLiveOwnerSignature(input: unknown): Promise<LiveOwnerSignature>;
     };
-    sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly }): Promise<string[]>;
+    sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly | LiveOwnerChecked }): Promise<string[]>;
     origin: string;
     pins: { networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
@@ -51,5 +61,9 @@ export class WalletController {
   review(): Promise<void>;
   createDelegate(): Promise<void>;
   checkAccount(): Promise<void>;
+  prepareLive(): Promise<void>;
+  cancelLive(): void;
+  consentLive(): Promise<void>;
+  checkReplay(): Promise<void>;
   install(): Promise<void>;
 }

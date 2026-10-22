@@ -7,6 +7,7 @@ import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
 import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
+import { consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, runLive } from './live-check.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const HASH = /^[a-f0-9]{64}$/;
@@ -44,26 +45,30 @@ function freshOwner(value, signer) {
     || !equal(native.signer_ids, xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]))
     || native.valid_until.type !== 'scvVoid') refuse();
 }
-function missingVerification(artifact, bindingSetHash, accountLayer, targetLayer) {
+function missingVerification(artifact, bindingSetHash, accountLayer, targetLayer, liveLayer) {
+  const layers = [
+    { layer: 'reference', status: artifact ? 'passed' : 'unavailable', detail: artifact
+      ? 'Constraint-derived reference cases passed; artifact reproduced separately.' : 'No candidate prepared.' },
+    accountLayer ?? { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
+    targetLayer ?? { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
+    liveLayer ?? { layer: 'live_enforcement', status: 'unavailable', detail: 'The live-enforcement check has not run.' },
+  ];
+  // Complete only when every layer passed; installation stays a separate, disabled capability.
   return freezeCopy({ runId: id(), specHash: artifact?.specHash ?? null, wasmHash: artifact?.wasmHash ?? null,
-    bindingSetHash: bindingSetHash ?? null, complete: false, layers: [
-      { layer: 'reference', status: artifact ? 'passed' : 'unavailable', detail: artifact
-        ? 'Constraint-derived reference cases passed; artifact reproduced separately.' : 'No candidate prepared.' },
-      accountLayer ?? { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
-      targetLayer ?? { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
-      { layer: 'live_enforcement', status: 'unavailable', detail: 'Wallet-authorized candidate behavioral preflight has not run.' },
-    ] });
+    bindingSetHash: bindingSetHash ?? null, complete: layers.every((layer) => layer.status === 'passed'), layers });
 }
 const accountLayer = (status, detail) => ({ layer: 'account_wasm', status, detail });
 const targetLayer = (status, detail) => ({ layer: 'captured_target', status, detail });
 
 /** Closed HTTP operations. Every privileged input comes from retained state or operator configuration. */
-export function createWalletActions({ session, toolchain, network, native = null }) {
+export function createWalletActions({ session, toolchain, network, native = null, live = null, delegates = new DelegateCapabilities() }) {
   const deployments = new Map();
   const attemptedArtifacts = new Set();
   const reviews = new Map();
-  const delegates = new DelegateCapabilities();
+  /** Every live check's replay obligation, append-only: what its signatures could change and until when. */
+  const liveRecords = [];
   let accountCheckRunning = false;
+  let liveRunning = false;
   let accountAttempted = false;
   let sampleAccount = null;
   let sampleSubmitted = false;
@@ -84,7 +89,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
         capabilities: { record: true, generate: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
-          install: false, lifecycle: false },
+          liveCheck: live !== null, install: false, lifecycle: false },
         verification: missingVerification() };
     },
     'prepare-account': async (input) => {
@@ -241,7 +246,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     // A local automation delegate: the key stays in this process; it never becomes an owner signer.
     'create-delegate': async (input) => {
       exact(input, []);
-      if (!native) refuse();
+      if (!native && !live) refuse();
       return delegates.create();
     },
     // Both local execution layers for one reviewed grant, from one CLI preparation (one run hash).
@@ -249,14 +254,14 @@ export function createWalletActions({ session, toolchain, network, native = null
     // nothing is recorded, so the backend's locks are released without accepting partial evidence.
     'check-account': async (input, { signal } = {}) => {
       exact(input, ['reviewId', 'capabilityId']);
-      if (!native || accountCheckRunning) refuse();
+      if (!native || accountCheckRunning || liveRunning) refuse();
       const review = get(reviews, input.reviewId);
       const deployment = get(deployments, review.deploymentId);
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
       const rule = artifact.spec.rules[0];
       const signers = rule.authorization?.signers;
       const delegate = signers?.length === 1 ? signers[0].delegated?.address : undefined;
-      const signer = delegates.signer(input.capabilityId, delegate);
+      const signer = delegates.offline(input.capabilityId, delegate);
       const maxCalls = rule.state?.[0]?.call_count_per_installation?.max_calls;
       const target = capturedCall(artifact.spec);
       let layer, captured;
@@ -372,9 +377,85 @@ export function createWalletActions({ session, toolchain, network, native = null
           stopped();
         } finally { accountCheckRunning = false; }
       }
-      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer, captured);
-      reviews.set(input.reviewId, { ...review, verification });
+      const current = reviews.get(input.reviewId);
+      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer, captured, current.liveLayer);
+      reviews.set(input.reviewId, { ...current, accountLayer: layer, targetLayer: captured, verification });
       return freezeCopy({ reviewId: input.reviewId, verification });
+    },
+    // The live-enforcement layer (live-check.mjs): prepare the consent statement; nothing signable yet.
+    'prepare-live': async (input) => {
+      exact(input, ['reviewId', 'capabilityId']);
+      if (!live || accountCheckRunning || liveRunning) refuse();
+      const review = get(reviews, input.reviewId);
+      const deployment = get(deployments, review.deploymentId);
+      const { response: artifact } = toolchain.artifact(deployment.artifactId);
+      const delegate = artifact.spec.rules?.[0]?.authorization?.signers?.[0]?.delegated?.address;
+      delegates.check(input.capabilityId, delegate);
+      session.invalidate('live');
+      session.invalidate('live_sign');
+      // Earlier signatures still valid: a new check would add more before the replay check can run.
+      if (liveRecords.length && await network.latestLedger() <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) refuse();
+      const result = await prepareLive({ network, helper: live.helper, approval: review.approval, spec: artifact.spec,
+        policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash, nextRuleId: review.nextRuleId });
+      if (result.layer) {
+        const current = reviews.get(input.reviewId);
+        const verification = missingVerification(artifact, deployment.response.bindingSetHash, current.accountLayer, current.targetLayer,
+          result.layer);
+        reviews.set(input.reviewId, { ...current, liveLayer: result.layer, verification });
+        return freezeCopy({ reviewId: input.reviewId, verification, live: null });
+      }
+      const p = result.prepared;
+      const action = session.issue('live', { reviewId: input.reviewId, capabilityId: input.capabilityId, prepared: p });
+      return freezeCopy({ reviewId: input.reviewId, verification: review.verification, live: { action, display: p.display,
+        statementSha256: p.statementSha256, inputs: { helper: p.helper.contract, policyCodeHash: artifact.wasmHash,
+          expectedRuleId: p.cases[0].expected_rule_id, currentLedger: p.currentLedger,
+          signatureExpirationLedger: p.cases[0].signature_expiration_ledger } } });
+    },
+    // Consent to exactly the prepared statement. Only now is the replay obligation recorded and the
+    // unsigned owner entry, with a fresh nonce, released for the passkey.
+    'consent-live': async (input) => {
+      exact(input, ['id', 'statementSha256']);
+      return session.consume(input.id, 'live', async (held) => {
+        if (!live || input.statementSha256 !== held.prepared.statementSha256) refuse();
+        const review = get(reviews, held.reviewId);
+        await consentWindow({ network, prepared: held.prepared });
+        const record = replayRecord(held.prepared);
+        network.recordLiveObligation(record);
+        liveRecords.push(record);
+        const ownerEntryXdr = ownerEntry({ approval: review.approval, prepared: held.prepared });
+        const action = session.issue('live_sign', { ...held, ownerEntryXdr });
+        return freezeCopy({ action, ownerEntryXdr, signatureExpirationLedger: record.signatureExpirationLedger });
+      });
+    },
+    // The owner's passkey signature, then the delegate's, both simulations and their validation.
+    // A disconnect stops it before the next step and records nothing.
+    'run-live': async (input, { signal } = {}) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'live_sign', async (held) => {
+        if (!live || liveRunning || accountCheckRunning) refuse();
+        const review = get(reviews, held.reviewId);
+        const deployment = get(deployments, review.deploymentId);
+        const { response: artifact } = toolchain.artifact(deployment.artifactId);
+        const stopped = () => { if (signal?.aborted) refuse(); };
+        liveRunning = true;
+        try {
+          const mintCapability = (approved) => delegates.live(held.capabilityId, held.prepared.cases[0].delegate, approved);
+          const liveLayer = await runLive({ network, mintCapability, prepared: held.prepared, approval: review.approval,
+            ownerEntryXdr: held.ownerEntryXdr, signedAuthEntriesXdr: input.signedAuthEntriesXdr, stopped });
+          stopped();
+          const current = reviews.get(held.reviewId);
+          const verification = missingVerification(artifact, deployment.response.bindingSetHash, current.accountLayer, current.targetLayer,
+            liveLayer);
+          reviews.set(held.reviewId, { ...current, liveLayer, verification });
+          return freezeCopy({ reviewId: held.reviewId, verification });
+        } finally { liveRunning = false; }
+      });
+    },
+    // After every live-check signature has expired: did anything they authorize happen?
+    'check-replay': async (input) => {
+      exact(input, []);
+      if (!liveRecords.length) refuse();
+      return freezeCopy({ replay: await replayStatus({ network, records: liveRecords }) });
     },
     // These handlers cannot be enabled by caller-supplied evidence. They will be
     // connected only to the actual wallet-owned execution and lifecycle backends.

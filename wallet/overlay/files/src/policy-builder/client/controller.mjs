@@ -18,7 +18,8 @@ export class WalletController {
   #request; #validators; #sign; #origin; #pins; #notify; #busy = false;
   #state = copy({ status: null, wallet: null, record: null, artifact: null, deployment: null,
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
-    sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, busy: false });
+    sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
+    replay: null, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {} }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
     this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange;
@@ -26,7 +27,7 @@ export class WalletController {
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
   #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null,
-    accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null }); }
+    accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null, livePreview: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
@@ -185,10 +186,11 @@ export class WalletController {
       this.#set({ review: { ...result, approval } });
     });
   }
-  /** A backend-held automation delegate for local execution only; it never replaces the owner passkey. */
+  /** A backend-held automation delegate for the local and live checks; it never replaces the owner passkey. */
   async createDelegate() {
     return this.#act(async () => {
-      this.#capability('accountCheck');
+      const capabilities = this.#state.status?.capabilities;
+      if (capabilities?.accountCheck !== true && capabilities?.liveCheck !== true) throw refused();
       const result = await this.#request('create-delegate', {});
       if (!HASH.test(result?.capabilityId) || !/^G[A-Z2-7]{55}$/.test(result.address ?? '')) throw refused();
       this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address } });
@@ -201,12 +203,78 @@ export class WalletController {
       const signers = artifact?.spec?.rules?.[0]?.authorization?.signers;
       if (!review || !delegate || !deployment || signers?.length !== 1 || signers[0].delegated?.address !== delegate.address) throw refused();
       const result = await this.#request('check-account', { reviewId: review.reviewId, capabilityId: delegate.capabilityId });
-      const verification = result?.verification;
-      if (result?.reviewId !== review.reviewId || !verification || verification.specHash !== artifact.specHash
-        || verification.wasmHash !== artifact.wasmHash || verification.bindingSetHash !== deployment.bindingSetHash
-        || !Array.isArray(verification.layers) || verification.layers.length !== LAYERS.length
-        || verification.layers.some((layer, index) => layer?.layer !== LAYERS[index])) throw refused();
-      this.#set({ review: { ...review, verification } });
+      this.#set({ review: { ...review, verification: this.#verification(result) } });
+    });
+  }
+  #verification(result) {
+    const { review, artifact, deployment } = this.#state;
+    const verification = result?.verification;
+    if (result?.reviewId !== review.reviewId || !verification || verification.specHash !== artifact.specHash
+      || verification.wasmHash !== artifact.wasmHash || verification.bindingSetHash !== deployment.bindingSetHash
+      || !Array.isArray(verification.layers) || verification.layers.length !== LAYERS.length
+      || verification.layers.some((layer, index) => layer?.layer !== LAYERS[index])) throw refused();
+    return verification;
+  }
+  /**
+   * Prepare the live-enforcement check. The consent statement shown is the one this browser derives
+   * from the reviewed grant and the backend's inputs; it must hash to the backend's statement.
+   */
+  async prepareLive() {
+    return this.#act(async () => {
+      this.#set({ livePreview: null });
+      this.#capability('liveCheck');
+      const { review, delegate, artifact, deployment } = this.#state;
+      const signers = artifact?.spec?.rules?.[0]?.authorization?.signers;
+      if (!review || !delegate || !deployment || signers?.length !== 1 || signers[0].delegated?.address !== delegate.address) throw refused();
+      const result = await this.#request('prepare-live', { reviewId: review.reviewId, capabilityId: delegate.capabilityId });
+      if (result?.live === null) {
+        this.#set({ review: { ...review, verification: this.#verification(result) } });
+        return;
+      }
+      const inputs = result?.live?.inputs;
+      if (!HASH.test(result?.live?.action?.id ?? '') || inputs?.policyCodeHash !== artifact.wasmHash) throw refused();
+      const cases = this.#validators.liveCases({ approval: review.approval, spec: artifact.spec, helper: inputs.helper,
+        policyCodeHash: inputs.policyCodeHash, expectedRuleId: inputs.expectedRuleId,
+        signatureExpirationLedger: inputs.signatureExpirationLedger });
+      const display = this.#validators.consentDisplay(cases, { currentLedger: inputs.currentLedger });
+      const statementSha256 = this.#validators.statementHash(display);
+      if (statementSha256 !== result.live.statementSha256 || JSON.stringify(display) !== JSON.stringify(result.live.display)) throw refused();
+      this.#set({ livePreview: { action: result.live.action, display, statementSha256, cases } });
+    });
+  }
+  cancelLive() {
+    if (this.#busy) throw refused();
+    this.#set({ livePreview: null });
+  }
+  /**
+   * The owner's consent to exactly the displayed statement, then the passkey, then the simulations.
+   * No signature is requested before the backend has recorded that consent and released the exact
+   * installation entry, which is checked here before the authenticator sees it.
+   */
+  async consentLive() {
+    return this.#act(async () => {
+      const { review, livePreview } = this.#state;
+      this.#set({ livePreview: null });
+      this.#capability('liveCheck');
+      if (!review || !livePreview) throw refused();
+      const consent = await this.#request('consent-live', { id: livePreview.action.id, statementSha256: livePreview.statementSha256 });
+      if (!HASH.test(consent?.action?.id ?? '') || consent.signatureExpirationLedger !== livePreview.display.signature_expiration_ledger) throw refused();
+      const checked = this.#validators.checkLiveOwnerEntry({ approval: review.approval, cases: livePreview.cases,
+        ownerEntryXdr: consent.ownerEntryXdr });
+      const signedAuthEntriesXdr = await this.#sign({ approval: review.approval, checked });
+      const owner = await this.#validators.validateLiveOwnerSignature({ approval: review.approval, checked, signedAuthEntriesXdr,
+        origin: this.#origin });
+      const result = await this.#request('run-live', { id: consent.action.id, signedAuthEntriesXdr: [owner.signedEntryXdr] });
+      this.#set({ review: { ...review, verification: this.#verification(result) } });
+    });
+  }
+  /** After every live-check signature has expired: did the account change? */
+  async checkReplay() {
+    return this.#act(async () => {
+      this.#capability('liveCheck');
+      const result = await this.#request('check-replay', {});
+      if (!['waiting', 'unchanged', 'changed'].includes(result?.replay?.status)) throw refused();
+      this.#set({ replay: result.replay });
     });
   }
   async install() {

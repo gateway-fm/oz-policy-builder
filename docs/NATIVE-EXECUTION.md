@@ -134,7 +134,7 @@ Runner line:
 {"type":"sign_request","request_id":"1","run_hash":"...","case_id":"case:0","delegate_address":"G...","execution_network_id":"...","nonce":"1001","expiration_ledger":123,"account_digest":"...","invocation_xdr":"...","preimage_xdr":"...","digest_hex":"..."}
 ```
 
-Nonce is canonical signed-i64 decimal text; expiration is u32. Both XDR fields are canonical base64; digest fields are canonical lowercase hex. `preimage_xdr` is the protocol `HashIdPreimage::SorobanAuthorization` with the derived offline network, exact nonce/expiration and `invocation_xdr`. The root must be exactly the candidate account's `__check_auth` with one Bytes argument containing `account_digest` and no subinvocations. `digest_hex` is SHA-256 of the canonical preimage XDR. The wallet independently parses and reconstructs this object, checks all fields, run/case/registered delegate and expiration bounds, and signs only that offline digest. No live-domain signature is accepted here.
+Nonce is canonical signed-i64 decimal text; expiration is u32. Both XDR fields are canonical base64; digest fields are canonical lowercase hex. `preimage_xdr` is the protocol `HashIdPreimage::SorobanAuthorization` with the derived offline network, exact nonce/expiration and `invocation_xdr`. The root must be exactly the candidate account's `__check_auth` with one Bytes argument containing `account_digest` and no subinvocations. `digest_hex` is SHA-256 of the canonical preimage XDR. The wallet independently parses and reconstructs this object, checks all fields, run/case/registered delegate and expiration bounds, and hands only the reconstructed preimage to the delegate's offline capability. That capability derives the execution network from the binding itself and signs a `HashIdPreimage::SorobanAuthorization` in that network and nothing else: no digest or other supplied bytes, and no preimage for mainnet, testnet, futurenet or the source network. No live-domain signature is accepted here. The same in-memory key signs testnet authorizations only through a separate live capability, which builds them itself for one consented [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check) and accepts no bytes.
 
 Wallet line:
 
@@ -171,9 +171,9 @@ An operator may supply `OZPB_ACCOUNT_WASM` to reuse an artifact; the runtime sti
 pinned hash. Source reproduction of the account requires the documented aarch64-apple-darwin
 build host. The existing nightly source-build gate runs this worker suite as well.
 
-Live-enforcement evidence remains missing, and captured-target evidence is the separate mode
-above. This worker is an incremental execution component; it does not expose the full public
-`dry_run` operation. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is the contract
-a future live layer would simulate; it is tested on the same host and deployed on testnet, but
-not wired to any wallet run, and it refuses generated policies without a call cap, whose
-execution it cannot observe.
+Live-enforcement evidence is not produced by this worker, and captured-target evidence is the
+separate mode above. This worker is an incremental execution component; it does not expose the full
+public `dry_run` operation. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is the
+contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+simulates on testnet; it refuses generated policies without a call cap, whose execution it cannot
+observe.

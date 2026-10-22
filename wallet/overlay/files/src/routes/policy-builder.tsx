@@ -9,7 +9,8 @@ import type { WalletState } from "../policy-builder/client/controller.mjs";
 import { verificationGate } from "../policy-builder/client/verification.mjs";
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, reviewIntent } from "../policy-builder/shared/approval.mjs";
 import { validateAssembly } from "../policy-builder/shared/assembly.mjs";
-import { validateSignedAuthorization } from "../policy-builder/shared/signature.mjs";
+import { validateLiveOwnerSignature, validateSignedAuthorization } from "../policy-builder/shared/signature.mjs";
+import { checkLiveOwnerEntry, consentDisplay, liveCases, statementHash } from "../policy-builder/shared/live-consent.mjs";
 import { reviewSample, validateSampleAssembly } from "../policy-builder/shared/sample.mjs";
 
 export const Route = createFileRoute("/policy-builder")({ component: PolicyBuilder });
@@ -97,6 +98,36 @@ function VerificationLayers({ verification }: { verification: unknown }) {
   </ul>;
 }
 
+/** The consent statement, exactly as this browser derived it from the reviewed grant. */
+function LiveConsent({ display }: { display: unknown }) {
+  const d = object(display);
+  const owner = object(d.owner_signs);
+  return <div className="space-y-3 rounded-lg border border-amber-500 bg-amber-950/30 p-4 text-sm">
+    <h3 className="font-semibold">Consent to the live check</h3>
+    <p className="font-medium text-amber-200">{label(d.warning)}</p>
+    <p>Signatures expire at ledger <strong>{label(d.signature_expiration_ledger)}</strong> (ledger {label(d.current_ledger)} when prepared).
+      {" "}Labels: {items(d.labels).map(label).join(", ")}.</p>
+    <div className="rounded border border-slate-700 p-3">
+      <p className="font-medium">Your owner passkey signs: {label(owner.contract)}.{label(owner.function)}</p>
+      <p className="break-all text-slate-300">context {label(owner.context)}, name {label(owner.name)}, valid until {label(owner.valid_until)},
+        signers {items(owner.signers).map(label).join(", ")}, policies {items(owner.policies).map(label).join(", ")},
+        checked under owner rule {items(owner.context_rule_ids).map(label).join(", ")}</p>
+    </div>
+    {items(d.cases).map((raw, index) => {
+      const c = object(raw);
+      const call = object(c.simulated_call);
+      const transfer = object(c.delegate_signs);
+      return <div key={index} className="rounded border border-slate-700 p-3">
+        <p className="font-medium">{label(c.case)}: expected {label(c.expected)}</p>
+        <p className="break-all text-slate-300">Simulated call: {label(call.contract)}.{label(call.function)}({JSON.stringify(call.candidate)})</p>
+        <p className="break-all text-slate-300">The delegate signs: {label(transfer.contract)}.{label(transfer.function)}(from {label(transfer.from)},
+          to {label(transfer.to)}, {label(transfer.amount_stroops)} stroops) under rule {items(transfer.context_rule_ids).map(label).join(", ")}</p>
+      </div>;
+    })}
+    <p className="text-slate-400">Delegate {label(object(d.delegate).address)}: {label(object(d.delegate).key)}.</p>
+  </div>;
+}
+
 function PolicyBuilder() {
   const controller = useRef<WalletController | null>(null);
   const creatingRef = useRef(false);
@@ -115,7 +146,7 @@ function PolicyBuilder() {
       const token = takeSessionToken(window.location, window.history);
       const instance = new WalletController({
         request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
-          reviewSample, validateSampleAssembly },
+          reviewSample, validateSampleAssembly, liveCases, consentDisplay, statementHash, checkLiveOwnerEntry, validateLiveOwnerSignature },
         pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
         origin: window.location.origin, onChange: setState,
         sign: async ({ approval, checked }) => {
@@ -241,11 +272,12 @@ function PolicyBuilder() {
         <Evidence title="Recorded authorization and evidence" value={state?.record} />
         <label htmlFor="delegate" className="block text-sm">Restricted delegate address</label>
         <input id="delegate" className={input} value={delegateAddress} onChange={(event) => setDelegateAddress(event.target.value)} />
-        {state?.status?.capabilities.accountCheck && <div className="space-y-2 text-sm">
+        {(state?.status?.capabilities.accountCheck || state?.status?.capabilities.liveCheck) && <div className="space-y-2 text-sm">
           <button className={button} disabled={busy || !!state.delegate}
             onClick={() => void run((value) => value.createDelegate())}>Create local automation delegate</button>
           <p className="text-slate-400">The backend creates an Ed25519 delegate key held only in its memory and discarded when it stops.
-            It signs offline candidate-execution checks only. It is automation, not your owner passkey, and no key leaves the backend.</p>
+            It signs offline candidate-execution checks and, only after you consent, the live check's two testnet transfers, which
+            the backend simulates and never submits. It is automation, not your owner passkey, and no key leaves the backend.</p>
         </div>}
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="text-sm">Grant name<input className={input} maxLength={20} value={grantName} onChange={(event) => setGrantName(event.target.value)} /></label>
@@ -281,13 +313,36 @@ function PolicyBuilder() {
           disabled={busy || !state?.review || !state?.delegate}
           onClick={() => void run((value) => value.checkAccount())}>Run local execution checks with the local delegate</button>}
         <p className="text-sm text-slate-300">Local verification: {gate.localReady ? "three required layers passed" : "incomplete"}.
-          {" "}Full acceptance: {gate.acceptanceReady ? "all four required layers passed" : "incomplete; signing is disabled"}.</p>
+          {" "}Full acceptance: {gate.acceptanceReady ? "all four required layers passed" : "incomplete; signing is disabled"}.
+          {" "}Installation is {state?.status?.capabilities.install ? "available" : "not available in this backend"}.</p>
         <button className={button} disabled={busy || !state?.review || !gate.acceptanceReady || !state?.status?.capabilities.install}
           onClick={() => void run((value) => value.install())}>Approve exact grant with owner passkey and install</button>
         <p className="text-sm text-slate-400">A refreshed unsigned envelope is checked against this review before the authenticator prompt.
-          Missing live-enforcement evidence remains unavailable. A virtual authenticator does not establish human approval.
+          The live-enforcement layer comes only from the consented live check below. A virtual authenticator does not establish human approval.
           The local checks run with an offline signing domain: account-Wasm in fresh synthetic state, then the exact transfer
           against target state the operator RPC reports now. Neither is live-enforcement or installation evidence.</p>
+      </section>
+      <section className={panel} aria-labelledby="live-heading">
+        <h2 id="live-heading" className="text-xl font-semibold">5. Live enforcement check</h2>
+        <p className="text-sm text-slate-300">Simulates the reviewed grant on testnet through the atomic live helper: the exact transfer,
+          which the policy must permit, and one stroop more, which it must refuse. Nothing is submitted, but the signatures it needs are
+          real until they expire, so the check runs only after you consent to the statement below.</p>
+        {state?.status?.capabilities.liveCheck && <button className={button}
+          disabled={busy || !state?.review || !state?.delegate || !!state?.livePreview}
+          onClick={() => void run((value) => value.prepareLive())}>Prepare the live check</button>}
+        {state?.livePreview && <LiveConsent display={state.livePreview.display} />}
+        {state?.livePreview && <div className="flex flex-wrap gap-3">
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.consentLive())}>I consent: sign the installation with my owner passkey and simulate both cases</button>
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.cancelLive())}>Cancel live check</button>
+        </div>}
+        {state?.status?.capabilities.liveCheck && <button className={button} disabled={busy || !state?.review}
+          onClick={() => void run((value) => value.checkReplay())}>Check that the live-check signatures were not used</button>}
+        {state?.replay && <p className={`rounded-lg border p-3 text-sm ${state.replay.status === "changed" ? "border-red-500 text-red-200" : "border-slate-700"}`}>
+          Replay check: {label(state.replay.status)} at ledger {label(state.replay.latestLedger)}; signatures valid until ledger {label(state.replay.signaturesValidUntil)}.
+          {" "}{label(state.replay.alert ?? (state.replay.status === "waiting" ? "Installation must wait until that ledger has passed." : "The account did not change."))}
+        </p>}
       </section>
       <Evidence title="Transaction receipts and installation result" value={{ receipt: state?.receipt, installation: state?.installation }} open />
       <Evidence title="Backend capabilities, recognized code and verification limitations" value={state?.status} />

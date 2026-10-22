@@ -9,12 +9,16 @@ makes one native-asset transfer under it. An enforce-mode simulation of that inv
 generated policy on live state, and nothing is installed because nothing is submitted.
 
 This package is the helper contract, its real-Wasm host tests, a testnet deployment probed by
-the harness, and the wallet's validators of a live case. **The `live_enforcement` layer remains
-`unavailable`.** The helper is deployed on testnet and the harness has simulated one permit and one
-denial through it with automation keys ([Testnet deployment](#testnet-deployment)), and the
-validators decide what such a simulation must show to count
-([How live use is meant to work](#how-live-use-is-meant-to-work)). The wallet-side preparation,
-consent, signing and simulation the layer needs are not built yet (see [Outstanding](#outstanding)).
+the harness, the wallet's validators of a live case, and the wallet's consented live check that
+produces the `live_enforcement` layer. The helper is deployed on testnet and the harness has
+simulated one permit and one denial through it with automation keys
+([Testnet deployment](#testnet-deployment)). The validators decide what such a simulation must
+show to count ([How live use is meant to work](#how-live-use-is-meant-to-work)). The wallet
+prepares the two cases, gets the owner's consent and passkey signature, signs the delegate's part
+and validates both enforce-mode simulations
+([live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)). The result is
+state-dependent simulation evidence for one grant shape; installation stays disabled (see
+[Outstanding](#outstanding)).
 
 ## What the helper does
 
@@ -131,12 +135,13 @@ Each live case is one atomic simulation from unchanged network state: the captur
 expected to fail with `NoTupleMatched`. This is two named cases, not the derived deny suite; it
 cannot stand in for anything the reference, account-Wasm or captured-target layers must cover.
 
-Preconditions, none of which this package performs: the helper and candidate policy are already
-deployed and their code is read back and matched to reviewed hashes; the delegate is a funded
-classic account whose signer settings are checked; the wallet shows the owner both exact calls,
-the expiry and the replay warning and gets explicit consent before any signature exists. Only
-`simulateTransaction` in enforce mode is used, never `sendTransaction`. A recording-mode
-simulation only discovers the authorization shape and is never evidence.
+Preconditions, which the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+establishes before anything is signed: the helper and candidate policy are already deployed and
+their code is read back and matched to reviewed hashes; the delegate is a funded classic account
+whose signer settings are checked; the wallet shows the owner both exact calls, the expiry and the
+replay warning and gets explicit consent before any signature exists. Only `simulateTransaction` in
+enforce mode is used, never `sendTransaction`. The wallet builds every authorization itself; a
+recording-mode simulation is never used for them and is never evidence.
 
 Helper success is evidence only together with what the orchestrator checks itself.
 `validateLiveCase` in [`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs)
@@ -293,13 +298,34 @@ built on it. To deploy again:
    It uploads the helper and a fresh candidate itself and needs nothing else from before the reset.
 3. Commit the new evidence file and replace the contract ID above; the old one is gone.
 
-The script always deploys a new instance. It never restores an archived one, and nothing else
-in this repository extends the deployment's lifetime. Once the helper has been archived, step 2
-deploys a new instance; whether its archived code entry has to be restored first has not been
-tried.
+The script always deploys a new instance. It never restores an archived one. Once the helper has
+been archived, step 2 deploys a new instance; whether its archived code entry has to be restored
+first has not been tried.
+
+### Keeping the helper live
+
+The wallet reads the helper's instance and code entries before every live check and reports the
+layer `unavailable` when either is archived or stays live only until the check's signatures would
+expire, naming the ledger. Nothing in this repository extends that lifetime automatically. Before
+it ends, an operator can extend both entries with the Stellar CLI, from any funded testnet key:
+
+```
+stellar contract extend --id <helper contract ID> --ledgers-to-extend <ledgers> \
+  --source-account <funded testnet key> --network testnet
+stellar contract extend --wasm-hash <EXPECTED_HELPER_HASH> \
+  --ledgers-to-extend <ledgers> --source-account <funded testnet key> --network testnet
+```
+
+The first extends the instance, the second the code, whose hash is `EXPECTED_HELPER_HASH`; they
+have not been run against this deployment. An entry that is already archived would have to be restored first
+(`stellar contract restore`), which has not been tried either; deploying again
+([above](#redeploying-after-a-testnet-reset)) is the tested path. Either way, update the
+operator's `liveHelper` if the contract ID changes.
 
 ## Outstanding
 
-- The wallet-side preparation, consent, signing and enforce-mode simulation, with its interface
-  agreed before implementation. Their result goes through `validateLiveCase`.
-- A live run of both cases through the wallet, with the owner's consent.
+- Installation through the wallet, gated on all four layers and on the live check's
+  [replay check](POLLYWALLET-INTEGRATION.md#live-enforcement-check).
+- A live check with a human owner's passkey; the automation run uses a virtual authenticator.
+- Grant shapes beyond one exact native transfer of at most 1,000,000 stroops, and the derived
+  deny suite, which the two named cases do not stand in for.

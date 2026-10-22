@@ -3,7 +3,7 @@ import { Address, Asset, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import { WalletSession } from '../server/session.mjs';
 import { createWalletActions } from '../server/actions.mjs';
 import { fixture } from './approval-fixture.mjs';
-export function setup({ native = null } = {}) {
+export function setup({ native = null, live = null, delegates } = {}) {
   const calls = [];
   const f = fixture();
   const session = new WalletSession({ origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000', secret: 'ab'.repeat(32) });
@@ -34,7 +34,8 @@ export function setup({ native = null } = {}) {
     record: async (request) => { calls.push(['record', request]); return { recordId: '4'.repeat(64) }; },
     generate: async (request) => { calls.push(['generate', request]); return { artifactId: '5'.repeat(64) }; },
   };
-  return { actions: createWalletActions({ session, toolchain, network, native }), calls, f, network, toolchain, session };
+  return { actions: createWalletActions({ session, toolchain, network, native, live, ...(delegates ? { delegates } : {}) }),
+    calls, f, network, toolchain, session };
 }
 
 export function deploymentFixture(change = () => {}, options = {}) {
