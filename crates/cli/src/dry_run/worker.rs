@@ -87,9 +87,27 @@ enum Event {
 }
 
 impl Worker {
+    /// The worker runs unsandboxed as the caller and can read anything the caller can,
+    /// including the delegate key file, so it must be a binary the caller trusts. A binary that
+    /// someone other than the caller or root could replace is refused.
     pub fn new(executable: &Path) -> Result<Self, &'static str> {
         if !executable.is_absolute() {
             return Err("the native worker must be an absolute path");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata =
+                std::fs::metadata(executable).map_err(|_| "the native worker cannot be read")?;
+            if !metadata.is_file() {
+                return Err("the native worker is not a regular file");
+            }
+            if metadata.mode() & 0o022 != 0 {
+                return Err("the native worker is writable by its group or others");
+            }
+            if metadata.uid() != nix::unistd::getuid().as_raw() && metadata.uid() != 0 {
+                return Err("the native worker is owned by neither the caller nor root");
+            }
         }
         Ok(Self {
             executable: executable.to_path_buf(),
@@ -582,6 +600,21 @@ mod tests {
             Outcome::Refused("signing_request_refused")
         ));
         assert!(Worker::new(Path::new("relative/worker")).is_err());
+    }
+
+    #[test]
+    fn a_worker_binary_others_can_replace_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(dir.path(), "exit 0");
+        assert!(Worker::new(&path).is_ok());
+        for mode in [0o720, 0o702, 0o777] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(Worker::new(&path).is_err(), "mode {mode:o}");
+        }
+        // A system binary only root can write is acceptable; a missing one or a directory is not.
+        assert!(Worker::new(Path::new("/bin/sh")).is_ok());
+        assert!(Worker::new(&dir.path().join("absent")).is_err());
+        assert!(Worker::new(dir.path()).is_err());
     }
 
     #[test]

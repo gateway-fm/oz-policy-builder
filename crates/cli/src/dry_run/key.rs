@@ -2,8 +2,14 @@
 //!
 //! It is read only from a file: never a process argument, never an environment variable. The
 //! file must be a regular file owned by the caller with mode exactly 0600, holding one Stellar
-//! secret seed (`S…`), and the key must be the spec's delegate. Everything this module copies
-//! of the secret is zeroized when dropped, and nothing it prints or returns contains it.
+//! secret seed (`S…`), and the key must be the spec's delegate. Zeroization is best effort: the
+//! file buffer, the decoded seed and the signing key are cleared when dropped, but a value moved
+//! by the compiler can leave a stack copy behind. Nothing this module prints or returns contains
+//! the secret. File mode and owner are the only access checks: an extended ACL that grants
+//! someone else access to a 0600 file is not detected.
+
+// The key file's path is a process argument, and the native worker runs as the caller: a hostile
+// worker binary can read the file. The worker must be trusted (see `worker::Worker::new`).
 
 use ed25519_dalek::SigningKey;
 use std::fmt;
@@ -78,7 +84,7 @@ impl DelegateKey {
         if !before.file_type().is_file() {
             return Err(KeyFileError::NotRegularFile);
         }
-        let file = std::fs::File::open(path).map_err(|_| KeyFileError::Unreadable)?;
+        let file = open_private(path)?;
         let opened = file.metadata().map_err(|_| KeyFileError::Unreadable)?;
         check_metadata(&before, &opened)?;
         let mut text = Zeroizing::new(Vec::with_capacity(MAX_KEY_FILE_BYTES as usize + 1));
@@ -114,6 +120,35 @@ impl DelegateKey {
         use ed25519_dalek::Signer;
         self.key.sign(digest).to_bytes()
     }
+}
+
+/// Open the key file for reading without following a link and without blocking (a FIFO swapped
+/// in after the path check would otherwise wait for a writer forever); the caller still checks
+/// what was opened against the path check.
+#[cfg(unix)]
+fn open_private(path: &Path) -> Result<std::fs::File, KeyFileError> {
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)
+        .map_err(|_| KeyFileError::Unreadable)?;
+    if !file
+        .metadata()
+        .map_err(|_| KeyFileError::Unreadable)?
+        .file_type()
+        .is_file()
+    {
+        return Err(KeyFileError::NotRegularFile);
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_private(_: &Path) -> Result<std::fs::File, KeyFileError> {
+    // Without file modes the file cannot be shown private (see `check_metadata`).
+    Err(KeyFileError::Unreadable)
 }
 
 #[cfg(unix)]
@@ -210,6 +245,30 @@ pub(crate) mod tests {
                 KeyFileError::Malformed
             );
         }
+    }
+
+    /// The window between the path check and the open: whatever is at the path by then, the
+    /// open neither blocks (a FIFO with no writer) nor follows a link.
+    #[cfg(unix)]
+    #[test]
+    fn the_key_file_open_neither_blocks_on_a_fifo_nor_follows_a_link() {
+        use nix::sys::stat::Mode;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("key.fifo");
+        nix::unistd::mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(open_private(&fifo).map(|_| ()));
+        });
+        let opened = finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("opening a FIFO must not block");
+        assert_eq!(opened.unwrap_err(), KeyFileError::NotRegularFile);
+        let real = key_file(dir.path(), "real.key", &seed_strkey([42; 32]), 0o600);
+        let link = dir.path().join("link.key");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(open_private(&link).is_err(), "a link is not followed");
+        assert!(open_private(&real).is_ok());
     }
 
     #[cfg(unix)]

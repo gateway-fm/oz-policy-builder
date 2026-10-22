@@ -33,8 +33,8 @@ zeroize = { workspace = true }
 hex = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-# The worker's process-group kill and the key file's owner check.
-nix = { workspace = true }
+# The worker's process-group kill, the key file's owner check and its no-follow, non-blocking open.
+nix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

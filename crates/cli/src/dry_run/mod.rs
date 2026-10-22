@@ -40,9 +40,11 @@ pub struct DryRunArgs {
     /// JSON map of source name to {rpc_url, network_passphrase}. The request names a source.
     #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
     rpc_sources: PathBuf,
-    /// Absolute path of the operator's native execution worker (`ozpb-execution-runtime`).
-    /// It runs with fixed arguments, an empty environment, a 120 s deadline per run and its
-    /// own process group.
+    /// Absolute path of the operator's native execution worker (`ozpb-execution-runtime`). It
+    /// must be trusted: it runs unsandboxed as you and can read anything you can, the key file
+    /// included. It must be writable only by you or root. It runs with fixed arguments, an
+    /// environment holding only PATH and LANG, a 120 s deadline per run and its own process
+    /// group.
     #[arg(long, env = "OZPB_NATIVE_WORKER")]
     native_worker: PathBuf,
     /// File holding the spec delegate's Stellar secret seed (`S…`): a regular file owned by
@@ -153,7 +155,8 @@ pub fn run(args: DryRunArgs) -> Result<()> {
 }
 
 /// Run the runtime layers for one preparation and assemble the report. The delegate key is read
-/// only once the run's offline binding is derived, and dropped (zeroized) before assembly.
+/// only once the run's offline binding is derived, and dropped (best-effort zeroized) before
+/// assembly.
 fn execute_layers(
     preparation: &DryRunOutput,
     worker: &Worker,
@@ -214,13 +217,19 @@ fn never_sign(_: &serde_json::Value) -> Result<serde_json::Value, &'static str> 
     Err("a preparation run asks for no signature")
 }
 
-/// Worker stderr as the operator sees it: control characters other than newlines, terminal
-/// escape sequences among them, are replaced, so a worker cannot rewrite the operator's screen.
+/// Worker stderr or endpoint error text as the operator sees it: control characters other than
+/// newlines (terminal escape sequences among them) and bidirectional marks, embeddings,
+/// overrides and isolates are replaced, so the text can neither rewrite the operator's screen
+/// nor reorder what it shows.
 fn printable(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr)
         .chars()
         .map(|c| {
-            if c == '\n' || !c.is_control() {
+            let bidi = matches!(
+                c,
+                '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            );
+            if c == '\n' || !(c.is_control() || bidi) {
                 c
             } else {
                 char::REPLACEMENT_CHARACTER
@@ -591,7 +600,7 @@ mod tests {
             "candidate_context_rule_id": 7, "run_nonce": "11".repeat(32),
         }))
         .unwrap();
-        let worker = Worker::new(Path::new("/bin/false")).unwrap();
+        let worker = Worker::new(Path::new("/bin/sh")).unwrap();
         let unreachable = || -> Result<TargetCapture, String> {
             Err("E_RPC: the endpoint did not answer".into())
         };
@@ -619,5 +628,15 @@ mod tests {
             "{shown:?}"
         );
         assert!(shown.contains("refused") && shown.contains("next line"));
+        // Bidirectional overrides and isolates cannot reorder what the operator reads either.
+        let shown = printable(
+            "ok \u{202E}deliaf\u{202C} \u{2066}x\u{2069}\u{200F}\u{200E}\u{061C}".as_bytes(),
+        );
+        assert!(
+            !shown.chars().any(|c| matches!(c,
+                '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')),
+            "{shown:?}"
+        );
+        assert!(shown.contains("deliaf"));
     }
 }

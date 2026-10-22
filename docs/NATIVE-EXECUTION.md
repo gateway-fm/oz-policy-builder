@@ -192,8 +192,11 @@ ozpb dry-run --request dry-run-request.json \
 ```
 
 - **Worker.** The operator names the executable (`--native-worker` or `OZPB_NATIVE_WORKER`, an
-  absolute path). It gets one fixed mode argument, an empty environment apart from `PATH` and
-  `LANG`, `/` as its directory and its own process group. Each run has a 120-second deadline
+  absolute path). It is trusted code: it runs unsandboxed as the caller's user and can read
+  anything the caller can, including the delegate key file, whose path is on the command line.
+  The guards below stop a confused worker, not a hostile one. A binary writable by its group or
+  others, or owned by neither the caller nor root, is refused. It gets one fixed mode argument,
+  an environment holding only `PATH` and `LANG`, `/` as its directory and its own process group. Each run has a 120-second deadline
   enforced by killing the group and the worker; once the worker ends, its pipes get five seconds
   to close. Stdout frames, total output (16 MiB) and stderr (64 KiB) are bounded. A nonzero
   exit, a refused frame, or a process or open pipe left behind fails the layer.
@@ -205,8 +208,10 @@ ozpb dry-run --request dry-run-request.json \
   initialization hashes from the trusted `--prepare-captured` frame.
 - **Key.** The spec delegate's Stellar secret seed is read only from `--delegate-key-file`: a
   regular file owned by the caller with mode exactly 0600, holding the key of the selected rule's
-  delegate. It is never taken from an argument or the environment, never passed to the worker,
-  never printed, and zeroized when the run ends.
+  delegate. It is opened without following links or blocking, never taken from an argument or
+  the environment, never passed to the worker and never printed. It is cleared when the run
+  ends, on a best-effort basis: a value the compiler moves can leave a stack copy. Mode and
+  owner are the only access checks; an extended ACL granting others access is not detected.
 - **Signing guard.** A request is signed only when the network ID inside its `HashIdPreimage` is
   the offline execution network ID derived by the CLI; a preimage naming the source, public, test
   or future network is refused as well. The request must also be the next expected one
@@ -219,7 +224,8 @@ ozpb dry-run --request dry-run-request.json \
 - **Exit status.** Zero only when the report's `acceptance.meets_minimum` holds; any other report
   is still printed. A refused key file prints no report. A requested capture that does not
   complete fails the captured layer, so such a run never exits zero. Worker stderr is printed
-  for a failed run, at most 4 KiB, with control characters replaced.
+  for a failed run, at most 4 KiB, with control characters and bidirectional formatting
+  characters replaced, as is endpoint error text.
 
 Live-enforcement evidence remains missing outside the wallet: `ozpb dry-run` reports that layer
 `unavailable` with `wallet_owner_consent_required`, and its report is never `complete`. The MCP
