@@ -171,14 +171,21 @@ runs separately and gives the field-by-field review procedure for a new summary.
 
 ## Keys
 
-Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling of
-10,000,000 stroops (1 testnet XLM), including Soroban resources. Uploading a new Wasm has a
-separate fixed ceiling of 100,000,000 stroops (10 testnet XLM), selected only from the original
-intended upload operation. A read-only estimate on 20 October 2026 for a 21,607-byte generated
-policy at ledger 5293145 required 89,730,616 total stroops (8.9730616 testnet XLM); it exceeded
-the ordinary ceiling and was refused before signing. This observation explains the separate
-upload allowance, not a promised future fee. Before the payer signs,
-assembly must preserve the exact operation, authorization entries, source, sequence, memo,
+Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling,
+including Soroban resources. By default it is 10,000,000 stroops (1 testnet XLM). A call known to
+cost more names its own ceiling, at most 100,000,000 stroops (10 testnet XLM); the Blend calls
+name 3 XLM. A Wasm upload, classified only from the original intended operation, defaults to
+10 XLM. It is the only transaction that may name more, at most 200,000,000 stroops (20 testnet
+XLM). The W1, W2 and W3 installers name 150,000,000 stroops (15 testnet XLM) for each generated
+policy's upload; the default native run shares W2's installer, so its upload names it too.
+
+An upload pays the write fee and rent for a new code entry, and those follow the network's
+prices. A read-only estimate on 20 October 2026 for a 21,607-byte generated policy at ledger
+5293145 required 89,730,616 total stroops (8.97 XLM). On 22 October 2026 the W3 router rule's
+21,814-byte policy assembled at 101,220,139 stroops (10.12 XLM), so the ten-XLM ceiling refused
+it before signing; about an hour earlier the same upload had assembled at 99,760,084 stroops.
+Fifteen XLM leaves room for that drift on testnet. It is not a promised future fee and is not
+meant for mainnet. Before the payer signs, assembly must preserve the exact operation, authorization entries, source, sequence, memo,
 time bounds and network. Extra signatures, authorization or operations are refused. A
 resource estimate above the ceiling stops the run; the harness never raises it automatically.
 For a source-funded setup operation without existing authorization, the harness constructs

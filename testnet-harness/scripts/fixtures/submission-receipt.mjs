@@ -78,6 +78,11 @@ function assemble(tx) {
   if (mode === 'named fee ceiling') wire.fee = 30_000_000;
   if (mode === 'named fee above ceiling') wire.fee = 30_000_001;
   if (mode === 'upload fee above ceiling') wire.fee = 100_000_001;
+  // 22 October 2026: the W3 router rule's 21,814-byte Wasm assembled at 101,220,139 stroops.
+  if (mode === 'upload named fee 10.12 XLM' || mode === 'upload default fee 10.12 XLM') wire.fee = 101_220_139;
+  if (mode === 'upload named fee at ceiling') wire.fee = 150_000_000;
+  if (mode === 'upload named fee above ceiling') wire.fee = 150_000_001;
+  if (mode === 'named call fee above ten') wire.fee = 100_000_001;
   if (mode === 'upload bytes replaced') wire.operations[0] = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109, 1]) });
   if (mode === 'replacement upload bypass') {
     wire.operations[0] = sdk.Operation.uploadContractWasm({ wasm: Buffer.from([0, 97, 115, 109]) });
@@ -183,16 +188,21 @@ if (mode === 'send backpressure' || mode === 'unknown send status') {
   'expired instance', 'future modified', 'missing modified', 'missing TTL'].includes(mode)) {
   await assert.rejects(source.namespace.contractCodeObservation(sdk.StrKey.encodeContract(Buffer.alloc(32, 1))), /instance|ledger/);
 } else if (['matching', 'fee ceiling', 'resource fee', 'submit enforce mode', 'source auth', 'create source auth',
-  'upload no auth', 'upload fee ceiling', 'existing auth', 'named fee ceiling'].includes(mode)) {
-  const sent = await source.namespace.submit(payer, operation, mode === 'named fee ceiling' ? { maxFee: 30_000_000n } : {});
+  'upload no auth', 'upload fee ceiling', 'existing auth', 'named fee ceiling',
+  'upload named fee 10.12 XLM', 'upload named fee at ceiling'].includes(mode)) {
+  const sent = await source.namespace.submit(payer, operation, mode === 'named fee ceiling' ? { maxFee: 30_000_000n }
+    : mode.startsWith('upload named') ? { maxFee: source.namespace.POLICY_WASM_UPLOAD_FEE } : {});
   assert.equal(sent.hash, expectedHash);
   assert.equal(sent.receipt.txHash, expectedHash);
   if (mode === 'submit enforce mode') assert.deepEqual(simulationModes, ['enforce']);
 } else if (['fee zero', 'fee above ceiling', 'negative resource fee', 'resource fee exceeds total', 'replacement operation',
   'replacement source', 'replacement sequence', 'replacement network', 'replacement timeout', 'replacement memo',
   'replacement signatures', 'extra operation', 'extra auth', 'wrong fetched source', 'wrong create source',
-  'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass', 'named fee above ceiling'].includes(mode)) {
-  await assert.rejects(source.namespace.submit(payer, operation, mode === 'named fee above ceiling' ? { maxFee: 30_000_000n } : {}),
+  'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass', 'named fee above ceiling',
+  'upload named fee above ceiling', 'upload default fee 10.12 XLM', 'named call fee above ten'].includes(mode)) {
+  await assert.rejects(source.namespace.submit(payer, operation, mode === 'named fee above ceiling' ? { maxFee: 30_000_000n }
+    : mode === 'upload named fee above ceiling' ? { maxFee: source.namespace.POLICY_WASM_UPLOAD_FEE }
+    : mode === 'named call fee above ten' ? { maxFee: 100_000_000n } : {}),
     /submission refused/);
   assert.equal(signatures, 0, 'nothing signed');
   assert.equal(expectedHash, undefined, 'nothing submitted');
@@ -210,8 +220,12 @@ if (mode === 'send backpressure' || mode === 'unknown send status') {
 } else if (mode === 'readback error ledger') {
   await assert.rejects(source.namespace.viewCallObservation(payer, sdk.StrKey.encodeContract(Buffer.alloc(32, 1)), 'missing'),
     (error) => error instanceof source.namespace.SimulationError && error.ledger === 31);
-} else if (mode === 'named ceiling out of range') {
-  for (const maxFee of [9_999_999n, 100_000_001n, 30_000_000]) {
+} else if (mode === 'named ceiling out of range' || mode === 'upload named ceiling out of range') {
+  // A call may name at most 10 XLM; only a Wasm upload may name more, and at most 20 XLM.
+  const outOfRange = mode === 'named ceiling out of range'
+    ? [9_999_999n, 100_000_001n, 150_000_000n, 200_000_000n, 30_000_000]
+    : [9_999_999n, 200_000_001n, 150_000_000];
+  for (const maxFee of outOfRange) {
     await assert.rejects(source.namespace.submit(payer, operation, { maxFee }), /fee ceiling/);
   }
   assert.equal(signatures, 0, 'nothing signed');

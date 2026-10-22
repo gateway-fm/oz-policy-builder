@@ -43,8 +43,8 @@ import { ownerSigner } from './owner.mjs';
 import { composedPolicies, subscriptionConfig } from './subscription.mjs';
 import { TRUST_OPERATOR, checkRequest, walletTrust } from './wallet-decision.mjs';
 import {
-  NETWORK_PASSPHRASE, args, assertTestnet, contractCodeHash, contractIdOf, latestLedger, loadKey, log,
-  readJson, recordAuth, submit, viewCall, writeJson,
+  NETWORK_PASSPHRASE, POLICY_WASM_UPLOAD_FEE, args, assertTestnet, contractCodeHash, contractIdOf, latestLedger,
+  loadKey, log, readJson, recordAuth, submit, viewCall, writeJson,
 } from './rpc.mjs';
 
 const ADMIN_RULE = 0;
@@ -162,7 +162,9 @@ const payer = loadKey('payer');
 const owner = await ownerSigner(run);
 
 // --- deploy the generated artifact ---------------------------------------------------------------
-const upload = await submit(payer, Operation.uploadContractWasm({ wasm }), { stage: 'upload policy wasm' });
+// New code's rent and write fee can exceed the ten-XLM upload default (README: Keys).
+const upload = await submit(payer, Operation.uploadContractWasm({ wasm }),
+  { stage: 'upload policy wasm', maxFee: POLICY_WASM_UPLOAD_FEE });
 const uploaded = Buffer.from(scValToNative(upload.returnValue)).toString('hex');
 if (uploaded !== wasmHash) throw new Error(`network stored ${uploaded}, local wasm is ${wasmHash}`);
 log(`uploaded  policy wasm ${wasmHash}  (tx ${upload.hash})`);

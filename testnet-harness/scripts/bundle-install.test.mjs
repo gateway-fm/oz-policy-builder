@@ -68,7 +68,7 @@ function fixture() {
       const confirmed = controls.hashSwap ? hash(98) : tx;
       const pending = history.at(-1).walkthrough.bundle.entries.find((entry) => entry.pending?.transaction === tx);
       assert.ok(pending, 'public transaction hash is saved before every network send');
-      sends.push({ op, tx, stage: options.stage });
+      sends.push({ op, tx, stage: options.stage, maxFee: options.maxFee });
       if (controls.failSend && counter === controls.failSend) throw new Error('ambiguous send');
       const host = op.body.invokeHostFunctionOp.hostFunction;
       if (host.type === 'hostFunctionTypeUploadContractWasm') {
@@ -117,6 +117,15 @@ test('bundle installation deploys every artifact then checks and signs each exac
     assert.deepEqual(body.auth[0].rootInvocation.subInvocations, []);
     xdr.Operation.fromXDR(op.toXDR());
   }
+});
+test('each policy Wasm upload names the 15-XLM policy upload ceiling; deploy and install name none', async () => {
+  const f = fixture();
+  await f.execute();
+  assert.deepEqual(f.sends.map((send) => [send.op.body.invokeHostFunctionOp.hostFunction.type, send.maxFee]), [
+    ['hostFunctionTypeUploadContractWasm', 150_000_000n], ['hostFunctionTypeCreateContractV2', undefined],
+    ['hostFunctionTypeUploadContractWasm', 150_000_000n], ['hostFunctionTypeCreateContractV2', undefined],
+    ['hostFunctionTypeInvokeContract', undefined], ['hostFunctionTypeInvokeContract', undefined],
+  ]);
 });
 test('wallet expectation matches the scope a bundle check answers: every bound policy, this rule target', async () => {
   // Shape observed from the CLI on testnet: a bundle request's verdict covers all bindings.

@@ -69,10 +69,26 @@ export async function latestLedgerClose() {
   return { ledger: readLedger(latest.sequence), close_time: closeTime };
 }
 
-/** Fixed total transaction fee, including Soroban resources: one testnet XLM. */
+/** Default total transaction fee, including Soroban resources: one testnet XLM. */
 export const MAX_TRANSACTION_FEE = 10_000_000n;
-/** Uploading newly generated code has a larger fixed ceiling: ten testnet XLM. */
-export const MAX_WASM_UPLOAD_FEE = 100_000_000n;
+/** The most any call other than a Wasm upload may name: ten testnet XLM. */
+export const MAX_NAMED_CALL_FEE = 100_000_000n;
+/** A Wasm upload that names no ceiling keeps the earlier fixed one: ten testnet XLM. */
+export const DEFAULT_WASM_UPLOAD_FEE = 100_000_000n;
+/** The most a Wasm upload may name: twenty testnet XLM. Only an upload may name above ten. */
+export const MAX_NAMED_UPLOAD_FEE = 200_000_000n;
+/**
+ * What the W1, W2 and W3 installers name for a generated policy's upload: fifteen testnet XLM.
+ * On 22 October 2026 a 21,814-byte generated policy's upload assembled at 101,220,139 stroops,
+ * above the ten-XLM default; new code's write fee and rent follow the network's prices.
+ */
+export const POLICY_WASM_UPLOAD_FEE = 150_000_000n;
+
+/** Exactly one Wasm upload: the only transaction class that may name more than ten XLM. */
+function isWasmUpload(operations) {
+  return operations.length === 1
+    && operations[0].body?.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm';
+}
 
 /** Explicit source-payer authorization for exactly this operation, never an RPC-supplied tree. */
 function withSourceAuthorization(operation, payer) {
@@ -108,13 +124,11 @@ function withSourceAuthorization(operation, payer) {
 }
 
 /** Assembly may add resource data and a bounded fee, never change the call we will sign. */
-function checkAssembly(assembled, expectedEnvelope, namedCeiling = MAX_TRANSACTION_FEE) {
+function checkAssembly(assembled, expectedEnvelope, maximumFee = MAX_TRANSACTION_FEE) {
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
-    const intended = expected.v1.tx.operations;
-    const maximumFee = intended.length === 1
-      && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
-      ? MAX_WASM_UPLOAD_FEE : namedCeiling;
+    // Re-derived from the intended envelope, never the assembled one: above ten XLM only for an upload.
+    if (maximumFee > (isWasmUpload(expected.v1.tx.operations) ? MAX_NAMED_UPLOAD_FEE : MAX_NAMED_CALL_FEE)) throw new Error();
     const envelope = assembled.toEnvelope();
     if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'
       || envelope.v1.signatures.length !== 0) throw new Error();
@@ -144,10 +158,14 @@ function checkAssembly(assembled, expectedEnvelope, namedCeiling = MAX_TRANSACTI
  * what makes a denial observable without spending a fee: the enforcing simulation runs
  * `__check_auth` and the installed policies exactly as the network would.
  */
-export async function submit(payer, operation, { stage = 'submit', onSubmitting, maxFee = MAX_TRANSACTION_FEE } = {}) {
+export async function submit(payer, operation, { stage = 'submit', onSubmitting, maxFee } = {}) {
   // A caller whose call is known to cost more than one XLM in resources (rent for new entries)
-  // names its own ceiling; it can never exceed the upload ceiling.
-  if (typeof maxFee !== 'bigint' || maxFee < MAX_TRANSACTION_FEE || maxFee > MAX_WASM_UPLOAD_FEE) {
+  // names its own ceiling, at most ten XLM. A Wasm upload, classified from this operation and
+  // never from anything the RPC returns, defaults to ten XLM and may name up to twenty.
+  const upload = isWasmUpload([operation]);
+  const ceiling = maxFee === undefined ? (upload ? DEFAULT_WASM_UPLOAD_FEE : MAX_TRANSACTION_FEE) : maxFee;
+  if (typeof ceiling !== 'bigint' || ceiling < MAX_TRANSACTION_FEE
+    || ceiling > (upload ? MAX_NAMED_UPLOAD_FEE : MAX_NAMED_CALL_FEE)) {
     throw new Error('submission refused: invalid fee ceiling');
   }
   const source = await server.getAccount(payer.publicKey());
@@ -158,7 +176,7 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   const sim = await server.simulateTransaction(tx, undefined, 'enforce');
   if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error);
   const assembled = rpc.assembleTransaction(tx, sim).build();
-  checkAssembly(assembled, expectedEnvelope, maxFee);
+  checkAssembly(assembled, expectedEnvelope, ceiling);
   assembled.sign(payer);
   const expectedHash = Buffer.from(assembled.hash()).toString('hex');
   const maxTime = Number(tx.timeBounds.maxTime);
