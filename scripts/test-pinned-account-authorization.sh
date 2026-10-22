@@ -71,6 +71,26 @@ grep -qx 'test pinned_account_wasm_full_authorization ... ok' "$work/test.log" |
     exit 1
 }
 
+# The same two artifacts: direct calls to the policy under alternate account rules, the
+# call-surface check over the resulting account state, and state across ledgers.
+( cd contracts && cargo test --locked -p ozpb-differential \
+    --test account_wasm_invariants -- --ignored ) | tee "$work/invariants.log"
+for test in \
+    grant_rule_cannot_reach_its_policy_and_rule_zero_is_listed_authority \
+    policy_address_rule_can_uninstall_and_call_surface_refuses_it \
+    policy_address_rule_held_by_another_key_is_listed_with_its_signer \
+    alternate_contract_rule_cannot_reach_policy_methods \
+    archived_counter_denies_until_restored \
+    extended_rule_validity_does_not_outlive_the_compiled_expiry \
+    stale_policy_state_is_refused_not_adopted \
+    grant_survives_inactivity_until_its_shortest_ttl \
+    failed_composition_rolls_back_the_permitting_policy; do
+    grep -qx "test $test ... ok" "$work/invariants.log" || {
+        echo "required state-invariant test did not run and pass: $test" >&2
+        exit 1
+    }
+done
+
 # Build the small target from reviewed source. Its hash is asserted in the
 # joined test, and no Wasm artifact is checked into the repository.
 bash scripts/check-build-input-pins.sh

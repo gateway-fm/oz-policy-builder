@@ -1487,7 +1487,9 @@ unverifiable claim about development chronology or every possible rejection path
   management/upgrade method; unknown management-method semantics failing unsupported;
   management methods beyond the three trait functions; authority-finding cases);
   **reconfiguration overlap tests** exercising both rule IDs and asserting aggregate
-  capability.
+  capability. Which state invariants and direct-call cases run today, through which account,
+  and which are still omitted is mapped in
+  [`SCOPE.md`](SCOPE.md#state-invariants-and-direct-calls).
 - **Registries:** signature verification, unknown-hash fail-closed behavior, rollback and
   freeze rejection, snapshot-pinning consistency, revocation-effect handling (alert +
   emergency removal, never silent), unknown-verifier failures; **rule-enumeration tests**

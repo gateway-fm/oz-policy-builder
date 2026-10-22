@@ -25,6 +25,8 @@ sha2 = "0.10"
 serde_json = "1"
 # Canned-response transports only: no HTTP transport, so no HTTP or TLS stack here.
 ozpb-source-rpc = { path = "../../crates/source-rpc", default-features = false }
+# The pure authority check, run over account state the source-rpc scan reads from a test ledger.
+ozpb-call-surface-core = { path = "../../crates/call-surface-core" }
 ozpb-recorder-core = { path = "../../crates/recorder-core" }
 soroban-ledger-snapshot = "=26.1.0"
 hex = "0.4"
