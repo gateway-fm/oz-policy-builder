@@ -375,3 +375,17 @@ test('the capture envelope is the fee payer\'s unsigned call: nothing is simulat
   const other = networkFixture(t, (server) => { server.getNetwork = async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 }); });
   await assert.rejects(() => other.network.targetEnvelope(call), /refused/);
 });
+
+test('policy upload reads the stored Wasm hash from the receipt as the RPC decodes it', async (t) => {
+  const { network } = networkFixture(t);
+  const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+  const wasmHash = Buffer.from(hash(wasm)).toString('hex');
+  let stored = wasmHash;
+  // A receipt's return value arrives decoded from XDR, where Bytes is a wrapper, not a Buffer.
+  network.submitOperation = async () => ({ hash: 'a'.repeat(64), ledger: 101, trust: 'rpc_reported',
+    returnValue: xdr.ScVal.fromXDR(xdr.ScVal.scvBytes(Buffer.from(stored, 'hex')).toXDR()) });
+  network.requireCode = async (requested) => { assert.equal(requested, wasmHash); return { hash: requested, ledger: 101 }; };
+  assert.equal((await network.upload(wasm, wasmHash)).ledger, 101);
+  stored = 'b'.repeat(64);
+  await assert.rejects(() => network.upload(wasm, wasmHash), /refused/);
+});

@@ -544,7 +544,8 @@ export class WalletNetwork {
   async upload(wasm, wasmHash) {
     if (!Buffer.isBuffer(wasm) || wasm.length > 2 * 1024 * 1024 || digest(wasm) !== wasmHash) refuse();
     const receipt = await this.submitOperation(Operation.uploadContractWasm({ wasm }), 'upload-policy');
-    if (receipt.returnValue.type !== 'scvBytes' || Buffer.from(receipt.returnValue.bytes).toString('hex') !== wasmHash) refuse();
+    // Decoded XDR wraps Bytes: the stored hash is its `value`.
+    if (receipt.returnValue.type !== 'scvBytes' || Buffer.from(receipt.returnValue.bytes.value).toString('hex') !== wasmHash) refuse();
     await this.requireCode(wasmHash);
     return receipt;
   }
