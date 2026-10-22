@@ -284,6 +284,12 @@ Missing, unsupported, failed, duplicated or mismatched evidence keeps acceptance
 An installation preflight is not counted as behavioral live-enforcement evidence. Backend
 capabilities keep installation signing and lifecycle actions unavailable until their required checks exist.
 
+The checks a live-enforcement case must pass exist as pure validators in
+[`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs), described in
+[ATOMIC-LIVE-HELPER.md](ATOMIC-LIVE-HELPER.md#how-live-use-is-meant-to-work). Nothing in the
+wallet prepares, consents to, signs or simulates a live case yet, so `live_enforcement` stays
+`unavailable` and acceptance stays closed.
+
 Authentication with a virtual authenticator is automation evidence. The signature result
 explicitly reports `human_approval_attested: false`; it does not establish a human acceptance
 decision. This local design also does not protect against an agent or process with arbitrary

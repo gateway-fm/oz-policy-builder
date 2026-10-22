@@ -15,12 +15,15 @@ const vec = (values) => xdr.ScVal.scvVec(values);
 const sym = (value) => xdr.ScVal.scvSymbol(value);
 const canonicalUnsigned = (text) => typeof text === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(text) && BigInt(text) < 9223372036854775807n;
 
+/** The account's `Signer` enum value for an intent signer: `Delegated(address)` or `External(verifier, key)`. */
+export function signerScVal(signer) {
+  if (signer.kind === 'delegated') return vec([sym('Delegated'), address(signer.address).toScVal()]);
+  if (signer.kind !== 'external' || !/^(?:[0-9a-f]{2}){1,1024}$/.test(signer.key_hex)) refuse();
+  return vec([sym('External'), address(signer.verifier, true).toScVal(), xdr.ScVal.scvBytes(Buffer.from(signer.key_hex, 'hex'))]);
+}
+
 export function installCall(intent) {
-  const signers = intent.delegate_signers.map((signer) => {
-    if (signer.kind === 'delegated') return vec([sym('Delegated'), address(signer.address).toScVal()]);
-    if (signer.kind !== 'external' || !/^(?:[0-9a-f]{2}){1,1024}$/.test(signer.key_hex)) refuse();
-    return vec([sym('External'), address(signer.verifier, true).toScVal(), xdr.ScVal.scvBytes(Buffer.from(signer.key_hex, 'hex'))]);
-  });
+  const signers = intent.delegate_signers.map(signerScVal);
   const policies = intent.policies.map((policy, index) => {
     if (policy.policy_index !== index) refuse();
     const params = policy.install_params;
