@@ -41,7 +41,7 @@ Before `synthesize_policy`, ask the user for:
 - The delegate signer identities and predicate (any-of, all-of, or threshold). Never infer a
   delegate from the transaction authorizer.
 - An expiration ledger or explicit acknowledgement that the grant has no expiration.
-- A call cap or an explicit choice about unrestricted use.
+- A call cap, or an explicit acknowledgement that the grant allows unlimited calls.
 - Whether to compose the reviewed spending-limit policy for a supported SEP-41 transfer;
   if so, ask for its amount cap and period in ledgers.
 - Every requested widening beyond the recorded arguments, with its bound, reason, and blast
@@ -62,6 +62,7 @@ the address, ledger, name, and limits with the user's choices before calling the
   "valid_until_ledger": 4260000,
   "no_expiry_acknowledged": false,
   "max_calls": 10,
+  "unlimited_calls_acknowledged": false,
   "widenings": [],
   "spending_limit": null
 }
@@ -72,8 +73,12 @@ the address, ledger, name, and limits with the user's choices before calling the
 - `predicate` is `"any_of"`, `"all_of"`, or `{"threshold":{"n":2}}`, where `n` is
   between 1 and the number of distinct delegates.
 - `valid_until_ledger` is a ledger sequence or `null`. For `null`, set
-  `no_expiry_acknowledged` to `true` only after the user explicitly accepts no expiry.
-  `max_calls` is a positive integer or `null` for an explicitly uncapped grant.
+  `no_expiry_acknowledged` to `true` only after the user explicitly accepts no expiry. An
+  expiry together with the acknowledgement is refused as contradictory.
+- `max_calls` is a positive integer or `null`. For `null`, set
+  `unlimited_calls_acknowledged` to `true` only after the user explicitly accepts unlimited
+  calls (high blast radius); without it synthesis refuses with `E_NEEDS_DECISION`. A cap
+  together with the acknowledgement is refused as contradictory.
 - Each `widenings` entry identifies an observed contract, function, and zero-based argument
   index. Its bound is `{"le_i128":{"max":"100"}}`,
   `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds are canonical

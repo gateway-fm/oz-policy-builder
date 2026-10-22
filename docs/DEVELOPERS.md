@@ -428,6 +428,13 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).
+- **Lifetime and call cap are required decisions.** `valid_until_ledger`, or
+  `no_expiry_acknowledged: true`; `max_calls`, or `unlimited_calls_acknowledged: true` (absent
+  reads as `false`). Neither answer gives `E_NEEDS_DECISION`; both answers to one question (a
+  cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry acknowledgement)
+  are contradictory and give `E_SPEC_INVALID`. Before v0.2.0 a null `max_calls` alone produced
+  an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
+  in the [release notes](release-notes/v0.2.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).

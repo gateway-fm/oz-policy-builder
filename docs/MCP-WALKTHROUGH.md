@@ -97,7 +97,7 @@ which saves a confusing failure.
 | `record_simulation` | the network, but no signature and no custody: record mode asks what an *unsigned* envelope would require. This is the path the demo script uses |
 | `preflight_transaction` | the network and an exact envelope carrying its intended authorization entries; enforcement mode returns the endpoint-reported simulation outcome and ledger, names each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and lists declared instructions or fee below the endpoint's padded estimate as advice that never changes the outcome. It does not prove that a particular installed policy was selected, and writes are discarded. Discarded writes do not make it harmless: signed authorization entries are live authorizations that anyone who sees the envelope — the RPC endpoint, this transcript — can submit until their `signatureExpirationLedger`, and simulation does not consume their nonce. Use testnet or a short expiration, a trusted endpoint, and the stdio server; a hosted server refuses signed envelopes |
 | `capture_target` | an RPC source the operator configured in `OZPB_RPC_SOURCES_JSON` (the request names it and its network, never a URL; `scripts/mcp-server-dev.sh` configures none), and an unsigned envelope whose only call is a native Stellar Asset Contract `transfer` from the contract account to an existing G recipient. Returns the `rpc_reported` target capture the native worker's captured-target layer reads; its record-mode simulation is acquisition only, not evidence that a policy permits the call. Any other call is refused with `E_UNSUPPORTED_ENVELOPE`. The envelope is confidential input: no result or error echoes it, but it reaches the endpoint and this transcript, and the capture repeats its call (account, recipient, amount), so prefer the CLI or a local stdio server. It does not run the captured-target layer |
-| `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap. Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
+| `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap (or an explicit `unlimited_calls_acknowledged: true` instead of one). Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
 | `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |
 | `verify` | the spec, selected rule, complete generated non-lock files, claimed Wasm and BuildManifest; reports reproduction and evidence limits separately |
@@ -154,7 +154,14 @@ Three of those arguments are worth a word each:
   and `record_simulation` return exactly this shape, so an agent that just recorded something
   already holds it.
 - **`decisions`** stays required. The signer set, the lifetime and the call cap are what the
-  grant *is*; a default would mean the toolkit decided how much authority to hand out.
+  grant *is*; a default would mean the toolkit decided how much authority to hand out. That
+  includes leaving a cap out: since v0.2.0, `max_calls: null` alone is refused with
+  `E_NEEDS_DECISION`, and an uncapped grant also needs `unlimited_calls_acknowledged: true`,
+  as a grant that never expires needs `no_expiry_acknowledged: true`. An absent
+  acknowledgement reads as `false`; a cap together with it, or an expiry ledger together with
+  `no_expiry_acknowledged: true`, is refused as contradictory (`E_SPEC_INVALID`). This is a
+  breaking change for decisions documents that relied on a null cap
+  ([release notes](release-notes/v0.2.0.md)).
 - **`spending_limit_capability: "pinned"`** opts in to composing OpenZeppelin's reviewed
   spending-limit policy without transcribing its hash. It is an opt-in rather than a default:
   composing a reviewed third-party contract into a grant is a decision too. Omit it and a
