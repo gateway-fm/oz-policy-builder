@@ -514,9 +514,10 @@ changes (rejected before authorization); strict-set, call-count and missing-stat
 
 This is W3's first passing report under [§7's definition](#what-a-passing-permitdeny-report-is):
 both recorded calls were permitted, the delegated swap was confirmed, and ten derived denials,
-five per rule, were refused by their predicted enforcers. Each rule's two unrecognized-signer
-cases stop at the same account check. All 14 control steps completed, and the wrapper finalized
-with exit 0. The same limits apply as in section 9: fixed harness widenings, no reviewed adapter,
+five per rule, were refused by their predicted enforcers. Counted as section 12 counts W1's, the
+ten are five distinct checks: each rule's policy tuple check (#6) and empty-signer check (#1), and
+the account's 3016, where all four unrecognized-signer cases stop. All 14 control steps completed,
+and the wrapper finalized with exit 0. The same limits apply as in section 9: fixed harness widenings, no reviewed adapter,
 editable local RPC observations, non-atomic reads, no ledger proof and no protected
 wallet-approval claim.
 

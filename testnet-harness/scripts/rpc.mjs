@@ -128,6 +128,8 @@ function checkAssembly(assembled, expectedEnvelope, maximumFee = MAX_TRANSACTION
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedEnvelope);
     // Re-derived from the intended envelope, never the assembled one: above ten XLM only for an upload.
+    // Deliberately redundant with submit's pre-check, which classifies the same operation, so submit
+    // cannot reach it today; it keeps the bound on the envelope actually signed if building changes.
     if (maximumFee > (isWasmUpload(expected.v1.tx.operations) ? MAX_NAMED_UPLOAD_FEE : MAX_NAMED_CALL_FEE)) throw new Error();
     const envelope = assembled.toEnvelope();
     if (assembled.networkPassphrase !== NETWORK_PASSPHRASE || envelope.type !== 'envelopeTypeTx'

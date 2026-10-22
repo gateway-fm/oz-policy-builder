@@ -181,6 +181,10 @@ test('cases are drawn from this spec\'s suite hash, not hand-picked', async () =
   relabeled.cases[7].label = 'hand-written control';
   relabeled.suite_hash = suiteHash(relabeled.spec_hash, relabeled.cases);
   assert.throws(() => verifySuite(relabeled, { specHash: emitted.spec_hash, reference }), /reference report/);
+  // A reference report that disagreed with any case is not one the grant was accepted on.
+  const disagreed = structuredClone(reference);
+  disagreed.report.outcomes[7].agree = false;
+  assert.throws(() => verifySuite(emitted, { specHash: emitted.spec_hash, reference: disagreed }), /reference report/);
 
   // End to end: the CLI is asked for this run's spec, and the replayed denials are every
   // live-realizable deny case of that suite, in suite order — none chosen by name.
@@ -409,6 +413,9 @@ test('a denied original fails the run and is not recorded as permitted', async (
 test('the replay refuses a grant that is not the installed, unexercised, pinned one', async () => {
   const live = faithful(ACCOUNT, predictFromOperation);
   const refusals = [
+    ['another network', { mutateRun: (r) => { r.network = 'Public Global Stellar Network ; September 2015'; } },
+      /unexpected network or account pin/],
+    ['another account pin', { mutateRun: (r) => { r.account_code_hash = 'ff'.repeat(32); } }, /unexpected network or account pin/],
     ['a delegated call already happened', { mutateRun: (r) => { r.invocations = [{ signer: 'delegate' }]; } },
       /after installation and before any delegated call/],
     ['the controls already started', { mutateRun: (r) => { r.subscription.controls = { status: 'running' }; } },
@@ -437,6 +444,37 @@ test('the replay refuses a grant that is not the installed, unexercised, pinned 
   }
 });
 
+test('W1 and W3 replays refuse a grant whose controls started or that a delegate already used', async () => {
+  const refusals = [
+    ['the controls already started', (r) => { r.walkthrough.controls = { status: 'running', steps: [] }; }],
+    ['a delegated call already happened', (r) => {
+      r.walkthrough.invocations = [{ name: 'owner_record', signer: 'owner', status: 'confirmed' },
+        { name: 'delegate_claim', signer: 'delegate', status: 'confirmed' }];
+    }],
+  ];
+  for (const walkthrough of ['w1', 'w3']) {
+    for (const [name, mutateRun] of refusals) {
+      const h = harness(walkthrough, { mutateRun, observe: () => assert.fail('nothing may be simulated') });
+      await assert.rejects(runDerivedDenials(h.dir, h.deps), /after installation and before any delegated call/, `${walkthrough}: ${name}`);
+      assert.equal(h.calls.network, 0, `${walkthrough}: ${name}`);
+      assert.equal(h.read().derived_denials, undefined, `${walkthrough}: ${name}`);
+      assert.ok(!existsSync(join(h.dir, 'derived-cases.json')), `${walkthrough}: ${name}`);
+    }
+  }
+});
+
+test('an enforcing simulation that reports no ledger is not an observation', async () => {
+  for (const ledger of [undefined, 0]) {
+    const h = harness('w2', { observe: (operation) => ({ ...faithful(ACCOUNT, predictFromOperation)(operation), ledger }) });
+    await assert.rejects(runDerivedDenials(h.dir, h.deps), /missing enforcing-simulation ledger/, String(ledger));
+    const journal = h.read().derived_denials;
+    assert.equal(journal.status, 'incomplete');
+    assert.deepEqual(journal.originals.map((o) => o.status), ['started'], 'nothing is recorded as permitted');
+    assert.equal(journal.cases.length, 0);
+    assert.equal(h.calls.simulations.length, 1);
+  }
+});
+
 test('signer sets the run cannot sign for, and other installation state, stay offline', () => {
   const { emitted, spec } = suiteFor('w2');
   const run = runFor('w2');
@@ -452,6 +490,11 @@ test('signer sets the run cannot sign for, and other installation state, stay of
   held[16].context.authenticated_signers = [{ delegated: { address: G(7) } }];
   for (const c of held) c.context.rule_live_signers = [...c.context.rule_live_signers, { delegated: { address: G(7) } }];
   assert.equal(reasonOf(plan(held), 'case-16'), 'signer_key_not_held');
+  // An unrecognized signer that is not an ed25519 account, here a contract, cannot be carried by
+  // this run's Delegated entries either.
+  const contractSigner = structuredClone(emitted.cases);
+  contractSigner[16].context.authenticated_signers = [{ delegated: { address: C(9) } }];
+  assert.equal(reasonOf(plan(contractSigner), 'case-16'), 'signer_key_not_held');
   const repeated = structuredClone(emitted.cases);
   repeated[18].context.authenticated_signers = [{ delegated: { address: DELEGATE } }, { delegated: { address: DELEGATE } }];
   assert.equal(reasonOf(plan(repeated), 'case-18'), 'repeated_signer_unrepresentable');

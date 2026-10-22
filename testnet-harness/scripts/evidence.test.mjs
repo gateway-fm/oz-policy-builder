@@ -1327,6 +1327,8 @@ test('derived denials refuse an observation, prediction or suite that does not h
     'an offline reason another class owns': (r) => { r.derived_denials.offline.find((o) => o.class === 'time_boundary').reason = 'authorizer_replaced'; },
     'fewer than five completed': (r) => { r.derived_denials.cases.splice(5); },
     'original not permitted': (r) => { r.derived_denials.originals[0].status = 'unexpected_denial'; },
+    'original id swapped': (r) => { r.derived_denials.originals[0].id = 'case-17'; },
+    'original given another rule': (r) => { r.derived_denials.originals[0].rule_index = 1; },
     'labelled as submitted': (r) => { r.derived_denials.labels.submitted = true; },
     'stand-in from another walkthrough': (r) => { r.derived_denials.cases[0].stand_in = 'blend_pool_submit'; },
     'case outside the suite': (r) => { r.derived_denials.cases[1].id = 'case-30'; },
@@ -1396,6 +1398,12 @@ test('protocol derived denials are attributed to the rule each case exercises', 
     c.expected.enforcer = D_ROUTER_POLICY; c.observed.enforcer = D_ROUTER_POLICY;
   });
   assert.throws(() => exportEvidence(misattributed), /invalid or inconsistent evidence record/);
+  // Each original is the plan's, on its own rule: not the swap's twice, not the transfer's on the router rule.
+  for (const [name, mutate] of [['original id swapped', (r) => { r.derived_denials.originals[1].id = 'case-0'; }],
+    ['original given another rule', (r) => { r.derived_denials.originals[1].rule_index = 0; }]]) {
+    const dir = await make(mutate);
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/, name);
+  }
   // Every installed rule's original must be permitted before the replay counts as complete.
   const unpermitted = await make((r) => { r.derived_denials.originals.pop(); r.derived_denials.permits_not_replayed++; });
   assert.throws(() => exportEvidence(unpermitted), /invalid or inconsistent evidence record/);

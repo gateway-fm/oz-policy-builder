@@ -222,12 +222,16 @@ if (mode === 'send backpressure' || mode === 'unknown send status') {
     (error) => error instanceof source.namespace.SimulationError && error.ledger === 31);
 } else if (mode === 'named ceiling out of range' || mode === 'upload named ceiling out of range') {
   // A call may name at most 10 XLM; only a Wasm upload may name more, and at most 20 XLM.
+  // submit's own pre-check refuses these before anything is simulated. checkAssembly re-derives
+  // the bound from the intended envelope, deliberately redundant with this pre-check (both classify
+  // the same operation), so through submit only the pre-check can be observed refusing.
   const outOfRange = mode === 'named ceiling out of range'
     ? [9_999_999n, 100_000_001n, 150_000_000n, 200_000_000n, 30_000_000]
     : [9_999_999n, 200_000_001n, 150_000_000];
   for (const maxFee of outOfRange) {
-    await assert.rejects(source.namespace.submit(payer, operation, { maxFee }), /fee ceiling/);
+    await assert.rejects(source.namespace.submit(payer, operation, { maxFee }), /invalid fee ceiling/);
   }
+  assert.deepEqual(simulationModes, [], 'refused before simulation');
   assert.equal(signatures, 0, 'nothing signed');
   assert.equal(expectedHash, undefined, 'nothing submitted');
 } else {
