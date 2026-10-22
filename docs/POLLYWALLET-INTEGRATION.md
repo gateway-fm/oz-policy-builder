@@ -452,8 +452,7 @@ re-establishes the same conditions:
    entry's expiry with it as a new obligation, before the entry leaves the backend. From then on a
    passkey may have signed it. Until it expires, no other installation entry is released. After it
    expires, the replay check compares the account with that state. Like the live check's, these
-   obligations live in the running backend: the journal keeps them for the operator, but a
-   restarted backend does not read it. After a restart, wait until the earlier expiry has passed.
+   obligations exist only in the running backend; see [After a restart](#after-a-restart).
 5. The browser derives the consent statement itself from the review and the validated assembly and
    requires it to equal the backend's. The statement shows the exact `add_context_rule` call, what
    installing grants (delegate, target, allowed calls, call cap, expiry, rule ID), the
@@ -490,9 +489,36 @@ hash, the spec and binding-set hashes, the authority commitment, the report's ru
 the evidence ledgers and the live check's consent hash. It also carries the owner's
 `webauthn_user_verified` with `human_approval_attested: false`. Once it exists, it closes every
 open replay obligation, so the replay check then reports `closed`. A confirmed installation whose
-verification failed stays listed, and leaves the obligations open. The browser adopts the listed
-installation after a failed or lost `submit` response. It can still be revoked when its own
-event named one rule ID.
+verification failed stays listed, and leaves the obligations open. It can still be revoked when its
+own event named one rule ID.
+
+When a `submit` response fails or is lost, the backend may still be working on the request and
+answers every other request with "busy" until it is done. The browser therefore asks for the status
+again every three seconds, for up to two minutes. Once the status lists a confirmed installation
+of the expected rule for this wallet, the browser adopts it, so that it can be revoked. If the
+backend is still busy after that, `Refresh backend status` asks again, and so does any later
+status read.
+
+### After a restart
+
+Replay obligations, the one-installation-per-session limit and the installation records exist only
+in the running backend. The session journal keeps every obligation (`live-check` and
+`install-release` entries) and every submission for the operator, but a restarted backend does
+not read it. So after a restart:
+
+- The new backend does not know that an installation entry released before the restart may have
+  been signed. Until that entry expires, it could still land, and it would install the same grant
+  a second time, with a call cap of its own.
+- The new backend cannot revoke a rule the earlier one installed.
+
+Before installing again after a restart, the operator:
+
+1. Reads the latest `signatureExpirationLedger` among the earlier session's `live-check` and
+   `install-release` journal entries, and waits until that ledger has passed.
+2. Checks the account's rules, for example with a new review, whose authority evidence lists
+   every rule. A rule that is not expected must be removed first, outside this wallet session,
+   for example with the harness's `lifecycle.mjs`.
+3. Only then starts a new review.
 
 An installation that needs a separate restoration transaction is refused. Restore the archived
 entries, then review again.
@@ -510,8 +536,14 @@ entries, then review again.
    browser shows its own consent statement.
 
 `confirm-revoke` repeats those reads, checks the owner's signature and submits once, as
-installation does. A removal refused before submission can be prepared again. Once the fee payer
-has started submitting it, the installation is never offered for removal again. The confirmed
+installation does. A removal that was refused before anything was sent can be prepared again:
+
+- a refused check or signature;
+- a fee-payer refusal that leaves it able to submit, such as a failed enforce-mode simulation.
+
+Once a removal may have reached the network, the installation is never offered for removal again
+in this session. That covers a send whose result is uncertain and a confirmed removal.
+`status` reports `removalAttempted` for each installation. The confirmed
 removal's identity is kept before anything is verified. It is reported `removed` only when both
 of these hold:
 

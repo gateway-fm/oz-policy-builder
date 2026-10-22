@@ -27,6 +27,7 @@ export interface WalletState {
   readonly replay: Details | null;
   readonly installPreview: (Details & { display: Details }) | null;
   readonly installAttempted: boolean;
+  readonly installRuleId: number | null;
   readonly installOwner?: Details | null;
   readonly revokePreview: (Details & { display: Details }) | null;
   readonly revokeAttempted: boolean;
@@ -55,9 +56,11 @@ export class WalletController {
     origin: string;
     pins: { networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
+    pause?(ms: number): Promise<void>;
   });
   readonly state: WalletState;
   connect(): Promise<void>;
+  refreshStatus(): Promise<void>;
   attachWallet(wallet: WalletIdentity): void;
   prepareAccount(credential: { credentialId: string; publicKey: string }): Promise<void>;
   confirmAccount(): Promise<void>;

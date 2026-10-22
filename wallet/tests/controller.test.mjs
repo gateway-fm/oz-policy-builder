@@ -46,9 +46,10 @@ function fixture() {
   const controller = new WalletController({
     pins, request: async (name, data) => {
       calls.push([name, data]);
-      if (replies[name] instanceof Error) throw replies[name];
-      return replies[name];
-    },
+      const reply = typeof replies[name] === 'function' ? replies[name]() : replies[name];
+      if (reply instanceof Error) throw reply;
+      return reply;
+    }, pause: async () => {},
     validators, sign: async () => { calls.push(['sign']); return ['signed']; }, origin: 'http://localhost:3000',
   });
   return { controller, replies, calls, validators };
@@ -478,15 +479,80 @@ test('a removal the backend refused before submitting can be prepared again; a s
   await f.controller.prepareInstall();
   await f.controller.install();
   f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, lifecycle: true },
-    installations: [{ ...INSTALLATION, ledger: 9, removal: null }] };
+    installations: [{ ...INSTALLATION, ledger: 9, removalAttempted: false, removal: null }] };
   await f.controller.prepareRevoke();
   f.replies['confirm-revoke'] = new Error('wallet action unavailable');
   await assert.rejects(f.controller.revoke(), /wallet action refused/);
   assert.equal(f.controller.state.revokeAttempted, false, 'the backend lists no removal');
   await f.controller.prepareRevoke();
-  f.replies.status = { ...f.replies.status, installations: [{ ...INSTALLATION, ledger: 9,
+  f.replies.status = { ...f.replies.status, installations: [{ ...INSTALLATION, ledger: 9, removalAttempted: true,
     removal: { status: 'confirmed_unverified', transactionHash: hash('f') } }] };
   await assert.rejects(f.controller.revoke(), /wallet action refused/);
   assert.equal(f.controller.state.revokeAttempted, true);
   await assert.rejects(f.controller.prepareRevoke(), /wallet action refused/);
+});
+
+test('the browser re-derives each consent before the passkey and checks the installed rule ID', async () => {
+  // Installation: the display at signing time must still be the one shown.
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  f.validators.installConsent = () => ({ ...INSTALL_DISPLAY, warning: 'changed' });
+  await assert.rejects(f.controller.install(), /wallet action refused/);
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'submit'), false);
+  // The backend's record must be for the rule the consent named.
+  const g = fixture();
+  await prepared(g);
+  await g.controller.prepareInstall();
+  g.replies.submit = { ...g.replies.submit, installation: { ...INSTALLATION, ruleId: 2 } };
+  await assert.rejects(g.controller.install(), /wallet action refused/);
+  assert.equal(g.controller.state.installation, null);
+  // Revocation: preparation and signing both re-derive the removal display, owner rule and installation.
+  for (const change of [
+    (h) => { h.validators.revokeConsent = () => ({ ...REVOKE_DISPLAY, warning: 'changed' }); },
+    (h) => { h.replies['prepare-revoke'] = { ...h.replies['prepare-revoke'], ownerRuleXdr: 'other owner' }; },
+    (h) => { h.replies['prepare-revoke'] = { ...h.replies['prepare-revoke'], installation: { ...INSTALLATION, ruleId: 2 } }; },
+  ]) {
+    const h = fixture();
+    await prepared(h);
+    await h.controller.prepareInstall();
+    await h.controller.install();
+    h.replies.status = { ...h.replies.status, capabilities: { ...h.replies.status.capabilities, lifecycle: true } };
+    change(h);
+    await assert.rejects(h.controller.prepareRevoke(), /wallet action refused/);
+    assert.equal(h.controller.state.revokePreview, null);
+  }
+  const k = fixture();
+  await prepared(k);
+  await k.controller.prepareInstall();
+  await k.controller.install();
+  k.replies.status = { ...k.replies.status, capabilities: { ...k.replies.status.capabilities, lifecycle: true } };
+  await k.controller.prepareRevoke();
+  k.validators.revokeConsent = () => ({ ...REVOKE_DISPLAY, warning: 'changed' });
+  await assert.rejects(k.controller.revoke(), /wallet action refused/);
+  assert.equal(k.calls.some(([name]) => name === 'confirm-revoke'), false);
+});
+test('after a lost submit response the browser waits while the backend is busy, then adopts what it confirmed', async () => {
+  const f = fixture();
+  await prepared(f);
+  await f.controller.prepareInstall();
+  const confirmed = { installationId: hash('6'), status: 'installed', account: wallet.contractId, ruleId: 1,
+    transactionHash: hash('e'), ledger: 9, removal: null };
+  const ready = { ...f.replies.status, installations: [confirmed], capabilities: { ...f.replies.status.capabilities, lifecycle: true } };
+  let busy = 3;
+  f.replies.submit = new Error('wallet action refused');
+  f.replies.status = () => (busy-- > 0 ? new Error('wallet session busy') : ready);
+  await assert.rejects(f.controller.install(), /wallet action refused/);
+  assert.deepEqual(f.controller.state.installation, confirmed);
+  // Still busy beyond the bound: nothing adopted yet, but a later status refresh adopts it.
+  const g = fixture();
+  await prepared(g);
+  await g.controller.prepareInstall();
+  g.replies.submit = new Error('wallet action refused');
+  g.replies.status = new Error('wallet session busy');
+  await assert.rejects(g.controller.install(), /wallet action refused/);
+  assert.equal(g.controller.state.installation, null);
+  g.replies.status = ready;
+  await g.controller.refreshStatus();
+  assert.deepEqual(g.controller.state.installation, confirmed);
 });

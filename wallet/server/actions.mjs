@@ -146,9 +146,10 @@ export function createWalletActions({ session, toolchain, network, native = null
   const readbackAfter = (account, ruleId, ledger) => readAfter(() => network.ruleReadback(account, ruleId), ledger);
   const markerAfter = (account, policy, ruleId, ledger) => readAfter(() => network.liveState({ account, policy, ruleId }), ledger);
   /** Public summaries, so a lost response can be recovered from `status`. */
-  const summaries = () => [...installations.values()].map(({ record, removal }) => ({ installationId: record.installationId,
-    status: record.status, account: record.account, ruleId: record.ruleId, transactionHash: record.transactionHash,
-    ledger: record.ledger, removal: removal ? { status: removal.status, transactionHash: removal.transactionHash } : null }));
+  const summaries = () => [...installations.values()].map(({ record, removal, removalAttempted }) => ({
+    installationId: record.installationId, status: record.status, account: record.account, ruleId: record.ruleId,
+    transactionHash: record.transactionHash, ledger: record.ledger, removalAttempted,
+    removal: removal ? { status: removal.status, transactionHash: removal.transactionHash } : null }));
   return {
     status: async (input) => {
       exact(input, []);
@@ -599,6 +600,8 @@ export function createWalletActions({ session, toolchain, network, native = null
           || currentLedger < fresh.observedLedger || currentLedger - fresh.observedLedger > 12
           || owner.ledger < fresh.observedLedger || owner.ledger - fresh.observedLedger > 12
           || currentLedger + 1 >= held.checked.maxLedger) refuse();
+        // The recheck took time: the evidence must still be recent at the ledger read after it.
+        installGate({ review, deployment, artifact, currentLedger });
         const signed = await validateSignedAuthorization({ approval, checked: held.checked,
           signedAuthEntriesXdr: input.signedAuthEntriesXdr, origin: LIVE_ORIGIN });
         session.invalidate('install');
@@ -685,9 +688,14 @@ export function createWalletActions({ session, toolchain, network, native = null
         const signed = await validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr: input.signedAuthEntriesXdr,
           origin: LIVE_ORIGIN });
         session.invalidate('revoke');
-        // Spent from here: a removal that may have reached the network is never prepared again.
+        // Spent from here: a removal that may have reached the network is never prepared again. A
+        // refusal that leaves the fee payer able to submit sent nothing, so removal stays available.
         held.removalAttempted = true;
-        const submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy');
+        let submitted;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch {
+          if (network.canSubmit === true) held.removalAttempted = false;
+          refuse();
+        }
         // Confirmed: keep its identity before any verification can refuse.
         held.removal = { status: 'confirmed_unverified', ruleId: record.ruleId, transactionHash: submitted.hash, ledger: submitted.ledger };
         let removal;

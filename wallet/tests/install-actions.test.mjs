@@ -148,11 +148,18 @@ test('install record requires the context_rule_added event bound to tx hash, led
       xdr.ScVal.scvMap([]))],
     'other return value': () => [addedEvent(f.f.wallet.contractId, installedRule(f.intent, { ruleId: RULE_ID + 1 }), RULE_ID + 1)],
     'no hash': () => null,
+    'no policy marker': (rule) => [addedEvent(f.f.wallet.contractId, rule)],
   };
   for (const [name, events] of Object.entries(variants)) {
     const g = await installable();
     g.onSubmit = (envelopeXdr, stage) => {
       g.state.ledger += 1;
+      // The rule is on the account, so the read-back finds it and the event checks decide.
+      Object.assign(g.state, { nextId: RULE_ID + 1, installed: true });
+      if (name === 'no policy marker') {
+        const read = g.network.liveState;
+        g.network.liveState = async (input) => ({ ...(await read(input)), installed: false });
+      }
       const rule = name === 'other return value' ? installedRule(g.intent, { ruleId: RULE_ID + 1 }) : g.rule;
       return { hash: name === 'no hash' ? 'not-a-hash' : 'e'.repeat(64), ledger: g.state.ledger, trust: 'rpc_reported', returnValue: rule,
         events: (events(rule) ?? [addedEvent(g.f.wallet.contractId, rule)]).map((e) => e) };
@@ -200,11 +207,7 @@ test('install refused on stale evidence', async () => {
   f.state.ledger = CAPTURE_LEDGER + INSTALL_EVIDENCE_MAX_AGE_LEDGERS + 1;
   await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), /refused/);
   assert.equal(assembles(f).length, 0);
-  // Evidence from a ledger after the installation's own read is not current either.
-  const g = await installable();
-  await verified(g);
-  g.state.ledger = CAPTURE_LEDGER - 1;
-  await assert.rejects(() => g.actions.assemble({ reviewId: g.review.reviewId }), /refused/);
+  // Evidence from a ledger after the installation's own read: see install-gate.test.mjs.
   // Aging between assembly and submission is refused before the fee payer signs.
   const h = await installable();
   await verified(h);
@@ -390,4 +393,80 @@ test('status says from which ledger a further installation entry can be released
   const f = await installable();
   const { signaturesValidUntil } = await verified(f, { expire: false });
   assert.equal((await f.actions.status({})).installOpensAfterLedger, signaturesValidUntil);
+});
+
+test('submit refuses when the transaction window closes, the fee payer moved or the recheck commitment differs', async () => {
+  for (const name of ['window closed', 'sequence moved', 'commitment changed', 'grant changed']) {
+    const f = await installable();
+    await verified(f);
+    const { result, signed } = await assembled(f);
+    if (name === 'window closed') f.onIntent = () => { f.state.ledger = result.assembly.max_ledger - 1; };
+    if (name === 'sequence moved') f.sequence = '4243';
+    if (name === 'commitment changed') f.freshChange = (value) => { value.authority.verdict.authority_commitment = '0'.repeat(64); };
+    if (name === 'grant changed') f.freshChange = (value) => { value.authority.verdict.grant.name = 'other'; };
+    await assert.rejects(() => f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed }), /refused/, name);
+    assert.equal(installs(f).length, 0, name);
+  }
+});
+
+test('assemble refuses owner-rule and fee-payer reads outside 12 ledgers of the CLI\'s authority read', async () => {
+  for (const [name, change] of [['owner read after', (f) => { f.ownerLedgerOffset = 13; }],
+    ['owner read before', (f) => { f.ownerLedgerOffset = -1; }], ['payer read after', (f) => { f.sourceLedgerOffset = 13; }],
+    ['payer read before', (f) => { f.sourceLedgerOffset = -1; }]]) {
+    const f = await installable();
+    await verified(f);
+    change(f);
+    await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), /refused/, name);
+    assert.equal(f.obligations.length, 0, `${name}: nothing released`);
+  }
+  for (const [name, change] of [['owner read after', (f) => { f.ownerLedgerOffset = 13; }],
+    ['owner read before', (f) => { f.ownerLedgerOffset = -1; }]]) {
+    const f = await installable();
+    await verified(f);
+    const { result, signed } = await assembled(f);
+    change(f);
+    await assert.rejects(() => f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed }), /refused/, `submit: ${name}`);
+    assert.equal(installs(f).length, 0);
+  }
+});
+
+test('submit refuses evidence that ages past the bound while the authority recheck runs', async () => {
+  const f = await installable();
+  await verified(f);
+  // Close to the bound at assembly; the CLI recheck takes the evidence past it.
+  f.state.ledger = CAPTURE_LEDGER + INSTALL_EVIDENCE_MAX_AGE_LEDGERS - 5;
+  const { result, signed } = await assembled(f);
+  f.onIntent = () => { f.state.ledger += 10; };
+  await assert.rejects(() => f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed }), /refused/);
+  assert.equal(installs(f).length, 0);
+});
+
+test('a removal the fee payer refused before sending stays available; one that may have been sent does not', async () => {
+  for (const [name, sent] of [['refused before sending', false], ['uncertain after sending', true]]) {
+    const f = await installable();
+    const { submitted } = await installed(f);
+    const installationId = submitted.installation.installationId;
+    const prepared = await f.actions['prepare-revoke']({ installationId });
+    const entry = xdr.TransactionEnvelope.fromXDR(prepared.assembly.envelope_xdr_base64, 'base64').v1.tx.operations[0].body
+      .invokeHostFunctionOp.auth[0].toXDR('base64');
+    f.onSubmit = () => {
+      f.network.canSubmit = !sent;
+      throw new Error('wallet network operation refused; inspect the local journal before retrying');
+    };
+    const signed = await f.signEntry(entry);
+    await assert.rejects(() => f.actions['confirm-revoke']({ id: prepared.action.id, signedAuthEntriesXdr: signed }), /refused/);
+    const [listed] = (await f.actions.status({})).installations;
+    assert.equal(listed.removalAttempted, sent, name);
+    assert.equal((await f.actions.status({})).capabilities.lifecycle, !sent, name);
+    if (sent) {
+      await assert.rejects(() => f.actions['prepare-revoke']({ installationId }), /refused/, name);
+    } else {
+      f.onSubmit = null;
+      const again = await f.actions['prepare-revoke']({ installationId });
+      const again2 = xdr.TransactionEnvelope.fromXDR(again.assembly.envelope_xdr_base64, 'base64').v1.tx.operations[0].body
+        .invokeHostFunctionOp.auth[0].toXDR('base64');
+      const confirmed = await f.actions['confirm-revoke']({ id: again.action.id, signedAuthEntriesXdr: await f.signEntry(again2) });
+      assert.equal(confirmed.removal.status, 'removed', name);
+    }
+  }
 });

@@ -417,9 +417,12 @@ function PolicyBuilder() {
           <button className={button} disabled={busy}
             onClick={() => void run((value) => value.cancelInstall())}>Cancel installation</button>
         </div>}
-        {state?.installAttempted && !state?.installation && <p className="text-sm text-amber-200">
-          An installation was attempted. Further attempts are disabled; the backend lists what it confirmed below and in its journal.
-        </p>}
+        {state?.installAttempted && !state?.installation && <div className="space-y-2 text-sm text-amber-200">
+          <p>An installation was attempted. Further attempts are disabled. If the backend confirmed a transaction, its status lists it,
+            and this page adopts it so that it can be revoked; the journal keeps it too.</p>
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.refreshStatus())}>Refresh backend status</button>
+        </div>}
         <Evidence title="Installation record" value={state?.installation} open />
       </section>
       <section className={panel} aria-labelledby="revoke-heading">

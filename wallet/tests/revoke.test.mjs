@@ -110,3 +110,12 @@ test('a rule reads back absent only on the account\'s own contract error 3000', 
     assert.throws(() => ruleReadbackResult(simulation, { account: ACCOUNT }), /refused/, name);
   }
 });
+
+test('removal validation refuses an owner entry whose credentials name another address', () => {
+  const value = removal((tx) => {
+    tx.operations[0].body.invokeHostFunctionOp.auth[0].credentials.addressV2.address = new Address(StrKey.encodeContract(Buffer.alloc(32, 1))).toScAddress();
+  });
+  const envelope = xdr.TransactionEnvelope.fromXDR(value.assembly.envelope_xdr_base64, 'base64');
+  value.assembly.envelope_xdr_sha256 = Buffer.from(hash(envelope.toXDR())).toString('hex');
+  assert.throws(() => validateRemovalAssembly(value), /refused/);
+});

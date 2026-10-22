@@ -114,6 +114,7 @@ export async function installable({ captureLedger = CAPTURE_LEDGER } = {}) {
   const fresh = () => {
     const value = structuredClone(intent);
     value.authority.verdict.observed_ledger = f.state.ledger;
+    f.freshChange?.(value);
     return value;
   };
   f.sequence = '4242';
@@ -130,12 +131,15 @@ export async function installable({ captureLedger = CAPTURE_LEDGER } = {}) {
     }
     assert.fail(`unexpected authority command ${command}`);
   };
-  n.sourceCapture = async () => ({ sourceSequence: f.sequence, ledger: f.state.ledger });
+  // Offsets a test may set: how far the owner-rule and fee-payer reads lie from the latest ledger.
+  f.ownerLedgerOffset = 0;
+  f.sourceLedgerOffset = 0;
+  n.sourceCapture = async () => ({ sourceSequence: f.sequence, ledger: f.state.ledger + f.sourceLedgerOffset });
   f.obligations = [];
   n.recordInstallObligation = (record) => { f.obligations.push(structuredClone(record)); };
   n.view = async (account, method, args) => {
     assert.equal(account, f.f.wallet.contractId); assert.equal(method, 'get_context_rule'); assert.equal(args[0].u32, 7);
-    return { value: xdr.ScVal.fromXDR(f.f.ownerRuleXdr, 'base64'), ledger: f.state.ledger };
+    return { value: xdr.ScVal.fromXDR(f.f.ownerRuleXdr, 'base64'), ledger: f.state.ledger + f.ownerLedgerOffset };
   };
   const rule = installedRule(intent);
   f.rule = rule;

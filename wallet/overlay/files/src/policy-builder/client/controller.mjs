@@ -15,20 +15,22 @@ const LAYERS = ['reference', 'account_wasm', 'captured_target', 'live_enforcemen
 
 /** The route supplies the real validators; only serialized XDR crosses SDK versions. */
 export class WalletController {
-  #request; #validators; #sign; #origin; #pins; #notify; #busy = false;
+  #request; #validators; #sign; #origin; #pins; #notify; #pause; #busy = false;
   #state = copy({ status: null, wallet: null, record: null, artifact: null, deployment: null,
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
-    replay: null, installPreview: null, installAttempted: false, revokePreview: null, revokeAttempted: false, removal: null, busy: false });
-  constructor({ request, validators, sign, origin, pins, onChange = () => {} }) {
+    replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
+    removal: null, busy: false });
+  constructor({ request, validators, sign, origin, pins, onChange = () => {},
+    pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }) }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
-    this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange;
+    this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange; this.#pause = pause;
   }
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
   #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null,
     accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null, livePreview: null,
-    installPreview: null, installAttempted: false, revokePreview: null, revokeAttempted: false, removal: null }); }
+    installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false, removal: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
@@ -48,9 +50,26 @@ export class WalletController {
     const status = await this.#request('status', {});
     if (status?.network !== 'testnet' || Object.keys(this.#pins).some((key) => status[key] !== this.#pins[key])) throw refused();
     this.#set({ status });
+    // An attempted installation whose response never arrived is adopted once the backend lists it.
+    const { installAttempted, installation, installRuleId } = this.#state;
+    if (installAttempted && !installation && installRuleId !== null) {
+      const listed = this.#confirmed(installRuleId);
+      if (listed) this.#set({ installation: listed });
+    }
     return status;
   }
+  /** The backend serves one request at a time: while it still works on a lost request, ask again. */
+  async #statusWhenFree() {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try { return await this.#status(); } catch { await this.#pause(3000); }
+    }
+    return null;
+  }
   async connect() {
+    return this.#act(() => this.#status());
+  }
+  /** Read the backend's status again, adopting an installation it confirmed after a lost response. */
+  async refreshStatus() {
     return this.#act(() => this.#status());
   }
   attachWallet(wallet) {
@@ -343,17 +362,15 @@ export class WalletController {
       const signed = await this.#validators.validateSignedAuthorization({ approval: review.approval,
         checked, signedAuthEntriesXdr, origin: this.#origin });
       // The owner identity a removal will need is kept before anything is submitted.
-      this.#set({ installAttempted: true, review: null,
+      this.#set({ installAttempted: true, installRuleId: display.grant.rule_id, review: null,
         installOwner: { wallet: review.approval.wallet, ownerRuleId: review.approval.ownerRuleId, ownerRuleXdr: review.approval.ownerRuleXdr } });
       let submitted;
       try {
         submitted = await this.#request('submit', { id: installPreview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
       } catch (error) {
         // A confirmed transaction the backend could not verify, or whose response was lost, is still
-        // listed there: adopt it, so that it can be seen and removed.
-        await this.#status().catch(() => {});
-        const listed = this.#confirmed(display.grant.rule_id);
-        if (listed) this.#set({ installation: listed });
+        // listed there: the status read adopts it, so that it can be seen and removed.
+        await this.#statusWhenFree();
         throw error;
       }
       await this.#status().catch(() => {});
@@ -419,10 +436,10 @@ export class WalletController {
       try {
         confirmed = await this.#request('confirm-revoke', { id: revokePreview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
       } catch (error) {
-        // Removal may be prepared again only when the backend lists this installation with no removal at all.
-        const refreshed = await this.#status().then(() => true, () => false);
+        // Removal may be prepared again only when the backend says nothing was sent for this installation.
+        const refreshed = (await this.#statusWhenFree()) !== null;
         const listed = (this.#state.status?.installations ?? []).find((item) => item?.installationId === installation.installationId);
-        if (refreshed && listed && listed.removal === null) this.#set({ revokeAttempted: false });
+        if (refreshed && listed && listed.removal === null && listed.removalAttempted === false) this.#set({ revokeAttempted: false });
         throw error;
       }
       await this.#status().catch(() => {});
