@@ -21,7 +21,7 @@ function fixture() {
         installation: { rule_id: rule_index + 8, transaction: H(30 + rule_index), ledger: 100 } })) } } };
   const artifacts = run.walkthrough.bundle.entries.map((entry) => ({ manifest: { rule_index: entry.rule_index,
     spec_hash: entry.spec_hash, wasm_hash: entry.wasm_hash, registry_snapshot: spec.registry_snapshot } }));
-  const history = [], sends = [], signs = [], ops = [], outcomes = [];
+  const history = [], sends = [], signs = [], ops = [], outcomes = [], events = [];
   const controls = {};
   const viewCall = async (_payer, contract, name) => {
     if (name === 'get_context_rule') {
@@ -36,7 +36,7 @@ function fixture() {
   };
   const deps = {
     delay: async () => {},
-    transactionOutcome: async (hash, maxTime) => { outcomes.push([hash, maxTime]);
+    transactionOutcome: async (hash, maxTime, options = {}) => { outcomes.push([hash, maxTime]); controls.budgets = [...(controls.budgets ?? []), options.budgetMs];
       return controls.outcome ?? { status: 'NOT_FOUND', after_window: false }; },
     viewCallObservation: async (payer, contract, name, args) => {
       const ledger = controls.readLedgers?.length ? controls.readLedgers.shift() : 111;
@@ -77,7 +77,8 @@ function fixture() {
       if (controls.ambiguous === id) throw new Error('send status unknown');
       return { hash, receipt: { ledger: 111, fixture_id: id } };
     },
-    removalEvent: (_receipt, { ruleId }) => {
+    removalEvent: (receipt, { ruleId, hash: removed }) => {
+      events.push({ receipt, ruleId, hash: removed });
       const saved = history.at(-1).walkthrough.bundle.entries.find((e) => e.installation?.rule_id === ruleId);
       assert.match(saved.removal.transaction, /^[0-9a-f]{64}$/, 'confirmed removal saved before validation');
       if (controls.eventFails === ruleId) throw new Error(`event missing${controls.seedInError ? ` ${SEED}` : ''}`);
@@ -85,7 +86,7 @@ function fixture() {
     viewCall,
   };
   const execute = () => revokePermissionBundle({ run, spec, artifacts, save: () => history.push(structuredClone(run)) }, deps);
-  return { run, spec, artifacts, controls, history, sends, signs, ops, outcomes, execute };
+  return { run, spec, artifacts, controls, history, sends, signs, ops, outcomes, events, execute, deps };
 }
 test('bundle cleanup removes every confirmed non-owner grant in reverse order', async () => {
   const f = fixture();
@@ -267,4 +268,51 @@ test('rule and policy readbacks count only at or after the removal ledger', asyn
   g.controls.readLedgers = new Array(100).fill(110);
   assert.equal((await g.execute()).status, 'incomplete');
   assert.equal(g.run.walkthrough.bundle.entries[1].removal.rule_readback, 'not_checked');
+});
+
+test('a reconciled removal is verified against its own landed transaction before it counts', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  const landed = { status: 'SUCCESS', ledger: 105, txHash: H(77) };
+  f.controls.outcome = landed;
+  await f.execute();
+  const event = f.events.find((e) => e.ruleId === 9);
+  assert.equal(event.receipt, landed);
+  assert.equal(event.hash, H(77));
+  const g = fixture();
+  pending(g, { max_time: 1 });
+  g.controls.outcome = landed;
+  g.controls.eventFails = 9;
+  assert.equal((await g.execute()).status, 'incomplete');
+  assert.equal(g.run.walkthrough.bundle.entries[1].removal.event, 'not_verified');
+});
+test('a pending removal is classified only after the network is confirmed to be testnet', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  f.controls.wrongNetwork = true;
+  f.controls.outcome = { status: 'FAILED' };
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.outcomes, []);
+  assert.equal(f.run.walkthrough.bundle.entries[1].pending_removal.transaction, H(77));
+});
+test('after two removals that did not land, no further removal is prepared, even on a later rerun', async () => {
+  const f = fixture();
+  f.run.walkthrough.bundle.entries[1].failed_removals = [{ transaction: H(75), status: 'failed' }, { transaction: H(76), status: 'failed' }];
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.sends, [8]);
+});
+
+test('cleanup budgets reconciliation against its deadline and prepares no removal it cannot finish', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  f.controls.outcome = { status: 'FAILED' };
+  // 300 s left: reconciliation may poll for what remains beyond the 240 s a fresh removal needs,
+  // and the fresh removal for rule 9 still fits; then rule 8 finds too little time left.
+  let clock = 0;
+  const result = await revokePermissionBundle({ run: f.run, spec: f.spec, artifacts: f.artifacts, save: () => f.history.push(structuredClone(f.run)) },
+    { ...f.deps, deadline: 300_000, now: () => clock, submit: async (...args) => { clock += 100_000; return f.deps.submit(...args); } });
+  assert.deepEqual(f.controls.budgets, [60_000]);
+  assert.deepEqual(f.sends, [9]);
+  assert.equal(result.status, 'incomplete');
+  assert.equal(f.run.walkthrough.bundle.entries[0].pending_removal, undefined, 'nothing was prepared for rule 8');
 });

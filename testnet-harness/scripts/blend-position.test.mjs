@@ -31,6 +31,7 @@ function fixture({ withPlan = true } = {}) {
     owner: { kind: 'passkey' }, ...(withPlan ? { walkthrough: plan(account) } : {}) };
   const control = {}, state = { usdc: 0n, supply: 0n, ledger: 1000, expiration: CLOSE + 4 * 86400, eps: 3_620_045_854_265n };
   const sends = [], signatures = [], saved = [], fees = [];
+  let stale = null;
   let txn = 0;
   const positions = () => map({ collateral: idMap([]), liabilities: idMap([]), supply: idMap(state.supply ? [[1, state.supply]] : []) });
   const deps = {
@@ -47,9 +48,15 @@ function fixture({ withPlan = true } = {}) {
     } }),
     delay: async () => {},
     viewCallObservation: async (payer, contract, fn, args) => {
-      // A lagging endpoint answers from an earlier ledger for the first `lag` reads.
-      const ledger = control.lag > 0 ? (control.lag--, state.ledger - 10) : state.ledger;
-      return { value: await deps.viewCall(payer, contract, fn, args), ledger };
+      // A lagging endpoint: after the armed submission, the next read of each listed function
+      // answers from the ledger before it, with the state before it.
+      const lag = stale && stale.fns.includes(fn) && !stale.used.has(fn) ? (stale.used.add(fn), stale.before) : null;
+      if (lag) {
+        if (fn === 'balance') return { value: i128(lag.usdc), ledger: lag.ledger };
+        if (fn === 'get_positions') return { value: map({ collateral: idMap([]), liabilities: idMap([]),
+          supply: idMap(lag.supply ? [[1, lag.supply]] : []) }), ledger: lag.ledger };
+      }
+      return { value: await deps.viewCall(payer, contract, fn, args), ledger: state.ledger };
     },
     viewCall: async (_payer, contract, fn, args) => {
       if (contract === p.blend_asset && fn === 'balance') { assert.equal(scValToNative(args[0]), account); return i128(state.usdc); }
@@ -82,6 +89,9 @@ function fixture({ withPlan = true } = {}) {
       if (fn === 'gulp_emissions' && control.gulpRefused) throw new SimulationError('gulp', 'Error(Contract, #1200)');
       const hash = (++txn).toString(16).padStart(64, '0');
       await options.onSubmitting(hash);
+      const label = fn === 'submit' ? `submit:${scValToNative(host.args[3])[0].request_type}` : fn;
+      if (control.staleAfter?.[label]) stale = { fns: control.staleAfter[label], used: new Set(),
+        before: { usdc: state.usdc, supply: state.supply, ledger: state.ledger } };
       sends.push(fn === 'submit' ? `submit:${scValToNative(host.args[3])[0].request_type}` : fn);
       fees.push(options.maxFee);
       if (control.ambiguous === sends.at(-1)) throw new Error('send unconfirmed');
@@ -314,16 +324,19 @@ test('pool and swap calls name the Blend fee ceiling; the plain XLM transfer kee
   assert.ok(BLEND_FEE_CEILING > 10_000_000n && BLEND_FEE_CEILING <= 100_000_000n);
 });
 
-test('position and balance readbacks after a confirmed call count only at or after its ledger', async () => {
-  const f = fixture();
-  await openPosition({ run: f.run, save: f.save }, f.deps);
-  f.control.lag = 2;
-  const reads = [];
-  const observe = f.deps.viewCallObservation;
-  f.deps.viewCallObservation = async (...args) => { const r = await observe(...args); reads.push([args[2], r.ledger]); return r; };
-  assert.equal((await closePosition({ run: f.run, save: f.save }, f.deps)).status, 'withdrawn');
-  const w = f.run.walkthrough.position_journal.withdrawal;
-  const after = reads.filter(([fn, ledger]) => fn === 'get_positions' && ledger >= w.ledger);
-  assert.ok(after.length >= 1, 'the empty readback that closed the position was at or after the withdrawal ledger');
-  assert.ok(reads.some(([, ledger]) => ledger < w.ledger), 'lagging reads happened and were not accepted');
-});
+for (const [site, label, fns] of [['swap balance', 'swap_exact_tokens_for_tokens', ['balance']],
+  ['supply balance', 'submit:0', ['balance']], ['supply position', 'submit:0', ['get_positions']],
+  ['withdrawal balance', 'submit:1', ['balance']], ['withdrawal position', 'submit:1', ['get_positions']]]) {
+  test(`a stale ${site} readback after its confirmed call is retried, never used`, async () => {
+    const f = fixture();
+    f.control.staleAfter = { [label]: fns };
+    await openPosition({ run: f.run, save: f.save }, f.deps);
+    assert.equal((await closePosition({ run: f.run, save: f.save }, f.deps)).status, 'withdrawn');
+    const j = f.run.walkthrough.position_journal;
+    assert.equal(j.funding_swap.usdc_after, '213000000');
+    assert.equal(j.supply.usdc_spent, AMOUNT.toString());
+    assert.equal(j.supply.b_tokens, (AMOUNT - 100n).toString());
+    assert.equal(j.withdrawal.usdc_returned, (AMOUNT + 5n).toString());
+    assert.equal(j.withdrawal.readback, 'empty');
+  });
+}

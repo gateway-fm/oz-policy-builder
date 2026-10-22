@@ -1,5 +1,5 @@
 // Called before fixture keys are discarded, on success or failure. The fixed cleanup child
-// gets one 180-second deadline plus a five-second termination grace for its whole process group.
+// gets one 600-second deadline plus a five-second termination grace for its whole process group.
 // If termination is unconfirmed, the caller must not reconcile/finalize the child-owned journal.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
 import { args, NETWORK_PASSPHRASE, PINNED_ACCOUNT_WASM, writeJson } from './rpc.mjs';
-import { childStdio, closeLog, openCleanupLog } from './failure-cleanup.mjs';
+import { CLEANUP_CHILD_DEADLINE_MS, childStdio, closeLog, openCleanupLog } from './failure-cleanup.mjs';
 const hash = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 const identity = (run) => {
   const bundle = run.walkthrough?.bundle;
@@ -53,7 +53,7 @@ export function runProtocolCleanupChild(dir, {
       } finally { closeLog(log); }
       child.once('error', () => Number.isSafeInteger(child.pid) && child.pid > 0 ? terminate() : finish({ status: 'failed' }));
       child.once('close', (code) => finish(timedOut ? { status: 'timed_out' } : { status: 'exited', code }));
-      timer = setTimer(terminate, 180_000);
+      timer = setTimer(terminate, CLEANUP_CHILD_DEADLINE_MS);
     } catch { finish({ status: 'failed' }); }
   });
 }

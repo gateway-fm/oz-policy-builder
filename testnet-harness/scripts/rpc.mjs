@@ -1,7 +1,8 @@
 // Network side of the harness: one RPC client, Friendbot, and a submit loop that refuses to sign
 // what simulation rejected. Everything here talks to the live network; nothing here holds a key
 // longer than the call that signs with it.
-import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import {
   Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
 } from '@stellar/stellar-sdk';
@@ -151,7 +152,7 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   }
   const source = await server.getAccount(payer.publicKey());
   const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: NETWORK_PASSPHRASE })
-    .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(120).build();
+    .addOperation(withSourceAuthorization(operation, payer.publicKey())).setTimeout(SUBMIT_TIMEOUT_SECONDS).build();
   if (tx.source !== payer.publicKey()) throw new Error('submission refused: RPC returned another fee payer');
   const expectedEnvelope = Buffer.from(tx.toEnvelope().toXDR());
   const sim = await server.simulateTransaction(tx, undefined, 'enforce');
@@ -185,28 +186,40 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
 }
 
 const POLL_INTERVAL_MS = 2000;
-/** Seconds past a transaction's validity window after which "not found" means it never landed. */
-export const CONFIRMATION_MARGIN_SECONDS = 30;
+/** Every submitted transaction is valid for this many seconds after it is built (`setTimeout`). */
+export const SUBMIT_TIMEOUT_SECONDS = 120;
+/** How long one outcome query may poll locally. Ledger close times, not this, decide outcomes. */
+export const OUTCOME_POLL_BUDGET_MS = 180_000;
+/**
+ * Time a cleanup keeps in hand before it prepares a removal: one submission's outcome polling,
+ * two bounded readbacks (10 reads, 2 s apart, each) and slack for recording and signing.
+ */
+export const REMOVAL_RESERVE_MS = OUTCOME_POLL_BUDGET_MS + 40_000 + 20_000;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * The final outcome of one submitted transaction: polled until SUCCESS or FAILED, or until its
- * validity window (`maxTime`, Unix seconds) plus a margin has passed. Transport errors are retried
- * within that bound; they are not outcomes. A `NOT_FOUND` returned after the window means the
- * transaction can no longer land. Without a known window, one read is made and `NOT_FOUND`
- * proves nothing.
+ * The outcome of one submitted transaction. SUCCESS and FAILED are returned at once. Otherwise
+ * it polls within a local budget; transport errors are retried, not outcomes. `NOT_FOUND` with
+ * `after_window: true` means the endpoint has closed a ledger after the window (`maxTime`, Unix
+ * seconds) so the transaction can no longer land, and still retains the ledgers from the window's
+ * start, so it would have seen it. Only ledger close times decide that; the local clock only
+ * bounds polling. Without a known window, one read is made and `NOT_FOUND` proves nothing.
  */
-export async function transactionOutcome(hash, maxTime, { now = () => Date.now(), delay = pause } = {}) {
+export async function transactionOutcome(hash, maxTime, { now = () => Date.now(), delay = pause,
+  budgetMs = OUTCOME_POLL_BUDGET_MS } = {}) {
   const known = Number.isSafeInteger(maxTime) && maxTime > 0;
-  const deadline = known ? (maxTime + CONFIRMATION_MARGIN_SECONDS) * 1000 : now();
+  const stopAt = now() + (known ? budgetMs : 0);
   for (;;) {
     let response = null;
     try { response = await server.getTransaction(hash); } catch { response = null; }
-    if (response && (response.status === 'SUCCESS' || response.status === 'FAILED')) return response;
-    if (now() >= deadline) {
-      return response?.status === 'NOT_FOUND' && known ? { status: 'NOT_FOUND', after_window: true }
-        : { status: response?.status === 'NOT_FOUND' ? 'NOT_FOUND' : 'UNKNOWN', after_window: false };
+    if (response?.status === 'SUCCESS' || response?.status === 'FAILED') return response;
+    if (known && response?.status === 'NOT_FOUND') {
+      const latest = Number(response.latestLedgerCloseTime), oldest = Number(response.oldestLedgerCloseTime);
+      if (Number.isFinite(latest) && latest > maxTime) {
+        return { status: 'NOT_FOUND', after_window: Number.isFinite(oldest) && oldest <= maxTime - SUBMIT_TIMEOUT_SECONDS };
+      }
     }
+    if (!known || now() >= stopAt) return { status: response?.status === 'NOT_FOUND' ? 'NOT_FOUND' : 'UNKNOWN', after_window: false };
     await delay(POLL_INTERVAL_MS);
   }
 }
@@ -343,8 +356,21 @@ export function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+/**
+ * Replace a journal atomically: a new temporary file in the same directory, written and synced,
+ * then renamed over the path, so a process killed mid-write leaves either the old or the new
+ * journal, never a truncated one.
+ */
 export function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`;
+  const fd = openSync(temporary, 'wx');
+  try {
+    try { writeSync(fd, `${JSON.stringify(value, null, 2)}\n`); fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 export function secretsPath() {

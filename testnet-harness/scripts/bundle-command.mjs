@@ -10,6 +10,7 @@ import { inspectBundleGrant } from './bundle-grant.mjs';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { walletTrust } from './wallet-decision.mjs';
 import { args, redactSecrets, writeJson } from './rpc.mjs';
+import { childDeadline } from './failure-cleanup.mjs';
 const requireThat = (ok, text) => { if (!ok) throw new Error(text); };
 
 export function loadBundleFiles(directory, expectedRunHash) {
@@ -73,7 +74,7 @@ export async function bundleCommand(command, directory, options = {}) {
       typeof value === 'number' && !Number.isSafeInteger(value) && /^-?\d+$/.test(context?.source ?? '') ? BigInt(context.source) : value);
     return installPermissionBundle({ ...input, checker, recording });
   }
-  if (command === 'cleanup') return revokePermissionBundle(input);
+  if (command === 'cleanup') return revokePermissionBundle(input, options.deadline === undefined ? {} : { deadline: options.deadline });
   requireThat(input.run.walkthrough.bundle?.status === 'installed', 'no complete protocol bundle to inspect');
   return Promise.all(input.run.walkthrough.bundle.entries.map((entry) => inspectBundleGrant(input.run, input.spec, entry)));
 }
@@ -82,6 +83,8 @@ if (isMainModule(import.meta.url)) {
   const options = args(process.argv.slice(3));
   requireThat(options['run-dir'], 'usage: bundle-command.mjs install|inspect|cleanup --run-dir DIRECTORY');
   let result;
+  // As the failure-cleanup child, cleanup stops itself before the parent's process-group kill.
+  if (process.argv[2] === 'cleanup') options.deadline = childDeadline();
   try { result = await bundleCommand(process.argv[2], options['run-dir'], options); } catch (error) {
     if (process.argv[2] !== 'cleanup') throw error;
     // The cleanup child's output is kept in cleanup-child.log: a message, no stack, no secrets.

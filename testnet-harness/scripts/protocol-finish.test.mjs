@@ -58,7 +58,7 @@ test('final cleanup never repeats a previous attempt', async (t) => {
   f.run.walkthrough.final_cleanup = { status: 'incomplete' }; f.save();
   assert.equal((await finishProtocolBundle(f.dir, { runChild: () => assert.fail('no retry') })).status, 'already_attempted');
 });
-test('protocol cleanup uses only its fixed command and a 180-second process-group deadline', async () => {
+test('protocol cleanup uses only its fixed command and a 600-second process-group deadline', async () => {
   const child = new EventEmitter(); child.pid = 123;
   let deadline, killed;
   const pending = runProtocolCleanupChild('/controlled run', { expectedRunHash: 'ab'.repeat(32),
@@ -69,7 +69,7 @@ test('protocol cleanup uses only its fixed command and a 180-second process-grou
       assert.equal(options.detached, true);
       return child;
     },
-    setTimer: (fn, ms) => { assert.equal(ms, 180_000); deadline = fn; return 1; },
+    setTimer: (fn, ms) => { assert.equal(ms, 600_000); deadline = fn; return 1; },
     clearTimer: () => {}, killGroup: (pid) => { killed = pid; child.emit('close', null, 'SIGKILL'); },
   });
   deadline();
@@ -85,7 +85,7 @@ test('cleanup deadline waits for child close before permitting journal reconcili
     setTimer: (fn, ms) => { timers.set(ms, fn); return ms; },
     clearTimer: () => {}, killGroup: (pid) => { killed = pid; },
   }).then((result) => { resolved = true; return result; });
-  timers.get(180_000)();
+  timers.get(600_000)();
   await Promise.resolve();
   assert.equal(killed, 123);
   assert.equal(resolved, false, 'a requested SIGKILL is not a reaped child');
@@ -100,7 +100,7 @@ for (const mode of ['kill fails', 'close never arrives']) {
       spawnProcess: () => child, setTimer: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimer: () => {},
       killGroup: () => { if (mode === 'kill fails') throw new Error('permission denied'); },
     });
-    timers.get(180_000)();
+    timers.get(600_000)();
     assert.ok(timers.has(5000), 'termination grace is fixed and bounded');
     timers.get(5000)();
     assert.deepEqual(await pending, { status: 'termination_unconfirmed' });

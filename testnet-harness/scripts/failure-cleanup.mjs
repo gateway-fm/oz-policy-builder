@@ -27,6 +27,15 @@ const sameIdentity = (left, right) => JSON.stringify(identity(left)) === JSON.st
  * and nothing is written through a link; the child then runs without a log. The child prints
  * transaction hashes and, on failure, its stage and a message with the run's secrets redacted.
  */
+/**
+ * The cleanup child's whole-process-group deadline. A child prepares a removal only with
+ * REMOVAL_RESERVE_MS (240 s) left and polls a pending removal only with the rest, so it stops
+ * itself before this kill: at worst one reconciliation (<= 180 s) and one fresh removal (240 s).
+ */
+export const CLEANUP_CHILD_DEADLINE_MS = 600_000;
+/** The child's own deadline, measured from its start, keeps this margin before the kill. */
+export const childDeadline = (start = Date.now()) => start + CLEANUP_CHILD_DEADLINE_MS - 30_000;
+
 export function openCleanupLog(dir) {
   try {
     // `dir` is the run directory `run.sh` created, or one its operator names on the command
@@ -77,7 +86,7 @@ export function runCleanupChild(dir, {
       } finally { closeLog(log); }
       child.once('error', () => Number.isSafeInteger(child.pid) && child.pid > 0 ? terminate() : finish({ status: 'failed' }));
       child.once('close', (code) => finish(timedOut ? { status: 'timed_out' } : { status: 'exited', code }));
-      timer = setTimer(terminate, 180_000);
+      timer = setTimer(terminate, CLEANUP_CHILD_DEADLINE_MS);
     } catch { finish({ status: 'failed' }); }
   });
 }

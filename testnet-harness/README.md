@@ -104,7 +104,7 @@ confirmed transaction. The observations come from the configured RPC; they are n
 
 A failed run with a confirmed installation attempts owner removal before discarding its
 temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
-policy configuration. Its entire child process group has a fixed 180-second deadline and a
+policy configuration. Its entire child process group has a fixed 600-second deadline and a
 five-second termination grace. A requested kill must be followed by the child's close event
 before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
 `cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
@@ -113,14 +113,17 @@ remain; secret deletion does not revoke it. A `run.json` that exists but cannot 
 reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
 since it may have been cut short after recording an installation. The journal records a removal hash before send,
 so an interrupted or unconfirmed submission remains `pending_removal` and is never sent again.
-The next cleanup reconciles it from its hash, polling until the transaction is final or its
-validity window plus 30 seconds has passed. One that landed is verified and marked `reconciled`.
-One that failed or was never seen is kept by hash under `failed_removals`, and one fresh removal
-may follow. Anything else stays pending. A confirmed removal with incomplete readbacks likewise
-requires inspection; its readbacks count only from an endpoint at or after its ledger. The
-cleanup child's stdout and stderr go to a new private `cleanup-child.log` in the run directory,
-holding transaction hashes and, on failure, the stage and a message with the run's secrets
-redacted.
+The next cleanup checks the network first, then reconciles it from its hash. One that landed
+is verified and marked `reconciled`. One that failed is kept by hash under `failed_removals`, and
+so is one the endpoint has not seen. The second case counts only when the endpoint's latest
+ledger closed after the transaction's validity window and it still retains the window's start;
+the local clock never decides it. One fresh removal may then follow, never a third; anything else
+stays pending. Polling is bounded, and the cleanup child prepares a removal only while 240
+seconds remain before its deadline, so it stops before the kill. Removal readbacks count only
+from an endpoint at or after the removal's ledger; a stale read is retried, never recorded.
+Journals are replaced atomically (synced temporary file, then rename). The cleanup child's stdout
+and stderr go to a new private `cleanup-child.log` in the run directory: transaction hashes and,
+on failure, one line with the stage or error and the run's secrets redacted, with no stack.
 
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.

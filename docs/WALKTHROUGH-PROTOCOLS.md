@@ -120,9 +120,10 @@ It removes each rule whose installation was confirmed, with the same bounded chi
 termination handling as W2's failure cleanup. The child's output goes to a new private
 `cleanup-child.log` in the run directory: transaction hashes and, on failure, the failing stage
 and a message with the run's secrets redacted. A removal that was prepared or sent is never
-resubmitted. Its hash is reconciled instead. If it landed, it is verified like any confirmed
-removal and marked `reconciled`. If it failed, or was not seen once its validity window had passed,
-it is kept by hash and one fresh removal may follow. Otherwise it stays pending and the cleanup
+resubmitted. Its hash is reconciled instead, after the network check. If it landed, it is
+verified like any confirmed removal and marked `reconciled`. If it failed, or the endpoint has not
+seen it although its latest ledger closed after the validity window and it retains the window's
+start, it is kept by hash and one fresh removal may follow, never a third. Otherwise it stays pending and the cleanup
 is `incomplete`. An attempt that prepared nothing may be retried. Removal readbacks count only
 from an endpoint at or after the removal's ledger. Before signing any removal, the
 network must be testnet and the account must still run the pinned code, whose rule IDs are never
@@ -216,7 +217,7 @@ counted only with a nonzero return and an equal BLND balance increase.
 After the controls, `blend-position.mjs close` withdraws the supply through rule 0 (a
 `submit` withdrawing twice the supplied amount, which the pool caps at the account's whole
 balance) and reads the account's positions back. Only an empty readback records `withdrawn`.
-On failure, the wrapper runs the same close, bounded to 180 seconds, before the bundle cleanup
+On failure, the wrapper runs the same close, bounded to 480 seconds, before the bundle cleanup
 and before discarding the keys. It never signs when the network, the account code or the pool
 code differs. A prepared withdrawal is never resubmitted; it is rebuilt, at most once, only
 when the network rejected it, never queued it or applied it as failed. A position still open, a

@@ -29,7 +29,8 @@ const ownerWaitLimit = 120;
 const WITHDRAW_FACTOR = 2n;
 // A withdrawal the network definitively did not apply may be rebuilt; at most this many are sent.
 const MAX_WITHDRAWALS = 2;
-const CLOSE_DEADLINE_MS = 180_000;
+// One withdrawal's outcome polling (<= 180 s) and readbacks, plus one rebuilt withdrawal.
+const CLOSE_DEADLINE_MS = 480_000;
 // rpc.submit's own words for a transaction that was rejected, never queued, or applied as failed.
 const notApplied = (error) => /sendTransaction ERROR|was not accepted \(TRY_AGAIN_LATER\)|ended FAILED/.test(String(error?.message));
 

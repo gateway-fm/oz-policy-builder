@@ -80,7 +80,7 @@ test('cleanup child has a fixed whole-process-group deadline', async () => {
   const pending = runCleanupChild('/run', {
     expectedRunHash: 'ab'.repeat(32),
     spawnProcess: (_cmd, _args, opts) => { options = opts; return child; },
-    setTimer: (fn, ms) => { assert.equal(ms, 180_000); deadline = fn; return 1; },
+    setTimer: (fn, ms) => { assert.equal(ms, 600_000); deadline = fn; return 1; },
     clearTimer: () => {}, killGroup: (pid) => { killed = pid; child.emit('close', null, 'SIGKILL'); },
   });
   deadline();
@@ -98,7 +98,7 @@ test('cleanup deadline waits for child close before permitting journal reconcili
     setTimer: (fn, ms) => { timers.set(ms, fn); return ms; },
     clearTimer: () => {}, killGroup: (pid) => { killed = pid; },
   }).then((result) => { resolved = true; return result; });
-  timers.get(180_000)();
+  timers.get(600_000)();
   await Promise.resolve();
   assert.equal(killed, 123);
   assert.equal(resolved, false, 'a requested SIGKILL is not a reaped child');
@@ -113,7 +113,7 @@ for (const mode of ['kill fails', 'close never arrives']) {
       spawnProcess: () => child, setTimer: (fn, ms) => { timers.set(ms, fn); return ms; }, clearTimer: () => {},
       killGroup: () => { if (mode === 'kill fails') throw new Error('permission denied'); },
     });
-    timers.get(180_000)();
+    timers.get(600_000)();
     assert.ok(timers.has(5000), 'termination grace is fixed and bounded');
     timers.get(5000)();
     assert.deepEqual(await pending, { status: 'termination_unconfirmed' });

@@ -15,12 +15,16 @@ const requireThat = (ok, text) => { if (!ok) throw new Error(text); };
 const hash = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 const absent = (error, account) => error instanceof rpc.SimulationError
   && new RegExp(`contract:${account}, topics:\\[error, Error\\(Contract, #3000\\)\\], data:\\["failing with contract error", 3000\\]`).test(error.error);
+// One removal that did not land may be followed by one fresh removal; never a third.
+export const MAX_FAILED_REMOVALS = 2;
 const completed = (entry) => entry.removal?.event === 'verified' && entry.removal.rule_readback === 'absent'
   && entry.removal.policy_cleanup === 'not_installed';
 
 export async function revokePermissionBundle({ run, spec, artifacts, save }, overrides = {}) {
   const deps = { ...rpc, ownerSigner, removalEvent, inspectGrant: inspectBundleGrant,
-    checkArtifacts: checkBundleArtifacts, ...overrides };
+    checkArtifacts: checkBundleArtifacts, now: () => Date.now(), ...overrides };
+  // As the failure-cleanup child, `deadline` (epoch ms) is just before the parent's kill.
+  const remaining = () => (deps.deadline ?? Infinity) - deps.now();
   const identities = await deps.checkArtifacts(spec, artifacts, { hashSpec: deps.hashSpec });
   const bundle = run.walkthrough?.bundle;
   requireThat(bundle && Array.isArray(bundle.entries) && bundle.entries.length === identities.length, 'missing complete bundle journal');
@@ -97,9 +101,12 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
       // confirmed removal; definitively not landed (failed, or unseen after its validity window),
       // it is kept by hash and one fresh removal may follow; otherwise it stays pending.
       if (entry.pending_removal) {
+        progress('identity checks');
+        await deps.assertTestnet();
         progress('pending removal outcome');
         const prepared = entry.pending_removal;
-        const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null);
+        const outcome = await deps.transactionOutcome(prepared.transaction, prepared.max_time ?? null,
+          { budgetMs: Math.max(0, Math.min(rpc.OUTCOME_POLL_BUDGET_MS, remaining() - rpc.REMOVAL_RESERVE_MS)) });
         if (outcome?.status === 'SUCCESS') {
           entry.removal = { transaction: prepared.transaction, ledger: Number.isSafeInteger(outcome.ledger) ? outcome.ledger : null,
             event: 'not_verified', rule_readback: 'not_checked', policy_cleanup: 'not_checked', confirmation: 'reconciled',
@@ -115,13 +122,15 @@ export async function revokePermissionBundle({ run, spec, artifacts, save }, ove
         (entry.failed_removals ??= []).push({ transaction: prepared.transaction, status: landed });
         delete entry.pending_removal;
         save();
-        if (entry.failed_removals.length > 1) throw new Error('a fresh removal was already tried once');
+        if (entry.failed_removals.length >= MAX_FAILED_REMOVALS) throw new Error('a fresh removal was already tried once');
       }
       // The pinned account assigns rule IDs from a monotonic counter, so the ID from our
       // confirmed install names only that grant. That holds only for the pinned code on the
       // expected network: those checks must pass before signing. A changed or unreadable grant
       // or policy is still removed.
       progress('identity checks');
+      requireThat((entry.failed_removals?.length ?? 0) < MAX_FAILED_REMOVALS, 'removals already failed twice; none is prepared again');
+      requireThat(remaining() >= rpc.REMOVAL_RESERVE_MS, 'too little time before the cleanup deadline to finish a removal; nothing prepared');
       await deps.assertTestnet();
       same(await deps.contractCodeHash(run.account), run.account_code_hash, 'live account code');
       progress('pre-removal readback');

@@ -51,3 +51,73 @@ test('a readback is accepted only at or after the confirmed ledger, and retried 
     { delay: async () => {}, attempts: 2 }), /confirmed ledger/);
   assert.equal(transport, 2);
 });
+
+// transactionOutcome itself, against a stubbed endpoint: only ledger close times decide that an
+// unseen transaction can no longer land; the local clock only bounds how long it polls.
+async function outcomeWith(responses, { maxTime, nowSeconds = [], budgetMs } = {}) {
+  const rpcModule = await import('./rpc.mjs');
+  const original = rpcModule.server.getTransaction;
+  let reads = 0, clock = 0;
+  rpcModule.server.getTransaction = async () => {
+    const r = responses[Math.min(reads++, responses.length - 1)];
+    if (r instanceof Error) throw r;
+    return r;
+  };
+  try {
+    const result = await rpcModule.transactionOutcome('ab'.repeat(32), maxTime, {
+      now: () => (nowSeconds.length ? nowSeconds[Math.min(clock++, nowSeconds.length - 1)] : 0) * 1000,
+      delay: async () => {}, ...(budgetMs === undefined ? {} : { budgetMs }) });
+    return { result, reads };
+  } finally { rpcModule.server.getTransaction = original; }
+}
+const missing = (latest, oldest) => ({ status: 'NOT_FOUND', latestLedgerCloseTime: String(latest), oldestLedgerCloseTime: String(oldest) });
+const WINDOW_END = 2_000_000_000, WINDOW_START = WINDOW_END - 120;
+test('transactionOutcome returns a final status at once', async () => {
+  for (const status of ['SUCCESS', 'FAILED']) {
+    const { result, reads } = await outcomeWith([{ status, ledger: 9 }], { maxTime: WINDOW_END });
+    assert.equal(result.status, status);
+    assert.equal(reads, 1);
+  }
+});
+test('without a known window one read is made and not-found proves nothing', async () => {
+  const { result, reads } = await outcomeWith([missing(WINDOW_END + 999, 1)], { maxTime: null });
+  assert.deepEqual([result.status, result.after_window, reads], ['NOT_FOUND', false, 1]);
+});
+test('not-found counts as unseen only once a ledger closed after the window and the endpoint retains its start', async () => {
+  const inside = await outcomeWith([missing(WINDOW_END - 5, 1), missing(WINDOW_END, 1), missing(WINDOW_END + 1, WINDOW_START)],
+    { maxTime: WINDOW_END });
+  assert.deepEqual([inside.result.status, inside.result.after_window, inside.reads], ['NOT_FOUND', true, 3]);
+  const lands = await outcomeWith([missing(WINDOW_END - 5, 1), { status: 'SUCCESS', ledger: 7 }], { maxTime: WINDOW_END });
+  assert.equal(lands.result.status, 'SUCCESS');
+});
+test('an endpoint that no longer retains the window start cannot call a transaction unseen', async () => {
+  const { result } = await outcomeWith([missing(WINDOW_END + 600_000, WINDOW_START + 1)], { maxTime: WINDOW_END });
+  assert.deepEqual([result.status, result.after_window], ['NOT_FOUND', false]);
+});
+test('a fast local clock never makes a lagging endpoint\'s not-found unseen', async () => {
+  const { result, reads } = await outcomeWith([missing(WINDOW_END - 60, 1)], { maxTime: WINDOW_END,
+    nowSeconds: [WINDOW_END + 10_000, WINDOW_END + 20_000, WINDOW_END + 30_000], budgetMs: 1000 });
+  assert.deepEqual([result.status, result.after_window], ['NOT_FOUND', false]);
+  assert.ok(reads >= 1);
+});
+test('transport errors are retried within the polling budget, then reported as unknown', async () => {
+  const retried = await outcomeWith([new Error('fetch failed'), { status: 'SUCCESS', ledger: 3 }], { maxTime: WINDOW_END });
+  assert.equal(retried.result.status, 'SUCCESS');
+  assert.equal(retried.reads, 2);
+  const down = await outcomeWith([new Error('fetch failed')], { maxTime: WINDOW_END, nowSeconds: [0, 0, 10, 10], budgetMs: 5000 });
+  assert.deepEqual([down.result.status, down.result.after_window], ['UNKNOWN', false]);
+});
+
+test('run journals are replaced atomically through a synced temporary file in the same directory', async (t) => {
+  const { mkdtempSync, readdirSync, readFileSync: rf, rmSync, writeFileSync: wf } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeJson } = await import('./rpc.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ozpb-atomic-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'run.json');
+  wf(path, '{"old":true}\n');
+  writeJson(path, { value: 1 });
+  assert.deepEqual(JSON.parse(rf(path, 'utf8')), { value: 1 });
+  assert.deepEqual(readdirSync(dir), ['run.json'], 'no temporary file is left behind');
+});

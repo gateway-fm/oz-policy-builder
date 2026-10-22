@@ -10,6 +10,7 @@ import { isMainModule } from './cli-entry.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import { PROTOCOL_TARGETS } from './protocol-calls.mjs';
 import { protocolInputs, validateProtocolSynthesis } from './protocol-synthesis.mjs';
+import { writeJson } from './rpc.mjs';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const NETWORK = 'Test SDF Network ; September 2015';
 const BLND = 'CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF';
@@ -104,7 +105,7 @@ export function runProtocolFlow(runDirectory, env = process.env) {
   }
   Object.assign(run, { spec: specPath, registry_root: spec.registry_snapshot, valid_until_ledger: inputs.decisions.valid_until_ledger });
   run.walkthrough.artifacts = artifacts;
-  writeFileSync(join(dir, 'run.json'), JSON.stringify(run, null, 2) + '\n');
+  writeJson(join(dir, 'run.json'), run);
   save(join(dir, 'protocol-pipeline.json'), { schema_version: 1, account: run.account, kind: run.walkthrough.kind,
     recorded_transaction: owner.hash, recording_hash: recording.recording_hash, acquisition_trust: 'rpc_reported',
     synthesis_recording_hash: spec.evidence.recordings[0].hash, synthesis_trust: 'self_supplied', spec_hash: synthesis.spec_hash,
