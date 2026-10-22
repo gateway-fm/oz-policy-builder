@@ -212,13 +212,14 @@ Three of those arguments are worth a word each:
   already holds it.
 - **`decisions`** stays required. The signer set, the lifetime and the call cap are what the
   grant *is*; a default would mean the toolkit decided how much authority to hand out. That
-  includes leaving a cap out: since v0.2.0, `max_calls: null` alone is refused with
-  `E_NEEDS_DECISION`, and an uncapped grant also needs `unlimited_calls_acknowledged: true`,
-  as a grant that never expires needs `no_expiry_acknowledged: true`. An absent
-  acknowledgement reads as `false`; a cap together with it, or an expiry ledger together with
-  `no_expiry_acknowledged: true`, is refused as contradictory (`E_SPEC_INVALID`). This is a
-  breaking change for decisions documents that relied on a null cap
-  ([release notes](release-notes/v0.2.0.md)).
+  includes leaving a cap out: since v0.2.0, `max_calls: null` alone is refused with an
+  `E_NEEDS_DECISION` finding, and an uncapped grant also needs
+  `unlimited_calls_acknowledged: true`, as a grant that never expires needs
+  `no_expiry_acknowledged: true`. An absent acknowledgement reads as `false`; a cap together
+  with it, or an expiry ledger together with `no_expiry_acknowledged: true`, is refused as
+  contradictory with an `E_INVALID_DECISION` finding. The findings are in the error's
+  `details`; the top-level code is the first one's. This is a breaking change for decisions
+  documents that relied on a null cap ([release notes](release-notes/v0.2.0.md)).
 - **`spending_limit_capability: "pinned"`** opts in to composing OpenZeppelin's reviewed
   spending-limit policy without transcribing its hash. It is an opt-in rather than a default:
   composing a reviewed third-party contract into a grant is a decision too. Omit it and a
