@@ -598,6 +598,16 @@ unchanged. The owner was a virtual authenticator, so this is automation evidence
 `human_approval_attested: false`. No native worker was configured, so the report was not complete,
 and nothing was installed.
 
+The [22 October 2026 install-and-revoke run](evidence/wallet-install-revoke-testnet-2026-10-22.json)
+took a fresh account through all four layers. The replay check reported the account unchanged
+once the live-check signatures expired. The owner's passkey then [installed](#installation) the
+one-call grant as rule 1, which the account's `context_rule_added`, a matching read-back and the
+policy's marker confirmed. It then [revoked](#revocation) it: one `context_rule_removed`, the rule
+absent (#3000), policy cleanup `not_installed`. The owner was a virtual authenticator, so this is
+automation evidence with `human_approval_attested: false`. No delegated call was made under the
+installed rule. [Section 10 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#10-wallet-installation-and-revocation-22-october-2026)
+records the run and four earlier attempts that day that stopped before installing anything.
+
 Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR
 and signature checks, and the client controller's refusal paths. The installation and
 revocation tests drive all four layers with a fake worker and RPC, then the gate, the replay
