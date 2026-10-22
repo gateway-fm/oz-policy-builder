@@ -34,6 +34,13 @@
 4a33492fb9ad6d65a73e07e428a8470fb46c085a1f2e3c1d5d510a6f2252c347|testnet-tx|second delegated subscription charge at ledger 5293681
 b924cc544bc958077990718d8c10728f0cd8f4f88a98e748a31020486f3261e6|testnet-tx|owner-authorized rule 1 removal at ledger 5293707
 
+# Controlled October 22 subscription run with derived denials in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
+# public testnet outcomes, not recomputed or independently fetched by the offline gate.
+0c591b7dace397eb217ca2e48f6d6225446df6cdcc1402aa95c42d046ace8f10|testnet-tx|rule 1 installation for the October 22 derived-denial subscription run
+62220c9aa875a216c0e610750e735406c59470a66dd867d78cfcf6859313cb66|testnet-tx|first delegated subscription charge at ledger 5327286
+b8f75fbad162ffce28eb8fbcd78552b67e88c9236c90ebe54eb9c0d46d3cfc69|testnet-tx|second delegated subscription charge at ledger 5327301
+c7c4308926e9f2f4b49ae7d0dc993d29a2432bc670e344e7fa70808de0146b36|testnet-tx|owner-authorized rule 1 removal at ledger 5327318
+
 # Controlled October 20 Soroswap run in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
 # public testnet outcomes, not recomputed or independently fetched by the offline gate.
 8e075309901d4508b6d12929cd3aa1b93c22b8279a81505029612796760175f7|testnet-tx|owner swap recorded for the October 20 Soroswap run, ledger 5294812

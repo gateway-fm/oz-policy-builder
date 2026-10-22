@@ -78,8 +78,9 @@ is submitted. Time, call-count, missing-state and strict-signer-set cases and mu
 rejects before authorization (arity, type confusion) stay offline layer-1 evidence, and the
 report lists them by class and reason. The unrecognized-signer case and the
 delegate-plus-unrecognized case stop at the same account check, so they count as two suite cases
-but only one live check. **Status:** the step is implemented and tested offline. The 20 October
-run (testnet evidence §8) predates it.
+but only one live check. **Status:** the [22 October run](TESTNET-EVIDENCE-TRANCHE-2.md#11-controlled-sep-41-run-with-derived-denials-22-october-2026)
+permitted the original and refused all ten derived denials as predicted. The 20 October run
+(§8) predates the step.
 
 Wrong-tuple and signer controls run before the first charge. Every W2 negative control is an
 enforcing simulation, with no fee-transaction signing or submission even if unexpectedly

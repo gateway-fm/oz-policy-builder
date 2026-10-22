@@ -357,7 +357,55 @@ far as the checks below show.
    position. The keys had already been deleted, as designed; the rule would in any case have
    expired at ledger 5316739.
 
-## 11. Evidence still needed
+## 11. Controlled SEP-41 run with derived denials, 22 October 2026
+
+The [allowlisted run summary](evidence/testnet-subscription-derived-2026-10-22.json) records a
+complete W2 harness execution from 09:04:36 to 09:09:40 UTC. The checkout was clean at
+`81ff8b82be007946ede4ae1d70a17b66c5fd2c73`, the commit that added the derived-denial step. The
+external CLI's byte digest is retained in its provenance; it identifies the executable, not its
+source. The owner was a throwaway ed25519 key, and confirmation used the explicit operator mode
+without a human prompt. The keys were deleted when the run ended.
+
+The selected account was `CDXYCLOXDIEB4COCDDQN5RM4LSHOELEJAEWSCYA7KUFOIANGQTXBQOHT`. Its grant
+composed:
+
+- an exact 1-XLM transfer to one controlled merchant;
+- a two-call lifetime cap;
+- a newly deployed instance of the pinned spending policy, with a deliberately short 12-ledger
+  test window.
+
+| Observation | Recorded result |
+| --- | --- |
+| Owner recording and artifact chain | The confirmed owner transfer went through the real RPC recorder, synthesis, the 30-case reference suite, generation/build and matching source/Wasm/manifest reproduction. |
+| Install | [Transaction 0c591b7d…8f10](https://stellar.expert/explorer/testnet/tx/0c591b7dace397eb217ca2e48f6d6225446df6cdcc1402aa95c42d046ace8f10) installed rule 1 after the authority commitment recheck at ledger 5327278. Both policy configurations matched. |
+| Derived denials | The CLI emitted the installed spec's 30-case suite and the replay verified its suite hash. The recorded transfer (`case-0`) was permitted in simulation at 5327282. All 10 live-realizable deny cases were refused at 5327282–5327283 by the predicted enforcer; the live policy order put the spending policy first. The 14 deny cases that stay offline are listed by class and reason, and the 5 other permit cases stay layer-1 only. Nothing was submitted. |
+| Tuple and signer controls | Larger amount, split charge, other merchant, funded other token, wrong signer and empty signer set all produced attributed enforcing-simulation denials before charging. |
+| First charge and early repeat | [First charge](https://stellar.expert/explorer/testnet/tx/62220c9aa875a216c0e610750e735406c59470a66dd867d78cfcf6859313cb66) confirmed at 5327286. The immediate repeat returned spending-policy code 3221 at 5327289, before cutoff 5327298. |
+| Next window and lifetime cap | [Second charge](https://stellar.expert/explorer/testnet/tx/b8f75fbad162ffce28eb8fbcd78552b67e88c9236c90ebe54eb9c0d46d3cfc69) confirmed at 5327301. After another full window, generated-policy code 7 was observed at 5327313. |
+| Owner removal | [Removal transaction](https://stellar.expert/explorer/testnet/tx/c7c4308926e9f2f4b49ae7d0dc993d29a2432bc670e344e7fa70808de0146b36) confirmed at 5327318. The pinned event matched, the rule read back absent, and both policies reported uninstalled. |
+| Post-removal control | An enforcing simulation returned the account's missing-rule code 3000 at 5327318. |
+
+The derived denials, by enforcer:
+
+| Cases | Class | Enforcer and code |
+| --- | --- | --- |
+| `case-1` | another contract: the funded control token stands in for the suite's undeployed address | account `UnvalidatedContext` 3002 |
+| `case-5`, `case-8`, `case-10` | stranger recipient; amount − 1; zero amount | generated policy `NoTupleMatched` #6 |
+| `case-7`, `case-9`, `case-11` | amount + 1; amount × 10; i128 maximum | spending policy `SpendingLimitExceeded` 3221 |
+| `case-15` | empty signer set | spending policy `NotAllowed` 3223 |
+| `case-16`, `case-18` | unrecognized signer; delegate plus an unrecognized signer (one account check) | account `UnauthorizedSigner` 3016 |
+
+This is W2's first passing report under [§7's definition](#what-a-passing-permitdeny-report-is):
+the original was permitted, and ten derived denials were refused by their predicted enforcers
+(`case-16` and `case-18` stop at the same account check). All 12 subscription control steps completed, and the wrapper finalized with
+exit 0.
+
+The reference evaluator still does not model the reviewed spending policy's rolling state; the
+replay predicts that policy's refusals from its pinned source and its live, unexercised state.
+These remain editable local RPC observations, with non-atomic reads and no ledger proof or
+protected wallet-approval claim.
+
+## 12. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -366,8 +414,9 @@ two-rule Soroswap swap runs with expiry and per-rule removal; the second include
 transfer rule's own policy. Section 10 adds one Blend claim run on a supply position the harness
 opened and withdrew.
 
-The section 8–10 runs predate the derived-denial step, so none of them is a passing report under
-[§7's definition](#what-a-passing-permitdeny-report-is).
+Section 11 adds a W2 run with the derived-denial step, which passes under
+[§7's definition](#what-a-passing-permitdeny-report-is). The section 8–10 runs predate that step,
+so W1 and W3 have no passing report yet.
 
 Phase 2 still needs a delivered wallet's protected approval and revoke flow, reviewed Blend and
 Soroswap adapters rather than `evidence_only` code observations and fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
