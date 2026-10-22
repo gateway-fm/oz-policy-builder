@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { xdr } from '@stellar/stellar-sdk';
 import { LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_SIGNATURE_LEDGERS, consentDisplay, liveCases, statementHash } from '../shared/live-consent.mjs';
-import { LIVE_MAX_CLOCK_SKEW_SECONDS, requireNoReplay } from '../server/live-check.mjs';
+import { LIVE_MAX_CLOCK_SKEW_SECONDS, clockedLedger, requireNoReplay } from '../server/live-check.mjs';
 import { setup } from './actions-fixture.mjs';
 import { HELPER, START_LEDGER, consented, liveReviewed } from './live-check-fixture.mjs';
 import { denialSimulation, permitChanges, permitSimulation, withProbe } from './live-enforcement-fixture.mjs';
@@ -344,4 +344,27 @@ test('a delegate whose testnet account cannot be created gives its slot back', a
   fail = false;
   for (let i = 0; i < 8; i++) await f.actions['create-delegate']({});
   await assert.rejects(() => f.actions['create-delegate']({}), /refused/, 'still at most eight');
+});
+
+test('the ledger clock fails closed on a close time that is not a whole number of seconds', async () => {
+  const now = () => 1_792_662_572_000;
+  const clock = (closeTime) => ({ ledgerClock: async () => ({ sequence: 500, closeTime }) });
+  assert.equal(await clockedLedger(clock(1_792_662_572), now), 500);
+  assert.equal(await clockedLedger(clock(1_792_662_572n), now), 500, 'the header\'s own bigint');
+  for (const closeTime of [undefined, null, 'abc', '1792662572', NaN, Infinity, {}, [], 1_792_662_572.5, 2n ** 64n, true]) {
+    await assert.rejects(() => clockedLedger(clock(closeTime), now), /refused/, String(closeTime));
+  }
+});
+
+test('a new live check waits on a trusted clock while earlier signatures may be valid', async () => {
+  const f = await liveReviewed();
+  const { input } = await consented(f);
+  await f.actions['run-live'](input);
+  f.state.ledger = START_LEDGER + LIVE_SIGNATURE_LEDGERS + 5;
+  f.state.closeTime = Math.floor(Date.now() / 1000) - LIVE_MAX_CLOCK_SKEW_SECONDS - 5;
+  await assert.rejects(() => f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId }), /refused/,
+    'a stale clock cannot declare the earlier signatures expired');
+  f.state.closeTime = null;
+  const again = await f.actions['prepare-live']({ reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId });
+  assert.ok(again.live);
 });

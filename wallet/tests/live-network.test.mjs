@@ -166,10 +166,17 @@ test('the delegate account and the raw simulation refuse anything but testnet be
   await assert.rejects(() => f.network.simulateRaw(envelope), /refused/);
   assert.equal(f.requests.length, 0);
   const g = fixture(t);
-  const server = { getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 }) };
-  const offTestnet = new WalletNetwork({ rpcUrl: RPC, journalRoot: g.root, server, fetchImpl: async () => assert.fail('nothing may be sent') });
+  // Every read and send is counted: the refusals below are caught, so only the counts show none happened.
+  const reached = [];
+  const server = { getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 }),
+    getLatestLedger: async () => { reached.push('getLatestLedger'); return {}; },
+    getLedgerEntries: async () => { reached.push('getLedgerEntries'); return { latestLedger: 1, entries: [] }; } };
+  const offTestnet = new WalletNetwork({ rpcUrl: RPC, journalRoot: g.root, server,
+    fetchImpl: async (url) => { reached.push(url); return new Response('{}'); } });
   await assert.rejects(() => offTestnet.ensureDelegateAccount(Keypair.random().publicKey()), /refused/);
   await assert.rejects(() => offTestnet.simulateRaw(unsigned(offTestnet)), /refused/);
+  await assert.rejects(() => offTestnet.ledgerClock(), /refused/);
+  assert.deepEqual(reached, [], 'nothing was read or sent off testnet');
 });
 
 test('the ledger clock is the latest header, bound to its sequence and hash', async (t) => {

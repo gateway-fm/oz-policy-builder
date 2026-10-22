@@ -384,15 +384,15 @@ preparing another check. `requireNoReplay` in
 flow must call before it signs anything; it refuses unless the check reports `unchanged`, and
 without any record. Installation itself is still disabled.
 
-**Ledger clock.** The operator RPC is trusted for the ledger clock, within a bound. Its latest
-ledger fixes N, decides whether consent and each simulation still fit before N, and decides whether
-N has passed for the replay check. Each of those reads takes the header the RPC returns with the
-latest ledger, which must describe that ledger and hash to its reported ID. Its close time must
-be within 60 seconds of the backend machine's clock, or the step is refused, and preparation
-reports `unavailable`. An endpoint answering from a stale or invented ledger outside that bound
-cannot stretch the signatures' real validity by more than about that long. One that keeps its
-invented ledger numbers and close times consistent within the bound is not detected: the operator
-chooses the endpoint, and the backend trusts it within the bound.
+**Ledger clock.** The operator RPC's latest ledger fixes N, decides whether consent and each
+simulation still fit before N, and decides whether N has passed for the replay check. Each of those
+reads takes the header the RPC returns with the latest ledger, which must describe that ledger and
+hash to its reported ID. Its close time must be a whole number of seconds within 60 seconds of the
+backend machine's clock, or the step is refused and preparation reports `unavailable`. That catches
+a stalled node, a node serving state from before a testnet reset, and a backend host whose own
+clock is wrong. It does not check the ledger sequence: the RPC is trusted for the sequence without
+a bound. A header with a current close time and an invented sequence passes, and could put N far
+past the real ledger. The operator chooses that endpoint.
 
 A passed live layer stays passed in the report even if a later replay check reports `changed`: the
 replay check speaks about the account, not the candidate. That is acceptable only while

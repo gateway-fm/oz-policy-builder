@@ -28,11 +28,12 @@ const int64 = () => randomBytes(8).readBigInt64BE().toString();
 const layer = (status, detail, evidence) => freezeCopy({ layer: 'live_enforcement', status, detail, ...(evidence ? { evidence } : {}) });
 const sha256 = (bytes) => Buffer.from(hash(bytes)).toString('hex');
 /**
- * How far the operator RPC's latest ledger may have closed from this machine's clock. The RPC is
- * trusted for the ledger clock within this bound: it fixes N, decides whether consent and each
- * simulation still fit before N, and whether N has passed for the replay check. An RPC answering
- * from a stale or invented ledger outside the bound is refused, so it cannot stretch the
- * signatures' real validity by more than about this long.
+ * How far the operator RPC's latest ledger may have closed from this machine's clock. That ledger
+ * fixes N, decides whether consent and each simulation still fit before N, and whether N has passed
+ * for the replay check. The bound catches a stalled node or one serving pre-reset state, whose close
+ * time is stale, and a host whose own clock is wrong. It checks only the close time, not the
+ * sequence: the RPC is trusted for the ledger sequence without a bound, and a header with a current
+ * close time and an invented sequence passes.
  */
 export const LIVE_MAX_CLOCK_SKEW_SECONDS = 60;
 class ClockSkew extends Error {
@@ -44,11 +45,12 @@ class ClockSkew extends Error {
 
 /** The operator RPC's latest ledger, refused unless it closed within the skew bound of `now()` (ms). */
 export async function clockedLedger(network, now = Date.now) {
-  const { sequence, closeTime } = await network.ledgerClock();
+  const { sequence, closeTime: raw } = await network.ledgerClock();
+  // Fails closed: anything but a whole number of seconds (the header's own bigint included) is refused.
+  const closeTime = typeof raw === 'bigint' && raw >= 0n && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw;
+  if (!Number.isSafeInteger(sequence) || sequence < 1 || !Number.isSafeInteger(closeTime)) refuse();
   const skew = closeTime - Math.floor(now() / 1000);
-  if (Math.abs(skew) > LIVE_MAX_CLOCK_SKEW_SECONDS) {
-    throw new ClockSkew(sequence, closeTime, skew);
-  }
+  if (!(Math.abs(skew) <= LIVE_MAX_CLOCK_SKEW_SECONDS)) throw new ClockSkew(sequence, closeTime, skew);
   return sequence;
 }
 
