@@ -2,18 +2,22 @@
 //!
 //! The executable is operator configuration, never request input, and gets only a fixed mode
 //! argument, an empty environment apart from a fixed `PATH` and `LANG`, and `/` as its working
-//! directory. It runs in its own process group. A deadline, enforced by a watchdog thread that
-//! kills the whole group, bounds every blocking point, including a worker that stops reading;
-//! stdout frames, total stdout and stderr are bounded; and a run that leaves any process in the
-//! group is refused, as is any frame the protocol does not allow at that point.
+//! directory. It runs in its own process group. Input is written by its own thread, so a worker
+//! that stops reading blocks nothing here. At the deadline a watchdog kills the group and wakes
+//! the coordinator, which kills the worker itself too, and once the worker has ended its pipes
+//! get a short grace period to close: neither a worker nor a descendant that left the group can
+//! hold the coordinator past either bound.
+//! Stdout frames, total stdout and stderr are bounded; and a run that leaves any process in the
+//! group, or its pipes open, is refused, as is any frame the protocol does not allow at that
+//! point.
 
 use ozpb_toolkit::dry_run_report::WorkerExit;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// The worker's own watchdog deadline; the coordinator holds each run to the same bound.
 pub const DEADLINE: Duration = Duration::from_secs(120);
@@ -62,17 +66,24 @@ pub enum Outcome {
     },
 }
 
+/// How long the coordinator waits for the worker's pipes to close once the worker has exited
+/// or been killed. A descendant that left the group can hold them open indefinitely.
+const PIPE_GRACE: Duration = Duration::from_secs(5);
+
 /// The operator's worker executable.
 #[derive(Clone, Debug)]
 pub struct Worker {
     executable: PathBuf,
     deadline: Duration,
+    grace: Duration,
 }
 
 enum Event {
     Frame(Vec<u8>),
-    Eof,
+    StdoutClosed,
+    StderrClosed,
     Refused(&'static str),
+    Deadline,
 }
 
 impl Worker {
@@ -83,12 +94,19 @@ impl Worker {
         Ok(Self {
             executable: executable.to_path_buf(),
             deadline: DEADLINE,
+            grace: PIPE_GRACE,
         })
     }
 
     #[cfg(test)]
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_grace(mut self, grace: Duration) -> Self {
+        self.grace = grace;
         self
     }
 
@@ -130,42 +148,62 @@ impl Worker {
         let watchdog = {
             let deadline_hit = deadline_hit.clone();
             let deadline = self.deadline;
+            let events = events.clone();
             std::thread::spawn(move || {
                 if let Err(mpsc::RecvTimeoutError::Timeout) =
                     watchdog_stopped.recv_timeout(deadline)
                 {
                     deadline_hit.store(true, Ordering::SeqCst);
                     kill_group(group);
+                    let _ = events.send(Event::Deadline);
                 }
             })
         };
-        let stdout = child.stdout.take().map(|stdout| {
+        let kept_stderr = Arc::new(Mutex::new(Vec::new()));
+        if let Some(stdout) = child.stdout.take() {
             let events = events.clone();
-            std::thread::spawn(move || read_frames(stdout, &events))
-        });
-        let stderr = child.stderr.take().map(|stderr| {
+            std::thread::spawn(move || read_frames(stdout, &events));
+        } else {
+            let _ = events.send(Event::StdoutClosed);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let (events, kept) = (events.clone(), kept_stderr.clone());
+            std::thread::spawn(move || read_stderr(stderr, &events, &kept));
+        } else {
+            let _ = events.send(Event::StderrClosed);
+        }
+        // Input goes through its own thread; dropping `stdin` closes the worker's input once
+        // every queued line is written.
+        let mut stdin = child.stdin.take().map(|mut input| {
+            let (lines, queued) = mpsc::channel::<Vec<u8>>();
             let events = events.clone();
-            std::thread::spawn(move || read_stderr(stderr, &events))
+            std::thread::spawn(move || {
+                for line in queued {
+                    if input.write_all(&line).and_then(|()| input.flush()).is_err() {
+                        let _ = events.send(Event::Refused("worker_input_closed"));
+                        return;
+                    }
+                }
+            });
+            lines
         });
         drop(events);
-        let mut stdin = child.stdin.take();
         let mut line = job.to_vec();
         line.push(b'\n');
-        let mut refused = match stdin.as_mut().map(|input| input.write_all(&line)) {
+        let mut refused = match stdin.as_ref().map(|input| input.send(line)) {
             Some(Ok(())) => None,
             _ => Some("worker_input_closed"),
         };
         if mode.preparation_only() {
             stdin = None;
         }
+        let (mut stdout_open, mut stderr_open) = (true, true);
         let mut prepared = None;
         let mut result = None;
-        while refused.is_none() {
-            let Ok(event) = received.recv() else { break };
-            match event {
-                Event::Eof => break,
-                Event::Refused(reason) => refused = Some(reason),
-                Event::Frame(bytes) => {
+        // The watchdog guarantees an event by the deadline, so this wait is bounded.
+        while refused.is_none() && stdout_open {
+            match received.recv() {
+                Ok(Event::Frame(bytes)) => {
                     refused = self
                         .receive(
                             mode,
@@ -178,26 +216,71 @@ impl Worker {
                         )
                         .err();
                 }
+                Ok(Event::StdoutClosed) => stdout_open = false,
+                Ok(Event::StderrClosed) => stderr_open = false,
+                Ok(Event::Refused(reason)) => refused = Some(reason),
+                Ok(Event::Deadline) => refused = Some("worker_deadline_exceeded"),
+                Err(_) => break,
             }
         }
         drop(stdin);
         if refused.is_some() {
             kill_group(group);
+            // The worker itself too, in case it left its group. `Child::kill` never signals a
+            // reaped process, so a reused process ID is never hit.
+            let _ = child.kill();
         }
-        let status = child.wait();
-        // The readers end at EOF, which the group kill above or the worker's exit brings.
-        let kept_stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
-        if let Some(t) = stdout {
-            let _ = t.join();
+        // Polled rather than waited on, so the deadline still applies to a worker that closed
+        // its output but did not exit.
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {
+                    if deadline_hit.load(Ordering::SeqCst) {
+                        kill_group(group);
+                        let _ = child.kill();
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        // The pipes close when every holder ends; a holder outside the group gets a grace period.
+        let grace_ends = Instant::now() + self.grace;
+        while stdout_open || stderr_open {
+            let remaining = grace_ends.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                refused.get_or_insert("worker_left_processes_running");
+                break;
+            }
+            match received.recv_timeout(remaining) {
+                Ok(Event::StdoutClosed) => stdout_open = false,
+                Ok(Event::StderrClosed) => stderr_open = false,
+                Ok(Event::Refused(reason)) => {
+                    refused.get_or_insert(reason);
+                }
+                Ok(Event::Frame(_)) => {
+                    refused.get_or_insert("worker_protocol_violation");
+                }
+                Ok(Event::Deadline) => {
+                    refused.get_or_insert("worker_deadline_exceeded");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
         }
         let _ = stop_watchdog.send(());
         let _ = watchdog.join();
-        // A late frame or limit seen while the readers drained still refuses the run.
+        // A late frame or limit seen after the pipes closed still refuses the run.
         while let Ok(event) = received.try_recv() {
             match event {
-                Event::Refused(reason) if refused.is_none() => refused = Some(reason),
-                Event::Frame(_) if refused.is_none() => refused = Some("worker_protocol_violation"),
-                _ => {}
+                Event::Refused(reason) => {
+                    refused.get_or_insert(reason);
+                }
+                Event::Frame(_) => {
+                    refused.get_or_insert("worker_protocol_violation");
+                }
+                Event::StdoutClosed | Event::StderrClosed | Event::Deadline => {}
             }
         }
         if deadline_hit.load(Ordering::SeqCst) {
@@ -207,6 +290,10 @@ impl Worker {
             kill_group(group);
             refused.get_or_insert("worker_left_processes_running");
         }
+        let kept_stderr = kept_stderr
+            .lock()
+            .map(|kept| kept.clone())
+            .unwrap_or_default();
         let outcome = match (refused, status) {
             (Some(reason), _) => Outcome::Refused(reason),
             (None, Err(_)) => Outcome::Refused("worker_wait_failed"),
@@ -226,7 +313,7 @@ impl Worker {
         bytes: &[u8],
         prepared: &mut Option<serde_json::Value>,
         result: &mut Option<serde_json::Value>,
-        stdin: &mut Option<std::process::ChildStdin>,
+        stdin: &mut Option<mpsc::Sender<Vec<u8>>>,
         check_prepared: &mut dyn FnMut(&serde_json::Value) -> Result<(), &'static str>,
         sign: &mut dyn FnMut(&serde_json::Value) -> Result<serde_json::Value, &'static str>,
     ) -> Result<(), &'static str> {
@@ -258,10 +345,10 @@ impl Worker {
                 let mut line =
                     serde_json::to_vec(&answer).map_err(|_| "signing_request_refused")?;
                 line.push(b'\n');
-                let input = stdin.as_mut().ok_or("worker_protocol_violation")?;
-                input
-                    .write_all(&line)
-                    .and_then(|()| input.flush())
+                stdin
+                    .as_ref()
+                    .ok_or("worker_protocol_violation")?
+                    .send(line)
                     .map_err(|_| "worker_input_closed")
             }
             "result" => {
@@ -293,13 +380,14 @@ fn read_frames(stdout: std::process::ChildStdout, events: &mpsc::Sender<Event>) 
             .read_until(b'\n', &mut frame);
         match read {
             Ok(0) => {
-                let _ = events.send(Event::Eof);
+                let _ = events.send(Event::StdoutClosed);
                 return;
             }
             Ok(count) => {
                 total = total.saturating_add(count);
                 if total > MAX_OUTPUT_BYTES {
                     let _ = events.send(Event::Refused("worker_output_limit_exceeded"));
+                    let _ = events.send(Event::StdoutClosed);
                     return;
                 }
                 if frame.last() != Some(&b'\n') {
@@ -310,6 +398,7 @@ fn read_frames(stdout: std::process::ChildStdout, events: &mpsc::Sender<Event>) 
                         "worker_protocol_violation"
                     };
                     let _ = events.send(Event::Refused(reason));
+                    let _ = events.send(Event::StdoutClosed);
                     return;
                 }
                 frame.pop();
@@ -319,30 +408,37 @@ fn read_frames(stdout: std::process::ChildStdout, events: &mpsc::Sender<Event>) 
             }
             Err(_) => {
                 let _ = events.send(Event::Refused("worker_protocol_violation"));
+                let _ = events.send(Event::StdoutClosed);
                 return;
             }
         }
     }
 }
 
-fn read_stderr(mut stderr: std::process::ChildStderr, events: &mpsc::Sender<Event>) -> Vec<u8> {
-    let mut kept = Vec::new();
+fn read_stderr(
+    mut stderr: std::process::ChildStderr,
+    events: &mpsc::Sender<Event>,
+    kept: &Mutex<Vec<u8>>,
+) {
     let mut total = 0usize;
     let mut chunk = [0u8; 4096];
     loop {
         match stderr.read(&mut chunk) {
-            Ok(0) | Err(_) => return kept,
+            Ok(0) | Err(_) => break,
             Ok(count) => {
                 total = total.saturating_add(count);
-                let room = KEPT_STDERR_BYTES.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..count.min(room)]);
+                if let Ok(mut kept) = kept.lock() {
+                    let room = KEPT_STDERR_BYTES.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..count.min(room)]);
+                }
                 if total > MAX_STDERR_BYTES {
                     let _ = events.send(Event::Refused("worker_stderr_limit_exceeded"));
-                    return kept;
+                    break;
                 }
             }
         }
     }
+    let _ = events.send(Event::StderrClosed);
 }
 
 #[cfg(unix)]
@@ -486,5 +582,68 @@ mod tests {
             Outcome::Refused("signing_request_refused")
         ));
         assert!(Worker::new(Path::new("relative/worker")).is_err());
+    }
+
+    #[test]
+    fn the_runner_returns_when_a_descendant_leaves_the_group_holding_its_output() {
+        let dir = tempfile::tempdir().unwrap();
+        // A descendant in its own session keeps the worker's stdout open after the worker has
+        // exited, where the group kill cannot reach it. The run must still end, refused.
+        let worker = Worker::new(&script(
+            dir.path(),
+            "read job; echo '{\"type\":\"prepared\"}'; \
+             /usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 12' & exit 0",
+        ))
+        .unwrap()
+        .with_deadline(Duration::from_millis(500))
+        .with_grace(Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let outcome = run(&worker, Mode::Prepare);
+        assert!(matches!(outcome, Outcome::Refused(_)), "{outcome:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "{:?}",
+            started.elapsed()
+        );
+        // The same with the worker itself never reading its input: the job is larger than a
+        // pipe buffer, and the run still ends at the deadline.
+        let worker = Worker::new(&script(
+            dir.path(),
+            "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 12' & sleep 12",
+        ))
+        .unwrap()
+        .with_deadline(Duration::from_millis(500))
+        .with_grace(Duration::from_millis(500));
+        let job = format!("{{\"job\":\"{}\"}}", "x".repeat(1 << 20));
+        let started = std::time::Instant::now();
+        let outcome = worker
+            .run(Mode::Prepare, job.as_bytes(), &mut accept, &mut never_sign)
+            .0;
+        assert!(matches!(outcome, Outcome::Refused(_)), "{outcome:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "{:?}",
+            started.elapsed()
+        );
+        // A worker that moves itself into its parent's group, out of reach of the group kill,
+        // and keeps its output open is still stopped at the deadline.
+        let worker = Worker::new(&script(
+            dir.path(),
+            "exec /usr/bin/perl -e 'use POSIX; setpgid(0, getpgrp(getppid())) or die; sleep 12'",
+        ))
+        .unwrap()
+        .with_deadline(Duration::from_millis(500))
+        .with_grace(Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let outcome = run(&worker, Mode::Prepare);
+        assert!(
+            matches!(outcome, Outcome::Refused("worker_deadline_exceeded")),
+            "{outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

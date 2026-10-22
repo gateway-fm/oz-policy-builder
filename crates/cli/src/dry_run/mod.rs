@@ -22,6 +22,7 @@ use ozpb_toolkit::dry_run_report::{
     LayerRun, NativeExpectation, NativeJob, SourceLedger, WorkerExit,
 };
 use signer::OfflineSigner;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use worker::{Mode, Outcome, Worker};
 
@@ -213,17 +214,32 @@ fn never_sign(_: &serde_json::Value) -> Result<serde_json::Value, &'static str> 
     Err("a preparation run asks for no signature")
 }
 
+/// Worker stderr as the operator sees it: control characters other than newlines, terminal
+/// escape sequences among them, are replaced, so a worker cannot rewrite the operator's screen.
+fn printable(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .chars()
+        .map(|c| {
+            if c == '\n' || !c.is_control() {
+                c
+            } else {
+                char::REPLACEMENT_CHARACTER
+            }
+        })
+        .collect()
+}
+
 fn report_stderr(label: &str, stderr: &[u8]) {
     if !stderr.is_empty() {
         eprintln!(
             "ozpb dry-run: {label} worker stderr (first {} bytes): {}",
             stderr.len(),
-            String::from_utf8_lossy(stderr).trim_end()
+            printable(stderr).trim_end()
         );
     }
 }
 
-fn layer_run(label: &str, outcome: Outcome, stderr: &[u8]) -> LayerRun {
+fn layer_run(label: &str, outcome: Outcome, stderr: &[u8], signed: BTreeSet<String>) -> LayerRun {
     match outcome {
         Outcome::Refused(reason) => {
             report_stderr(label, stderr);
@@ -235,7 +251,11 @@ fn layer_run(label: &str, outcome: Outcome, stderr: &[u8]) -> LayerRun {
             if exit != WorkerExit::Success {
                 report_stderr(label, stderr);
             }
-            LayerRun::Ran { exit, result }
+            LayerRun::Ran {
+                exit,
+                result,
+                signed,
+            }
         }
     }
 }
@@ -311,7 +331,7 @@ fn run_account_layer(
         },
         &mut |request| signer.sign(request),
     );
-    layer_run("account-Wasm", outcome, &stderr)
+    layer_run("account-Wasm", outcome, &stderr, signer.signed_cases())
 }
 
 fn run_captured_layer(
@@ -325,11 +345,15 @@ fn run_captured_layer(
     let capture = match capture() {
         Ok(capture) => capture,
         Err(message) => {
-            eprintln!("ozpb dry-run: target capture did not complete: {message}");
+            // Requested and not run: a failed layer, so the report cannot meet the bar on the
+            // other layers alone.
+            eprintln!(
+                "ozpb dry-run: target capture did not complete: {}",
+                printable(message.as_bytes())
+            );
             return (
                 None,
-                LayerRun::NotRun {
-                    unsupported: false,
+                LayerRun::Refused {
                     reason: "target_capture_failed".into(),
                 },
             );
@@ -403,9 +427,10 @@ fn run_captured_layer(
         },
         &mut |request| signer.sign(request),
     );
+    let signed = signer.signed_cases();
     (
         Some(expectation),
-        layer_run("captured-target", outcome, &stderr),
+        layer_run("captured-target", outcome, &stderr, signed),
     )
 }
 
@@ -415,7 +440,6 @@ mod tests {
     use super::key::KeyFileError;
     use super::signer::tests::{binding, delegate_key, request};
     use super::*;
-    use std::collections::BTreeSet;
 
     #[test]
     fn key_never_appears_in_output_or_evidence() {
@@ -527,5 +551,73 @@ mod tests {
                 assert!(!text.contains(secret.as_str()), "secret in: {text}");
             }
         }
+    }
+
+    fn minimal_preparation(binding: &ozpb_toolkit::dry_run_report::OfflineBinding) -> DryRunOutput {
+        serde_json::from_value(serde_json::json!({
+            "schema": "ozpb:dry-run:v1", "run_hash": binding.run_hash,
+            "binding": {
+                "spec_hash": "aa".repeat(32), "binding_set_hash": "bb".repeat(32),
+                "registry_snapshot_root": "dd".repeat(32), "account_address": binding.account_address,
+                "account_code_hash": ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex(),
+                "network_id": binding.source_network_id, "rule_index": 0,
+                "candidate_context_rule_id": 7, "suite_hash": binding.suite_hash,
+                "policy_code_hashes": {},
+            },
+            "artifact_verification": {
+                "spec_conformance": "", "source_reproduction": "", "offline_behavioral_conformance": "",
+                "wasm_reproduction": "", "current_network_preflight": "", "normalized_input_hash": "",
+                "models_all_policies": true, "unmodeled_reviewed_policies": [], "matches": true,
+            },
+            "reference_report": {}, "layers": [], "complete": false, "disclaimer": "",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_requested_capture_that_fails_fails_the_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = delegate_key(dir.path());
+        let binding = binding(key.address());
+        let input: DryRunInput = serde_json::from_value(serde_json::json!({
+            "candidate": {
+                "spec": {}, "rule_index": 0,
+                "binding_set": {"schema": "policy-binding-set/v1", "spec_hash": "00".repeat(32),
+                                "network_id": binding.source_network_id, "bindings": []},
+                "signed_registry_snapshot": {}, "account_address": binding.account_address,
+                "network_id": binding.source_network_id, "rpc_source": "testnet",
+            },
+            "artifact": {"spec": {}, "rule_index": 0, "claimed_generated_files": {}},
+            "candidate_context_rule_id": 7, "run_nonce": "11".repeat(32),
+        }))
+        .unwrap();
+        let worker = Worker::new(Path::new("/bin/false")).unwrap();
+        let unreachable = || -> Result<TargetCapture, String> {
+            Err("E_RPC: the endpoint did not answer".into())
+        };
+        let (expectation, run) = run_captured_layer(
+            &worker,
+            &input,
+            &minimal_preparation(&binding),
+            &[],
+            &unreachable,
+            &key,
+        );
+        assert!(expectation.is_none());
+        // Asked for and not run is a failed layer, so it blocks acceptance, not a missing one.
+        assert!(
+            matches!(&run, LayerRun::Refused { reason } if reason == "target_capture_failed"),
+            "{run:?}"
+        );
+    }
+
+    #[test]
+    fn worker_stderr_is_printed_without_control_characters() {
+        let shown = printable(b"refused\x1b[2J\x1b[1;1Hacceptance met\x07\r\nnext line\n");
+        assert!(
+            !shown.chars().any(|c| c.is_control() && c != '\n'),
+            "{shown:?}"
+        );
+        assert!(shown.contains("refused") && shown.contains("next line"));
     }
 }

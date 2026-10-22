@@ -136,6 +136,10 @@ fn expectation(preparation: &DryRunOutput) -> NativeExpectation {
         candidate_context_rule_id: 7,
         boundary_cases: reference(preparation).unwrap().outcomes.len(),
         signature_expiration_ledgers: BTreeSet::from([1064]),
+        signing_cases: ["case:0", "case:1", "control:signature_bit", "sequence:0"]
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
     }
 }
 
@@ -182,10 +186,12 @@ fn worker_result(preparation: &DryRunOutput, expectation: &NativeExpectation) ->
     })
 }
 
-fn ran(result: serde_json::Value) -> LayerRun {
+/// A clean exit after the signer answered every request `native` expects.
+fn ran(native: &NativeExpectation, result: serde_json::Value) -> LayerRun {
     LayerRun::Ran {
         exit: WorkerExit::Success,
         result: Some(result),
+        signed: native.signing_cases.clone(),
     }
 }
 
@@ -215,7 +221,7 @@ fn acceptance(report: &DryRunOutput) -> &DryRunAcceptance {
 fn dry_run_acceptance_requires_original_permit_and_five_reverted_denials() {
     let prep = preparation(5);
     let native = expectation(&prep);
-    let report = assemble(&prep, &native, ran(worker_result(&prep, &native)));
+    let report = assemble(&prep, &native, ran(&native, worker_result(&prep, &native)));
     let account = layer_of(&report, Layer::AccountWasm);
     assert_eq!(account.status, Status::Passed, "{}", account.reason);
     assert_eq!(account.cases, 6);
@@ -249,7 +255,7 @@ fn dry_run_acceptance_requires_original_permit_and_five_reverted_denials() {
     // Four reverted denials: the layer passes, the bar is not met.
     let prep = preparation(4);
     let native = expectation(&prep);
-    let report = assemble(&prep, &native, ran(worker_result(&prep, &native)));
+    let report = assemble(&prep, &native, ran(&native, worker_result(&prep, &native)));
     assert_eq!(layer_of(&report, Layer::AccountWasm).status, Status::Passed);
     assert_eq!(acceptance(&report).executed_layers[0].reverted_denials, 4);
     assert!(!acceptance(&report).meets_minimum);
@@ -265,7 +271,7 @@ fn dry_run_acceptance_requires_original_permit_and_five_reverted_denials() {
     original["state_after_hash"] = "a0".repeat(32).into();
     original["state_changed"] = false.into();
     original["counter_after"] = 0.into();
-    let report = assemble(&prep, &native, ran(refused));
+    let report = assemble(&prep, &native, ran(&native, refused));
     let account = layer_of(&report, Layer::AccountWasm);
     assert_eq!(account.status, Status::Failed);
     assert_eq!(account.reason, "case_disagreement");
@@ -277,7 +283,7 @@ fn dry_run_acceptance_requires_original_permit_and_five_reverted_denials() {
     let mut misattributed = worker_result(&prep, &native);
     misattributed["cases"][3]["refusal_contract"] = account_address().into();
     misattributed["cases"][3]["refusal_code"] = 3016.into();
-    let report = assemble(&prep, &native, ran(misattributed));
+    let report = assemble(&prep, &native, ran(&native, misattributed));
     let account = layer_of(&report, Layer::AccountWasm);
     assert_eq!(account.status, Status::Failed);
     assert!(!account.execution.as_ref().unwrap().cases[3].agree);
@@ -286,7 +292,11 @@ fn dry_run_acceptance_requires_original_permit_and_five_reverted_denials() {
     // The reference layer must itself have passed.
     let mut unreferenced = preparation(5);
     unreferenced.layers[0].status = Status::Unsupported;
-    let report = assemble(&unreferenced, &native, ran(worker_result(&prep, &native)));
+    let report = assemble(
+        &unreferenced,
+        &native,
+        ran(&native, worker_result(&prep, &native)),
+    );
     assert_eq!(layer_of(&report, Layer::AccountWasm).status, Status::Passed);
     assert!(!acceptance(&report).meets_minimum);
 
@@ -322,7 +332,7 @@ fn dry_run_report_refuses_worker_result_with_foreign_run_hash() {
     binding.run_hash = "ff".repeat(32);
     foreign["execution_network_id"] = offline_execution_network_id(&binding).unwrap().into();
     foreign["binding"] = serde_json::to_value(&binding).unwrap();
-    let report = assemble(&prep, &native, ran(foreign));
+    let report = assemble(&prep, &native, ran(&native, foreign));
     let account = layer_of(&report, Layer::AccountWasm);
     assert_eq!(account.status, Status::Failed);
     assert_eq!(account.reason, "worker_binding_mismatch");
@@ -337,11 +347,24 @@ fn dry_run_report_refuses_worker_result_with_foreign_run_hash() {
     stray.execution_network_id = offline_execution_network_id(&stray.binding).unwrap();
     let mut matching = worker_result(&prep, &stray);
     matching["binding"]["run_hash"] = "ff".repeat(32).into();
-    let report = assemble(&prep, &stray, ran(matching));
+    let report = assemble(&prep, &stray, ran(&stray, matching));
     let account = layer_of(&report, Layer::AccountWasm);
     assert_eq!(account.status, Status::Failed);
     assert_eq!(account.reason, "expectation_not_bound_to_preparation");
     assert!(!acceptance(&report).meets_minimum);
+
+    // So is one whose suite is not the prepared suite, with a worker report that matches it.
+    let mut other_suite = native.clone();
+    other_suite.binding.suite_hash = "ff".repeat(32);
+    other_suite.execution_network_id = offline_execution_network_id(&other_suite.binding).unwrap();
+    let report = assemble(
+        &prep,
+        &other_suite,
+        ran(&other_suite, worker_result(&prep, &other_suite)),
+    );
+    let account = layer_of(&report, Layer::AccountWasm);
+    assert_eq!(account.status, Status::Failed);
+    assert_eq!(account.reason, "expectation_not_bound_to_preparation");
 }
 
 #[test]
@@ -359,6 +382,7 @@ fn dry_run_report_fails_layer_on_nonzero_worker_exit() {
             LayerRun::Ran {
                 exit,
                 result: Some(worker_result(&prep, &native)),
+                signed: native.signing_cases.clone(),
             },
         );
         let account = layer_of(&report, Layer::AccountWasm);
@@ -368,7 +392,15 @@ fn dry_run_report_fails_layer_on_nonzero_worker_exit() {
         assert!(!acceptance(&report).original_permitted);
         assert!(!acceptance(&report).meets_minimum);
         // Without any report the exit still names the failure.
-        let report = assemble(&prep, &native, LayerRun::Ran { exit, result: None });
+        let report = assemble(
+            &prep,
+            &native,
+            LayerRun::Ran {
+                exit,
+                result: None,
+                signed: BTreeSet::new(),
+            },
+        );
         assert_eq!(layer_of(&report, Layer::AccountWasm).reason, reason);
     }
     // A refused exchange is a failed layer with no evidence.
@@ -433,7 +465,10 @@ fn captured_layer_counts_its_two_denials_and_never_meets_the_bar_alone() {
         policy_address: policy(),
         policy_code_hash: "cc".repeat(32),
         candidate_context_rule_id: 7,
-        signing_case_ids: BTreeSet::new(),
+        signing_case_ids: ["target:original:0", "target:argument-denial:0"]
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
         signature_expiration_ledgers: BTreeSet::from([1064]),
     };
     let case = |id: &str, class: &str, permit: bool, code: Option<u32>| {
@@ -474,7 +509,11 @@ fn captured_layer_counts_its_two_denials_and_never_meets_the_bar_alone() {
             reason: "selected_rule_outside_native_scope".into(),
         },
         Some(&captured),
-        &ran(result.clone()),
+        &LayerRun::Ran {
+            exit: WorkerExit::Success,
+            result: Some(result.clone()),
+            signed: captured.signing_case_ids.clone(),
+        },
     );
     let layer = layer_of(&report, Layer::CapturedTarget);
     assert_eq!(layer.status, Status::Passed, "{}", layer.reason);
@@ -493,10 +532,107 @@ fn captured_layer_counts_its_two_denials_and_never_meets_the_bar_alone() {
         Some(&native),
         &not_requested(),
         Some(&captured),
-        &ran(moved),
+        &LayerRun::Ran {
+            exit: WorkerExit::Success,
+            result: Some(moved),
+            signed: captured.signing_case_ids.clone(),
+        },
     );
     assert_eq!(
         layer_of(&report, Layer::CapturedTarget).reason,
         "case_disagreement"
     );
+}
+
+#[test]
+fn dry_run_report_requires_exactly_the_expected_signatures() {
+    let prep = preparation(5);
+    let native = expectation(&prep);
+    // A report the worker could produce without asking for a single signature, or after
+    // skipping one, or after asking for one too many, is not evidence of authorization.
+    let mut missing = native.signing_cases.clone();
+    missing.remove("control:signature_bit");
+    let mut extra = native.signing_cases.clone();
+    extra.insert("case:5".into());
+    for signed in [BTreeSet::new(), missing, extra] {
+        let report = assemble(
+            &prep,
+            &native,
+            LayerRun::Ran {
+                exit: WorkerExit::Success,
+                result: Some(worker_result(&prep, &native)),
+                signed,
+            },
+        );
+        let account = layer_of(&report, Layer::AccountWasm);
+        assert_eq!(account.status, Status::Failed);
+        assert_eq!(account.reason, "signatures_differ_from_expectation");
+        assert!(account.execution.is_none());
+        assert!(!acceptance(&report).meets_minimum);
+    }
+}
+
+/// The synthetic example request: the public subscription spec reduced to its generated
+/// policy, claiming the pinned account, with one binding.
+fn example_request(mutate: impl FnOnce(&mut serde_json::Value)) -> DryRunInput {
+    let mut spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/examples/subscription-spec.json"
+    ))
+    .unwrap();
+    spec["smart_account"]["observed_code_hash"] = OZ_SMART_ACCOUNT_WASM.to_hex().into();
+    spec["rules"][0]["policies"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|policy| policy.get("generated").is_some());
+    mutate(&mut spec);
+    let network_id = spec["network_id"].clone();
+    serde_json::from_value(json!({
+        "candidate": {
+            "spec": spec, "rule_index": 0,
+            "binding_set": {
+                "schema": "policy-binding-set/v1", "spec_hash": "00".repeat(32),
+                "network_id": network_id,
+                "bindings": [{
+                    "rule_index": 0, "policy_index": 0, "contract_address": policy(),
+                    "observed_wasm_hash": "cc".repeat(32),
+                    "recognition": {"kind": "reviewed_registry"},
+                    "resolution_reference": "synthetic scope test",
+                }],
+            },
+            "signed_registry_snapshot": {}, "account_address": spec["smart_account"]["address"],
+            "network_id": network_id, "rpc_source": "synthetic",
+        },
+        "artifact": {
+            "spec": spec, "rule_index": 0, "claimed_generated_files": {},
+            "claimed_wasm_base64": null, "claimed_build_manifest": null,
+        },
+        "candidate_context_rule_id": 7, "run_nonce": "11".repeat(32),
+    }))
+    .unwrap()
+}
+
+#[test]
+fn native_scope_refuses_every_bound_the_worker_refuses() {
+    let scope = native_scope(&example_request(|_| {})).expect("the example is in scope");
+    assert_eq!(scope.max_calls, Some(12));
+    // An unselected rule with nine calls: the worker derives every rule's suite first.
+    let nine_calls = example_request(|spec| {
+        let mut second = spec["rules"][0].clone();
+        let call = second["allowed_calls"][0].clone();
+        second["allowed_calls"] = (0..9)
+            .map(|n| {
+                let mut c = call.clone();
+                c["fn"] = format!("transfer_{n}").into();
+                c
+            })
+            .collect::<Vec<_>>()
+            .into();
+        spec["rules"].as_array_mut().unwrap().push(second);
+    });
+    assert!(native_scope(&nine_calls).is_err());
+    // A call cap the worker's stateful sequence does not run.
+    let large_cap = example_request(|spec| {
+        spec["rules"][0]["state"] = json!([{"call_count_per_installation": {"max_calls": 513}}]);
+    });
+    assert!(native_scope(&large_cap).is_err());
 }

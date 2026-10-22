@@ -123,6 +123,11 @@ impl<'k> OfflineSigner<'k> {
         })
     }
 
+    /// The case IDs this signer has answered so far.
+    pub fn signed_cases(&self) -> BTreeSet<String> {
+        self.used_cases.clone()
+    }
+
     /// Answer one `sign_request` frame with a `signature` frame, or refuse it and every later one.
     pub fn sign(&mut self, frame: &serde_json::Value) -> Result<serde_json::Value, &'static str> {
         if self.failed {

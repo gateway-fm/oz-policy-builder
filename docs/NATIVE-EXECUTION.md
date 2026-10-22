@@ -194,8 +194,9 @@ ozpb dry-run --request dry-run-request.json \
 - **Worker.** The operator names the executable (`--native-worker` or `OZPB_NATIVE_WORKER`, an
   absolute path). It gets one fixed mode argument, an empty environment apart from `PATH` and
   `LANG`, `/` as its directory and its own process group. Each run has a 120-second deadline
-  enforced by killing the group; stdout frames, total output (16 MiB) and stderr (64 KiB) are
-  bounded; a nonzero exit, a refused frame or a process left in the group fails the layer.
+  enforced by killing the group and the worker; once the worker ends, its pipes get five seconds
+  to close. Stdout frames, total output (16 MiB) and stderr (64 KiB) are bounded. A nonzero
+  exit, a refused frame, or a process or open pipe left behind fails the layer.
 - **Bindings derived first.** Before the worker starts, the CLI derives the account-Wasm job,
   suite and initialization hashes, the allowed signature expiries and the offline execution
   network ID from the request and the preparation. The worker's `--prepare` frame must equal
@@ -211,10 +212,14 @@ ozpb dry-run --request dry-run-request.json \
   or future network is refused as well. The request must also be the next expected one
   (sequential ID and nonce, an allowed unused case ID, an allowed expiry), and the invocation,
   preimage and digest are rebuilt and compared byte for byte. The first refusal ends the run.
+  The signer allows only the case IDs a correct run asks to sign, and the report is accepted
+  only if it answered exactly those.
 - **Ledger and account.** `--source-ledger` supplies the job's protocol-29 ledger parameters
   (provenance only for this layer); `--account-wasm` must hash to the pinned account Wasm.
 - **Exit status.** Zero only when the report's `acceptance.meets_minimum` holds; any other report
-  is still printed. A refused key file prints no report.
+  is still printed. A refused key file prints no report. A requested capture that does not
+  complete fails the captured layer, so such a run never exits zero. Worker stderr is printed
+  for a failed run, at most 4 KiB, with control characters replaced.
 
 Live-enforcement evidence remains missing outside the wallet: `ozpb dry-run` reports that layer
 `unavailable` with `wallet_owner_consent_required`, and its report is never `complete`. The MCP

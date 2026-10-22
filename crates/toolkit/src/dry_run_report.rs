@@ -379,22 +379,46 @@ pub struct NativeScope {
     pub max_calls: Option<u32>,
 }
 
-/// Whether the selected rule is one the native worker can run: one explicit delegated G signer,
-/// a supported predicate, exactly one generated policy and exactly one binding for it. The
-/// worker re-checks all of this; asking first keeps an out-of-scope rule `unsupported` rather
-/// than a failed run, and names the delegate whose key the coordinator must hold.
+/// The worker's size bounds: the specification, every rule's calls and arguments, the selected
+/// rule's derived cases and its call cap.
+const MAX_SPEC_BYTES: usize = 64 * 1024;
+const MAX_CALLS_PER_RULE: usize = 8;
+const MAX_ARGS_PER_CALL: usize = 16;
+const MAX_DERIVED_CASES: usize = 256;
+const MAX_CALL_CAP: u32 = 512;
+
+/// Whether the selected rule is one the native worker can run, applying every scope check the
+/// worker applies before execution: its size bounds, one explicit delegated G signer, a
+/// supported predicate, exactly one generated policy with exactly one binding, a derived suite
+/// of at most 256 cases covering its required classes, and a call cap of at most 512. The worker
+/// re-checks all of this; asking first keeps an out-of-scope rule `unsupported` rather than a
+/// failed run, without reading a key, and names the delegate whose key the coordinator must hold.
 pub fn native_scope(input: &DryRunInput) -> Result<NativeScope, &'static str> {
+    scoped(input).map(|(scope, _)| scope)
+}
+
+fn scoped(input: &DryRunInput) -> Result<(NativeScope, Vec<Case>), &'static str> {
     let spec: PolicySpec = serde_json::from_value(input.candidate.spec.clone())
         .map_err(|_| "the candidate spec does not parse")?;
+    let rule_index = input.candidate.rule_index;
+    if rule_index >= spec.rules.len() {
+        return Err("the selected rule index is outside the spec");
+    }
+    if serde_json::to_vec(&spec).map_or(true, |bytes| bytes.len() > MAX_SPEC_BYTES)
+        || spec.rules.iter().any(|rule| {
+            rule.allowed_calls.len() > MAX_CALLS_PER_RULE
+                || rule
+                    .allowed_calls
+                    .iter()
+                    .any(|call| call.args.len() > MAX_ARGS_PER_CALL)
+        })
+    {
+        return Err("the spec exceeds the native worker's size bounds");
+    }
     let spec = spec
         .validate()
         .map_err(|_| "the candidate spec does not validate")?;
-    let rule_index = input.candidate.rule_index;
-    let rule = spec
-        .spec()
-        .rules
-        .get(rule_index)
-        .ok_or("the selected rule index is outside the spec")?;
+    let rule = &spec.spec().rules[rule_index];
     let [SignerSpec::Delegated { address }] = rule.authorization.signers.as_slice() else {
         return Err("the selected rule does not have exactly one delegated signer");
     };
@@ -427,13 +451,30 @@ pub fn native_scope(input: &DryRunInput) -> Result<NativeScope, &'static str> {
             StateSpec::CallCountPerInstallation { max_calls } => *max_calls,
         })
         .next();
-    Ok(NativeScope {
-        delegate_address: address.clone(),
-        policy_address: binding.contract_address.clone(),
-        policy_code_hash: binding.observed_wasm_hash.clone(),
-        target_contract: rule.context.contract.clone(),
-        max_calls,
-    })
+    if max_calls.is_some_and(|cap| cap > MAX_CALL_CAP) {
+        return Err("the selected rule's call cap exceeds the native worker's sequence");
+    }
+    let suite: Vec<_> = ozpb_harness::build_suite(&spec)
+        .into_iter()
+        .filter(|case| case.rule_index == rule_index)
+        .collect();
+    let observed: BTreeSet<_> = suite.iter().map(|case| case.class).collect();
+    let covered = ozpb_harness::expected_classes(&spec)
+        .remove(&rule_index)
+        .is_some_and(|required| required.is_subset(&observed));
+    if suite.is_empty() || suite.len() > MAX_DERIVED_CASES || !covered {
+        return Err("the selected rule's derived suite is outside the native worker's bounds");
+    }
+    Ok((
+        NativeScope {
+            delegate_address: address.clone(),
+            policy_address: binding.contract_address.clone(),
+            policy_code_hash: binding.observed_wasm_hash.clone(),
+            target_contract: rule.context.contract.clone(),
+            max_calls,
+        },
+        suite,
+    ))
 }
 
 /// The account-Wasm layer's start frame for exactly the prepared request.
@@ -457,46 +498,51 @@ pub struct NativeExpectation {
     pub candidate_context_rule_id: u32,
     pub boundary_cases: usize,
     pub signature_expiration_ledgers: BTreeSet<u32>,
+    /// Exactly the case IDs a correct run asks the delegate to sign: every derived case the
+    /// delegate authenticates, every control and, for a capped rule, the call-cap sequence.
+    pub signing_cases: BTreeSet<String>,
 }
 
 impl NativeExpectation {
     /// Exactly the case IDs the worker may request a delegate signature for, in no order.
     pub fn signing_case_ids(&self) -> BTreeSet<String> {
-        let mut ids: BTreeSet<String> = (0..self.boundary_cases)
-            .map(|index| format!("case:{index}"))
-            .collect();
-        ids.extend(
-            NATIVE_CONTROLS
-                .iter()
-                .map(|(name, _)| format!("control:{name}")),
-        );
-        if let Some(max_calls) = self.scope.max_calls {
-            ids.extend((0..max_calls).map(|index| format!("sequence:{index}")));
-            ids.insert("sequence:partial_rollback".into());
-            ids.insert("sequence:overflow".into());
-        }
-        ids
+        self.signing_cases.clone()
     }
+}
+
+/// The case IDs a correct account-Wasm run asks the delegate to sign: each derived case the
+/// delegate authenticates, each control, and for a capped rule each sequence call, the
+/// partial-rollback attempt and the overflow attempt.
+fn native_signing_cases(suite: &[Case], scope: &NativeScope) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = suite
+        .iter()
+        .enumerate()
+        .filter(|(_, case)| {
+            case.context.authenticated_signers.iter().any(|signer| {
+                matches!(signer, SignerSpec::Delegated { address } if *address == scope.delegate_address)
+            })
+        })
+        .map(|(index, _)| format!("case:{index}"))
+        .collect();
+    ids.extend(
+        NATIVE_CONTROLS
+            .iter()
+            .map(|(name, _)| format!("control:{name}")),
+    );
+    if let Some(max_calls) = scope.max_calls {
+        ids.extend((0..max_calls).map(|index| format!("sequence:{index}")));
+        if max_calls > 0 {
+            ids.insert("sequence:partial_rollback".into());
+        }
+        ids.insert("sequence:overflow".into());
+    }
+    ids
 }
 
 fn hash<T: Serialize>(domain: &str, value: &T) -> Result<String, &'static str> {
     canonical_hash(domain, value)
         .map(|digest| digest.to_hex())
         .map_err(|_| "a dry-run identity exceeds canonical bounds")
-}
-
-/// The selected rule's derived suite, recomputed here: the same cases the preparation hashed
-/// and the worker runs.
-fn selected_suite(input: &DryRunInput) -> Result<Vec<Case>, &'static str> {
-    let spec: PolicySpec = serde_json::from_value(input.candidate.spec.clone())
-        .map_err(|_| "the candidate spec does not parse")?;
-    let spec = spec
-        .validate()
-        .map_err(|_| "the candidate spec does not validate")?;
-    Ok(ozpb_harness::build_suite(&spec)
-        .into_iter()
-        .filter(|case| case.rule_index == input.candidate.rule_index)
-        .collect())
 }
 
 /// Derive the account-Wasm layer's offline binding without the worker: the request must be the
@@ -508,12 +554,11 @@ pub fn native_expectation(
     job: &NativeJob,
 ) -> Result<NativeExpectation, &'static str> {
     let input = &job.request;
-    let scope = native_scope(input)?;
+    let (scope, suite) = scoped(input)?;
     check_source_ledger(&job.ledger)?;
     if hash(domains::DRY_RUN_REQUEST, input)? != preparation.run_hash {
         return Err("the job's request is not the prepared request");
     }
-    let suite = selected_suite(input)?;
     if hash(domains::DRY_RUN_SUITE, &suite)? != preparation.binding.suite_hash {
         return Err("the derived suite is not the prepared suite");
     }
@@ -569,6 +614,7 @@ pub fn native_expectation(
     let expectation = NativeExpectation {
         binding,
         execution_network_id,
+        signing_cases: native_signing_cases(&suite, &scope),
         scope,
         candidate_context_rule_id: input.candidate_context_rule_id,
         boundary_cases: suite.len(),
@@ -799,6 +845,7 @@ pub fn captured_expectation(
         candidate_context_rule_id: expectation.candidate_context_rule_id,
         boundary_cases: 0,
         signature_expiration_ledgers: BTreeSet::new(),
+        signing_cases: BTreeSet::new(),
     };
     bound_to_preparation(preparation, &expectation.binding, &native)?;
     Ok(expectation)
@@ -823,10 +870,12 @@ pub enum LayerRun {
     /// The coordinator stopped the exchange (refused a frame or a signature request, hit the
     /// deadline or an output bound); no report from it is accepted.
     Refused { reason: String },
-    /// The worker ran to its own exit; its final report, if any, is still unchecked.
+    /// The worker ran to its own exit; its final report, if any, is still unchecked. `signed`
+    /// holds the case IDs the coordinator's signer answered.
     Ran {
         exit: WorkerExit,
         result: Option<serde_json::Value>,
+        signed: BTreeSet<String>,
     },
 }
 
@@ -959,7 +1008,12 @@ fn native_layer(
     if let Some(layer) = not_executed(id, run) {
         return layer;
     }
-    let LayerRun::Ran { exit, result } = run else {
+    let LayerRun::Ran {
+        exit,
+        result,
+        signed,
+    } = run
+    else {
         return layer(id, Status::Failed, "worker_result_missing");
     };
     let fail = |reason: &str| layer(id, Status::Failed, reason);
@@ -967,6 +1021,7 @@ fn native_layer(
         return fail("preparation_expectations_unavailable");
     };
     if bound_to_preparation(preparation, &expectation.binding, expectation).is_err()
+        || expectation.binding.suite_hash != preparation.binding.suite_hash
         || offline_execution_network_id(&expectation.binding).as_deref()
             != Ok(expectation.execution_network_id.as_str())
     {
@@ -994,6 +1049,11 @@ fn native_layer(
         || frame.complete
     {
         return fail("worker_binding_mismatch");
+    }
+    // A run that did not ask for exactly the expected signatures did not exercise the
+    // delegate's authorization the report describes, whatever the report says.
+    if *signed != expectation.signing_cases {
+        return fail("signatures_differ_from_expectation");
     }
     if frame.cases.len() != reference.outcomes.len()
         || frame.cases.len() != expectation.boundary_cases
@@ -1158,7 +1218,12 @@ fn captured_layer(
     if let Some(layer) = not_executed(id, run) {
         return layer;
     }
-    let LayerRun::Ran { exit, result } = run else {
+    let LayerRun::Ran {
+        exit,
+        result,
+        signed,
+    } = run
+    else {
         return layer(id, Status::Failed, "worker_result_missing");
     };
     let fail = |reason: &str| layer(id, Status::Failed, reason);
@@ -1207,6 +1272,9 @@ fn captured_layer(
         || frame.complete
     {
         return fail("worker_binding_mismatch");
+    }
+    if *signed != expectation.signing_case_ids {
+        return fail("signatures_differ_from_expectation");
     }
     let planned = [
         (MutationClass::Original, true, None),

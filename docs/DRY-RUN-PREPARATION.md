@@ -78,7 +78,13 @@ the preparation, the worker's raw reports and exit statuses, and identities it d
   account and policy code identities and proposed rule ID must equal the preparation's and the
   locally derived ones. The account-Wasm job and initialization hashes and the execution network
   ID are derived without the worker. A report from another run is `failed` with
-  `worker_binding_mismatch`, and none of its cases is accepted.
+  `worker_binding_mismatch`, and none of its cases is accepted. The native suite hash must also
+  be the preparation's.
+- **Signatures.** The coordinator reports which case IDs its signer answered. They must be
+  exactly the ones a correct run asks for: every derived case the delegate authenticates, every
+  control and, for a capped rule, every call of the cap sequence (both signing cases for the
+  captured layer). A report from a run that skipped or added a signature is `failed` with
+  `signatures_differ_from_expectation`, and none of its cases is accepted.
 - **Agreement.** Each case's expectation is the preparation's reference expectation, not the
   worker's. A permitted case agrees only when the expectation is permit, nothing was attributed
   as a refusal and any counter advanced by exactly one. A denial agrees only when the refusal is
@@ -94,9 +100,12 @@ the preparation, the worker's raw reports and exit statuses, and identities it d
   `wallet_owner_consent_required`, and `complete` stays `false`.
 
 `ozpb dry-run` is the CLI coordinator that fills these fields. It reports the live layer as
-above, `captured_target` as `unavailable` with `captured_target_not_requested` unless given a
-capture request, and a selected rule outside the native worker's scope as `unsupported` with
-`selected_rule_outside_native_scope`, without reading the key.
+above and `captured_target` as `unavailable` with `captured_target_not_requested` unless given a
+capture request. A requested capture that does not complete is `failed` with
+`target_capture_failed`, so it blocks acceptance. A selected rule outside the native worker's
+scope, including its size bounds (64 KiB of specification, eight calls per rule, sixteen
+arguments per call, 256 derived cases, a call cap of 512), is `unsupported` with
+`selected_rule_outside_native_scope`, and the key is not read.
 
 `acceptance` counts only executed layers that passed. For each executed layer it records whether
 the original call was permitted and how many derived denials reverted: refused with the
