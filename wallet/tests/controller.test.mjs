@@ -270,3 +270,80 @@ test('account check is unavailable without the capability or for a grant naming 
   await assert.rejects(h.controller.checkAccount(), /wallet action refused/, 'no review after the wallet changes');
   assert.equal(h.calls.some(([name]) => name === 'check-account'), false);
 });
+
+function liveFixture() {
+  const f = fixture();
+  f.replies.status.capabilities.liveCheck = true;
+  f.replies['create-delegate'] = { capabilityId: hash('5'), address: `G${'A'.repeat(55)}` };
+  f.replies.generate.spec.rules[0].authorization.signers[0].delegated.address = f.replies['create-delegate'].address;
+  const display = { signature_expiration_ledger: 130, warning: 'Until ledger 130, these signatures are real and submittable.' };
+  f.replies['prepare-live'] = { reviewId: 'review1', live: { action: { id: hash('6') }, display, statementSha256: hash('7'),
+    inputs: { helper: 'helper', policyCodeHash: hash('b'), expectedRuleId: 1, currentLedger: 100, signatureExpirationLedger: 130 } } };
+  f.replies['consent-live'] = { action: { id: hash('8') }, ownerEntryXdr: 'unsigned owner entry', signatureExpirationLedger: 130 };
+  f.replies['run-live'] = { reviewId: 'review1', verification: f.replies.review.verification };
+  f.replies['check-replay'] = { replay: { status: 'waiting', latestLedger: 120, signaturesValidUntil: 130 } };
+  Object.assign(f.validators, {
+    liveCases: (input) => { f.calls.push(['liveCases', input]); return ['permit', 'denial']; },
+    consentDisplay: () => display,
+    statementHash: () => hash('7'),
+    checkLiveOwnerEntry: ({ ownerEntryXdr }) => { f.calls.push(['checkLiveOwnerEntry', ownerEntryXdr]);
+      return { authEntriesXdr: [ownerEntryXdr], ownerRuleId: 7, expirationLedger: 130 }; },
+    validateLiveOwnerSignature: async ({ signedAuthEntriesXdr }) => ({ signedEntryXdr: signedAuthEntriesXdr[0] }),
+  });
+  return f;
+}
+async function livePrepared(f) {
+  await f.controller.connect();
+  f.controller.attachWallet(wallet);
+  await f.controller.createDelegate();
+  await f.controller.record(hash('d'));
+  await f.controller.generate({ delegateAddress: f.replies['create-delegate'].address, maxCalls: 2, validUntilLedger: 123, grantName: 'grant' });
+  await f.controller.prepareDeploy();
+  await f.controller.confirmDeploy();
+  await f.controller.review();
+}
+
+test('the live check shows the browser\'s own statement, then consent, then the passkey, then the simulations', async () => {
+  const f = liveFixture();
+  await livePrepared(f);
+  await f.controller.prepareLive();
+  assert.equal(f.controller.state.livePreview.statementSha256, hash('7'));
+  assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'consent-live'), false, 'preparing signs and consents to nothing');
+  await f.controller.consentLive();
+  const names = f.calls.map(([name]) => name);
+  assert.deepEqual(names.slice(names.indexOf('consent-live')), ['consent-live', 'checkLiveOwnerEntry', 'sign', 'run-live']);
+  assert.deepEqual(f.calls.find(([name]) => name === 'run-live')[1], { id: hash('8'), signedAuthEntriesXdr: ['signed'] });
+  assert.equal(f.controller.state.livePreview, null);
+  await f.controller.checkReplay();
+  assert.equal(f.controller.state.replay.status, 'waiting');
+});
+
+test('consent required before any live signature: no preview, a different statement or a changed entry asks no passkey', async () => {
+  const noPreview = liveFixture();
+  await livePrepared(noPreview);
+  await assert.rejects(noPreview.controller.consentLive(), /wallet action refused/);
+  for (const change of [
+    (f) => { f.validators.statementHash = () => hash('0'); },
+    (f) => { f.replies['prepare-live'].live.inputs.policyCodeHash = hash('0'); },
+    (f) => { f.replies['consent-live'].signatureExpirationLedger = 131; },
+    (f) => { f.validators.checkLiveOwnerEntry = () => { throw new Error('not the reviewed installation'); }; },
+  ]) {
+    const f = liveFixture();
+    change(f);
+    await livePrepared(f);
+    await f.controller.prepareLive().then(() => f.controller.consentLive()).catch(() => {});
+    assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'run-live'), false);
+    await assert.rejects(f.controller.consentLive(), /wallet action refused/, 'a refused attempt consumes the preview');
+  }
+});
+
+test('the automation delegate is available for the live check without the native worker', async () => {
+  const f = liveFixture();
+  await f.controller.connect();
+  await f.controller.createDelegate();
+  assert.equal(f.controller.state.delegate.capabilityId, hash('5'));
+  const g = fixture();
+  g.replies['create-delegate'] = { capabilityId: hash('5'), address: `G${'A'.repeat(55)}` };
+  await g.controller.connect();
+  await assert.rejects(g.controller.createDelegate(), /wallet action refused/);
+});

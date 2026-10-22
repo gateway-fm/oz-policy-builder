@@ -62,5 +62,6 @@ local account-Wasm evidence after this preparation. It does not change this oper
 meaning or complete the captured-target and live-enforcement layers. The worker's separate
 [captured-target mode](CAPTURED-TARGET-EXECUTION.md) does not either: this operation still
 reports `captured_target` as unavailable. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md)
-is a tested building block for the live layer only, limited to generated policies with a call
-cap; `live_enforcement` stays `unavailable`.
+is the contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+simulates after the owner's consent, limited to generated policies with a call cap; this operation's
+`live_enforcement` stays `unavailable`.

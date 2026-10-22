@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Account, Address, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
 import { targetEnvelopeXdr } from './captured-execution.mjs';
@@ -132,10 +132,11 @@ function confirmed(receipt, sent) {
 
 /** Trusted backend only. No HTTP route exposes operations, envelopes or this fee payer. */
 export class WalletNetwork {
-  #server; #payer = Keypair.random(); #fetch; #journal; #assemble; #pause;
-  #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0;
+  #server; #payer = Keypair.random(); #fetch; #journal; #assemble; #pause; #rpcUrl;
+  #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #delegatesFunded = new Set();
   constructor({ rpcUrl, journalRoot, server, fetchImpl = fetch, assemble = rpc.assembleTransaction, pause = sleep }) {
     this.#server = server ?? boundedRpcServer(rpcUrl, fetchImpl);
+    this.#rpcUrl = rpcUrl;
     this.#fetch = fetchImpl; this.#journal = journalRoot; this.#assemble = assemble; this.#pause = pause;
   }
   get payerAddress() { return this.#payer.publicKey(); }
@@ -145,6 +146,20 @@ export class WalletNetwork {
     return network;
   }
   async latestLedger() { await this.assertTestnet(); return ledger((await this.#server.getLatestLedger()).sequence); }
+  /**
+   * The latest ledger and its close time (seconds), from the header the RPC returns with it: the
+   * header must describe that ledger and hash to its reported ID.
+   */
+  async ledgerClock() {
+    try {
+      await this.assertTestnet();
+      const latest = await this.#server.getLatestLedger();
+      const sequence = ledger(latest.sequence);
+      const header = latest.headerXdr;
+      if (header?.ledgerSeq !== sequence || digest(bytes(header)) !== latest.id || typeof header.scpValue?.closeTime !== 'bigint') refuse();
+      return { sequence, closeTime: Number(header.scpValue.closeTime) };
+    } catch { refuse(); }
+  }
   async sourceCapture() {
     const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: this.#payer.xdrPublicKey() }));
     const response = await this.#server.getLedgerEntries(key);
@@ -332,6 +347,176 @@ export class WalletNetwork {
       return targetEnvelopeXdr(await this.source(), call);
     } catch { refuse(); }
   }
+  /**
+   * One enforce-mode `simulateTransaction` of an unsigned envelope, returned as the RPC's raw JSON
+   * result with its XDR still base64, as the live-case validator requires (the SDK's parsed form
+   * drops what a failed simulation reports). Nothing is signed by the fee payer or sent; the
+   * envelope carries live authorizations, so neither it nor the RPC's error text leaves this method.
+   */
+  async simulateRaw(envelopeXdr) {
+    try {
+      await this.assertTestnet();
+      const url = new URL(this.#rpcUrl);
+      if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) refuse();
+      if (typeof envelopeXdr !== 'string' || envelopeXdr.length > 256 * 1024) refuse();
+      const envelope = xdr.TransactionEnvelope.fromXDR(envelopeXdr, 'base64');
+      if (envelope.toXDR('base64') !== envelopeXdr || envelope.type !== 'envelopeTypeTx' || envelope.v1.signatures.length
+        || envelope.v1.tx.sourceAccount.type !== 'keyTypeEd25519'
+        || StrKey.encodeEd25519PublicKey(envelope.v1.tx.sourceAccount.ed25519.value) !== this.payerAddress) refuse();
+      const id = randomBytes(8).toString('hex');
+      const response = await this.#fetch(url.href, { method: 'POST', credentials: 'omit', redirect: 'error',
+        headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'simulateTransaction', params: { transaction: envelopeXdr, authMode: 'enforce' } }) });
+      const data = JSON.parse(await boundedText(response, 16 * 1024 * 1024));
+      if (data?.jsonrpc !== '2.0' || data.id !== id || !data.result || typeof data.result !== 'object' || Array.isArray(data.result)) refuse();
+      ledger(data.result.latestLedger);
+      return data.result;
+    } catch { refuse(); }
+  }
+  /**
+   * Whether `contractId` exists and until when its instance and code stay live, read without
+   * refusing an expired entry: `{ found: false, ledger }` or `{ found: true, wasmHash,
+   * instanceLiveUntil, codeLiveUntil, ledger }`. The code's bytes must hash to the instance's hash.
+   */
+  async contractLiveness(contractId) {
+    try {
+      if (!StrKey.isValidContract(contractId)) refuse();
+      await this.assertTestnet();
+      const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(contractId).toScAddress(),
+        key: xdr.ScVal.scvLedgerKeyContractInstance(), durability: xdr.ContractDataDurability.persistent }));
+      const response = await this.#server.getLedgerEntries(key);
+      const observed = ledger(response.latestLedger);
+      if (!response.entries?.length) return { found: false, ledger: observed };
+      const [entry] = response.entries;
+      const data = entry.val?.contractData;
+      if (response.entries.length !== 1 || !same(entry.key, key) || entry.val.type !== 'contractData'
+        || data.val.type !== 'scvContractInstance' || data.val.instance.executable.type !== 'contractExecutableWasm') refuse();
+      const wasmHash = Buffer.from(data.val.instance.executable.wasmHash.value).toString('hex');
+      const codeKey = xdr.LedgerKey.contractCode(new xdr.LedgerKeyContractCode({ hash: Buffer.from(wasmHash, 'hex') }));
+      const code = await this.#server.getLedgerEntries(codeKey);
+      const codeLedger = ledger(code.latestLedger);
+      if (!code.entries?.length) return { found: true, wasmHash, instanceLiveUntil: ledger(entry.liveUntilLedgerSeq), codeLiveUntil: null, ledger: observed };
+      const [codeEntry] = code.entries;
+      if (code.entries.length !== 1 || !same(codeEntry.key, codeKey) || codeEntry.val.type !== 'contractCode'
+        || digest(codeEntry.val.contractCode.code) !== wasmHash || codeLedger < observed || codeLedger - observed > 12) refuse();
+      return { found: true, wasmHash, instanceLiveUntil: ledger(entry.liveUntilLedgerSeq),
+        codeLiveUntil: ledger(codeEntry.liveUntilLedgerSeq), ledger: observed };
+    } catch { refuse(); }
+  }
+  /**
+   * What a live check's signatures could change, read together: the account instance's `NextId`
+   * and `Count`, every `ContextRuleData(id)` below `NextId` (stellar-accounts 0.7.2 storage), and
+   * the candidate policy's `Installed(account, ruleId)` marker. Read twice, the second time with
+   * the instance again, which must not have moved in between. At most 64 rule IDs.
+   */
+  async liveState({ account, policy, ruleId }) {
+    try {
+      if (!StrKey.isValidContract(account) || !StrKey.isValidContract(policy) || account === policy
+        || !Number.isSafeInteger(ruleId) || ruleId < 0 || ruleId > 0xffffffff) refuse();
+      await this.assertTestnet();
+      const data = (contract, key) => xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+        contract: new Address(contract).toScAddress(), key, durability: xdr.ContractDataDurability.persistent }));
+      const keyed = (name, ...rest) => xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name), ...rest]);
+      const instanceKey = data(account, xdr.ScVal.scvLedgerKeyContractInstance());
+      const counters = (response) => {
+        const entry = response.entries?.find((item) => same(item.key, instanceKey));
+        const instance = entry?.val?.type === 'contractData' && entry.val.contractData.val.type === 'scvContractInstance'
+          ? entry.val.contractData.val.instance : refuse();
+        if (instance.executable.type !== 'contractExecutableWasm') refuse();
+        const read = (name) => {
+          const found = (instance.storage ?? []).filter((item) => same(item.key, keyed(name)));
+          return found.length === 1 && found[0].val.type === 'scvU32' ? found[0].val.u32 : refuse();
+        };
+        return { nextId: read('NextId'), count: read('Count'), wasmHash: Buffer.from(instance.executable.wasmHash.value).toString('hex') };
+      };
+      const first = await this.#server.getLedgerEntries(instanceKey);
+      const firstLedger = ledger(first.latestLedger);
+      const { nextId, count } = counters(first);
+      if (nextId > 64 || count > nextId) refuse();
+      const ruleKeys = Array.from({ length: nextId }, (_, id) => data(account, keyed('ContextRuleData', xdr.ScVal.scvU32(id))));
+      const markerKey = data(policy, keyed('Installed', new Address(account).toScVal(), xdr.ScVal.scvU32(ruleId)));
+      const second = await this.#server.getLedgerEntries(instanceKey, ...ruleKeys, markerKey);
+      const observed = ledger(second.latestLedger);
+      const again = counters(second);
+      if (observed < firstLedger || observed - firstLedger > 12 || again.nextId !== nextId || again.count !== count
+        || (second.entries ?? []).some((item) => ![instanceKey, ...ruleKeys, markerKey].some((key) => same(item.key, key)))) refuse();
+      const value = (key) => {
+        const found = second.entries.filter((item) => same(item.key, key));
+        if (found.length > 1) refuse();
+        return found.length ? found[0].val.contractData.val.toXDR('base64') : null;
+      };
+      const marker = value(markerKey);
+      if (marker !== null && marker !== xdr.ScVal.scvBool(true).toXDR('base64')) refuse();
+      return { ledger: observed, account, policy, ruleId, nextId, count, accountWasmHash: again.wasmHash,
+        rules: ruleKeys.map((key, id) => ({ id, xdr: value(key) })), installed: marker !== null };
+    } catch { refuse(); }
+  }
+  /**
+   * The wallet's automation delegate as a classic testnet account, which the host needs to check its
+   * signature: created through Friendbot if it does not exist yet (a testnet write that costs the fee
+   * payer nothing), then read back with its master key alone able to sign. At most once per address.
+   */
+  async ensureDelegateAccount(address) {
+    try {
+      if (!StrKey.isValidEd25519PublicKey(address) || address === this.payerAddress) refuse();
+      await this.assertTestnet();
+      const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: Keypair.fromPublicKey(address).xdrAccountId() }));
+      const read = async () => {
+        const response = await this.#server.getLedgerEntries(key);
+        const observed = ledger(response.latestLedger);
+        if (!response.entries?.length) return null;
+        const [entry] = response.entries;
+        const account = entry.val?.type === 'account' ? entry.val.account : refuse();
+        const [master, , medium] = Buffer.from(account.thresholds.value);
+        if (response.entries.length !== 1 || !same(entry.key, key) || account.signers.length || master < 1 || master < medium) refuse();
+        return { ledger: observed };
+      };
+      const existing = await read();
+      if (existing) return { ...existing, createdNow: false };
+      if (this.#delegatesFunded.has(address)) refuse();
+      this.#delegatesFunded.add(address);
+      const response = await this.#fetch(`https://friendbot.stellar.org/?addr=${address}`, {
+        method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
+      });
+      await boundedText(response, 256 * 1024);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const created = await read();
+        if (created) return { ...created, createdNow: true };
+        await this.#pause(2000);
+      }
+      refuse();
+    } catch { refuse(); }
+  }
+  /**
+   * Whether the exact transfer can run against current state, so that a target-side failure is not
+   * mistaken for the candidate's: the recipient account exists and the account's native balance
+   * covers `amount`. Read in one request.
+   */
+  async transferReadiness({ account, recipient, amount }) {
+    try {
+      if (!StrKey.isValidContract(account) || !StrKey.isValidEd25519PublicKey(recipient)
+        || typeof amount !== 'string' || !/^[1-9][0-9]{0,18}$/.test(amount)) refuse();
+      await this.assertTestnet();
+      const sac = Asset.native().contractId(Networks.TESTNET);
+      const balanceKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(sac).toScAddress(),
+        key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Balance'), new Address(account).toScVal()]),
+        durability: xdr.ContractDataDurability.persistent }));
+      const recipientKey = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({
+        accountId: Keypair.fromPublicKey(recipient).xdrAccountId() }));
+      const response = await this.#server.getLedgerEntries(balanceKey, recipientKey);
+      const observed = ledger(response.latestLedger);
+      const find = (key) => (response.entries ?? []).filter((entry) => same(entry.key, key));
+      const [balance] = find(balanceKey);
+      const [target] = find(recipientKey);
+      const value = balance ? scValToNative(balance.val.contractData.val) : null;
+      const funds = typeof value?.amount === 'bigint' ? value.amount : 0n;
+      return { ledger: observed, recipientExists: Boolean(target), covered: funds >= BigInt(amount) };
+    } catch { refuse(); }
+  }
+  /** The live check's replay obligation, kept in the session journal: public addresses, ledgers and reads only. */
+  recordLiveObligation(record) {
+    this.#save(++this.#serial, 'live-check', record);
+  }
   async requireInstance(contractId, wasmHash) {
     if (!StrKey.isValidContract(contractId)) refuse();
     const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
@@ -373,7 +558,8 @@ export class WalletNetwork {
   async upload(wasm, wasmHash) {
     if (!Buffer.isBuffer(wasm) || wasm.length > 2 * 1024 * 1024 || digest(wasm) !== wasmHash) refuse();
     const receipt = await this.submitOperation(Operation.uploadContractWasm({ wasm }), 'upload-policy');
-    if (receipt.returnValue.type !== 'scvBytes' || Buffer.from(receipt.returnValue.bytes).toString('hex') !== wasmHash) refuse();
+    // Decoded XDR wraps Bytes: the stored hash is its `value`.
+    if (receipt.returnValue.type !== 'scvBytes' || Buffer.from(receipt.returnValue.bytes.value).toString('hex') !== wasmHash) refuse();
     await this.requireCode(wasmHash);
     return receipt;
   }

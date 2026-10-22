@@ -14,9 +14,11 @@ This integration supports recognized account creation, a fixed owner-authorized 
 transfer from that new account, confirmed-transaction recording, artifact generation and
 reproduction, artifact deployment, live authority review and, when the operator configures
 the [native worker](NATIVE-EXECUTION.md), local account-Wasm and captured-target execution of
-the reviewed grant. Policy installation, revocation and replacement remain disabled: the
-behavioral live-enforcement layer is not yet connected. The signing validators below are
-tested foundations, not a completed installation or wallet acceptance claim.
+the reviewed grant. When the operator names the deployed [atomic live helper](ATOMIC-LIVE-HELPER.md),
+the owner can also consent to a [live-enforcement check](#live-enforcement-check): two
+enforce-mode simulations on testnet, never submitted. Policy installation, revocation and
+replacement remain disabled. The signing validators below are tested foundations, not a
+completed installation or wallet acceptance claim.
 
 ## Apply to the supported upstream revision
 
@@ -91,7 +93,10 @@ Set the minimum registry version to the operator's accepted rollback floor. Opti
 `stellarBinary`, `cargoHome`, `rustupHome`, and `buildCacheDir` fields select existing local
 toolchain paths; the cache directory also requires mode `0700`. Optional `nativeExecutable`
 names the operator-built `ozpb-execution-runtime` binary; without it both local execution checks
-are unavailable. The CLI and optional Stellar and native binaries must be executable regular files. Configuration, registry and executable paths cannot
+are unavailable. Optional `liveHelper` names the contract ID of the deployed atomic live helper
+(see [Testnet deployment](ATOMIC-LIVE-HELPER.md#testnet-deployment)); without it the
+live-enforcement layer is unavailable. The backend never trusts that ID: it reads the helper's code
+back and requires the reviewed hash before every check. The CLI and optional Stellar and native binaries must be executable regular files. Configuration, registry and executable paths cannot
 be symlinks or writable by other users. Arbitrary environment overrides are refused, builds
 run offline, and HTTP requests cannot select these settings.
 
@@ -139,7 +144,11 @@ can finish and write its receipt before shutdown. Keep the journal when interrup
 5. Optionally run the local execution checks described below: account-Wasm, then captured
    target. They sign nothing with the owner passkey and do not change the installation gate's
    other required layers.
-6. Only when the required verification report is complete does the route enable owner signing.
+6. Optionally prepare the [live-enforcement check](#live-enforcement-check), read its consent
+   statement, and consent with the owner passkey. It is the only step in which the automation
+   delegate signs for testnet, and its signatures, the owner's included, are simulated and never
+   submitted.
+7. Only when the required verification report is complete does the route enable owner signing.
    It checks the fresh unsigned envelope against the immutable display before asking Pollywallet
    for a passkey signature. It then independently checks the signed XDR, origin, challenge,
    user verification, full signer identity and exact owner rule before submission.
@@ -164,11 +173,18 @@ for this owner-passkey flow.
 
 ## Account-Wasm execution
 
-With `nativeExecutable` configured, the route can create a local automation delegate. The
-backend generates an Ed25519 key in process memory and returns only its public address and an
-opaque capability ID; at most eight exist per backend, and they disappear when it stops. Use
-that address as the grant's restricted delegate. The owner passkey never stands in for it, and
-a grant naming any other delegate address cannot run this check.
+With `nativeExecutable` or `liveHelper` configured, the route can create a local automation
+delegate. The backend generates an Ed25519 key in process memory and returns only its public
+address and an opaque capability ID; at most eight exist per backend, and they disappear when it
+stops. It also creates the key's classic testnet account through Friendbot, a testnet write that
+costs the fee payer nothing: the authority review refuses a grant whose delegate account does not
+exist, and the host checks the delegate's signatures against that account. If that account cannot
+be created, the key is dropped and its slot freed, so the step can be retried. Use that address as the grant's restricted delegate. The owner passkey never stands in for
+it, and a grant naming any other delegate address cannot run these checks. The key never signs
+supplied bytes. It signs through two capabilities only, each refusing the other's network: the
+offline capability signs authorization preimages in the derived offline execution network, and
+the [live capability](#live-enforcement-check) builds and signs the two testnet transfers of one
+consented live check.
 
 `Run local execution checks` runs this layer and then the
 [captured-target layer](#captured-target-execution) from one CLI preparation, so both report the
@@ -184,9 +200,9 @@ deployment:
 3. The worker runs once with `--prepare`; the wallet checks that frame against step 1 and the
    offline signing domain, then runs the identical job interactively. Every repeated frame
    must equal the retained one. The wallet signs only the offline-domain `__check_auth`
-   digests of IDs in the derived case, control and sequence inventory, each at most once,
-   in the runner's exact request-ID and nonce order. The order of the IDs themselves is not
-   enforced.
+   preimages of IDs in the derived case, control and sequence inventory, each at most once,
+   in the runner's exact request-ID and nonce order, through the offline capability, which
+   refuses a preimage for any other network. The order of the IDs themselves is not enforced.
 4. The final report is accepted only after the wallet recomputes agreement for every case
    from the CLI's expectations and the reported observations, checks all five cryptographic
    controls and the stateful call-cap sequence, and requires a zero worker exit that leaves no
@@ -276,6 +292,118 @@ through the wallet toolchain, served offline by a loopback endpoint. Like the te
 script needs `OZPB_REGISTRY_SNAPSHOT_ROOT` set to the root of `docs/examples/registry.signed.json`;
 `OZPB_ACCOUNT_WASM` may reuse a pinned account artifact.
 
+## Live-enforcement check
+
+The fourth layer shows the reviewed candidate deciding a real call on testnet: an enforce-mode
+simulation of the [atomic live helper](ATOMIC-LIVE-HELPER.md), which installs the candidate rule
+through the account's own `add_context_rule` and then makes the grant's exact transfer under it.
+It needs `liveHelper` and a backend-created [automation delegate](#account-wasm-execution) as
+the grant's delegate. Nothing is submitted, but the signatures are real: the owner's passkey
+signature alone is a submittable installation, and with it the delegate's are a submittable
+transfer, until they expire ([why](ATOMIC-LIVE-HELPER.md#signatures-are-real-and-usable-without-the-helper)).
+So the check runs only after the owner consents to exactly what is signed.
+
+It supports the grant this route generates from the sample transfer: one rule on the testnet
+native asset, one Ed25519 delegate, a call cap, and one exact-amount `transfer` to a G account
+of at most 1,000,000 stroops, so that the adjacent denial stays within the helper's bound. Two
+cases run: the exact transfer (`target:original:0`), which the candidate must permit, and one
+stroop more (`target:argument-denial:0`), which it must refuse with `NoTupleMatched` (6). This is
+two named cases, not the derived deny suite.
+
+1. **Prepare.** The backend reads, through the operator RPC: the helper's instance and code,
+   which must run the reviewed helper Wasm and stay live past the signatures' expiry; the
+   deployed candidate's code, which must be the reviewed Wasm; that the recipient exists and the
+   account's balance covers the amount; and the account's `NextId` and `Count`, every rule below
+   `NextId`, and the candidate's installation marker for the next rule ID, which must be the one
+   the review established. It reads back the delegate's classic testnet account, which must be
+   signable by its master key alone, and creates it through Friendbot if it is missing. It then
+   fixes the expiry ledger N, 30 ledgers
+   (about two and a half minutes) after the latest ledger, and returns the consent statement.
+   Nothing is signed, and nothing signable has been released.
+2. **Consent.** The browser derives the statement itself from the reviewed grant and the
+   backend's inputs (helper, candidate hash, rule ID, ledgers) and shows it: both exact calls,
+   the owner's installation and each delegate transfer, the expiry N, the labels and this
+   warning: until ledger N the signatures are real and submittable; the owner's alone installs
+   the rule, which gives the backend-held delegate the grant's authority until it expires;
+   none of them names the helper; all of them reach the operator's RPC endpoint inside the
+   simulation requests; and the replay check after N compares the account with the state read
+   before they existed. Consent returns the statement's SHA-256. The backend accepts it only for
+   the statement it prepared and only while at least 15 ledgers remain before N. Only then does
+   it journal the replay obligation (below) and release the unsigned owner entry with a fresh
+   nonce. The browser checks that entry is exactly the reviewed installation before the passkey
+   sees it.
+3. **Run.** The backend verifies the owner's passkey signature of that entry as for any owner
+   signature (origin, challenge, user verification, full credential, owner rule). Only then does
+   it mint the delegate's live capability for exactly the consented check. That capability takes
+   a structure, never bytes: account, asset, recipient, amount, rule, nonce and expiry. It
+   accepts only testnet, only the two consented amounts, each once, and only expiry N. It builds
+   the account's transfer entry (no sub-invocations, checked under exactly the candidate rule)
+   and the delegate's own `__check_auth` entry itself, and signs the latter. For each case, with
+   at least 3 ledgers left before N, the backend builds an unsigned envelope from its fee payer
+   with the helper call and the three entries. It sends that envelope to `simulateTransaction`
+   in enforce mode and keeps the raw result, with its XDR still base64. Nothing is signed by the
+   fee payer or sent. Each raw response must pass `validateLiveCase`.
+
+Outcomes:
+
+- `passed`: the exact transfer validated as a `permit` and the adjacent amount as a `deny` with
+  code 6 from the candidate policy's contract ID.
+- `failed`: a response the validator refused, a permitted adjacent amount, a denial with another
+  code or from another contract, a helper refusal (7001–7009), or a deployed candidate that is not
+  the reviewed Wasm. None counts as passing evidence.
+- `unavailable`: no helper configured; the helper missing, not the reviewed Wasm, or its
+  instance or code archived or ending before N
+  ([extend or redeploy it](ATOMIC-LIVE-HELPER.md#keeping-the-helper-live)); the candidate missing
+  on testnet; no established next rule ID, a moved `NextId`, or the candidate already installed
+  for it; a delegate account that could not be created or read back; an RPC read or simulation
+  that did not complete; a recipient or balance the transfer cannot run against; a grant expiring
+  before the check; too few ledgers left; or a response needing restoration while the other case
+  came out as expected. None of these is about the candidate.
+- `unsupported`: any other grant shape, including a policy without a call cap, which the helper
+  cannot observe.
+
+A passing layer carries public evidence only: the helper, the candidate and their hashes, the
+expected rule ID, the expiry ledger, the statement hash, each case's outcome, simulation ledger
+and envelope hash. It also carries the owner's `webauthn_user_verified` with
+`human_approval_attested: false`, and the labels `state_dependent`, `simulation_only`,
+`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key`. It is
+evidence about testnet state at the simulation ledgers, and stored evidence does not age.
+
+**Replay check.** The prepared reads of `NextId`, `Count`, the rules and the installation
+marker are the state before any signature existed. At consent, before the owner entry is
+released, they are recorded with N and journaled in the session directory. While any recorded
+signature is still valid, `Check that the live-check signatures were not used` reports `waiting`,
+and a new live check is refused. After N, it re-reads the same state. The ledger it judges by is
+that of the read itself, never a separate request, which a lagging node could answer. It reports
+`unchanged`, or `changed` with what moved and an alert not to install. The check runs when the
+owner asks for it; nothing runs it automatically. A record outlives an aborted run, but only in
+the running backend: the journal entry is evidence for the operator, and a restarted backend does
+not read an earlier session's journal. After a restart, wait until the earlier N has passed before
+preparing another check. `requireNoReplay` in
+[`wallet/server/live-check.mjs`](../wallet/server/live-check.mjs) is the guard the installation
+flow must call before it signs anything; it refuses unless the check reports `unchanged`, and
+without any record. Installation itself is still disabled.
+
+**Ledger clock.** The operator RPC's latest ledger fixes N, decides whether consent and each
+simulation still fit before N, and decides whether N has passed for the replay check. Each of those
+reads takes the header the RPC returns with the latest ledger, which must describe that ledger and
+hash to its reported ID. Its close time must be a whole number of seconds within 60 seconds of the
+backend machine's clock, or the step is refused and preparation reports `unavailable`. That catches
+a stalled node, a node serving state from before a testnet reset, and a backend host whose own
+clock is wrong. It does not check the ledger sequence: the RPC is trusted for the sequence without
+a bound. A header with a current close time and an invented sequence passes, and could put N far
+past the real ledger. The operator chooses that endpoint.
+
+A passed live layer stays passed in the report even if a later replay check reports `changed`: the
+replay check speaks about the account, not the candidate. That is acceptable only while
+installation is disabled. The installation flow must call `requireNoReplay` before it signs, and
+refuse on anything but `unchanged`.
+
+If the browser disconnects during the run, the backend checks for that before each step: it
+signs and simulates nothing further, and records no layer. Signatures already created stay valid
+until N, and the replay obligation stays recorded. The backend serves one live check at a time
+and runs no local execution check alongside it.
+
 ## Report layers
 
 The four report layers are `reference`, `account_wasm`, `captured_target` and
@@ -283,6 +411,12 @@ The four report layers are `reference`, `account_wasm`, `captured_target` and
 Missing, unsupported, failed, duplicated or mismatched evidence keeps acceptance closed.
 An installation preflight is not counted as behavioral live-enforcement evidence. Backend
 capabilities keep installation signing and lifecycle actions unavailable until their required checks exist.
+
+The `live_enforcement` layer comes only from the consented [live-enforcement
+check](#live-enforcement-check), and each of its two responses must pass the validators in
+[`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs). The report is
+`complete` only when all four layers passed. Installation stays disabled in this backend whatever
+the report says: the installation flow, with its replay check, is not built yet.
 
 Authentication with a virtual authenticator is automation evidence. The signature result
 explicitly reports `human_approval_attested: false`; it does not establish a human acceptance
@@ -296,6 +430,16 @@ funded a pinned testnet account, approved the fixed 0.1 XLM transfer using `Addr
 confirmed it at ledger 5294119, and recorded the transaction through the CLI. It used the
 actual browser integration with a virtual authenticator. This is sample-flow evidence;
 the run did not install a generated grant or complete four-layer/lifecycle acceptance.
+
+The [22 October 2026 live-check run](evidence/wallet-live-enforcement-testnet-2026-10-22.json)
+went through this route end to end on testnet: a fresh account and its sample transfer, recording,
+an automation delegate, generation, deployment and review of a one-call grant, then the
+[live-enforcement check](#live-enforcement-check). The exact transfer validated as a permit and one
+stroop more as `NoTupleMatched` (6) from the candidate policy. The layer passed against the deployed
+helper, simulation only. After the signatures expired, the replay check found the account
+unchanged. The owner was a virtual authenticator, so this is automation evidence with
+`human_approval_attested: false`. No native worker was configured, so the report was not complete,
+and nothing was installed.
 
 Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR
 and signature checks, and the client controller's refusal paths. The apply-script tests cover

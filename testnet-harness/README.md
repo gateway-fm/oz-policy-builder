@@ -280,6 +280,11 @@ node lifecycle.mjs --run-dir R                # owner signs removal; needs the r
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
 
+`deploy-live-helper.mjs` runs setup, the owner transfer and the synthesis chain itself with its
+own throwaway keys, then deploys the [atomic live-enforcement helper](../docs/ATOMIC-LIVE-HELPER.md#testnet-deployment)
+and simulates one permit and one denial through it. It runs `ozpb` as the other steps do (`OZPB_BIN`,
+or Cargo) and needs `stellar`.
+
 CI runs both this suite and `npm test` in `testnet-harness/browser`, with locked dependencies
 and pinned Node. The installer tests run the real local CLI (`OZPB_BIN`, or Cargo) but mock
 the RPC and key boundaries; they require the Rust dependencies to be cached for offline use.
