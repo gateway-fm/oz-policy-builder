@@ -307,11 +307,14 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
-`docs/MCP-WALKTHROUGH.md` covers the server and the `policy-builder` Claude skill. The
-repository's `.mcp.json` exposes the server for local tool use; `claude --plugin-dir .` loads
-the packaged skill and its server entry. The wrapper refreshes a plugin binary from source
-in Claude's persistent plugin data directory and launches a stdio server per session. The
-walkthrough also covers tool inputs and raw JSON-RPC.
+`docs/MCP-WALKTHROUGH.md` covers the server, the `policy-builder` Claude skill and the
+human-invoked `policy-builder-install` skill that hands a confirmed grant off. Do not
+pre-approve `prepare_install_intent`, `assemble_install_transaction` or `capture_target` in
+Claude Code permissions; each call should prompt. The repository's `.mcp.json` exposes the
+server for local tool use; `claude --plugin-dir .` loads the packaged skill and its server
+entry. The wrapper refreshes a plugin binary from source in Claude's persistent plugin data
+directory and launches a stdio server per session. The walkthrough also covers tool inputs and
+raw JSON-RPC.
 
 ```bash
 cargo build -r -p ozpb-mcp-server
@@ -372,7 +375,10 @@ signs, or holds keys.
 `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
 source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
-source, but reads nothing through it.
+source, but reads nothing through it. `scripts/mcp-server-dev.sh` configures exactly one source,
+`testnet` (SDF's public testnet RPC unless `OZPB_DEV_TESTNET_RPC_URL` names another `https://`
+endpoint), and replaces any map already in the environment; it never configures another
+network.
 The source must be for the request's network, and a hosted server also requires its URL on
 `OZPB_RPC_ALLOWLIST`. For every one of them except `capture_target`, which needs no registry
 trust, the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`, `OZPB_REGISTRY_MIN_VERSION`)
@@ -428,6 +434,14 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).
+- **Lifetime and call cap are required decisions.** `valid_until_ledger`, or
+  `no_expiry_acknowledged: true`; `max_calls`, or `unlimited_calls_acknowledged: true` (absent
+  reads as `false`). Neither answer is an `E_NEEDS_DECISION` finding; both answers to one
+  question (a cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry
+  acknowledgement) are contradictory, an `E_INVALID_DECISION` finding. A refusal lists every
+  finding in `details` under the first one's code. Before v0.2.0 a null `max_calls` alone produced
+  an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
+  in the [release notes](release-notes/v0.2.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).

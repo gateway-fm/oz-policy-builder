@@ -82,7 +82,7 @@ export class WalletToolchain {
       const directory = this.#directory();
       const decisions = { grant_name: grantName, delegate_signers: [{ delegated: { address: delegateAddress } }],
         predicate: 'any_of', valid_until_ledger: validUntilLedger, no_expiry_acknowledged: false,
-        max_calls: maxCalls, widenings: [], spending_limit: null };
+        max_calls: maxCalls, unlimited_calls_acknowledged: false, widenings: [], spending_limit: null };
       const account = { address: record.response.accountAddress, observed_code_hash: ACCOUNT_WASM,
         registry_resolution: 'resolved from the wallet operator signed registry' };
       save(join(directory, 'account.json'), JSON.stringify(account));
