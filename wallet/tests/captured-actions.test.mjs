@@ -172,6 +172,7 @@ const STAGES = [
   { stage: 'capture envelope read', child: false, before: 'envelope' },
   { stage: 'capture ledger read', child: false, before: 'ledger' },
   { stage: 'capture-target', child: true, before: 'capture' },
+  { stage: 'capture-target finishing as the client leaves', child: false, before: 'capture' },
   { stage: 'captured worker preparation', child: true, before: 'worker', worker: { captured: true, prepareOnly: true } },
   { stage: 'captured worker signing run', child: true, before: 'worker', worker: { captured: true, prepareOnly: false } },
 ];

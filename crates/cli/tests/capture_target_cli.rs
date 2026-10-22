@@ -240,9 +240,17 @@ fn a_target_refusal_or_archived_footprint_has_its_own_code() {
                         simulation["error"] = json!(quoted);
                         simulation.as_object_mut().unwrap().remove("results");
                     }
+                    // A well-formed preamble: transaction data whose fee is its own.
                     "restorePreamble" => {
-                        simulation["restorePreamble"] =
-                            json!({ "transactionData": quoted, "minResourceFee": "1" })
+                        use stellar_xdr::{Limits, WriteXdr};
+                        let data = stellar_xdr::SorobanTransactionData {
+                            resource_fee: 4321,
+                            ..Default::default()
+                        };
+                        simulation["restorePreamble"] = json!({
+                            "transactionData": data.to_xdr_base64(Limits::none()).unwrap(),
+                            "minResourceFee": "4321",
+                        })
                     }
                     _ => restored(&mut simulation),
                 }

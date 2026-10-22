@@ -341,6 +341,7 @@ export function createWalletActions({ session, toolchain, network, native = null
                 captured = incomplete();
               }
             }
+            stopped();
           }
           const observed = capture?.value?.observed_ledger;
           if (!captured && Number.isSafeInteger(observed)

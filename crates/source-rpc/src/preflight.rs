@@ -514,7 +514,7 @@ pub(crate) fn restores_archived_entries(
     Ok(!ext.archived_soroban_entries.is_empty())
 }
 
-fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
+pub(crate) fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
     let object = restore
         .as_object()
         .ok_or_else(|| RpcError::Malformed("restorePreamble is not an object".to_string()))?;

@@ -284,7 +284,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1),
-            "is archived at the reported ledger",
+            "is archived at the captured ledger",
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER),
@@ -301,7 +301,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
             "exactly one recorded authorization root",
         ),
         (
-            |f| f.simulation["restorePreamble"] = json!({}),
+            |f| f.simulation["restorePreamble"] = valid_preamble(),
             "requires restoration",
         ),
         (
@@ -663,6 +663,11 @@ fn native_target_capture_classifies_the_simulation_like_preflight() {
         })
     };
     let refusal = format!("HostError: Error(Contract, #10) balance is not sufficient: {quoted}");
+    let preamble = |value: Value| -> Mutation {
+        Box::new(move |f: &mut Fixture| f.simulation["restorePreamble"] = value.clone())
+    };
+    let mut wrong_fee = valid_preamble();
+    wrong_fee["minResourceFee"] = json!("2");
     let cases: Vec<(&str, Mutation, Kind)> = vec![
         ("a failed simulation", failed(json!(refusal)), Kind::Refused),
         ("an empty error", failed(json!("")), Kind::Rpc),
@@ -695,11 +700,24 @@ fn native_target_capture_classifies_the_simulation_like_preflight() {
         ),
         (
             "a restoration preamble",
-            Box::new(move |f: &mut Fixture| {
-                f.simulation["restorePreamble"] =
-                    json!({ "transactionData": quoted.clone(), "minResourceFee": "1" })
-            }),
+            preamble(valid_preamble()),
             Kind::Archived,
+        ),
+        // Preflight validates a preamble before reporting restoration; so does capture.
+        (
+            "an empty restoration preamble",
+            preamble(json!({})),
+            Kind::Rpc,
+        ),
+        (
+            "a preamble with undecodable transaction data",
+            preamble(json!({ "transactionData": quoted.clone(), "minResourceFee": "1" })),
+            Kind::Rpc,
+        ),
+        (
+            "a preamble whose fee is not its data's",
+            preamble(wrong_fee),
+            Kind::Rpc,
         ),
         (
             "a malformed restoration preamble",
@@ -724,6 +742,17 @@ fn native_target_capture_classifies_the_simulation_like_preflight() {
             Kind::Archived,
         ),
         (
+            // The reader judges archival at its own ledger: from a node behind or ahead of the
+            // simulation that says nothing about the call at L, so it is retried as any ledger
+            // mismatch, and a persistent one is an endpoint answer.
+            "an entry archived at a ledger other than the simulation's",
+            Box::new(|f: &mut Fixture| {
+                f.entries["latestLedger"] = json!(LEDGER + 1);
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER);
+            }),
+            Kind::Rpc,
+        ),
+        (
             "a footprint entry expiring at the captured ledger",
             Box::new(|f: &mut Fixture| {
                 f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER)
@@ -742,6 +771,37 @@ fn native_target_capture_classifies_the_simulation_like_preflight() {
             _ => Kind::Rpc,
         };
         assert_eq!(kind, expected, "{name}: {error}");
+        // A refused or archived simulation is the call's outcome: nothing is read after it.
+        if matches!(
+            name,
+            "a failed simulation"
+                | "a restoration preamble"
+                | "a success that restored archived entries"
+        ) {
+            assert_eq!(
+                *fixture.calls.borrow(),
+                ["getNetwork", "simulateTransaction"],
+                "{name}"
+            );
+        }
+        if name == "an entry archived at a ledger other than the simulation's" {
+            assert!(
+                error
+                    .to_string()
+                    .contains("kept observing different ledgers"),
+                "{error}"
+            );
+            assert_eq!(
+                fixture
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|m| *m == "simulateTransaction")
+                    .count(),
+                CAPTURE_ATTEMPTS,
+                "retried as a ledger mismatch"
+            );
+        }
         let code = match kind {
             Kind::Refused => "E_TARGET_REFUSED: ",
             Kind::Archived => "E_TARGET_ARCHIVED: ",
@@ -753,4 +813,14 @@ fn native_target_capture_classifies_the_simulation_like_preflight() {
             assert!(!text.contains("HostError"), "{name}: {text}");
         }
     }
+}
+
+/// A restoration preamble whose transaction data decodes and whose fee is that data's own, as
+/// preflight requires before it reports restoration.
+fn valid_preamble() -> Value {
+    let data = SorobanTransactionData {
+        resource_fee: 4321,
+        ..Default::default()
+    };
+    json!({ "transactionData": encode(&data), "minResourceFee": "4321" })
 }

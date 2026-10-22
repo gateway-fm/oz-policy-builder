@@ -12,7 +12,7 @@
 //! endpoint holds the envelope and could quote it in any later reply, so no endpoint-controlled
 //! text reaches an error: the category survives, the words do not.
 
-use crate::preflight::{local_envelope, restores_archived_entries};
+use crate::preflight::{local_envelope, restores_archived_entries, validate_restoration};
 use crate::{
     envelope_carries_signatures, read_invocation_footprint, verify_network, xdr_limits,
     CapturedFootprintEntry, FootprintCaptureError, RpcError, RpcTransport, MAX_XDR_BASE64_BYTES,
@@ -262,10 +262,11 @@ pub fn capture_native_target<T: RpcTransport>(
                     .to_string(),
             ));
         }
-        match simulation.get("restorePreamble") {
-            None => {}
-            Some(Value::Object(_)) => return Err(archived("the target footprint")),
-            Some(_) => return Err(refuse("restorePreamble is not an object")),
+        // A preamble is archived state only once it is well formed, as preflight requires;
+        // its fixed refusal texts carry nothing of the endpoint's.
+        if let Some(restore) = simulation.get("restorePreamble") {
+            validate_restoration(restore)?;
+            return Err(archived("the target footprint"));
         }
         let observed = reported;
         let [result] = simulation
@@ -354,22 +355,32 @@ pub fn capture_native_target<T: RpcTransport>(
             unreachable!("checked above");
         };
         acquisition_v1.tx.ext = TransactionExt::V1(resources);
-        let mut capture = read_invocation_footprint(
+        let mut capture = match read_invocation_footprint(
             &transport,
             network_passphrase,
             &encode(&acquisition, "acquisition envelope")?,
-        )
-        .map_err(|error| match error {
+        ) {
+            Ok(capture) => capture,
+            // The reader judges archival at the ledger it reports. Only at the simulation's
+            // ledger is that the call's state; from a node behind or ahead it is retried like
+            // any ledger mismatch.
+            Err(FootprintCaptureError::ArchivedDeclaredKey { reported, .. })
+                if reported == observed =>
+            {
+                return Err(archived(
+                    "a footprint entry is archived at the captured ledger: the call",
+                ))
+            }
+            Err(FootprintCaptureError::ArchivedDeclaredKey { .. }) => continue,
             // Its reported network is the endpoint's text. The transport has already withheld
             // every endpoint error, and the reader's own refusals are fixed descriptions, so
             // both keep their variant.
-            FootprintCaptureError::Rpc(error @ RpcError::NetworkMismatch { .. }) => withhold(error),
-            FootprintCaptureError::Rpc(error) => error,
-            FootprintCaptureError::ArchivedDeclaredKey { .. } => {
-                archived("a footprint entry is archived at the reported ledger: the call")
+            Err(FootprintCaptureError::Rpc(error @ RpcError::NetworkMismatch { .. })) => {
+                return Err(withhold(error))
             }
-            error => refuse(&error.to_string()),
-        })?;
+            Err(FootprintCaptureError::Rpc(error)) => return Err(error),
+            Err(error) => return Err(refuse(&error.to_string())),
+        };
         if capture.reported_ledger.0 != observed {
             continue;
         }
