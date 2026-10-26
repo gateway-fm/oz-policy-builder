@@ -390,3 +390,23 @@ test('an original may extend the SAC instance and balance and candidate entries'
   result.cases[0].ttl_extended_keys = [f.keys.instance, f.keys.balance, policyInstance];
   assert.equal(checkCapturedResult(result, f).status, 'passed');
 });
+
+
+const ttlCodeKey = (hash) => xdr.LedgerKey.contractCode(new xdr.LedgerKeyContractCode({
+  hash: Buffer.from(hash, 'hex') })).toXDR('base64');
+const ttlInstanceKey = (contract) => xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+  contract: new Address(contract).toScAddress(), key: xdr.ScVal.scvLedgerKeyContractInstance(),
+  durability: xdr.ContractDataDurability.persistent })).toXDR('base64');
+
+test('captured TTL extensions are confined to the candidate account, policy and transfer entries', () => {
+  const f = setup();
+  for (const key of [ttlInstanceKey(StrKey.encodeContract(Buffer.alloc(32, 42))), ttlCodeKey(H('8'))]) {
+    const result = clone(f.result);
+    result.cases[0].ttl_extended_keys = [key];
+    assert.throws(() => checkCapturedResult(result, f), /refused/);
+  }
+  const result = clone(f.result);
+  result.cases[0].ttl_extended_keys = [ttlInstanceKey(ACCOUNT), ttlInstanceKey(POLICY),
+    ttlCodeKey(f.prepared.account_code_hash), ttlCodeKey(f.prepared.policy_code_hash), f.keys.instance, f.keys.balance];
+  assert.equal(checkCapturedResult(result, f).status, 'passed');
+});

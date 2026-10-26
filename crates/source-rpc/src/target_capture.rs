@@ -312,6 +312,14 @@ pub fn capture_native_target<T: RpcTransport>(
         }
         let mut resources: SorobanTransactionData =
             decode(text(&simulation, "transactionData")?, "transaction data")?;
+        let min_fee = text(&simulation, "minResourceFee")?
+            .parse::<u64>()
+            .map_err(|_| refuse("simulation minResourceFee is not a u64"))?;
+        if i64::try_from(min_fee).ok() != Some(resources.resource_fee) {
+            return Err(refuse(
+                "simulation minResourceFee differs from its transaction data fee",
+            ));
+        }
         // Since protocol 23 the endpoint restores archived entries inside the simulated call
         // and lists them here instead of sending a preamble: the same archived target state.
         if restores_archived_entries(&resources)? {

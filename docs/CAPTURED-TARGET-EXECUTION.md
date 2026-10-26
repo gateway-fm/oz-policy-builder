@@ -204,3 +204,10 @@ candidate state), twenty preparation refusals including re-hashed headers that d
 ledger, the recorded testnet capture replayed offline, and the full process protocol. The
 nightly pinned-account gate runs it. Refresh the recorded responses deliberately with
 `cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.
+
+
+Captured execution accepts TTL extensions only for the transfer's SAC instance and sender
+balance, the candidate account/policy data namespaces, and their pinned code hashes. Extensions
+of unrelated contract data or code refuse the report. A simulation that reports restored entries
+must first supply a valid `minResourceFee` matching its transaction data; missing, malformed or
+inconsistent fees remain endpoint failures rather than archival-state evidence.
