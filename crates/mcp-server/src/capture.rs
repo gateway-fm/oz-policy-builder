@@ -54,7 +54,7 @@ impl PolicyBuilderServer {
         Parameters(input): Parameters<CaptureTargetInput>,
     ) -> Result<Json<CaptureTargetOutput>, CallToolResult> {
         // Resolved first, so an unknown name or another network fails before any slot or read.
-        let source = ozpb_toolkit::resolve_rpc_source(
+        let source = ozpb_toolkit::resolve_capture_rpc_source(
             &self.rpc_sources,
             &input.rpc_source,
             &input.network_id,
