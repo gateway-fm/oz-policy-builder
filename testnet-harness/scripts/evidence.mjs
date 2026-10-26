@@ -473,15 +473,16 @@ function derivedDenialsRecord(value, emittedBytes, specBytes, rawRun, run, pipel
   const offline = plan.offline.map(({ rule_index, class: cls, reason, cases, ids }) => ({ rule_index, class: cls, reason, cases, ids }));
   if (!Array.isArray(d.offline) || JSON.stringify(d.offline) !== JSON.stringify(offline)
     || d.permits_not_replayed !== plan.permits_not_replayed) fail();
-  // The live order covers exactly the installed policies; each rule's are enforced in that order.
+  // Before any simulation, a failed state/code read can leave the discovered order partial.
+  // Once execution starts, or completion is claimed, every installed policy must be known.
   if (!Array.isArray(d.policy_order) || d.policy_order.length > 4) fail();
   const policyOrder = d.policy_order.map(address);
   const installed = [...new Set(rules.flatMap((rule) => rule.policies.map((p) => p.address)))];
-  if (new Set(policyOrder).size !== policyOrder.length || policyOrder.length !== installed.length
-    || installed.some((a) => !policyOrder.includes(a))) fail();
   // Replayed in plan order, so a journal holds a prefix of the plan, all of it once completed.
   if (!Array.isArray(d.originals) || d.originals.length > plan.originals.length
     || !Array.isArray(d.cases) || d.cases.length > plan.denials.length) fail();
+  if (new Set(policyOrder).size !== policyOrder.length || policyOrder.some((a) => !installed.includes(a))
+    || ((status === 'completed' || d.originals.length || d.cases.length) && policyOrder.length !== installed.length)) fail();
   const originals = d.originals.map((item, i) => {
     const o = object(item);
     const state = choice(o.status, ['started', 'permitted', 'unexpected_denial']);
