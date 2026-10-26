@@ -46,9 +46,113 @@ pub struct DryRunLayer {
     pub reason: String,
     pub cases: usize,
     pub state_dependent: bool,
-    /// Local committed state must be distinguished from live network writes in
-    /// execution evidence. No current coordinator layer commits either.
+    /// Writes committed to a live network. No layer here commits one. An offline layer's
+    /// permitted calls commit only fresh synthetic local state, which its `execution`
+    /// provenance states.
     pub writes_committed: bool,
+    /// Present only on a layer this run executed, once the worker's report was bound to the
+    /// preparation: the identities it ran under and every case, each re-checked against the
+    /// preparation's expectation. Never present in a preparation, and never on a layer whose
+    /// report was refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<DryRunLayerExecution>,
+}
+
+/// One executed layer's bound evidence. The offline binding equals the one derived from the
+/// preparation; `execution_network_id` is re-derived from it, never a live network.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunLayerExecution {
+    pub run_hash: String,
+    pub job_hash: String,
+    pub suite_hash: String,
+    pub state_hash: String,
+    pub source_network_id: String,
+    pub source_ledger: u32,
+    /// Counterfactual network the layer executed in, derived from the binding above.
+    pub execution_network_id: String,
+    pub delegate_address: String,
+    pub policy_address: String,
+    pub policy_code_hash: String,
+    pub host_version: String,
+    pub provenance: String,
+    pub cases: Vec<DryRunCaseResult>,
+    /// Signature, nonce, payload, rule-binding and replay controls (account-Wasm layer only).
+    pub controls: Vec<DryRunControlResult>,
+    /// The call-cap sequence, when the selected rule has a cap (account-Wasm layer only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stateful: Option<DryRunStatefulResult>,
+}
+
+/// The contract that raised an attributed refusal, by its role in the candidate grant.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DryRunEnforcer {
+    Account,
+    Policy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunCaseResult {
+    pub case_id: String,
+    pub label: String,
+    /// The reference case's mutation class in snake case, e.g. `arg_equality`.
+    pub class: String,
+    /// The preparation's expectation for this case, not the worker's.
+    pub expected_permit: bool,
+    pub permitted: bool,
+    pub refused_by: Option<DryRunEnforcer>,
+    pub refusal_code: Option<u32>,
+    /// Local state was identical before and after the call.
+    pub state_unchanged: bool,
+    /// Recomputed by the coordinator: the outcome equals the expectation, and a refusal is the
+    /// error its class predicts, raised by the contract that owns that error, with state
+    /// unchanged. The worker's own verdict is necessary, never sufficient.
+    pub agree: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunControlResult {
+    pub name: String,
+    pub passed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunStatefulResult {
+    pub max_calls: u32,
+    pub successful_calls: u32,
+    pub passed: bool,
+}
+
+/// Whether the executed evidence meets the permit/deny bar: the original call permitted, and
+/// enough derived denials reverted in executed Wasm. Counted only from layers that passed.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunAcceptance {
+    /// Fewest derived denials one executed layer must revert.
+    pub required_reverted_denials: usize,
+    /// At least one layer executed, and every executed layer passed and permitted the original.
+    pub original_permitted: bool,
+    /// One entry per layer this run executed, in layer order.
+    pub executed_layers: Vec<DryRunLayerAcceptance>,
+    /// The reference layer passed, `original_permitted` holds, and one executed layer
+    /// reverted at least `required_reverted_denials` derived denials.
+    pub meets_minimum: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunLayerAcceptance {
+    pub layer: DryRunLayerId,
+    pub status: DryRunLayerStatus,
+    /// The layer passed and permitted its original call.
+    pub original_permitted: bool,
+    /// Derived denials this layer refused with the predicted error and unchanged state; zero
+    /// unless the layer passed.
+    pub reverted_denials: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -84,5 +188,8 @@ pub struct DryRunOutput {
     /// False until every required runtime layer is actually executed and checked.
     /// This is never an account-safety or transaction-authorization verdict.
     pub complete: bool,
+    /// Filled only by a coordinator that executed layers; absent from a preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<DryRunAcceptance>,
     pub disclaimer: String,
 }

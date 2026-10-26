@@ -55,7 +55,7 @@ function recordingInputs(run, recording) {
       registry_resolution: 'resolved by the toolkit from the signed snapshot' },
     decisions: { grant_name: subscription ? 'subscription' : 'native-sub', delegate_signers: [{ delegated: { address: run.delegate } }],
       predicate: 'any_of', valid_until_ledger: bundle.ledger + HORIZON, no_expiry_acknowledged: false,
-      max_calls: subscription ? 2 : 1, widenings: [],
+      max_calls: subscription ? 2 : 1, unlimited_calls_acknowledged: false, widenings: [],
       spending_limit: subscription ? { limit: run.amount, period_ledgers: subscription.period_ledgers } : null },
     justification: `recordings[0]/auth[${index}]`,
   };

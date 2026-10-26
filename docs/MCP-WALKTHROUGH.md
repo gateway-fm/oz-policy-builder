@@ -21,7 +21,11 @@ For the guided flow, run `claude --plugin-dir .` from this checkout and invoke
 For direct tool use, the repository's `.mcp.json` also points at
 `scripts/mcp-server-dev.sh`. The wrapper refreshes plugin builds in Claude's persistent
 plugin data directory and starts the server with development registry trust configured;
-without trust roots, `synthesize_policy` refuses.
+without trust roots, `synthesize_policy` refuses. It also configures one RPC source, named
+`testnet`, for the tools that read through an operator source: SDF's public testnet RPC, or
+another `https://` endpoint named in `OZPB_DEV_TESTNET_RPC_URL`. The network is fixed to
+testnet, and any `OZPB_RPC_SOURCES_JSON` already in the environment is replaced. Those tools
+therefore read live testnet state by default, and what a request carries reaches that endpoint.
 
 **The trust that wrapper installs is the committed development pair, and it is not a production
 configuration.** `docs/examples/registry-roots.json` is a key this repository publishes, so
@@ -66,9 +70,66 @@ hash and no signature.
 **Going further than one command is better done with the skill.** The flow needs decisions
 only you can make — how long the grant lives, a call cap, a spend limit, which signer.
 The skill asks for them and guides the available record, synthesize, reference, generate,
-and verify tools, with optional exact-envelope preflight. Once the policies are deployed, it
-continues to the advisory authority check and install intent; it never deploys, signs or
-installs (§4.7).
+and verify tools, with optional exact-envelope preflight, then shows a confirmation card and
+stops. When policies are already deployed it can also run the advisory authority check,
+install intent and dry-run preparation; otherwise the authority check comes in the handoff,
+before assembly. It never deploys, signs or installs (§4.7).
+
+### Confirm, then hand off
+
+Before anything leaves the conversation, the skill shows a **Confirm before deploy** card built
+from tool outputs: what the grant permits and what it leaves unconstrained, every high-blast-
+radius choice (an `any_value` argument, including one an adapter derives for a caller-chosen
+deadline, a `high` widening, no expiry, no cap), the signer, expiry, cap and policies, the build
+verdict and target code identity, all four dry-run layers with their status, and the authority
+list or why it has not been read. It then waits for a reply that is just `confirm`. A later
+synthesis or a new authority or dry-run result needs a new card and a new confirmation.
+
+The handoff is a separate skill, `/oz-policy-builder:policy-builder-install`, which only the
+user can start: its `disable-model-invocation: true` keeps the agent from invoking it. It
+checks that the current grant was confirmed and then prints one of two things:
+
+- **An `ozpb-grant-proposal/v1` document**, for a grant of the shape the wallet integration
+  supports (recorded from the wallet account's confirmed testnet transaction; one rule, one
+  delegated signer, an expiry and a call cap; exact arguments; the generated policy only). It
+  carries the network ID, that transaction's hash, the wallet-supported decisions (`grant_name`,
+  `delegate`, `valid_until_ledger`, `max_calls`, `unlimited_calls_acknowledged`),
+  `expected_grant` and the agent's `spec_hash`. `expected_grant` is the spec's grant projection:
+  the account and, per rule, the context type, contract and target code hash (`null` for a
+  Stellar Asset contract, so an upgraded target is refused), each allowed call's function and
+  argument constraints, the authorization, the expiry ledger, the call cap and the policy kinds.
+  It leaves out when the target code was observed, its role and drift policy, and constraint
+  provenance, which an honest re-acquisition can observe differently. A wallet import is
+  designed to treat it as untrusted: record the transaction again by hash through its own RPC,
+  synthesize again with its own toolchain from its own decisions document, refuse any projection
+  difference, widening or spending limit, and show the delegate, expiry and cap for approval.
+  Spec hashes are shown, not required to match. The skill's text is the exact field-by-field
+  definition, and `scripts/check-agent-transcript.py` checks a printed proposal against the tool
+  calls it came from. The wallet integration does not import proposals yet.
+- **A user-run path** for every other grant: generate and verify the policy locally, upload it
+  and deploy it by its verified Wasm hash with the user's own key, bind it, rerun the authority
+  check, confirm a new card that includes the authority list, then
+  `assemble_install_transaction` for an unsigned draft. That draft still needs a wallet that
+  validates it, builds the owner authorization and enforce-simulates before signing
+  ([`docs/INSTALL-ASSEMBLY.md`](INSTALL-ASSEMBLY.md)).
+
+**Do not pre-approve `prepare_install_intent`, `assemble_install_transaction` or
+`capture_target`** — not with a Claude Code permission rule, `--allowedTools`, or a skill's
+`allowed-tools`. Neither the plugin nor the skills do, and a test keeps it that way. Each call
+should prompt, so a person sees every request that reads the account for an install or carries
+a confidential envelope.
+
+`scripts/check-agent-transcript.py` reads a session's JSON lines: `claude -p --output-format
+stream-json --verbose` output (with `--input-format stream-json --replay-user-messages` for a
+multi-turn run, so the user's turns are in it) or a session log. It works on the structured
+sequence of user turns, tool calls and results, and exits 1 on a synthesis whose decisions were
+not restated to the user and plainly accepted, a delegate the user never wrote, a handoff
+without a complete card and confirmation, the agent invoking the install skill, a command naming
+the Stellar CLI with a signing, submitting, deploying or key verb (a search for them included),
+a tool touching the CLI's key store, a secret seed, an affirmative "safe" about the account or
+grant, or a proposal whose values are not the tools' latest. "Not safe" passes. Its card,
+confirmation and safety checks read English, as the skill asks. A pass says the session kept
+these rules, not that the grant is what the user wanted.
 
 ### Two more things worth trying
 
@@ -96,8 +157,8 @@ which saves a confusing failure.
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
 | `record_simulation` | the network, but no signature and no custody: record mode asks what an *unsigned* envelope would require. This is the path the demo script uses |
 | `preflight_transaction` | the network and an exact envelope carrying its intended authorization entries; enforcement mode returns the endpoint-reported simulation outcome and ledger, names each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and lists declared instructions or fee below the endpoint's padded estimate as advice that never changes the outcome. It does not prove that a particular installed policy was selected, and writes are discarded. Discarded writes do not make it harmless: signed authorization entries are live authorizations that anyone who sees the envelope — the RPC endpoint, this transcript — can submit until their `signatureExpirationLedger`, and simulation does not consume their nonce. Use testnet or a short expiration, a trusted endpoint, and the stdio server; a hosted server refuses signed envelopes |
-| `capture_target` | an RPC source the operator configured in `OZPB_RPC_SOURCES_JSON` (the request names it and its network, never a URL; `scripts/mcp-server-dev.sh` configures none), and an unsigned envelope whose only call is a native Stellar Asset Contract `transfer` from the contract account to an existing G recipient. Returns the `rpc_reported` target capture the native worker's captured-target layer reads; its record-mode simulation is acquisition only, not evidence that a policy permits the call. Any other call is refused with `E_UNSUPPORTED_ENVELOPE`; a failed simulation of the call returns `E_TARGET_REFUSED`, archived call state `E_TARGET_ARCHIVED`. The envelope is confidential input: no result or error echoes it, but it reaches the endpoint and this transcript, and the capture repeats its call (account, recipient, amount), so prefer the CLI or a local stdio server. It does not run the captured-target layer |
-| `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap. Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
+| `capture_target` | an RPC source the operator configured in `OZPB_RPC_SOURCES_JSON` (the request names it and its network, never a URL; `scripts/mcp-server-dev.sh` configures one, `testnet`), and an unsigned envelope whose only call is a native Stellar Asset Contract `transfer` from the contract account to an existing G recipient. Returns the `rpc_reported` target capture the native worker's captured-target layer reads; its record-mode simulation is acquisition only, not evidence that a policy permits the call. Any other call is refused with `E_UNSUPPORTED_ENVELOPE`; a failed simulation of the call returns `E_TARGET_REFUSED`, archived call state `E_TARGET_ARCHIVED`. The envelope is confidential input: no result or error echoes it, but it reaches the endpoint and this transcript, and the capture repeats its call (account, recipient, amount), so prefer the CLI or a local stdio server. It does not run the captured-target layer |
+| `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap (or an explicit `unlimited_calls_acknowledged: true` instead of one). Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
 | `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |
 | `verify` | the spec, selected rule, complete generated non-lock files, claimed Wasm and BuildManifest; reports reproduction and evidence limits separately |
@@ -154,7 +215,15 @@ Three of those arguments are worth a word each:
   and `record_simulation` return exactly this shape, so an agent that just recorded something
   already holds it.
 - **`decisions`** stays required. The signer set, the lifetime and the call cap are what the
-  grant *is*; a default would mean the toolkit decided how much authority to hand out.
+  grant *is*; a default would mean the toolkit decided how much authority to hand out. That
+  includes leaving a cap out: since v0.2.0, `max_calls: null` alone is refused with an
+  `E_NEEDS_DECISION` finding, and an uncapped grant also needs
+  `unlimited_calls_acknowledged: true`, as a grant that never expires needs
+  `no_expiry_acknowledged: true`. An absent acknowledgement reads as `false`; a cap together
+  with it, or an expiry ledger together with `no_expiry_acknowledged: true`, is refused as
+  contradictory with an `E_INVALID_DECISION` finding. The findings are in the error's
+  `details`; the top-level code is the first one's. This is a breaking change for decisions
+  documents that relied on a null cap ([release notes](release-notes/v0.2.0.md)).
 - **`spending_limit_capability: "pinned"`** opts in to composing OpenZeppelin's reviewed
   spending-limit policy without transcribing its hash. It is an opt-in rather than a default:
   composing a reviewed third-party contract into a grant is a decision too. Omit it and a
@@ -280,7 +349,8 @@ not a smart account executing a policy, which is a different and stronger claim 
 with the harness.
 
 The `policy-builder` skill guides the available tools through an artifact and evidence
-summary and, once the policies are deployed, the advisory authority check and install intent;
-it never signs or installs. Its layer-1 reference suite is not the full contract/live dry run.
-The complete dry-run report, wallet install flow, and a deployed hosted endpoint remain
-scheduled work.
+summary and, once the policies are deployed, the advisory authority check, install intent and
+dry-run preparation, then asks for confirmation; the install skill hands the confirmed grant
+off. Neither signs or installs. Its layer-1 reference suite is not the full contract/live dry
+run. The complete dry-run report, wallet install flow and proposal import, and a deployed
+hosted endpoint remain scheduled work.

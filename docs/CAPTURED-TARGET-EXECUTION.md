@@ -11,8 +11,8 @@ resource check, or live-network acceptance, and its result is always `complete: 
 
 ## Supported scope
 
-The native worker's scope applies (one rule, one delegated Ed25519 G signer, one generated
-policy). In addition the rule must have exactly one allowed call, `transfer(SELF, recipient,
+The native worker's scope applies (the selected rule only, with one delegated Ed25519 G signer
+and exactly one generated policy). In addition the rule must have exactly one allowed call, `transfer(SELF, recipient,
 amount)` on the source network's native SAC, with the amount fixed by `eq_i128`. The captured
 call must be exactly the candidate's derived original call: the candidate account as sender, an
 existing G recipient, and a positive amount below `i64::MAX`. Other targets, functions, argument
@@ -117,10 +117,14 @@ The CLI sets no overall deadline: each of its at most eight requests is bounded 
 transport's 30 s timeout. On an MCP server the 300 s deadline ends the wait, not the read; a
 hosted server's slot stays held until the read itself stops.
 
-Producing a capture does not run this layer. No CLI or MCP command runs it yet, and
-`prepare_dry_run` still reports `captured_target` as unavailable. The local
-[Pollywallet backend](POLLYWALLET-INTEGRATION.md#captured-target-execution) runs it for a
-reviewed grant.
+Producing a capture does not run this layer, and `prepare_dry_run` still reports
+`captured_target` as unavailable. `ozpb dry-run --capture-request` runs it: it captures through
+the same code and operator source, builds the job at the capture's ledger, runs
+`--prepare-captured` and `--captured` with its own offline-domain signer, and reports the layer
+([running the layers from the CLI](NATIVE-EXECUTION.md#running-the-layers-from-the-cli)). A
+requested capture that does not complete fails the layer. No MCP command runs it.
+The local [Pollywallet backend](POLLYWALLET-INTEGRATION.md#captured-target-execution) also runs it
+for a reviewed grant.
 
 ## Preparation
 
