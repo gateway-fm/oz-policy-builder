@@ -239,3 +239,17 @@ native fixture and, through a local endpoint replaying the recorded testnet capt
 captured layer. It needs `OZPB_REGISTRY_SNAPSHOT_ROOT` set to the root of
 `docs/examples/registry.signed.json`; `OZPB_ACCOUNT_WASM`, `OZPB_BIN` and `OZPB_NATIVE_WORKER`
 may reuse existing artifacts.
+
+
+The CLI opens and validates the configured worker, then retains a private executable copy for
+both preparation and execution. Replacing the configured pathname between modes cannot change
+those bytes. This keeps the existing trust requirement: the worker runs with the caller's
+privileges. Pipe cleanup grace begins when the worker process exits, even if a detached child
+still holds stdout open.
+
+Each native boundary case must report its exact derived execution ledger. Delegate signing
+requests are bound to that case's own expiration ledger; control and stateful-sequence requests
+use the original call's ledger. A contract-address delegate is outside the native execution
+scope and is refused before opening a signing-key file. Captured reports require canonical
+state hashes for rollback claims, no refusal code on a permit, and exactly one counter advance
+for a counted permit (or no counter for an uncapped rule).

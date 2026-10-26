@@ -322,7 +322,7 @@ fn run_account_layer(
         &native.binding,
         &native.execution_network_id,
         native.signing_case_ids(),
-        native.signature_expiration_ledgers.clone(),
+        native.signing_expirations.clone(),
     ) else {
         return LayerRun::Refused {
             reason: "signer_refused_binding".into(),
@@ -415,7 +415,18 @@ fn run_captured_layer(
         &expectation.binding,
         &expectation.execution_network_id,
         expectation.signing_case_ids.clone(),
-        expectation.signature_expiration_ledgers.clone(),
+        expectation
+            .signing_case_ids
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    expectation
+                        .observed_ledger
+                        .saturating_add(ozpb_toolkit::dry_run_report::SIGNATURE_WINDOW),
+                )
+            })
+            .collect(),
     ) else {
         return (
             Some(expectation),
@@ -470,7 +481,10 @@ mod tests {
             &binding,
             &network,
             ["case:0", "case:1"].iter().map(|c| c.to_string()).collect(),
-            BTreeSet::from([1064]),
+            ["case:0", "case:1"]
+                .iter()
+                .map(|c| (c.to_string(), 1064))
+                .collect(),
         )
         .unwrap();
         for (id, case) in [(1, "case:0"), (2, "case:1")] {

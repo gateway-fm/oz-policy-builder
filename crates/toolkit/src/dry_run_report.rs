@@ -20,7 +20,7 @@ use ozpb_domain::{
 use ozpb_harness::{Case, EvidenceReport, MutationClass};
 use ozpb_policy_spec::{PolicyRef, PolicySpec, PredicateKind, SignerSpec, StateSpec};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use stellar_xdr::{Limits, ReadXdr, ScString, ScVal};
 
 /// The host the worker pins; a report naming another host is refused.
@@ -422,6 +422,11 @@ fn scoped(input: &DryRunInput) -> Result<(NativeScope, Vec<Case>), &'static str>
     let [SignerSpec::Delegated { address }] = rule.authorization.signers.as_slice() else {
         return Err("the selected rule does not have exactly one delegated signer");
     };
+    if stellar_strkey::ed25519::PublicKey::from_string(address)
+        .map_or(true, |key| key.to_string().as_str() != address.as_str())
+    {
+        return Err("the native worker requires one canonical Ed25519 delegated address");
+    }
     if !matches!(
         rule.authorization.kind,
         PredicateKind::AnyOf | PredicateKind::AllOf | PredicateKind::Threshold { n: 1 }
@@ -497,6 +502,10 @@ pub struct NativeExpectation {
     pub scope: NativeScope,
     pub candidate_context_rule_id: u32,
     pub boundary_cases: usize,
+    /// Exact execution ledger for each derived case, in suite order.
+    pub case_ledgers: Vec<u32>,
+    /// Each signing case is bound to its own ledger; controls/sequences use the original's.
+    pub signing_expirations: BTreeMap<String, u32>,
     pub signature_expiration_ledgers: BTreeSet<u32>,
     /// Exactly the case IDs a correct run asks the delegate to sign: every derived case the
     /// delegate authenticates, every control and, for a capped rule, the call-cap sequence.
@@ -567,6 +576,36 @@ pub fn native_expectation(
         .map(|case| case.context.current_ledger.0.checked_add(SIGNATURE_WINDOW))
         .collect::<Option<BTreeSet<_>>>()
         .ok_or("signature expiry overflow")?;
+    let case_ledgers: Vec<_> = suite
+        .iter()
+        .map(|case| case.context.current_ledger.0)
+        .collect();
+    let original_ledger = suite
+        .iter()
+        .find(|case| case.class == MutationClass::Original)
+        .ok_or("the suite has no original call")?
+        .context
+        .current_ledger
+        .0;
+    let signing_cases = native_signing_cases(&suite, &scope);
+    let signing_expirations = signing_cases
+        .iter()
+        .map(|id| {
+            let ledger = if let Some(index) = id.strip_prefix("case:") {
+                *case_ledgers
+                    .get(index.parse::<usize>().map_err(|_| "invalid case index")?)
+                    .ok_or("invalid case index")?
+            } else {
+                original_ledger
+            };
+            Ok((
+                id.clone(),
+                ledger
+                    .checked_add(SIGNATURE_WINDOW)
+                    .ok_or("signature expiry overflow")?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, &'static str>>()?;
     let job_hash = hash(domains::NATIVE_EXECUTION_JOB, job)?;
     // The worker's synthetic local owner. Its seed is deliberately public (the run hash under
     // its own domain); only its public key is computed here, to bind the initialization.
@@ -614,7 +653,9 @@ pub fn native_expectation(
     let expectation = NativeExpectation {
         binding,
         execution_network_id,
-        signing_cases: native_signing_cases(&suite, &scope),
+        signing_cases,
+        signing_expirations,
+        case_ledgers,
         scope,
         candidate_context_rule_id: input.candidate_context_rule_id,
         boundary_cases: suite.len(),
@@ -752,6 +793,7 @@ pub struct CapturedExpectation {
     pub target_contract: String,
     pub observed_ledger: u32,
     pub amount: i128,
+    pub counter_seed: Option<u32>,
     pub policy_address: String,
     pub policy_code_hash: String,
     pub candidate_context_rule_id: u32,
@@ -797,6 +839,7 @@ pub fn captured_expectation(
         target_contract: scope.target_contract.clone(),
         observed_ledger,
         amount: captured_amount(capture)?,
+        counter_seed: scope.max_calls.map(|_| 0),
         policy_address: scope.policy_address.clone(),
         policy_code_hash: scope.policy_code_hash.clone(),
         candidate_context_rule_id: input.candidate_context_rule_id,
@@ -844,6 +887,8 @@ pub fn captured_expectation(
         scope,
         candidate_context_rule_id: expectation.candidate_context_rule_id,
         boundary_cases: 0,
+        case_ledgers: Vec::new(),
+        signing_expirations: BTreeMap::new(),
         signature_expiration_ledgers: BTreeSet::new(),
         signing_cases: BTreeSet::new(),
     };
@@ -1057,10 +1102,12 @@ fn native_layer(
     }
     if frame.cases.len() != reference.outcomes.len()
         || frame.cases.len() != expectation.boundary_cases
+        || frame.cases.len() != expectation.case_ledgers.len()
         || frame.required_classes != reference.required_classes
         || frame.cases.iter().zip(&reference.outcomes).enumerate().any(
             |(index, (case, outcome))| {
                 case.case_id != format!("case:{index}")
+                    || case.ledger != expectation.case_ledgers[index]
                     || case.label != outcome.label
                     || case.class != outcome.class
                     || case.expected_permit != (outcome.expected == "permit")
@@ -1080,13 +1127,7 @@ fn native_layer(
             let expected_permit = outcome.expected == "permit";
             let refused_by = enforcer(&case.refusal_contract, account, policy);
             let state_unchanged = case.state_before_hash == case.state_after_hash;
-            let seeded = case.counter_before == case.counter_seed
-                && case
-                    .ledger
-                    .checked_add(SIGNATURE_WINDOW)
-                    .is_some_and(|expiry| {
-                        expectation.signature_expiration_ledgers.contains(&expiry)
-                    });
+            let seeded = case.counter_before == case.counter_seed;
             let agree = case.agree
                 && seeded
                 && case.permitted == expected_permit
@@ -1305,7 +1346,10 @@ fn captured_layer(
             );
             let state_unchanged = case.state_before_hash == case.state_after_hash;
             let clean = case.unexpected_changes.is_empty()
+                && is_hash(&case.state_before_hash)
+                && is_hash(&case.state_after_hash)
                 && case.undeclared_reads.is_empty()
+                && case.counter_seed == expectation.counter_seed
                 && case.counter_before == case.counter_seed;
             let agree = case.agree
                 && clean
@@ -1313,6 +1357,11 @@ fn captured_layer(
                 && match code {
                     None => {
                         case.refusal_contract.is_none()
+                            && case.refusal_code.is_none()
+                            && match case.counter_before {
+                                Some(before) => before.checked_add(1) == case.counter_after,
+                                None => case.counter_after.is_none(),
+                            }
                             && case.host_error.is_none()
                             && case.sender_delta == format!("-{amount}")
                             && case.recipient_delta == amount
