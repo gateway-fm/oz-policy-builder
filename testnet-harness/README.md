@@ -63,6 +63,10 @@ path is refused. Executable paths preserve filesystem traversal through symlinks
 so the digest identifies the file the shell selects. A symlinked checkout or reporting
 script still runs the startup checks, finalization and evidence export.
 Cargo mode records the checkout and explicitly leaves the executable hash unavailable.
+Provenance startup requires only Node's built-in modules and Git, so it can run before npm
+dependencies are installed. Evidence validation loads at finalization. If a derived replay
+fails while reading live policies, its unfinished journal can report a partial policy order
+only while no simulation has started; completed evidence always requires the full order.
 These observations describe startup, not changes made to the checkout or executable during
 the run. The exit status is process bookkeeping, not an acceptance verdict.
 

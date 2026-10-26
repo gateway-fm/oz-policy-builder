@@ -8,7 +8,6 @@ import {
 import { delimiter, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { writeEvidence } from './evidence.mjs';
 import { isMainModule } from './cli-entry.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -101,9 +100,14 @@ export function finishRun(runDir, exitCode) {
   });
 }
 
-export function finalizeRun(runDir, exitCode) {
+export async function finalizeRun(runDir, exitCode) {
   finishRun(runDir, exitCode);
-  try { writeEvidence(runDir); }
+  try {
+    // Startup runs before npm ci. Load the exporter's SDK-dependent validation only here,
+    // retaining the same failure bookkeeping if dependencies or export are unavailable.
+    const { writeEvidence } = await import('./evidence.mjs');
+    writeEvidence(runDir);
+  }
   catch (error) {
     // Export failure changes a successful wrapper exit to failure. Keep that in provenance
     // as well; an original failure keeps its own code even if reporting fails too.
@@ -122,7 +126,7 @@ if (isMainModule(import.meta.url)) {
     else if (['finish', 'finalize'].includes(action) && /^(0|[1-9][0-9]{0,2})$/.test(code) && Number(code) <= 255) {
       if (action === 'finalize') {
         failureCode = Number(code) || 1;
-        process.exitCode = finalizeRun(runDir, Number(code));
+        process.exitCode = await finalizeRun(runDir, Number(code));
       } else finishRun(runDir, Number(code));
     }
     else throw new Error('usage');

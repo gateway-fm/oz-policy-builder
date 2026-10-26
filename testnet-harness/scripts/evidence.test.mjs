@@ -1487,6 +1487,34 @@ test('a W2 derived-denial replay exports suite identity, predictions and observa
   assert.ok(!JSON.stringify(report).includes(SENTINEL));
 });
 
+test('derived replay exports an early failure with an incomplete policy order only before simulation', async (t) => {
+  for (const status of ['running', 'incomplete']) {
+    for (const order of [[], [D_SPENDING]]) {
+      const { dir } = await w2Derived(t, { mutate: (r) => {
+        Object.assign(r.derived_denials, { status, policy_order: order, originals: [], cases: [] });
+      } });
+      const report = exportEvidence(dir).derived_denials;
+      assert.equal(report.status, status);
+      assert.deepEqual(report.policy_order, order);
+      assert.equal(report.denials_verified, 0);
+    }
+  }
+  for (const change of [
+    (d) => { d.status = 'completed'; },
+    (d) => { d.originals = [{ id: 'case-0', rule_index: 0, status: 'started' }]; },
+    (d, original) => { d.cases = original.cases.slice(0, 1); },
+    (d) => { d.policy_order = [D_SPENDING, D_SPENDING]; },
+    (d) => { d.policy_order = [D_TRANSFER_POLICY]; },
+  ]) {
+    const { dir } = await w2Derived(t, { mutate: (r) => {
+      const original = structuredClone(r.derived_denials);
+      Object.assign(r.derived_denials, { status: 'incomplete', policy_order: [], originals: [], cases: [] });
+      change(r.derived_denials, original);
+    } });
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+  }
+});
+
 test('derived denials refuse an observation, prediction or suite that does not hold', async (t) => {
   const mutations = {
     'observed differs from a verified denial': (r) => { r.derived_denials.cases[1].observed.code = 7; },
