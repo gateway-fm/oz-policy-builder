@@ -204,7 +204,7 @@ fn fixture() -> Fixture {
     };
     Fixture {
         envelope: encode(&envelope),
-        simulation: json!({"latestLedger":LEDGER,"transactionData":encode(&data),"results":[{"xdr":encode(&ScVal::Void),"auth":[encode(&auth)]}]}),
+        simulation: json!({"latestLedger":LEDGER,"transactionData":encode(&data),"minResourceFee":data.resource_fee.to_string(),"results":[{"xdr":encode(&ScVal::Void),"auth":[encode(&auth)]}]}),
         entries: json!({"latestLedger":LEDGER,"entries":([instance,balance,classic,archival,account_instance,account_code].into_iter().map(|entry|json!({"key":encode(&entry.to_key()),"xdr":encode(&entry),"lastModifiedLedgerSeq":999,"liveUntilLedgerSeq":if matches!(entry,LedgerEntryData::ContractData(_)|LedgerEntryData::ContractCode(_)){Some(900000)}else{None}})).collect::<Vec<_>>())}),
         header: json!({"ledgers":[{"sequence":LEDGER,"hash":hash.to_hex(),"ledgerCloseTime":"100000","headerXdr":encode(&header)}]}),
         nonce_key: encode(&nonce),
@@ -662,6 +662,33 @@ fn native_target_capture_classifies_the_simulation_like_preflight() {
             f.simulation["transactionData"] = json!(encode(&data));
         })
     };
+    // A success that restored entries is still malformed if its resource fee is not complete
+    // and consistent. It must remain an endpoint failure, never an archival-state diagnosis.
+    for fee in [
+        None,
+        Some(Value::Null),
+        Some(json!(123)),
+        Some(json!("not-a-fee")),
+        Some(json!("-1")),
+        Some(json!("18446744073709551616")),
+        Some(json!("1")),
+    ] {
+        let mut f = fixture();
+        archived(vec![2])(&mut f);
+        if let Some(fee) = fee {
+            f.simulation["minResourceFee"] = fee;
+        } else {
+            f.simulation
+                .as_object_mut()
+                .unwrap()
+                .remove("minResourceFee");
+        }
+        let error = capture_native_target(&f, NETWORK, &f.envelope).unwrap_err();
+        assert!(
+            matches!(error, RpcError::Malformed(_) | RpcError::Rpc(_)),
+            "{error}"
+        );
+    }
     let refusal = format!("HostError: Error(Contract, #10) balance is not sufficient: {quoted}");
     let preamble = |value: Value| -> Mutation {
         Box::new(move |f: &mut Fixture| f.simulation["restorePreamble"] = value.clone())

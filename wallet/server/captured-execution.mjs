@@ -255,13 +255,17 @@ export const checkCapturedResult = guarded((frame, { prepared, expected, maxCall
   const captured = new Set([keys.instance, keys.balance, keys.recipient]);
   const counterKey = b64(contractKey(policy, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallCount'), new Address(account).toScVal(),
     xdr.ScVal.scvU32(1)]), xdr.ContractDataDurability.persistent));
-  // The SAC may extend its own instance and the sender's balance, and the candidate its own
-  // entries; the worker bounds every extension. Any other SAC entry, and classic entries, which
-  // have no TTL, may not appear.
+  // TTL changes are effects too: only this transfer's SAC entries and the freshly built
+  // account/policy namespace and pinned code may be extended.
   const extensible = (key) => {
     const decoded = decode(key, xdr.LedgerKey);
-    if (decoded.type !== 'contractData') return decoded.type === 'contractCode';
-    return Address.fromScAddress(decoded.contractData.contract).toString() !== SAC || key === keys.instance || key === keys.balance;
+    if (decoded.type === 'contractCode') {
+      const hash = Buffer.from(decoded.contractCode.hash.value).toString('hex');
+      return hash === ACCOUNT_WASM || hash === prepared.policy_code_hash;
+    }
+    if (decoded.type !== 'contractData') return false;
+    const contract = Address.fromScAddress(decoded.contractData.contract).toString();
+    return contract === account || contract === policy || key === keys.instance || key === keys.balance;
   };
   const amount = expected.amount;
   const plan = [

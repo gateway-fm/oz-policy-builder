@@ -185,7 +185,10 @@ fn a_malformed_request_file_is_refused_without_quoting_it() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("line 1"), "{stderr}");
+    assert!(
+        stderr.contains("invalid shape; confidential details withheld"),
+        "{stderr}"
+    );
     assert_not_echoed(&output, &envelope);
     assert_eq!(endpoint.connections(), 0);
 }
@@ -279,4 +282,28 @@ fn a_target_refusal_or_archived_footprint_has_its_own_code() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn a_confidential_envelope_copied_into_the_source_name_is_not_echoed() {
+    let secret = envelope();
+    let mut input = request(&secret);
+    input["rpc_source"] = json!(secret);
+    let endpoint = preflight_rpc::CountingEndpoint::bind();
+    let output = capture(&endpoint.url, &input);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("E_RPC"));
+    assert_not_echoed(&output, &secret);
+    assert_eq!(endpoint.connections(), 0);
+}
+
+#[test]
+fn syntax_locations_survive_without_echoing_confidential_input() {
+    let secret = envelope();
+    let endpoint = preflight_rpc::CountingEndpoint::bind();
+    let output = capture_raw(&endpoint.url, format!("{{\"{secret}\":").as_bytes());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("line 1"));
+    assert_not_echoed(&output, &secret);
+    assert_eq!(endpoint.connections(), 0);
 }
