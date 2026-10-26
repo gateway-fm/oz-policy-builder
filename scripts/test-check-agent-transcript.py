@@ -90,6 +90,18 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change."""
 ANSWER, RESTATE, AGREE, SYNTH, SYNTH_RESULT, CARD_AT, CONFIRM, COMMAND = 4, 5, 6, 7, 8, 11, 12, 13
 
 
+def authority_output():
+    # Full public wire shape, with its grant identity rebound to this synthetic session.
+    output = json.loads((ROOT / "testnet-harness/scripts/fixtures/authority/intent-passkey-owner.json").read_text())["authority"]
+    output["spec_hash"] = SPEC_HASH
+    verdict = output["verdict"]
+    verdict.update(spec_hash=SPEC_HASH, account_address=ACCOUNT, network_id=NETWORK_ID)
+    verdict["grant"].update(rule_index=0, target=TARGET, name=SPEC["name"], valid_until=5000,
+                            signers=[{"kind": "delegated", "address": DELEGATE}])
+    verdict["scope"].update(account=ACCOUNT, targets=[TARGET])
+    return output
+
+
 def proposal(**overrides) -> dict:
     out = {
         "schema": "ozpb-grant-proposal/v1",
@@ -181,6 +193,114 @@ def checks(events) -> set:
 
 def without(events, *indices):
     return [event for i, event in enumerate(events) if i not in indices]
+
+
+class ReviewRegressions(unittest.TestCase):
+    def test_card_function_and_constraints_must_match_at_their_positions(self):
+        for old, new in [("transfer(SELF", "approve(SELF"), ("1000000) on", "999999) on"),
+                         (f"SELF, {RECIPIENT}", f"{RECIPIENT}, SELF")]:
+            card = CARD.replace(old, new) + "\nUnrelated note: transfer, 1000000."
+            self.assertIn("handoff_without_confirmation", checks(session(card=card)))
+
+    def test_widening_requires_its_exact_target_index_operator_value_and_blast_radius(self):
+        widening = {"contract": TARGET, "fn_name": "transfer", "arg_index": 2,
+                    "bound": {"le_i128": {"max": "2000000"}}, "intent": "headroom", "blast_radius": "medium"}
+        decisions = dict(DECISIONS, widenings=[widening])
+        stated = RESTATEMENT + f" Widen {TARGET}.transfer arg[2] to <= 2000000; blast radius: medium; reason: headroom."
+        self.assertNotIn("synthesize_before_decisions", checks(session(decisions=decisions, restatement=stated)))
+        for old, new in [(TARGET, ACCOUNT), ("arg[2]", "arg[1]"), ("<=", ">="),
+                         ("2000000", "1000000"), ("medium", "low")]:
+            self.assertIn("synthesize_before_decisions", checks(session(decisions=decisions,
+                restatement=stated.replace(old, new))))
+        unlimited = dict(widening, bound="any_value", blast_radius="high")
+        self.assertIn("synthesize_before_decisions", checks(session(decisions=dict(DECISIONS, widenings=[unlimited]),
+            restatement=stated.replace("medium", "high"))))
+
+    def test_intervening_user_message_invalidates_the_card_not_only_confirmation(self):
+        events = session()
+        events[COMMAND:COMMAND] = [user("Change the amount."), user("confirm")]
+        self.assertIn("handoff_without_confirmation", checks(events))
+
+    def test_failed_synthesis_cannot_revive_the_previous_spec(self):
+        events = session()[:-1] + [say(RESTATEMENT), user("yes"),
+            call("retry", MCP + "synthesize_policy", {"bundles": [BUNDLE], "decisions": DECISIONS}),
+            result("retry", {"code": "E_NEEDS_DECISION"}, True), say(CARD), user("confirm"), handoff()]
+        self.assertIn("handoff_without_confirmation", checks(events))
+        self.assertIn("proposal_provenance", checks(events))
+
+    def test_failed_or_unreadable_authority_does_not_enable_assembly(self):
+        listed = CARD.replace(NOT_READ, f"rule 0 (owner): {DELEGATE} must sign.")
+        for payload, error in [({"code": "E_RPC"}, True), ({"summary": "not a verdict"}, False)]:
+            events = session()[:-1] + [call("a1", MCP + "check_policy_call_surface", {"spec": SPEC, "rule_index": 0}),
+                result("a1", payload, error), say(listed), user("confirm"),
+                call("a2", MCP + "assemble_install_transaction", {"intent_request": {}})]
+            self.assertIn("handoff_without_confirmation", checks(events))
+
+    def test_authority_must_match_the_current_grant_without_blocking_findings(self):
+        listed = CARD.replace(NOT_READ, f"rule 0 (owner): {DELEGATE} must sign.")
+        mutations = [
+            lambda p: p.update(spec_hash=OLD_SPEC_HASH),
+            lambda p: p["verdict"].update(spec_hash=OLD_SPEC_HASH),
+            lambda p: p["verdict"].update(account_address=TARGET),
+            lambda p: p["verdict"].update(network_id="00" * 32),
+            lambda p: p["verdict"]["grant"].update(rule_index=1),
+            lambda p: p["verdict"]["grant"].update(target=ACCOUNT),
+            lambda p: p["verdict"]["grant"].update(valid_until=6000),
+            lambda p: p["verdict"].update(refusals=[{"reason": "blocked"}]),
+            lambda p: p["verdict"].update(unresolved=[{"reason": "unknown"}]),
+        ]
+        for mutate in mutations:
+            payload = authority_output(); mutate(payload)
+            events = session()[:-1] + [call("a1", MCP + "check_policy_call_surface", {"spec": SPEC, "rule_index": 0}),
+                result("a1", payload), say(listed), user("confirm"),
+                call("a2", MCP + "assemble_install_transaction", {"intent_request": {}})]
+            self.assertIn("handoff_without_confirmation", checks(events))
+
+    def test_bound_operator_is_attached_to_its_argument_on_the_card(self):
+        spec = copy.deepcopy(SPEC)
+        spec["rules"][0]["allowed_calls"][0]["args"][2]["c"] = {"le_i128": {"max": "1000000"}}
+        correct = CARD.replace("1000000) on", "<= 1000000) on")
+        self.assertNotIn("handoff_without_confirmation", checks(session(spec=spec, card=correct)))
+        for card in [CARD, correct.replace("<=", ">="), correct.replace("<= 1000000", "<= 2000000")]:
+            self.assertIn("handoff_without_confirmation", checks(session(spec=spec, card=card)))
+
+    def test_readable_shell_proposals_pass_and_unverifiable_writes_refuse(self):
+        events = session()[:-1] + [call("write", "Bash", {"command": "cat > proposal.json <<'EOF'\n" + json.dumps(proposal()) + "\nEOF"})]
+        self.assertEqual(check(events), [])
+        events[-1] = call("write", "Bash", {"command": "generate --schema ozpb-grant-proposal/v1 > proposal.json"})
+        self.assertIn("proposal_provenance", checks(events))
+
+    def test_file_proposal_content_must_be_readable(self):
+        events = session()[:-1] + [call("write", "Write", {"file_path": "proposal.json",
+            "content": "{'schema': 'ozpb-grant-proposal/v1', 'spec_hash': 'forged'}"})]
+        self.assertIn("proposal_provenance", checks(events))
+
+    def test_shell_transformations_cannot_vouch_for_the_literal_they_rewrite(self):
+        command = "cat <<'EOF' | sed 's/" + SPEC_HASH + "/" + OLD_SPEC_HASH + "/g' > proposal.json\n" + json.dumps(proposal()) + "\nEOF"
+        events = session()[:-1] + [call("write", "Bash", {"command": command})]
+        self.assertIn("proposal_provenance", checks(events))
+
+    def test_an_earlier_heredoc_delimiter_cannot_hide_a_rewrite(self):
+        command = "cat > proposal.json <<'EOF'\n" + json.dumps(proposal()) + "\nEOF\nsed -i 's/" + SPEC_HASH + "/" + OLD_SPEC_HASH + "/g' proposal.json\n: <<'EOF'\nEOF"
+        events = session()[:-1] + [call("write", "Bash", {"command": command})]
+        self.assertIn("proposal_provenance", checks(events))
+
+    def test_assembly_request_is_bound_to_the_reviewed_authority_request(self):
+        listed = CARD.replace(NOT_READ, f"rule 0 (owner): {DELEGATE} must sign.")
+        request = {"spec": SPEC, "rule_index": 0}
+        for field in ["spec", "rule_index"]:
+            other = copy.deepcopy(request)
+            if field == "spec": other["spec"]["rules"][0]["allowed_calls"][0]["args"][2]["c"]["eq_i128"]["value"] = "999999999"
+            else: other["rule_index"] = 1
+            events = session()[:-1] + [call("a1", MCP + "check_policy_call_surface", request),
+                result("a1", authority_output()), say(listed), user("confirm"),
+                call("a2", MCP + "assemble_install_transaction", {"intent_request": other})]
+            self.assertIn("handoff_without_confirmation", checks(events))
+
+    def test_shell_written_proposals_are_checked_for_provenance(self):
+        forged = json.dumps(proposal(spec_hash="ef" * 32))
+        events = session()[:-1] + [call("write", "Bash", {"command": "cat > proposal.json <<'EOF'\n" + forged + "\nEOF"})]
+        self.assertIn("proposal_provenance", checks(events))
 
 
 class Decisions(unittest.TestCase):
@@ -352,7 +472,7 @@ class Confirmation(unittest.TestCase):
             card = CARD.replace("**High blast radius:** none.", f"**High blast radius:** {entry}")
             self.assertIn("handoff_without_confirmation", checks(session(spec=spec, card=card)),
                           entry)
-        flagged = CARD.replace("**High blast radius:** none.",
+        flagged = CARD.replace("1000000) on", "any_value) on").replace("**High blast radius:** none.",
                                "**High blast radius:** argument 2 accepts any value "
                                "(adapter-derived: router).")
         self.assertNotIn("handoff_without_confirmation", checks(session(spec=spec, card=flagged)))
@@ -392,11 +512,11 @@ class Confirmation(unittest.TestCase):
         self.assertIn("proposal_provenance", checks(events))
 
     def authority(self, tool_id):
-        return [call(tool_id, MCP + "check_policy_call_surface", {"rule_index": 0}),
-                result(tool_id, {"summary": "who can change the account"})]
+        return [call(tool_id, MCP + "check_policy_call_surface", {"spec": SPEC, "rule_index": 0}),
+                result(tool_id, authority_output())]
 
     def assembly(self, tool_id):
-        return call(tool_id, MCP + "assemble_install_transaction", {"intent_request": {}})
+        return call(tool_id, MCP + "assemble_install_transaction", {"intent_request": {"spec": SPEC, "rule_index": 0}})
 
     def test_assembly_needs_a_confirmed_card_listing_the_authority(self):
         listed = CARD.replace(NOT_READ, f"rule 0 (owner): {DELEGATE} must sign.")
@@ -419,7 +539,8 @@ class Confirmation(unittest.TestCase):
         self.assertIn("handoff_without_confirmation", checks(resynthesized))
         events[-1] = call("t6", "Bash", {"command": "ozpb assemble-install-transaction "
                                                     "--request r.json"})
-        self.assertNotIn("handoff_without_confirmation", checks(events))
+        self.assertIn("handoff_without_confirmation", checks(events),
+                      "a shell request file cannot be bound to the reviewed tool input")
         self.assertIn("handoff_without_confirmation", checks(events[:-3] + [events[-1]]))
 
     def test_the_model_never_invokes_the_install_skill(self):

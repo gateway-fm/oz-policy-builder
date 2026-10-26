@@ -123,6 +123,10 @@ Even when the user gave some decisions up front, restate the complete decisions 
 to send (every delegate address in full, the grant name, the expiry ledger or "no expiry", the
 cap or "unlimited", each widening and any spending limit) and wait for the user to accept them
 before calling `synthesize_policy`. If the reply changes or refuses anything, restate again.
+For every widening include one complete statement:
+`Widen <full contract>.<function> arg[<index>] to <bound>; blast radius: <low|medium|high>; reason: <intent>.`
+Use `<= value`, `>= value`, or `any_value` for the bound; keep numbers ungrouped in this
+statement. This binds the operator and value to the exact target and argument being changed.
 Copy delegate addresses exactly as the user wrote them.
 
 `synthesize_policy` returns no list of questions. A missing decision is refused with
@@ -260,6 +264,11 @@ must sign, plus every refusal and unresolved item; or "not read: <why>"
 Reply "confirm" to hand off exactly this grant, or tell me what to change.
 ```
 
+- **Permitted** writes each call as `function(arg0, arg1, ...) on <full contract address>`.
+  Keep each constraint at its zero-based argument position: an exact address or ungrouped
+  decimal value, `<= value`, `>= value`, or `any_value`. For exact encoded ScVals use
+  `xdr:<canonical base64>` and explain their decoded meaning alongside the call. A number
+  elsewhere on the card does not describe the argument. Repeat the form for every call.
 - **High blast radius** lists every `any_value` argument, whether user-widened or
   adapter-derived. An adapter derives `any_value` for a caller-chosen argument such as a swap
   deadline; its provenance names the adapter but carries no blast-radius field, and accepting
