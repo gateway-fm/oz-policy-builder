@@ -11,6 +11,21 @@ use ozpb_api_types::{CaptureTargetOutput, ErrorCode as EC, ToolError};
 use ozpb_domain::TargetCapture;
 use ozpb_source_rpc::RpcError;
 
+/// Resolve the configured source without echoing any request field. Even a source name can
+/// carry a copied confidential envelope; keep the refusal category but discard its detail.
+pub fn resolve_capture_rpc_source<'a>(
+    sources: &'a std::collections::BTreeMap<String, crate::RpcSource>,
+    name: &str,
+    network_id: &str,
+) -> Result<&'a crate::RpcSource, ToolError> {
+    crate::resolve_rpc_source(sources, name, network_id).map_err(|error| {
+        ToolError::new(
+            error.code,
+            "capture-target RPC source refused; request details withheld",
+        )
+    })
+}
+
 /// The capture as the tool's output, or the refusal under its stable code: the caller's
 /// envelope as an input code (`E_RESOURCE_LIMIT`, `E_ENVELOPE_PARSE`, `E_UNSUPPORTED_ENVELOPE`,
 /// the last for any call other than a native SAC exact-amount transfer), a source on another
