@@ -470,3 +470,35 @@ test('a removal the fee payer refused before sending stays available; one that m
     }
   }
 });
+
+
+test('assembly taking too long refuses before releasing an install action or recording an obligation', async () => {
+  const f = await installable();
+  await verified(f);
+  const authority = f.toolchain.authority;
+  f.toolchain.authority = async (...args) => {
+    if (args[0] === 'assemble-install-transaction') f.state.ledger = CAPTURE_LEDGER + INSTALL_EVIDENCE_MAX_AGE_LEDGERS + 1;
+    return authority(...args);
+  };
+  await assert.rejects(f.actions.assemble({ reviewId: f.review.reviewId }), /refused/);
+  assert.equal(assembles(f).length, 1, 'the pre-assembly evidence was still recent');
+  assert.equal(f.obligations.length, 0);
+  assert.equal(f.submissions.length, 0);
+});
+
+
+test('the final snapshot cannot make assembly authority stale or move the release clock backwards', async () => {
+  for (const delta of [13, -1]) {
+    const f = await installable();
+    await verified(f);
+    const read = f.network.liveState;
+    f.network.liveState = async (...args) => {
+      const result = await read(...args);
+      if (assembles(f).length) f.state.ledger += delta;
+      return result;
+    };
+    await assert.rejects(f.actions.assemble({ reviewId: f.review.reviewId }), /refused/, `clock delta ${delta}`);
+    assert.equal(f.obligations.length, 0);
+    assert.equal(f.submissions.length, 0);
+  }
+});

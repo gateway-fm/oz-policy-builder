@@ -20,7 +20,7 @@ export class WalletController {
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
-    removal: null, busy: false });
+    removal: null, installOwner: null, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }) }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
@@ -28,9 +28,13 @@ export class WalletController {
   }
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
+  // Proposal state may be discarded while an earlier grant still needs recovery or revocation.
   #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null,
-    accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null, livePreview: null, replay: null,
-    installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false, removal: null }); }
+    accountPreview: null, deployPreview: null, samplePreview: null, livePreview: null, replay: null,
+    installPreview: null, revokePreview: null }); }
+  #clearLifecycle() { this.#set({ installation: null, receipt: null, installOwner: null,
+    installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null,
+    revokeAttempted: false, removal: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
@@ -75,6 +79,7 @@ export class WalletController {
   attachWallet(wallet) {
     if (this.#busy || !wallet || ['contractId', 'credentialId', 'publicKey', 'verifier']
       .some((key) => typeof wallet[key] !== 'string' || !wallet[key].length || wallet[key].length > 2048)) throw refused();
+    if (!sameWallet(this.#state.wallet, wallet)) this.#clearLifecycle();
     this.#clear(); this.#clearSample(); this.#set({ wallet });
   }
   async prepareAccount(credential) {
@@ -98,6 +103,7 @@ export class WalletController {
         || result.wallet?.publicKey !== preview.summary.publicKey || !result.wallet?.contractId || !result.wallet?.verifier) throw refused();
       this.#validators.reviewSample({ wallet: result.wallet, descriptor: result.sample,
         ownerRuleXdr: result.sample?.ownerRuleXdr });
+      if (!sameWallet(this.#state.wallet, result.wallet)) this.#clearLifecycle();
       this.#set({ wallet: result.wallet, receipt: result.receipts, sample: result.sample });
     });
   }
@@ -157,8 +163,8 @@ export class WalletController {
     return this.#act(async () => {
       this.#capability('generate');
       const record = this.#state.record;
-      this.#set({ artifact: null, deployment: null, review: null, deployPreview: null, installation: null, receipt: null,
-        livePreview: null, replay: null });
+      this.#set({ artifact: null, deployment: null, review: null, deployPreview: null,
+        installPreview: null, revokePreview: null, livePreview: null, replay: null });
       if (!record) throw refused();
       const selected = copy(parameters);
       const artifact = await this.#request('generate', { ...selected, recordId: record.recordId });

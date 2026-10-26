@@ -564,6 +564,13 @@ export function createWalletActions({ session, toolchain, network, native = null
         ruleId: review.nextRuleId });
       const snapshot = await network.liveState({ account: review.approval.wallet.contractId,
         policy: deployment.response.policyAddress, ruleId: review.nextRuleId });
+      // Assembly and the subsequent reads take time. Recheck the bounded ledger clock before
+      // recording any signing obligation or releasing an owner entry to the browser.
+      const releaseLedger = await clockedLedger(network);
+      installGate({ review, deployment, artifact, currentLedger: releaseLedger });
+      limits.currentLedger = releaseLedger;
+      validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
+      if (releaseLedger + 1 >= checked.maxLedger) refuse();
       const obligation = freezeCopy({ signatureExpirationLedger: checked.expirationLedger, snapshot,
         consentStatementSha256: createHash('sha256').update(JSON.stringify(display)).digest('hex') });
       session.invalidate('install');

@@ -650,3 +650,36 @@ test('the browser asks a busy backend for its status at most 40 times after a lo
   assert.equal(f.pauses.length, 40);
   assert.ok(f.pauses.every((ms) => ms === 3000));
 });
+
+
+test('new recording and generation retain confirmed and uncertain installation recovery for the same wallet', async () => {
+  for (const uncertain of [false, true]) {
+    for (const reset of ['record', 'generate', 'attach']) {
+      const f = fixture();
+      await prepared(f);
+      await f.controller.prepareInstall();
+      if (uncertain) {
+        f.replies.submit = new Error('lost response');
+        await assert.rejects(f.controller.install(), /refused/);
+      } else await f.controller.install();
+      const owner = f.controller.state.installOwner;
+      if (reset === 'record') await f.controller.record(hash('d'));
+      if (reset === 'generate') await f.controller.generate({ grantName: 'grant', delegateAddress: 'delegate', validUntilLedger: 123, maxCalls: 2 });
+      if (reset === 'attach') f.controller.attachWallet({ ...wallet });
+      assert.equal(f.controller.state.installAttempted, true, reset);
+      assert.equal(f.controller.state.installRuleId, 1, reset);
+      assert.deepEqual(f.controller.state.installOwner, owner, reset);
+      f.replies.status = { ...f.replies.status, installations: [{ ...INSTALLATION, removal: null }],
+        capabilities: { ...f.replies.status.capabilities, lifecycle: true } };
+      await f.controller.refreshStatus();
+      assert.equal(f.controller.state.installation.installationId, INSTALLATION.installationId, reset);
+      await f.controller.prepareRevoke();
+      await f.controller.revoke();
+      assert.equal(f.controller.state.removal.status, 'removed', reset);
+      f.controller.attachWallet({ ...wallet, contractId: 'different-wallet' });
+      assert.equal(f.controller.state.installation, null);
+      assert.equal(f.controller.state.installOwner, null);
+      assert.equal(f.controller.state.installAttempted, false);
+    }
+  }
+});
