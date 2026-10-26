@@ -31,10 +31,8 @@ stellar-strkey = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
+tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's process-group kill, the key file's owner check and its no-follow, non-blocking open.
 nix = { workspace = true, features = ["fs"] }
-
-[dev-dependencies]
-tempfile = { workspace = true }

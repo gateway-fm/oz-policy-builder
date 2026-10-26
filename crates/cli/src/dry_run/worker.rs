@@ -74,6 +74,8 @@ const PIPE_GRACE: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug)]
 pub struct Worker {
     executable: PathBuf,
+    // Retain one private byte snapshot across preparation and execution, including clones.
+    _pinned: Arc<tempfile::TempDir>,
     deadline: Duration,
     grace: Duration,
 }
@@ -94,23 +96,58 @@ impl Worker {
         if !executable.is_absolute() {
             return Err("the native worker must be an absolute path");
         }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits());
+        }
+        let mut source = options
+            .open(executable)
+            .map_err(|_| "the native worker cannot be opened")?;
+        let metadata = source
+            .metadata()
+            .map_err(|_| "the native worker cannot be read")?;
+        if !metadata.is_file() {
+            return Err("the native worker is not a regular file");
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let metadata =
-                std::fs::metadata(executable).map_err(|_| "the native worker cannot be read")?;
-            if !metadata.is_file() {
-                return Err("the native worker is not a regular file");
-            }
             if metadata.mode() & 0o022 != 0 {
                 return Err("the native worker is writable by its group or others");
+            }
+            if metadata.mode() & 0o111 == 0 {
+                return Err("the native worker is not executable");
             }
             if metadata.uid() != nix::unistd::getuid().as_raw() && metadata.uid() != 0 {
                 return Err("the native worker is owned by neither the caller nor root");
             }
         }
+        let pinned = tempfile::Builder::new()
+            .prefix("ozpb-worker-")
+            .tempdir()
+            .map_err(|_| "the native worker snapshot cannot be created")?;
+        let snapshot = pinned.path().join("worker");
+        {
+            let mut destination = std::fs::File::create(&snapshot)
+                .map_err(|_| "the native worker snapshot cannot be opened")?;
+            std::io::copy(&mut source, &mut destination)
+                .map_err(|_| "the native worker snapshot cannot be copied")?;
+        } // Close the writable handle before exec (also required by Linux's ETXTBSY rule).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(pinned.path(), std::fs::Permissions::from_mode(0o700))
+                .and_then(|()| {
+                    std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o500))
+                })
+                .map_err(|_| "the native worker snapshot cannot be protected")?;
+        }
         Ok(Self {
-            executable: executable.to_path_buf(),
+            executable: snapshot,
+            _pinned: Arc::new(pinned),
             deadline: DEADLINE,
             grace: PIPE_GRACE,
         })
@@ -218,9 +255,29 @@ impl Worker {
         let (mut stdout_open, mut stderr_open) = (true, true);
         let mut prepared = None;
         let mut result = None;
-        // The watchdog guarantees an event by the deadline, so this wait is bounded.
+        let mut exited = None;
+        let mut exited_at = None;
+        // Observe child exit independently of stdout EOF: a detached descendant may retain
+        // that pipe. Its grace starts when the worker exits, not when the pipe finally closes.
         while refused.is_none() && stdout_open {
-            match received.recv() {
+            if exited.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        exited = Some(status);
+                        exited_at = Some(Instant::now());
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        refused = Some("worker_exit_unavailable");
+                        break;
+                    }
+                }
+            }
+            if exited_at.is_some_and(|at| at.elapsed() >= self.grace) {
+                refused = Some("worker_left_processes_running");
+                break;
+            }
+            match received.recv_timeout(Duration::from_millis(10)) {
                 Ok(Event::Frame(bytes)) => {
                     refused = self
                         .receive(
@@ -238,7 +295,8 @@ impl Worker {
                 Ok(Event::StderrClosed) => stderr_open = false,
                 Ok(Event::Refused(reason)) => refused = Some(reason),
                 Ok(Event::Deadline) => refused = Some("worker_deadline_exceeded"),
-                Err(_) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         drop(stdin);
@@ -251,8 +309,14 @@ impl Worker {
         // Polled rather than waited on, so the deadline still applies to a worker that closed
         // its output but did not exit.
         let status = loop {
+            if let Some(status) = exited {
+                break Ok(status);
+            }
             match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
+                Ok(Some(status)) => {
+                    exited_at = Some(Instant::now());
+                    break Ok(status);
+                }
                 Ok(None) => {
                     if deadline_hit.load(Ordering::SeqCst) {
                         kill_group(group);
@@ -264,7 +328,7 @@ impl Worker {
             }
         };
         // The pipes close when every holder ends; a holder outside the group gets a grace period.
-        let grace_ends = Instant::now() + self.grace;
+        let grace_ends = exited_at.unwrap_or_else(Instant::now) + self.grace;
         while stdout_open || stderr_open {
             let remaining = grace_ends.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -520,6 +584,24 @@ mod tests {
     }
 
     #[test]
+    fn validating_a_worker_fifo_does_not_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("worker.fifo");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR).unwrap();
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(Worker::new(&fifo));
+        });
+        let result = finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("validating a FIFO must not block");
+        assert_eq!(
+            result.unwrap_err(),
+            "the native worker is not a regular file"
+        );
+    }
+
+    #[test]
     fn the_runner_bounds_time_stderr_and_stray_processes_and_keeps_the_exit_status() {
         let dir = tempfile::tempdir().unwrap();
         // A clean preparation: one frame, exit zero.
@@ -600,6 +682,64 @@ mod tests {
             Outcome::Refused("signing_request_refused")
         ));
         assert!(Worker::new(Path::new("relative/worker")).is_err());
+    }
+
+    #[test]
+    fn replacement_after_validation_and_between_modes_never_changes_the_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(
+            dir.path(),
+            "read job; echo '{\"type\":\"prepared\",\"identity\":\"original\"}'; \
+             if [ \"$1\" != \"--prepare\" ]; then echo '{\"type\":\"result\"}'; fi",
+        );
+        let worker = Worker::new(&path).unwrap();
+        let marker = dir.path().join("untrusted-ran");
+        script(dir.path(), &format!("touch '{}'; exit 9", marker.display()));
+        let prepared = run(&worker, Mode::Prepare);
+        assert!(
+            matches!(
+                prepared,
+                Outcome::Exited {
+                    exit: WorkerExit::Success,
+                    ..
+                }
+            ),
+            "{prepared:?}"
+        );
+        // Even replacing the path a second time cannot change execution after preparation.
+        script(dir.path(), &format!("touch '{}'; exit 8", marker.display()));
+        let executed = run(&worker.clone(), Mode::Execute);
+        assert!(
+            matches!(
+                executed,
+                Outcome::Exited {
+                    exit: WorkerExit::Success,
+                    ..
+                }
+            ),
+            "{executed:?}"
+        );
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn a_detached_pipe_holder_is_refused_at_exit_grace_before_the_main_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = Worker::new(&script(
+            dir.path(),
+            "read job; echo '{\"type\":\"prepared\"}'; \
+             /usr/bin/perl -e 'use POSIX; POSIX::setsid(); select(undef,undef,undef,0.8)' & exit 0",
+        ))
+        .unwrap()
+        .with_deadline(Duration::from_secs(5))
+        .with_grace(Duration::from_millis(100));
+        let started = Instant::now();
+        let outcome = run(&worker, Mode::Prepare);
+        assert!(
+            matches!(outcome, Outcome::Refused("worker_left_processes_running")),
+            "{outcome:?}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(650));
     }
 
     #[test]

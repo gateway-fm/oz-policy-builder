@@ -135,6 +135,11 @@ fn expectation(preparation: &DryRunOutput) -> NativeExpectation {
         },
         candidate_context_rule_id: 7,
         boundary_cases: reference(preparation).unwrap().outcomes.len(),
+        case_ledgers: vec![1000; reference(preparation).unwrap().outcomes.len()],
+        signing_expirations: ["case:0", "case:1", "control:signature_bit", "sequence:0"]
+            .iter()
+            .map(|id| (id.to_string(), 1064))
+            .collect(),
         signature_expiration_ledgers: BTreeSet::from([1064]),
         signing_cases: ["case:0", "case:1", "control:signature_bit", "sequence:0"]
             .iter()
@@ -462,6 +467,7 @@ fn captured_layer_counts_its_two_denials_and_never_meets_the_bar_alone() {
         target_contract: contract(9),
         observed_ledger: 1000,
         amount: 1_000_000,
+        counter_seed: Some(0),
         policy_address: policy(),
         policy_code_hash: "cc".repeat(32),
         candidate_context_rule_id: 7,
@@ -523,6 +529,86 @@ fn captured_layer_counts_its_two_denials_and_never_meets_the_bar_alone() {
     assert_eq!(accepted.executed_layers[0].reverted_denials, 2);
     assert!(accepted.original_permitted);
     assert!(!accepted.meets_minimum, "two denials are below the bar");
+
+    for (index, field, value) in [
+        (1, "state_before_hash", json!("")),
+        (1, "state_after_hash", json!("")),
+        (0, "counter_after", json!(0)),
+        (0, "refusal_code", json!(6)),
+    ] {
+        let mut changed = result.clone();
+        changed["cases"][index][field] = value;
+        if field.starts_with("state_") {
+            changed["cases"][index]["state_before_hash"] = json!("");
+            changed["cases"][index]["state_after_hash"] = json!("");
+        }
+        let report = assemble_dry_run_report(
+            &prep,
+            Some(&native),
+            &not_requested(),
+            Some(&captured),
+            &LayerRun::Ran {
+                exit: WorkerExit::Success,
+                result: Some(changed),
+                signed: captured.signing_case_ids.clone(),
+            },
+        );
+        assert_eq!(
+            layer_of(&report, Layer::CapturedTarget).status,
+            Status::Failed,
+            "{field}"
+        );
+    }
+
+    // Counter shape and seed come from the policy, including on the denial cases.
+    for index in 0..3 {
+        for seed in [None, Some(1)] {
+            let mut changed = result.clone();
+            changed["cases"][index]["counter_seed"] = json!(seed);
+            changed["cases"][index]["counter_before"] = json!(seed);
+            changed["cases"][index]["counter_after"] =
+                json!(seed.map(|value| value + u32::from(index == 0)));
+            let report = assemble_dry_run_report(
+                &prep,
+                Some(&native),
+                &not_requested(),
+                Some(&captured),
+                &LayerRun::Ran {
+                    exit: WorkerExit::Success,
+                    result: Some(changed),
+                    signed: captured.signing_case_ids.clone(),
+                },
+            );
+            assert_eq!(
+                layer_of(&report, Layer::CapturedTarget).status,
+                Status::Failed
+            );
+        }
+    }
+    // Uncapped policies legitimately have no counter fields.
+    let mut uncapped = captured.clone();
+    uncapped.counter_seed = None;
+    let mut uncounted = result.clone();
+    for case in uncounted["cases"].as_array_mut().unwrap() {
+        for field in ["counter_seed", "counter_before", "counter_after"] {
+            case[field] = json!(null);
+        }
+    }
+    let report = assemble_dry_run_report(
+        &prep,
+        Some(&native),
+        &not_requested(),
+        Some(&uncapped),
+        &LayerRun::Ran {
+            exit: WorkerExit::Success,
+            result: Some(uncounted),
+            signed: uncapped.signing_case_ids.clone(),
+        },
+    );
+    assert_eq!(
+        layer_of(&report, Layer::CapturedTarget).status,
+        Status::Passed
+    );
 
     // An original that moved another amount does not agree.
     let mut moved = result;
@@ -635,4 +721,42 @@ fn native_scope_refuses_every_bound_the_worker_refuses() {
         spec["rules"][0]["state"] = json!([{"call_count_per_installation": {"max_calls": 513}}]);
     });
     assert!(native_scope(&large_cap).is_err());
+}
+
+#[test]
+fn native_results_cannot_swap_valid_execution_ledgers_between_cases() {
+    let prep = preparation(5);
+    let mut native = expectation(&prep);
+    native.case_ledgers[1] = 1001;
+    native.signature_expiration_ledgers.insert(1065);
+    native.signing_expirations.insert("case:1".into(), 1065);
+    let mut result = worker_result(&prep, &native);
+    result["cases"][1]["ledger"] = json!(1001);
+    assert_eq!(
+        layer_of(
+            &assemble(&prep, &native, ran(&native, result.clone())),
+            Layer::AccountWasm
+        )
+        .status,
+        Status::Passed
+    );
+    result["cases"][0]["ledger"] = json!(1001);
+    result["cases"][1]["ledger"] = json!(1000);
+    assert_eq!(
+        layer_of(
+            &assemble(&prep, &native, ran(&native, result)),
+            Layer::AccountWasm
+        )
+        .status,
+        Status::Failed
+    );
+}
+
+#[test]
+fn contract_delegates_are_outside_native_scope_before_any_key_is_read() {
+    let request = example_request(|spec| {
+        spec["rules"][0]["authorization"]["signers"][0]["delegated"]["address"] =
+            json!(contract(6));
+    });
+    assert!(native_scope(&request).unwrap_err().contains("Ed25519"));
 }
