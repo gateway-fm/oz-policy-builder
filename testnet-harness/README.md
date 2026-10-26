@@ -98,6 +98,10 @@ The export labels the pipeline as `recorded` only when its completion record exi
 RPC acquisition trust separate from the synthesis boundary's `self_supplied` trust and reports
 artifact reproduction separately from current-network preflight. These remain editable local
 observations. Older runs say `not_recorded`; they do not acquire results from the new pipeline.
+
+If a protocol bundle's approval or pre-sign recheck refuses, the local journal records the
+refusal stage and the terminal log includes the redacted reason. No install is signed after
+that refusal. Public evidence reports only the refused status, without diagnostic text.
 Lifecycle records likewise distinguish a confirmed removal transaction, its checked event,
 the rule readback and best-effort policy cleanup. A later readback failure does not erase the
 confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.

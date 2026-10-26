@@ -1132,6 +1132,24 @@ test('an incomplete protocol walkthrough exports its partial journal without com
   assert.equal(report.walkthrough.bundle.cleanup, 'incomplete');
 });
 
+test('a refused bundle exports no local approval stage or diagnostic text', (t) => {
+  const run = protocolFixture();
+  delete run.walkthrough.controls;
+  run.walkthrough.invocations = run.walkthrough.invocations.slice(0, 1);
+  run.walkthrough.bundle.status = 'incomplete';
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  for (const entry of run.walkthrough.bundle.entries) {
+    delete entry.installation;
+    delete entry.readback;
+    delete entry.removal;
+    delete entry.tx.install;
+    entry.authority = { status: 'refused', stage: SENTINEL, reasons: [SENTINEL] };
+  }
+  const report = exportEvidence(setup(t, run));
+  assert.deepEqual(report.walkthrough.bundle.entries[0].authority, { status: 'refused' });
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
 test('a single-rule Blend journal is not labelled with transfer-rule denials', (t) => {
   const run = protocolFixture();
   run.walkthrough.kind = 'blend_claim';
