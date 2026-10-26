@@ -99,13 +99,15 @@ checks that the current grant was confirmed and then prints one of two things:
   Stellar Asset contract, so an upgraded target is refused), each allowed call's function and
   argument constraints, the authorization, the expiry ledger, the call cap and the policy kinds.
   It leaves out when the target code was observed, its role and drift policy, and constraint
-  provenance, which an honest re-acquisition can observe differently. A wallet import is
-  designed to treat it as untrusted: record the transaction again by hash through its own RPC,
+  provenance, which an honest re-acquisition can observe differently. The wallet import
+  treats it as untrusted: record the transaction again by hash through its own RPC,
   synthesize again with its own toolchain from its own decisions document, refuse any projection
   difference, widening or spending limit, and show the delegate, expiry and cap for approval.
   Spec hashes are shown, not required to match. The skill's text is the exact field-by-field
   definition, and `scripts/check-agent-transcript.py` checks a printed proposal against the tool
-  calls it came from. The wallet integration does not import proposals yet.
+  calls it came from. The local wallet accepts the supported native-XLM transfer subset through
+  [Import a grant proposal](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal).
+  Its execution checks require the delegate held by that backend session.
 - **A user-run path** for every other grant: generate and verify the policy locally, upload it
   and deploy it by its verified Wasm hash with the user's own key, bind it, rerun the authority
   check, confirm a new card that includes the authority list, then

@@ -20,7 +20,7 @@ export class WalletController {
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
-    removal: null, installOwner: null, busy: false });
+    removal: null, installOwner: null, proposalReview: null, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }) }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
@@ -29,7 +29,7 @@ export class WalletController {
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
   // Proposal state may be discarded while an earlier grant still needs recovery or revocation.
-  #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null,
+  #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null, proposalReview: null,
     accountPreview: null, deployPreview: null, samplePreview: null, livePreview: null, replay: null,
     installPreview: null, revokePreview: null }); }
   #clearLifecycle() { this.#set({ installation: null, receipt: null, installOwner: null,
@@ -159,11 +159,26 @@ export class WalletController {
       this.#set({ record });
     });
   }
+  async importProposal(text) {
+    return this.#act(async () => {
+      this.#clear();
+      this.#capability('importProposal');
+      const wallet = this.#state.wallet;
+      if (!wallet) throw refused();
+      const proposal = this.#validators.parseGrantProposal(text, wallet.contractId);
+      const result = await this.#request('import-proposal', { proposal: text, wallet });
+      if (typeof result.record?.recordId !== 'string' || !HASH.test(result.record.recordId) || result.record.transactionHash !== proposal.transaction_hash
+        || result.record.accountAddress !== wallet.contractId) throw refused();
+      const review = this.#validators.checkProposalArtifact(proposal, result.artifact);
+      if (Object.keys(review).some(key => result.proposalReview?.[key] !== review[key])) throw refused();
+      this.#set({ record: result.record, artifact: result.artifact, proposalReview: review });
+    });
+  }
   async generate(parameters) {
     return this.#act(async () => {
       this.#capability('generate');
       const record = this.#state.record;
-      this.#set({ artifact: null, deployment: null, review: null, deployPreview: null,
+      this.#set({ artifact: null, deployment: null, review: null, deployPreview: null, proposalReview: null,
         installPreview: null, revokePreview: null, livePreview: null, replay: null });
       if (!record) throw refused();
       const selected = copy(parameters);

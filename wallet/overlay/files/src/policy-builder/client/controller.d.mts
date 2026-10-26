@@ -5,6 +5,7 @@ import type { SampleApproval, SampleDescriptor } from '../shared/sample.mjs';
 import type { ConsentDisplay, LiveOwnerChecked } from '../shared/live-consent.mjs';
 import type { LiveCase } from '../shared/live-enforcement.mjs';
 import type { LiveOwnerSignature } from '../shared/signature.mjs';
+import type { GrantProposal, ProposalReview } from '../shared/proposal.mjs';
 type Details = Readonly<Record<string, unknown>>;
 export interface WalletState {
   readonly busy: boolean;
@@ -32,11 +33,14 @@ export interface WalletState {
   readonly revokePreview: (Details & { display: Details }) | null;
   readonly revokeAttempted: boolean;
   readonly removal: Details | null;
+  readonly proposalReview: ProposalReview | null;
 }
 export class WalletController {
   constructor(options: {
     request(name: string, data: unknown): Promise<unknown>;
     validators: {
+      parseGrantProposal(text: string, accountAddress: string): GrantProposal;
+      checkProposalArtifact(proposal: GrantProposal, artifact: unknown): ProposalReview;
       reviewIntent(input: unknown): Approval;
       validateAssembly(input: unknown): CheckedAssembly;
       reviewSample(input: unknown): SampleApproval;
@@ -68,6 +72,7 @@ export class WalletController {
   cancelSample(): void;
   approveSample(): Promise<void>;
   record(transactionHash: string): Promise<void>;
+  importProposal(text: string): Promise<void>;
   generate(parameters: { delegateAddress: string; validUntilLedger: number; maxCalls: number; grantName: string }): Promise<void>;
   prepareDeploy(): Promise<void>;
   confirmDeploy(): Promise<void>;

@@ -5,6 +5,7 @@ import { StrKey } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
 import { RawJson, parseJsonExact, requestText } from './raw-json.mjs';
 import { runTool } from './tool.mjs';
+import { checkProposalSpec } from '../shared/proposal.mjs';
 
 const NETWORK = 'Test SDF Network ; September 2015';
 const HASH = /^[0-9a-f]{64}$/;
@@ -83,7 +84,7 @@ export class WalletToolchain {
     } catch { refuse(); }
   }
 
-  async generate({ recordId, delegateAddress, validUntilLedger, maxCalls, grantName, currentLedger }) {
+  async generate({ recordId, delegateAddress, validUntilLedger, maxCalls, grantName, currentLedger, proposal }) {
     try {
       const record = this.#get(this.#records, recordId);
       if (this.#artifacts.size >= 8 || !StrKey.isValidEd25519PublicKey(delegateAddress)
@@ -108,6 +109,8 @@ export class WalletToolchain {
         || rule.valid_until?.ledger !== validUntilLedger || JSON.stringify(rule.authorization?.signers) !== JSON.stringify(decisions.delegate_signers)
         || rule.policies?.length !== 1 || rule.policies[0].generated?.kind !== 'gen:scope+count'
         || JSON.stringify(rule.state) !== JSON.stringify([{ call_count_per_installation: { max_calls: maxCalls } }])) refuse();
+      // Imported permissions must match before compilation or retaining a deployable artifact.
+      if (proposal !== undefined) checkProposalSpec(proposal, spec);
       save(join(directory, 'spec.json'), JSON.stringify(spec));
       const reference = await this.#call(directory, 'reference-suite', ['--spec', join(directory, 'spec.json')]);
       if (reference.report?.spec_hash !== synthesis.spec_hash || reference.all_agree !== true || reference.disagreements !== 0
