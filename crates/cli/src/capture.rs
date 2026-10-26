@@ -23,7 +23,8 @@ pub fn run(request: &Path, rpc_sources: &Path) -> Result<()> {
     let sources = std::fs::read_to_string(rpc_sources)
         .with_context(|| format!("reading {}", rpc_sources.display()))?;
     let sources = ozpb_toolkit::rpc_sources_from_json(&sources)?;
-    let source = ozpb_toolkit::resolve_rpc_source(&sources, &input.rpc_source, &input.network_id)?;
+    let source =
+        ozpb_toolkit::resolve_capture_rpc_source(&sources, &input.rpc_source, &input.network_id)?;
     let capture = capture_native_target(
         &HttpTransport::new(source.rpc_url.clone()),
         &source.network_passphrase,
@@ -49,7 +50,9 @@ fn read_request(path: &Path) -> Result<CaptureTargetInput> {
             path.display()
         );
     }
-    serde_json::from_slice(&bytes).map_err(|error| {
+    // Validate syntax separately, without retaining a Value (which would erase duplicate keys).
+    // Typed deserialization then keeps strict fields while withholding all shape-error details.
+    serde_json::from_slice::<serde::de::IgnoredAny>(&bytes).map_err(|error| {
         anyhow::anyhow!(
             "parsing {}: not a capture-target request ({:?} error at line {} column {}; detail \
              withheld because the request carries a confidential envelope)",
@@ -58,6 +61,9 @@ fn read_request(path: &Path) -> Result<CaptureTargetInput> {
             error.line(),
             error.column()
         )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        anyhow::anyhow!("parsing {}: not a capture-target request (invalid shape; confidential details withheld)", path.display())
     })
 }
 

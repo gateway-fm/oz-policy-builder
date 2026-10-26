@@ -48,7 +48,7 @@ pub use install_assembly::{install_assembly_output, install_assembly_request};
 mod preflight;
 pub use preflight::preflight_transaction_output;
 mod target_capture;
-pub use target_capture::capture_target_output;
+pub use target_capture::{capture_target_output, resolve_capture_rpc_source};
 mod policy_check;
 pub use policy_check::{
     finish_policy_check, plan_policy_check_read, policy_check_unavailable, PolicyCheckReadPlan,
