@@ -66,3 +66,7 @@ b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golde
 90792361630c2bc7d5cbaa5f3b217a59cf7fcef0caa396ef380b3313dd794386|wasm-hash|the same source under CLI 27.1.0, kept as the evidence that the CLI alone moves the hash
 9cf2a72a06661da7717acdc4fb83372499bfa527352956a46d99e71163b93ea3|wasm-hash|golden policy under the pinned rustc 1.91.1 and CLI 27.0.0, re-measured after the event field documentation was corrected, since the spec section carries those doc strings; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2 and scripts/recorded-build-inputs.sh, recorded here at full length
 ded75163e31e6ba146d60441e73e95ede5f9520895c69f66351db2e4009f1242|wasm-hash|the Soroswap policy under the same rustc 1.91.1 and CLI 27.0.0, measured in the same sweep as the golden; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2, recorded here at full length
+
+# October 26 wallet proposal-import lifecycle in docs/TESTNET-EVIDENCE-TRANCHE-2.md.
+5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290|testnet-tx|wallet passkey-authorized rule 1 installation at ledger 5402672, October 26 proposal-import run
+d558c505144dadceeefe823c7bd88e0bc22a43d646ff3fbff68c226451495c83|testnet-tx|wallet passkey-authorized rule 1 removal at ledger 5402675, October 26 proposal-import run

@@ -160,6 +160,15 @@ from the toolkit checkout (using the Playwright dependency documented under [Ver
 changed-grant refusal, failed-retry invalidation and size limits. It does not attest to a live
 RPC acquisition, generated-Wasm build or passkey-approved installation of an imported proposal.
 
+The separate [26 October 2026 testnet run](evidence/wallet-proposal-import-testnet-2026-10-26.json)
+exercised a real CLI-to-wallet handoff: independent recording and synthesis, JSON file import,
+wallet-owned recording and regeneration, reproduced generated Wasm, all four verification layers,
+installation and revocation. The agent-side and wallet hashes differed; the permissions matched.
+The replay check cleared after signature expiry, the installed rule read back identical, and
+revocation left the rule absent and the policy marker unset. This used an automated virtual
+passkey and a backend-held delegate: no human clarification or protected approval is attested,
+and no delegated transaction was submitted under the installed rule.
+
 ## Review and consent
 
 1. Create a passkey using Pollywallet's existing authenticator helper, then separately review

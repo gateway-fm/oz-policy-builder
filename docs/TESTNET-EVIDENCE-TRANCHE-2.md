@@ -294,7 +294,45 @@ Four attempts the same day stopped earlier:
 
 Each earlier account read back with its owner rule only (`NextId` 1): nothing was installed.
 
-## 11. Evidence still needed
+## 11. Wallet proposal import, installation and revocation, 26 October 2026
+
+The [allowlisted evidence](evidence/wallet-proposal-import-testnet-2026-10-26.json) records one
+successful automated run from 17:44:43 to 17:49:23 UTC on testnet. The current CLI and wallet
+were built/applied from the clean tracked revision recorded in the file. The native worker was
+a preserved older artifact with unchanged runtime sources, locks and toolchain; its byte digest
+and the source-compatibility limit are recorded separately. No reproducible-build attestation
+is inferred from the executable name.
+
+A fresh wallet `CCW5UOEUJTSJMH5XIZIRO33ZFCN27PR7OOF5BVQERSYLMWKJNIR6O5XK`
+authorized a 0.1-XLM sample transfer. An independent CLI recording and synthesis produced a
+bounded `ozpb-grant-proposal/v1` document using that backend session's automation delegate,
+a one-call cap and expiry ledger 5403229. Playwright uploaded the JSON file
+through the real wallet UI. The wallet recorded the transaction again and regenerated the
+artifact. Both recording and specification hashes differed between the two acquisitions, while
+the backend and browser accepted equal grant permissions. Generation and artifact reproduction
+completed before deployment.
+
+| Step | Recorded observation |
+| --- | --- |
+| Four verification layers | Reference, account-Wasm, captured-target at ledger 5402635 and live enforcement at 5402636 all passed. The live cases permitted the exact transfer and denied one stroop more with policy error 6. |
+| Replay check | The live signatures expired at ledger 5402666; the check reported `unchanged` at 5402667. |
+| Installation | Owner-passkey [transaction 5d35dbfd…](https://stellar.expert/explorer/testnet/tx/5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290) installed rule 1 at ledger 5402672. The account emitted the matching addition event; the rule read back identical and the policy marker was installed. |
+| Revocation | Owner-passkey [transaction d558c505…](https://stellar.expert/explorer/testnet/tx/d558c505144dadceeefe823c7bd88e0bc22a43d646ff3fbff68c226451495c83) removed rule 1 at ledger 5402675. The removal event was verified, the rule read back absent with account error 3000, and policy cleanup reported `not_installed`. |
+
+This is an automated independent CLI-to-wallet handoff with a Chrome virtual authenticator,
+`human_approval_attested: false`. It does not exercise a human clarification or permission-review
+session, protected human approval, or a delegated transaction under the installed rule. The
+four layers retain their distinct local, captured and live-simulation boundaries. Receipts
+and reads are editable local observations of RPC reports, not authenticated ledger proofs.
+The backend and browser stopped after verified removal; this run needed no retries or recovery.
+
+A separate read-only review fetched all eight reported transaction receipts from the public RPC:
+each was `SUCCESS` and its decoded envelope matched the reported hash. The install and removal
+events were independently decoded and checked. A final ledger-entry read at 5402699 found
+`NextId` 2, `Count` 1, owner rule 0 present, rule 1 absent and the policy installation marker
+absent. This post-run check has the same RPC trust and non-atomic observation limits.
+
+## 12. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -303,7 +341,7 @@ two-rule Soroswap swap runs with expiry and per-rule removal; the second include
 transfer rule's own policy.
 
 Phase 2 still needs a human owner's protected approval in the wallet's install and revoke flow
-(section 10 is an automation run), the Blend
+(sections 10 and 11 are automation runs), the Blend
 walkthrough (its position setup is not implemented), a reviewed Soroswap adapter rather than fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
 hosted-service deployment evidence, and the public demonstration/video. The controlled W2 and
 W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.
