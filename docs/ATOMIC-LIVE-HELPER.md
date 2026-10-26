@@ -159,8 +159,10 @@ with a reason. Only `permit` and `deny` are evidence:
   every entry, consumed once. The helper must return the rule the account stored. A simulation
   that would restore archived entries is refused.
 
-A denial needs the `NoTupleMatched` error attributed to the candidate policy inside the asset's
-failed authentication of the account, with no ledger changes. It is read twice: from the printed
+A denial requires a top-level `Auth/InvalidAction` failure and rejects conflicting account
+errors in the printed log or transfer authorization events. It needs the `NoTupleMatched` error
+attributed to the candidate policy inside the asset's failed authentication of the account, with
+no ledger changes. It is read twice: from the printed
 event log as the harness reads it, matched only where the log starts an event so that a value it
 prints verbatim, such as the rule name, cannot pass for one, and from the structured diagnostic
 events. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial and settles
@@ -169,7 +171,7 @@ nothing about the policy, and neither is an account error.
 A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
 address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
 which the RPC returns for a failed simulation too. In the order the host records them, they must
-show one helper call with exactly the approved candidate, then the account's `__check_auth` for the
+show one top-level helper call with exactly the approved candidate, then the account's `__check_auth` for the
 installation and then for the transfer, once each, with that entry's signature payload (which
 covers its nonce and expiry), its signature and its contexts. Only the host's diagnostic events
 count; a contract can emit any topics as a contract event. For a permit every event comes from a

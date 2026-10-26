@@ -71,7 +71,7 @@ export interface RawLiveSimulation {
   readonly events?: readonly string[];
   readonly results?: readonly { readonly xdr: string; readonly auth?: readonly string[] }[];
   readonly stateChanges?: readonly {
-    readonly type: number;
+    readonly type: number | 'created' | 'updated' | 'deleted';
     readonly key: string;
     readonly before: string | null;
     readonly after: string | null;
