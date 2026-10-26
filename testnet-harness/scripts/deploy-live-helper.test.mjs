@@ -1,6 +1,9 @@
 // Offline tests for deploy-live-helper.mjs: every RPC answer below is a mock, nothing is signed
 // for or sent to a network.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -439,4 +442,100 @@ test('a signal deletes the throwaway keys before the process exits with the sign
       assert.deepEqual(proc.exits, [status]);
     }, { proc });
   }
+});
+
+
+test('cancellation stops a signing step and its descendants before deleting keys, with no next step', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ozpb-helper-cancel-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const keysPath = join(dir, 'keys-path');
+  const ready = join(dir, 'ready');
+  const heartbeat = join(dir, 'heartbeat');
+  const next = join(dir, 'next');
+  const childScript = join(dir, 'child.mjs');
+  writeFileSync(childScript, `
+    import { spawn } from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    const grandchild = spawn(process.execPath, ['--input-type=module', '-e',
+      'import { writeFileSync } from "node:fs"; setInterval(() => writeFileSync(process.argv[1], String(Date.now())), 10)',
+      ${JSON.stringify(heartbeat)}], { stdio: 'inherit' });
+    process.on('SIGTERM', () => {});
+    writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+    setInterval(() => {}, 1000);
+  `);
+  const fixture = `
+    import { withThrowawayKeys } from ${JSON.stringify(new URL('./deploy-live-helper.mjs', import.meta.url).href)};
+    import { writeFileSync } from 'node:fs';
+    await withThrowawayKeys(async (secrets, runStep) => {
+      writeFileSync(secrets, 'throwaway fixture key');
+      writeFileSync(${JSON.stringify(keysPath)}, secrets);
+      await runStep(${JSON.stringify(childScript)}, []);
+      writeFileSync(${JSON.stringify(next)}, 'must not run');
+    });
+  `;
+  const parent = spawn(process.execPath, ['--input-type=module', '-e', fixture], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = ''; parent.stderr.on('data', (d) => { stderr += d; });
+  const closed = once(parent, 'close');
+  t.after(() => {
+    parent.kill('SIGKILL');
+    if (existsSync(ready)) {
+      for (const pid of Object.values(JSON.parse(readFileSync(ready, 'utf8')))) {
+        try { process.kill(pid, 'SIGKILL'); } catch {}
+      }
+    }
+  });
+  const deadline = Date.now() + 5000;
+  while (!existsSync(heartbeat) && parent.exitCode === null && Date.now() < deadline) await delay(10);
+  assert.ok(existsSync(heartbeat), `signing child did not start: ${stderr}`);
+  const secrets = readFileSync(keysPath, 'utf8');
+  assert.ok(existsSync(secrets));
+  parent.kill('SIGTERM');
+  const [code] = await closed;
+  assert.equal(code, 143, stderr);
+  assert.equal(existsSync(secrets), false);
+  assert.equal(existsSync(next), false);
+  const last = readFileSync(heartbeat, 'utf8');
+  await delay(100);
+  assert.equal(readFileSync(heartbeat, 'utf8'), last, 'descendant kept running after cancellation');
+});
+
+
+test('repeated cancellation keeps the same-signal handler until the signing child closes', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ozpb-helper-repeat-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const script = join(dir, 'child.mjs');
+  writeFileSync(script, 'setInterval(() => {}, 1000);');
+  const proc = fakeProcess();
+  let keys;
+  await assert.rejects(withThrowawayKeys(async (secrets, runStep) => {
+    keys = secrets;
+    writeFileSync(secrets, 'fixture key');
+    const step = runStep(script, []);
+    proc.emit('SIGTERM', 'SIGTERM');
+    assert.equal(proc.listenerCount('SIGTERM'), 1, 'second signal must not restore default exit');
+    assert.ok(existsSync(secrets), 'keys remain until the child closes');
+    proc.emit('SIGTERM', 'SIGTERM');
+    await step;
+  }, { proc }), /cancelled/);
+  assert.equal(existsSync(keys), false);
+  assert.deepEqual(proc.exits, [143]);
+  assert.equal(proc.listenerCount('SIGTERM'), 0);
+});
+
+
+test('cancellation during a failed spawn still waits for close and cleans up', async () => {
+  const proc = fakeProcess();
+  let keys;
+  await assert.rejects(withThrowawayKeys(async (secrets, runStep) => {
+    keys = secrets;
+    writeFileSync(secrets, 'fixture key');
+    const executable = process.execPath;
+    let step;
+    try { process.execPath = join(secrets, '..', 'missing-node'); step = runStep('unused.mjs', []); }
+    finally { process.execPath = executable; }
+    proc.emit('SIGTERM', 'SIGTERM');
+    await step;
+  }, { proc }), /cancelled/);
+  assert.equal(existsSync(keys), false);
+  assert.deepEqual(proc.exits, [143]);
 });

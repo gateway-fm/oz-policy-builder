@@ -37,7 +37,7 @@
 // simulation request and to nothing else; this script never prints or stores them, and step 5
 // checks that nobody submitted them. This is a harness probe with automation keys;
 // `live_enforcement` stays unavailable.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -320,15 +320,45 @@ const KEY_SIGNALS = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
 export async function withThrowawayKeys(work, { proc = process } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-live-helper-'));
   const remove = () => rmSync(dir, { recursive: true, force: true });
-  const onSignal = (signal) => {
-    remove();
-    proc.exit(128 + KEY_SIGNALS[signal]);
+  let cancelled = false;
+  let active = null;
+  // Each step owns a process group, including any CLI/build descendants. Keep the event loop
+  // available while it runs so cancellation can stop all of them before removing their keys.
+  const runStep = async (script, args) => {
+    if (cancelled) throw new Error('helper run cancelled');
+    if (active) throw new Error('helper steps must run sequentially');
+    const child = spawn(process.execPath, [resolve(HERE, script), ...args], {
+      cwd: ROOT, detached: true, stdio: 'inherit',
+      env: { ...process.env, OZPB_HARNESS_SECRETS: secrets },
+    });
+    const closed = new Promise((done) => {
+      let error;
+      child.once('error', (e) => { error = e; });
+      child.once('close', (status) => done({ status, error }));
+    });
+    active = { child, closed };
+    const result = await closed;
+    active = null;
+    if (cancelled) throw new Error('helper run cancelled');
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`${script} failed (exit ${result.status})`);
   };
-  for (const signal of Object.keys(KEY_SIGNALS)) proc.once(signal, onSignal);
+  const onSignal = (signal) => {
+    if (cancelled) return;
+    cancelled = true;
+    const finish = () => { remove(); proc.exit(128 + KEY_SIGNALS[signal]); };
+    if (!active) { finish(); return; }
+    // No grace period for a signing child: cancellation must not permit another transaction.
+    try { if (Number.isInteger(active.child.pid)) process.kill(-active.child.pid, 'SIGKILL'); }
+    catch (e) { if (e.code !== 'ESRCH') throw e; }
+    // A kill request is not a reaped child. Do not delete its key directory or exit yet.
+    active.closed.then(finish);
+  };
+  for (const signal of Object.keys(KEY_SIGNALS)) proc.on(signal, onSignal);
   const secrets = join(dir, 'keys.json');
   proc.env.OZPB_HARNESS_SECRETS = secrets;
   try {
-    return await work(secrets);
+    return await work(secrets, runStep);
   } finally {
     remove();
     delete proc.env.OZPB_HARNESS_SECRETS;
@@ -374,13 +404,6 @@ async function liveUntil(contract, wasmHash) {
   return { instance_live_until_ledger: of(instance), code_live_until_ledger: of(code) };
 }
 
-function runHarnessStep(script, args, secrets) {
-  const result = spawnSync(process.execPath, [join(HERE, script), ...args], {
-    cwd: ROOT, stdio: 'inherit', env: { ...process.env, OZPB_HARNESS_SECRETS: secrets },
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${script} failed (exit ${result.status})`);
-}
 
 const STELLAR = process.env.OZPB_STELLAR_BINARY || 'stellar';
 
@@ -428,12 +451,12 @@ async function main() {
   const fetched = spawnSync('cargo', ['fetch', '--locked'], { cwd: join(ROOT, 'contracts/golden-transfer-policy'), stdio: 'inherit' });
   if (fetched.error || fetched.status !== 0) throw new Error('cargo fetch --locked for the generated policy failed');
 
-  const report = await withThrowawayKeys(async (secrets) => {
-    runHarnessStep('setup.mjs', ['--run-dir', runDir, '--owner', 'ed25519', '--amount', String(PERMIT_AMOUNT)], secrets);
+  const report = await withThrowawayKeys(async (secrets, runStep) => {
+    await runStep('setup.mjs', ['--run-dir', runDir, '--owner', 'ed25519', '--amount', String(PERMIT_AMOUNT)]);
     let run = rpc.readJson(join(runDir, 'run.json'));
-    runHarnessStep('invoke.mjs', ['--run-dir', runDir, '--signer', 'owner', '--rule', '0', '--amount', run.amount,
-      '--to', run.recipient, '--expect', 'permit', '--bundle', join(runDir, 'import-bundle.json')], secrets);
-    runHarnessStep('synthesis-flow.mjs', ['--run-dir', runDir], secrets);
+    await runStep('invoke.mjs', ['--run-dir', runDir, '--signer', 'owner', '--rule', '0', '--amount', run.amount,
+      '--to', run.recipient, '--expect', 'permit', '--bundle', join(runDir, 'import-bundle.json')]);
+    await runStep('synthesis-flow.mjs', ['--run-dir', runDir]);
     run = rpc.readJson(join(runDir, 'run.json'));
     const spec = parseJsonExact(readFileSync(run.spec, 'utf8'));
     const policyDir = join(runDir, 'policy');
