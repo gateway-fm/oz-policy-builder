@@ -399,6 +399,10 @@ replay check speaks about the account, not the candidate. That is acceptable onl
 installation is disabled. The installation flow must call `requireNoReplay` before it signs, and
 refuse on anything but `unchanged`.
 
+The browser clears the displayed replay result when the wallet, recording or grant changes,
+when authority is reviewed again, and when a new live consent starts, even if that consent fails.
+A refreshed authority review also invalidates any pending live consent preview before signing.
+
 If the browser disconnects during the run, the backend checks for that before each step: it
 signs and simulates nothing further, and records no layer. Signatures already created stay valid
 until N, and the replay obligation stays recorded. The backend serves one live check at a time
