@@ -29,7 +29,7 @@ export class WalletController {
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
   #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null,
-    accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null, livePreview: null,
+    accountPreview: null, deployPreview: null, installation: null, receipt: null, samplePreview: null, livePreview: null, replay: null,
     installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false, removal: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
@@ -157,7 +157,8 @@ export class WalletController {
     return this.#act(async () => {
       this.#capability('generate');
       const record = this.#state.record;
-      this.#set({ artifact: null, deployment: null, review: null, deployPreview: null, installation: null, receipt: null });
+      this.#set({ artifact: null, deployment: null, review: null, deployPreview: null, installation: null, receipt: null,
+        livePreview: null, replay: null });
       if (!record) throw refused();
       const selected = copy(parameters);
       const artifact = await this.#request('generate', { ...selected, recordId: record.recordId });
@@ -197,7 +198,7 @@ export class WalletController {
   }
   async review() {
     return this.#act(async () => {
-      this.#set({ review: null });
+      this.#set({ review: null, livePreview: null, replay: null });
       const { deployment, artifact, wallet } = this.#state;
       if (!deployment || !artifact || !wallet) throw refused();
       const result = await this.#request('review', { deploymentId: deployment.deploymentId, wallet });
@@ -276,7 +277,7 @@ export class WalletController {
   async consentLive() {
     return this.#act(async () => {
       const { review, livePreview } = this.#state;
-      this.#set({ livePreview: null });
+      this.#set({ livePreview: null, replay: null });
       this.#capability('liveCheck');
       if (!review || !livePreview) throw refused();
       const consent = await this.#request('consent-live', { id: livePreview.action.id, statementSha256: livePreview.statementSha256 });

@@ -406,6 +406,10 @@ A passed live layer stays passed in the report even if a later replay check repo
 replay check speaks about the account, not the candidate. Installation therefore refuses unless
 `requireNoReplay` reports `unchanged`, whatever the layer says.
 
+The browser clears the displayed replay result when the wallet, recording or grant changes,
+when authority is reviewed again, and when a new live consent starts, even if that consent fails.
+A refreshed authority review also invalidates any pending live consent preview before signing.
+
 If the browser disconnects during the run, the backend checks for that before each step: it
 signs and simulates nothing further, and records no layer. Signatures already created stay valid
 until N, and the replay obligation stays recorded. The backend serves one live check at a time

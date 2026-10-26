@@ -437,6 +437,59 @@ test('consent required before any live signature: no preview, a different statem
   }
 });
 
+test('wallet and grant resets discard the previous live preview and replay assurance', async () => {
+  for (const reset of ['attach', 'record', 'generate']) {
+    const f = liveFixture();
+    await livePrepared(f);
+    await f.controller.prepareLive();
+    f.replies['check-replay'] = { replay: { status: 'unchanged' } };
+    await f.controller.checkReplay();
+    if (reset === 'attach') f.controller.attachWallet({ ...wallet, contractId: 'other-account' });
+    if (reset === 'record') await f.controller.record(hash('d'));
+    if (reset === 'generate') await f.controller.generate({ delegateAddress: f.replies['create-delegate'].address,
+      maxCalls: 2, validUntilLedger: 123, grantName: 'grant' });
+    assert.equal(f.controller.state.replay, null, reset);
+    assert.equal(f.controller.state.livePreview, null, reset);
+    await assert.rejects(f.controller.consentLive(), /wallet action refused/);
+    assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'consent-live'), false);
+  }
+});
+
+test('refreshing authority invalidates the live preview before success or failure', async () => {
+  for (const valid of [true, false]) {
+    const f = liveFixture();
+    await livePrepared(f);
+    await f.controller.prepareLive();
+    f.replies['check-replay'] = { replay: { status: 'unchanged' } };
+    await f.controller.checkReplay();
+    f.replies.review = { ...f.replies.review, reviewId: 'review2', ...(valid ? {} : { wallet: null }) };
+    if (valid) await f.controller.review();
+    else await assert.rejects(f.controller.review(), /wallet action refused/);
+    assert.equal(f.controller.state.livePreview, null);
+    assert.equal(f.controller.state.replay, null);
+    await assert.rejects(f.controller.consentLive(), /wallet action refused/);
+    assert.equal(f.calls.some(([name]) => name === 'sign' || name === 'consent-live'), false);
+  }
+});
+
+test('a new live consent clears earlier replay assurance even if consent fails', async () => {
+  for (const valid of [true, false]) {
+    const f = liveFixture();
+    await livePrepared(f);
+    f.replies['check-replay'] = { replay: { status: 'unchanged' } };
+    await f.controller.checkReplay();
+    await f.controller.prepareLive();
+    const check = f.validators.checkLiveOwnerEntry;
+    f.validators.checkLiveOwnerEntry = (args) => { assert.equal(f.controller.state.replay, null); return check(args); };
+    if (valid) await f.controller.consentLive();
+    else {
+      f.replies['consent-live'].signatureExpirationLedger++;
+      await assert.rejects(f.controller.consentLive(), /wallet action refused/);
+    }
+    assert.equal(f.controller.state.replay, null);
+  }
+});
+
 test('the automation delegate is available for the live check without the native worker', async () => {
   const f = liveFixture();
   await f.controller.connect();
