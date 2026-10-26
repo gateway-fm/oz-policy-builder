@@ -67,6 +67,24 @@ pub struct DryRunArgs {
     build: BuildConfigArgs,
 }
 
+fn resolve_capture_source(
+    sources: &std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>,
+    capture: &ozpb_api_types::CaptureTargetInput,
+    candidate_network: &str,
+) -> Result<ozpb_toolkit::RpcSource> {
+    if capture.network_id != candidate_network {
+        bail!("the capture request names another network than the candidate");
+    }
+    Ok(
+        ozpb_toolkit::resolve_capture_rpc_source(
+            sources,
+            &capture.rpc_source,
+            &capture.network_id,
+        )?
+        .clone(),
+    )
+}
+
 pub fn run(args: DryRunArgs) -> Result<()> {
     let input: DryRunInput = serde_json::from_value(read_json(&args.request)?)
         .with_context(|| format!("parsing {}", args.request.display()))?;
@@ -100,22 +118,10 @@ pub fn run(args: DryRunArgs) -> Result<()> {
         .as_deref()
         .map(crate::capture::read_request)
         .transpose()?;
-    let capture_source = match &capture_input {
-        Some(capture) => {
-            if capture.network_id != input.candidate.network_id {
-                bail!("the capture request names another network than the candidate");
-            }
-            Some(
-                ozpb_toolkit::resolve_rpc_source(
-                    &sources,
-                    &capture.rpc_source,
-                    &capture.network_id,
-                )?
-                .clone(),
-            )
-        }
-        None => None,
-    };
+    let capture_source = capture_input
+        .as_ref()
+        .map(|capture| resolve_capture_source(&sources, capture, &input.candidate.network_id))
+        .transpose()?;
     let preparation =
         ozpb_toolkit::prepare_dry_run_with_build_config(&input, &trust, &args.build.resolve()?)?;
     let capture = capture_input.zip(capture_source).map(|(capture, source)| {
@@ -460,6 +466,33 @@ mod tests {
     use super::key::KeyFileError;
     use super::signer::tests::{binding, delegate_key, request};
     use super::*;
+
+    #[test]
+    fn capture_source_errors_never_echo_confidential_request_fields() {
+        let secret = "CONFIDENTIAL_CAPTURE_ENVELOPE";
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
+            .0
+            .to_hex();
+        let sources = ozpb_toolkit::rpc_sources_from_json(
+            r#"{"testnet":{"rpc_url":"https://example.invalid","network_passphrase":"Test SDF Network ; September 2015"}}"#,
+        ).unwrap();
+        let mut capture = ozpb_api_types::CaptureTargetInput {
+            network_id: network.clone(),
+            rpc_source: "testnet".into(),
+            envelope_xdr_base64: secret.into(),
+        };
+        assert!(resolve_capture_source(&sources, &capture, &network).is_ok());
+        capture.rpc_source = secret.into();
+        let error = resolve_capture_source(&sources, &capture, &network).unwrap_err();
+        assert!(error.to_string().contains("request details withheld"));
+        assert!(!format!("{error:#}").contains(secret));
+        capture.network_id = secret.into();
+        let error = resolve_capture_source(&sources, &capture, &network).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the capture request names another network than the candidate"
+        );
+    }
 
     #[test]
     fn key_never_appears_in_output_or_evidence() {
