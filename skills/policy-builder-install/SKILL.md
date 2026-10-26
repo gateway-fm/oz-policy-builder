@@ -157,3 +157,11 @@ the spec's `network_id` (`testnet` in the development setup); stop if you cannot
    recorded. A wallet must validate every field, recheck authority, build the owner
    authorization and enforce-simulate before signing (`docs/INSTALL-ASSEMBLY.md`);
    `stellar tx sign` alone does none of that. Say so, and stop.
+
+
+For a transcript-checkable file handoff, use the structured file-write tool with the full JSON
+content, or a single literal `cat > proposal.json <<'EOF'` heredoc ending at `EOF`. Shell pipes,
+substitutions, generators and later commands make the written bytes unverifiable to the checker.
+For unsigned assembly use the structured MCP tool with `intent_request` equal to the successful
+current authority-check request. The checker cannot verify the contents of a CLI request file
+and flags that path for manual review.
