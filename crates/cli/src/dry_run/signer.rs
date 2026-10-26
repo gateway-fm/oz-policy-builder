@@ -16,7 +16,7 @@ use ozpb_toolkit::dry_run_report::{
     live_network_ids, offline_execution_network_id, OfflineBinding, FIRST_DELEGATE_NONCE,
 };
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use stellar_xdr::{
     ContractId, Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs,
     Limits, ReadXdr, ScAddress, ScVal, SorobanAuthorizedFunction, SorobanAuthorizedInvocation,
@@ -70,7 +70,7 @@ pub struct OfflineSigner<'k> {
     account: [u8; 32],
     allowed_cases: BTreeSet<String>,
     used_cases: BTreeSet<String>,
-    expirations: BTreeSet<u32>,
+    expirations: BTreeMap<String, u32>,
     signed: u32,
     failed: bool,
 }
@@ -95,7 +95,7 @@ impl<'k> OfflineSigner<'k> {
         binding: &OfflineBinding,
         claimed_network_id: &str,
         allowed_cases: BTreeSet<String>,
-        expirations: BTreeSet<u32>,
+        expirations: BTreeMap<String, u32>,
     ) -> Result<Self, &'static str> {
         let derived = offline_execution_network_id(binding)?;
         if derived != claimed_network_id {
@@ -107,7 +107,9 @@ impl<'k> OfflineSigner<'k> {
         let account = stellar_strkey::Contract::from_string(&binding.account_address)
             .map_err(|_| "account must be a contract address")?
             .0;
-        if allowed_cases.is_empty() || expirations.is_empty() {
+        if allowed_cases.is_empty()
+            || allowed_cases != expirations.keys().cloned().collect::<BTreeSet<_>>()
+        {
             return Err("a signer needs allowed cases and expiries");
         }
         Ok(Self {
@@ -169,7 +171,7 @@ impl<'k> OfflineSigner<'k> {
             || request.execution_network_id != network
             || !self.allowed_cases.contains(&request.case_id)
             || self.used_cases.contains(&request.case_id)
-            || !self.expirations.contains(&request.expiration_ledger)
+            || self.expirations.get(&request.case_id) != Some(&request.expiration_ledger)
         {
             return Err("the request is not the next one this run may ask for");
         }
@@ -260,6 +262,16 @@ pub(crate) mod tests {
         id: u32,
         case_id: &str,
     ) -> serde_json::Value {
+        request_at(binding, network, id, case_id, 1064)
+    }
+
+    fn request_at(
+        binding: &OfflineBinding,
+        network: &str,
+        id: u32,
+        case_id: &str,
+        expiry: u32,
+    ) -> serde_json::Value {
         let account = stellar_strkey::Contract::from_string(&binding.account_address)
             .unwrap()
             .0;
@@ -278,14 +290,14 @@ pub(crate) mod tests {
         let preimage = HashIdPreimage::SorobanAuthorization(HashIdPreimageSorobanAuthorization {
             network_id: Hash(hex32(network).unwrap()),
             nonce,
-            signature_expiration_ledger: 1064,
+            signature_expiration_ledger: expiry,
             invocation: invocation.clone(),
         });
         serde_json::json!({
             "type": "sign_request", "request_id": id.to_string(), "run_hash": binding.run_hash,
             "case_id": case_id, "delegate_address": binding.delegate_address,
             "execution_network_id": network, "nonce": nonce.to_string(),
-            "expiration_ledger": 1064, "account_digest": hex::encode(digest),
+            "expiration_ledger": expiry, "account_digest": hex::encode(digest),
             "invocation_xdr": invocation.to_xdr_base64(limits()).unwrap(),
             "preimage_xdr": preimage.to_xdr_base64(limits()).unwrap(),
             "digest_hex": ozpb_domain::sha256(&preimage.to_xdr(limits()).unwrap()).to_hex(),
@@ -300,6 +312,40 @@ pub(crate) mod tests {
 
     fn cases(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signing_case_cannot_borrow_another_cases_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = delegate_key(dir.path());
+        let binding = binding(key.address());
+        let derived = offline_execution_network_id(&binding).unwrap();
+        let mut signer = OfflineSigner::new(
+            &key,
+            &binding,
+            &derived,
+            cases(&["case:0", "case:1"]),
+            BTreeMap::from([("case:0".into(), 1064), ("case:1".into(), 1065)]),
+        )
+        .unwrap();
+        assert!(signer
+            .sign(&request_at(&binding, &derived, 1, "case:0", 1065))
+            .is_err());
+        let mut signer = OfflineSigner::new(
+            &key,
+            &binding,
+            &derived,
+            cases(&["case:0", "case:1"]),
+            BTreeMap::from([("case:0".into(), 1064), ("case:1".into(), 1065)]),
+        )
+        .unwrap();
+        assert!(signer
+            .sign(&request_at(&binding, &derived, 1, "case:0", 1064))
+            .is_ok());
+        assert!(signer
+            .sign(&request_at(&binding, &derived, 2, "case:1", 1065))
+            .is_ok());
     }
 
     #[cfg(unix)]
@@ -320,7 +366,7 @@ pub(crate) mod tests {
                 &binding,
                 &derived,
                 cases(&["case:0", "case:1"]),
-                BTreeSet::from([1064]),
+                BTreeMap::from([("case:0".into(), 1064), ("case:1".into(), 1064)]),
             )
             .unwrap()
         };
@@ -371,7 +417,7 @@ pub(crate) mod tests {
             &binding,
             &not_derived,
             cases(&["case:0"]),
-            BTreeSet::from([1064])
+            BTreeMap::from([("case:0".into(), 1064)])
         )
         .is_err());
         assert!(OfflineSigner::new(
@@ -379,7 +425,7 @@ pub(crate) mod tests {
             &binding,
             &testnet,
             cases(&["case:0"]),
-            BTreeSet::from([1064])
+            BTreeMap::from([("case:0".into(), 1064)])
         )
         .is_err());
 
