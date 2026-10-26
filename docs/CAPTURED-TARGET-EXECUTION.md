@@ -113,6 +113,11 @@ Only the shape above is captured. The refusals:
 | any other answer the capture above refuses: an error that is empty, not a string, beside results or a preamble, or at ledger 0 (the endpoint refused before simulating); a preamble preflight would not accept; an entry archived at a ledger other than the simulation's, on both attempts; a non-void simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
 | MCP server, stdio or hosted: not finished within 300 s | during the capture | `E_RESOURCE_LIMIT` |
 
+Request-shape errors use a fixed description before MCP parameter handling can report them.
+Source-resolution errors retain their category while withholding request text, and debug output
+shows only field lengths. This also protects envelope bytes copied into a field name, a wrongly
+typed value, or the source-name field.
+
 The CLI sets no overall deadline: each of its at most eight requests is bounded by the
 transport's 30 s timeout. On an MCP server the 300 s deadline ends the wait, not the read; a
 hosted server's slot stays held until the read itself stops.
@@ -208,3 +213,10 @@ candidate state), twenty preparation refusals including re-hashed headers that d
 ledger, the recorded testnet capture replayed offline, and the full process protocol. The
 nightly pinned-account gate runs it. Refresh the recorded responses deliberately with
 `cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.
+
+
+Captured execution accepts TTL extensions only for the transfer's SAC instance and sender
+balance, the candidate account/policy data namespaces, and their pinned code hashes. Extensions
+of unrelated contract data or code refuse the report. A simulation that reports restored entries
+must first supply a valid `minResourceFee` matching its transaction data; missing, malformed or
+inconsistent fees remain endpoint failures rather than archival-state evidence.

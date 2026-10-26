@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Capture the target state for one unsigned native SAC
 /// `transfer(contract account, existing G recipient, amount)` envelope through an
 /// operator-configured RPC source.
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureTargetInput {
     /// Hex network ID; the named source must be configured for exactly this network.
@@ -26,13 +26,43 @@ pub struct CaptureTargetInput {
     pub envelope_xdr_base64: String,
 }
 
-/// The envelope is confidential, so a debug print of a request shows only its length.
+// Framework parameter parsing happens before the handler can redact errors. An unknown key
+// or a value of the wrong type can contain a copy of the envelope, so erase every parser detail.
+impl<'de> Deserialize<'de> for CaptureTargetInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            network_id: String,
+            rpc_source: String,
+            envelope_xdr_base64: String,
+        }
+        let fields = Fields::deserialize(deserializer).map_err(|_| {
+            <D::Error as serde::de::Error>::custom(
+                "invalid capture-target request; confidential details withheld",
+            )
+        })?;
+        Ok(Self {
+            network_id: fields.network_id,
+            rpc_source: fields.rpc_source,
+            envelope_xdr_base64: fields.envelope_xdr_base64,
+        })
+    }
+}
+
+/// Any request field may contain confidential bytes; debug output shows lengths only.
 impl std::fmt::Debug for CaptureTargetInput {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CaptureTargetInput")
-            .field("network_id", &self.network_id)
-            .field("rpc_source", &self.rpc_source)
+            .field(
+                "network_id",
+                &format_args!("<withheld: {} bytes>", self.network_id.len()),
+            )
+            .field(
+                "rpc_source",
+                &format_args!("<withheld: {} bytes>", self.rpc_source.len()),
+            )
             .field(
                 "envelope_xdr_base64",
                 &format_args!("<withheld: {} bytes>", self.envelope_xdr_base64.len()),
@@ -264,6 +294,40 @@ mod tests {
             "CaptureTargetInput",
             schemars::schema_for!(CaptureTargetInput),
         );
+    }
+
+    #[test]
+    fn malformed_request_errors_never_repeat_keys_or_values() {
+        let secret = "CONFIDENTIAL-COPIED-ENVELOPE";
+        let base = serde_json::json!({
+            "network_id": "00", "rpc_source": "testnet", "envelope_xdr_base64": secret,
+        });
+        let mut variants = Vec::new();
+        let mut unknown = base.clone();
+        unknown[secret] = serde_json::json!(true);
+        variants.push(unknown);
+        for key in ["network_id", "rpc_source", "envelope_xdr_base64"] {
+            let mut nested = base.clone();
+            nested[key] = serde_json::json!({secret: secret});
+            variants.push(nested);
+        }
+        variants.push(serde_json::json!(secret));
+        for value in variants {
+            let error = serde_json::from_value::<CaptureTargetInput>(value)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains(secret), "{error}");
+            assert_eq!(
+                error,
+                "invalid capture-target request; confidential details withheld"
+            );
+        }
+        let input = CaptureTargetInput {
+            network_id: secret.into(),
+            rpc_source: secret.into(),
+            envelope_xdr_base64: secret.into(),
+        };
+        assert!(!format!("{input:?}").contains(secret));
     }
 
     #[test]

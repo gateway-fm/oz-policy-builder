@@ -268,3 +268,41 @@ fn a_target_refusal_or_archived_footprint_has_its_own_code() {
         );
     }
 }
+
+#[test]
+fn malformed_capture_arguments_do_not_echo_any_request_field() {
+    let secret = envelope();
+    let mut unknown = arguments(&secret);
+    unknown[&secret] = json!(true);
+    let mut wrong_type = arguments(&secret);
+    wrong_type["rpc_source"] = json!({&secret: secret});
+    let mut copied_source = arguments(&secret);
+    copied_source["rpc_source"] = json!(secret);
+    let mut copied_network = arguments(&secret);
+    copied_network["network_id"] = json!(secret);
+    for (input, code) in [
+        (unknown, None),
+        (wrong_type, None),
+        (copied_source, Some("E_RPC")),
+        (copied_network, Some("E_NETWORK_MISMATCH")),
+    ] {
+        let endpoint = preflight_rpc::CountingEndpoint::bind();
+        let call = capture_call(&endpoint.url, input);
+        if let Some(code) = code {
+            assert_eq!(call["result"]["isError"], true, "{call}");
+            assert_eq!(call["result"]["structuredContent"]["code"], code, "{call}");
+        } else {
+            assert_eq!(call["result"]["isError"], true, "{call}");
+            assert_eq!(
+                call["result"]["content"],
+                json!([{"type": "text", "text": "failed to deserialize parameters: invalid capture-target request; confidential details withheld"}]),
+                "{call}"
+            );
+        }
+        assert!(
+            !call.to_string().contains(&secret),
+            "response echoed confidential input"
+        );
+        assert_eq!(endpoint.connections(), 0);
+    }
+}
