@@ -448,6 +448,11 @@ function policyDenial(text, asset, account, policy) {
   const raised = new RegExp(`${EVENT}contract:${policy}, topics:\\[error, Error\\(Contract, #(\\d+)\\)\\], `
     + 'data:\\["failing with contract error", (\\d+)\\]', 'm').exec(text);
   if (!authFailed || !raised || raised[1] !== raised[2] || raised[1] !== authFailed[1]) return null;
+  const expected = `Error(Contract, #${raised[1]})`;
+  const accountErrors = [...text.matchAll(new RegExp(`${EVENT}contract:${account}, topics:\\[error, ([^\\n]*?)\\], data:`, 'gm'))];
+  const accountTraps = [...text.matchAll(new RegExp(`${EVENT}contract:${account}, topics:\\[log\\], `
+    + 'data:\\["VM call trapped with HostError", __check_auth, ([^\\n]*?)\\]', 'gm'))];
+  if ([...accountErrors, ...accountTraps].some((event) => event[1] !== expected)) return null;
   return Number(raised[1]);
 }
 
@@ -507,7 +512,7 @@ function authContexts(entry) {
  */
 function requireBinding(c, events, { install, transfer }) {
   const helper = callsInto(events, c.helper, 'install_and_transfer');
-  if (helper.length !== 1 || !same(helper[0].data, helperCall(c).args[0])) {
+  if (helper.length !== 1 || helper[0].by !== null || !same(helper[0].data, helperCall(c).args[0])) {
     fail('unbound_response', 'the response does not record one helper call with exactly the approved candidate');
   }
   const checks = callsInto(events, c.account, '__check_auth');
@@ -536,6 +541,9 @@ function denial(c, simulation, records) {
   if (raisedByHelper !== undefined) {
     fail('helper_refusal', 'the helper refused the case; that settles nothing about the policy', { code: raisedByHelper, host });
   }
+  if (text.split('\n')[0] !== 'HostError: Error(Auth, InvalidAction)') {
+    fail('not_a_policy_denial', 'the top-level failure is not the transfer authentication failure', { host });
+  }
   const code = policyDenial(text, c.asset, c.account, c.policy);
   if (code === null) fail('not_a_policy_denial', 'the candidate policy did not refuse the account\'s authorization', { host });
   if (code !== POLICY_NO_TUPLE_MATCHED) {
@@ -552,6 +560,17 @@ function denial(c, simulation, records) {
   // and the asset then reports the account's failure.
   const authFailed = vec([xdr.ScVal.scvString('failed account authentication with error'), addressVal(c.account), contractError(code)]);
   const checkReturned = returnsOf(events, c.account, '__check_auth').find((e) => e.index > transferCheck);
+  const accountEvents = events.filter((e) => e.host && e.by === contractHex(c.account) && e.index > transferCheck
+    && (!checkReturned || e.index < checkReturned.index));
+  if (accountEvents.some((e) => {
+    if (same(e.topics[0], sym('error'))) return e.topics.length !== 2 || !same(e.topics[1], contractError(code));
+    const data = e.data.type === 'scvVec' ? e.data.vec : [];
+    if (same(e.topics[0], sym('log')) && same(data[0], xdr.ScVal.scvString('VM call trapped with HostError'))
+      && same(data[1], sym('__check_auth'))) return data.length !== 3 || !same(data[2], contractError(code));
+    return false;
+  })) {
+    fail('not_a_policy_denial', 'the account reported a conflicting failure during transfer authorization', { host });
+  }
   const policyError = errorsBy(events, c.policy).find((e) => e.topics[1].error.contractCode === code && e.index > transferCheck
     && (!checkReturned || e.index < checkReturned.index));
   if (!policyError || !events.some((e) => e.host && e.index > policyError.index && e.by === contractHex(c.asset) && e.topics.length === 2

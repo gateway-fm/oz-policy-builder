@@ -700,6 +700,59 @@ test('real responses with one part removed or reordered are refused', () => {
 const realEvents = (name) => REAL[name].simulation.events.map((text) => xdr.DiagnosticEvent.fromXDR(text, 'base64'));
 const encode = (events) => events.map((e) => e.toXDR('base64'));
 
+test('real responses must invoke the helper at the top level', () => {
+  for (const name of ['permit', 'denial']) {
+    const events = realEvents(name);
+    const index = events.findIndex((e) => e.event.body.v0.topics[2]?.sym?.toString() === 'install_and_transfer');
+    const event = events[index];
+    const nested = F.diagnostic(REAL.provenance.account, event.event.body.v0.topics, event.event.body.v0.data,
+      event.inSuccessfulContractCall);
+    const encoded = encode(events);
+    encoded[index] = nested;
+    refused(realCase(name, { ...REAL[name].simulation, events: encoded }), 'unbound_response');
+  }
+});
+
+test('a printed policy denial cannot override a different top-level failure', () => {
+  for (const host of ['HostError: Error(Contract, #3002)', 'HostError: Error(Budget, ExceededLimit)', 'endpoint unavailable']) {
+    const error = REAL.denial.simulation.error.replace(/^[^\n]*/, host);
+    refused(realCase('denial', { ...REAL.denial.simulation, error }), 'not_a_policy_denial');
+  }
+});
+
+test('a policy denial cannot include a contradictory account failure', () => {
+  const account = REAL.provenance.account;
+  const event = F.errorEvent(account, xdr.ScError.sceContract(3016),
+    xdr.ScVal.scvVec([xdr.ScVal.scvString('failing with contract error'), xdr.ScVal.scvU32(3016)]));
+  const line = `\n  99: [Failed Diagnostic Event] contract:${account}, topics:[error, Error(Contract, #3016)], data:["failing with contract error", 3016]`;
+  for (const mode of ['structured', 'printed', 'both']) {
+    const simulation = clone(REAL.denial.simulation);
+    if (mode !== 'printed') simulation.events.splice(18, 0, event);
+    if (mode !== 'structured') simulation.error += line;
+    refused(realCase('denial', simulation), 'not_a_policy_denial', mode);
+  }
+});
+
+for (const kind of ['trap', 'budget']) for (const mode of ['structured', 'printed', 'both']) {
+  test(`account failure propagation must agree with the policy: ${kind}, ${mode}`, () => {
+    const simulation = clone(REAL.denial.simulation);
+    const value = xdr.ScVal.scvError(kind === 'trap' ? xdr.ScError.sceContract(3016)
+      : xdr.ScError.sceBudget(xdr.ScErrorCode.scecExceededLimit));
+    if (mode !== 'printed') {
+      const events = realEvents('denial');
+      events[21].event.body.v0.data.vec[2] = value;
+      if (kind === 'budget') for (const i of [19, 20]) events[i].event.body.v0.topics[1] = value;
+      simulation.events = encode(events);
+    }
+    if (mode !== 'structured') {
+      simulation.error = simulation.error.split('\n').map((line) =>
+        line.includes(`contract:${REAL.provenance.account},`) && (kind === 'budget' || line.includes('VM call trapped with HostError'))
+          ? line.replaceAll('Error(Contract, #6)', kind === 'trap' ? 'Error(Contract, #3016)' : 'Error(Budget, ExceededLimit)') : line).join('\n');
+    }
+    refused(realCase('denial', simulation), 'not_a_policy_denial');
+  });
+}
+
 test('a spliced response is refused: a denial\'s events all come from failed calls', () => {
   // The permit's successful events, then the denial's failure tail from the policy's error on.
   const spliced = [...REAL.permit.simulation.events, ...REAL.denial.simulation.events.slice(16)];
