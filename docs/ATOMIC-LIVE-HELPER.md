@@ -256,7 +256,9 @@ refuses an RPC serving any other network before it builds, funds or signs anythi
    unchanged and that the candidate reports no installation;
 7. only then writes public addresses, hashes, ledgers and outcomes, never keys or signed entries,
    to `docs/evidence/atomic-live-helper-testnet-<date>.json`. It deletes the throwaway keys on
-   success, on failure and on SIGINT, SIGTERM or SIGHUP.
+   success, on failure and on SIGINT, SIGTERM or SIGHUP. A signal stops the active harness
+   subprocess and its process group, waits for the child to close, and then deletes the keys;
+   no later harness step runs. Repeated signals cannot bypass that cleanup.
 
 The [21 October 2026 run](evidence/atomic-live-helper-testnet-2026-10-21.json) deployed the
 helper as `CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V`, which reads back with
