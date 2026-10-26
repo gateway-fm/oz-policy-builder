@@ -545,7 +545,52 @@ Two W3 attempts earlier that day stopped before completing.
    the owner rule, and the keys were deleted at exit. Fixed by the 15-XLM policy upload ceiling
    ([harness README](../testnet-harness/README.md#keys)).
 
-## 14. Evidence still needed
+## 14. Controlled Soroswap adapter run (26 October 2026)
+
+The [allowlisted run summary](evidence/testnet-soroswap-adapter-2026-10-26.json) records a clean checkout at
+`5180152e58f6f94765a652aa4c240fded08b4936`, from 15:02:33 to 15:18:49 UTC, with exit 0.
+The external CLI was built at `cd3a8df2`; no Rust source or build input changed between that
+revision and the run checkout. Its byte digest is retained in the summary. Later provenance
+export fixes were merged after the run; this evidence describes the recorded revision.
+
+This run used development registry version 4's `soroswap-router@1` binding and the committed
+operator decisions: input/transfer cap 1,000,000 stroops, output floor 100,000 units, and an
+explicitly accepted open deadline. Both generated rules had a call cap of one and expiry at
+ledger 5400859. The account was
+`CAWJ7RA2LLQN5BM2CBD3SSZKHMQDZOYLFFPHXYB2IA4I25NDIPNAQFQX`.
+
+| Observation | Recorded result |
+| --- | --- |
+| Owner recording | [Owner swap](https://stellar.expert/explorer/testnet/tx/ca3eede4a691b498f653526c701e307d7b2dc98df87f4aca4f7b433a45ea17ac) confirmed at 5400679; 169317 output units and a matching balance increase. RPC recording, synthesis, the 64-case reference suite and artifact reproduction completed for both policies. |
+| Install | Router rule ID 1 installed at 5400686, after authority checks at 5400684/5400685; transfer rule ID 2 at 5400689, after checks at 5400686/5400687. Both configurations matched their readbacks. |
+| Derived denials | Both originals permitted; all ten live-realizable denials refused by their predicted enforcer/code at 5400690–5400691. The other 31 deny cases stayed offline and 21 other permit cases stayed layer-1 only. |
+| Route and function | Reordered, extended and truncated routes returned router-policy code 6. The alternate router function returned code 5. |
+| Foreign recipient | Recipient authorization refused at 5400694. No policy enforcer/code is attributed to this result. |
+| Disclosed permissions | A different deadline and an independent direct transfer to the pair were permitted in simulations. Neither was submitted; these are permissions the grant allows. |
+| Other controls | Larger input, lower output floor and direct transfer above its cap returned policy code 6; zero signers returned policy code 1; a wrong signer returned account code 3016. |
+| Delegated swap | [Delegated swap](https://stellar.expert/explorer/testnet/tx/92bfb858f95f768c7fd5ce180845d26d4af02bba7c43d8795999762226cee685) confirmed at 5400698; 169317 output units and a matching balance increase. Subsequent swap and direct-transfer attempts returned their respective policies' count-cap code 7. |
+| Expiry | Account code 3002 at 5400861, after the grant's last valid ledger. |
+| Removal | [Transfer rule](https://stellar.expert/explorer/testnet/tx/e7a8202fea1042021013194a7765d9e06a8ec63d20317fa5a481e30bae18f55d) removed at 5400864; [router rule](https://stellar.expert/explorer/testnet/tx/bf08c657dd64b9f4b5854cb661c9c5873f341eb072a3ac98b1f4b60c201ebc40) at 5400867. Each removal event matched, each rule read back absent, and both policies reported not installed. |
+| Post-removal | Account missing-rule code 3000 at 5400868. All 19 control steps completed. |
+
+The 64-case accounting is two original permits, ten verified denials, 31 offline denials and
+21 other permits. The ten verified denials represent five distinct checks under section 13's
+counting convention. Independent read-only checks confirmed all twelve recorded transaction
+receipts and, at ledger 5400935, both rules absent, both policies uninstalled, and the recorded
+account/policy code hashes unchanged. An independent re-export matched the saved summary.
+
+The adapter remains a development-root assertion: the router's deployed Wasm was not
+reproduced from source ([binding review](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+Recording is RPC-reported; synthesis treats its input as self-supplied. These are editable local
+observations with non-atomic reads, not ledger proofs. Approval used operator mode and a
+throwaway ed25519 owner, not a protected wallet approval. The successful exit runs key cleanup;
+there is no separate forensic deletion attestation.
+
+An earlier adapter attempt on 22 October stopped at the pre-sign authority recheck, before
+any grant was installed. Its cleanup reported no installed grants. It is not counted as a
+passing report; refusal stage/reason diagnostics were added before this fresh run.
+
+## 15. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -563,11 +608,10 @@ The W3 runs in sections 9 and 13 used widenings the harness wrote itself and `ev
 router hashes. The harness now takes the router's input bound and open deadline from the
 development registry's `soroswap-router@1` binding, a development-registry assertion whose Wasm
 was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)),
-and the floor and transfer cap from an operator decisions file. No live run has exercised it yet,
-so no section above shows it.
+and the floor and transfer cap from an operator decisions file. Section 14 records the first
+completed live run through that binding, including route, recipient and function controls.
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, a live W3 run through
-the adapter binding, a reviewed Blend adapter rather than an `evidence_only` code observation, the
+Phase 2 still needs a delivered wallet's protected approval and revoke flow, a reviewed Blend adapter rather than an `evidence_only` code observation, the
 remaining harness layers with their actual evidence boundaries, hosted-service deployment
 evidence, and the public demonstration/video. The controlled W1, W2 and W3 runs do not close
 those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

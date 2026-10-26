@@ -15,7 +15,8 @@ Those runs used widenings the harness wrote itself. W3 now takes the router's in
 open deadline from the registry's reviewed adapter, the floor and transfer cap from an operator
 decisions file, and adds route, recipient and function controls. The adapter binding is a
 development-registry assertion, and the router's Wasm was not reproduced from source
-([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)). No live run has exercised that yet.
+([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)). A controlled run on 26 October completed all 19 controls with that binding and ten verified
+derived denials ([section 14](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026)).
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
 2026 completed every W1 step after four stopped attempts
@@ -149,6 +150,8 @@ which moves the authorization off the account, and the suite's undeployed contra
 function, which have no live equivalent here. The adapter leaves the deadline open, so the suite
 has no deadline denial; its cases for the deadline expect a permit and are not replayed. The
 section 13 run predates the adapter and replayed the same ten denials against an exact deadline.
+The [section 14 run](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026)
+uses the adapter-bound 64-case suite and reports the open deadline as a disclosed permission.
 
 **Passing.** A W3 or W1 report passes when the recorded calls are permitted and at least five
 derived denials from that spec's suite are refused by the predicted enforcer. That means the

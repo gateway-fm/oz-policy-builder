@@ -104,3 +104,9 @@ ded75163e31e6ba146d60441e73e95ede5f9520895c69f66351db2e4009f1242|wasm-hash|the S
 # is not the deployed router's. (The deployed hash itself is the committed registry example's key.)
 540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab|upstream-release|rust:1.83.0-slim-bookworm linux/amd64 image digest used for the router rebuild, quoted abbreviated
 c2efe757871b55325e7dd10a10a9fa35b2e298afa5e99e6430973a62f5c7c9cc|wasm-hash|Soroswap router rebuilt from tag v1.0 with rustc 1.83.0 and the soroban-cli 22.0.1 optimizer settings; differs from the deployed router only in internal function order; quoted abbreviated
+
+# Controlled October 26 Soroswap adapter run in docs/TESTNET-EVIDENCE-TRANCHE-2.md.
+ca3eede4a691b498f653526c701e307d7b2dc98df87f4aca4f7b433a45ea17ac|testnet-tx|owner swap at ledger 5400679; independent live readback matched, not derivable by the offline gate
+92bfb858f95f768c7fd5ce180845d26d4af02bba7c43d8795999762226cee685|testnet-tx|delegated swap at ledger 5400698; independent live readback matched, not derivable by the offline gate
+bf08c657dd64b9f4b5854cb661c9c5873f341eb072a3ac98b1f4b60c201ebc40|testnet-tx|rule 1 removal at ledger 5400867; independent live readback matched, not derivable by the offline gate
+e7a8202fea1042021013194a7765d9e06a8ec63d20317fa5a481e30bae18f55d|testnet-tx|rule 2 removal at ledger 5400864; independent live readback matched, not derivable by the offline gate
