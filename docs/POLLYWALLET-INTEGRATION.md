@@ -406,6 +406,10 @@ A passed live layer stays passed in the report even if a later replay check repo
 replay check speaks about the account, not the candidate. Installation therefore refuses unless
 `requireNoReplay` reports `unchanged`, whatever the layer says.
 
+The browser clears the displayed replay result when the wallet, recording or grant changes,
+when authority is reviewed again, and when a new live consent starts, even if that consent fails.
+A refreshed authority review also invalidates any pending live consent preview before signing.
+
 If the browser disconnects during the run, the backend checks for that before each step: it
 signs and simulates nothing further, and records no layer. Signatures already created stay valid
 until N, and the replay obligation stays recorded. The backend serves one live check at a time
@@ -418,6 +422,11 @@ offered for one review at a time, and once per backend session. Status reports `
 only while some review has a complete report and no installation was attempted in this backend,
 and `installOpensAfterLedger` while an earlier released signature is still valid. Nothing is
 released or spent while the fee payer cannot submit, for example after an uncertain result.
+Starting another recording or generation for the same wallet clears proposal consent and
+verification state while retaining an earlier installation and its recovery identity. Confirmed
+grants remain revocable, and a lost submission response can still be reconciled by a status
+refresh. Switching wallet identity clears that lifecycle state.
+
 `Prepare installation` (`assemble`) and the passkey approval (`submit`) are two steps. A backend
 refusal to prepare keeps the browser's review, since nothing was released; an answer the browser
 itself refuses consumes it.
@@ -451,8 +460,10 @@ re-establishes the same conditions:
    the exact `add_context_rule` arguments, one address-bound owner entry with no
    sub-invocations, and the declared resources. Testnet records `AddressV2` credentials; either
    direct arm is kept as recorded.
-4. The backend reads the account state the live check's replay obligation reads and journals the
-   entry's expiry with it as a new obligation, before the entry leaves the backend. From then on a
+4. The backend reads the account state the live check's replay obligation reads, then rechecks
+   the four-layer evidence and assembly authority freshness against a fresh bounded ledger clock.
+   It journals the entry's expiry with that state as a new obligation only after these checks,
+   before the entry leaves the backend. From then on a
    passkey may have signed it. Until it expires, no other installation entry is released. After it
    expires, the replay check compares the account with that state. Like the live check's, these
    obligations exist only in the running backend; see [After a restart](#after-a-restart).
