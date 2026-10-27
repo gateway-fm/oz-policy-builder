@@ -204,7 +204,7 @@ fn fixture() -> Fixture {
     };
     Fixture {
         envelope: encode(&envelope),
-        simulation: json!({"latestLedger":LEDGER,"transactionData":encode(&data),"results":[{"xdr":encode(&ScVal::Void),"auth":[encode(&auth)]}]}),
+        simulation: json!({"latestLedger":LEDGER,"transactionData":encode(&data),"minResourceFee":data.resource_fee.to_string(),"results":[{"xdr":encode(&ScVal::Void),"auth":[encode(&auth)]}]}),
         entries: json!({"latestLedger":LEDGER,"entries":([instance,balance,classic,archival,account_instance,account_code].into_iter().map(|entry|json!({"key":encode(&entry.to_key()),"xdr":encode(&entry),"lastModifiedLedgerSeq":999,"liveUntilLedgerSeq":if matches!(entry,LedgerEntryData::ContractData(_)|LedgerEntryData::ContractCode(_)){Some(900000)}else{None}})).collect::<Vec<_>>())}),
         header: json!({"ledgers":[{"sequence":LEDGER,"hash":hash.to_hex(),"ledgerCloseTime":"100000","headerXdr":encode(&header)}]}),
         nonce_key: encode(&nonce),
@@ -284,7 +284,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1),
-            "is archived at reported ledger",
+            "is archived at the captured ledger",
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER),
@@ -301,7 +301,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
             "exactly one recorded authorization root",
         ),
         (
-            |f| f.simulation["restorePreamble"] = json!({}),
+            |f| f.simulation["restorePreamble"] = valid_preamble(),
             "requires restoration",
         ),
         (
@@ -626,4 +626,228 @@ fn native_target_capture_parse_refusals_are_fixed_descriptions() {
         );
         assert!(fixture.calls.borrow().is_empty());
     }
+}
+
+/// The simulation is classified as preflight classifies it: only a non-empty string error, with
+/// no results or restoration and a ledger the endpoint read, is the target refusing the call;
+/// a preamble, a success that restored archived entries, or an archived or expiring footprint
+/// entry is archived target state. Everything else stays an endpoint answer (`E_RPC`). No
+/// classification carries the endpoint's text, which could quote the envelope.
+#[test]
+fn native_target_capture_classifies_the_simulation_like_preflight() {
+    #[derive(Debug, PartialEq)]
+    enum Kind {
+        Refused,
+        Archived,
+        Rpc,
+    }
+    type Mutation = Box<dyn Fn(&mut Fixture)>;
+    let quoted = fixture().envelope;
+    let failed = |error: Value| -> Mutation {
+        Box::new(move |f: &mut Fixture| {
+            f.simulation["error"] = error.clone();
+            f.simulation.as_object_mut().unwrap().remove("results");
+        })
+    };
+    let archived = |indices: Vec<u32>| -> Mutation {
+        Box::new(move |f: &mut Fixture| {
+            let mut data = SorobanTransactionData::from_xdr_base64(
+                f.simulation["transactionData"].as_str().unwrap(),
+                xdr_limits(),
+            )
+            .unwrap();
+            data.ext = SorobanTransactionDataExt::V1(SorobanResourcesExtV0 {
+                archived_soroban_entries: indices.clone().try_into().unwrap(),
+            });
+            f.simulation["transactionData"] = json!(encode(&data));
+        })
+    };
+    // A success that restored entries is still malformed if its resource fee is not complete
+    // and consistent. It must remain an endpoint failure, never an archival-state diagnosis.
+    for fee in [
+        None,
+        Some(Value::Null),
+        Some(json!(123)),
+        Some(json!("not-a-fee")),
+        Some(json!("-1")),
+        Some(json!("18446744073709551616")),
+        Some(json!("1")),
+    ] {
+        let mut f = fixture();
+        archived(vec![2])(&mut f);
+        if let Some(fee) = fee {
+            f.simulation["minResourceFee"] = fee;
+        } else {
+            f.simulation
+                .as_object_mut()
+                .unwrap()
+                .remove("minResourceFee");
+        }
+        let error = capture_native_target(&f, NETWORK, &f.envelope).unwrap_err();
+        assert!(
+            matches!(error, RpcError::Malformed(_) | RpcError::Rpc(_)),
+            "{error}"
+        );
+    }
+    let refusal = format!("HostError: Error(Contract, #10) balance is not sufficient: {quoted}");
+    let preamble = |value: Value| -> Mutation {
+        Box::new(move |f: &mut Fixture| f.simulation["restorePreamble"] = value.clone())
+    };
+    let mut wrong_fee = valid_preamble();
+    wrong_fee["minResourceFee"] = json!("2");
+    let cases: Vec<(&str, Mutation, Kind)> = vec![
+        ("a failed simulation", failed(json!(refusal)), Kind::Refused),
+        ("an empty error", failed(json!("")), Kind::Rpc),
+        ("a null error", failed(Value::Null), Kind::Rpc),
+        (
+            "a non-string error",
+            failed(json!({ "message": refusal })),
+            Kind::Rpc,
+        ),
+        (
+            "an error alongside results",
+            Box::new(|f: &mut Fixture| f.simulation["error"] = json!("refused")),
+            Kind::Rpc,
+        ),
+        (
+            "an error alongside a restoration preamble",
+            Box::new(move |f: &mut Fixture| {
+                failed(json!("refused"))(f);
+                f.simulation["restorePreamble"] = json!({ "transactionData": "AAAA" });
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "an error before the endpoint read its ledger",
+            Box::new(move |f: &mut Fixture| {
+                failed(json!("refused"))(f);
+                f.simulation["latestLedger"] = json!(0);
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "a restoration preamble",
+            preamble(valid_preamble()),
+            Kind::Archived,
+        ),
+        // Preflight validates a preamble before reporting restoration; so does capture.
+        (
+            "an empty restoration preamble",
+            preamble(json!({})),
+            Kind::Rpc,
+        ),
+        (
+            "a preamble with undecodable transaction data",
+            preamble(json!({ "transactionData": quoted.clone(), "minResourceFee": "1" })),
+            Kind::Rpc,
+        ),
+        (
+            "a preamble whose fee is not its data's",
+            preamble(wrong_fee),
+            Kind::Rpc,
+        ),
+        (
+            "a malformed restoration preamble",
+            Box::new(|f: &mut Fixture| f.simulation["restorePreamble"] = json!("restore")),
+            Kind::Rpc,
+        ),
+        (
+            "a success that restored archived entries",
+            archived(vec![2]),
+            Kind::Archived,
+        ),
+        (
+            "an archived index outside the footprint",
+            archived(vec![9]),
+            Kind::Rpc,
+        ),
+        (
+            "an archived footprint entry",
+            Box::new(|f: &mut Fixture| {
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1)
+            }),
+            Kind::Archived,
+        ),
+        (
+            // The reader judges archival at its own ledger: from a node behind or ahead of the
+            // simulation that says nothing about the call at L, so it is retried as any ledger
+            // mismatch, and a persistent one is an endpoint answer.
+            "an entry archived at a ledger other than the simulation's",
+            Box::new(|f: &mut Fixture| {
+                f.entries["latestLedger"] = json!(LEDGER + 1);
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER);
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "a footprint entry expiring at the captured ledger",
+            Box::new(|f: &mut Fixture| {
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER)
+            }),
+            Kind::Archived,
+        ),
+    ];
+    for (name, mutate, expected) in cases {
+        let mut fixture = fixture();
+        mutate(&mut fixture);
+        let error = capture_native_target(&fixture, NETWORK, &fixture.envelope)
+            .expect_err("a refused simulation was accepted");
+        let kind = match error {
+            RpcError::TargetRefused(_) => Kind::Refused,
+            RpcError::TargetArchived(_) => Kind::Archived,
+            _ => Kind::Rpc,
+        };
+        assert_eq!(kind, expected, "{name}: {error}");
+        // A refused or archived simulation is the call's outcome: nothing is read after it.
+        if matches!(
+            name,
+            "a failed simulation"
+                | "a restoration preamble"
+                | "a success that restored archived entries"
+        ) {
+            assert_eq!(
+                *fixture.calls.borrow(),
+                ["getNetwork", "simulateTransaction"],
+                "{name}"
+            );
+        }
+        if name == "an entry archived at a ledger other than the simulation's" {
+            assert!(
+                error
+                    .to_string()
+                    .contains("kept observing different ledgers"),
+                "{error}"
+            );
+            assert_eq!(
+                fixture
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|m| *m == "simulateTransaction")
+                    .count(),
+                CAPTURE_ATTEMPTS,
+                "retried as a ledger mismatch"
+            );
+        }
+        let code = match kind {
+            Kind::Refused => "E_TARGET_REFUSED: ",
+            Kind::Archived => "E_TARGET_ARCHIVED: ",
+            Kind::Rpc => "E_RPC: ",
+        };
+        assert!(error.to_string().starts_with(code), "{name}: {error}");
+        for text in [error.to_string(), format!("{error:?}")] {
+            assert!(!text.contains(&fixture.envelope), "{name}: {text}");
+            assert!(!text.contains("HostError"), "{name}: {text}");
+        }
+    }
+}
+
+/// A restoration preamble whose transaction data decodes and whose fee is that data's own, as
+/// preflight requires before it reports restoration.
+fn valid_preamble() -> Value {
+    let data = SorobanTransactionData {
+        resource_fee: 4321,
+        ..Default::default()
+    };
+    json!({ "transactionData": encode(&data), "minResourceFee": "4321" })
 }

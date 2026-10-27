@@ -12,7 +12,7 @@
 //! endpoint holds the envelope and could quote it in any later reply, so no endpoint-controlled
 //! text reaches an error: the category survives, the words do not.
 
-use crate::preflight::local_envelope;
+use crate::preflight::{local_envelope, restores_archived_entries, validate_restoration};
 use crate::{
     envelope_carries_signatures, read_invocation_footprint, verify_network, xdr_limits,
     CapturedFootprintEntry, FootprintCaptureError, RpcError, RpcTransport, MAX_XDR_BASE64_BYTES,
@@ -37,6 +37,15 @@ const MAX_CAPTURED_ENTRY_BYTES: usize = 2 * 1024 * 1024;
 
 fn refuse(reason: &str) -> RpcError {
     RpcError::Malformed(format!("native target capture refused: {reason}"))
+}
+
+/// Archived target state: the call `subject` names needs restoration first, which capture
+/// never performs. Fixed text, as for every endpoint-derived refusal.
+fn archived(subject: &str) -> RpcError {
+    RpcError::TargetArchived(format!(
+        "native target capture refused: {subject} requires restoration, which this capture does \
+         not perform"
+    ))
 }
 
 /// The caller's envelope decodes but is not a call this capture takes. Refused before any
@@ -213,13 +222,53 @@ pub fn capture_native_target<T: RpcTransport>(
                 "xdrFormat": "base64",
             }),
         )?;
-        if simulation.get("error").is_some() {
-            return Err(refuse("record-mode simulation failed"));
+        // The call's own outcome, named apart from endpoint faults so a caller can attribute
+        // it to the target, by the rules preflight applies. The endpoint's description is
+        // withheld: it could quote the envelope.
+        let failed = match simulation.get("error") {
+            None => false,
+            Some(Value::String(message)) if !message.is_empty() => true,
+            Some(_) => return Err(refuse("the simulation error is not a non-empty string")),
+        };
+        if failed
+            && (simulation.get("results").is_some() || simulation.get("restorePreamble").is_some())
+        {
+            return Err(refuse(
+                "a failed simulation also reports success or restoration",
+            ));
         }
-        if simulation.get("restorePreamble").is_some() {
-            return Err(refuse("the target footprint requires restoration"));
+        let reported = simulation
+            .get("latestLedger")
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| refuse("response lacks u32 latestLedger"))?;
+        if reported == 0 {
+            // stellar-rpc answers a request it refuses before reading its ledger with the error
+            // and `latestLedger` 0: nothing was simulated, so the target decided nothing.
+            return Err(if failed {
+                RpcError::Rpc(
+                    "the RPC source refused the simulation before simulating (endpoint detail \
+                     withheld)"
+                        .to_string(),
+                )
+            } else {
+                refuse("response lacks positive u32 latestLedger")
+            });
         }
-        let observed = ledger(&simulation, "latestLedger")?;
+        if failed {
+            return Err(RpcError::TargetRefused(
+                "native target capture refused: the record-mode simulation failed; the target \
+                 refused the call or the simulator failed (endpoint detail withheld)"
+                    .to_string(),
+            ));
+        }
+        // A preamble is archived state only once it is well formed, as preflight requires;
+        // its fixed refusal texts carry nothing of the endpoint's.
+        if let Some(restore) = simulation.get("restorePreamble") {
+            validate_restoration(restore)?;
+            return Err(archived("the target footprint"));
+        }
+        let observed = reported;
         let [result] = simulation
             .get("results")
             .and_then(Value::as_array)
@@ -263,6 +312,21 @@ pub fn capture_native_target<T: RpcTransport>(
         }
         let mut resources: SorobanTransactionData =
             decode(text(&simulation, "transactionData")?, "transaction data")?;
+        let min_fee = text(&simulation, "minResourceFee")?
+            .parse::<u64>()
+            .map_err(|_| refuse("simulation minResourceFee is not a u64"))?;
+        if i64::try_from(min_fee).ok() != Some(resources.resource_fee) {
+            return Err(refuse(
+                "simulation minResourceFee differs from its transaction data fee",
+            ));
+        }
+        // Since protocol 23 the endpoint restores archived entries inside the simulated call
+        // and lists them here instead of sending a preamble: the same archived target state.
+        if restores_archived_entries(&resources)? {
+            return Err(archived(
+                "the simulation restored archived entries: the target footprint",
+            ));
+        }
         let footprint = &mut resources.resources.footprint;
         if footprint
             .read_only
@@ -299,19 +363,32 @@ pub fn capture_native_target<T: RpcTransport>(
             unreachable!("checked above");
         };
         acquisition_v1.tx.ext = TransactionExt::V1(resources);
-        let mut capture = read_invocation_footprint(
+        let mut capture = match read_invocation_footprint(
             &transport,
             network_passphrase,
             &encode(&acquisition, "acquisition envelope")?,
-        )
-        .map_err(|error| match error {
+        ) {
+            Ok(capture) => capture,
+            // The reader judges archival at the ledger it reports. Only at the simulation's
+            // ledger is that the call's state; from a node behind or ahead it is retried like
+            // any ledger mismatch.
+            Err(FootprintCaptureError::ArchivedDeclaredKey { reported, .. })
+                if reported == observed =>
+            {
+                return Err(archived(
+                    "a footprint entry is archived at the captured ledger: the call",
+                ))
+            }
+            Err(FootprintCaptureError::ArchivedDeclaredKey { .. }) => continue,
             // Its reported network is the endpoint's text. The transport has already withheld
             // every endpoint error, and the reader's own refusals are fixed descriptions, so
             // both keep their variant.
-            FootprintCaptureError::Rpc(error @ RpcError::NetworkMismatch { .. }) => withhold(error),
-            FootprintCaptureError::Rpc(error) => error,
-            error => refuse(&error.to_string()),
-        })?;
+            Err(FootprintCaptureError::Rpc(error @ RpcError::NetworkMismatch { .. })) => {
+                return Err(withhold(error))
+            }
+            Err(FootprintCaptureError::Rpc(error)) => return Err(error),
+            Err(error) => return Err(refuse(&error.to_string())),
+        };
         if capture.reported_ledger.0 != observed {
             continue;
         }
@@ -322,7 +399,9 @@ pub fn capture_native_target<T: RpcTransport>(
             .values()
             .any(|entry| entry.live_until_ledger.is_some_and(|ttl| ttl.0 <= observed))
         {
-            return Err(refuse("a footprint entry expires at the captured ledger"));
+            return Err(archived(
+                "a footprint entry expires at the captured ledger: a call based on it",
+            ));
         }
         let headers = transport.call(
             "getLedgers",

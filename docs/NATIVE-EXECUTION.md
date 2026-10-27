@@ -105,7 +105,8 @@ address and opaque capability ID to the UI. `ozpb dry-run` reads the spec delega
 0600 file (see [running the layers from the CLI](#running-the-layers-from-the-cli)). In both,
 the worker receives only the address. An arbitrary supplied delegate address without a matching
 capability is unavailable; an owner passkey does not stand in for the delegate. The [Pollywallet backend](POLLYWALLET-INTEGRATION.md#account-wasm-execution)
-implements this exchange.
+implements this exchange for both modes, and kills the worker's group when its HTTP client
+disconnects.
 
 ## Exact offline-domain encoding
 
@@ -139,7 +140,7 @@ Runner line:
 {"type":"sign_request","request_id":"1","run_hash":"...","case_id":"case:0","delegate_address":"G...","execution_network_id":"...","nonce":"1001","expiration_ledger":123,"account_digest":"...","invocation_xdr":"...","preimage_xdr":"...","digest_hex":"..."}
 ```
 
-Nonce is canonical signed-i64 decimal text; expiration is u32. Both XDR fields are canonical base64; digest fields are canonical lowercase hex. `preimage_xdr` is the protocol `HashIdPreimage::SorobanAuthorization` with the derived offline network, exact nonce/expiration and `invocation_xdr`. The root must be exactly the candidate account's `__check_auth` with one Bytes argument containing `account_digest` and no subinvocations. `digest_hex` is SHA-256 of the canonical preimage XDR. The coordinator (the wallet, or `ozpb dry-run`) independently parses and reconstructs this object, checks all fields, run/case/registered delegate and expiration bounds, and signs only that offline digest. No live-domain signature is accepted here.
+Nonce is canonical signed-i64 decimal text; expiration is u32. Both XDR fields are canonical base64; digest fields are canonical lowercase hex. `preimage_xdr` is the protocol `HashIdPreimage::SorobanAuthorization` with the derived offline network, exact nonce/expiration and `invocation_xdr`. The root must be exactly the candidate account's `__check_auth` with one Bytes argument containing `account_digest` and no subinvocations. `digest_hex` is SHA-256 of the canonical preimage XDR. The coordinator (the wallet, or `ozpb dry-run`) independently parses and reconstructs this object and checks all fields, run/case/registered delegate and expiration bounds. `ozpb dry-run` then signs only that offline digest ([signing guard](#running-the-layers-from-the-cli)). The wallet hands only the reconstructed preimage to the delegate's offline capability. That capability derives the execution network from the binding itself and signs a `HashIdPreimage::SorobanAuthorization` in that network and nothing else: no digest or other supplied bytes, and no preimage for mainnet, testnet, futurenet or the source network. No live-domain signature is accepted here. The wallet's same in-memory key signs testnet authorizations only through a separate live capability, which builds them itself for one consented [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check) and accepts no bytes.
 
 Wallet line:
 
@@ -230,8 +231,8 @@ ozpb dry-run --request dry-run-request.json \
 Live-enforcement evidence remains missing outside the wallet: `ozpb dry-run` reports that layer
 `unavailable` with `wallet_owner_consent_required`, and its report is never `complete`. The MCP
 server exposes no signing dry run. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is
-the contract a future live layer would simulate; it is tested on the same host but not deployed or
-wired to any run, and it refuses generated policies without a call cap, whose execution it cannot
+the contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+simulates on testnet; it refuses generated policies without a call cap, whose execution it cannot
 observe.
 
 `bash scripts/test-cli-dry-run.sh` runs `ozpb dry-run` with the actual CLI and worker over the

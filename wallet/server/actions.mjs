@@ -1,11 +1,19 @@
-import { createECDH, randomBytes } from 'node:crypto';
+import { createECDH, createHash, randomBytes } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Address, Asset, Networks, Operation, StrKey, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
 import { decodeBase64Url } from '../shared/base64url.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { validateSignedAuthorization } from '../shared/signature.mjs';
+import { validateAssembly } from '../shared/assembly.mjs';
+import { INSTALL_VALIDITY_LEDGERS, installConsent } from '../shared/install.mjs';
+import { REMOVAL_MAX_FEE_STROOPS, reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared/revoke.mjs';
+import { addedRuleId, installGate, verifyInstallation, verifyRemoval } from './install.mjs';
+import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
+import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
+import { LIVE_ORIGIN, clockedLedger, consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, requireNoReplay, runLive } from './live-check.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const HASH = /^[a-f0-9]{64}$/;
@@ -43,25 +51,42 @@ function freshOwner(value, signer) {
     || !equal(native.signer_ids, xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]))
     || native.valid_until.type !== 'scvVoid') refuse();
 }
-function missingVerification(artifact, bindingSetHash, accountLayer) {
+function missingVerification(artifact, bindingSetHash, accountLayer, targetLayer, liveLayer) {
+  const layers = [
+    { layer: 'reference', status: artifact ? 'passed' : 'unavailable', detail: artifact
+      ? 'Constraint-derived reference cases passed; artifact reproduced separately.' : 'No candidate prepared.' },
+    accountLayer ?? { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
+    targetLayer ?? { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
+    liveLayer ?? { layer: 'live_enforcement', status: 'unavailable', detail: 'The live-enforcement check has not run.' },
+  ];
+  // Complete only when every layer passed. Installation is gated separately, on this stored report (`installGate`).
   return freezeCopy({ runId: id(), specHash: artifact?.specHash ?? null, wasmHash: artifact?.wasmHash ?? null,
-    bindingSetHash: bindingSetHash ?? null, complete: false, layers: [
-      { layer: 'reference', status: artifact ? 'passed' : 'unavailable', detail: artifact
-        ? 'Constraint-derived reference cases passed; artifact reproduced separately.' : 'No candidate prepared.' },
-      accountLayer ?? { layer: 'account_wasm', status: 'unavailable', detail: 'Candidate account execution has not run.' },
-      { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
-      { layer: 'live_enforcement', status: 'unavailable', detail: 'Wallet-authorized candidate behavioral preflight has not run.' },
-    ] });
+    bindingSetHash: bindingSetHash ?? null, complete: layers.every((layer) => layer.status === 'passed'), layers });
 }
 const accountLayer = (status, detail) => ({ layer: 'account_wasm', status, detail });
+const READBACK_ATTEMPTS = 5;
+const READBACK_PAUSE_MS = 2000;
+const OWNER = Object.freeze({ authentication: 'webauthn_user_verified', human_approval_attested: false });
+const targetLayer = (status, detail) => ({ layer: 'captured_target', status, detail });
 
 /** Closed HTTP operations. Every privileged input comes from retained state or operator configuration. */
-export function createWalletActions({ session, toolchain, network, native = null }) {
+export function createWalletActions({ session, toolchain, network, native = null, live = null, delegates = new DelegateCapabilities(),
+  pause = sleep }) {
   const deployments = new Map();
   const attemptedArtifacts = new Set();
   const reviews = new Map();
-  const delegates = new DelegateCapabilities();
+  /**
+   * Every replay obligation, append-only: what the signatures of each live check, and of each installation
+   * entry released for the passkey, could change and until when.
+   */
+  const liveRecords = [];
+  /** This session's confirmed installations by opaque ID (event-verified, or confirmed only), with what removal needs. */
+  const installations = new Map();
+  /** Obligations a confirmed, verified installation closed, with its transaction hash. */
+  const closedRecords = new Map();
+  let installAttempts = 0;
   let accountCheckRunning = false;
+  let liveRunning = false;
   let accountAttempted = false;
   let sampleAccount = null;
   let sampleSubmitted = false;
@@ -76,13 +101,67 @@ export function createWalletActions({ session, toolchain, network, native = null
     const approval = reviewSample({ ...sampleAccount, ownerRuleXdr });
     return { ownerRuleXdr, approval, ownerReadLedger: observed.ledger };
   }
+  // A review whose report every layer passed, while no installation was attempted in this backend.
+  const installable = (review) => native !== null && live !== null && review.verification?.complete === true
+    && !review.installAttempted && installAttempts === 0;
+  /** Replay obligations no confirmed installation has closed yet. */
+  const openRecords = () => liveRecords.filter((record) => !closedRecords.has(record));
+  /** The owner rule the review matched, read again: it must still be byte-identical. */
+  async function ownerRead(wallet, ownerRuleId, ownerRuleXdr) {
+    const observed = await network.view(wallet.contractId, 'get_context_rule', [xdr.ScVal.scvU32(ownerRuleId)]);
+    const raw = observed.value.toXDR('base64');
+    if (raw !== ownerRuleXdr || !Number.isSafeInteger(observed.ledger)) refuse();
+    return { ownerRuleXdr: raw, ledger: observed.ledger };
+  }
+  /**
+   * What every installation step re-establishes before it releases or submits anything: the stored
+   * four-layer evidence is this review's and recent at the bounded ledger clock, and no signature
+   * the wallet released earlier, the live check's included, can still be used or changed anything
+   * (`requireNoReplay`, which fails closed). `own` is the obligation of the entry being submitted.
+   */
+  async function installPreconditions(review, deployment, artifact, own = null) {
+    let currentLedger;
+    try { currentLedger = await clockedLedger(network); } catch { refuse(); }
+    const evidence = installGate({ review, deployment, artifact, currentLedger });
+    const replay = await requireNoReplay({ network, records: openRecords().filter((record) => record !== own) });
+    return { evidence, replay };
+  }
+  /** A fresh authority answer for the retained deployment, accepted only with the approved commitment. */
+  async function authorityRecheck(review, deployment, ownerRuleXdr) {
+    const intent = await toolchain.authority('prepare-install-intent', deployment.request);
+    const fresh = reviewIntent({ intent, expected: review.approval.expected, wallet: review.approval.wallet, ownerRuleXdr });
+    if (fresh.commitment !== review.approval.commitment || fresh.ownerRuleId !== review.approval.ownerRuleId
+      || fresh.observedLedger < review.approval.observedLedger
+      || JSON.stringify(fresh.intent.authority.verdict.grant) !== JSON.stringify(review.approval.intent.authority.verdict.grant)) refuse();
+    return fresh;
+  }
+  /** A read from a node at or past `ledger`: a lagging node is asked again, a few times. */
+  async function readAfter(read, ledger) {
+    for (let attempt = 0; attempt < READBACK_ATTEMPTS; attempt++) {
+      const result = await read();
+      if (result.ledger >= ledger) return result;
+      await pause(READBACK_PAUSE_MS);
+    }
+    return refuse();
+  }
+  const readbackAfter = (account, ruleId, ledger) => readAfter(() => network.ruleReadback(account, ruleId), ledger);
+  const markerAfter = (account, policy, ruleId, ledger) => readAfter(() => network.liveState({ account, policy, ruleId }), ledger);
+  /** Public summaries, so a lost response can be recovered from `status`. */
+  const summaries = () => [...installations.values()].map(({ record, removal, removalAttempted }) => ({
+    installationId: record.installationId, status: record.status, account: record.account, ruleId: record.ruleId,
+    transactionHash: record.transactionHash, ledger: record.ledger, removalAttempted,
+    removal: removal ? { status: removal.status, transactionHash: removal.transactionHash } : null }));
   return {
     status: async (input) => {
       exact(input, []);
       return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
-        capabilities: { record: true, generate: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
-          install: false, lifecycle: false },
+        capabilities: { record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+          liveCheck: live !== null, install: [...reviews.values()].some(installable),
+          lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)) },
+        installations: summaries(),
+        // No installation entry is released while an earlier signature the wallet released is still valid.
+        installOpensAfterLedger: openRecords().length ? Math.max(...openRecords().map((r) => r.signatureExpirationLedger)) : null,
         verification: missingVerification() };
     },
     'prepare-account': async (input) => {
@@ -169,6 +248,20 @@ export function createWalletActions({ session, toolchain, network, native = null
         return { transactionHash: submitted.hash, receipt: receipt(submitted) };
       });
     },
+    'import-proposal': async (input) => {
+      exact(input, ['proposal', 'wallet']);
+      const wallet = walletIdentity(input.wallet);
+      const proposal = parseGrantProposal(input.proposal, wallet.contractId);
+      await network.assertTestnet();
+      await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
+      await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
+      const record = await toolchain.record({ transactionHash: proposal.transaction_hash, accountAddress: wallet.contractId });
+      const d = proposal.decisions;
+      const artifact = await toolchain.generate({ recordId: record.recordId, delegateAddress: d.delegate,
+        validUntilLedger: d.valid_until_ledger, maxCalls: d.max_calls, grantName: d.grant_name,
+        currentLedger: await network.latestLedger(), proposal });
+      return { record, artifact, proposalReview: checkProposalArtifact(proposal, artifact) };
+    },
     generate: async (input) => {
       exact(input, ['recordId', 'delegateAddress', 'validUntilLedger', 'maxCalls', 'grantName']);
       return toolchain.generate({ ...input, currentLedger: await network.latestLedger() });
@@ -237,60 +330,418 @@ export function createWalletActions({ session, toolchain, network, native = null
       return freezeCopy({ reviewId, intent, expected, wallet, ownerRuleXdr, verification });
     },
     // A local automation delegate: the key stays in this process; it never becomes an owner signer.
+    // Its classic testnet account is created at once through Friendbot: the authority review
+    // refuses a grant whose delegate account does not exist, and the host checks its signatures
+    // against that account.
     'create-delegate': async (input) => {
       exact(input, []);
-      if (!native) refuse();
-      return delegates.create();
+      if (!native && !live) refuse();
+      const created = delegates.create();
+      // A key whose account could not be created is dropped, so a retry does not use up a slot.
+      try { await network.ensureDelegateAccount(created.address); } catch { delegates.release(created.capabilityId); refuse(); }
+      return created;
     },
-    'check-account': async (input) => {
+    // Both local execution layers for one reviewed grant, from one CLI preparation (one run hash).
+    // `signal` aborts when the HTTP client disconnects: every child process group is killed and
+    // nothing is recorded, so the backend's locks are released without accepting partial evidence.
+    'check-account': async (input, { signal } = {}) => {
       exact(input, ['reviewId', 'capabilityId']);
-      if (!native || accountCheckRunning) refuse();
+      if (!native || accountCheckRunning || liveRunning) refuse();
       const review = get(reviews, input.reviewId);
       const deployment = get(deployments, review.deploymentId);
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
       const rule = artifact.spec.rules[0];
       const signers = rule.authorization?.signers;
       const delegate = signers?.length === 1 ? signers[0].delegated?.address : undefined;
-      const signer = delegates.signer(input.capabilityId, delegate);
+      const signer = delegates.offline(input.capabilityId, delegate);
       const maxCalls = rule.state?.[0]?.call_count_per_installation?.max_calls;
-      let layer;
+      const target = capturedCall(artifact.spec);
+      let layer, captured;
+      // An unsupported shape is reported as such whatever else happens to this check.
+      if (!target) {
+        captured = targetLayer('unsupported', 'Captured execution supports one exact-amount native XLM transfer from the account '
+          + 'to a G account; nothing was captured and the worker did not run.');
+      }
       if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > NATIVE_LIMITS.maxCalls) {
         layer = accountLayer('unsupported', `The native worker supports call caps up to ${NATIVE_LIMITS.maxCalls}; it did not run.`);
+        captured ??= targetLayer('unsupported', `The native worker supports call caps up to ${NATIVE_LIMITS.maxCalls}; it did not run.`);
       } else if (review.nextRuleId === null) {
         layer = accountLayer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID.');
+        captured ??= targetLayer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID.');
       } else {
         accountCheckRunning = true;
+        // Checked before every step: a step already running is killed (a child process) or runs
+        // to its own timeout (an operator RPC read), and nothing starts after a disconnect.
+        const stopped = () => { if (signal?.aborted) refuse(); };
         try {
-          let prepared, source;
+          let prepared, source, checked;
           try {
             prepared = await toolchain.prepareDryRun({ artifactId: deployment.artifactId,
-              candidate: deployment.request, candidateContextRuleId: review.nextRuleId });
+              candidate: deployment.request, candidateContextRuleId: review.nextRuleId, signal });
+            stopped();
             source = await network.nativeSource(ACCOUNT_WASM);
+            stopped();
           } catch {
+            stopped();
             // Infrastructure, not the candidate: the CLI preparation or operator RPC read did not complete.
             layer = accountLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
+            captured ??= targetLayer('unavailable', 'CLI preparation or the operator RPC ledger read did not complete; the worker did not run.');
           }
           if (!layer) {
             try {
-              const checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
+              checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
                 bindingSetHash: deployment.response.bindingSetHash, accountAddress: artifact.spec.smart_account.address,
                 delegateAddress: delegate, policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
                 candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence });
-              layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls,
+            } catch {
+              layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
+              captured ??= targetLayer('failed', 'The CLI preparation evidence was refused; the worker did not run.');
+            }
+          }
+          if (!layer) {
+            try {
+              layer = await runAccountExecution({ executable: native.executable, run: native.run, signer, maxCalls, signal,
                 jobText: nativeJobText(prepared.request, source.accountWasmBase64, source.ledger), ...checked });
             } catch {
               layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
             }
           }
+          stopped();
+          let capture, envelope, notBefore;
+          const incomplete = () => targetLayer('unavailable',
+            'capture-target or the operator RPC read did not complete; the worker did not run.');
+          if (!captured) {
+            try { envelope = await network.targetEnvelope(target.call); } catch { captured = incomplete(); }
+            stopped();
+          }
+          if (!captured) {
+            try { notBefore = await network.latestLedger(); } catch { captured = incomplete(); }
+            stopped();
+          }
+          if (!captured) {
+            // Only this call's rejection may carry a target code: the toolchain surfaces it from
+            // capture-target's own refusal and from nothing else.
+            try {
+              capture = { notBefore, value: await toolchain.captureTarget(envelope, { signal }) };
+            } catch (error) {
+              stopped();
+              // The call's own outcome in the operator RPC's record-mode simulation, before the
+              // worker: the target, or the simulator, not the candidate's policy. No evidence.
+              if (error?.code === 'E_TARGET_REFUSED') {
+                captured = targetLayer('failed', 'The target refused the exact transfer, or the operator RPC\'s simulator failed, '
+                  + 'in record-mode simulation, for example for an insufficient balance or a missing recipient; the endpoint '
+                  + 'does not say which. The worker did not run.');
+              } else if (error?.code === 'E_TARGET_ARCHIVED') {
+                captured = targetLayer('failed', 'The exact call\'s target state is archived and needs restoration, which capture '
+                  + 'does not perform; the worker did not run.');
+              } else {
+                captured = incomplete();
+              }
+            }
+            stopped();
+          }
+          const observed = capture?.value?.observed_ledger;
+          if (!captured && Number.isSafeInteger(observed)
+            && (observed < capture.notBefore || observed - capture.notBefore > FRESHNESS_LEDGERS)) {
+            // A lagging or slow endpoint: no current-state evidence was obtained, which says nothing about the candidate.
+            captured = targetLayer('unavailable', 'The capture was not from the current ledger window; the worker did not run.');
+          }
+          if (!captured) {
+            try {
+              const checkedCapture = checkTargetCapture(capture.value, { call: target.call, accountAddress: target.accountAddress,
+                recipient: target.recipient, notBefore: capture.notBefore });
+              const validUntil = rule.valid_until?.ledger;
+              // A call based on the capture lands at the next ledger or later, where such a grant no longer applies.
+              if (Number.isSafeInteger(validUntil) && checkedCapture.observedLedger >= validUntil) {
+                captured = targetLayer('unavailable', 'The grant expires at or before the captured ledger; the worker did not run.');
+              } else {
+                captured = await runCapturedExecution({ executable: native.executable, run: native.run, signer, maxCalls, signal,
+                  jobText: capturedJobText(prepared.request, source.accountWasmBase64, checkedCapture),
+                  expected: { runHash: checked.expected.runHash, accountAddress: target.accountAddress, delegateAddress: delegate,
+                    policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
+                    candidateContextRuleId: review.nextRuleId, observedLedger: checkedCapture.observedLedger,
+                    captureHash: checkedCapture.captureHash, recipient: target.recipient, amount: target.amount } });
+              }
+            } catch {
+              captured = targetLayer('failed', 'The capture, the native worker or its report was refused; no evidence accepted.');
+            }
+          }
+          stopped();
         } finally { accountCheckRunning = false; }
       }
-      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer);
-      reviews.set(input.reviewId, { ...review, verification });
+      const current = reviews.get(input.reviewId);
+      const verification = missingVerification(artifact, deployment.response.bindingSetHash, layer, captured, current.liveLayer);
+      reviews.set(input.reviewId, { ...current, accountLayer: layer, targetLayer: captured, verification });
       return freezeCopy({ reviewId: input.reviewId, verification });
     },
-    // These handlers cannot be enabled by caller-supplied evidence. They will be
-    // connected only to the actual wallet-owned execution and lifecycle backends.
-    assemble: async () => { refuse(); },
-    submit: async () => { refuse(); },
+    // The live-enforcement layer (live-check.mjs): prepare the consent statement; nothing signable yet.
+    'prepare-live': async (input) => {
+      exact(input, ['reviewId', 'capabilityId']);
+      if (!live || accountCheckRunning || liveRunning) refuse();
+      const review = get(reviews, input.reviewId);
+      const deployment = get(deployments, review.deploymentId);
+      const { response: artifact } = toolchain.artifact(deployment.artifactId);
+      const delegate = artifact.spec.rules?.[0]?.authorization?.signers?.[0]?.delegated?.address;
+      delegates.check(input.capabilityId, delegate);
+      session.invalidate('live');
+      session.invalidate('live_sign');
+      // Earlier signatures still valid: a new check would add more before the replay check can run.
+      if (liveRecords.length && (await clockedLedger(network)) <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) refuse();
+      const result = await prepareLive({ network, helper: live.helper, approval: review.approval, spec: artifact.spec,
+        policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash, nextRuleId: review.nextRuleId });
+      if (result.layer) {
+        const current = reviews.get(input.reviewId);
+        const verification = missingVerification(artifact, deployment.response.bindingSetHash, current.accountLayer, current.targetLayer,
+          result.layer);
+        reviews.set(input.reviewId, { ...current, liveLayer: result.layer, verification });
+        return freezeCopy({ reviewId: input.reviewId, verification, live: null });
+      }
+      const p = result.prepared;
+      const action = session.issue('live', { reviewId: input.reviewId, capabilityId: input.capabilityId, prepared: p });
+      return freezeCopy({ reviewId: input.reviewId, verification: review.verification, live: { action, display: p.display,
+        statementSha256: p.statementSha256, inputs: { helper: p.helper.contract, policyCodeHash: artifact.wasmHash,
+          expectedRuleId: p.cases[0].expected_rule_id, currentLedger: p.currentLedger,
+          signatureExpirationLedger: p.cases[0].signature_expiration_ledger } } });
+    },
+    // Consent to exactly the prepared statement. Only now is the replay obligation recorded and the
+    // unsigned owner entry, with a fresh nonce, released for the passkey.
+    'consent-live': async (input) => {
+      exact(input, ['id', 'statementSha256']);
+      return session.consume(input.id, 'live', async (held) => {
+        if (!live || input.statementSha256 !== held.prepared.statementSha256) refuse();
+        const review = get(reviews, held.reviewId);
+        await consentWindow({ network, prepared: held.prepared });
+        const record = replayRecord(held.prepared);
+        network.recordLiveObligation(record);
+        liveRecords.push(record);
+        const ownerEntryXdr = ownerEntry({ approval: review.approval, prepared: held.prepared });
+        const action = session.issue('live_sign', { ...held, ownerEntryXdr });
+        return freezeCopy({ action, ownerEntryXdr, signatureExpirationLedger: record.signatureExpirationLedger });
+      });
+    },
+    // The owner's passkey signature, then the delegate's, both simulations and their validation.
+    // A disconnect stops it before the next step and records nothing.
+    'run-live': async (input, { signal } = {}) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'live_sign', async (held) => {
+        if (!live || liveRunning || accountCheckRunning) refuse();
+        const review = get(reviews, held.reviewId);
+        const deployment = get(deployments, review.deploymentId);
+        const { response: artifact } = toolchain.artifact(deployment.artifactId);
+        const stopped = () => { if (signal?.aborted) refuse(); };
+        liveRunning = true;
+        try {
+          const mintCapability = (approved) => delegates.live(held.capabilityId, held.prepared.cases[0].delegate, approved);
+          const liveLayer = await runLive({ network, mintCapability, prepared: held.prepared, approval: review.approval,
+            ownerEntryXdr: held.ownerEntryXdr, signedAuthEntriesXdr: input.signedAuthEntriesXdr, stopped });
+          stopped();
+          const current = reviews.get(held.reviewId);
+          const verification = missingVerification(artifact, deployment.response.bindingSetHash, current.accountLayer, current.targetLayer,
+            liveLayer);
+          reviews.set(held.reviewId, { ...current, liveLayer, verification });
+          return freezeCopy({ reviewId: held.reviewId, verification });
+        } finally { liveRunning = false; }
+      });
+    },
+    // After every live-check signature has expired: did anything they authorize happen?
+    'check-replay': async (input) => {
+      exact(input, []);
+      if (!liveRecords.length) refuse();
+      const open = openRecords();
+      // Every obligation was closed by this session's own confirmed installation, which used the last one.
+      if (!open.length) return freezeCopy({ replay: { status: 'closed', closedBy: [...new Set(closedRecords.values())] } });
+      return freezeCopy({ replay: await replayStatus({ network, records: open }) });
+    },
+    // Installation, step 1: only for a review whose four layers all passed on recent evidence, after
+    // the replay check. The CLI assembles the unsigned transaction and re-runs the authority check;
+    // the wallet re-validates every field, journals the entry as a replay obligation (a passkey may
+    // sign it from now on) and only then releases it with its consent display.
+    assemble: async (input) => {
+      exact(input, ['reviewId']);
+      const review = get(reviews, input.reviewId);
+      if (!installable(review) || accountCheckRunning || liveRunning || network.canSubmit !== true) refuse();
+      const deployment = get(deployments, review.deploymentId);
+      const { response: artifact } = toolchain.artifact(deployment.artifactId);
+      await network.assertTestnet();
+      await installPreconditions(review, deployment, artifact);
+      const assembly = await toolchain.authority('assemble-install-transaction', { intent_request: deployment.request,
+        fee_payer: network.payerAddress, max_fee_stroops: MAX_FEE_STROOPS, validity_ledgers: INSTALL_VALIDITY_LEDGERS });
+      const owner = await ownerRead(review.approval.wallet, review.approval.ownerRuleId, review.approval.ownerRuleXdr);
+      const source = await network.sourceCapture();
+      const currentLedger = await network.latestLedger();
+      const observed = assembly?.intent?.authority?.verdict?.observed_ledger;
+      if (!Number.isSafeInteger(observed) || owner.ledger < observed || owner.ledger - observed > 12 || source.ledger < observed
+        || source.ledger - observed > 12) refuse();
+      const limits = { feePayer: network.payerAddress, sourceSequence: source.sourceSequence, maxFeeStroops: MAX_FEE_STROOPS,
+        validityLedgers: INSTALL_VALIDITY_LEDGERS, currentLedger };
+      const checked = validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
+      const display = installConsent({ approval: review.approval, checked, spec: artifact.spec, maxFeeStroops: MAX_FEE_STROOPS,
+        ruleId: review.nextRuleId });
+      const snapshot = await network.liveState({ account: review.approval.wallet.contractId,
+        policy: deployment.response.policyAddress, ruleId: review.nextRuleId });
+      // Assembly and the subsequent reads take time. Recheck the bounded ledger clock before
+      // recording any signing obligation or releasing an owner entry to the browser.
+      const releaseLedger = await clockedLedger(network);
+      installGate({ review, deployment, artifact, currentLedger: releaseLedger });
+      limits.currentLedger = releaseLedger;
+      validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
+      if (releaseLedger + 1 >= checked.maxLedger) refuse();
+      const obligation = freezeCopy({ signatureExpirationLedger: checked.expirationLedger, snapshot,
+        consentStatementSha256: createHash('sha256').update(JSON.stringify(display)).digest('hex') });
+      session.invalidate('install');
+      network.recordInstallObligation(obligation);
+      liveRecords.push(obligation);
+      const action = session.issue('install', { reviewId: input.reviewId, checked, display, obligation: liveRecords.length - 1 });
+      return freezeCopy({ action, reviewId: input.reviewId, verification: review.verification, assembly,
+        ownerRuleXdr: owner.ownerRuleXdr, limits, display });
+    },
+    // Installation, step 2: the owner's passkey signature of exactly the released entry. Consuming the
+    // action spends the review whatever follows. Everything the gate depends on is read again; the fee
+    // payer then enforce-simulates, signs, journals and submits once, and the result is recorded first
+    // as confirmed and counts as installed only with the account's own event and a read-back.
+    submit: async (input) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'install', async (held) => {
+        const review = get(reviews, held.reviewId);
+        if (!installable(review) || accountCheckRunning || liveRunning || network.canSubmit !== true) refuse();
+        reviews.set(held.reviewId, { ...review, installAttempted: true });
+        installAttempts++;
+        const deployment = get(deployments, review.deploymentId);
+        const { response: artifact } = toolchain.artifact(deployment.artifactId);
+        const { approval } = review;
+        const own = liveRecords[held.obligation];
+        await network.assertTestnet();
+        await installPreconditions(review, deployment, artifact, own);
+        // The CLI recheck first: it builds and scans, so ledgers close while it runs. The reads it is
+        // compared with come after it, within 12 ledgers of its observation.
+        const fresh = await authorityRecheck(review, deployment, approval.ownerRuleXdr);
+        const owner = await ownerRead(approval.wallet, approval.ownerRuleId, approval.ownerRuleXdr);
+        const source = await network.sourceCapture();
+        const currentLedger = await network.latestLedger();
+        if (source.sourceSequence !== String(sourceOf(held.checked.envelopeXdr))
+          || currentLedger < fresh.observedLedger || currentLedger - fresh.observedLedger > 12
+          || owner.ledger < fresh.observedLedger || owner.ledger - fresh.observedLedger > 12
+          || currentLedger + 1 >= held.checked.maxLedger) refuse();
+        // The recheck took time: the evidence must still be recent at the ledger read after it.
+        installGate({ review, deployment, artifact, currentLedger });
+        const signed = await validateSignedAuthorization({ approval, checked: held.checked,
+          signedAuthEntriesXdr: input.signedAuthEntriesXdr, origin: LIVE_ORIGIN });
+        session.invalidate('install');
+        const submitted = await network.submitEnvelope(signed.envelopeXdr, 'install-policy');
+        const account = approval.wallet.contractId;
+        const policy = deployment.response.policyAddress;
+        // Confirmed: keep its identity before any verification can refuse, so it can still be seen and removed.
+        const installationId = id();
+        const owners = { wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr: approval.ownerRuleXdr };
+        installations.set(installationId, { record: freezeCopy({ installationId, status: 'confirmed_unverified', account, policy,
+          ruleId: addedRuleId(submitted, account), transactionHash: submitted.hash, ledger: submitted.ledger, ruleXdr: null }),
+        owner: owners, removalAttempted: false, removal: null });
+        let record;
+        try {
+          const event = verifyInstallation({ submitted, intent: approval.intent, ruleId: review.nextRuleId });
+          const readback = await readbackAfter(account, event.ruleId, event.ledger);
+          if (readback.status !== 'present' || readback.xdr !== event.ruleXdr) refuse();
+          const marker = await markerAfter(account, policy, event.ruleId, event.ledger);
+          if (marker.installed !== true) refuse();
+          const live = review.liveLayer.evidence;
+          record = freezeCopy({ installationId, status: 'installed', network: 'testnet', networkId: NETWORK_ID,
+            account, ruleId: event.ruleId, transactionHash: event.transactionHash, ledger: event.ledger, trust: 'rpc_reported',
+            feeChargedStroops: submitted.feeChargedStroops ?? null,
+            policy, policyCodeHash: artifact.wasmHash, specHash: artifact.specHash, bindingSetHash: deployment.response.bindingSetHash,
+            delegate: approval.intent.delegate_signers[0].address, validUntilLedger: approval.intent.valid_until_ledger,
+            authorityCommitment: approval.commitment, verificationRunId: review.verification.runId,
+            layers: review.verification.layers.map((layer) => ({ layer: layer.layer, status: layer.status })),
+            evidenceLedgers: { captured: review.targetLayer.evidence.observedLedger, live: live.cases.map((c) => c.simulationLedger) },
+            liveCheck: { consentStatementSha256: live.consentStatementSha256, signatureExpirationLedger: live.signatureExpirationLedger },
+            event: { name: 'context_rule_added', ruleId: event.ruleId, transactionHash: event.transactionHash, ledger: event.ledger },
+            ruleXdr: event.ruleXdr,
+            readback: { rule: 'matched', ledger: readback.ledger, policyMarker: 'installed', markerLedger: marker.ledger },
+            owner: OWNER });
+        } catch {
+          // Confirmed but not verified: no installation record; the confirmed identity stays listed in `status`.
+          refuse();
+        }
+        installations.set(installationId, { record, owner: owners, removalAttempted: false, removal: null });
+        // This installation used its own entry; every earlier signature had expired unused (checked above).
+        for (const obligation of openRecords()) closedRecords.set(obligation, record.transactionHash);
+        return freezeCopy({ receipt: receipt(submitted), installation: record });
+      });
+    },
+    // Revocation, step 1: the recorded rule must still be on the account (exactly as installed, for a
+    // verified installation), and the owner rule unchanged; the fee payer's record-mode simulation
+    // drafts the unsigned removal, which is validated before it is released.
+    'prepare-revoke': async (input) => {
+      exact(input, ['installationId']);
+      const held = get(installations, input.installationId);
+      const { record, owner } = held;
+      if (held.removalAttempted || !Number.isSafeInteger(record.ruleId)) refuse();
+      session.invalidate('revoke');
+      await network.assertTestnet();
+      const fresh = await ownerRead(owner.wallet, owner.ownerRuleId, owner.ownerRuleXdr);
+      const rule = await network.ruleReadback(record.account, record.ruleId);
+      if (rule.status !== 'present' || (record.ruleXdr === null
+        ? !xdr.ScVal.fromXDR(rule.xdr, 'base64').map.some((e) => e.key.sym?.toString() === 'id' && e.val.u32 === record.ruleId)
+        : rule.xdr !== record.ruleXdr)) refuse();
+      const approval = reviewRemoval({ ...owner, ownerRuleXdr: fresh.ownerRuleXdr,
+        installation: { account: record.account, ruleId: record.ruleId, transactionHash: record.transactionHash } });
+      const prepared = await network.prepareRemoval({ wallet: owner.wallet, ruleId: record.ruleId, ownerReadLedger: fresh.ledger });
+      const checked = validateRemovalAssembly({ approval, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits });
+      const display = revokeConsent({ approval, checked, maxFeeStroops: REMOVAL_MAX_FEE_STROOPS });
+      const action = session.issue('revoke', { installationId: input.installationId, approval, checked, ruleXdr: rule.xdr });
+      return freezeCopy({ action, installation: record, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr,
+        limits: prepared.limits, display });
+    },
+    // Revocation, step 2: the owner's passkey signature of exactly the released removal, submitted once.
+    // Success needs the account's `context_rule_removed` and the rule reading back absent (#3000) at or
+    // after the removal's ledger; whether the policy dropped its installation state is reported separately.
+    'confirm-revoke': async (input) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'revoke', async ({ installationId, approval, checked, ruleXdr }) => {
+        const held = get(installations, installationId);
+        if (held.removalAttempted || network.canSubmit !== true) refuse();
+        const { record, owner } = held;
+        await network.assertTestnet();
+        const fresh = await ownerRead(owner.wallet, owner.ownerRuleId, approval.ownerRuleXdr);
+        const rule = await network.ruleReadback(record.account, record.ruleId);
+        const source = await network.sourceCapture();
+        const currentLedger = await network.latestLedger();
+        if (rule.status !== 'present' || rule.xdr !== ruleXdr || source.sourceSequence !== String(sourceOf(checked.envelopeXdr))
+          || currentLedger + 1 >= checked.maxLedger || currentLedger < fresh.ledger || currentLedger - fresh.ledger > 12) refuse();
+        const signed = await validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr: input.signedAuthEntriesXdr,
+          origin: LIVE_ORIGIN });
+        session.invalidate('revoke');
+        // Spent from here: a removal that may have reached the network is never prepared again. A
+        // refusal that leaves the fee payer able to submit sent nothing, so removal stays available.
+        held.removalAttempted = true;
+        let submitted;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch {
+          if (network.canSubmit === true) held.removalAttempted = false;
+          refuse();
+        }
+        // Confirmed: keep its identity before any verification can refuse.
+        held.removal = { status: 'confirmed_unverified', ruleId: record.ruleId, transactionHash: submitted.hash, ledger: submitted.ledger };
+        let removal;
+        try {
+          const event = verifyRemoval({ submitted, account: record.account, ruleId: record.ruleId });
+          const readback = await readbackAfter(record.account, record.ruleId, event.ledger);
+          if (readback.status !== 'absent') refuse();
+          let cleanup = { policyCleanup: 'not_checked', cleanupLedger: null };
+          try {
+            const marker = await markerAfter(record.account, record.policy, record.ruleId, event.ledger);
+            cleanup = { policyCleanup: marker.installed ? 'still_installed' : 'not_installed', cleanupLedger: marker.ledger };
+          } catch { /* reported as not_checked: cleanup is a separate observation from the removal */ }
+          removal = freezeCopy({ status: 'removed', ruleId: record.ruleId, transactionHash: event.transactionHash, ledger: event.ledger,
+            event: 'verified', ruleReadback: 'absent', readbackLedger: readback.ledger, ...cleanup, owner: OWNER });
+        } catch { refuse(); }
+        held.removal = removal;
+        return freezeCopy({ receipt: receipt(submitted), removal });
+      });
+    },
   };
+}
+
+/** The sequence an unsigned envelope's source account had when it was drafted (its own sequence minus one). */
+function sourceOf(envelopeXdr) {
+  const envelope = xdr.TransactionEnvelope.fromXDR(envelopeXdr, 'base64');
+  return envelope.v1.tx.seqNum - 1n;
 }

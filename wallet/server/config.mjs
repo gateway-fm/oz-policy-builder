@@ -1,9 +1,10 @@
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, normalize } from 'node:path';
+import { StrKey } from '@stellar/stellar-sdk';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
-const OPTIONAL = ['stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable'];
+const OPTIONAL = ['stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
 const integer = (value, max) => Number.isSafeInteger(value) && value >= 1 && value <= max;
 
@@ -74,8 +75,12 @@ export function loadWalletConfig(path) {
     }
     // The native worker is optional; without it the account-Wasm layer stays unavailable.
     const nativeExecutable = Object.hasOwn(value, 'nativeExecutable') ? executable(value.nativeExecutable) : null;
+    // The deployed atomic live helper's contract ID; without it the live-enforcement layer is unavailable.
+    // Its code is read back and matched to the reviewed hash before every use, never trusted from here.
+    if (Object.hasOwn(value, 'liveHelper') && (typeof value.liveHelper !== 'string' || !StrKey.isValidContract(value.liveHelper))) refused();
+    const liveHelper = Object.hasOwn(value, 'liveHelper') ? value.liveHelper : null;
     return Object.freeze({ executable: executable(value.executable), workRoot: directory(value.workRoot, true),
       rpcUrl: url.href, registrySnapshot, registryRoots, registryMinimumVersion: value.registryMinimumVersion,
-      buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable });
+      buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable, liveHelper });
   } catch { refused(); }
 }

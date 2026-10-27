@@ -34,22 +34,22 @@ Use the wallet proposal only when every one of these holds for the confirmed spe
 
 - it came from `record_transaction` on a confirmed transaction of the user's wallet account,
   on testnet;
-- one rule; one delegated `G…` signer; predicate `any_of`;
+- one rule; one delegated `G…` signer; predicate `any_of` with `strict_signer_set: true`;
 - an expiry ledger and a call cap of 1 to 10,000 calls (the wallet does not take unlimited
   calls or no expiry);
 - every argument constraint is exact (`eq_*`): no widening, no adapter-derived constraint;
 - the only policy is the generated scope policy (no spending limit);
-- the target is the built-in Stellar Asset contract's `transfer` to a `G…` recipient;
+- the only call is the native XLM Stellar Asset contract's `transfer` from `SELF` to a
+  `G…` recipient, with an exact positive i128 amount;
 - the grant name is lowercase letters, digits and hyphens, starting with a letter, at most 20
   characters.
 
-No wallet imports `ozpb-grant-proposal/v1` yet: the proposal records the confirmed grant in
-the form the wallet integration's planned import takes, and the user-run path in section 4 is
-the way to an install draft today. Tell the user so. Also tell them what that import is
-designed to require: the account must be the wallet's own account, running the account code the
-wallet recognises; it records the transaction again by hash, which works only while RPC still
-holds it (a few days); and the expiry must fall within about a day (17,280 ledgers) of the
-ledger at import. The wallet decides; a refusal there is final, not something to work around.
+The local wallet integration accepts this proposal through **Import a grant proposal**. The
+account must be the wallet's own recognized account. The wallet records the transaction again
+by hash while RPC retains it, and requires expiry within 17,280 ledgers of its current ledger.
+For execution checks and installation, use the automation delegate created by that wallet
+backend session; an external delegate can be imported for inspection but cannot complete those
+checks. The wallet decides; a refusal is final, not something to work around.
 
 For anything else, use the user-run path in section 4.
 
@@ -107,8 +107,8 @@ memory, shorten it, or fill one in:
   `valid_until_ledger` is `valid_until.ledger` or `null`; `max_calls` is the
   `call_count_per_installation` cap or `null`; `policy_kinds` is each policy's `kind`, in order.
 
-No other field. Then tell the user, briefly, that nothing is installed, and how the planned
-wallet import is designed to treat the proposal:
+No other field. Then tell the user, briefly, that nothing is installed, and how the
+wallet import treats the proposal:
 
 - as untrusted: it records the transaction again through its own RPC, synthesizes again with
   its own toolchain from its own decisions document, compares the grant projection, and

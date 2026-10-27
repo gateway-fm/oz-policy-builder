@@ -9,6 +9,7 @@ export interface CheckedAssembly {
   readonly maxLedger: number;
   readonly authorityCommitment: string;
 }
+export function signerScVal(signer: unknown): xdr.ScVal;
 export function installCall(intent: unknown): xdr.InvokeContractArgs;
 export function decodeEnvelope(raw: string): xdr.TransactionEnvelope;
 export function validateAssembly(input: unknown): CheckedAssembly;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Address, Keypair, Networks, hash, xdr } from '@stellar/stellar-sdk';
-import { offlineDomain, createOfflineSigner } from '../server/native-protocol.mjs';
+import { offlineCapability, offlineDomain, createOfflineSigner } from '../server/native-protocol.mjs';
 const vector = JSON.parse(readFileSync(new URL('../../docs/examples/native-domain-vector.json', import.meta.url)));
 const H = (n) => n.repeat(64);
 const digest = (bytes) => Buffer.from(hash(bytes)).toString('hex');
@@ -13,7 +13,7 @@ function fixture() {
   const prepared = { binding, execution_network_id: domain.networkId, signature_expiration_ledgers: [1064, 200064] };
   let signatures = 0;
   const signer = createOfflineSigner({ prepared, caseIds: ['case:0', 'control:nonce_replay'],
-    signer: { address: key.publicKey(), sign: (bytes) => { signatures++; return key.sign(bytes); } } });
+    signer: offlineCapability({ publicKey: () => key.publicKey(), sign: (bytes) => { signatures++; return key.sign(bytes); }, verify: (b, s) => key.verify(b, s) }) });
   return { key, prepared, signer, count: () => signatures };
 }
 function request(f, change = () => {}) {
@@ -122,5 +122,5 @@ test('retained expected metadata is immutable even if its caller changes objects
 test('a key for another delegate cannot create an offline signer', () => {
   const f = fixture();
   assert.throws(() => createOfflineSigner({ prepared: f.prepared, caseIds: ['case:0'],
-    signer: { address: Keypair.random().publicKey(), sign: () => { throw new Error('must not sign'); } } }), /refused/);
+    signer: offlineCapability({ publicKey: () => Keypair.random().publicKey(), sign: () => { throw new Error('must not sign'); }, verify: (b, s) => Keypair.random().verify(b, s) }) }), /refused/);
 });

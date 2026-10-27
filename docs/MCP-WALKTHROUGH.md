@@ -99,13 +99,15 @@ checks that the current grant was confirmed and then prints one of two things:
   Stellar Asset contract, so an upgraded target is refused), each allowed call's function and
   argument constraints, the authorization, the expiry ledger, the call cap and the policy kinds.
   It leaves out when the target code was observed, its role and drift policy, and constraint
-  provenance, which an honest re-acquisition can observe differently. A wallet import is
-  designed to treat it as untrusted: record the transaction again by hash through its own RPC,
+  provenance, which an honest re-acquisition can observe differently. The wallet import
+  treats it as untrusted: record the transaction again by hash through its own RPC,
   synthesize again with its own toolchain from its own decisions document, refuse any projection
   difference, widening or spending limit, and show the delegate, expiry and cap for approval.
   Spec hashes are shown, not required to match. The skill's text is the exact field-by-field
   definition, and `scripts/check-agent-transcript.py` checks a printed proposal against the tool
-  calls it came from. The wallet integration does not import proposals yet.
+  calls it came from. The local wallet accepts the supported native-XLM transfer subset through
+  [Import a grant proposal](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal).
+  Its execution checks require the delegate held by that backend session.
 - **A user-run path** for every other grant: generate and verify the policy locally, upload it
   and deploy it by its verified Wasm hash with the user's own key, bind it, rerun the authority
   check, confirm a new card that includes the authority list, then
@@ -157,7 +159,7 @@ which saves a confusing failure.
 | `record_transaction` | the network, and a transaction hash still inside RPC retention — a few days |
 | `record_simulation` | the network, but no signature and no custody: record mode asks what an *unsigned* envelope would require. This is the path the demo script uses |
 | `preflight_transaction` | the network and an exact envelope carrying its intended authorization entries; enforcement mode returns the endpoint-reported simulation outcome and ledger, names each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and lists declared instructions or fee below the endpoint's padded estimate as advice that never changes the outcome. It does not prove that a particular installed policy was selected, and writes are discarded. Discarded writes do not make it harmless: signed authorization entries are live authorizations that anyone who sees the envelope — the RPC endpoint, this transcript — can submit until their `signatureExpirationLedger`, and simulation does not consume their nonce. Use testnet or a short expiration, a trusted endpoint, and the stdio server; a hosted server refuses signed envelopes |
-| `capture_target` | an RPC source the operator configured in `OZPB_RPC_SOURCES_JSON` (the request names it and its network, never a URL; `scripts/mcp-server-dev.sh` configures one, `testnet`), and an unsigned envelope whose only call is a native Stellar Asset Contract `transfer` from the contract account to an existing G recipient. Returns the `rpc_reported` target capture the native worker's captured-target layer reads; its record-mode simulation is acquisition only, not evidence that a policy permits the call. Any other call is refused with `E_UNSUPPORTED_ENVELOPE`. The envelope is confidential input: no result or error echoes it, but it reaches the endpoint and this transcript, and the capture repeats its call (account, recipient, amount), so prefer the CLI or a local stdio server. It does not run the captured-target layer |
+| `capture_target` | an RPC source the operator configured in `OZPB_RPC_SOURCES_JSON` (the request names it and its network, never a URL; `scripts/mcp-server-dev.sh` configures one, `testnet`), and an unsigned envelope whose only call is a native Stellar Asset Contract `transfer` from the contract account to an existing G recipient. Returns the `rpc_reported` target capture the native worker's captured-target layer reads; its record-mode simulation is acquisition only, not evidence that a policy permits the call. Any other call is refused with `E_UNSUPPORTED_ENVELOPE`; a failed simulation of the call returns `E_TARGET_REFUSED`, archived call state `E_TARGET_ARCHIVED`. The envelope is confidential input: no result or error echoes it, but it reaches the endpoint and this transcript, and the capture repeats its call (account, recipient, amount), so prefer the CLI or a local stdio server. It does not run the captured-target layer |
 | `synthesize_policy` | a recording and the decisions — the signer set, the lifetime, the call cap (or an explicit `unlimited_calls_acknowledged: true` instead of one). Everything else it can work out: the account comes from the recording, and the registry snapshot from what the server was started with (`scripts/mcp-server-dev.sh` supplies the committed development pair). What it will not work out is the decisions, because those are the grant |
 | `reference_suite` | a validated spec; returns layer-1 permit/deny evidence and coverage, not a complete dry run |
 | `generate_code` | the pinned `stellar contract build` installed, and a warm dependency cache. The first call is slow |

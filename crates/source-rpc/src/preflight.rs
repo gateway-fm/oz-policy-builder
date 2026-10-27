@@ -494,7 +494,9 @@ fn ensure_min_fee_is_data_fee(
 /// `soroban-simulation` lists the restored entries, by index into the simulated read-write
 /// footprint, in `SorobanTransactionDataExt::V1`. That success is against restored state, not
 /// the state the endpoint reports, so it is the same outcome as a preamble.
-fn restores_archived_entries(simulated: &SorobanTransactionData) -> Result<bool, RpcError> {
+pub(crate) fn restores_archived_entries(
+    simulated: &SorobanTransactionData,
+) -> Result<bool, RpcError> {
     let SorobanTransactionDataExt::V1(ext) = &simulated.ext else {
         return Ok(false);
     };
@@ -512,7 +514,7 @@ fn restores_archived_entries(simulated: &SorobanTransactionData) -> Result<bool,
     Ok(!ext.archived_soroban_entries.is_empty())
 }
 
-fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
+pub(crate) fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
     let object = restore
         .as_object()
         .ok_or_else(|| RpcError::Malformed("restorePreamble is not an object".to_string()))?;

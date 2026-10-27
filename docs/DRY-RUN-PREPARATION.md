@@ -63,8 +63,9 @@ then that worker ([running the layers from the CLI](NATIVE-EXECUTION.md#running-
 Neither changes this operation's meaning or completes the live-enforcement layer. The worker's separate
 [captured-target mode](CAPTURED-TARGET-EXECUTION.md) does not either: this operation still
 reports `captured_target` as unavailable. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md)
-is a tested building block for the live layer only, limited to generated policies with a call
-cap; `live_enforcement` stays `unavailable`.
+is the contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+simulates after the owner's consent, limited to generated policies with a call cap; this operation's
+`live_enforcement` stays `unavailable`.
 
 ## Executed layers and acceptance
 

@@ -108,7 +108,9 @@ Only the shape above is captured. The refusals:
 | hosted server: the source's URL is not on `OZPB_RPC_ALLOWLIST` | before any request | `E_RPC` |
 | hosted server: another read through an operator source is running | before any request | `E_RESOURCE_LIMIT` |
 | the endpoint reports another network | during the capture | `E_NETWORK_MISMATCH` |
-| any answer the capture above refuses: a failed, non-void or restoring simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing, archived or expiring entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
+| the record-mode simulation failed, as preflight classifies it: a non-empty error, with no results or restoration, at a ledger the endpoint read. The target refused the call (for example an insufficient balance or a missing recipient) or, indistinguishably once the endpoint's text is withheld, its simulator failed | during the capture | `E_TARGET_REFUSED` |
+| the call's state is archived: a well-formed restoration preamble; a simulation that restored archived entries, which since protocol 23 is how the endpoint reports them; or a footprint entry archived at, or expiring at, the captured ledger | during the capture | `E_TARGET_ARCHIVED` |
+| any other answer the capture above refuses: an error that is empty, not a string, beside results or a preamble, or at ledger 0 (the endpoint refused before simulating); a preamble preflight would not accept; an entry archived at a ledger other than the simulation's, on both attempts; a non-void simulation; an authorization root other than exactly the account's transfer; other account storage in the footprint; a missing entry; an inconsistent header or archival configuration; ledgers that kept changing; or an unreachable or refusing endpoint | during the capture | `E_RPC` |
 | MCP server, stdio or hosted: not finished within 300 s | during the capture | `E_RESOURCE_LIMIT` |
 
 Request-shape errors use a fixed description before MCP parameter handling can report them.
@@ -126,6 +128,8 @@ the same code and operator source, builds the job at the capture's ledger, runs
 `--prepare-captured` and `--captured` with its own offline-domain signer, and reports the layer
 ([running the layers from the CLI](NATIVE-EXECUTION.md#running-the-layers-from-the-cli)). A
 requested capture that does not complete fails the layer. No MCP command runs it.
+The local [Pollywallet backend](POLLYWALLET-INTEGRATION.md#captured-target-execution) also runs it
+for a reviewed grant.
 
 ## Preparation
 
@@ -199,7 +203,9 @@ change-classification unit tests and argument refusal. `cargo test -p ozpb-sourc
 the recorded testnet capture and the mocked refusal cases, including endpoint replies that quote
 the envelope. `cargo test -p ozpb-cli --test capture_target_cli` and
 `cargo test -p ozpb-mcp-server --test mcp_stdio_capture` replay the same recorded responses over
-a local HTTP endpoint through each shell's operator source configuration. `bash scripts/test-captured-target.sh`
+a local HTTP endpoint through each shell's operator source configuration, and
+`bash scripts/test-wallet-native-execution.sh` drives the wallet backend's checks of the capture
+and of both worker modes with them. `bash scripts/test-captured-target.sh`
 generates four real policies and requires every actual-Wasm test to run and pass: the fixture
 capture (a real SDK-29 SAC deployment built locally), the same with an uncapped rule, a capture
 whose sender cannot cover the amount, a rule paying the delegate itself (refused as overlapping
@@ -207,3 +213,10 @@ candidate state), twenty preparation refusals including re-hashed headers that d
 ledger, the recorded testnet capture replayed offline, and the full process protocol. The
 nightly pinned-account gate runs it. Refresh the recorded responses deliberately with
 `cargo test -p ozpb-source-rpc --test target_capture_conformance -- --ignored`.
+
+
+Captured execution accepts TTL extensions only for the transfer's SAC instance and sender
+balance, the candidate account/policy data namespaces, and their pinned code hashes. Extensions
+of unrelated contract data or code refuse the report. A simulation that reports restored entries
+must first supply a valid `minResourceFee` matching its transaction data; missing, malformed or
+inconsistent fees remain endpoint failures rather than archival-state evidence.

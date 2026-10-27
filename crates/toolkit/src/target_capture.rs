@@ -29,7 +29,9 @@ pub fn resolve_capture_rpc_source<'a>(
 /// The capture as the tool's output, or the refusal under its stable code: the caller's
 /// envelope as an input code (`E_RESOURCE_LIMIT`, `E_ENVELOPE_PARSE`, `E_UNSUPPORTED_ENVELOPE`,
 /// the last for any call other than a native SAC exact-amount transfer), a source on another
-/// network as `E_NETWORK_MISMATCH`, and everything the endpoint caused as `E_RPC`.
+/// network as `E_NETWORK_MISMATCH`, a failed simulation of the call as `E_TARGET_REFUSED`, a
+/// footprint needing restoration as `E_TARGET_ARCHIVED`, and every other endpoint answer or
+/// fault as `E_RPC`.
 pub fn capture_target_output(
     capture: Result<TargetCapture, RpcError>,
 ) -> Result<CaptureTargetOutput, ToolError> {
@@ -42,6 +44,8 @@ pub fn capture_target_output(
         RpcError::EnvelopeParse(_) => EC::EEnvelopeParse,
         RpcError::UnsupportedEnvelope(_) => EC::EUnsupportedEnvelope,
         RpcError::NetworkMismatch { .. } => EC::ENetworkMismatch,
+        RpcError::TargetRefused(_) => EC::ETargetRefused,
+        RpcError::TargetArchived(_) => EC::ETargetArchived,
         _ => EC::ERpc,
     };
     // The message is the adapter's, which already leads with the same code, as
@@ -68,6 +72,14 @@ mod tests {
                     actual: "withheld".into(),
                 },
                 EC::ENetworkMismatch,
+            ),
+            (
+                RpcError::TargetRefused("refused".into()),
+                EC::ETargetRefused,
+            ),
+            (
+                RpcError::TargetArchived("archived".into()),
+                EC::ETargetArchived,
             ),
             (RpcError::Malformed("refused".into()), EC::ERpc),
             (RpcError::Rpc("withheld".into()), EC::ERpc),
