@@ -3,7 +3,8 @@
 //!
 //! Exact-by-default: every observed argument becomes a deep exact-equality constraint on
 //! the complete tuple. Widening is never heuristic — it enters only through an explicit
-//! [`Widening`] decision carrying intent and blast radius. The delegate signer set and
+//! [`Widening`] decision carrying intent and blast radius, or a reviewed adapter bound to
+//! the observed target code hash and complete argument signature. The delegate signer set and
 //! predicate cannot be inferred from a recording and are required decisions. Sequences
 //! produce a *permission bundle* (independent rules, one per contract), never a workflow.
 
@@ -385,7 +386,16 @@ pub fn synthesize(
         // Dedup identical tuples; merge their evidence paths.
         let mut tuples: Vec<(AllowedCall, Vec<String>)> = Vec::new();
         for o in calls {
-            let args = exact_constraints(o, input, decisions, adapter, &mut errors, &mut rationale);
+            let matched_adapter =
+                adapter.filter(|adapter| adapter.matches_call(&o.fn_name, o.args));
+            let args = exact_constraints(
+                o,
+                input,
+                decisions,
+                matched_adapter,
+                &mut errors,
+                &mut rationale,
+            );
             let call = AllowedCall {
                 fn_name: o.fn_name.clone(),
                 args,
@@ -1080,6 +1090,8 @@ mod tests {
                     code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         bundle.contract_executables.insert(
@@ -1087,6 +1099,8 @@ mod tests {
             ExecutableObservation {
                 executable: ObservedExecutable::StellarAsset,
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         bundle
@@ -1213,6 +1227,8 @@ mod tests {
                     code_hash: sha256(b"different-account-wasm"),
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
 
@@ -1233,6 +1249,8 @@ mod tests {
                     code_hash: target_hash,
                 },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
 
@@ -1267,6 +1285,8 @@ mod tests {
                     ExecutableObservation {
                         executable: ObservedExecutable::Wasm { code_hash },
                         observed_ledger: LedgerSeq(ledger),
+                        last_modified_ledger: None,
+                        live_until_ledger: None,
                     },
                 );
                 bundle
@@ -1368,6 +1388,84 @@ mod tests {
     }
 
     #[test]
+    fn adapter_never_widens_a_call_with_the_wrong_whole_argument_shape() {
+        use ozpb_recorder_core::{ArgSummary, AuthorizedCall, ObservedExecutable};
+        let mut input = crate::fixtures::golden_input();
+        let code_hash = ozpb_domain::sha256(b"synthetic-swap-shape");
+        input.bundles[0]
+            .contract_executables
+            .get_mut(&crate::fixtures::golden_token_strkey())
+            .unwrap()
+            .executable = ObservedExecutable::Wasm { code_hash };
+        input.adapters = vec![adapters::soroswap_router_adapter(code_hash)];
+        input.spending_limit_capability = None;
+        let mut decisions = crate::fixtures::golden_decisions();
+        decisions.spending_limit = None;
+        let path = stellar_xdr::ScVal::Vec(Some(
+            vec![stellar_xdr::ScVal::Address(
+                stellar_xdr::ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(
+                    [2; 32],
+                ))),
+            )]
+            .try_into()
+            .unwrap(),
+        ));
+        let args = vec![
+            ArgSummary::I128(1000),
+            ArgSummary::I128(950),
+            ArgSummary::Other {
+                xdr_base64: path.to_xdr_base64(stellar_xdr::Limits::none()).unwrap(),
+            },
+            ArgSummary::Address(crate::fixtures::golden_account_strkey()),
+            ArgSummary::U64(2000),
+        ];
+        for mutation in 0..5 {
+            let mut input = input.clone();
+            let AuthorizedCall::Contract {
+                fn_name,
+                args: observed,
+                ..
+            } = &mut input.bundles[0].authorizations[0].root.call
+            else {
+                unreachable!()
+            };
+            *fn_name = "swap_exact_tokens_for_tokens".into();
+            *observed = args.clone();
+            match mutation {
+                0 => observed.push(ArgSummary::U32(1)),
+                1 => {
+                    observed.pop();
+                }
+                2 => observed[2] = ArgSummary::U32(1),
+                3 => observed[4] = ArgSummary::I128(2000),
+                _ => {
+                    observed[2] = ArgSummary::Other {
+                        xdr_base64: stellar_xdr::ScVal::Vec(Some(
+                            vec![stellar_xdr::ScVal::U32(1)].try_into().unwrap(),
+                        ))
+                        .to_xdr_base64(stellar_xdr::Limits::none())
+                        .unwrap(),
+                    }
+                }
+            }
+            let output = synthesize(&input, &decisions).unwrap();
+            assert!(
+                output
+                    .spec
+                    .rules
+                    .iter()
+                    .flat_map(|r| &r.allowed_calls)
+                    .flat_map(|c| &c.args)
+                    .all(|a| !matches!(
+                        a.provenance,
+                        ozpb_domain::Provenance::AdapterDerived { .. }
+                    )),
+                "malformed call shape {mutation} was widened"
+            );
+        }
+    }
+
+    #[test]
     fn a_reviewed_adapter_bound_to_the_observed_code_hash_derives_widenings() {
         use adapters::{Adapter, ArgRole, FnRoles};
 
@@ -1381,6 +1479,8 @@ mod tests {
             ExecutableObservation {
                 executable: ObservedExecutable::Wasm { code_hash },
                 observed_ledger: LedgerSeq(4_200_100),
+                last_modified_ledger: None,
+                live_until_ledger: None,
             },
         );
         // `amount` (arg 2) is a MaxInput → the reviewed adapter caps it from above; from/to
@@ -1390,6 +1490,11 @@ mod tests {
             "transfer".to_string(),
             FnRoles {
                 fn_name: "transfer".to_string(),
+                arg_types: vec![
+                    ozpb_domain::target_adapters::ArgumentType::Address,
+                    ozpb_domain::target_adapters::ArgumentType::Address,
+                    ozpb_domain::target_adapters::ArgumentType::I128,
+                ],
                 arg_roles: vec![ArgRole::ExactOnly, ArgRole::ExactOnly, ArgRole::MaxInput],
             },
         );
@@ -1633,7 +1738,9 @@ mod tests {
             state_changes: vec![],
             contract_executables: input().bundles[0].contract_executables.clone(),
             evidence_notes: vec![],
+            acquisition: None,
             raw: RawEvidence {
+                result_xdr_base64: None,
                 envelope_xdr_base64: "x".to_string(),
                 result_meta_xdr_base64: None,
                 simulated_auth_xdr_base64: vec![],
@@ -2421,6 +2528,8 @@ pub mod fixtures {
                             code_hash: pinned_upstream::OZ_SMART_ACCOUNT_WASM,
                         },
                         observed_ledger: LedgerSeq(4_200_100),
+                        last_modified_ledger: None,
+                        live_until_ledger: None,
                     },
                 );
                 bundle.contract_executables.insert(
@@ -2428,6 +2537,8 @@ pub mod fixtures {
                     ozpb_recorder_core::ExecutableObservation {
                         executable: ozpb_recorder_core::ObservedExecutable::StellarAsset,
                         observed_ledger: LedgerSeq(4_200_100),
+                        last_modified_ledger: None,
+                        live_until_ledger: None,
                     },
                 );
                 bundle

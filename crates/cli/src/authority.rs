@@ -5,7 +5,8 @@
 
 use anyhow::{Context as _, Result};
 use ozpb_api_types::{
-    CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput, PrepareInstallIntentOutput,
+    AssembleInstallTransactionInput, CheckPolicyCallSurfaceInput, CheckPolicyCallSurfaceOutput,
+    PrepareInstallIntentOutput,
 };
 use ozpb_source_rpc::{scan_authority_state, AccountStateScan, HttpTransport};
 use std::path::PathBuf;
@@ -38,6 +39,27 @@ pub fn check(args: AuthorityArgs, text: bool) -> Result<()> {
 pub fn intent(args: AuthorityArgs) -> Result<()> {
     let output = run_intent(&args)?;
     print_json(&output)
+}
+
+pub fn assemble(args: AuthorityArgs) -> Result<()> {
+    let input: AssembleInstallTransactionInput = read_json(&args.request)?;
+    let session = Session::with_input(&args, input.intent_request.clone())?;
+    let plan =
+        ozpb_toolkit::plan_install_intent_read(&session.input, &session.trust, &args.build_config)?;
+    let scan = session.read(&plan)?;
+    let intent =
+        ozpb_toolkit::prepare_install_intent_from_scan(&plan, &session.input.rpc_source, &scan)?;
+    let request = ozpb_toolkit::install_assembly_request(&input, &intent)?;
+    let observation = ozpb_source_rpc::assemble_install_transaction(
+        &HttpTransport::new(session.source.rpc_url.clone()),
+        &session.source.network_passphrase,
+        &request,
+    )?;
+    print_json(&ozpb_toolkit::install_assembly_output(
+        &input,
+        intent,
+        observation,
+    )?)
 }
 
 pub(crate) fn run_check(args: &AuthorityArgs) -> Result<CheckPolicyCallSurfaceOutput> {
@@ -75,6 +97,10 @@ impl Session {
     /// unknown name or a source for another network fails before any build or read.
     fn load(args: &AuthorityArgs) -> Result<Self> {
         let input: CheckPolicyCallSurfaceInput = read_json(&args.request)?;
+        Self::with_input(args, input)
+    }
+
+    fn with_input(args: &AuthorityArgs, input: CheckPolicyCallSurfaceInput) -> Result<Self> {
         let roots = std::fs::read_to_string(&args.registry_roots)
             .with_context(|| format!("reading {}", args.registry_roots.display()))?;
         let trust =

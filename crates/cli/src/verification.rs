@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::Subcommand;
-use ozpb_api_types::{ReferenceSuiteInput, VerifyInput};
+use ozpb_api_types::{DryRunInput, ReferenceSuiteInput, VerifyInput};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,19 @@ use crate::{print_json, read_json, BuildConfigArgs};
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Bind a candidate to reference/reproduction evidence; runtime layers stay unavailable.
+    PrepareDryRun {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        registry_roots: PathBuf,
+        #[arg(long)]
+        registry_min_version: u64,
+        #[arg(long)]
+        rpc_sources: PathBuf,
+        #[command(flatten)]
+        build: BuildConfigArgs,
+    },
     /// Run the offline reference suite (layer 1 only; not a full dry run).
     ReferenceSuite {
         #[arg(long)]
@@ -39,6 +52,33 @@ pub enum Command {
 impl Command {
     pub fn run(self) -> Result<()> {
         match self {
+            Self::PrepareDryRun {
+                request,
+                registry_roots,
+                registry_min_version,
+                rpc_sources,
+                build,
+            } => {
+                let input: DryRunInput = serde_json::from_value(read_json(&request)?)?;
+                let roots = std::fs::read_to_string(&registry_roots)
+                    .with_context(|| format!("reading {}", registry_roots.display()))?;
+                let trust =
+                    ozpb_toolkit::registry_trust_from_roots_json(&roots, registry_min_version)?;
+                let sources = std::fs::read_to_string(&rpc_sources)
+                    .with_context(|| format!("reading {}", rpc_sources.display()))?;
+                let sources = ozpb_toolkit::rpc_sources_from_json(&sources)?;
+                ozpb_toolkit::resolve_rpc_source(
+                    &sources,
+                    &input.candidate.rpc_source,
+                    &input.candidate.network_id,
+                )?;
+                let output = ozpb_toolkit::prepare_dry_run_with_build_config(
+                    &input,
+                    &trust,
+                    &build.resolve()?,
+                )?;
+                print_json(&output)?;
+            }
             Self::ReferenceSuite { spec } => {
                 let result = ozpb_toolkit::reference_suite(&ReferenceSuiteInput {
                     spec: read_json(&spec)?,
@@ -174,6 +214,26 @@ mod tests {
     use super::*;
     use crate::{Cli, Command as CliCommand};
     use clap::Parser;
+
+    #[test]
+    fn preparation_requires_operator_registry_and_rpc_configuration() {
+        assert!(Cli::try_parse_from([
+            "ozpb",
+            "prepare-dry-run",
+            "--request",
+            "request.json",
+            "--registry-roots",
+            "roots.json",
+            "--registry-min-version",
+            "3",
+            "--rpc-sources",
+            "sources.json",
+        ])
+        .is_ok());
+        assert!(
+            Cli::try_parse_from(["ozpb", "prepare-dry-run", "--request", "request.json",]).is_err()
+        );
+    }
 
     #[test]
     fn commands_parse_at_the_top_level_with_the_crate_root_and_build_flags() {

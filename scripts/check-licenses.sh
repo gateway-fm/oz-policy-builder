@@ -3,7 +3,7 @@
 #
 # Enforces the RFP's "open source, permissive license" requirement across the ENTIRE
 # dependency tree — our own crates (Apache-2.0 OR MIT) plus every transitive dependency — for
-# BOTH the toolkit workspace and the on-chain `contracts/` workspace. Also verifies crates
+# the toolkit, on-chain contracts and native execution workspaces. Also verifies crates
 # come only from allowed sources and flags known security advisories. Config: deny.toml.
 #
 # licenses/bans/sources are deterministic and offline. The advisory check needs the RustSec
@@ -39,9 +39,13 @@ echo "== contracts workspace (on-chain deliverables): licenses · bans · source
 cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check licenses bans sources \
     -A license-not-encountered -A license-exception-not-encountered
 
-echo "== security advisories (RustSec; both workspaces; fail closed) =="
-# Runs over BOTH workspaces — the contracts tree has its own dependency graph (e.g. the
-# Soroban SDK stack). A missing/unreachable database is not evidence that the dependency
+echo "== native execution workspace: licenses · bans · sources =="
+cargo deny --manifest-path execution-runtime/Cargo.toml --config deny.toml check licenses bans sources \
+    -A license-not-encountered -A license-exception-not-encountered
+
+echo "== security advisories (RustSec; all workspaces; fail closed) =="
+# Runs over all workspaces — contracts and native execution have separate
+# Soroban SDK dependency graphs. A missing/unreachable database is not evidence that the dependency
 # tree is safe, so cargo-deny's non-zero verdict is propagated unchanged.
 # The one `ignore` entry belongs to the contracts tree (an unmaintained build-time macro crate in
 # the Soroban SDK stack), so it is this run that cannot match it — the same shared-config artefact
@@ -49,5 +53,6 @@ echo "== security advisories (RustSec; both workspaces; fail closed) =="
 # which is where a genuinely stale ignore would surface.
 cargo deny check advisories -A advisory-not-detected
 cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check advisories
+cargo deny --manifest-path execution-runtime/Cargo.toml --config deny.toml check advisories -A advisory-not-detected
 
 echo "LICENSE & SUPPLY-CHAIN GATE PASSED"

@@ -87,6 +87,44 @@ fn without_pinned_trust_nothing_is_read() {
 }
 
 #[test]
+fn assembly_is_unsigned_and_uses_operator_trust_and_rpc_sources() {
+    let listed = run_session(&[
+        initialize(),
+        initialized(),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    ]);
+    let tool = by_id(&listed, 2)["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "assemble_install_transaction")
+        .unwrap();
+    assert!(tool["inputSchema"].is_object() && tool["outputSchema"].is_object());
+    assert_eq!(tool["annotations"]["destructiveHint"], false);
+    assert_eq!(tool["annotations"]["readOnlyHint"], false);
+    assert!(tool["inputSchema"]["properties"].get("intent").is_none());
+    assert!(tool["inputSchema"]["properties"].get("rpc_url").is_none());
+    let mut call = request_for("assemble_install_transaction", "anywhere");
+    let authority_request = call["params"]["arguments"].take();
+    call["params"]["arguments"] = serde_json::json!({
+        "intent_request":authority_request,
+        "fee_payer":subscription_spec()["rules"][0]["authorization"]["signers"][0]["delegated"]["address"],
+        "max_fee_stroops":100_000, "validity_ledgers":20
+    });
+    assert_eq!(
+        error_code(&run_session(&[initialize(), initialized(), call.clone()])),
+        "E_REGISTRY_EMPTY"
+    );
+    assert_eq!(
+        error_code(&run_session_with_env(
+            &[initialize(), initialized(), call],
+            &trust_env()
+        )),
+        "E_RPC"
+    );
+}
+
+#[test]
 fn a_source_the_operator_did_not_configure_is_refused_before_any_read() {
     let responses = run_session_with_env(
         &[initialize(), initialized(), request("anywhere")],
