@@ -34,6 +34,13 @@
 4a33492fb9ad6d65a73e07e428a8470fb46c085a1f2e3c1d5d510a6f2252c347|testnet-tx|second delegated subscription charge at ledger 5293681
 b924cc544bc958077990718d8c10728f0cd8f4f88a98e748a31020486f3261e6|testnet-tx|owner-authorized rule 1 removal at ledger 5293707
 
+# Controlled October 22 subscription run with derived denials in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
+# public testnet outcomes, not recomputed or independently fetched by the offline gate.
+0c591b7dace397eb217ca2e48f6d6225446df6cdcc1402aa95c42d046ace8f10|testnet-tx|rule 1 installation for the October 22 derived-denial subscription run
+62220c9aa875a216c0e610750e735406c59470a66dd867d78cfcf6859313cb66|testnet-tx|first delegated subscription charge at ledger 5327286
+b8f75fbad162ffce28eb8fbcd78552b67e88c9236c90ebe54eb9c0d46d3cfc69|testnet-tx|second delegated subscription charge at ledger 5327301
+c7c4308926e9f2f4b49ae7d0dc993d29a2432bc670e344e7fa70808de0146b36|testnet-tx|owner-authorized rule 1 removal at ledger 5327318
+
 # Controlled October 20 Soroswap run in docs/TESTNET-EVIDENCE-TRANCHE-2.md;
 # public testnet outcomes, not recomputed or independently fetched by the offline gate.
 8e075309901d4508b6d12929cd3aa1b93c22b8279a81505029612796760175f7|testnet-tx|owner swap recorded for the October 20 Soroswap run, ledger 5294812
@@ -51,6 +58,33 @@ a7f56018934690ca6454641d4ebeb69f063241f9d2b8267bb0ff0ce80cc06987|testnet-tx|owne
 9b8bcbaacbb361f968f27c5e2114f7c1664260c688661aac114ca51da535cf7d|testnet-tx|wallet passkey-authorized rule 1 installation at ledger 5331779, 22 October install-and-revoke run
 a6646c5d06f7e17ff3de5b56b4bd01bf114a244cad332e104521515f210148ec|testnet-tx|wallet passkey-authorized rule 1 removal at ledger 5331783, 22 October install-and-revoke run
 
+# Controlled October 21 Blend claim run in docs/TESTNET-EVIDENCE-TRANCHE-2.md section 10;
+# public testnet outcomes, not recomputed or independently fetched by the offline gate.
+48475f8d7ff5128e7a23292331f8bd1562e4742d2847c59592c8ae511c34a433|testnet-tx|owner-authorized 10 USDC Blend supply at ledger 5316494 for the October 21 Blend run
+81954cb3585bd5b26a373d37fa0c9502e3464bc2436b49a74c8421c6099c4fbf|testnet-tx|owner claim recorded for the October 21 Blend run, ledger 5316509
+c0c3c10cccb1f423efffcd1c6c1e32fd4af8b3a05946a7c5ef0f0b626f5ff6d7|testnet-tx|owner-authorized installation of the claim rule (account rule ID 1) for the October 21 Blend run
+4e987cf5f5d3030afe9d044518c26c18edfdb5aa111a07b19419dfc84a3e504f|testnet-tx|delegated Blend claim at ledger 5316526
+ec505ff30a03aef18cf2c91a68f09b371b74641e074891a11d8e1d365c088a24|testnet-tx|owner-authorized claim-rule (ID 1) removal at ledger 5316813
+3e7caed05c8793f5411250ce6aebb0b952e33346447ea6bab38a6a2a323c78ce|testnet-tx|owner-authorized Blend withdrawal at ledger 5316817 for the October 21 Blend run
+
+# Controlled October 22 Blend claim run with derived denials in docs/TESTNET-EVIDENCE-TRANCHE-2.md
+# section 12; public testnet outcomes, not recomputed or independently fetched by the offline gate.
+b49f66b81a2abe391ffe22278e6ee1b33b87d639bb3a3541f08d6dc491331c1a|testnet-tx|owner-authorized 10 USDC Blend supply at ledger 5328544 for the October 22 derived-denial Blend run
+34428e7cf5a1bc6f97629d252e3e0f782f0fec14ae5b0d3d02b7454145115824|testnet-tx|owner claim recorded for the October 22 derived-denial Blend run, ledger 5328559
+eba348c235c510bef6f619f4132f0c4efb60b212bdd944f0c51b3278be58109b|testnet-tx|owner-authorized installation of the claim rule (account rule ID 1) for the October 22 derived-denial Blend run
+559d9c5cb053faaf1fe8b055453a6f54e2334b550a70ce634ebc9e4976c12650|testnet-tx|delegated Blend claim at ledger 5328585
+2e019c91a1919dd37e634b7ff55cb1b1726f40719c13a5b346f15feb14b2b603|testnet-tx|owner-authorized claim-rule (ID 1) removal at ledger 5328861
+3e109c59d6e00d4ebc7e0aaae2139382ebe9c380428c1b961471fcdb4456db72|testnet-tx|owner-authorized Blend withdrawal at ledger 5328866 for the October 22 derived-denial Blend run
+
+# Controlled October 22 Soroswap run with derived denials in docs/TESTNET-EVIDENCE-TRANCHE-2.md
+# section 13; public testnet outcomes, not recomputed or independently fetched by the offline gate.
+5ff1093ff365c824d1e6ff2d26cc6b52a86afae38116c5c52bb944d52c471ac6|testnet-tx|owner swap recorded for the October 22 derived-denial Soroswap run, ledger 5329068
+49c3e2ba804e140042cda37a8d7a625fb61fec590478ed899f1c764af0f54e0d|testnet-tx|owner-authorized installation of the router rule (account rule ID 1), October 22 derived-denial Soroswap run
+ff7bd39b8634a50dedf35babdccddfe30841b744a2ed6d9edf4eda4515c5bc42|testnet-tx|owner-authorized installation of the transfer rule (account rule ID 2), October 22 derived-denial Soroswap run
+33b4717212eab0b9d46d117e1b9b16c8fab37272c65a9d1733e249903ffc3d28|testnet-tx|delegated swap at ledger 5329098, October 22 derived-denial Soroswap run
+cb91fafb2544bd0e58238257ecc6de6d6e04bb0a2d61bcf7e42a285c50fe0df2|testnet-tx|owner-authorized transfer-rule (ID 2) removal at ledger 5329252
+c16b10fd54019a80caad6c3e2e7bfeba144ab7ef99a6b5258dccbed68a5896ef|testnet-tx|owner-authorized router-rule (ID 1) removal at ledger 5329253
+
 # The stellar-cli release the wasm gates pin. These identify an upstream artifact we
 # download rather than build: each checksum is a published tarball's, and the revision is
 # the release commit. Recorded, not resolved — see the pinning note in nightly-live.yml.
@@ -66,6 +100,18 @@ b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golde
 90792361630c2bc7d5cbaa5f3b217a59cf7fcef0caa396ef380b3313dd794386|wasm-hash|the same source under CLI 27.1.0, kept as the evidence that the CLI alone moves the hash
 9cf2a72a06661da7717acdc4fb83372499bfa527352956a46d99e71163b93ea3|wasm-hash|golden policy under the pinned rustc 1.91.1 and CLI 27.0.0, re-measured after the event field documentation was corrected, since the spec section carries those doc strings; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2 and scripts/recorded-build-inputs.sh, recorded here at full length
 ded75163e31e6ba146d60441e73e95ede5f9520895c69f66351db2e4009f1242|wasm-hash|the Soroswap policy under the same rustc 1.91.1 and CLI 27.0.0, measured in the same sweep as the golden; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2, recorded here at full length
+
+# The Soroswap router review in docs/TARGET-ADAPTERS.md. The image digest names the rust:1.83.0
+# environment of the rebuild, and the rebuilt Wasm hash is what that environment produced, which
+# is not the deployed router's. (The deployed hash itself is the committed registry example's key.)
+540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab|upstream-release|rust:1.83.0-slim-bookworm linux/amd64 image digest used for the router rebuild, quoted abbreviated
+c2efe757871b55325e7dd10a10a9fa35b2e298afa5e99e6430973a62f5c7c9cc|wasm-hash|Soroswap router rebuilt from tag v1.0 with rustc 1.83.0 and the soroban-cli 22.0.1 optimizer settings; differs from the deployed router only in internal function order; quoted abbreviated
+
+# Controlled October 26 Soroswap adapter run in docs/TESTNET-EVIDENCE-TRANCHE-2.md.
+ca3eede4a691b498f653526c701e307d7b2dc98df87f4aca4f7b433a45ea17ac|testnet-tx|owner swap at ledger 5400679; independent live readback matched, not derivable by the offline gate
+92bfb858f95f768c7fd5ce180845d26d4af02bba7c43d8795999762226cee685|testnet-tx|delegated swap at ledger 5400698; independent live readback matched, not derivable by the offline gate
+bf08c657dd64b9f4b5854cb661c9c5873f341eb072a3ac98b1f4b60c201ebc40|testnet-tx|rule 1 removal at ledger 5400867; independent live readback matched, not derivable by the offline gate
+e7a8202fea1042021013194a7765d9e06a8ec63d20317fa5a481e30bae18f55d|testnet-tx|rule 2 removal at ledger 5400864; independent live readback matched, not derivable by the offline gate
 
 # October 26 wallet proposal-import lifecycle in docs/TESTNET-EVIDENCE-TRANCHE-2.md.
 5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290|testnet-tx|wallet passkey-authorized rule 1 installation at ledger 5402672, October 26 proposal-import run

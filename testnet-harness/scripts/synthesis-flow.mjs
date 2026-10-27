@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import { composedPolicies, SPENDING_LIMIT_WASM, SPENDING_MODEL_GAP, subscriptionConfig } from './subscription.mjs';
+import { writeJson } from './rpc.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const NETWORK = 'Test SDF Network ; September 2015';
@@ -116,7 +117,7 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   const trust = [env.OZPB_SIGNED_REGISTRY_SNAPSHOT, env.OZPB_REGISTRY_ROOTS_FILE, env.OZPB_REGISTRY_MIN_VERSION];
   requireThat(trust.every(Boolean) || trust.every((v) => !v), 'configure all three registry trust inputs, or none');
   const [snapshot, roots, minimum] = trust.every(Boolean) ? [resolve(trust[0]), resolve(trust[1]), trust[2]]
-    : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '3'];
+    : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '4'];
   requireThat(/^[1-9][0-9]*$/.test(minimum), 'registry minimum version must be a positive integer');
   requireThat(existsSync(snapshot) && existsSync(roots), 'registry trust files are missing');
   // Resolve caller-selected paths before launching under ROOT; bare names retain PATH lookup.
@@ -188,7 +189,7 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   same(verified.current_network_preflight, 'not_checked_here: state-dependent (wallet/live)', 'verification evidence boundary');
   Object.assign(run, { spec: join(dir, 'spec.json'), valid_until_ledger: inputs.decisions.valid_until_ledger,
     registry_root: spec.registry_snapshot });
-  writeFileSync(runPath, JSON.stringify(run, null, 2) + '\n');
+  writeJson(runPath, run);
   save(join(dir, 'pipeline.json'), {
     schema_version: 1, account: run.account, recorded_transaction: permits[0].hash,
     recording_hash: record.recording_hash, acquisition_trust: 'rpc_reported',

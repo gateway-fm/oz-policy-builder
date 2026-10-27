@@ -39,7 +39,7 @@ async function prepared({ candidateContextRuleId = 3 } = {}) {
   const path = join(work, `request-${request.run_nonce}.json`);
   writeFileSync(path, requestText(request), { mode: 0o600, flag: 'wx' });
   const output = parseJsonExact(await runTool(cli, ['prepare-dry-run', '--request', path,
-    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '3',
+    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '4',
     '--rpc-sources', join(work, 'rpc-sources.json')]));
   const checked = checkDryRunPreparation(output, { specHash: manifest.spec_hash, bindingSetHash: output.binding.binding_set_hash,
     accountAddress: spec.smart_account.address, delegateAddress: delegate.publicKey(), policyAddress: POLICY,

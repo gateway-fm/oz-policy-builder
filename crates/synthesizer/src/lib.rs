@@ -866,12 +866,24 @@ fn exact_constraints(
                         .map(|bound| (ad, bound))
                 }) {
                     Some((ad, bound)) => {
-                        rationale.push(format!(
-                            "{}/{} arg {index}: adapter '{}' derived a code-hash-bound widening \
-                             from its reviewed argument role (valid only while the target's code \
-                             hash holds)",
-                            o.contract, o.fn_name, ad.name
-                        ));
+                        rationale.push(if matches!(bound, WideningBound::AnyValue) {
+                            // As open as a user's any-value decision, which validation holds to
+                            // high blast radius; no user chose it, so the report must say so.
+                            format!(
+                                "{}/{} arg {index}: adapter '{}' leaves this argument \
+                                 UNCONSTRAINED (any value) from its reviewed caller-chosen role \
+                                 — a high blast radius widening no user decided; valid only \
+                                 while the target's code hash holds",
+                                o.contract, o.fn_name, ad.name
+                            )
+                        } else {
+                            format!(
+                                "{}/{} arg {index}: adapter '{}' derived a code-hash-bound \
+                                 widening from its reviewed argument role (valid only while the \
+                                 target's code hash holds)",
+                                o.contract, o.fn_name, ad.name
+                            )
+                        });
                         let constraint = match bound {
                             WideningBound::LeI128 { max } => Constraint::LeI128 { max },
                             WideningBound::GeI128 { min } => Constraint::GeI128 { min },
@@ -1495,6 +1507,68 @@ mod tests {
                 "malformed call shape {mutation} was widened"
             );
         }
+    }
+
+    /// An argument the adapter leaves open is as unconstrained as a user's any-value decision,
+    /// so the rationale must say so in the same terms, not as a routine derived bound.
+    #[test]
+    fn adapter_any_value_rationale_flags_high_blast_radius() {
+        use ozpb_recorder_core::{ArgSummary, AuthorizedCall, ObservedExecutable};
+        let mut input = crate::fixtures::golden_input();
+        let code_hash = ozpb_domain::sha256(b"synthetic-swap-shape");
+        input.bundles[0]
+            .contract_executables
+            .get_mut(&crate::fixtures::golden_token_strkey())
+            .unwrap()
+            .executable = ObservedExecutable::Wasm { code_hash };
+        input.adapters = vec![adapters::soroswap_router_adapter(code_hash)];
+        input.spending_limit_capability = None;
+        let mut decisions = crate::fixtures::golden_decisions();
+        decisions.spending_limit = None;
+        let path = stellar_xdr::ScVal::Vec(Some(
+            vec![stellar_xdr::ScVal::Address(
+                stellar_xdr::ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(
+                    [2; 32],
+                ))),
+            )]
+            .try_into()
+            .unwrap(),
+        ));
+        let AuthorizedCall::Contract { fn_name, args, .. } =
+            &mut input.bundles[0].authorizations[0].root.call
+        else {
+            unreachable!()
+        };
+        *fn_name = "swap_exact_tokens_for_tokens".into();
+        *args = vec![
+            ArgSummary::I128(1000),
+            ArgSummary::I128(950),
+            ArgSummary::Other {
+                xdr_base64: path.to_xdr_base64(stellar_xdr::Limits::none()).unwrap(),
+            },
+            ArgSummary::Address(crate::fixtures::golden_account_strkey()),
+            ArgSummary::U64(2000),
+        ];
+        let output = synthesize(&input, &decisions).unwrap();
+        let line = |arg: &str| {
+            output
+                .rationale
+                .iter()
+                .find(|line| line.contains(&format!("swap_exact_tokens_for_tokens arg {arg}:")))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let deadline = line("4");
+        assert!(
+            deadline.contains("UNCONSTRAINED") && deadline.contains("high blast radius"),
+            "the open deadline is reported as a routine bound: {deadline:?}"
+        );
+        assert!(deadline.contains("soroswap-router@1"));
+        let input_bound = line("0");
+        assert!(
+            !input_bound.contains("high blast radius"),
+            "a bounded input is not flagged as open: {input_bound:?}"
+        );
     }
 
     #[test]

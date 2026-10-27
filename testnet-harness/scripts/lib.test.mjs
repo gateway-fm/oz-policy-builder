@@ -485,3 +485,14 @@ test('composed install parameters are exact i128/u32 and map keys follow contrac
     assert.throws(() => addContextRuleArgs(input), /period/);
   }
 });
+
+test('a Delegated signer map is ordered by key and refuses what it cannot order', async () => {
+  const { delegatedSignersPayload } = await import('./lib.mjs');
+  const low = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 0)), high = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 0xff));
+  const signers = (payload) => payload.map.find((e) => e.key.sym.toString() === 'signers').val.map
+    .map((e) => Address.fromScAddress(e.key.vec[1].address).toString());
+  assert.deepEqual(signers(delegatedSignersPayload([high, low], [3])), [low, high]);
+  assert.deepEqual(signers(delegatedSignersPayload([], [3])), []);
+  assert.throws(() => delegatedSignersPayload([low, low], [3]), /cannot repeat/);
+  assert.throws(() => delegatedSignersPayload([StrKey.encodeContract(Buffer.alloc(32, 1))], [3]), /ed25519/);
+});

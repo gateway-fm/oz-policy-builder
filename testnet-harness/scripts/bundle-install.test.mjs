@@ -26,7 +26,7 @@ function fixture() {
       registry_snapshot: spec.registry_snapshot, wasm_hash: createHash('sha256').update(wasm).digest('hex') } };
   });
   const policies = [C(20), C(21)];
-  const history = [], sends = [], approvals = [], signatures = [];
+  const history = [], sends = [], approvals = [], signatures = [], logs = [];
   let counter = 0, createIndex = 0, codeChecks = 0;
   const controls = {};
   const owner = { verifier: C(22), keyData: Buffer.alloc(66, 7), sign: async (digest) => {
@@ -34,7 +34,7 @@ function fixture() {
   } };
   const deps = {
     hashSpec: async () => synthesis.spec_hash, assertTestnet: async () => {}, loadKey: () => payer,
-    ownerSigner: async () => owner, log: () => {},
+    ownerSigner: async () => owner, log: (text) => logs.push(text),
     latestLedger: async () => controls.expired ? spec.rules[0].valid_until.ledger : record.bundle.ledger + 10,
     contractCodeHash: async (address) => address === run.account ? run.account_code_hash
       : controls.wrongDeployedCode ? hash(99)
@@ -43,6 +43,7 @@ function fixture() {
     approveInstall: async (args) => {
       approvals.push(args);
       const i = args.request.rule_index;
+      if (controls.refuseFirst) return { approved: false, stage: 'recheck_error', reasons: controls.refusalReasons };
       if (controls.refuseSecond && i === 1) return { approved: false, reasons: ['fixture refused'] };
       const result = { account: run.account, context: spec.rules[i].context.contract, name: spec.name,
         validUntil: spec.rules[i].valid_until.ledger, signers: [{ kind: 'delegated', address: run.delegate }],
@@ -68,7 +69,7 @@ function fixture() {
       const confirmed = controls.hashSwap ? hash(98) : tx;
       const pending = history.at(-1).walkthrough.bundle.entries.find((entry) => entry.pending?.transaction === tx);
       assert.ok(pending, 'public transaction hash is saved before every network send');
-      sends.push({ op, tx, stage: options.stage });
+      sends.push({ op, tx, stage: options.stage, maxFee: options.maxFee });
       if (controls.failSend && counter === controls.failSend) throw new Error('ambiguous send');
       const host = op.body.invokeHostFunctionOp.hostFunction;
       if (host.type === 'hostFunctionTypeUploadContractWasm') {
@@ -96,8 +97,21 @@ function fixture() {
     confirm: async () => true };
   const execute = () => installPermissionBundle({ run, spec, artifacts, recording: record, checker,
     save: () => history.push(structuredClone(run)) }, deps);
-  return { run, spec, artifacts, controls, sends, approvals, signatures, history, execute };
+  return { run, spec, artifacts, controls, sends, approvals, signatures, history, logs, execute };
 }
+test('a refused recheck preserves its stage and redacted local reason without signing or installing', async () => {
+  const f = fixture();
+  const seed = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 17)).secret();
+  f.controls.refuseFirst = true;
+  f.controls.refusalReasons = [`the pre-sign re-check could not answer: E_RPC: fixture ${seed}`];
+  await assert.rejects(f.execute(), /did not approve/);
+  assert.deepEqual(f.run.walkthrough.bundle.entries[0].authority, { status: 'refused', stage: 'recheck_error' });
+  assert.match(f.logs.join('\n'), /recheck_error.*E_RPC/);
+  assert.ok(!f.logs.join('\n').includes(seed));
+  assert.ok(!JSON.stringify(f.history).includes(seed));
+  assert.equal(f.signatures.length, 0);
+  assert.equal(f.sends.some((s) => s.stage.endsWith('install')), false);
+});
 test('bundle installation deploys every artifact then checks and signs each exact indexed grant', async () => {
   const f = fixture();
   const result = await f.execute();
@@ -117,6 +131,15 @@ test('bundle installation deploys every artifact then checks and signs each exac
     assert.deepEqual(body.auth[0].rootInvocation.subInvocations, []);
     xdr.Operation.fromXDR(op.toXDR());
   }
+});
+test('each policy Wasm upload names the 15-XLM policy upload ceiling; deploy and install name none', async () => {
+  const f = fixture();
+  await f.execute();
+  assert.deepEqual(f.sends.map((send) => [send.op.body.invokeHostFunctionOp.hostFunction.type, send.maxFee]), [
+    ['hostFunctionTypeUploadContractWasm', 150_000_000n], ['hostFunctionTypeCreateContractV2', undefined],
+    ['hostFunctionTypeUploadContractWasm', 150_000_000n], ['hostFunctionTypeCreateContractV2', undefined],
+    ['hostFunctionTypeInvokeContract', undefined], ['hostFunctionTypeInvokeContract', undefined],
+  ]);
 });
 test('wallet expectation matches the scope a bundle check answers: every bound policy, this rule target', async () => {
   // Shape observed from the CLI on testnet: a bundle request's verdict covers all bindings.

@@ -91,3 +91,39 @@ for (const [mode, pattern, ran] of [
     assert.equal(existsSync(join(f.dir, 'protocol-pipeline.json')), false);
   });
 }
+
+test('protocol pipeline records the adapter identity and flags its open deadline as high blast radius', (t) => {
+  const f = fixture(t);
+  f.execute();
+  const pipeline = JSON.parse(readFileSync(join(f.dir, 'protocol-pipeline.json')));
+  assert.deepEqual(pipeline.adapter, { name: 'soroswap-router@1', rule_index: 0,
+    code_hash: '4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c',
+    registry_root: capture.synthesis.spec.registry_snapshot, registry: 'development_root' });
+  assert.deepEqual(pipeline.high_blast_radius, [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4,
+    constraint: 'any_value', provenance: 'adapter_derived', blast_radius: 'high' }]);
+});
+
+test('a W3 synthesis without the adapter stops before any artifact is generated', (t) => {
+  const f = fixture(t);
+  const args = f.files['synthesize.json'].spec.rules[0].allowed_calls[0].args;
+  args[4] = { i: 4, c: { eq_scval: { xdr_base64: 'AAAABQAAAABq1087' } }, prov: 'observed_exact' };
+  assert.throws(f.execute, /allowed tuple/);
+  assert.deepEqual(commands(f), ['record', 'synthesize']);
+  assert.equal(existsSync(join(f.dir, 'protocol-pipeline.json')), false);
+});
+
+test('the adapter binding is labeled by who can sign the registry, not by where the files came from', (t) => {
+  // run.sh's authority check always configures the three trust files, often with the committed ones.
+  const roots = JSON.parse(readFileSync(new URL('../../docs/examples/registry-roots.json', import.meta.url)));
+  for (const [keys, label] of [[roots.keys, 'development_root'], [{ operator: 'ab'.repeat(32) }, 'operator_root'],
+    [{ operator: 'ab'.repeat(32), ...roots.keys }, 'development_root']]) {
+    const f = fixture(t);
+    const trust = join(f.dir, 'trust'); mkdirSync(trust);
+    writeFileSync(join(trust, 'roots.json'), JSON.stringify({ threshold: 1, keys }));
+    writeFileSync(join(trust, 'registry.json'), '{}');
+    Object.assign(f.env, { OZPB_SIGNED_REGISTRY_SNAPSHOT: join(trust, 'registry.json'),
+      OZPB_REGISTRY_ROOTS_FILE: join(trust, 'roots.json'), OZPB_REGISTRY_MIN_VERSION: '4' });
+    f.execute();
+    assert.equal(JSON.parse(readFileSync(join(f.dir, 'protocol-pipeline.json'))).adapter.registry, label);
+  }
+});

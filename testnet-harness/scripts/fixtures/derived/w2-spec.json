@@ -1,0 +1,108 @@
+{
+  "evidence": {
+    "recordings": [
+      {
+        "hash": "e36ddf95604d10eec4698c2990e986d5db117cbfcd16944ec02276b27aa25b03",
+        "trust": "self_supplied"
+      }
+    ]
+  },
+  "name": "subscription",
+  "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+  "registry_snapshot": "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f",
+  "rules": [
+    {
+      "allowed_calls": [
+        {
+          "args": [
+            {
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "i": 0,
+              "prov": "observed_exact"
+            },
+            {
+              "c": {
+                "eq_address": {
+                  "value": "CACAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAINCW"
+                }
+              },
+              "i": 1,
+              "prov": "observed_exact"
+            },
+            {
+              "c": {
+                "eq_i128": {
+                  "value": "10000000"
+                }
+              },
+              "i": 2,
+              "prov": "observed_exact"
+            }
+          ],
+          "fn": "transfer",
+          "justified_by": [
+            "recordings[0]/auth[0]"
+          ]
+        }
+      ],
+      "authorization": {
+        "kind": "any_of",
+        "signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "strict_signer_set": true
+      },
+      "context": {
+        "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "target_code_hash": null,
+        "type": "CallContract"
+      },
+      "policies": [
+        {
+          "reviewed": {
+            "capability": "4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c",
+            "kind": "oz:spending_limit",
+            "params": {
+              "spending_limit": {
+                "limit": "10000000",
+                "period_ledgers": 24
+              }
+            }
+          }
+        },
+        {
+          "generated": {
+            "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+            "kind": "gen:scope+count",
+            "template_family": "policy-templates/scope@1"
+          }
+        }
+      ],
+      "state": [
+        {
+          "call_count_per_installation": {
+            "max_calls": 2
+          }
+        }
+      ],
+      "valid_until": {
+        "approx_time": null,
+        "ledger": 5310917
+      }
+    }
+  ],
+  "schema": "policy-spec/v1",
+  "smart_account": {
+    "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+    "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
+    "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
+  }
+}

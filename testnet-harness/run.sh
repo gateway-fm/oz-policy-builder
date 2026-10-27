@@ -13,9 +13,13 @@
 #   OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_REGISTRY_SNAPSHOT_ROOT=<hex> … bash testnet-harness/run.sh
 #                                   # install through the wallet decision on the authority check
 #                                   # (README: "The wallet decision on the authority check")
-#   OZPB_HARNESS_WALKTHROUGH=soroswap OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator …
+#   OZPB_HARNESS_WALKTHROUGH=soroswap OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator \
+#   OZPB_SOROSWAP_DECISIONS=testnet-harness/soroswap-decisions.json …
 #                                   # W3: a real Soroswap swap, two independent rules installed
 #                                   # separately (docs/WALKTHROUGH-PROTOCOLS.md)
+#   OZPB_HARNESS_WALKTHROUGH=blend OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator …
+#                                   # W1: a real Blend claim on a bounded USDC supply the run opens
+#                                   # and withdraws (docs/WALKTHROUGH-PROTOCOLS.md)
 #
 # Everything the run produces is kept under `testnet-harness/runs/<UTC timestamp>-<pid>/` (gitignored):
 # run.json (every address and transaction hash), the import bundle, the recording, the spec, the
@@ -41,17 +45,18 @@ case "$WALKTHROUGH" in
         node -e 'const n = Number(process.argv[1]); process.exit(Number.isInteger(n) && n >= 12 && n <= 120 ? 0 : 1)' "${OZPB_SUBSCRIPTION_PERIOD_LEDGERS:-}" \
             || { echo "subscription needs explicit OZPB_SUBSCRIPTION_PERIOD_LEDGERS=12..120 (short test window)"; exit 1; }
         ;;
-    soroswap)
-        [ "${OZPB_HARNESS_AUTHORITY_CHECK:-}" = cli ] || { echo "soroswap needs OZPB_HARNESS_AUTHORITY_CHECK=cli"; exit 1; }
+    soroswap|blend)
+        [ "${OZPB_HARNESS_AUTHORITY_CHECK:-}" = cli ] || { echo "$WALKTHROUGH needs OZPB_HARNESS_AUTHORITY_CHECK=cli"; exit 1; }
         # Each rule of the bundle gets its own authority check; there is no terminal prompt per rule.
-        [ "${OZPB_HARNESS_CONFIRM:-}" = operator ] || { echo "soroswap needs OZPB_HARNESS_CONFIRM=operator"; exit 1; }
+        [ "${OZPB_HARNESS_CONFIRM:-}" = operator ] || { echo "$WALKTHROUGH needs OZPB_HARNESS_CONFIRM=operator"; exit 1; }
+        if [ "$WALKTHROUGH" = soroswap ]; then
+            # The output floor and the transfer cap are the operator's decisions, and so is accepting
+            # the adapter's any-value deadline; the harness never picks them (soroswap-decisions.json).
+            [ -f "${OZPB_SOROSWAP_DECISIONS:-}" ] && [ ! -L "${OZPB_SOROSWAP_DECISIONS:-}" ] \
+                || { echo "soroswap needs OZPB_SOROSWAP_DECISIONS=FILE, a regular file (example: testnet-harness/soroswap-decisions.json)"; exit 1; }
+        fi
         ;;
-    blend)
-        echo "blend is not runnable yet: the claim needs a bounded Blend position (native-XLM collateral plus a"
-        echo "small borrow of an emitting reserve) and its repayment, which this harness does not create."
-        echo "See docs/WALKTHROUGH-PROTOCOLS.md."
-        exit 1 ;;
-    *) echo "OZPB_HARNESS_WALKTHROUGH is native, subscription or soroswap"; exit 1 ;;
+    *) echo "OZPB_HARNESS_WALKTHROUGH is native, subscription, soroswap or blend"; exit 1 ;;
 esac
 # Optional: install through the wallet decision on the authority check. The spec then names the
 # signed registry root, and install.mjs takes the check's settings from the environment.
@@ -97,18 +102,22 @@ finish_run() {
     local cleanup_status=0
     trap - EXIT
     if [ "$run_status" -ne 0 ] && [ -n "$SECRETS" ]; then
-        if [ "${WALKTHROUGH:-native}" = soroswap ]; then
-            node "$SCRIPTS/protocol-finish.mjs" --run-dir "$RUN" || cleanup_status=$?
-        else
-            node "$SCRIPTS/failure-cleanup.mjs" --run-dir "$RUN" || cleanup_status=$?
-        fi
+        case "${WALKTHROUGH:-native}" in
+            soroswap) node "$SCRIPTS/protocol-finish.mjs" --run-dir "$RUN" || cleanup_status=$? ;;
+            blend)
+                # Withdraw the supply first: it writes run.json itself, so it must finish before the
+                # bundle cleanup child takes the journal over.
+                node "$SCRIPTS/blend-position.mjs" close --run-dir "$RUN" || cleanup_status=1
+                node "$SCRIPTS/protocol-finish.mjs" --run-dir "$RUN" || cleanup_status=$? ;;
+            *) node "$SCRIPTS/failure-cleanup.mjs" --run-dir "$RUN" || cleanup_status=$? ;;
+        esac
     fi
     if [ -n "$SECRETS" ]; then rm -rf "$SECRETS" || { [ "$run_status" -ne 0 ] || run_status=1; }; fi
     if [ "$cleanup_status" -eq 2 ]; then
         echo 'Cleanup termination is unconfirmed; retaining its files without finalization. Inspect cleanup-termination.json and run.json.' >&2
         exit "$run_status"
     fi
-    if [ "$cleanup_status" -ne 0 ]; then echo 'Failure cleanup incomplete; inspect run.json before assuming the grant was removed.' >&2; fi
+    if [ "$cleanup_status" -ne 0 ]; then echo 'Failure cleanup incomplete; inspect run.json and cleanup-child.log before assuming the grant was removed.' >&2; fi
     # Finalize and export together, keeping provenance consistent with a reporting failure.
     node "$SCRIPTS/run-provenance.mjs" finalize "$RUN" "$run_status" || { [ "$run_status" -ne 0 ] || run_status=1; }
     exit "$run_status"
@@ -128,22 +137,40 @@ if [ "$OWNER" = passkey ]; then npm ci --prefix "$HARNESS/browser" --no-audit --
 
 say "1. setup: throwaway keys, the pinned OpenZeppelin account (owner: $OWNER)"
 node "$SCRIPTS/setup.mjs" --run-dir "$RUN" --owner "$OWNER" ${OZPB_HARNESS_VERIFIER:+--verifier "$OZPB_HARNESS_VERIFIER"}
-if [ "$WALKTHROUGH" = soroswap ]; then
-    say "2. inspect the pinned route, then swap as the owner to justify the grant"
-    # Fixed 0.1-XLM input and absolute output floor; the route's code and pair are re-read first.
-    node "$SCRIPTS/soroswap-preflight.mjs" --run-dir "$RUN"
+if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then
+    if [ "$WALKTHROUGH" = soroswap ]; then
+        say "2. inspect the pinned route, then swap as the owner to justify the grant"
+        # Fixed 0.1-XLM input; the operator's floor, transfer cap and deadline acceptance are journaled
+        # with the file's hash. The route's code and pair are re-read first.
+        node "$SCRIPTS/soroswap-preflight.mjs" --run-dir "$RUN" --decisions "$OZPB_SOROSWAP_DECISIONS"
+    else
+        say "2. refresh an expired emission only, inspect the pool, open the USDC supply, then claim as the owner"
+        # gulp_emissions is called (and recorded) only when the claimed ID's emission has expired or
+        # would expire within the run; the preflight then refuses anything that would claim zero.
+        node "$SCRIPTS/blend-position.mjs" refresh --run-dir "$RUN"
+        node "$SCRIPTS/blend-preflight.mjs" --run-dir "$RUN"
+        node "$SCRIPTS/blend-position.mjs" open --run-dir "$RUN"
+    fi
     node "$SCRIPTS/protocol-invoke.mjs" --run-dir "$RUN"
 
-    say "3. record, synthesize, reference-check, generate and reproduce both independent rules"
+    say "3. record, synthesize, reference-check, generate and reproduce every independent rule"
     ( cd contracts/golden-transfer-policy && cargo fetch --locked >/dev/null )
     node "$SCRIPTS/protocol-flow.mjs" --run-dir "$RUN"
 
-    say "4. install each rule separately after its own authority check, then read both back"
+    say "4. install each rule separately after its own authority check, read each back, replay derived denials"
     node "$SCRIPTS/bundle-command.mjs" install --run-dir "$RUN" --confirm operator
     node "$SCRIPTS/bundle-command.mjs" inspect --run-dir "$RUN"
+    # This spec's own reference suite (by suite hash), replayed against the installed rules:
+    # the recorded originals must permit and at least five derived denials must be refused by the
+    # enforcer each class predicts. Enforcing simulations only, before any delegated call.
+    node "$SCRIPTS/derived-denials.mjs" --run-dir "$RUN"
 
-    say "5. swap controls, one delegated swap, count cap, expiry, removal and post-removal denial"
+    say "5. tuple and signer controls, one delegated call, count cap, expiry, removal and post-removal denial"
     node "$SCRIPTS/protocol-controls.mjs" --run-dir "$RUN"
+    if [ "$WALKTHROUGH" = blend ]; then
+        say "6. withdraw the supply while the keys exist"
+        node "$SCRIPTS/blend-position.mjs" close --run-dir "$RUN"
+    fi
 
     say "done"
     echo "  account  https://stellar.expert/explorer/testnet/contract/$(field account)  (owner: $OWNER)"
@@ -182,6 +209,11 @@ WASMS=("$RUN"/policy/*.wasm)
 say "4. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"
+if [ "$WALKTHROUGH" = subscription ]; then
+    # Derived denials from this spec's own suite, against the installed composition, before any
+    # charge (the spending policy must still be unexercised). Enforcing simulations only.
+    node "$SCRIPTS/derived-denials.mjs" --run-dir "$RUN"
+fi
 
 if [ "$WALKTHROUGH" = subscription ]; then
     say "5. verify subscription tuple, signer, rolling window and total call cap controls"

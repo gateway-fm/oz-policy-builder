@@ -27,9 +27,75 @@ fn load(snapshot: RegistrySnapshot) -> Result<Registry, RegistryError> {
     Ok(registry)
 }
 
+fn dev_registry(version: u64) -> Registry {
+    let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+    let (text, _) = dev::dev_trust_files(network, version).unwrap();
+    let mut registry = Registry::with_pinned_roots(RootPolicy {
+        threshold: 1,
+        keys: BTreeMap::from([("legacy".into(), dev::dev_root_verifying_bytes())]),
+    })
+    .unwrap();
+    registry
+        .load(&serde_json::from_str(&text).unwrap())
+        .unwrap();
+    registry
+}
+
+/// The development registry binds the testnet router's exact code to the reviewed
+/// descriptor. It is a development-registry assertion: the root key is public and the
+/// deployed Wasm was not reproduced from source, and the binding says both.
+#[test]
+fn dev_registry_resolves_soroswap_router_adapter_for_pinned_hash() {
+    let router = target_adapters::SOROSWAP_ROUTER_TESTNET_WASM;
+    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 4);
+    let current = dev_registry(dev::SIGNED_EXAMPLE_VERSION);
+    assert_eq!(
+        current.resolve_target_adapter(&router).unwrap(),
+        Some(target_adapters::soroswap_router())
+    );
+    // Bound to that code alone: another build of the router stays exact.
+    assert_eq!(
+        current
+            .resolve_target_adapter(&sha256(b"another router build"))
+            .unwrap(),
+        None
+    );
+    // The published parent never carried it.
+    assert_eq!(
+        dev_registry(3).resolve_target_adapter(&router).unwrap(),
+        None
+    );
+    let committed: SignedSnapshot =
+        serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json")).unwrap();
+    assert_eq!(committed.snapshot.target_adapters.len(), 1);
+    let binding = &committed.snapshot.target_adapters[&router.to_hex()];
+    assert_eq!(binding.implementation, "soroswap-router@1");
+    for disclosure in [
+        "development-registry assertion",
+        "not governance",
+        "not reproduced",
+    ] {
+        assert!(
+            binding.review_reference.to_lowercase().contains(disclosure),
+            "the binding must say it is a {disclosure:?}"
+        );
+    }
+}
+
 #[test]
 fn existing_signed_snapshot_keeps_its_root_and_signature() {
-    let text = include_str!("../../../docs/examples/registry.signed.json");
+    // Version 3 as it was published, byte for byte, before version 4 replaced the committed
+    // example. Adding the adapter field must not move its root, its signature or its bytes.
+    let text = include_str!("published-v3.signed.json");
+    let (regenerated, _) = dev::dev_trust_files(
+        NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        regenerated, text,
+        "version 3 no longer serializes to its published bytes"
+    );
     let signed: SignedSnapshot = serde_json::from_str(text).unwrap();
     assert!(signed.snapshot.target_adapters.is_empty());
     assert_eq!(

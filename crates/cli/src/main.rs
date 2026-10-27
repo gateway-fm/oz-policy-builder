@@ -10,6 +10,7 @@
 //!     < syn.json > spec.json
 //!   ozpb generate --spec spec.json --rule 0 --out ./generated
 //!   ozpb reference-suite --spec spec.json
+//!   ozpb reference-suite --spec spec.json --emit-cases   # the suite's cases and suite hash
 //!   ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \\
 //!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
 //!     --manifest ./generated/build-manifest.json

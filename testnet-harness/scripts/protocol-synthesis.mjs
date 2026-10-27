@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Address, Networks, scValToNative } from '@stellar/stellar-sdk';
 import { PINNED_ACCOUNT_WASM } from './rpc.mjs';
-import { PROTOCOL_TARGETS, protocolInvocation } from './protocol-calls.mjs';
+import { PROTOCOL_TARGETS, ROUTER_ADAPTER, ROUTER_DEADLINE_ARG, protocolInvocation, soroswapDecisions } from './protocol-calls.mjs';
 const NETWORK_ID = createHash('sha256').update(Networks.TESTNET).digest('hex');
 const TEMPLATE = 'policy-templates/scope@1';
 const SCHEMA = '15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61';
@@ -79,18 +79,58 @@ export function protocolInputs(run, recording) {
   }
   walk(root, `recordings[0]/auth[${selected[0].index}]`);
   orderRootFirst(calls);
-  const widen = (contract, fn_name, arg_index, bound, intent) => ({ contract, fn_name, arg_index, bound, intent, blast_radius: 'medium' });
-  const widenings = plan.kind === 'soroswap_swap' ? [
-    widen(PROTOCOL_TARGETS.router, 'swap_exact_tokens_for_tokens', 0, { le_i128: { max: plan.amount_in } }, 'Bound this swap input at the recorded amount'),
-    widen(PROTOCOL_TARGETS.router, 'swap_exact_tokens_for_tokens', 1, { ge_i128: { min: plan.minimum_out } }, 'Use the explicitly selected absolute output floor'),
-    widen(PROTOCOL_TARGETS.native, 'transfer', 2, { le_i128: { max: plan.amount_in } }, 'Permit the bounded token transfer to the exact pair as an independent capability'),
-  ] : [];
+  const widen = (contract, fn_name, arg_index, bound, intent, blast_radius = 'medium') => ({ contract, fn_name, arg_index, bound,
+    intent, blast_radius });
+  let widenings = [];
+  if (plan.kind === 'soroswap_swap') {
+    // Only the operator's two decisions. The router's input bound and its any-value deadline come
+    // from the registry's reviewed adapter; validateProtocolSynthesis refuses a spec without them.
+    const decided = soroswapDecisions(plan.operator_decisions, { journal: true });
+    requireThat(decided.output_floor.min === plan.minimum_out, 'output floor: the recorded call names another floor than the operator decided');
+    requireThat(BigInt(decided.transfer_cap.max) >= BigInt(plan.amount_in), 'transfer cap below the recorded input');
+    widenings = [
+      widen(PROTOCOL_TARGETS.router, 'swap_exact_tokens_for_tokens', 1, { ge_i128: { min: decided.output_floor.min } }, decided.output_floor.intent),
+      // A direct transfer to the pair is lost to the account. Allowing more than the recorded swap
+      // moved is authority the walkthrough never exercised, so it is high blast radius.
+      widen(PROTOCOL_TARGETS.native, 'transfer', 2, { le_i128: { max: decided.transfer_cap.max } }, decided.transfer_cap.intent,
+        BigInt(decided.transfer_cap.max) > BigInt(plan.amount_in) ? 'high' : 'medium'),
+    ];
+  }
   return { calls, account: { address: run.account, observed_code_hash: run.account_code_hash,
     registry_resolution: 'resolved by the toolkit from the signed snapshot' }, decisions: {
     grant_name: plan.kind === 'blend_claim' ? 'blend-claim' : 'soroswap-swap', delegate_signers: [{ delegated: { address: run.delegate } }],
     predicate: 'any_of', valid_until_ledger: bundle.ledger + horizon, no_expiry_acknowledged: false, max_calls: 1,
     unlimited_calls_acknowledged: false, widenings, spending_limit: null,
   } };
+}
+
+const ADAPTED = { adapter_derived: { adapter: ROUTER_ADAPTER, code_hash: PROTOCOL_TARGETS.router_code } };
+/** What the adapter itself contributes to the router rule: the input bound and the open deadline. */
+function adapterConstraint(call, i) {
+  if (call.contract !== PROTOCOL_TARGETS.router) return null;
+  if (i === 0) return { i, c: { le_i128: { max: scValToNative(call.args[0]).toString() } }, prov: ADAPTED };
+  if (i === ROUTER_DEADLINE_ARG) return { i, c: 'any_value', prov: ADAPTED };
+  return null;
+}
+
+/**
+ * The adapter a validated spec relies on and the arguments it leaves unconstrained. Each such
+ * argument is a high-blast-radius widening the report must flag, even though no user chose it.
+ */
+export function adapterDisclosure(spec) {
+  const adapters = [], open = [];
+  spec.rules.forEach((rule, rule_index) => rule.allowed_calls.forEach((call) => call.args.forEach((arg) => {
+    const derived = arg.prov?.adapter_derived;
+    if (!derived) return;
+    if (!adapters.some((a) => a.rule_index === rule_index && a.name === derived.adapter && a.code_hash === derived.code_hash)) {
+      adapters.push({ name: derived.adapter, code_hash: derived.code_hash, rule_index });
+    }
+    if (arg.c === 'any_value') {
+      open.push({ rule_index, fn: call.fn, arg_index: arg.i, constraint: 'any_value', provenance: 'adapter_derived', blast_radius: 'high' });
+    }
+  })));
+  requireThat(adapters.length <= 1, 'adapter identity');
+  return { adapter: adapters[0] ?? null, high_blast_radius: open };
 }
 
 export function validateProtocolSynthesis(output, run, inputs, registryRoot) {
@@ -107,14 +147,20 @@ export function validateProtocolSynthesis(output, run, inputs, registryRoot) {
   same(spec.rules?.length, inputs.calls.length, 'complete rule count');
   inputs.calls.forEach((call, index) => {
     const rule = spec.rules[index];
+    // The router rule's adapter-derived constraints hold only for the bound code, so its hash is
+    // required and drift refuses; the Blend pool has no adapter and its hash stays evidence.
+    const router = call.contract === PROTOCOL_TARGETS.router;
     same(rule.context, { type: 'CallContract', contract: call.contract, target_code_hash: call.code ? {
-      hash: call.code, observed_ledger: call.observation.observed_ledger, role: 'evidence_only', on_drift: 'warn',
+      hash: call.code, observed_ledger: call.observation.observed_ledger,
+      role: router ? 'adapter_required' : 'evidence_only', on_drift: router ? 'refuse' : 'warn',
     } : null }, 'rule target and code observation');
     same(rule.valid_until, { ledger: inputs.decisions.valid_until_ledger, approx_time: null }, 'bounded expiry');
     same(rule.authorization, { kind: 'any_of', strict_signer_set: true, signers: inputs.decisions.delegate_signers }, 'signers');
     const args = call.args.map((value, i) => {
       const w = inputs.decisions.widenings.find((w) => w.contract === call.contract && w.fn_name === call.fn && w.arg_index === i);
       if (w) return { i, c: w.bound, prov: { user_widened: { intent: w.intent, blast_radius: w.blast_radius } } };
+      const adapted = adapterConstraint(call, i);
+      if (adapted) return adapted;
       const c = value.type === 'scvAddress' ? { eq_address: { value: scValToNative(value) === run.account ? 'SELF' : scValToNative(value) } }
         : value.type === 'scvI128' ? { eq_i128: { value: scValToNative(value).toString() } }
           : { eq_scval: { xdr_base64: Buffer.from(value.toXDR()).toString('base64') } };

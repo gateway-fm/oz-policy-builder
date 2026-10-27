@@ -157,4 +157,3 @@ export function ruleReadbackResult(simulation, { account }) {
     return { status: 'absent', ledger };
   } catch { return refuse(); }
 }
-

@@ -660,7 +660,7 @@ one-call grant as rule 1, which the account's `context_rule_added`, a matching r
 policy's marker confirmed. It then [revoked](#revocation) it: one `context_rule_removed`, the rule
 absent (#3000), policy cleanup `not_installed`. The owner was a virtual authenticator, so this is
 automation evidence with `human_approval_attested: false`. No delegated call was made under the
-installed rule. [Section 10 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#10-wallet-installation-and-revocation-22-october-2026)
+installed rule. [Section 15 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#15-wallet-installation-and-revocation-22-october-2026)
 records the run and four earlier attempts that day that stopped before installing anything.
 
 Toolkit tests exercise session authentication, one-shot state, transport limits, exact XDR

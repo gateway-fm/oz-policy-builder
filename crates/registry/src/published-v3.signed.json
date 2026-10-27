@@ -1,0 +1,84 @@
+{
+  "snapshot": {
+    "schema": "registry/v1",
+    "version": 3,
+    "log_index": 3,
+    "previous_root": "4474ec405262f83c3d125cffde8f362eefcf4c90120cefa5cae74aec4e929ed9",
+    "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+    "valid_from_unix": -9223372036854775808,
+    "expires_at_unix": 9223372036854775807,
+    "policies": {
+      "4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c": {
+        "kind": "oz:spending_limit",
+        "signer_predicates": [],
+        "security_relevant_methods": [
+          "install",
+          "enforce",
+          "uninstall",
+          "set_spending_limit"
+        ],
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/spending-limit-policy @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Upstream publishes no wasm, so this is our reproducible build of their source, not an artifact they signed."
+      }
+    },
+    "accounts": {
+      "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289": {
+        "release": "stellar-accounts@0.7.x",
+        "rule_enumeration": "bounded_next_id",
+        "management_evidence": "return_value_and_events_must_agree",
+        "bounded_next_id": {
+          "schema_version": 1,
+          "max_scan_ids": 1000,
+          "max_rpc_batches": 16,
+          "max_transitive_entries": 1000,
+          "max_attempts": 2,
+          "archive_policy": "reject_unresolved",
+          "snapshot_policy": "same_ledger_and_instance"
+        },
+        "method_inventory_digest": "f92b2de15b78b73f316846f588daa313f730f7c061240e6a1bbd8568ebe8c5c7",
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/account @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact."
+      }
+    },
+    "verifiers": {
+      "60e8798db610bdaf3370d39ebda56ee1dc2c15ce1c3a9e28b528bfa24a06b477": {
+        "implementation": "oz ed25519 verifier",
+        "key_encoding": "raw ed25519 public key (32 bytes)",
+        "immutable": true,
+        "key_scheme": "ed25519",
+        "stateless": true,
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/ed25519-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact. Exports only verify, canonicalize_key and batch_canonicalize_key; its Wasm imports no ledger functions (read from the testnet copy of this exact code), so it is stateless and cannot upgrade itself."
+      },
+      "e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76": {
+        "implementation": "oz webauthn (passkey) verifier",
+        "key_encoding": "65-byte uncompressed P-256 public key, then an optional credential id the verifier ignores",
+        "immutable": true,
+        "key_scheme": "webauthn_p256",
+        "stateless": true,
+        "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/webauthn-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 and stellar-cli 27.0.0 — provenance in ozpb_domain::pinned_upstream. No storage, constructor, upgrade or admin; Wasm imports no ledger functions. Our build of their source, not an upstream-published artifact."
+      }
+    },
+    "templates": {
+      "policy-templates/scope@1": {
+        "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+        "signer_predicates": [
+          "all_of",
+          "any_of",
+          "any_of_current_rule_signers",
+          "threshold"
+        ],
+        "constraint_kinds": [
+          "any_value",
+          "eq_address",
+          "eq_i128",
+          "eq_scval",
+          "ge_i128",
+          "le_i128"
+        ],
+        "review_reference": "audited with the template pack"
+      }
+    },
+    "revocations": {}
+  },
+  "signatures": {
+    "legacy": "2b3bafc7bce0311427007efd86d612c17b7b7ec640694322cf1fb3fd9737597bf2bb96eb16d75607266bce26b15bdd773f704742cd0cbc67e06fe59f2fbe800b"
+  }
+}
