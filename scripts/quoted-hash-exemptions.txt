@@ -98,3 +98,15 @@ b8ea10a2d41a242db8450e18e432cd76cf477bd7061a79ca94a348e8cca6580b|wasm-hash|golde
 90792361630c2bc7d5cbaa5f3b217a59cf7fcef0caa396ef380b3313dd794386|wasm-hash|the same source under CLI 27.1.0, kept as the evidence that the CLI alone moves the hash
 9cf2a72a06661da7717acdc4fb83372499bfa527352956a46d99e71163b93ea3|wasm-hash|golden policy under the pinned rustc 1.91.1 and CLI 27.0.0, re-measured after the event field documentation was corrected, since the spec section carries those doc strings; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2 and scripts/recorded-build-inputs.sh, recorded here at full length
 ded75163e31e6ba146d60441e73e95ede5f9520895c69f66351db2e4009f1242|wasm-hash|the Soroswap policy under the same rustc 1.91.1 and CLI 27.0.0, measured in the same sweep as the golden; quoted abbreviated by docs/ECOSYSTEM-CONFORMANCE.md §2, recorded here at full length
+
+# The Soroswap router review in docs/TARGET-ADAPTERS.md. The image digest names the rust:1.83.0
+# environment of the rebuild, and the rebuilt Wasm hash is what that environment produced, which
+# is not the deployed router's. (The deployed hash itself is the committed registry example's key.)
+540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab|upstream-release|rust:1.83.0-slim-bookworm linux/amd64 image digest used for the router rebuild, quoted abbreviated
+c2efe757871b55325e7dd10a10a9fa35b2e298afa5e99e6430973a62f5c7c9cc|wasm-hash|Soroswap router rebuilt from tag v1.0 with rustc 1.83.0 and the soroban-cli 22.0.1 optimizer settings; differs from the deployed router only in internal function order; quoted abbreviated
+
+# Controlled October 26 Soroswap adapter run in docs/TESTNET-EVIDENCE-TRANCHE-2.md.
+ca3eede4a691b498f653526c701e307d7b2dc98df87f4aca4f7b433a45ea17ac|testnet-tx|owner swap at ledger 5400679; independent live readback matched, not derivable by the offline gate
+92bfb858f95f768c7fd5ce180845d26d4af02bba7c43d8795999762226cee685|testnet-tx|delegated swap at ledger 5400698; independent live readback matched, not derivable by the offline gate
+bf08c657dd64b9f4b5854cb661c9c5873f341eb072a3ac98b1f4b60c201ebc40|testnet-tx|rule 1 removal at ledger 5400867; independent live readback matched, not derivable by the offline gate
+e7a8202fea1042021013194a7765d9e06a8ec63d20317fa5a481e30bae18f55d|testnet-tx|rule 2 removal at ledger 5400864; independent live readback matched, not derivable by the offline gate

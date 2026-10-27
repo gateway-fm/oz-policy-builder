@@ -324,6 +324,20 @@ export async function signForSmartAccount({ entry, expect, signer, ruleIds, vali
 }
 
 /**
+ * True when a host error says the call stopped because `recipient` never authorized it, and the
+ * account was not asked at all: no "failed account authentication" names it. That is how a swap
+ * naming a foreign `to` fails, because the router asks `to`, and only `to`, to authorize. The
+ * error and its subject must be one event, not two strings found anywhere in the text.
+ */
+export function recipientAuthorizationMissing(text, account, recipient) {
+  const str = String(text);
+  const unauthorized = new RegExp(
+    `topics:\\[error, Error\\(Auth, InvalidAction\\)\\], data:\\["Unauthorized function call for address", ${recipient}\\]`,
+  ).test(str);
+  return unauthorized && !str.includes(`"failed account authentication with error", ${account}`);
+}
+
+/**
  * The code with which `policy` refused an authorization of `account`, read from a host error, or
  * `null` when the error is anything else.
  *

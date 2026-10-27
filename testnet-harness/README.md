@@ -102,6 +102,10 @@ The export labels the pipeline as `recorded` only when its completion record exi
 RPC acquisition trust separate from the synthesis boundary's `self_supplied` trust and reports
 artifact reproduction separately from current-network preflight. These remain editable local
 observations. Older runs say `not_recorded`; they do not acquire results from the new pipeline.
+
+If a protocol bundle's approval or pre-sign recheck refuses, the local journal records the
+refusal stage and the terminal log includes the redacted reason. No install is signed after
+that refusal. Public evidence reports only the refused status, without diagnostic text.
 Lifecycle records likewise distinguish a confirmed removal transaction, its checked event,
 the rule readback and best-effort policy cleanup. A later readback failure does not erase the
 confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
@@ -162,7 +166,12 @@ runs separately and gives the field-by-field review procedure for a new summary.
   exactly one generated policy plus the pinned reviewed spending-limit policy, with both
   instances bound to their spec indices. Other compositions are refused before deployment.
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
-  each of its two independent scope+count rules separately through `bundle-command.mjs`.
+  each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
+  output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
+  (example: `soroswap-decisions.json`); the router's input bound and open deadline come from the
+  registry's reviewed adapter. That binding is a development-registry assertion, and the router's
+  Wasm was not reproduced from source
+  ([target adapters](../docs/TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -484,7 +493,7 @@ rule `install.mjs` builds from the spec.
 ```
 OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_BIN=<ozpb with the check commands> \
 OZPB_REGISTRY_SNAPSHOT_ROOT=<root of the signed snapshot> OZPB_SIGNED_REGISTRY_SNAPSHOT=registry.signed.json \
-OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=3 OZPB_RPC_SOURCES_FILE=sources.json \
+OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=4 OZPB_RPC_SOURCES_FILE=sources.json \
 [OZPB_RPC_SOURCE=testnet] [OZPB_HARNESS_CONFIRM=tty|operator] [OZPB_HARNESS_TRUST=trust.json] \
 bash testnet-harness/run.sh
 ```

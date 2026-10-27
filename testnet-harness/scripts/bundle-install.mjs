@@ -74,8 +74,14 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
         account: run.account, networkId: spec.network_id, target: fromSpec.context, boundPolicies: policies,
         ruleIndex: entry.rule_index, specHash: entry.spec_hash, registrySnapshotRoot: spec.registry_snapshot,
       } });
-      entry.authority = approval.approved ? { ...approval.evidence, status: 'rechecked' } : { status: 'refused' };
+      entry.authority = approval.approved ? { ...approval.evidence, status: 'rechecked' }
+        : { status: 'refused', stage: approval.stage ?? 'unknown' };
       save();
+      if (approval.approved !== true) {
+        // Local diagnostics explain which guard refused. The public evidence exporter keeps
+        // only the refused status, and never copies free-form tool errors or this stage.
+        deps.log(rpc.redactSecrets(`Bundle rule ${entry.rule_index} refused at ${entry.authority.stage}: ${(approval.reasons ?? []).join('; ')}`));
+      }
       requireThat(approval.approved === true, 'the harness wallet did not approve the bundle rule');
       const ruleArgs = signedRuleArgs({ approved: approval.args, fromSpec, account: run.account });
       const operation = (auth = []) => Operation.invokeContractFunction({

@@ -20,7 +20,7 @@ feature or an automated check is not by itself evidence that the whole milestone
 | Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |
 | Testnet installation | The harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. Its lifecycle scripts observe grant/code configuration, remove the rule and check a post-removal denial. | Reviewed live lifecycle evidence, a wallet-product install and revoke flow, protected human approval, safe reconfiguration, and full call-surface monitoring. Composed rules are refused. |
 | Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. The native-transfer wrapper now runs RPC recording, synthesis, reference checks and artifact reproduction before installation. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
-| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; executable native-SAC, composed SEP-41 subscription, [Soroswap two-rule](WALKTHROUGH-PROTOCOLS.md) and Blend claim harness flows; the Blend flow opens and withdraws its own USDC supply position, with controlled live runs. | Reviewed current live walkthrough evidence, including relevant denials, wallet approval and adapter/code-hash evidence. |
+| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; executable native-SAC, composed SEP-41 subscription, [Soroswap two-rule](WALKTHROUGH-PROTOCOLS.md) and Blend claim harness flows; the Blend flow opens and withdraws its own USDC supply position, with controlled live runs. The Soroswap flow now takes its router bounds from the development registry's adapter binding and its floor and transfer cap from an operator file; a [controlled live run](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026) completed with that binding. | Reviewed current live walkthrough evidence, including relevant denials, wallet approval and adapter/code-hash evidence. |
 | Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. | Deployment configuration and a deployed service with TLS, client authorization, worker isolation and operational evidence. |
 | Verification and demonstration | Phase 1 gates and the [Phase 2 gate and guide](TRANCHE-2-VERIFICATION.md). | The complete acceptance run, public demonstration and video. |
 
@@ -100,7 +100,11 @@ The source-reviewed account method inventory and its limits are described in
    65 key bytes; a credential id is ignored). A verifier vouches for an owner only when its
    observed code is one whose key handling was reviewed from source (compiled in per exact
    hash, like the method inventory) and its signed entry agrees; older binaries refuse the
-   version-3 entry's new fields. Its public development signing key
+   version-3 entry's new fields. Version 4 adds one target-adapter binding: the testnet Soroswap
+   router's exact code to `soroswap-router@1`. That binding is a development-registry assertion,
+   and the router's Wasm was not reproduced from source
+   ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+   Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
    authority evidence. The operator reader below refuses that root unless its pinned network
    is testnet.

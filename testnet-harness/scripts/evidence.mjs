@@ -10,6 +10,7 @@ import { isMainModule } from './cli-entry.mjs';
 import {
   CASES_FORMAT, MIN_DERIVED_DENIALS, SELECTION, liveRules, liveStandIns, planDerivedDenials, predictEnforcer, suiteHash,
 } from './derived-plan.mjs';
+import { PROTOCOL_TARGETS, ROUTER_ADAPTER, ROUTER_DEADLINE_ARG, soroswapDecisions } from './protocol-calls.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const ADDRESS = /^[CG][A-Z2-7]{55}$/;
@@ -208,6 +209,8 @@ function subscriptionRecord(value, run) {
 }
 
 // Control set 1 (no `control_set` field) predates the transfer rule's own cap and count denials.
+// Set 3 is the adapter-bound router: tampered routes, a foreign recipient, another router function,
+// and the adapter's open deadline observed as a disclosed permit instead of an exact-deadline denial.
 const WALKTHROUGH_STEPS = {
   1: { soroswap_swap: ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
     'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
@@ -215,10 +218,17 @@ const WALKTHROUGH_STEPS = {
     'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'],
   blend_claim: ['reserve_ids', 'claim_recipient', 'pool_function', 'wrong_signer', 'zero_signers', 'accrual_wait',
     'delegate_claim', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
+  3: { soroswap_swap: ['input_cap', 'output_floor', 'path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient',
+    'router_function', 'any_deadline', 'wrong_signer', 'zero_signers', 'independent_token', 'token_cap', 'delegate_swap',
+    'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
 };
+const CONTROL_SETS = { 2: 'transfer_rule_denials_included', 3: 'adapter_route_recipient_function_controls' };
+/** Controls the harness signs over a tree it built, without recording the call first. */
+const CONSTRUCTED_CONTROLS = ['path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient', 'router_function'];
 const SUBMITTED = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
 const SIMULATED = ['started', 'verified_denial', 'unexpected_permit', 'unattributed_denial',
-  'verified_independent_permission', 'independent_permission_not_observed'];
+  'verified_independent_permission', 'independent_permission_not_observed', 'verified_disclosed_permission',
+  'disclosed_permission_not_observed', 'verified_recipient_refusal'];
 
 const POSITION_STEP = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
 /** Prepared transactions that definitively did not land, by hash; exported only when recorded. */
@@ -284,9 +294,13 @@ function walkthroughRecord(value, run) {
       : i.transaction === undefined ? null : fail();
     const denial = status === 'verified_denial';
     if (denial !== (i.code !== undefined) || denial !== (i.enforcer !== undefined)) fail();
-    return { name: match(i.name, /^[a-z][a-z0-9_]{0,63}$/),
-      control: choice(i.control, ['baseline', 'input_cap', 'output_floor', 'deadline', 'direct_token', 'direct_token_cap',
-        'reserve_ids', 'claim_recipient', 'pool_function']),
+    const control = choice(i.control, ['baseline', 'input_cap', 'output_floor', 'deadline', 'direct_token', 'direct_token_cap',
+      'reserve_ids', 'claim_recipient', 'pool_function', 'path_reordered', 'path_extended', 'path_truncated',
+      'foreign_recipient', 'router_function', 'any_deadline']);
+    // Which authorizations were signed over a built tree instead of a recorded one, and only those.
+    const authorization = i.authorization === undefined ? 'recorded' : choice(i.authorization, ['signed_without_recording']);
+    if (CONSTRUCTED_CONTROLS.includes(control) !== (authorization === 'signed_without_recording')) fail();
+    return { name: match(i.name, /^[a-z][a-z0-9_]{0,63}$/), control, authorization,
       signer: choice(i.signer, ['owner', 'delegate', 'payer', 'none']), rule_ids: ids, observation, status, transaction,
       ledger: optional(i.ledger, uint), enforcer: denial ? address(i.enforcer) : null, code: denial ? uint(i.code) : null,
       returned_amount: optional(i.returned_amount, amount) };
@@ -374,12 +388,24 @@ function walkthroughRecord(value, run) {
     if (bundle.cleanup === 'no_installed_grants' && bundle.entries.some(installed)) fail();
   }
   const position = kind === 'blend_claim' ? { position: blendPositionRecord(w) } : {};
+  // The operator's W3 decisions, by value and source-file hash; their free-text intents stay local.
+  let decisions = {};
+  if (w.operator_decisions !== undefined) {
+    if (kind !== 'soroswap_swap') fail();
+    let d;
+    try { d = soroswapDecisions(w.operator_decisions, { journal: true }); } catch { fail(); }
+    decisions = { operator_decisions: { output_floor: amount(d.output_floor.min), transfer_cap: amount(d.transfer_cap.max),
+      adapter_deadline: d.adapter_deadline, source_sha256: hash(d.source_sha256) } };
+  }
   if (w.controls === undefined) {
-    return { kind, owner_transaction: owner, invocations, bundle, ...position, controls: { status: 'not_recorded', steps: [] } };
+    return { kind, owner_transaction: owner, invocations, bundle, ...position, ...decisions, controls: { status: 'not_recorded', steps: [] } };
   }
   const c = object(w.controls);
   const status = choice(c.status, ['running', 'incomplete', 'completed']);
-  const set = c.control_set === undefined ? 1 : choice(c.control_set, [2]);
+  const set = c.control_set === undefined ? 1 : choice(c.control_set, [2, 3]);
+  // The adapter-bound controls step past the operator's journaled floor and transfer cap, and a plan
+  // with those decisions has the adapter's open deadline, which the older sets would call denied.
+  if ((set === 3) !== (decisions.operator_decisions !== undefined)) fail();
   const names = WALKTHROUGH_STEPS[set][kind] ?? fail();
   if (!Array.isArray(c.steps) || c.steps.length > 20) fail();
   const steps = c.steps.map((item) => {
@@ -393,7 +419,8 @@ function walkthroughRecord(value, run) {
       if (ledger < target) fail();
       return { name, ledger, target_ledger: target, result: choice(step.result, ['ledger_reached']) };
     }
-    const result = choice(step.result, ['verified_denial', 'verified_independent_permission', 'confirmed', 'inconclusive_expiry_window']);
+    const result = choice(step.result, ['verified_denial', 'verified_independent_permission', 'confirmed', 'inconclusive_expiry_window',
+      'verified_disclosed_permission', 'verified_recipient_refusal']);
     const denial = step.code !== undefined;
     if (denial !== (step.enforcer !== undefined)) fail();
     return { name, ledger, result, transaction: optional(step.transaction, hash),
@@ -404,6 +431,7 @@ function walkthroughRecord(value, run) {
     const valid = run.valid_until_ledger;
     const positive = kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap';
     const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], reserve_ids: [root, 6],
+      path_reordered: [root, 6], path_extended: [root, 6], path_truncated: [root, 6], router_function: [root, 5],
       claim_recipient: [root, 6], pool_function: [root, 5], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
       count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000],
       token_cap: [transfer, 6], token_count_cap: [transfer, 7] };
@@ -425,12 +453,17 @@ function walkthroughRecord(value, run) {
           && i.transaction === s.transaction && i.ledger === s.ledger).length !== 1) fail();
       } else if (s.name === 'independent_token') {
         if (s.result !== 'verified_independent_permission') fail();
+      } else if (s.name === 'any_deadline') {
+        // The adapter leaves the deadline open: a permit, disclosed as high blast radius.
+        if (s.result !== 'verified_disclosed_permission' || s.enforcer !== null) fail();
+      } else if (s.name === 'foreign_recipient') {
+        // The router asks `to` to authorize, so the account and its policies are never reached.
+        if (s.result !== 'verified_recipient_refusal' || s.enforcer !== null) fail();
       } else if (s.result !== 'verified_denial' || s.enforcer !== expected[s.name][0] || s.code !== expected[s.name][1]) fail();
     }
   }
-  return { kind, owner_transaction: owner, invocations, bundle, ...position, controls: { status,
-    control_set: kind === 'blend_claim' ? 'single_rule'
-      : set === 2 ? 'transfer_rule_denials_included' : 'router_rule_denials_only', steps } };
+  return { kind, owner_transaction: owner, invocations, bundle, ...position, ...decisions, controls: { status,
+    control_set: kind === 'blend_claim' ? 'single_rule' : CONTROL_SETS[set] ?? 'router_rule_denials_only', steps } };
 }
 
 const caseId = (v) => match(v, /^case-(0|[1-9][0-9]{0,3})$/);
@@ -523,6 +556,39 @@ function derivedDenialsRecord(value, emittedBytes, specBytes, rawRun, run, pipel
     denials_verified: cases.filter((c) => c.status === 'verified_denial').length };
 }
 
+/**
+ * The router rule's adapter, which W3 evidence must name: without it the router's input bound
+ * and open deadline came from somewhere other than the reviewed binding. A registry the public
+ * development key can sign is labeled as the assertion it is, and the open deadline is flagged
+ * as high blast radius. A plan without operator decisions predates the adapter and is exported
+ * as such; a Blend claim has no adapter.
+ */
+function adapterRecord(p, run, walkthrough) {
+  const none = (adapter_status) => {
+    if ((p.adapter ?? null) !== null || (p.high_blast_radius ?? []).length !== 0) fail();
+    return { adapter_status, adapter: null, high_blast_radius: [] };
+  };
+  if (p.kind !== 'soroswap_swap') return none('not_applicable');
+  if (walkthrough.operator_decisions === undefined) return none('pre_adapter');
+  const a = object(p.adapter);
+  if (a.name !== ROUTER_ADAPTER || a.code_hash !== PROTOCOL_TARGETS.router_code || a.rule_index !== 0) fail();
+  // The registry the run resolved and, once installed, the one its bundle was approved under.
+  const root = hash(a.registry_root);
+  if ((run.registry_root === null && !walkthrough.bundle) || (run.registry_root !== null && run.registry_root !== root)
+    || (walkthrough.bundle && walkthrough.bundle.registry_root !== root)) fail();
+  const registry = choice(a.registry, ['development_root', 'operator_root']);
+  const open = Array.isArray(p.high_blast_radius) && p.high_blast_radius.length === 1 ? object(p.high_blast_radius[0]) : fail();
+  if (open.rule_index !== 0 || open.fn !== 'swap_exact_tokens_for_tokens' || open.arg_index !== ROUTER_DEADLINE_ARG
+    || open.constraint !== 'any_value' || open.provenance !== 'adapter_derived' || open.blast_radius !== 'high') fail();
+  return {
+    adapter_status: 'adapter_bound',
+    adapter: { name: a.name, code_hash: hash(a.code_hash), rule_index: 0, registry_root: root, registry,
+      binding: registry === 'development_root' ? 'development_registry_assertion_not_governance' : 'operator_registry' },
+    high_blast_radius: [{ rule_index: 0, fn: open.fn, arg_index: ROUTER_DEADLINE_ARG, constraint: 'any_value',
+      provenance: 'adapter_derived', blast_radius: 'high' }],
+  };
+}
+
 function protocolPipelineRecord(value, run, walkthrough) {
   if (value === undefined) return { status: 'not_recorded' };
   const p = object(value);
@@ -531,12 +597,13 @@ function protocolPipelineRecord(value, run, walkthrough) {
     || !Array.isArray(p.artifacts) || p.artifacts.length < 1 || p.artifacts.length > 2) fail();
   const cases = uint(p.reference_cases);
   if (cases === 0) fail();
+  const adapter = adapterRecord(p, run, walkthrough);
   return {
     status: 'recorded', kind: p.kind, recorded_transaction: hash(p.recorded_transaction),
     recording_hash: hash(p.recording_hash), acquisition_trust: choice(p.acquisition_trust, ['rpc_reported']),
     synthesis_recording_hash: hash(p.synthesis_recording_hash), synthesis_trust: choice(p.synthesis_trust, ['self_supplied']),
     spec_hash: hash(p.spec_hash), reference_cases: cases, artifact_reproduction: choice(p.artifact_reproduction, ['matched']),
-    current_network_preflight: choice(p.current_network_preflight, ['not_checked_here']),
+    current_network_preflight: choice(p.current_network_preflight, ['not_checked_here']), ...adapter,
     artifacts: p.artifacts.map((item, index) => {
       const a = object(item);
       if (a.rule_index !== index) fail();
@@ -691,6 +758,9 @@ export function exportEvidence(runDir) {
   const protocolPipeline = protocolPipelineRecord(
     decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
   if (run === null && source.status === 'unavailable') fail();
+  // Adapter-bound controls mean something only next to the adapter they relied on, and the
+  // controls run after the pipeline that names it, so a journal of them always has one.
+  if (walkthrough.controls?.control_set === CONTROL_SETS[3] && protocolPipeline.status !== 'recorded') fail();
   // Operator-selected local run directory plus a constant basename, as for the artifacts below.
   // nosemgrep
   const emittedCases = artifact('derived_cases', join(runDir, 'derived-cases.json'));
