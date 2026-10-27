@@ -71,8 +71,12 @@ pub struct UserDecisions {
     pub valid_until_ledger: Option<u32>,
     /// Explicit, high-blast-radius acknowledgment that the grant never expires.
     pub no_expiry_acknowledged: bool,
-    /// Optional per-installation call cap.
+    /// Per-installation call cap; `None` requires the explicit unlimited-calls ack.
     pub max_calls: Option<u32>,
+    /// Explicit, high-blast-radius acknowledgment that the grant has no call cap. Absent reads
+    /// as `false`, so a caller that drops it gets a question, never an uncapped grant.
+    #[serde(default)]
+    pub unlimited_calls_acknowledged: bool,
     /// Explicit widenings (the only path to non-exact constraints).
     pub widenings: Vec<Widening>,
     /// Compose the reviewed OZ spending-limit policy (SEP-41 transfer rules only).
@@ -262,12 +266,33 @@ pub fn synthesize(
             ));
         }
     }
-    if decisions.valid_until_ledger.is_none() && !decisions.no_expiry_acknowledged {
-        errors.push(SynthError::NeedsDecision(
+    match (
+        decisions.valid_until_ledger,
+        decisions.no_expiry_acknowledged,
+    ) {
+        (None, false) => errors.push(SynthError::NeedsDecision(
             "grant lifetime: provide valid_until_ledger, or explicitly acknowledge a \
              non-expiring grant (high blast radius)"
                 .to_string(),
-        ));
+        )),
+        // Two answers to one question: picking either would decide for the user.
+        (Some(ledger), true) => errors.push(SynthError::InvalidDecision(format!(
+            "grant lifetime: valid_until_ledger {ledger} contradicts no_expiry_acknowledged; \
+             choose one"
+        ))),
+        _ => {}
+    }
+    match (decisions.max_calls, decisions.unlimited_calls_acknowledged) {
+        (None, false) => errors.push(SynthError::NeedsDecision(
+            "call cap: provide max_calls, or explicitly acknowledge unlimited calls \
+             (unlimited_calls_acknowledged, high blast radius)"
+                .to_string(),
+        )),
+        (Some(max_calls), true) => errors.push(SynthError::InvalidDecision(format!(
+            "call cap: max_calls {max_calls} contradicts unlimited_calls_acknowledged; \
+             choose one"
+        ))),
+        _ => {}
     }
     if let PredicateChoice::Threshold { n } = decisions.predicate {
         let count = decisions.delegate_signers.len();
@@ -510,7 +535,13 @@ pub fn synthesize(
                 }
                 vec![StateSpec::CallCountPerInstallation { max_calls }]
             }
-            None => vec![],
+            None => {
+                rationale.push(format!(
+                    "{contract}: NO CALL CAP — the user explicitly acknowledged unlimited calls \
+                     (high blast radius)"
+                ));
+                vec![]
+            }
         };
 
         rules.push(RuleSpec {
@@ -835,12 +866,24 @@ fn exact_constraints(
                         .map(|bound| (ad, bound))
                 }) {
                     Some((ad, bound)) => {
-                        rationale.push(format!(
-                            "{}/{} arg {index}: adapter '{}' derived a code-hash-bound widening \
-                             from its reviewed argument role (valid only while the target's code \
-                             hash holds)",
-                            o.contract, o.fn_name, ad.name
-                        ));
+                        rationale.push(if matches!(bound, WideningBound::AnyValue) {
+                            // As open as a user's any-value decision, which validation holds to
+                            // high blast radius; no user chose it, so the report must say so.
+                            format!(
+                                "{}/{} arg {index}: adapter '{}' leaves this argument \
+                                 UNCONSTRAINED (any value) from its reviewed caller-chosen role \
+                                 — a high blast radius widening no user decided; valid only \
+                                 while the target's code hash holds",
+                                o.contract, o.fn_name, ad.name
+                            )
+                        } else {
+                            format!(
+                                "{}/{} arg {index}: adapter '{}' derived a code-hash-bound \
+                                 widening from its reviewed argument role (valid only while the \
+                                 target's code hash holds)",
+                                o.contract, o.fn_name, ad.name
+                            )
+                        });
                         let constraint = match bound {
                             WideningBound::LeI128 { max } => Constraint::LeI128 { max },
                             WideningBound::GeI128 { min } => Constraint::GeI128 { min },
@@ -1154,6 +1197,7 @@ mod tests {
             valid_until_ledger: Some(4_223_456),
             no_expiry_acknowledged: false,
             max_calls: Some(12),
+            unlimited_calls_acknowledged: false,
             widenings: vec![],
             spending_limit: Some(SpendingLimitChoice {
                 limit: "500000000".to_string(),
@@ -1465,6 +1509,68 @@ mod tests {
         }
     }
 
+    /// An argument the adapter leaves open is as unconstrained as a user's any-value decision,
+    /// so the rationale must say so in the same terms, not as a routine derived bound.
+    #[test]
+    fn adapter_any_value_rationale_flags_high_blast_radius() {
+        use ozpb_recorder_core::{ArgSummary, AuthorizedCall, ObservedExecutable};
+        let mut input = crate::fixtures::golden_input();
+        let code_hash = ozpb_domain::sha256(b"synthetic-swap-shape");
+        input.bundles[0]
+            .contract_executables
+            .get_mut(&crate::fixtures::golden_token_strkey())
+            .unwrap()
+            .executable = ObservedExecutable::Wasm { code_hash };
+        input.adapters = vec![adapters::soroswap_router_adapter(code_hash)];
+        input.spending_limit_capability = None;
+        let mut decisions = crate::fixtures::golden_decisions();
+        decisions.spending_limit = None;
+        let path = stellar_xdr::ScVal::Vec(Some(
+            vec![stellar_xdr::ScVal::Address(
+                stellar_xdr::ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(
+                    [2; 32],
+                ))),
+            )]
+            .try_into()
+            .unwrap(),
+        ));
+        let AuthorizedCall::Contract { fn_name, args, .. } =
+            &mut input.bundles[0].authorizations[0].root.call
+        else {
+            unreachable!()
+        };
+        *fn_name = "swap_exact_tokens_for_tokens".into();
+        *args = vec![
+            ArgSummary::I128(1000),
+            ArgSummary::I128(950),
+            ArgSummary::Other {
+                xdr_base64: path.to_xdr_base64(stellar_xdr::Limits::none()).unwrap(),
+            },
+            ArgSummary::Address(crate::fixtures::golden_account_strkey()),
+            ArgSummary::U64(2000),
+        ];
+        let output = synthesize(&input, &decisions).unwrap();
+        let line = |arg: &str| {
+            output
+                .rationale
+                .iter()
+                .find(|line| line.contains(&format!("swap_exact_tokens_for_tokens arg {arg}:")))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let deadline = line("4");
+        assert!(
+            deadline.contains("UNCONSTRAINED") && deadline.contains("high blast radius"),
+            "the open deadline is reported as a routine bound: {deadline:?}"
+        );
+        assert!(deadline.contains("soroswap-router@1"));
+        let input_bound = line("0");
+        assert!(
+            !input_bound.contains("high blast radius"),
+            "a bounded input is not flagged as open: {input_bound:?}"
+        );
+    }
+
     #[test]
     fn a_reviewed_adapter_bound_to_the_observed_code_hash_derives_widenings() {
         use adapters::{Adapter, ArgRole, FnRoles};
@@ -1621,6 +1727,45 @@ mod tests {
         let out = synthesize(&input(), &d).unwrap();
         assert!(out.spec.rules[0].valid_until.is_none());
         assert!(out.spec.validate().is_ok());
+    }
+
+    #[test]
+    fn decisions_without_cap_or_unlimited_ack_need_decision() {
+        let mut d = decisions();
+        d.max_calls = None;
+        let errs = synthesize(&input(), &d).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, SynthError::NeedsDecision(m) if m.contains("call cap"))));
+
+        d.unlimited_calls_acknowledged = true;
+        let out = synthesize(&input(), &d).unwrap();
+        assert!(out.spec.rules[0].state.is_empty());
+        assert!(out
+            .rationale
+            .iter()
+            .any(|line| line.contains("NO CALL CAP")));
+        assert!(out.spec.validate().is_ok());
+    }
+
+    #[test]
+    fn an_expiry_with_the_no_expiry_ack_is_contradictory() {
+        let mut d = decisions();
+        d.no_expiry_acknowledged = true;
+        let errs = synthesize(&input(), &d).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, SynthError::InvalidDecision(m) if m.contains("lifetime"))));
+    }
+
+    #[test]
+    fn a_call_cap_with_the_unlimited_ack_is_contradictory() {
+        let mut d = decisions();
+        d.unlimited_calls_acknowledged = true;
+        let errs = synthesize(&input(), &d).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, SynthError::InvalidDecision(m) if m.contains("call cap"))));
     }
 
     #[test]
@@ -2574,6 +2719,7 @@ pub mod fixtures {
             valid_until_ledger: Some(4_223_456),
             no_expiry_acknowledged: false,
             max_calls: Some(12),
+            unlimited_calls_acknowledged: false,
             widenings: vec![],
             spending_limit: Some(SpendingLimitChoice {
                 limit: "500000000".to_string(),

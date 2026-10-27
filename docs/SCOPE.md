@@ -14,22 +14,26 @@ feature or an automated check is not by itself evidence that the whole milestone
 
 | Area | Available evidence or implementation | Still required |
 | --- | --- | --- |
-| Agent workflow | The policy-builder skill, plugin and MCP recording/synthesis tools. | An exercised clarification, permission review and wallet confirmation flow. |
-| Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification, [candidate-bound preparation](DRY-RUN-PREPARATION.md) and a pinned-account [state-invariant and direct-call suite](#state-invariants-and-direct-calls). | Complete layer-by-layer execution evidence and the cases that section lists as not covered; preparation explicitly reports missing runtime layers and cannot authorize installation. |
+| Agent workflow | The policy-builder skill with its confirm-before-deploy card, the human-invoked install skill and its `ozpb-grant-proposal/v1` handoff, the plugin, the MCP tools, a session-transcript checker and [wallet proposal import](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal) with independent grant regeneration. An [automated CLI-to-wallet testnet run](evidence/wallet-proposal-import-testnet-2026-10-26.json) imported, verified, installed and revoked one exact-transfer grant. | An exercised human clarification, permission review and confirmation session through the final wallet lifecycle. |
+| Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification, [candidate-bound preparation](DRY-RUN-PREPARATION.md), the CLI `dry-run`, which runs the account-Wasm and supported captured-target layers, and a pinned-account [state-invariant and direct-call suite](#state-invariants-and-direct-calls). | Complete layer-by-layer execution evidence and the cases that section lists as not covered; preparation explicitly reports missing runtime layers, and no report authorizes installation. |
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
 | Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |
-| Testnet installation | The harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. Its lifecycle scripts observe grant/code configuration, remove the rule and check a post-removal denial. | Reviewed live lifecycle evidence, a wallet-product install and revoke flow, protected human approval, safe reconfiguration, and full call-surface monitoring. Composed rules are refused. |
+| Live enforcement | The [atomic live helper](ATOMIC-LIVE-HELPER.md), deployed and probed on testnet, and the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check): after the owner consents to the exact calls and expiry, an owner passkey installation and the wallet's automation delegate transfer, simulated in enforce mode for the exact amount and one stroop more and validated case by case. Separate signing capabilities keep the delegate's testnet and offline signatures apart, and a replay check after the signatures expire. One automation run on testnet, [22 October 2026](evidence/wallet-live-enforcement-testnet-2026-10-22.json), passed with a virtual-authenticator owner. State-dependent simulation only, for one grant shape. | A run with a human owner's passkey, other grant shapes, and the derived deny suite live. |
+| Wallet installation and revocation | The wallet's [installation](POLLYWALLET-INTEGRATION.md#installation) of a reviewed grant whose four layers all passed, on captured and live evidence at most 360 ledgers old, after the replay check: CLI assembly, independent re-validation in the backend and the browser, a fresh authority recheck, the owner's passkey and one fee-payer submission, recorded only with the account's own `context_rule_added` event, a matching read-back and the policy's marker. Each released entry is a replay obligation until it expires. [Revocation](POLLYWALLET-INTEGRATION.md#revocation) signs `remove_context_rule` and succeeds only with the removal event and the rule reading back absent (#3000); policy cleanup is reported separately. One automation run on testnet, [22 October 2026](evidence/wallet-install-revoke-testnet-2026-10-22.json), installed and revoked a one-call grant with a virtual-authenticator owner. | A run with a human owner's passkey, delegated calls through the wallet, replacement and monitoring, other grant shapes, and installation that needs a separate restoration. |
+| Testnet installation | The default harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. The [subscription mode](WALKTHROUGH-SEP41.md) composes that policy with the pinned reviewed spending-limit policy, and the [Soroswap mode](WALKTHROUGH-PROTOCOLS.md) installs two independent rules separately. Lifecycle scripts observe grant/code configuration, remove each rule and check a post-removal denial. Live W2 and W3 runs record that lifecycle ([testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9), with operator-mode approval and throwaway keys or an exportable virtual passkey. | A live lifecycle run of the default mode, protected human approval of the [wallet's install and revoke flow](POLLYWALLET-INTEGRATION.md#installation), safe reconfiguration, and full call-surface monitoring. The default installer refuses composed rules; the subscription mode refuses any composition but its own. |
 | Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. The native-transfer wrapper now runs RPC recording, synthesis, reference checks and artifact reproduction before installation. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
-| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; executable native-SAC, composed SEP-41 subscription and [Soroswap two-rule](WALKTHROUGH-PROTOCOLS.md) harness flows. Blend claim controls exist without the position setup they need. | Reviewed current live walkthrough evidence, including relevant denials, wallet approval and adapter/code-hash evidence. |
-| Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. | Deployment configuration and a deployed service with TLS, client authorization, worker isolation and operational evidence. |
+| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; executable native-SAC, composed SEP-41 subscription, [Soroswap two-rule](WALKTHROUGH-PROTOCOLS.md) and Blend claim harness flows; the Blend flow opens and withdraws its own USDC supply position, with controlled live runs. The Soroswap flow now takes its router bounds from the development registry's adapter binding and its floor and transfer cap from an operator file; a [controlled live run](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026) completed with that binding. | Reviewed current live walkthrough evidence, including relevant denials, wallet approval and adapter/code-hash evidence. |
+| Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. [Self-hosting](SELF-HOSTING.md) deployment configuration behind a TLS proxy, and a [disposable build-worker mode](ISOLATED-BUILDS.md) that isolates each compilation. | Per-client authorization, per-tool and per-client quotas, request cancellation, host provisioning, a published image, and a deployed testnet endpoint with operational evidence. |
 | Verification and demonstration | Phase 1 gates and the [Phase 2 gate and guide](TRANCHE-2-VERIFICATION.md). | The complete acceptance run, public demonstration and video. |
 
 [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) distinguishes historical
 observations from current checks and explains how to collect and review a new run. The
 [harness README](../testnet-harness/README.md) maps each wallet-flow step to what actually runs.
 The default harness now runs synthesis with explicit test decisions and signed development
-registry trust; the historical October runs filled a checked template. Neither those earlier
-runs nor the new offline workflow tests demonstrate the updated chain on live testnet.
+registry trust; the 15 October runs filled a checked template and do not demonstrate that
+chain. The controlled 20 October W2 and W3 runs ran it on live testnet, from RPC recording
+through artifact reproduction, with operator-mode approval and an external CLI identified by
+digest only; the default native mode has no recorded live run of that chain.
 Passkey-owner support there does not change the toolkit's restriction on generated
 grants using External signers.
 
@@ -114,9 +118,11 @@ The source-reviewed account method inventory and its limits are described in
    `ozpb check-policy-call-surface` and the MCP tool `check_policy_call_surface`: it validates
    the request against the pinned registry trust (rebuilding generated bindings) before it
    reads anything, reads through an operator-named RPC source (never a request URL), and
-   returns the structured answer with a plain-words `summary`. Over MCP it is advisory; it has
-   not yet been run against a live testnet account in this repository's tests, which use
-   constructed scans, refuse-before-read paths and, in the
+   returns the structured answer with a plain-words `summary`. Over MCP it is advisory. The CLI
+   command has run against live testnet accounts in the controlled W2 and W3 harness runs
+   ([testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9), through an external
+   `ozpb` binary whose byte digest, not source revision, was recorded. The MCP tool has not,
+   and this repository's tests use constructed scans, refuse-before-read paths and, in the
    [state-invariant suite](#state-invariants-and-direct-calls), the scan, projection and pure
    check over state the pinned account Wasm wrote in a local test ledger.
 
@@ -161,7 +167,11 @@ The source-reviewed account method inventory and its limits are described in
    65 key bytes; a credential id is ignored). A verifier vouches for an owner only when its
    observed code is one whose key handling was reviewed from source (compiled in per exact
    hash, like the method inventory) and its signed entry agrees; older binaries refuse the
-   version-3 entry's new fields. Its public development signing key
+   version-3 entry's new fields. Version 4 adds one target-adapter binding: the testnet Soroswap
+   router's exact code to `soroswap-router@1`. That binding is a development-registry assertion,
+   and the router's Wasm was not reproduced from source
+   ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+   Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
    authority evidence. The operator reader below refuses that root unless its pinned network
    is testnet.
@@ -193,11 +203,15 @@ The source-reviewed account method inventory and its limits are described in
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
    canonicalization version, build target). The builder is labelled `local-unattested`, which
-   is what it is. Adding manifest fields rehashes every manifest, so the container and the
-   fields land together at a release gate. The memory, disk and cgroup limits in §4.6 are part
-   of that work and are **not** claimed today. §6.3 carries a scope note listing the fields the
-   manifest holds against the ones it does not, so the gap is stated rather than left for a
-   reader to find by diffing the document against the struct.
+   is what it is, in every build mode. Adding manifest fields rehashes every manifest, so those
+   fields land at a release gate. The memory, disk and cgroup limits in §4.6 are claimed only
+   for the optional [worker mode](ISOLATED-BUILDS.md), which runs each build in a disposable
+   rootless container with CPU, memory, PID and tmpfs limits, which its acceptance suite
+   checks on the chosen host.
+   The default host builder and the [Compose package](SELF-HOSTING.md) do **not** isolate one
+   build from another, and no manifest records a container image. §6.3 carries a scope note
+   listing the fields the manifest holds against the ones it does not, so the gap is stated
+   rather than left for a reader to find by diffing the document against the struct.
 
 3. **A real reviewed policy wasm at layer 2** (F5d). The blocker is not a dependency bump:
    `stellar-accounts` 0.7.2 ships `src/policies/*.rs` as *library helpers*, and its
@@ -298,11 +312,20 @@ The source-reviewed account method inventory and its limits are described in
    captured balances and, for a capped rule, advance the counter, and an amount-plus-one and
    an unsigned call must be refused by the policy with unchanged state. Recorded testnet
    responses for the public Pollywallet sample account replay offline through the same path.
-   It is offline and counterfactual, covers no other target, and no CLI or MCP command runs it
-   yet.
+   It is offline and counterfactual and covers no other target. `ozpb capture-target` and the
+   MCP `capture_target` tool only produce its captured input through an operator-configured RPC
+   source; `ozpb dry-run --capture-request` runs the layer from the CLI, the local Pollywallet
+   backend runs it for the grant it generates from its sample transfer, and no MCP command runs
+   it.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
+   `ozpb dry-run` runs the native worker's account-Wasm layer for the selected rule and, for the
+   supported native transfer, its captured-target layer, with the CLI's offline-domain signer,
+   and reports whether the original was permitted and at least five derived denials reverted
+   ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)). Its live
+   layer is always unavailable, because that needs the wallet owner's consent, so its report is
+   never complete; the MCP server has no signing dry run.
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
    `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
    endpoint would refuse before simulating, such as one with a memo. It records the endpoint's
@@ -330,8 +353,9 @@ The source-reviewed account method inventory and its limits are described in
    must supply signed authorization entries in the envelope where the invocation needs them.
    The source adapter does not return raw RPC error details that could echo confidential
    envelope contents. General disposable execution against complete captured target and
-   dependency state with a full ledger context, and a policy-bound live preflight remain
-   scheduled.
+   dependency state with a full ledger context, and a policy-bound live preflight for anything
+   beyond the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+   of one exact native transfer remain scheduled.
 
    The CLI `preflight-transaction` command and the MCP `preflight_transaction` tool expose this
    observation for one exact envelope, with the failing dimensions in

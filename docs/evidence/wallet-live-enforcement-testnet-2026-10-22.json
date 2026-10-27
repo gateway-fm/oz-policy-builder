@@ -1,0 +1,182 @@
+{
+  "schema": "wallet-live-enforcement-evidence/v1",
+  "network": "Test SDF Network ; September 2015",
+  "trust": "rpc_reported",
+  "toolkit_revision": "5dd1246b1f9908b7c5bf67cbef3dd72f861561b2",
+  "toolkit_tree_dirty": false,
+  "pollywallet_revision": "853b102983699726f918b68d8e42edbba74e65b9",
+  "cli": {
+    "sha256": "b243a58bc23c17afbd53fc2e37fe4f59f04f672c17739f4db119bda485d2b408",
+    "built_from": "this repository; its Rust sources are unchanged between 78ff6198 and the toolkit revision"
+  },
+  "browser": {
+    "automation": "playwright 1.63.0",
+    "channel": "Google Chrome 155.0.8059.85 "
+  },
+  "started_at": "2026-10-22T09:02:25.354Z",
+  "finished_at": "2026-10-22T09:06:38.790Z",
+  "authentication": "webauthn_user_verified",
+  "authenticator": "browser_virtual_authenticator",
+  "automation": true,
+  "human_approval_attested": false,
+  "account": "CAUWXXLKUM6D6AQZUXT73F2DTZ223QDXTC3MY4PVWICLTPJCSM5XNOLM",
+  "verifier": "CA4EDLCACDPGB5QHLGCQ7KXTKMUE45WHCB7YMWCEQHXNJQQEA4FKNM6Y",
+  "account_creation": {
+    "deploy_verifier": {
+      "hash": "41f06f48e5a345ee99027653c95b8fe8527db2642fb9c96bae3f4727a842743e",
+      "ledger": 5327234,
+      "trust": "rpc_reported"
+    },
+    "deploy_account": {
+      "hash": "db0cb620e9b1dfe4526cf9598db1c319bf07b415d852a72c0d348940bfc85f52",
+      "ledger": 5327235,
+      "trust": "rpc_reported"
+    },
+    "fund_sample_balance": {
+      "hash": "421f64d92a5a6db03e4983eda21b414fb60b45c8b7bd79438d8cecae6255fc2d",
+      "ledger": 5327239,
+      "trust": "rpc_reported"
+    }
+  },
+  "sample_transfer": {
+    "amount_stroops": "1000000",
+    "recipient": "GB5BDNBVBYBZ3HJN7XTQPVZOQ3W7LA3VY4SWQHRRFZS6HP4ZCYBXRGNS",
+    "receipt": {
+      "hash": "6ad2f35900beb7af65aae38a638ef5ef58642db380001d4924cc3b011e6ceeec",
+      "ledger": 5327240,
+      "trust": "rpc_reported"
+    }
+  },
+  "recorded_transaction": "6ad2f35900beb7af65aae38a638ef5ef58642db380001d4924cc3b011e6ceeec",
+  "delegate": {
+    "address": "GASEGG5JWPHVS7OAPXIAXQMBEMM5NKC4QEIHY43MR3C4QKUHBEXDRKUK",
+    "key": "the wallet backend's in-memory automation key; its classic testnet account was created through Friendbot; discarded when the backend stopped"
+  },
+  "candidate_policy": {
+    "contract": "CDXXI2UWBOUEOAAQPMJSAYCFPLL77EDVTPDK3YH4FUHLUMZPFY7TU2KN",
+    "code_hash": "c25d88e1b5428a50b15fbaa70f1f601efc12788eb50984be354622d83189a195",
+    "spec_hash": "8105119bd25286fe6296d4b324ae2d57004c62c76a91f48d59f6c9e36d7b4a3d",
+    "binding_set_hash": "fa2701789e9bf794898343bc45c1d910e97859c200bde303226d740ccaf4a330",
+    "name": "live-check",
+    "max_calls": 1,
+    "valid_until_ledger": 5329243,
+    "upload": {
+      "hash": "e5ee87d85a096842964a8765d547a898514db59f1bab3d92f2a73fe98de8d8ae",
+      "ledger": 5327244,
+      "trust": "rpc_reported"
+    },
+    "create": {
+      "hash": "a742acafed73ef86e1d32c5d51ce8b499d11c2e80eef5487bece8b7c25485c1b",
+      "ledger": 5327245,
+      "trust": "rpc_reported"
+    }
+  },
+  "helper": {
+    "contract": "CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V",
+    "code_hash": "4ca1510cf2fcc5bc7deb22b8563aa6ee8064898c6b92afc06785a6b04966c6fb",
+    "expected_from": "execution-runtime/tests/atomic_helper.rs EXPECTED_HELPER_HASH"
+  },
+  "consent": {
+    "statement_sha256": "f18779d28245a27e3c2e3e61f292f4bcfdf01a6566571c3ba15b58ee80dea03b",
+    "current_ledger": 5327249,
+    "signature_expiration_ledger": 5327279,
+    "expected_rule_id": 1,
+    "labels": [
+      "state_dependent",
+      "simulation_only",
+      "signatures_valid_until_ledger:5327279",
+      "delegate_is_wallet_in_memory_automation_key"
+    ],
+    "warning": "Until ledger 5327279, these signatures are real and submittable. Your passkey signature alone is a complete installation of rule \"live-check\" on account CAUWXXLKUM6D6AQZUXT73F2DTZ223QDXTC3MY4PVWICLTPJCSM5XNOLM: submitted, it would give the delegate GASEGG5JWPHVS7OAPXIAXQMBEMM5NKC4QEIHY43MR3C4QKUHBEXDRKUK, whose key this wallet backend holds, the grant's authority until ledger 5329243. With it, the delegate's signatures are a real transfer of 1000000 stroops (0.1 testnet XLM) to GB5BDNBVBYBZ3HJN7XTQPVZOQ3W7LA3VY4SWQHRRFZS6HP4ZCYBXRGNS, and of 1000001 stroops (0.1000001 testnet XLM), which the policy must refuse. None of them names the helper, so whoever obtains them before ledger 5327279 could submit them without it, and every one of them is sent to the operator's testnet RPC endpoint inside the simulation requests. The wallet only simulates them and never submits them. After ledger 5327279, its replay check compares the account with what was read before they existed; run it before relying on the account."
+  },
+  "verification_layers": [
+    {
+      "layer": "reference",
+      "status": "passed"
+    },
+    {
+      "layer": "account_wasm",
+      "status": "unavailable"
+    },
+    {
+      "layer": "captured_target",
+      "status": "unavailable"
+    },
+    {
+      "layer": "live_enforcement",
+      "status": "passed"
+    }
+  ],
+  "complete": false,
+  "live_enforcement": {
+    "status": "passed",
+    "detail": "The candidate policy permitted the exact transfer and refused the adjacent amount with NoTupleMatched, in enforce-mode simulations of the atomic live helper on testnet, through the pinned account, with the owner's passkey installation and the wallet's automation delegate. Simulation only and state-dependent; signatures valid until ledger 5327279.",
+    "cases": [
+      {
+        "case": "target:original:0",
+        "outcome": "permit",
+        "reason": "candidate_permitted",
+        "simulationLedger": 5327249,
+        "envelopeXdrSha256": "0540fdf3921e5c5173aba709169792cd34433c677c38951fc60ba9fe9be20251"
+      },
+      {
+        "case": "target:argument-denial:0",
+        "outcome": "deny",
+        "reason": "policy_denied",
+        "code": 6,
+        "simulationLedger": 5327249,
+        "envelopeXdrSha256": "0a6ad4b07651487aef9785d21ff1068b07620d7ff413b8a0c931e0d605229358"
+      }
+    ],
+    "owner": {
+      "authentication": "webauthn_user_verified",
+      "human_approval_attested": false
+    },
+    "delegate": "wallet_in_memory_automation_key",
+    "submitted": false,
+    "labels": [
+      "state_dependent",
+      "simulation_only",
+      "signatures_valid_until_ledger:5327279",
+      "delegate_is_wallet_in_memory_automation_key"
+    ]
+  },
+  "replay_check": {
+    "before_expiry": {
+      "status": "waiting",
+      "latestLedger": 5327249,
+      "signaturesValidUntil": 5327279
+    },
+    "after_expiry": {
+      "status": "unchanged",
+      "latestLedger": 5327282,
+      "signaturesValidUntil": 5327279,
+      "snapshotDigest": "0fdb0abf9c5d95822d44a858562cf9f055ae8cc3fa971ec1b175bcbdb534e280"
+    }
+  },
+  "steps": [
+    "prepare-account",
+    "confirm-account",
+    "prepare-sample",
+    "submit-sample",
+    "record",
+    "create-delegate",
+    "generate",
+    "prepare-deploy",
+    "confirm-deploy",
+    "review",
+    "prepare-live",
+    "consent-live",
+    "run-live",
+    "check-replay",
+    "check-replay"
+  ],
+  "limitations": [
+    "Enforce-mode simulations only: neither case was submitted. After the signatures expired at ledger 5327279, the replay check read the account's NextId, Count, rules and the candidate's installation marker unchanged at ledger 5327282.",
+    "Automation: the owner passkey is a Chrome DevTools virtual authenticator driven by Playwright; no human saw or approved anything, and human approval is not attested.",
+    "State-dependent: each outcome describes testnet state at its simulation ledger.",
+    "The account-Wasm and captured-target layers were not configured in this run (no native worker), so the report is not complete; installation stays disabled.",
+    "The signatures were real and submittable until ledger 5327279; they went to the testnet RPC endpoint inside the simulation requests and are not kept here.",
+    "Earlier attempts the same day stopped before any live signature: at policy deployment and at review (fixed in the preceding commits), and once at preparation, where an operator RPC read did not complete and the layer was reported unavailable."
+  ]
+}

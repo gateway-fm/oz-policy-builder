@@ -71,6 +71,18 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual((self.checkout / "src/lib/passkey.ts").read_text(), "after\n")
         self.assertEqual((self.checkout / "src/policy-builder/LICENSE-APACHE").read_text(), "fixture\n")
 
+    def test_overlay_bridge_test_is_applied_but_other_dotted_names_are_not(self):
+        self.write("wallet/overlay/files/src/lib/__tests__/policy-builder-bridge.test.ts", "fixture test\n")
+        self.write("wallet/overlay/files/src/policy-builder/client/controller.test.mjs", "not applied\n")
+        self.write("wallet/shared/approval.test.mjs", "not applied\n")
+        self.write("wallet/overlay/files/src/lib/__tests__/policy-builder.bridge.ts", "not applied\n")
+        self.revision = commit(self.repo)
+        self.apply()
+        self.assertEqual((self.checkout / "src/lib/__tests__/policy-builder-bridge.test.ts").read_text(), "fixture test\n")
+        self.assertFalse((self.checkout / "src/policy-builder/client/controller.test.mjs").exists())
+        self.assertFalse((self.checkout / "src/policy-builder/shared/approval.test.mjs").exists())
+        self.assertFalse((self.checkout / "src/lib/__tests__/policy-builder.bridge.ts").exists())
+
     def test_wrong_revision_dirty_or_untracked_checkout_is_refused(self):
         for kind in ("revision", "dirty", "untracked"):
             with self.subTest(kind=kind):

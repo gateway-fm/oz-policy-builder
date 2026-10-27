@@ -1,5 +1,5 @@
 // Called before fixture keys are discarded, on success or failure. The fixed cleanup child
-// gets one 180-second deadline plus a five-second termination grace for its whole process group.
+// gets one 600-second deadline plus a five-second termination grace for its whole process group.
 // If termination is unconfirmed, the caller must not reconcile/finalize the child-owned journal.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
 import { args, NETWORK_PASSPHRASE, PINNED_ACCOUNT_WASM, writeJson } from './rpc.mjs';
+import { CLEANUP_CHILD_DEADLINE_MS, childStdio, closeLog, openCleanupLog } from './failure-cleanup.mjs';
 const hash = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 const identity = (run) => {
   const bundle = run.walkthrough?.bundle;
@@ -44,12 +45,15 @@ export function runProtocolCleanupChild(dir, {
     };
     try {
       if (!hash(expectedRunHash)) throw new Error('missing expected protocol snapshot');
-      child = spawnProcess(process.execPath, [fileURLToPath(new URL('./bundle-command.mjs', import.meta.url)),
-        'cleanup', '--run-dir', dir, '--expected-run-sha256', expectedRunHash],
-      { detached: true, stdio: 'ignore', env: process.env });
+      const log = openCleanupLog(dir);
+      try {
+        child = spawnProcess(process.execPath, [fileURLToPath(new URL('./bundle-command.mjs', import.meta.url)),
+          'cleanup', '--run-dir', dir, '--expected-run-sha256', expectedRunHash],
+        { detached: true, stdio: childStdio(log), env: process.env });
+      } finally { closeLog(log); }
       child.once('error', () => Number.isSafeInteger(child.pid) && child.pid > 0 ? terminate() : finish({ status: 'failed' }));
       child.once('close', (code) => finish(timedOut ? { status: 'timed_out' } : { status: 'exited', code }));
-      timer = setTimer(terminate, 180_000);
+      timer = setTimer(terminate, CLEANUP_CHILD_DEADLINE_MS);
     } catch { finish({ status: 'failed' }); }
   });
 }
@@ -112,7 +116,7 @@ if (isMainModule(import.meta.url)) {
   const result = await finishProtocolBundle(options['run-dir']);
   console.error(`Protocol grant cleanup: ${result.status}.`);
   if (result.status === 'incomplete' || result.status === 'termination_unconfirmed') {
-    console.error('One or more grants may remain; retain the journal. Fixture keys must still be discarded.');
+    console.error('One or more grants may remain; retain the journal and cleanup-child.log. Fixture keys must still be discarded.');
     if (result.status === 'termination_unconfirmed') console.error('Cleanup termination is unconfirmed; do not rewrite or finalize its journal.');
     process.exitCode = result.status === 'termination_unconfirmed' ? 2 : 1;
   }

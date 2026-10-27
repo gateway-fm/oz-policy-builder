@@ -120,6 +120,7 @@ test('a re-check that reads a different authority state means asking again', asy
   const r = await approveInstall({ runner: fakeRunner({ fresh }), request: REQUEST, trust, expect: EXPECT, confirm: yes, log: quiet });
   assert.equal(r.approved, false);
   assert.match(r.reasons.join('\n'), /ask again/i);
+  assert.equal(r.stage, 'recheck_decision');
 });
 
 test('a re-check whose grant differs from the intent is refused, even under the same commitment', async () => {
@@ -154,6 +155,7 @@ test('a re-check that cannot answer is a refusal', async () => {
   });
   assert.equal(r.approved, false);
   assert.match(r.reasons.join('\n'), /E_RPC/);
+  assert.equal(r.stage, 'recheck_error');
 });
 
 // --- the CLI seam ------------------------------------------------------------------------------

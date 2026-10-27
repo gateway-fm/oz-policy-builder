@@ -7,6 +7,7 @@ import { contractCall } from './lib.mjs';
 import { NETWORK_PASSPHRASE, PINNED_ACCOUNT_WASM, SimulationError } from './rpc.mjs';
 const C = (n) => StrKey.encodeContract(Buffer.alloc(32, n));
 const H = (n) => n.toString(16).padStart(64, '0');
+const SEED = 'S' + 'D'.repeat(55);
 function fixture() {
   const spec = JSON.parse(readFileSync(new URL('../native-sac-policy-spec.json', import.meta.url)));
   spec.rules.push(structuredClone(spec.rules[0]));
@@ -20,9 +21,29 @@ function fixture() {
         installation: { rule_id: rule_index + 8, transaction: H(30 + rule_index), ledger: 100 } })) } } };
   const artifacts = run.walkthrough.bundle.entries.map((entry) => ({ manifest: { rule_index: entry.rule_index,
     spec_hash: entry.spec_hash, wasm_hash: entry.wasm_hash, registry_snapshot: spec.registry_snapshot } }));
-  const history = [], sends = [], signs = [], ops = [];
+  const history = [], sends = [], signs = [], ops = [], outcomes = [], events = [];
   const controls = {};
+  const viewCall = async (_payer, contract, name) => {
+    if (name === 'get_context_rule') {
+      if (controls.stillPresent) return xdr.ScVal.scvMap([]);
+      if (controls.readbackError === 'other contract code') {
+        throw new SimulationError(name, `contract:${contract}, topics:[error, Error(Contract, #3001)], data:["failing with contract error", 3001]`);
+      }
+      if (controls.readbackError === 'transport') throw new Error('fetch failed');
+      throw new SimulationError(name, `contract:${contract}, topics:[error, Error(Contract, #3000)], data:["failing with contract error", 3000]`);
+    }
+    return xdr.ScVal.scvBool(controls.stillInstalled === contract);
+  };
   const deps = {
+    delay: async () => {},
+    transactionOutcome: async (hash, maxTime, options = {}) => { outcomes.push([hash, maxTime]); controls.budgets = [...(controls.budgets ?? []), options.budgetMs];
+      controls.minLedgers = [...(controls.minLedgers ?? []), options.minLedger];
+      return controls.outcome ?? { status: 'NOT_FOUND', after_window: false }; },
+    viewCallObservation: async (payer, contract, name, args) => {
+      const ledger = controls.readLedgers?.length ? controls.readLedgers.shift() : 111;
+      try { return { value: await viewCall(payer, contract, name, args), ledger }; }
+      catch (error) { if (error instanceof SimulationError) error.ledger = ledger; throw error; }
+    },
     checkArtifacts: async () => artifacts.map(({ manifest }) => ({ rule_index: manifest.rule_index, spec_hash: manifest.spec_hash,
       wasm_hash: manifest.wasm_hash })),
     inspectGrant: async (_run, _spec, entry) => {
@@ -49,7 +70,7 @@ function fixture() {
     submit: async (_payer, op, options) => {
       const id = op.body.invokeHostFunctionOp.hostFunction.invokeContract.args[0].u32;
       const hash = H(100 + id);
-      await options.onSubmitting(hash);
+      await options.onSubmitting(hash, { max_time: 999, min_ledger: 77 });
       const latest = history.at(-1).walkthrough.bundle.entries.find((e) => e.installation?.rule_id === id);
       assert.equal(latest.pending_removal.transaction, hash, 'hash retained before send');
       sends.push(id);
@@ -57,25 +78,16 @@ function fixture() {
       if (controls.ambiguous === id) throw new Error('send status unknown');
       return { hash, receipt: { ledger: 111, fixture_id: id } };
     },
-    removalEvent: (_receipt, { ruleId }) => {
+    removalEvent: (receipt, { ruleId, hash: removed }) => {
+      events.push({ receipt, ruleId, hash: removed });
       const saved = history.at(-1).walkthrough.bundle.entries.find((e) => e.installation?.rule_id === ruleId);
-      assert.equal(saved.removal.transaction, H(100 + ruleId), 'confirmed removal saved before validation');
-      if (controls.eventFails === ruleId) throw new Error('event missing');
+      assert.match(saved.removal.transaction, /^[0-9a-f]{64}$/, 'confirmed removal saved before validation');
+      if (controls.eventFails === ruleId) throw new Error(`event missing${controls.seedInError ? ` ${SEED}` : ''}`);
     },
-    viewCall: async (_payer, contract, name) => {
-      if (name === 'get_context_rule') {
-        if (controls.stillPresent) return xdr.ScVal.scvMap([]);
-        if (controls.readbackError === 'other contract code') {
-          throw new SimulationError(name, `contract:${contract}, topics:[error, Error(Contract, #3001)], data:["failing with contract error", 3001]`);
-        }
-        if (controls.readbackError === 'transport') throw new Error('fetch failed');
-        throw new SimulationError(name, `contract:${contract}, topics:[error, Error(Contract, #3000)], data:["failing with contract error", 3000]`);
-      }
-      return xdr.ScVal.scvBool(controls.stillInstalled === contract);
-    },
+    viewCall,
   };
   const execute = () => revokePermissionBundle({ run, spec, artifacts, save: () => history.push(structuredClone(run)) }, deps);
-  return { run, spec, artifacts, controls, history, sends, signs, ops, execute };
+  return { run, spec, artifacts, controls, history, sends, signs, ops, outcomes, events, execute, deps };
 }
 test('bundle cleanup removes every confirmed non-owner grant in reverse order', async () => {
   const f = fixture();
@@ -181,3 +193,136 @@ for (const mode of ['wrong network', 'upgraded account code']) {
     }
   });
 }
+
+const pending = (f, extra = {}) => {
+  f.run.walkthrough.bundle.entries[1].pending_removal = { transaction: H(77), status: 'prepared_for_submission', ...extra };
+};
+test('a prepared removal that landed is reconciled from its hash, verified, and never sent again', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  f.controls.outcome = { status: 'SUCCESS', ledger: 105, txHash: H(77) };
+  assert.equal((await f.execute()).status, 'removed');
+  assert.deepEqual(f.sends, [8]);
+  assert.deepEqual(f.outcomes, [[H(77), 1]]);
+  const e = f.run.walkthrough.bundle.entries[1];
+  assert.equal(e.pending_removal, undefined);
+  assert.deepEqual([e.removal.transaction, e.removal.ledger, e.removal.confirmation, e.removal.event, e.removal.rule_readback,
+    e.removal.policy_cleanup], [H(77), 105, 'reconciled', 'verified', 'absent', 'not_installed']);
+});
+for (const [name, outcome, status] of [['failed', { status: 'FAILED' }, 'failed'],
+  ['was unseen past its validity window', { status: 'NOT_FOUND', after_window: true }, 'expired_unseen']]) {
+  test(`a prepared removal that ${name} is kept by hash and replaced once by a fresh removal`, async () => {
+    const f = fixture();
+    pending(f, { max_time: 1 });
+    f.controls.outcome = outcome;
+    assert.equal((await f.execute()).status, 'removed');
+    assert.deepEqual(f.sends, [9, 8]);
+    const e = f.run.walkthrough.bundle.entries[1];
+    assert.deepEqual(e.failed_removals, [{ transaction: H(77), status }]);
+    assert.equal(e.removal.transaction, H(109));
+    assert.equal(e.removal.confirmation, undefined);
+  });
+}
+test('a prepared removal without a final outcome stays pending and blocks any new send', async () => {
+  const f = fixture();
+  pending(f);
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.sends, [8]);
+  assert.equal(f.run.walkthrough.bundle.entries[1].pending_removal.transaction, H(77));
+});
+test('only one fresh removal follows removals that did not land', async () => {
+  const f = fixture();
+  f.run.walkthrough.bundle.entries[1].failed_removals = [{ transaction: H(76), status: 'failed' }];
+  pending(f, { max_time: 1 });
+  f.controls.outcome = { status: 'FAILED' };
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.sends, [8]);
+  assert.equal(f.run.walkthrough.bundle.entries[1].failed_removals.length, 2);
+});
+test('a prepared removal journals its validity window and its pre-removal readback before send', async () => {
+  const f = fixture();
+  f.controls.ambiguous = 9;
+  await f.execute();
+  const e = f.run.walkthrough.bundle.entries[1];
+  assert.equal(e.pending_removal.max_time, 999);
+  assert.equal(e.pending_removal.before.configuration, 'matched');
+});
+test('a failed cleanup stage goes to stderr by rule and stage with secrets redacted, never into the journal', async (t) => {
+  const f = fixture();
+  f.controls.eventFails = 9; f.controls.seedInError = true;
+  const lines = [];
+  const original = console.error;
+  console.error = (...parts) => lines.push(parts.join(' '));
+  t.after(() => { console.error = original; });
+  assert.equal((await f.execute()).status, 'incomplete');
+  console.error = original;
+  const line = lines.find((l) => l.includes('rule 9'));
+  assert.ok(line && line.includes('removal event') && line.includes('event missing'), lines.join('\n'));
+  assert.ok(!lines.join('\n').includes(SEED));
+  assert.ok(!JSON.stringify(f.run).includes('event missing'));
+});
+test('rule and policy readbacks count only at or after the removal ledger', async () => {
+  const f = fixture();
+  f.controls.readLedgers = [110, 111, 111, 111];
+  assert.equal((await f.execute()).status, 'removed');
+  const g = fixture();
+  g.controls.readLedgers = new Array(100).fill(110);
+  assert.equal((await g.execute()).status, 'incomplete');
+  assert.equal(g.run.walkthrough.bundle.entries[1].removal.rule_readback, 'not_checked');
+});
+
+test('a reconciled removal is verified against its own landed transaction before it counts', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  const landed = { status: 'SUCCESS', ledger: 105, txHash: H(77) };
+  f.controls.outcome = landed;
+  await f.execute();
+  const event = f.events.find((e) => e.ruleId === 9);
+  assert.equal(event.receipt, landed);
+  assert.equal(event.hash, H(77));
+  const g = fixture();
+  pending(g, { max_time: 1 });
+  g.controls.outcome = landed;
+  g.controls.eventFails = 9;
+  assert.equal((await g.execute()).status, 'incomplete');
+  assert.equal(g.run.walkthrough.bundle.entries[1].removal.event, 'not_verified');
+});
+test('a pending removal is classified only after the network is confirmed to be testnet', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  f.controls.wrongNetwork = true;
+  f.controls.outcome = { status: 'FAILED' };
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.outcomes, []);
+  assert.equal(f.run.walkthrough.bundle.entries[1].pending_removal.transaction, H(77));
+});
+test('after two removals that did not land, no further removal is prepared, even on a later rerun', async () => {
+  const f = fixture();
+  f.run.walkthrough.bundle.entries[1].failed_removals = [{ transaction: H(75), status: 'failed' }, { transaction: H(76), status: 'failed' }];
+  assert.equal((await f.execute()).status, 'incomplete');
+  assert.deepEqual(f.sends, [8]);
+});
+
+test('cleanup budgets reconciliation against its deadline and prepares no removal it cannot finish', async () => {
+  const f = fixture();
+  pending(f, { max_time: 1 });
+  f.controls.outcome = { status: 'FAILED' };
+  // 300 s left: reconciliation may poll for what remains beyond the 240 s a fresh removal needs,
+  // and the fresh removal for rule 9 still fits; then rule 8 finds too little time left.
+  let clock = 0;
+  const result = await revokePermissionBundle({ run: f.run, spec: f.spec, artifacts: f.artifacts, save: () => f.history.push(structuredClone(f.run)) },
+    { ...f.deps, deadline: 300_000, now: () => clock, submit: async (...args) => { clock += 100_000; return f.deps.submit(...args); } });
+  assert.deepEqual(f.controls.budgets, [60_000]);
+  assert.deepEqual(f.sends, [9]);
+  assert.equal(result.status, 'incomplete');
+  assert.equal(f.run.walkthrough.bundle.entries[0].pending_removal, undefined, 'nothing was prepared for rule 8');
+});
+
+test('a prepared removal journals the ledger before which it cannot land, and reconciliation uses it', async () => {
+  const f = fixture();
+  f.controls.ambiguous = 9;
+  await f.execute();
+  assert.equal(f.run.walkthrough.bundle.entries[1].pending_removal.min_ledger, 77);
+  await f.execute();
+  assert.deepEqual(f.controls.minLedgers, [77]);
+});

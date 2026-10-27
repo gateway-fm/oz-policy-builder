@@ -9,7 +9,7 @@ not the complete `dry_run` operation; `complete` is always `false`.
 ozpb prepare-dry-run \
   --request dry-run-request.json \
   --registry-roots registry-roots.json \
-  --registry-min-version 3 \
+  --registry-min-version 4 \
   --rpc-sources rpc-sources.json
 ```
 
@@ -58,9 +58,61 @@ The [canonical hashing specification](CANONICAL-HASHING.md) defines both new has
 This preparation package adds no complete acceptance claim.
 
 The separately configured [native execution worker](NATIVE-EXECUTION.md) can produce
-local account-Wasm evidence after this preparation. It does not change this operation's
-meaning or complete the captured-target and live-enforcement layers. The worker's separate
+local account-Wasm evidence after this preparation; `ozpb dry-run` runs this preparation and
+then that worker ([running the layers from the CLI](NATIVE-EXECUTION.md#running-the-layers-from-the-cli)).
+Neither changes this operation's meaning or completes the live-enforcement layer. The worker's separate
 [captured-target mode](CAPTURED-TARGET-EXECUTION.md) does not either: this operation still
 reports `captured_target` as unavailable. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md)
-is a tested building block for the live layer only, limited to generated policies with a call
-cap; `live_enforcement` stays `unavailable`.
+is the contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+simulates after the owner's consent, limited to generated policies with a call cap; this operation's
+`live_enforcement` stays `unavailable`.
+
+## Executed layers and acceptance
+
+A coordinator that runs the runtime layers returns the same report type with two additions that
+a preparation never carries: an `execution` block on each layer it executed, and an
+`acceptance` block. The pure assembler in `ozpb_toolkit::dry_run_report` builds that report from
+the preparation, the worker's raw reports and exit statuses, and identities it derives itself.
+
+- **Bindings.** Before any case is read, the worker's offline binding (run, job, suite and
+  initialization hashes, source network and ledger, account, delegate), its execution network,
+  account and policy code identities and proposed rule ID must equal the preparation's and the
+  locally derived ones. The account-Wasm job and initialization hashes and the execution network
+  ID are derived without the worker. A report from another run is `failed` with
+  `worker_binding_mismatch`, and none of its cases is accepted. The native suite hash must also
+  be the preparation's.
+- **Signatures.** The coordinator reports which case IDs its signer answered. They must be
+  exactly the ones a correct run asks for: every derived case the delegate authenticates, every
+  control and, for a capped rule, every call of the cap sequence (both signing cases for the
+  captured layer). A report from a run that skipped or added a signature is `failed` with
+  `signatures_differ_from_expectation`, and none of its cases is accepted.
+- **Agreement.** Each case's expectation is the preparation's reference expectation, not the
+  worker's. A permitted case agrees only when the expectation is permit, nothing was attributed
+  as a refusal and any counter advanced by exactly one. A denial agrees only when the refusal is
+  the error its class predicts, raised by the contract that owns that error (`account` or
+  `policy`), with local state and counter unchanged. The worker's own `agree` and `passed` are
+  necessary, never sufficient. Controls and, for a capped rule, the call-cap sequence must pass.
+- **Exit status.** A nonzero worker exit or a signal fails the layer even with a passing report.
+  A run the coordinator stopped (deadline, output bound, refused frame or signature request) is
+  `failed` with that reason and no evidence.
+- **Missing layers stay missing.** A layer that did not run keeps `unavailable` or
+  `unsupported`; what a preparation says about the runtime layers is ignored. Outside the
+  wallet, `live_enforcement` is always `unavailable` with reason
+  `wallet_owner_consent_required`, and `complete` stays `false`.
+
+`ozpb dry-run` is the CLI coordinator that fills these fields. It reports the live layer as
+above and `captured_target` as `unavailable` with `captured_target_not_requested` unless given a
+capture request. A requested capture that does not complete is `failed` with
+`target_capture_failed`, so it blocks acceptance. A selected rule outside the native worker's
+scope, including its size bounds (64 KiB of specification, eight calls per rule, sixteen
+arguments per call, 256 derived cases, a call cap of 512), is `unsupported` with
+`selected_rule_outside_native_scope`, and the key is not read.
+
+`acceptance` counts only executed layers that passed. For each executed layer it records whether
+the original call was permitted and how many derived denials reverted: refused with the
+predicted error from the predicted contract, with state unchanged. `meets_minimum` holds when
+the reference layer passed, at least one layer executed, every executed layer passed and
+permitted the original, and one executed layer reverted at least `required_reverted_denials`
+(five) derived denials. The captured-target layer has two denials, so it never meets the bar
+alone. `meets_minimum` is a statement about the executed cases only, never about untested inputs,
+live behavior or installation safety.

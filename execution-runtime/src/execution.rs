@@ -149,19 +149,24 @@ pub fn prepare(job: NativeJob) -> RuntimeResult<PreparedExecution> {
     }
     let raw: PolicySpec =
         serde_json::from_value(job.request.candidate.spec.clone()).map_err(|e| e.to_string())?;
-    // Bound suite expansion before it clones argument tuples. Larger valid
-    // specifications are outside this worker's initial supported scope.
-    if raw.rules.len() != 1
-        || serde_json::to_vec(&raw).map_err(|e| e.to_string())?.len() > 64 * 1024
+    // Only the selected rule runs, and only its policy is installed; the other rules of the
+    // same specification are context. Its index is checked here, not clamped.
+    let rule_index = job.request.candidate.rule_index;
+    if rule_index >= raw.rules.len() {
+        return Err("selected rule index is outside the specification".into());
+    }
+    // Bound suite expansion before it clones argument tuples. The suite is derived for every
+    // rule before the selected rule's cases are kept, so the per-rule bounds hold for all of
+    // them. Larger valid specifications are outside this worker's supported scope.
+    if serde_json::to_vec(&raw).map_err(|e| e.to_string())?.len() > 64 * 1024
         || raw
             .rules
             .iter()
             .any(|r| r.allowed_calls.len() > 8 || r.allowed_calls.iter().any(|c| c.args.len() > 16))
     {
-        return Err("unsupported native scope: one rule, at most eight calls, sixteen arguments and 64 KiB of specification".into());
+        return Err("unsupported native scope: at most eight calls per rule, sixteen arguments and 64 KiB of specification".into());
     }
     let spec = raw.validate().map_err(|e| format!("{e:?}"))?;
-    let rule_index = job.request.candidate.rule_index;
     let rule = spec
         .spec()
         .rules
@@ -187,8 +192,13 @@ pub fn prepare(job: NativeJob) -> RuntimeResult<PreparedExecution> {
     ) {
         return Err("unsupported signer predicate".into());
     }
+    // A selected rule composed with another policy (a reviewed spending limit, say) would run
+    // here without it, so its evidence would describe a rule nobody installs.
     let [PolicyRef::Generated { .. }] = rule.policies.as_slice() else {
-        return Err("unsupported policy composition".into());
+        return Err(
+            "unsupported policy composition: the selected rule must carry exactly one generated policy"
+                .into(),
+        );
     };
     let bindings: Vec<_> = job
         .request

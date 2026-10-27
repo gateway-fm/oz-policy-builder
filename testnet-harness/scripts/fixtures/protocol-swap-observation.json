@@ -4,7 +4,20 @@
     "account": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
     "amount_in": "1000000",
     "minimum_out": "100000",
-    "deadline": 1792495419
+    "deadline": 1792495419,
+    "operator_decisions": {
+      "schema": "ozpb-soroswap-operator-decisions/v1",
+      "output_floor": {
+        "min": "100000",
+        "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
+      },
+      "transfer_cap": {
+        "max": "1000000",
+        "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
+      },
+      "adapter_deadline": "accept_any_value_high_blast_radius",
+      "source_sha256": "f60e747c82cc22422d11fad0169730b15a6226f65ef130aa7f1612c93c101e5f"
+    }
   },
   "record": {
     "trust": "rpc_reported",
@@ -103,7 +116,7 @@
       },
       "name": "soroswap-swap",
       "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
-      "registry_snapshot": "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f",
+      "registry_snapshot": "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf",
       "rules": [
         {
           "allowed_calls": [
@@ -117,9 +130,9 @@
                   },
                   "i": 0,
                   "prov": {
-                    "user_widened": {
-                      "blast_radius": "medium",
-                      "intent": "Bound this swap input at the recorded amount"
+                    "adapter_derived": {
+                      "adapter": "soroswap-router@1",
+                      "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
                     }
                   }
                 },
@@ -133,7 +146,7 @@
                   "prov": {
                     "user_widened": {
                       "blast_radius": "medium",
-                      "intent": "Use the explicitly selected absolute output floor"
+                      "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
                     }
                   }
                 },
@@ -156,13 +169,14 @@
                   "prov": "observed_exact"
                 },
                 {
-                  "c": {
-                    "eq_scval": {
-                      "xdr_base64": "AAAABQAAAABq1087"
-                    }
-                  },
+                  "c": "any_value",
                   "i": 4,
-                  "prov": "observed_exact"
+                  "prov": {
+                    "adapter_derived": {
+                      "adapter": "soroswap-router@1",
+                      "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
+                    }
+                  }
                 }
               ],
               "fn": "swap_exact_tokens_for_tokens",
@@ -187,8 +201,8 @@
             "target_code_hash": {
               "hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c",
               "observed_ledger": 5293646,
-              "on_drift": "warn",
-              "role": "evidence_only"
+              "on_drift": "refuse",
+              "role": "adapter_required"
             },
             "type": "CallContract"
           },
@@ -245,7 +259,7 @@
                   "prov": {
                     "user_widened": {
                       "blast_radius": "medium",
-                      "intent": "Permit the bounded token transfer to the exact pair as an independent capability"
+                      "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
                     }
                   }
                 }
@@ -301,13 +315,14 @@
         "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
       }
     },
-    "spec_hash": "865edc88e32b2c88eebca57a3dcec31e4232460eea13f4ab681e098118ecbf3e",
+    "spec_hash": "8a9b164a6d4ef9b58a458a737556f08da358a78cd739ee658e556ee8f6cd0ac8",
     "rationale": [
       "permission bundle: 2 independent rules (one per contract); ordering and dependency between them are NOT enforced",
-      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: user-widened (Bound this swap input at the recorded amount), blast radius Medium",
-      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 1: user-widened (Use the explicitly selected absolute output floor), blast radius Medium",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: adapter 'soroswap-router@1' derived a code-hash-bound widening from its reviewed argument role (valid only while the target's code hash holds)",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 1: user-widened (Absolute output floor chosen for this controlled test swap; not a price or slippage model), blast radius Medium",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 4: adapter 'soroswap-router@1' leaves this argument UNCONSTRAINED (any value) from its reviewed caller-chosen role \u2014 a high blast radius widening no user decided; valid only while the target's code hash holds",
       "target CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC is the built-in Stellar Asset contract; it has no Wasm code hash",
-      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded token transfer to the exact pair as an independent capability), blast radius Medium"
+      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded native transfer to the exact pair as an independent capability), blast radius Medium"
     ]
   }
 }

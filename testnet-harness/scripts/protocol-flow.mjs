@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { isMainModule } from './cli-entry.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import { PROTOCOL_TARGETS } from './protocol-calls.mjs';
-import { protocolInputs, validateProtocolSynthesis } from './protocol-synthesis.mjs';
+import { adapterDisclosure, protocolInputs, validateProtocolSynthesis } from './protocol-synthesis.mjs';
+import { writeJson } from './rpc.mjs';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const NETWORK = 'Test SDF Network ; September 2015';
 const BLND = 'CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF';
@@ -44,7 +45,7 @@ export function runProtocolFlow(runDirectory, env = process.env) {
   const trust = [env.OZPB_SIGNED_REGISTRY_SNAPSHOT, env.OZPB_REGISTRY_ROOTS_FILE, env.OZPB_REGISTRY_MIN_VERSION];
   requireThat(trust.every(Boolean) || trust.every((v) => !v), 'configure all three registry trust inputs or none');
   const [snapshot, roots, minimum] = trust.every(Boolean) ? [resolve(trust[0]), resolve(trust[1]), trust[2]]
-    : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '3'];
+    : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '4'];
   requireThat(/^[1-9][0-9]*$/.test(minimum) && existsSync(snapshot) && existsSync(roots), 'invalid registry trust configuration');
   requireThat(hash(env.OZPB_REGISTRY_SNAPSHOT_ROOT), 'protocol flow requires the explicit resolved registry root');
   const command = env.OZPB_BIN ? [env.OZPB_BIN.includes('/') ? resolve(env.OZPB_BIN) : env.OZPB_BIN]
@@ -71,6 +72,14 @@ export function runProtocolFlow(runDirectory, env = process.env) {
     '--account', join(dir, 'account.json'), '--signed-registry', snapshot, '--registry-roots', roots,
     '--registry-min-version', minimum, '--decisions', join(dir, 'decisions.json'), '--template-family', 'policy-templates/scope@1'], 'synthesis.json');
   const spec = validateProtocolSynthesis(synthesis, run, inputs, env.OZPB_REGISTRY_SNAPSHOT_ROOT);
+  // The adapter the router rule relies on, and what it leaves open. Whoever holds a root key can
+  // sign the binding, so a registry the public development key can sign is labeled a development
+  // assertion, whichever files the operator pointed at; any other root is the operator's.
+  const disclosure = adapterDisclosure(spec);
+  requireThat((disclosure.adapter !== null) === (run.walkthrough.kind === 'soroswap_swap'), 'unexpected adapter identity');
+  const developmentKeys = Object.values(read(join(ROOT, 'docs/examples/registry-roots.json')).keys);
+  const configuredKeys = Object.values(read(roots).keys ?? {}).map((key) => String(key).toLowerCase());
+  const registryLabel = configuredKeys.some((key) => developmentKeys.includes(key)) ? 'development_root' : 'operator_root';
   const specPath = join(dir, 'spec.json'); save(specPath, spec);
   const reference = cli('reference-suite', ['--spec', specPath], 'reference-suite.json');
   same(reference.report?.spec_hash, synthesis.spec_hash, 'reference spec hash');
@@ -104,11 +113,13 @@ export function runProtocolFlow(runDirectory, env = process.env) {
   }
   Object.assign(run, { spec: specPath, registry_root: spec.registry_snapshot, valid_until_ledger: inputs.decisions.valid_until_ledger });
   run.walkthrough.artifacts = artifacts;
-  writeFileSync(join(dir, 'run.json'), JSON.stringify(run, null, 2) + '\n');
+  writeJson(join(dir, 'run.json'), run);
   save(join(dir, 'protocol-pipeline.json'), { schema_version: 1, account: run.account, kind: run.walkthrough.kind,
     recorded_transaction: owner.hash, recording_hash: recording.recording_hash, acquisition_trust: 'rpc_reported',
     synthesis_recording_hash: spec.evidence.recordings[0].hash, synthesis_trust: 'self_supplied', spec_hash: synthesis.spec_hash,
     reference_cases: reference.total, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+    adapter: disclosure.adapter && { ...disclosure.adapter, registry_root: spec.registry_snapshot, registry: registryLabel },
+    high_blast_radius: disclosure.high_blast_radius,
     artifacts: artifacts.map(({ rule_index, wasm_hash, normalized_input_hash }) => ({ rule_index, wasm_hash, normalized_input_hash })) });
   return artifacts;
 }

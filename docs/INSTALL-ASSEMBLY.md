@@ -31,7 +31,7 @@ configuration. Run the CLI with the same trust files as the authority commands:
 
 ```sh
 ozpb assemble-install-transaction --request assembly-request.json \
-  --registry-roots registry-roots.json --registry-min-version 3 \
+  --registry-roots registry-roots.json --registry-min-version 4 \
   --rpc-sources rpc-sources.json > unsigned-assembly.json
 ```
 

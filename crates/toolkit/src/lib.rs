@@ -25,10 +25,11 @@ use ozpb_synthesizer::{synthesize, SynthesisInput, UserDecisions};
 use std::collections::BTreeMap;
 
 mod verification;
-pub use verification::{reference_suite, verify_with_build_config};
+pub use verification::{reference_suite, reference_suite_cases, verify_with_build_config};
 mod dry_run;
 pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
+pub mod dry_run_report;
 #[cfg(test)]
 mod dry_run_tests;
 pub use authority_text::render_authority_text;
@@ -47,6 +48,8 @@ mod install_assembly;
 pub use install_assembly::{install_assembly_output, install_assembly_request};
 mod preflight;
 pub use preflight::preflight_transaction_output;
+mod target_capture;
+pub use target_capture::{capture_target_output, resolve_capture_rpc_source};
 mod policy_check;
 pub use policy_check::{
     finish_policy_check, plan_policy_check_read, policy_check_unavailable, PolicyCheckReadPlan,
@@ -1188,6 +1191,41 @@ mod tests {
         };
         let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
         assert_eq!(err.code, EC::ENeedsDecision);
+    }
+
+    /// A caller that drops the acknowledgement, as tool callers often drop fields, gets a
+    /// question rather than an uncapped grant: absent reads as not acknowledged.
+    #[test]
+    fn an_uncapped_decision_without_the_acknowledgement_needs_a_decision() {
+        let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+        let fields = decisions.as_object_mut().unwrap();
+        assert_eq!(
+            fields.remove("unlimited_calls_acknowledged"),
+            Some(serde_json::Value::Bool(false))
+        );
+        fields.insert("max_calls".into(), serde_json::Value::Null);
+        let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+        let input = SynthesizeInput {
+            bundles: vec![rec.bundle],
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
+            decisions,
+            spending_limit_capability: Some(
+                fx::golden_input()
+                    .spending_limit_capability
+                    .unwrap()
+                    .to_hex(),
+            ),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+        let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::ENeedsDecision);
+        assert!(
+            err.details.iter().any(|detail| detail.contains("call cap")),
+            "{:?}",
+            err.details
+        );
     }
 
     #[test]

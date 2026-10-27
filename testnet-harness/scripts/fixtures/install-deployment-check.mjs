@@ -12,6 +12,7 @@ import { signedRuleArgs } from '../approve-install.mjs';
 import { cliSpecHash } from '../check-runner.mjs';
 import { decide, walletTrust } from '../wallet-decision.mjs';
 import { SPENDING_LIMIT_WASM } from '../subscription.mjs';
+import { POLICY_WASM_UPLOAD_FEE } from '../rpc.mjs';
 
 const mode = process.argv[2];
 const readbackFailure = process.argv[3];
@@ -87,15 +88,17 @@ try {
     } };
   };
   const rpc = {
-    NETWORK_PASSPHRASE: sdk.Networks.TESTNET, log: () => {}, writeJson,
+    NETWORK_PASSPHRASE: sdk.Networks.TESTNET, POLICY_WASM_UPLOAD_FEE, log: () => {}, writeJson,
     args: () => ({ 'run-dir': dir, wasm: join(dir, 'policy.wasm'),
       ...(mode === 'default' ? {} : { 'authority-check': 'cli', confirm: 'operator' }) }),
     readJson: (path) => JSON.parse(readFileSync(path, 'utf8')),
     loadKey: () => ({ publicKey: () => payer }), assertTestnet: async () => {},
     contractCodeHash: async (address) => address === reviewed ? SPENDING_LIMIT_WASM : wasmHash, contractIdOf: () => policy, latestLedger: async () => 10,
     recordAuth: async () => { deploymentSaved(); return [{}]; },
-    submit: async (_payer, _operation, { stage }) => {
+    submit: async (_payer, _operation, { stage, maxFee }) => {
       stages.push(stage);
+      // The policy upload names the 15-XLM upload ceiling; deploy and install keep the default.
+      assert.equal(maxFee, stage === 'upload policy wasm' ? 150_000_000n : undefined, `fee ceiling for ${stage}`);
       if (stage === 'upload policy wasm') return { hash: 'upload-tx', returnValue: sdk.xdr.ScVal.scvBytes(Buffer.from(wasmHash, 'hex')) };
       if (stage === 'create policy') return { hash: 'create-tx', returnValue: null };
       assert.equal(stage, 'add_context_rule');

@@ -6,6 +6,7 @@ import { revokePermissionBundle } from './bundle-cleanup.mjs';
 import { loadBundleFiles } from './bundle-command.mjs';
 import { inspectBundleGrant } from './bundle-grant.mjs';
 import { checkBundleArtifacts } from './permission-bundle.mjs';
+import { soroswapDecisions } from './protocol-calls.mjs';
 import { invokeProtocol } from './protocol-invoke.mjs';
 import * as rpc from './rpc.mjs';
 const requireThat = (ok, text) => { if (!ok) throw new Error(text); };
@@ -13,7 +14,7 @@ const positiveLedger = (n) => Number.isSafeInteger(n) && n > 0 && n <= 0xffff_ff
 
 // Rule 0 is the root invocation's rule (protocolInputs refuses any other order), so the
 // root's generated policy is the first enforcer reached for tuple, signer and count denials.
-function negatives(kind, account, root, transfer) {
+export function negatives(kind, account, root, transfer) {
   const tuple = { enforcer: root, code: 6 };
   const signers = [
     ['wrong_signer', { signer: 'payer', expected: { enforcer: account, code: 3016 } }],
@@ -22,11 +23,22 @@ function negatives(kind, account, root, transfer) {
   if (kind === 'blend_claim') {
     return [['reserve_ids', { control: 'reserve_ids', expected: tuple }],
       ['claim_recipient', { control: 'claim_recipient', expected: tuple }],
-      ['pool_function', { control: 'pool_function', expected: tuple }], ...signers];
+      // The generated policy checks the function name before any argument: FunctionNotAllowed.
+      ['pool_function', { control: 'pool_function', expected: { enforcer: root, code: 5 } }], ...signers];
   }
   return [['input_cap', { control: 'input_cap', expected: tuple }],
     ['output_floor', { control: 'output_floor', expected: tuple }],
-    ['exact_deadline', { control: 'deadline', expected: tuple }], ...signers,
+    // The route is exact: reordered, extended and truncated routes are each refused by the tuple.
+    ['path_reordered', { control: 'path_reordered', expected: tuple }],
+    ['path_extended', { control: 'path_extended', expected: tuple }],
+    ['path_truncated', { control: 'path_truncated', expected: tuple }],
+    // The router asks `to`, and only `to`, to authorize: a foreign recipient is refused before the
+    // account or any of its policies is asked.
+    ['foreign_recipient', { control: 'foreign_recipient', expected: { recipient_refusal: true } }],
+    // The generated policy checks the function name before any argument: FunctionNotAllowed.
+    ['router_function', { control: 'router_function', expected: { enforcer: root, code: 5 } }],
+    // The adapter leaves the deadline open. This observes that disclosed high-blast-radius authority.
+    ['any_deadline', { control: 'any_deadline', expected: { permit: true } }], ...signers,
     // The child token rule is independently usable; this observes that disclosed authority, and
     // that the transfer rule's own policy still bounds a direct transfer.
     ['independent_token', { control: 'direct_token', expected: { permit: true } }],
@@ -45,6 +57,8 @@ export async function runProtocolControls(input, overrides = {}) {
   const plan = run.walkthrough;
   requireThat(plan?.controls === undefined, 'protocol controls already started; use a fresh isolated grant');
   requireThat(['soroswap_swap', 'blend_claim'].includes(plan.kind), 'unsupported protocol walkthrough');
+  // The floor and transfer-cap controls step past the operator's journaled decisions.
+  if (plan.kind === 'soroswap_swap') soroswapDecisions(plan.operator_decisions, { journal: true });
   const entries = plan.bundle?.entries;
   requireThat(plan.bundle?.status === 'installed' && Array.isArray(entries)
     && entries.length === (plan.kind === 'blend_claim' ? 1 : 2)
@@ -66,14 +80,17 @@ export async function runProtocolControls(input, overrides = {}) {
   const start = await deps.latestLedger();
   requireThat(positiveLedger(start) && start < run.valid_until_ledger, 'grant is already at or past its expiry ledger');
 
-  // Control set 2 adds the transfer rule's own cap and count denials (soroswap only).
-  const journal = { status: 'running', control_set: 2, steps: [] };
+  // Control set 2 adds the transfer rule's own cap and count denials (soroswap only); set 3 the
+  // adapter-bound router's route, recipient, function and open-deadline controls (soroswap only).
+  const journal = { status: 'running', control_set: plan.kind === 'soroswap_swap' ? 3 : 2, steps: [] };
   plan.controls = journal;
   save();
   const record = (step) => { journal.steps.push(step); save(); };
   async function call(name, { mode = 'simulate', signer = 'delegate', control = 'baseline', expected }, window) {
     const observed = await deps.invoke({ run, name, mode, signer, control, expected, save });
-    const wanted = mode === 'execute' ? 'confirmed' : expected.permit ? 'verified_independent_permission' : 'verified_denial';
+    const wanted = mode === 'execute' ? 'confirmed'
+      : expected.permit ? (control === 'direct_token' ? 'verified_independent_permission' : 'verified_disclosed_permission')
+        : expected.recipient_refusal ? 'verified_recipient_refusal' : 'verified_denial';
     requireThat(observed?.status === wanted && positiveLedger(observed.ledger), `${name}: ${observed?.status ?? 'missing result'}`);
     // A denial seen at the wrong side of expiry is attributed to the wrong rule state.
     const timely = window === 'any' || (window === 'valid' ? observed.ledger <= run.valid_until_ledger

@@ -369,6 +369,112 @@ pub fn run_layer1(spec: &ValidatedSpec) -> EvidenceReport {
     }
 }
 
+/// Format tag of [`SuiteCases`]; also the first line of the `suite_hash` preimage.
+pub const CASES_FORMAT: &str = "ozpb-reference-suite-cases/v1";
+
+/// The suite itself, in a form a replay outside this crate can read: every case's invocation
+/// and context, in suite order, under the hash that names exactly this list.
+///
+/// The layer-1 report carries outcomes, not invocations, so it cannot be replayed. This can.
+/// `suite_hash` is a checksum over the spec hash and the serialized cases: a replay that
+/// recomputes it knows the list was not truncated or edited after it was emitted. It is not a
+/// signature — anyone can hash a list they assembled — so what ties the cases to a spec is
+/// running this on that spec, which a reviewer can repeat.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuiteCases {
+    pub format: String,
+    pub spec_hash: String,
+    /// sha256 of `"{CASES_FORMAT}\n{spec_hash}\n"` followed by the compact JSON of `cases`
+    /// exactly as serialized here; see [`suite_hash`].
+    pub suite_hash: String,
+    pub total: usize,
+    pub cases: Vec<EmittedCase>,
+}
+
+/// One case of [`SuiteCases`]: [`Case`] with a stable id and JSON-safe arguments.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmittedCase {
+    /// `case-<index>`. Stable within one `suite_hash`, not across generator versions.
+    pub id: String,
+    pub index: usize,
+    pub rule_index: usize,
+    pub class: MutationClass,
+    pub label: String,
+    pub expect_permit: bool,
+    pub invocation: EmittedInvocation,
+    pub context: EvalContext,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmittedInvocation {
+    pub contract: String,
+    pub fn_name: String,
+    pub args: Vec<EmittedArg>,
+}
+
+/// [`ArgValue`] with the `i128` as a decimal string. A JSON number is read as a double by
+/// JavaScript, which cannot hold most of the i128 range: `i128::MAX` would arrive as another
+/// value and a replay would test a case the suite never generated.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum EmittedArg {
+    Address(String),
+    I128(String),
+    ScvalXdr(String),
+}
+
+impl From<&ArgValue> for EmittedArg {
+    fn from(value: &ArgValue) -> Self {
+        match value {
+            ArgValue::Address(address) => Self::Address(address.clone()),
+            ArgValue::I128(number) => Self::I128(number.to_string()),
+            ArgValue::ScvalXdr(xdr) => Self::ScvalXdr(xdr.clone()),
+        }
+    }
+}
+
+/// The hash [`SuiteCases::suite_hash`] carries: sha256 over the format line, the spec hash and
+/// the compact JSON of `cases`. Field order is declaration order and every number is a small
+/// integer, so `JSON.stringify` of the parsed array reproduces the same bytes.
+pub fn suite_hash(spec_hash: &str, cases: &[EmittedCase]) -> Result<String, serde_json::Error> {
+    let mut preimage = format!("{CASES_FORMAT}\n{spec_hash}\n").into_bytes();
+    preimage.extend(serde_json::to_vec(cases)?);
+    Ok(ozpb_domain::sha256(&preimage).to_hex())
+}
+
+/// Emit this spec's complete suite with its hash (`ozpb reference-suite --emit-cases`).
+pub fn emit_cases(spec: &ValidatedSpec) -> Result<SuiteCases, serde_json::Error> {
+    let cases: Vec<EmittedCase> = build_suite(spec)
+        .into_iter()
+        .enumerate()
+        .map(|(index, case)| EmittedCase {
+            id: format!("case-{index}"),
+            index,
+            rule_index: case.rule_index,
+            class: case.class,
+            label: case.label,
+            expect_permit: case.expect_permit,
+            invocation: EmittedInvocation {
+                args: case.invocation.args.iter().map(EmittedArg::from).collect(),
+                contract: case.invocation.contract,
+                fn_name: case.invocation.fn_name,
+            },
+            context: case.context,
+        })
+        .collect();
+    let spec_hash = spec.hash().to_hex();
+    Ok(SuiteCases {
+        format: CASES_FORMAT.to_string(),
+        suite_hash: suite_hash(&spec_hash, &cases)?,
+        spec_hash,
+        total: cases.len(),
+        cases,
+    })
+}
+
 /// Expose the suite so layer 2 (the contracts workspace) drives the same mutations.
 pub fn build_suite(spec: &ValidatedSpec) -> Vec<Case> {
     let mut cases = Vec::new();
@@ -1447,6 +1553,128 @@ mod tests {
             );
         }
         assert!(run_layer1(&stateless).missing_classes().is_empty());
+    }
+
+    // --- emitted cases (`ozpb reference-suite --emit-cases`) -------------------------------
+    //
+    // The report carries outcomes, not invocations, so nothing outside layer 1 could replay a
+    // case. The emitted form must be the suite itself — same order, labels, classes and
+    // expectations as the report — and bind a hash a JavaScript replay can recompute.
+
+    #[test]
+    fn emitted_cases_mirror_the_suite_and_bind_its_hash() {
+        for spec in [golden_spec(), blend_claim_spec(), soroswap_swap_spec()] {
+            let suite = build_suite(&spec);
+            let report = run_layer1(&spec);
+            let emitted = emit_cases(&spec).unwrap();
+            assert_eq!(emitted.format, CASES_FORMAT);
+            assert_eq!(emitted.spec_hash, spec.hash().to_hex());
+            assert_eq!(emitted.total, suite.len());
+            assert_eq!(emitted.cases.len(), suite.len());
+            for (index, ((case, out), outcome)) in suite
+                .iter()
+                .zip(&emitted.cases)
+                .zip(&report.outcomes)
+                .enumerate()
+            {
+                assert_eq!(out.index, index);
+                assert_eq!(out.id, format!("case-{index}"));
+                assert_eq!(out.rule_index, case.rule_index);
+                assert_eq!(out.class, case.class);
+                assert_eq!(out.label, case.label);
+                assert_eq!(out.expect_permit, case.expect_permit);
+                assert_eq!(out.context, case.context);
+                assert_eq!(out.invocation.contract, case.invocation.contract);
+                assert_eq!(out.invocation.fn_name, case.invocation.fn_name);
+                let args: Vec<EmittedArg> =
+                    case.invocation.args.iter().map(EmittedArg::from).collect();
+                assert_eq!(out.invocation.args, args);
+                // The same case the report evaluated, under the same label and expectation.
+                assert_eq!(out.label, outcome.label);
+                assert_eq!(out.class, outcome.class);
+                assert_eq!(
+                    outcome.expected,
+                    if out.expect_permit { "permit" } else { "deny" }
+                );
+            }
+            // Recomputable from the serialized cases alone, which is what a replay has.
+            let mut preimage = format!("{CASES_FORMAT}\n{}\n", emitted.spec_hash).into_bytes();
+            preimage.extend(serde_json::to_vec(&emitted.cases).unwrap());
+            assert_eq!(emitted.suite_hash, ozpb_domain::sha256(&preimage).to_hex());
+        }
+    }
+
+    #[test]
+    fn emitted_i128_values_are_exact_decimal_strings() {
+        // A JavaScript replay parses JSON numbers as doubles, which cannot hold i128::MAX; a
+        // replayed "i128 maximum" case would silently be a different number.
+        let emitted = emit_cases(&golden_spec()).unwrap();
+        let text = serde_json::to_string(&emitted).unwrap();
+        assert!(text.contains(&format!("{{\"i128\":\"{}\"}}", i128::MAX)));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut seen = 0;
+        for case in value["cases"].as_array().unwrap() {
+            for arg in case["invocation"]["args"].as_array().unwrap() {
+                if let Some(number) = arg.get("i128") {
+                    assert!(number.is_string(), "bare JSON number in {case}");
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 0);
+        let back: SuiteCases = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, emitted);
+    }
+
+    #[test]
+    fn suite_hash_names_this_spec_and_exactly_these_cases() {
+        let golden = emit_cases(&golden_spec()).unwrap();
+        assert_eq!(golden, emit_cases(&golden_spec()).unwrap());
+        assert_ne!(
+            golden.suite_hash,
+            emit_cases(&blend_claim_spec()).unwrap().suite_hash
+        );
+        // A list with a case removed, or another spec's hash, no longer recomputes to it: a
+        // hand-picked subset cannot pass as this suite.
+        let mut edited = golden.clone();
+        edited.cases.remove(1);
+        assert_ne!(
+            suite_hash(&edited.spec_hash, &edited.cases).unwrap(),
+            golden.suite_hash
+        );
+        assert_ne!(
+            suite_hash(&"00".repeat(32), &golden.cases).unwrap(),
+            golden.suite_hash
+        );
+        assert_eq!(
+            suite_hash(&golden.spec_hash, &golden.cases).unwrap(),
+            golden.suite_hash
+        );
+    }
+
+    #[test]
+    fn testnet_harness_fixtures_are_what_this_generator_emits() {
+        // The harness's replay tests read committed emitted suites for W1/W2/W3-shaped specs. They
+        // must be exactly what `emit_cases` produces now; otherwise those tests would keep
+        // passing against a generator that has moved on.
+        macro_rules! fixture {
+            ($name:literal) => {
+                include_str!(concat!(
+                    "../../../testnet-harness/scripts/fixtures/derived/",
+                    $name
+                ))
+            };
+        }
+        for (spec, cases) in [
+            (fixture!("w1-spec.json"), fixture!("w1-cases.json")),
+            (fixture!("w2-spec.json"), fixture!("w2-cases.json")),
+            (fixture!("w3-spec.json"), fixture!("w3-cases.json")),
+        ] {
+            let spec: ozpb_policy_spec::PolicySpec = serde_json::from_str(spec).unwrap();
+            let validated = spec.validate().unwrap();
+            let committed: SuiteCases = serde_json::from_str(cases).unwrap();
+            assert_eq!(emit_cases(&validated).unwrap(), committed);
+        }
     }
 
     #[test]
