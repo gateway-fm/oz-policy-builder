@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Address, Keypair, hash, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM } from '../shared/approval.mjs';
-import { offlineDomain } from '../server/native-protocol.mjs';
+import { offlineCapability, offlineDomain } from '../server/native-protocol.mjs';
 
 const vector = JSON.parse(readFileSync(new URL('../../docs/examples/native-domain-vector.json', import.meta.url)));
 const H = (n) => n.repeat(64);
@@ -45,7 +45,7 @@ export function nativeFixture({ maxCalls = 2, accountAddress = vector.binding.ac
       partial_rollback_preserved_counter: true, passed: true },
     required_classes: requiredClasses, passed: true, complete: false };
   return { key, binding, expected, prepared, result, maxCalls,
-    reference: { outcomes, requiredClasses }, signer: key && { address: key.publicKey(), sign: (bytes) => key.sign(bytes) } };
+    reference: { outcomes, requiredClasses }, signer: key && offlineCapability(key) };
 }
 
 /** The runner's exact sign request for one case of a prepared frame (offline domain only). */

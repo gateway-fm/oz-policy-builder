@@ -46,6 +46,18 @@ test('native execution is unavailable unless the operator configures one canonic
   assert.equal(loadWalletConfig(path).nativeExecutable, value.executable);
 });
 
+test('the live layer is unavailable unless the operator names the deployed helper contract', (t) => {
+  const { path, value, save } = fixture(t);
+  assert.equal(loadWalletConfig(path).liveHelper, null);
+  const helper = 'CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V';
+  save({ ...value, liveHelper: helper });
+  assert.equal(loadWalletConfig(path).liveHelper, helper);
+  for (const invalid of ['GAW4W7HJNIYRVGT2XWMIKFTG7NVJP2UNMF3C7NT5SVTP7WSSFOZHF244', helper.toLowerCase(), null, 7]) {
+    save({ ...value, liveHelper: invalid });
+    assert.throws(() => loadWalletConfig(path), /invalid wallet operator configuration/);
+  }
+});
+
 for (const invalid of ['unknown field', 'environment', 'http rpc', 'rpc secret', 'relative executable',
   'symlink executable', 'non-executable', 'shared workspace', 'oversized config', 'oversized registry', 'jobs', 'timeout',
   'relative native executable', 'symlink native executable', 'non-executable native', 'null native executable']) {

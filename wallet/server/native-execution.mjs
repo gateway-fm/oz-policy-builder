@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
-import { createOfflineSigner, offlineDomain } from './native-protocol.mjs';
+import { createLiveCapability } from './live-signing.mjs';
+import { createOfflineSigner, offlineCapability, offlineDomain } from './native-protocol.mjs';
 import { runNative } from './native-process.mjs';
 import { requestText } from './raw-json.mjs';
 
@@ -40,9 +41,13 @@ const guarded = (check) => (...args) => { try { return check(...args); } catch {
 /**
  * Explicitly created local automation delegates. Keys exist only in this backend process; the
  * browser receives the public address and an opaque capability ID, the worker only the address.
+ * A key signs through exactly two capabilities and never raw bytes: `offline` signs authorization
+ * preimages in the derived offline execution network only, `live` builds and signs one live case's
+ * transfer authorization on testnet only. Neither accepts the other's network.
  */
 export class DelegateCapabilities {
   #keys = new Map();
+  #consents = new Set();
   create() {
     if (this.#keys.size >= MAX_DELEGATES) refuse();
     const key = Keypair.random();
@@ -50,11 +55,24 @@ export class DelegateCapabilities {
     this.#keys.set(capabilityId, key);
     return Object.freeze({ capabilityId, address: key.publicKey() });
   }
-  signer(capabilityId, address) {
+  #key(capabilityId, address) {
     if (typeof capabilityId !== 'string' || !HASH.test(capabilityId) || !this.#keys.has(capabilityId)) refuse();
     const key = this.#keys.get(capabilityId);
     if (key.publicKey() !== address) refuse();
-    return Object.freeze({ address, sign: (bytes) => key.sign(bytes) });
+    return key;
+  }
+  offline(capabilityId, address) { return offlineCapability(this.#key(capabilityId, address)); }
+  /** Forget a key that never became usable, so that its slot can be used again. */
+  release(capabilityId) { this.#keys.delete(capabilityId); }
+  /** Throws unless `capabilityId` holds the key for `address`; signs nothing. */
+  check(capabilityId, address) { this.#key(capabilityId, address); return true; }
+  /** One live capability per consented statement (`consent`, its SHA-256), for exactly that check. */
+  live(capabilityId, address, { consent, ...approved } = {}) {
+    const key = this.#key(capabilityId, address);
+    if (typeof consent !== 'string' || !HASH.test(consent) || this.#consents.has(consent)) refuse();
+    const capability = createLiveCapability(key, approved);
+    this.#consents.add(consent);
+    return capability;
   }
 }
 

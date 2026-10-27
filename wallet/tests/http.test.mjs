@@ -69,3 +69,39 @@ test('only one long operation occupies the local wallet backend at a time', asyn
   assert.equal((await send()).status, 409);
   release(); assert.equal((await first).status, 200);
 });
+
+test('a client that disconnects aborts the running action and frees the backend', async (t) => {
+  let started, aborted;
+  const begun = new Promise((resolve) => { started = resolve; });
+  const stopped = new Promise((resolve) => { aborted = resolve; });
+  const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: token });
+  const server = createWalletServer({ session, actions: { status: async () => ({ ready: true }),
+    wait: async (_body, { signal }) => {
+      started();
+      await new Promise((resolve) => signal.addEventListener('abort', () => { aborted(); resolve(); }, { once: true }));
+      return {};
+    } } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const headers = { host: 'localhost:3000', origin: 'http://localhost:3000', authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  const req = request({ hostname: '127.0.0.1', port: server.address().port, method: 'POST', path: '/api/policy-builder/wait', headers });
+  req.on('error', () => {});
+  req.end('{}');
+  await begun;
+  req.destroy();
+  await stopped;
+  const status = await new Promise((resolve, reject) => {
+    const next = request({ hostname: '127.0.0.1', port: server.address().port, method: 'POST', path: '/api/policy-builder/status', headers },
+      (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    next.on('error', reject); next.end('{}');
+  });
+  assert.equal(status, 200);
+});
+
+test('a completed reply never aborts its action afterwards', async (t) => {
+  let signal;
+  const send = await fixture(t, { status: async (_body, options) => { signal = options.signal; return { ready: true }; } });
+  assert.equal((await send()).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(signal.aborted, false);
+});

@@ -32,3 +32,6 @@ hex = { workspace = true }
 base64 = { workspace = true }
 stellar-strkey = { workspace = true }
 stellar-xdr = { workspace = true }
+# Public-key derivation of the native worker's synthetic bootstrap owner, whose seed is public by
+# design, to bind its initialization hash. This crate holds no private key and signs nothing.
+ed25519-dalek = { workspace = true }

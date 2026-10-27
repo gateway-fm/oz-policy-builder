@@ -2,6 +2,10 @@ import type { Approval, WalletIdentity } from '../shared/approval.mjs';
 import type { CheckedAssembly } from '../shared/assembly.mjs';
 import type { SignedAuthorization } from '../shared/signature.mjs';
 import type { SampleApproval, SampleDescriptor } from '../shared/sample.mjs';
+import type { ConsentDisplay, LiveOwnerChecked } from '../shared/live-consent.mjs';
+import type { LiveCase } from '../shared/live-enforcement.mjs';
+import type { LiveOwnerSignature } from '../shared/signature.mjs';
+import type { GrantProposal, ProposalReview } from '../shared/proposal.mjs';
 type Details = Readonly<Record<string, unknown>>;
 export interface WalletState {
   readonly busy: boolean;
@@ -20,24 +24,47 @@ export interface WalletState {
   readonly sampleTransactionHash: string | null;
   readonly sampleAttempted: boolean;
   readonly delegate: { readonly capabilityId: string; readonly address: string } | null;
+  readonly livePreview: (Details & { display: ConsentDisplay; statementSha256: string; cases: readonly LiveCase[] }) | null;
+  readonly replay: Details | null;
+  readonly installPreview: (Details & { display: Details }) | null;
+  readonly installAttempted: boolean;
+  readonly installRuleId: number | null;
+  readonly installOwner?: Details | null;
+  readonly revokePreview: (Details & { display: Details }) | null;
+  readonly revokeAttempted: boolean;
+  readonly removal: Details | null;
+  readonly proposalReview: ProposalReview | null;
 }
 export class WalletController {
   constructor(options: {
     request(name: string, data: unknown): Promise<unknown>;
     validators: {
+      parseGrantProposal(text: string, accountAddress: string): GrantProposal;
+      checkProposalArtifact(proposal: GrantProposal, artifact: unknown): ProposalReview;
       reviewIntent(input: unknown): Approval;
       validateAssembly(input: unknown): CheckedAssembly;
       reviewSample(input: unknown): SampleApproval;
       validateSampleAssembly(input: unknown): CheckedAssembly;
       validateSignedAuthorization(input: unknown): Promise<SignedAuthorization>;
+      liveCases(input: unknown): readonly LiveCase[];
+      consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number }): ConsentDisplay;
+      statementHash(display: ConsentDisplay): string;
+      checkLiveOwnerEntry(input: unknown): LiveOwnerChecked;
+      validateLiveOwnerSignature(input: unknown): Promise<LiveOwnerSignature>;
+      installConsent(input: unknown): Details;
+      reviewRemoval(input: unknown): Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>;
+      validateRemovalAssembly(input: unknown): CheckedAssembly;
+      revokeConsent(input: unknown): Details;
     };
-    sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly }): Promise<string[]>;
+    sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly | LiveOwnerChecked }): Promise<string[]>;
     origin: string;
     pins: { networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
+    pause?(ms: number): Promise<void>;
   });
   readonly state: WalletState;
   connect(): Promise<void>;
+  refreshStatus(): Promise<void>;
   attachWallet(wallet: WalletIdentity): void;
   prepareAccount(credential: { credentialId: string; publicKey: string }): Promise<void>;
   confirmAccount(): Promise<void>;
@@ -45,11 +72,21 @@ export class WalletController {
   cancelSample(): void;
   approveSample(): Promise<void>;
   record(transactionHash: string): Promise<void>;
+  importProposal(text: string): Promise<void>;
   generate(parameters: { delegateAddress: string; validUntilLedger: number; maxCalls: number; grantName: string }): Promise<void>;
   prepareDeploy(): Promise<void>;
   confirmDeploy(): Promise<void>;
   review(): Promise<void>;
   createDelegate(): Promise<void>;
   checkAccount(): Promise<void>;
+  prepareLive(): Promise<void>;
+  cancelLive(): void;
+  consentLive(): Promise<void>;
+  checkReplay(): Promise<void>;
+  prepareInstall(): Promise<void>;
+  cancelInstall(): void;
   install(): Promise<void>;
+  prepareRevoke(): Promise<void>;
+  cancelRevoke(): void;
+  revoke(): Promise<void>;
 }
