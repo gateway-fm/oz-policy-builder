@@ -1,0 +1,400 @@
+{
+  "schema": "wallet-proposal-import-evidence/v1",
+  "network": "Test SDF Network ; September 2015",
+  "trust": "rpc_reported",
+  "toolkit_revision": "a2e3e68d216f982dc299e414ab4f43211126ea67",
+  "toolkit_tree_dirty": false,
+  "pollywallet_revision": "853b102983699726f918b68d8e42edbba74e65b9",
+  "applied_toolkit_tree": "3c72ec64d67f6adb7b3f0bcfa2d0702ba5b398a8",
+  "cli": {
+    "sha256": "377367ad3c03797cbe0b29484c923fb12535b0b57d2f7fb5adb3d5ce4a9e169f",
+    "built_from": "a2e3e68d216f982dc299e414ab4f43211126ea67"
+  },
+  "native_worker": {
+    "sha256": "3367457e49287b719f0e4f3601c13c817a1a27ca9ba3abd1d930369b86d29216",
+    "preserved_artifact_revision": "0524ed82",
+    "note": "Preserved artifact; runtime sources, locks and toolchain unchanged; api-types changes affect unused capture input and error variants. Not a reproducible-build attestation."
+  },
+  "policy_build": "Current CLI with stellar 27.0.0; offline generated-policy build and reproduction using the operator build cache.",
+  "browser": {
+    "automation": "playwright 1.63.0",
+    "channel": "Google Chrome 155.0.8059.86",
+    "recovery_access_verified": true
+  },
+  "started_at": "2026-10-26T17:44:42.975Z",
+  "finished_at": "2026-10-26T17:49:23.607Z",
+  "automation": true,
+  "human_approval_attested": false,
+  "authenticator": "browser_virtual_authenticator",
+  "account": "CCW5UOEUJTSJMH5XIZIRO33ZFCN27PR7OOF5BVQERSYLMWKJNIR6O5XK",
+  "verifier": "CC423N4NXYXA3ODSXVTWEVFVFW4WOCZDWM2BHYGSEJQLXHSUWDPLAMCW",
+  "account_creation": {
+    "deploy_verifier": {
+      "hash": "5a6dbbf424d14e08f33a6dafaa96ecd75432bcb511fec3b29c62c658570ae481",
+      "ledger": 5402623,
+      "trust": "rpc_reported"
+    },
+    "deploy_account": {
+      "hash": "819bdca4a6a7b3e885fdca87d75c30eca9f0dada7b3b1a9494609ad935a39d75",
+      "ledger": 5402624,
+      "trust": "rpc_reported"
+    },
+    "fund_sample_balance": {
+      "hash": "184443e8f56e153bf6413c257dd6f549608931bd4eca74f00a9e9b143d64a931",
+      "ledger": 5402625,
+      "trust": "rpc_reported"
+    }
+  },
+  "sample_transfer": {
+    "amount_stroops": "1000000",
+    "recipient": "GADPQL52N4Z44HG7LVJJ6AUOGC6LVJJFNATFEL7KDJDMBMZG2UHH7ROR",
+    "receipt": {
+      "hash": "b1d8ae5fde3ccb004d43bf163a5927721354227412f210854986bea59be267b9",
+      "ledger": 5402628,
+      "trust": "rpc_reported"
+    }
+  },
+  "proposal": {
+    "origin": "independent CLI record and synthesize; automated handoff, not a human-confirmed agent session",
+    "document_sha256": "6defc100973c8c200264415e2530ac4296df99db3feadcad17f5b820fbc6b905",
+    "transaction_hash": "b1d8ae5fde3ccb004d43bf163a5927721354227412f210854986bea59be267b9",
+    "agent_recording_hash": "7470f60fe6833a289ed9a25dd6a01c33c39db25b1eef6995342203387f11dc37",
+    "agent_spec_hash": "cc0ef16b5bdd24be9baa56603ecd5dba6913ead4241554582451cb9834b8cd1d",
+    "wallet_recording_hash": "77dd14c3dae84cf1beb9ec3a1241676f38dc81ca9459a74b37febf5ab94168eb",
+    "wallet_spec_hash": "57ef8181eae3c78c13510356a596180e73d1d09dc0835db29a5cc955fc8041a6",
+    "hashes_match": false,
+    "delegate": "GDJY4ZOF6Y43LQIMYWHSZ4FLPT6ERSJRAB5X2SVWZJG37WKFAAF7PWTY",
+    "max_calls": 1,
+    "valid_until_ledger": 5403229,
+    "schema": "ozpb-grant-proposal/v1",
+    "input": "JSON file through the real wallet UI",
+    "grants_match": true,
+    "hash_note": "Independent RPC recordings and synthesis produced different evidence/spec hashes; both the backend and browser accepted equal grant projections. No hash equality was inferred.",
+    "delegate_key": "Backend-created in-memory automation delegate, funded through Friendbot; discarded when the backend stopped."
+  },
+  "candidate_policy": {
+    "contract": "CBNPWZWRNG3QCCGUUWIA2GG7BPERR3N2BB7UVHFB4MH74DG4RK75AARA",
+    "code_hash": "9022f9bd9c7b9e8151a21ac14359855ce87eaaca49c0f50935b41fb61b4fac50",
+    "spec_hash": "57ef8181eae3c78c13510356a596180e73d1d09dc0835db29a5cc955fc8041a6",
+    "binding_set_hash": "04251935f473ba8f866085fdb0604bb10508a15eaade69e9e95b2a54b9667f4d",
+    "upload": {
+      "hash": "97f742a314b155f9d453a5c09371bdb3a0581c664f4a6fd7518bdd2e1ff0a845",
+      "ledger": 5402632,
+      "trust": "rpc_reported"
+    },
+    "create": {
+      "hash": "5906b9d6c564e8858e16192fd14aaa8ad4f14ed27f3cd3569dbd6e8672115694",
+      "ledger": 5402633,
+      "trust": "rpc_reported"
+    }
+  },
+  "reference": {
+    "total": 30,
+    "disagreements": 0,
+    "all_agree": true,
+    "missing_classes": [],
+    "permit_only_classes": [],
+    "unmodeled_reviewed_policies": []
+  },
+  "artifact_reproduction": {
+    "spec_conformance": "conforms (validated PolicySpec v1)",
+    "source_reproduction": "reproduced: generated non-lock files are byte-identical",
+    "offline_behavioral_conformance": "pass: 30 constraint-derived cases all agree",
+    "wasm_reproduction": "reproduced: Wasm and BuildManifest are identical",
+    "current_network_preflight": "not_checked_here: state-dependent (wallet/live)",
+    "normalized_input_hash": "fd0d8d33b5a14e199c312165212aabd761f3e4d2dbb4dfd6a57cf9062b9db200",
+    "models_all_policies": true,
+    "matches": true
+  },
+  "verification_layers": [
+    {
+      "layer": "reference",
+      "status": "passed"
+    },
+    {
+      "layer": "account_wasm",
+      "status": "passed"
+    },
+    {
+      "layer": "captured_target",
+      "status": "passed"
+    },
+    {
+      "layer": "live_enforcement",
+      "status": "passed"
+    }
+  ],
+  "complete": true,
+  "account_wasm": {
+    "runHash": "8767f094b562ebbf0227ea7496a92773a58c017ff81f5d219f83cb3dd7dc5546",
+    "suiteHash": "3e725a316cda037cc9aba7a8a1d843e9faa38b75c52a86bf4d9562115bbbd3f2",
+    "sourceLedger": 5402634,
+    "candidateContextRuleId": 1,
+    "cases": 30,
+    "controls": [
+      "signature_bit",
+      "nonce_binding",
+      "payload_binding",
+      "context_rule_binding",
+      "nonce_replay"
+    ],
+    "provenance": "fresh_local_candidate_boundary_states; counter seeds and ledgers are synthetic; no wallet ownership or live state claim",
+    "stateful": {
+      "successfulCalls": 1
+    }
+  },
+  "captured_target": {
+    "runHash": "8767f094b562ebbf0227ea7496a92773a58c017ff81f5d219f83cb3dd7dc5546",
+    "captureHash": "21343890296c5fe110acfe0a9cde9fdbe2e78323058427e4aacbe2a2d84cf2d6",
+    "captureProvenance": "rpc_reported",
+    "observedLedger": 5402635,
+    "candidateContextRuleId": 1,
+    "cases": [
+      "target:original:0",
+      "target:argument-denial:0",
+      "target:empty-signers:0"
+    ],
+    "counterSeed": 0,
+    "provenance": "rpc_reported target entries with outer LedgerEntry extension reconstructed as V0; fresh local candidate installation and synthetic counter seed; offline execution network; no owner authority, fee, reserve or live-network claim"
+  },
+  "live_enforcement": {
+    "helper": "CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V",
+    "helperCodeHash": "4ca1510cf2fcc5bc7deb22b8563aa6ee8064898c6b92afc06785a6b04966c6fb",
+    "expectedRuleId": 1,
+    "signatureExpirationLedger": 5402666,
+    "consentStatementSha256": "b78c798853de578cea77b5c25253bd98b78e115bd720761d803d639303c42c82",
+    "submitted": false,
+    "labels": [
+      "state_dependent",
+      "simulation_only",
+      "signatures_valid_until_ledger:5402666",
+      "delegate_is_wallet_in_memory_automation_key"
+    ],
+    "status": "passed",
+    "owner": {
+      "authentication": "webauthn_user_verified",
+      "human_approval_attested": false
+    },
+    "cases": [
+      {
+        "case": "target:original:0",
+        "outcome": "permit",
+        "reason": "candidate_permitted",
+        "simulationLedger": 5402636,
+        "envelopeXdrSha256": "57eef255fc98bce919cd90ed0170956cee0fe1fd0dc4fa3168464d3f0f2bdd21"
+      },
+      {
+        "case": "target:argument-denial:0",
+        "outcome": "deny",
+        "reason": "policy_denied",
+        "code": 6,
+        "simulationLedger": 5402636,
+        "envelopeXdrSha256": "9a6d6981f6cfac3e74bc5ce2160fbe3fa1a7d21951b661b6bffa836446f53ec2"
+      }
+    ]
+  },
+  "replay_checks": [
+    {
+      "status": "waiting",
+      "latestLedger": 5402642,
+      "signaturesValidUntil": 5402666
+    },
+    {
+      "status": "waiting",
+      "latestLedger": 5402648,
+      "signaturesValidUntil": 5402666
+    },
+    {
+      "status": "waiting",
+      "latestLedger": 5402655,
+      "signaturesValidUntil": 5402666
+    },
+    {
+      "status": "waiting",
+      "latestLedger": 5402661,
+      "signaturesValidUntil": 5402666
+    },
+    {
+      "status": "unchanged",
+      "latestLedger": 5402667,
+      "signaturesValidUntil": 5402666,
+      "snapshotDigest": "6119a716c7bea477b8c531f88070c099306c79c28f759ab6412efd95d36eb562"
+    }
+  ],
+  "installation": {
+    "status": "installed",
+    "network": "testnet",
+    "networkId": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+    "account": "CCW5UOEUJTSJMH5XIZIRO33ZFCN27PR7OOF5BVQERSYLMWKJNIR6O5XK",
+    "ruleId": 1,
+    "transactionHash": "5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290",
+    "ledger": 5402672,
+    "trust": "rpc_reported",
+    "feeChargedStroops": "165953",
+    "policy": "CBNPWZWRNG3QCCGUUWIA2GG7BPERR3N2BB7UVHFB4MH74DG4RK75AARA",
+    "policyCodeHash": "9022f9bd9c7b9e8151a21ac14359855ce87eaaca49c0f50935b41fb61b4fac50",
+    "specHash": "57ef8181eae3c78c13510356a596180e73d1d09dc0835db29a5cc955fc8041a6",
+    "bindingSetHash": "04251935f473ba8f866085fdb0604bb10508a15eaade69e9e95b2a54b9667f4d",
+    "delegate": "GDJY4ZOF6Y43LQIMYWHSZ4FLPT6ERSJRAB5X2SVWZJG37WKFAAF7PWTY",
+    "validUntilLedger": 5403229,
+    "authorityCommitment": "bc41684f9f382b9fd775bf6253b83faac815b2ea35675c5179e8ab74e4b3a693",
+    "verificationRunId": "8cf3447adc336c5e4202674797b2611a078d3cd182e1ad20da2adf5059c6c2bd",
+    "event": {
+      "name": "context_rule_added",
+      "ruleId": 1,
+      "transactionHash": "5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290",
+      "ledger": 5402672
+    },
+    "readback": {
+      "rule": "matched",
+      "ledger": 5402672,
+      "policyMarker": "installed",
+      "markerLedger": 5402672
+    },
+    "owner": {
+      "authentication": "webauthn_user_verified",
+      "human_approval_attested": false
+    },
+    "consent": {
+      "transaction": {
+        "min_ledger": 5402669,
+        "max_ledger": 5402729,
+        "signature_expiration_ledger": 5402728
+      },
+      "fee": {
+        "prepared_fee_stroops": 292555,
+        "max_fee_stroops": 10000000
+      }
+    }
+  },
+  "removal": {
+    "status": "removed",
+    "ruleId": 1,
+    "transactionHash": "d558c505144dadceeefe823c7bd88e0bc22a43d646ff3fbff68c226451495c83",
+    "ledger": 5402675,
+    "event": "verified",
+    "ruleReadback": "absent",
+    "readbackLedger": 5402675,
+    "policyCleanup": "not_installed",
+    "cleanupLedger": 5402675,
+    "owner": {
+      "authentication": "webauthn_user_verified",
+      "human_approval_attested": false
+    },
+    "consent": {
+      "transaction": {
+        "min_ledger": 5402672,
+        "max_ledger": 5402792,
+        "signature_expiration_ledger": 5402791
+      },
+      "fee": {
+        "prepared_fee_stroops": 1126679,
+        "max_fee_stroops": 10000000
+      }
+    }
+  },
+  "independent_reads": {
+    "account": "CCW5UOEUJTSJMH5XIZIRO33ZFCN27PR7OOF5BVQERSYLMWKJNIR6O5XK",
+    "policy": "CBNPWZWRNG3QCCGUUWIA2GG7BPERR3N2BB7UVHFB4MH74DG4RK75AARA",
+    "rule_id": 1,
+    "trust": "rpc_reported",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "checked_at": "2026-10-26T17:51:23.010Z",
+    "transactions": [
+      {
+        "hash": "5a6dbbf424d14e08f33a6dafaa96ecd75432bcb511fec3b29c62c658570ae481",
+        "status": "SUCCESS",
+        "ledger": 5402623,
+        "envelope_hash_matches": true
+      },
+      {
+        "hash": "819bdca4a6a7b3e885fdca87d75c30eca9f0dada7b3b1a9494609ad935a39d75",
+        "status": "SUCCESS",
+        "ledger": 5402624,
+        "envelope_hash_matches": true
+      },
+      {
+        "hash": "184443e8f56e153bf6413c257dd6f549608931bd4eca74f00a9e9b143d64a931",
+        "status": "SUCCESS",
+        "ledger": 5402625,
+        "envelope_hash_matches": true
+      },
+      {
+        "hash": "b1d8ae5fde3ccb004d43bf163a5927721354227412f210854986bea59be267b9",
+        "status": "SUCCESS",
+        "ledger": 5402628,
+        "envelope_hash_matches": true
+      },
+      {
+        "hash": "97f742a314b155f9d453a5c09371bdb3a0581c664f4a6fd7518bdd2e1ff0a845",
+        "status": "SUCCESS",
+        "ledger": 5402632,
+        "envelope_hash_matches": true
+      },
+      {
+        "hash": "5906b9d6c564e8858e16192fd14aaa8ad4f14ed27f3cd3569dbd6e8672115694",
+        "status": "SUCCESS",
+        "ledger": 5402633,
+        "envelope_hash_matches": true
+      },
+      {
+        "hash": "5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290",
+        "status": "SUCCESS",
+        "ledger": 5402672,
+        "envelope_hash_matches": true,
+        "event_name": "context_rule_added",
+        "event_rule_id": 1
+      },
+      {
+        "hash": "d558c505144dadceeefe823c7bd88e0bc22a43d646ff3fbff68c226451495c83",
+        "status": "SUCCESS",
+        "ledger": 5402675,
+        "envelope_hash_matches": true,
+        "event_name": "context_rule_removed",
+        "event_rule_id": 1
+      }
+    ],
+    "final_state": {
+      "ledger": 5402699,
+      "account_next_id": 2,
+      "account_count": 1,
+      "owner_rule_present": true,
+      "rule_absent": true,
+      "policy_installed": false
+    },
+    "note": "Separate read-only review after removal. RPC-reported receipts and ledger entries; observations across calls are non-atomic, not ledger proofs."
+  },
+  "steps": [
+    "prepare-account",
+    "confirm-account",
+    "prepare-sample",
+    "submit-sample",
+    "create-delegate",
+    "import-proposal",
+    "prepare-deploy",
+    "confirm-deploy",
+    "review",
+    "check-account",
+    "prepare-live",
+    "consent-live",
+    "run-live",
+    "check-replay",
+    "check-replay",
+    "check-replay",
+    "check-replay",
+    "check-replay",
+    "assemble",
+    "submit",
+    "prepare-revoke",
+    "confirm-revoke"
+  ],
+  "retries": [],
+  "delegated_calls": "No delegated transaction was submitted under the installed rule. The live-enforcement cases were simulations before installation.",
+  "limitations": [
+    "One exact native-XLM transfer grant on testnet, with one backend-held delegate, a one-call cap and ledger expiry.",
+    "Automated independent CLI-to-wallet handoff; no human clarification, permission review or protected passkey approval is attested.",
+    "Editable local observations and RPC-reported, non-atomic reads; not authenticated ledger proofs or a reproducible-build attestation.",
+    "Reference and account-Wasm cases are local; captured-target execution uses RPC-reported entries in synthetic candidate state; live enforcement is state-dependent simulation.",
+    "Raw authorizations, credentials, session capabilities, run paths and full RPC responses are excluded."
+  ]
+}

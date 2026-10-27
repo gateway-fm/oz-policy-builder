@@ -14,8 +14,8 @@ feature or an automated check is not by itself evidence that the whole milestone
 
 | Area | Available evidence or implementation | Still required |
 | --- | --- | --- |
-| Agent workflow | The policy-builder skill, plugin and MCP recording/synthesis tools. | An exercised clarification, permission review and wallet confirmation flow. |
-| Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification and [candidate-bound preparation](DRY-RUN-PREPARATION.md). | Complete layer-by-layer execution evidence, state invariants and adversarial direct-call coverage; preparation explicitly reports missing runtime layers and cannot authorize installation. |
+| Agent workflow | The policy-builder skill with its confirm-before-deploy card, the human-invoked install skill and its `ozpb-grant-proposal/v1` handoff, the plugin, the MCP tools, a session-transcript checker and [wallet proposal import](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal) with independent grant regeneration. An [automated CLI-to-wallet testnet run](evidence/wallet-proposal-import-testnet-2026-10-26.json) imported, verified, installed and revoked one exact-transfer grant. | An exercised human clarification, permission review and confirmation session through the final wallet lifecycle. |
+| Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification, [candidate-bound preparation](DRY-RUN-PREPARATION.md) and the CLI `dry-run`, which runs the account-Wasm and supported captured-target layers. | Live-layer execution evidence, state invariants and adversarial direct-call coverage; preparation explicitly reports missing runtime layers, and no report authorizes installation. |
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
 | Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |
 | Live enforcement | The [atomic live helper](ATOMIC-LIVE-HELPER.md), deployed and probed on testnet, and the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check): after the owner consents to the exact calls and expiry, an owner passkey installation and the wallet's automation delegate transfer, simulated in enforce mode for the exact amount and one stroop more and validated case by case. Separate signing capabilities keep the delegate's testnet and offline signatures apart, and a replay check after the signatures expire. One automation run on testnet, [22 October 2026](evidence/wallet-live-enforcement-testnet-2026-10-22.json), passed with a virtual-authenticator owner. State-dependent simulation only, for one grant shape. | A run with a human owner's passkey, other grant shapes, and the derived deny suite live. |
@@ -246,13 +246,20 @@ The source-reviewed account method inventory and its limits are described in
    captured balances and, for a capped rule, advance the counter, and an amount-plus-one and
    an unsigned call must be refused by the policy with unchanged state. Recorded testnet
    responses for the public Pollywallet sample account replay offline through the same path.
-   It is offline and counterfactual and covers no other target. No CLI or MCP command runs it
-   yet; the local Pollywallet backend runs it for the grant it generates from its sample
-   transfer. `ozpb capture-target` and the MCP `capture_target` tool only produce its captured
-   input through an operator-configured RPC source.
+   It is offline and counterfactual and covers no other target. `ozpb capture-target` and the
+   MCP `capture_target` tool only produce its captured input through an operator-configured RPC
+   source; `ozpb dry-run --capture-request` runs the layer from the CLI, the local Pollywallet
+   backend runs it for the grant it generates from its sample transfer, and no MCP command runs
+   it.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
+   `ozpb dry-run` runs the native worker's account-Wasm layer for the selected rule and, for the
+   supported native transfer, its captured-target layer, with the CLI's offline-domain signer,
+   and reports whether the original was permitted and at least five derived denials reverted
+   ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)). Its live
+   layer is always unavailable, because that needs the wallet owner's consent, so its report is
+   never complete; the MCP server has no signing dry run.
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
    `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
    endpoint would refuse before simulating, such as one with a memo. It records the endpoint's

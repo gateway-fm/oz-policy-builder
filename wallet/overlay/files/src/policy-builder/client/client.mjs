@@ -1,4 +1,4 @@
-const ENDPOINTS = new Set(['status', 'prepare-account', 'confirm-account', 'prepare-sample', 'submit-sample', 'record', 'generate',
+const ENDPOINTS = new Set(['status', 'prepare-account', 'confirm-account', 'prepare-sample', 'submit-sample', 'record', 'generate', 'import-proposal',
   'prepare-deploy', 'confirm-deploy', 'review', 'create-delegate', 'check-account', 'prepare-live', 'consent-live', 'run-live',
   'check-replay', 'assemble', 'submit', 'monitor', 'prepare-revoke', 'confirm-revoke']);
 const refused = () => new Error('wallet request refused; reconnect or try a fresh review');

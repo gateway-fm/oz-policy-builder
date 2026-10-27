@@ -10,6 +10,7 @@ import { validateAssembly } from '../shared/assembly.mjs';
 import { INSTALL_VALIDITY_LEDGERS, installConsent } from '../shared/install.mjs';
 import { REMOVAL_MAX_FEE_STROOPS, reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared/revoke.mjs';
 import { addedRuleId, installGate, verifyInstallation, verifyRemoval } from './install.mjs';
+import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
 import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
 import { LIVE_ORIGIN, clockedLedger, consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, requireNoReplay, runLive } from './live-check.mjs';
@@ -155,7 +156,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       exact(input, []);
       return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
-        capabilities: { record: true, generate: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+        capabilities: { record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
           liveCheck: live !== null, install: [...reviews.values()].some(installable),
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)) },
         installations: summaries(),
@@ -246,6 +247,20 @@ export function createWalletActions({ session, toolchain, network, native = null
         if (submitted.returnValue.type !== 'scvVoid') refuse();
         return { transactionHash: submitted.hash, receipt: receipt(submitted) };
       });
+    },
+    'import-proposal': async (input) => {
+      exact(input, ['proposal', 'wallet']);
+      const wallet = walletIdentity(input.wallet);
+      const proposal = parseGrantProposal(input.proposal, wallet.contractId);
+      await network.assertTestnet();
+      await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
+      await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
+      const record = await toolchain.record({ transactionHash: proposal.transaction_hash, accountAddress: wallet.contractId });
+      const d = proposal.decisions;
+      const artifact = await toolchain.generate({ recordId: record.recordId, delegateAddress: d.delegate,
+        validUntilLedger: d.valid_until_ledger, maxCalls: d.max_calls, grantName: d.grant_name,
+        currentLedger: await network.latestLedger(), proposal });
+      return { record, artifact, proposalReview: checkProposalArtifact(proposal, artifact) };
     },
     generate: async (input) => {
       exact(input, ['recordId', 'delegateAddress', 'validUntilLedger', 'maxCalls', 'grantName']);

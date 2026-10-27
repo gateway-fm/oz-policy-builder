@@ -14,6 +14,7 @@ import { checkLiveOwnerEntry, consentDisplay, liveCases, statementHash } from ".
 import { reviewSample, validateSampleAssembly } from "../policy-builder/shared/sample.mjs";
 import { installConsent } from "../policy-builder/shared/install.mjs";
 import { reviewRemoval, revokeConsent, validateRemovalAssembly } from "../policy-builder/shared/revoke.mjs";
+import { MAX_PROPOSAL_BYTES, parseGrantProposal, checkProposalArtifact } from "../policy-builder/shared/proposal.mjs";
 
 export const Route = createFileRoute("/policy-builder")({ component: PolicyBuilder });
 const button = "rounded-lg bg-cyan-600 px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-40";
@@ -188,6 +189,7 @@ function PolicyBuilder() {
   const [creating, setCreating] = useState(false);
   const [walletJson, setWalletJson] = useState("");
   const [transactionHash, setTransactionHash] = useState("");
+  const [proposalText, setProposalText] = useState("");
   const [delegateAddress, setDelegateAddress] = useState("");
   const [validUntilLedger, setValidUntilLedger] = useState("");
   const [maxCalls, setMaxCalls] = useState("1");
@@ -199,7 +201,7 @@ function PolicyBuilder() {
       const instance = new WalletController({
         request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
           reviewSample, validateSampleAssembly, liveCases, consentDisplay, statementHash, checkLiveOwnerEntry, validateLiveOwnerSignature,
-          installConsent, reviewRemoval, validateRemovalAssembly, revokeConsent },
+          installConsent, reviewRemoval, validateRemovalAssembly, revokeConsent, parseGrantProposal, checkProposalArtifact },
         pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
         origin: window.location.origin, onChange: setState,
         sign: async ({ approval, checked }) => {
@@ -290,6 +292,37 @@ function PolicyBuilder() {
       </section>
       <section className={panel} aria-labelledby="record-heading">
         <h2 id="record-heading" className="text-xl font-semibold">2. Record and generate</h2>
+        <details className="space-y-3 rounded-lg border border-slate-600 p-4">
+          <summary className="cursor-pointer font-semibold">Import a grant proposal</summary>
+          <p className="text-sm text-slate-300">Import a capped, expiring grant for one exact native XLM transfer on testnet.
+            The wallet records the transaction again and regenerates the grant, refusing any permission difference.
+            You review deployment and installation separately. Installation requires the automation delegate
+            created in this wallet session.</p>
+          <label className="block text-sm" htmlFor="proposal-file">Choose a proposal JSON file (up to 16 KiB)</label>
+          <input id="proposal-file" type="file" accept="application/json,.json" disabled={busy}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              setProposalText("");
+              if (!file) return;
+              if (file.size > MAX_PROPOSAL_BYTES) { setMessage("Proposal file exceeds 16 KiB."); return; }
+              try { setProposalText(await file.text()); }
+              catch { setMessage("Could not read the proposal file."); }
+            }} />
+          <label className="block text-sm" htmlFor="proposal-json">Or paste the proposal JSON</label>
+          <textarea id="proposal-json" className={input} rows={6} maxLength={MAX_PROPOSAL_BYTES}
+            value={proposalText} disabled={busy} onChange={(event) => setProposalText(event.target.value)} />
+          <button className={button} disabled={busy || !state?.wallet || !proposalText || !state?.status?.capabilities.importProposal}
+            onClick={() => void run((value) => value.importProposal(proposalText))}>Import and verify proposal</button>
+        </details>
+        {state?.proposalReview && <div className="space-y-2 rounded-lg border border-cyan-700 p-4 text-sm">
+          <p>The regenerated permissions match the proposal. Review the grant below.</p>
+          <dl className="space-y-2 break-all">
+            <div><dt>Agent specification hash</dt><dd>{state.proposalReview.agentSpecHash}</dd></div>
+            <div><dt>Wallet specification hash</dt><dd>{state.proposalReview.walletSpecHash}</dd></div>
+          </dl>
+          {!state.proposalReview.hashesMatch && <p>Specification hashes include acquisition details and may differ even when permissions match.
+            The account, calls, signer requirements, expiry, cap and policy kinds were compared separately and match.</p>}
+        </div>}
         {state?.sample && <div className="space-y-3 rounded-lg border border-cyan-700 bg-cyan-950/20 p-4">
           <h3 className="font-semibold">Create a sample transaction with this new account</h3>
           <p className="text-sm">Transfer exactly 0.1 testnet XLM from the account to the local testnet fee payer.

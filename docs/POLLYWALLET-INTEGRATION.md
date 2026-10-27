@@ -125,6 +125,50 @@ across its three transactions (`maxTotalFeeStroops: 30000000`).
 On SIGINT or SIGTERM the listener stops accepting new requests; an already admitted request
 can finish and write its receipt before shutdown. Keep the journal when interrupting a session.
 
+## Importing an agent proposal
+
+After attaching the account, open **Import a grant proposal** under **Record and generate**.
+Paste an `ozpb-grant-proposal/v1` document or choose a JSON file up to 16 KiB, then select
+**Import and verify proposal**. The accepted grant is one exact native XLM transfer from this
+account to a G-address recipient on testnet: one strict `any_of` delegated signer, an expiry
+within 17,280 ledgers of the current ledger, and a cap of 1–10,000 calls. Widenings, spending
+limits, unlimited grants, other networks and other call shapes are refused.
+
+The backend records the confirmed transaction again through its configured RPC and synthesizes
+from a fresh wallet-owned decisions document. Before compiling or retaining an artifact, it
+compares the account, rule context and target code hash, ordered calls and argument constraints,
+complete signer predicate, expiry, call cap and policy kinds with the proposal. Every difference
+is refused. The browser repeats this comparison against the returned specification. Duplicate
+JSON keys, lossy numeric literals, unknown fields and malformed or oversized input are refused.
+The transaction must still be available in the RPC node's retention window.
+
+Both specification hashes are displayed. Equality is not required: acquisition provenance may
+change while the permissions stay equal. Import clears previous proposal previews and evidence,
+but retains an existing installation's recovery and removal controls. It performs no deployment,
+owner signing or submission. Continue through the separate deployment, four-layer checks,
+installation consent and passkey steps below.
+
+To complete account and live execution checks, the grant's delegate must be the automation
+delegate held by this backend session. Create that delegate first and provide its public address
+to the agent. A proposal naming an external delegate can be inspected and regenerated, but those
+checks remain unavailable and installation stays blocked; importing never changes the delegate.
+
+The import boundary has unit and action/controller tests plus a browser check against a synthetic
+backend. With the applied checkout's Vite server running, run
+`OZPB_BROWSER_CHANNEL=chrome node scripts/test-wallet-proposal-browser.mjs http://localhost:3000`
+from the toolkit checkout (using the Playwright dependency documented under [Verification](#verification)). This covers paste/file input,
+changed-grant refusal, failed-retry invalidation and size limits. It does not attest to a live
+RPC acquisition, generated-Wasm build or passkey-approved installation of an imported proposal.
+
+The separate [26 October 2026 testnet run](evidence/wallet-proposal-import-testnet-2026-10-26.json)
+exercised a real CLI-to-wallet handoff: independent recording and synthesis, JSON file import,
+wallet-owned recording and regeneration, reproduced generated Wasm, all four verification layers,
+installation and revocation. The agent-side and wallet hashes differed; the permissions matched.
+The replay check cleared after signature expiry, the installed rule read back identical, and
+revocation left the rule absent and the policy marker unset. This used an automated virtual
+passkey and a backend-held delegate: no human clarification or protected approval is attested,
+and no delegated transaction was submitted under the installed rule.
+
 ## Review and consent
 
 1. Create a passkey using Pollywallet's existing authenticator helper, then separately review

@@ -43,7 +43,10 @@ Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
 record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
+`ozpb dry-run` runs the native worker's account-Wasm layer and, with a capture request, its
+captured-target layer, signing only offline-domain requests with the spec delegate's key from a
+0600 file; its live layer stays unavailable, so its report is never complete. It is a CLI
+command only: the MCP server holds no keys and has no signing dry run. The live authority
 check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
 built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
 advisory wherever they run. `ozpb capture-target` and `capture_target` read, through the same
@@ -141,6 +144,15 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
   --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015"
+
+# Optional: run the account-Wasm layer through the operator's native worker and print a
+# four-layer report. The delegate key is read only from a 0600 file and signs only requests for
+# the run's derived offline network; the live layer is reported unavailable. Exits 0 only when
+# the report's `acceptance` meets the permit/deny bar.
+ozpb dry-run --request dry-run-request.json --registry-roots registry-roots.json \
+  --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --native-worker /abs/path/ozpb-execution-runtime --delegate-key-file delegate.key \
+  --account-wasm pinned-account.wasm --source-ledger ledger.json > dry-run.json
 
 # Optional: capture the target state of one unsigned native SAC transfer for the native
 # worker's captured-target layer. The request names an operator source and network and carries
@@ -295,11 +307,14 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
-`docs/MCP-WALKTHROUGH.md` covers the server and the `policy-builder` Claude skill. The
-repository's `.mcp.json` exposes the server for local tool use; `claude --plugin-dir .` loads
-the packaged skill and its server entry. The wrapper refreshes a plugin binary from source
-in Claude's persistent plugin data directory and launches a stdio server per session. The
-walkthrough also covers tool inputs and raw JSON-RPC.
+`docs/MCP-WALKTHROUGH.md` covers the server, the `policy-builder` Claude skill and the
+human-invoked `policy-builder-install` skill that hands a confirmed grant off. Do not
+pre-approve `prepare_install_intent`, `assemble_install_transaction` or `capture_target` in
+Claude Code permissions; each call should prompt. The repository's `.mcp.json` exposes the
+server for local tool use; `claude --plugin-dir .` loads the packaged skill and its server
+entry. The wrapper refreshes a plugin binary from source in Claude's persistent plugin data
+directory and launches a stdio server per session. The walkthrough also covers tool inputs and
+raw JSON-RPC.
 
 ```bash
 cargo build -r -p ozpb-mcp-server
@@ -349,8 +364,10 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   The envelope is confidential input that no result or error echoes, but over MCP it passes
   through the conversation, and the capture repeats its call; prefer the CLI or a local stdio
   server.
-- **Scheduled, not exposed** — the full four-layer `dry_run`. The full dry-run harness needs
-  its own evidence before exposure.
+- **CLI only, not exposed** — the signing dry run. `ozpb dry-run` runs the account-Wasm and
+  supported captured-target layers with an offline-domain delegate key; this server holds no
+  keys, so it serves `prepare_dry_run` and `capture_target` instead. A complete four-layer run
+  needs the wallet's live layer.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
@@ -361,7 +378,10 @@ signs, or holds keys.
 `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
 source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
-source, but reads nothing through it.
+source, but reads nothing through it. `scripts/mcp-server-dev.sh` configures exactly one source,
+`testnet` (SDF's public testnet RPC unless `OZPB_DEV_TESTNET_RPC_URL` names another `https://`
+endpoint), and replaces any map already in the environment; it never configures another
+network.
 The source must be for the request's network, and a hosted server also requires its URL on
 `OZPB_RPC_ALLOWLIST`. For every one of them except `capture_target`, which needs no registry
 trust, the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`, `OZPB_REGISTRY_MIN_VERSION`)
@@ -417,6 +437,14 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).
+- **Lifetime and call cap are required decisions.** `valid_until_ledger`, or
+  `no_expiry_acknowledged: true`; `max_calls`, or `unlimited_calls_acknowledged: true` (absent
+  reads as `false`). Neither answer is an `E_NEEDS_DECISION` finding; both answers to one
+  question (a cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry
+  acknowledgement) are contradictory, an `E_INVALID_DECISION` finding. A refusal lists every
+  finding in `details` under the first one's code. Before v0.2.0 a null `max_calls` alone produced
+  an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
+  in the [release notes](release-notes/v0.2.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).

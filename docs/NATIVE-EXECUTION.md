@@ -16,11 +16,16 @@ The synthetic fixture script tests execution only and is not a preparation trust
 
 ## Supported scope and execution evidence
 
-Initial support is one rule with one explicit delegated Ed25519 G signer, one generated policy,
-and `any_of`, `all_of` or threshold-one authorization. The specification is at most 64 KiB,
-with at most eight allowed calls, sixteen arguments per call and 256 derived boundary cases.
-A call cap may be at most 512. Larger valid grants and other signer/policy compositions are
-unsupported; there is no substitute signer or passing fallback.
+The worker runs the request's selected rule, `candidate.rule_index`, of a specification that may
+hold other rules. Only that rule is installed, with only its own policy binding; an index past
+the last rule is refused. The selected rule must have one explicit delegated Ed25519 G signer,
+exactly one generated policy and `any_of`, `all_of` or threshold-one authorization. A selected
+rule composed with any other policy, such as a reviewed spending limit, is refused: it would run
+here without that policy. The specification is at most 64 KiB, every rule has at most eight
+allowed calls and sixteen arguments per call, because the suite is derived for every rule
+before the selected rule's cases are kept, and the selected rule has at most 256 derived
+boundary cases. A call cap may be at most 512. Larger valid grants and other signer/policy
+compositions are unsupported; there is no substitute signer or passing fallback.
 
 Each boundary case starts from a fresh local installation at the exact candidate account and
 policy addresses. A distinct deterministic bootstrap owner signs the setup invocation in the
@@ -68,10 +73,10 @@ The first UTF-8 NDJSON line is a `NativeJob` of at most 16 MiB:
 run nonce and generated Wasm in `artifact.claimed_wasm_base64`. Unknown fields are rejected.
 The worker derives the suite; callers cannot supply arbitrary cases or previous results.
 
-A wallet first invokes its trusted local binary with the fixed `--prepare` argument and closes
-stdin after the job. That mode validates and hashes the immutable job and emits exactly one
-`PreparedFrame`; it neither executes Wasm nor requests signatures. The wallet retains this
-trusted metadata. Interactive execution of the identical job begins with the same frame,
+A coordinator (the wallet, or `ozpb dry-run` below) first invokes its trusted local binary with
+the fixed `--prepare` argument and closes stdin after the job. That mode validates and hashes
+the immutable job and emits exactly one `PreparedFrame`; it neither executes Wasm nor requests
+signatures. The coordinator retains this trusted metadata. Interactive execution of the identical job begins with the same frame,
 then emits sequential `sign_request` frames and one final `result`. Every repeated binding
 must match the retained preparation frame. Repeats from the executing worker alone are not
 an independent source of expected metadata.
@@ -96,9 +101,10 @@ wallet can signal. The group check enforces the contract of a trusted local bina
 containment: a descendant that calls `setsid` or `setpgid` leaves the group unseen.
 
 The wallet keeps a registered, controlled delegate key in backend memory and exposes only its
-address and opaque capability ID to the UI. The worker receives only the address. An arbitrary
-supplied delegate address without a matching capability is unavailable; an owner passkey does
-not stand in for the delegate. The [Pollywallet backend](POLLYWALLET-INTEGRATION.md#account-wasm-execution)
+address and opaque capability ID to the UI. `ozpb dry-run` reads the spec delegate's key from a
+0600 file (see [running the layers from the CLI](#running-the-layers-from-the-cli)). In both,
+the worker receives only the address. An arbitrary supplied delegate address without a matching
+capability is unavailable; an owner passkey does not stand in for the delegate. The [Pollywallet backend](POLLYWALLET-INTEGRATION.md#account-wasm-execution)
 implements this exchange for both modes, and kills the worker's group when its HTTP client
 disconnects.
 
@@ -134,7 +140,7 @@ Runner line:
 {"type":"sign_request","request_id":"1","run_hash":"...","case_id":"case:0","delegate_address":"G...","execution_network_id":"...","nonce":"1001","expiration_ledger":123,"account_digest":"...","invocation_xdr":"...","preimage_xdr":"...","digest_hex":"..."}
 ```
 
-Nonce is canonical signed-i64 decimal text; expiration is u32. Both XDR fields are canonical base64; digest fields are canonical lowercase hex. `preimage_xdr` is the protocol `HashIdPreimage::SorobanAuthorization` with the derived offline network, exact nonce/expiration and `invocation_xdr`. The root must be exactly the candidate account's `__check_auth` with one Bytes argument containing `account_digest` and no subinvocations. `digest_hex` is SHA-256 of the canonical preimage XDR. The wallet independently parses and reconstructs this object, checks all fields, run/case/registered delegate and expiration bounds, and hands only the reconstructed preimage to the delegate's offline capability. That capability derives the execution network from the binding itself and signs a `HashIdPreimage::SorobanAuthorization` in that network and nothing else: no digest or other supplied bytes, and no preimage for mainnet, testnet, futurenet or the source network. No live-domain signature is accepted here. The same in-memory key signs testnet authorizations only through a separate live capability, which builds them itself for one consented [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check) and accepts no bytes.
+Nonce is canonical signed-i64 decimal text; expiration is u32. Both XDR fields are canonical base64; digest fields are canonical lowercase hex. `preimage_xdr` is the protocol `HashIdPreimage::SorobanAuthorization` with the derived offline network, exact nonce/expiration and `invocation_xdr`. The root must be exactly the candidate account's `__check_auth` with one Bytes argument containing `account_digest` and no subinvocations. `digest_hex` is SHA-256 of the canonical preimage XDR. The coordinator (the wallet, or `ozpb dry-run`) independently parses and reconstructs this object and checks all fields, run/case/registered delegate and expiration bounds. `ozpb dry-run` then signs only that offline digest ([signing guard](#running-the-layers-from-the-cli)). The wallet hands only the reconstructed preimage to the delegate's offline capability. That capability derives the execution network from the binding itself and signs a `HashIdPreimage::SorobanAuthorization` in that network and nothing else: no digest or other supplied bytes, and no preimage for mainnet, testnet, futurenet or the source network. No live-domain signature is accepted here. The wallet's same in-memory key signs testnet authorizations only through a separate live capability, which builds them itself for one consented [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check) and accepts no bytes.
 
 Wallet line:
 
@@ -142,7 +148,7 @@ Wallet line:
 {"type":"signature","request_id":"1","public_key_hex":"...","signature_hex":"..."}
 ```
 
-The runtime checks the public key against the exact delegate, verifies the Ed25519 signature, and then executes the real account authorization. Keys never leave wallet backend memory. Negative cryptographic tests alter a verified signature or local invocation inside the runtime and label that mutation; they do not ask the wallet to sign an unrelated live payload.
+The runtime checks the public key against the exact delegate, verifies the Ed25519 signature, and then executes the real account authorization. Keys never leave the coordinator: the wallet's backend memory or the `ozpb dry-run` process. Negative cryptographic tests alter a verified signature or local invocation inside the runtime and label that mutation; they do not ask the wallet to sign an unrelated live payload.
 
 The final `result` repeats run/job/suite/state/source-network/execution-network/account/policy bindings, exact host/protocol versions, local state provenance and initial-state hash, case results/error attribution/delta hashes, required coverage and supported scope. This report cannot become full four-layer completion by itself. The wallet rejects any missing/mismatched binding or unsupported/failed case and separately requires captured-target and live-enforcement evidence.
 
@@ -171,9 +177,80 @@ An operator may supply `OZPB_ACCOUNT_WASM` to reuse an artifact; the runtime sti
 pinned hash. Source reproduction of the account requires the documented aarch64-apple-darwin
 build host. The existing nightly source-build gate runs this worker suite as well.
 
-Live-enforcement evidence is not produced by this worker, and captured-target evidence is the
-separate mode above. This worker is an incremental execution component; it does not expose the full
-public `dry_run` operation. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is the
-contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+## Running the layers from the CLI
+
+`ozpb dry-run` is the CLI coordinator for this worker: it prepares the candidate, runs `--prepare`
+and then the interactive mode (and, with `--capture-request`, the
+[captured-target](CAPTURED-TARGET-EXECUTION.md) modes), signs the worker's requests itself, and
+prints one four-layer report ([report fields](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)).
+
+```sh
+ozpb dry-run --request dry-run-request.json \
+  --registry-roots registry-roots.json --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --native-worker /abs/path/ozpb-execution-runtime \
+  --delegate-key-file delegate.key --account-wasm pinned-account.wasm \
+  --source-ledger ledger.json [--capture-request capture-request.json]
+```
+
+- **Worker.** The operator names the executable (`--native-worker` or `OZPB_NATIVE_WORKER`, an
+  absolute path). It is trusted code: it runs unsandboxed as the caller's user and can read
+  anything the caller can, including the delegate key file, whose path is on the command line.
+  The guards below stop a confused worker, not a hostile one. A binary writable by its group or
+  others, or owned by neither the caller nor root, is refused. It gets one fixed mode argument,
+  an environment holding only `PATH` and `LANG`, `/` as its directory and its own process group. Each run has a 120-second deadline
+  enforced by killing the group and the worker; once the worker ends, its pipes get five seconds
+  to close. Stdout frames, total output (16 MiB) and stderr (64 KiB) are bounded. A nonzero
+  exit, a refused frame, or a process or open pipe left behind fails the layer.
+- **Bindings derived first.** Before the worker starts, the CLI derives the account-Wasm job,
+  suite and initialization hashes, the allowed signature expiries and the offline execution
+  network ID from the request and the preparation. The worker's `--prepare` frame must equal
+  them exactly; only then is a signature requested. For the captured layer, whose candidate state
+  only the worker can compute, the CLI derives every other identity and takes the suite and
+  initialization hashes from the trusted `--prepare-captured` frame.
+- **Key.** The spec delegate's Stellar secret seed is read only from `--delegate-key-file`: a
+  regular file owned by the caller with mode exactly 0600, holding the key of the selected rule's
+  delegate. It is opened without following links or blocking, never taken from an argument or
+  the environment, never passed to the worker and never printed. It is cleared when the run
+  ends, on a best-effort basis: a value the compiler moves can leave a stack copy. Mode and
+  owner are the only access checks; an extended ACL granting others access is not detected.
+- **Signing guard.** A request is signed only when the network ID inside its `HashIdPreimage` is
+  the offline execution network ID derived by the CLI; a preimage naming the source, public, test
+  or future network is refused as well. The request must also be the next expected one
+  (sequential ID and nonce, an allowed unused case ID, an allowed expiry), and the invocation,
+  preimage and digest are rebuilt and compared byte for byte. The first refusal ends the run.
+  The signer allows only the case IDs a correct run asks to sign, and the report is accepted
+  only if it answered exactly those.
+- **Ledger and account.** `--source-ledger` supplies the job's protocol-29 ledger parameters
+  (provenance only for this layer); `--account-wasm` must hash to the pinned account Wasm.
+- **Exit status.** Zero only when the report's `acceptance.meets_minimum` holds; any other report
+  is still printed. A refused key file prints no report. A requested capture that does not
+  complete fails the captured layer, so such a run never exits zero. Worker stderr is printed
+  for a failed run, at most 4 KiB, with control characters and bidirectional formatting
+  characters replaced, as is endpoint error text.
+
+Live-enforcement evidence remains missing outside the wallet: `ozpb dry-run` reports that layer
+`unavailable` with `wallet_owner_consent_required`, and its report is never `complete`. The MCP
+server exposes no signing dry run. The [atomic live-enforcement helper](ATOMIC-LIVE-HELPER.md) is
+the contract the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
 simulates on testnet; it refuses generated policies without a call cap, whose execution it cannot
 observe.
+
+`bash scripts/test-cli-dry-run.sh` runs `ozpb dry-run` with the actual CLI and worker over the
+native fixture and, through a local endpoint replaying the recorded testnet capture, over the
+captured layer. It needs `OZPB_REGISTRY_SNAPSHOT_ROOT` set to the root of
+`docs/examples/registry.signed.json`; `OZPB_ACCOUNT_WASM`, `OZPB_BIN` and `OZPB_NATIVE_WORKER`
+may reuse existing artifacts.
+
+
+The CLI opens and validates the configured worker, then retains a private executable copy for
+both preparation and execution. Replacing the configured pathname between modes cannot change
+those bytes. This keeps the existing trust requirement: the worker runs with the caller's
+privileges. Pipe cleanup grace begins when the worker process exits, even if a detached child
+still holds stdout open.
+
+Each native boundary case must report its exact derived execution ledger. Delegate signing
+requests are bound to that case's own expiration ledger; control and stateful-sequence requests
+use the original call's ledger. A contract-address delegate is outside the native execution
+scope and is refused before opening a signing-key file. Captured reports require canonical
+state hashes for rollback claims, no refusal code on a permit, and exactly one counter advance
+for a counted permit (or no counter for an uncapped rule).
