@@ -104,7 +104,7 @@ scripts/            dependency-rule check, determinism check
 testnet-harness/    Tranche 2: install a generated policy into an OZ account on testnet (node)
 wallet/             Tranche 2: local wallet backend for the Pollywallet integration (node)
 deployment/         Tranche 2: self-hosted MCP image, TLS proxy and disposable build workers
-skills/             the policy-builder Claude skill; .claude-plugin/ packages it with the server
+skills/             policy-builder Claude skills; .claude-plugin/ packages them with the server
 ```
 
 The security-critical cores have unit, property, differential, and real-toolchain

@@ -38,7 +38,7 @@ pub fn run(request: &Path, rpc_sources: &Path) -> Result<()> {
 
 /// The request, read under a bound. A parse error reports where, never what: the JSON parser's
 /// own message can quote the document, and the document is the envelope.
-fn read_request(path: &Path) -> Result<CaptureTargetInput> {
+pub(crate) fn read_request(path: &Path) -> Result<CaptureTargetInput> {
     let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let mut bytes = Vec::new();
     file.take(MAX_REQUEST_BYTES as u64 + 1)

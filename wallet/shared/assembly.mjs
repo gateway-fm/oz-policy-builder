@@ -2,6 +2,7 @@
 import { Buffer } from 'buffer';
 import { Address, StrKey, hash, nativeToScVal, xdr } from '#wallet-stellar-sdk';
 import { NETWORK_ID, freezeCopy, reviewIntent } from './approval.mjs';
+import { directAddressCredentials } from './auth-credentials.mjs';
 
 const refuse = () => { throw new Error('wallet transaction refused; refresh and review again'); };
 const bytes = (value) => Buffer.from(value.toXDR());
@@ -115,9 +116,10 @@ export function validateAssembly({ approval, assembly, ownerRuleXdr, limits }) {
       || !same(op.invokeHostFunctionOp.hostFunction.invokeContract, expected) || op.invokeHostFunctionOp.auth.length !== 1) refuse();
     const entry = op.invokeHostFunctionOp.auth[0];
     const root = entry.rootInvocation;
-    if (entry.credentials.type !== 'sorobanCredentialsAddress' || root.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
+    // Either direct arm, kept as recorded: it selects the preimage the passkey signs.
+    const credentials = directAddressCredentials(entry.credentials);
+    if (root.function.type !== 'sorobanAuthorizedFunctionTypeContractFn'
       || !same(root.function.contractFn, expected) || root.subInvocations.length) refuse();
-    const credentials = entry.credentials.address;
     if (Address.fromScAddress(credentials.address).toString() !== approval.wallet.contractId
       || credentials.signature.type !== 'scvVoid' || credentials.signatureExpirationLedger !== assembly.max_ledger - 1) refuse();
     if (tx.ext.type !== 'sorobanData') refuse();

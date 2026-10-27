@@ -19,8 +19,9 @@ and validates both enforce-mode simulations
 ([live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)). Its
 [22 October 2026 automation run](evidence/wallet-live-enforcement-testnet-2026-10-22.json) passed
 against the deployed helper with a passkey owner on a fresh account. The result is state-dependent
-simulation evidence for one grant shape; installation stays disabled (see
-[Outstanding](#outstanding)).
+simulation evidence for one grant shape. The wallet's
+[installation](POLLYWALLET-INTEGRATION.md#installation) requires this layer to have passed on recent
+evidence and the replay check to report the account unchanged.
 
 ## What the helper does
 
@@ -330,8 +331,6 @@ operator's `liveHelper` if the contract ID changes.
 
 ## Outstanding
 
-- Installation through the wallet, gated on all four layers and on the live check's
-  [replay check](POLLYWALLET-INTEGRATION.md#live-enforcement-check).
 - A live check with a human owner's passkey; the automation run uses a virtual authenticator.
 - Grant shapes beyond one exact native transfer of at most 1,000,000 stroops, and the derived
   deny suite, which the two named cases do not stand in for.
