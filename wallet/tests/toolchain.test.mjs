@@ -89,6 +89,23 @@ test('generation retains bounded reproduced artifacts without claiming runtime a
   assert.equal(Object.isFrozen(toolchain.artifact(result.artifactId).response), true);
 });
 
+test('generation states every decision, including that calls are not unlimited', async (t) => {
+  const account = fixture().wallet.contractId;
+  const delegate = Keypair.random().publicKey();
+  const pipeline = generatedPipeline(account, delegate);
+  let decisions;
+  const { toolchain } = setup(t, undefined, async (args) => {
+    if (args[0] === 'synthesize') decisions = JSON.parse(readFileSync(args[args.indexOf('--decisions') + 1], 'utf8'));
+    return pipeline(args);
+  });
+  const recorded = await toolchain.record({ transactionHash: '2'.repeat(64), accountAddress: account });
+  await toolchain.generate({ recordId: recorded.recordId, delegateAddress: delegate,
+    validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101 });
+  assert.equal(decisions.max_calls, 1);
+  assert.equal(decisions.unlimited_calls_acknowledged, false);
+  assert.equal(decisions.no_expiry_acknowledged, false);
+});
+
 for (const failure of ['source reproduction', 'wasm reproduction', 'spec conformance', 'path traversal', 'wrong wasm', 'unmodeled']) {
   test(`generation refuses ${failure} even when matches is asserted`, async (t) => {
     const account = fixture().wallet.contractId;

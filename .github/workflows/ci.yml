@@ -87,6 +87,10 @@ jobs:
         run: cargo test --workspace
       - name: Phase 2 gates refuse missing tests, failed producers, and omitted build evidence
         run: python3 scripts/test-check-phase2-evidence.py
+      - name: the development MCP wrapper configures a testnet-only RPC source
+        run: bash scripts/test-mcp-server-dev.sh
+      - name: agent-transcript checker, and no skill or plugin pre-approves a per-call tool
+        run: python3 scripts/test-check-agent-transcript.py
       - name: Phase 2 reference coverage and MCP verification evidence
         run: bash scripts/check-phase2-evidence.sh --host-only
       # Source determinism, asserted without a toolchain. This previously shelled out to

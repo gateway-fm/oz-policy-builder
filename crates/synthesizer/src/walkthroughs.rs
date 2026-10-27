@@ -163,6 +163,7 @@ pub fn blend_claim_spec() -> ValidatedSpec {
         valid_until_ledger: Some(4_300_000),
         no_expiry_acknowledged: false,
         max_calls: Some(30),
+        unlimited_calls_acknowledged: false,
         widenings: vec![],
         spending_limit: None,
     };
@@ -223,6 +224,7 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
         valid_until_ledger: Some(4_260_000),
         no_expiry_acknowledged: false,
         max_calls: Some(10),
+        unlimited_calls_acknowledged: false,
         widenings: vec![
             Widening {
                 contract: router.clone(),
