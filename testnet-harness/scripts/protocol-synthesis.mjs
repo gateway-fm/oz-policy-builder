@@ -100,7 +100,7 @@ export function protocolInputs(run, recording) {
     registry_resolution: 'resolved by the toolkit from the signed snapshot' }, decisions: {
     grant_name: plan.kind === 'blend_claim' ? 'blend-claim' : 'soroswap-swap', delegate_signers: [{ delegated: { address: run.delegate } }],
     predicate: 'any_of', valid_until_ledger: bundle.ledger + horizon, no_expiry_acknowledged: false, max_calls: 1,
-    widenings, spending_limit: null,
+    unlimited_calls_acknowledged: false, widenings, spending_limit: null,
   } };
 }
 

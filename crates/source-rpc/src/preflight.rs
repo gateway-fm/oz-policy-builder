@@ -228,6 +228,11 @@ fn delegates_signed(delegates: &[SorobanDelegateSignature]) -> bool {
     })
 }
 
+/// What preflight and target capture say about an envelope that does not decode.
+pub(crate) const ENVELOPE_DECODE_REFUSAL: &str =
+    "invalid transaction envelope: not base64 XDR of one transaction envelope within the decode \
+     limits";
+
 /// The caller's envelope, refused with an input code when it is too large, is not one unbroken
 /// base64 string, does not decode, or has a shape simulation does not take. Each is the
 /// caller's input rather than an endpoint reply, and nothing is sent for any of them.
@@ -235,7 +240,7 @@ fn delegates_signed(delegates: &[SorobanDelegateSignature]) -> bool {
 /// Whitespace is refused rather than skipped. The XDR decoder skips ASCII whitespace, so a
 /// spaced-out string decodes to the same bytes as the canonical one; refusing it keeps the
 /// CLI and MCP tool to one rule and leaves no second spelling of an envelope to forward.
-fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
+pub(crate) fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcError> {
     if envelope_xdr_base64.len() > MAX_XDR_BASE64_BYTES {
         return Err(RpcError::EnvelopeTooLarge(format!(
             "transaction envelope is {} encoded bytes, over the {MAX_XDR_BASE64_BYTES}-byte XDR \
@@ -252,10 +257,10 @@ fn local_envelope(envelope_xdr_base64: &str) -> Result<TransactionEnvelope, RpcE
                 .to_string(),
         ));
     }
+    // A fixed description: the decoder's own message names an input byte and its offset, and
+    // the input is a confidential envelope.
     let envelope = TransactionEnvelope::from_xdr_base64(envelope_xdr_base64, xdr_limits())
-        .map_err(|error| {
-            RpcError::EnvelopeParse(format!("invalid transaction envelope: {error}"))
-        })?;
+        .map_err(|_| RpcError::EnvelopeParse(ENVELOPE_DECODE_REFUSAL.to_string()))?;
     simulation_shape(&envelope).map_err(RpcError::UnsupportedEnvelope)?;
     Ok(envelope)
 }
@@ -489,7 +494,9 @@ fn ensure_min_fee_is_data_fee(
 /// `soroban-simulation` lists the restored entries, by index into the simulated read-write
 /// footprint, in `SorobanTransactionDataExt::V1`. That success is against restored state, not
 /// the state the endpoint reports, so it is the same outcome as a preamble.
-fn restores_archived_entries(simulated: &SorobanTransactionData) -> Result<bool, RpcError> {
+pub(crate) fn restores_archived_entries(
+    simulated: &SorobanTransactionData,
+) -> Result<bool, RpcError> {
     let SorobanTransactionDataExt::V1(ext) = &simulated.ext else {
         return Ok(false);
     };
@@ -507,7 +514,7 @@ fn restores_archived_entries(simulated: &SorobanTransactionData) -> Result<bool,
     Ok(!ext.archived_soroban_entries.is_empty())
 }
 
-fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
+pub(crate) fn validate_restoration(restore: &Value) -> Result<(), RpcError> {
     let object = restore
         .as_object()
         .ok_or_else(|| RpcError::Malformed("restorePreamble is not an object".to_string()))?;

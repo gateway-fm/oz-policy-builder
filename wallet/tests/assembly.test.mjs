@@ -84,3 +84,16 @@ for (const name of ['digest', 'network', 'commitment', 'stale', 'backwards', 're
     assert.throws(() => validateAssembly(value), /refused/);
   });
 }
+
+test('independent validation accepts the AddressV2 credentials testnet records and keeps their arm', () => {
+  const value = sample((tx, envelope, entry) => {
+    const auth = tx.operations[0].body.invokeHostFunctionOp.auth;
+    auth[0] = new xdr.SorobanAuthorizationEntry({
+      credentials: xdr.SorobanCredentials.sorobanCredentialsAddressV2(entry.credentials.address), rootInvocation: entry.rootInvocation });
+  });
+  const envelope = xdr.TransactionEnvelope.fromXDR(value.assembly.envelope_xdr_base64, 'base64');
+  value.assembly.envelope_xdr_sha256 = Buffer.from(hash(envelope.toXDR())).toString('hex');
+  const checked = validateAssembly(value);
+  assert.equal(xdr.SorobanAuthorizationEntry.fromXDR(checked.authEntriesXdr[0], 'base64').credentials.type, 'sorobanCredentialsAddressV2');
+  assert.equal(checked.expirationLedger, 123479);
+});

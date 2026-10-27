@@ -71,8 +71,12 @@ pub struct UserDecisions {
     pub valid_until_ledger: Option<u32>,
     /// Explicit, high-blast-radius acknowledgment that the grant never expires.
     pub no_expiry_acknowledged: bool,
-    /// Optional per-installation call cap.
+    /// Per-installation call cap; `None` requires the explicit unlimited-calls ack.
     pub max_calls: Option<u32>,
+    /// Explicit, high-blast-radius acknowledgment that the grant has no call cap. Absent reads
+    /// as `false`, so a caller that drops it gets a question, never an uncapped grant.
+    #[serde(default)]
+    pub unlimited_calls_acknowledged: bool,
     /// Explicit widenings (the only path to non-exact constraints).
     pub widenings: Vec<Widening>,
     /// Compose the reviewed OZ spending-limit policy (SEP-41 transfer rules only).
@@ -262,12 +266,33 @@ pub fn synthesize(
             ));
         }
     }
-    if decisions.valid_until_ledger.is_none() && !decisions.no_expiry_acknowledged {
-        errors.push(SynthError::NeedsDecision(
+    match (
+        decisions.valid_until_ledger,
+        decisions.no_expiry_acknowledged,
+    ) {
+        (None, false) => errors.push(SynthError::NeedsDecision(
             "grant lifetime: provide valid_until_ledger, or explicitly acknowledge a \
              non-expiring grant (high blast radius)"
                 .to_string(),
-        ));
+        )),
+        // Two answers to one question: picking either would decide for the user.
+        (Some(ledger), true) => errors.push(SynthError::InvalidDecision(format!(
+            "grant lifetime: valid_until_ledger {ledger} contradicts no_expiry_acknowledged; \
+             choose one"
+        ))),
+        _ => {}
+    }
+    match (decisions.max_calls, decisions.unlimited_calls_acknowledged) {
+        (None, false) => errors.push(SynthError::NeedsDecision(
+            "call cap: provide max_calls, or explicitly acknowledge unlimited calls \
+             (unlimited_calls_acknowledged, high blast radius)"
+                .to_string(),
+        )),
+        (Some(max_calls), true) => errors.push(SynthError::InvalidDecision(format!(
+            "call cap: max_calls {max_calls} contradicts unlimited_calls_acknowledged; \
+             choose one"
+        ))),
+        _ => {}
     }
     if let PredicateChoice::Threshold { n } = decisions.predicate {
         let count = decisions.delegate_signers.len();
@@ -510,7 +535,13 @@ pub fn synthesize(
                 }
                 vec![StateSpec::CallCountPerInstallation { max_calls }]
             }
-            None => vec![],
+            None => {
+                rationale.push(format!(
+                    "{contract}: NO CALL CAP — the user explicitly acknowledged unlimited calls \
+                     (high blast radius)"
+                ));
+                vec![]
+            }
         };
 
         rules.push(RuleSpec {
@@ -1166,6 +1197,7 @@ mod tests {
             valid_until_ledger: Some(4_223_456),
             no_expiry_acknowledged: false,
             max_calls: Some(12),
+            unlimited_calls_acknowledged: false,
             widenings: vec![],
             spending_limit: Some(SpendingLimitChoice {
                 limit: "500000000".to_string(),
@@ -1695,6 +1727,45 @@ mod tests {
         let out = synthesize(&input(), &d).unwrap();
         assert!(out.spec.rules[0].valid_until.is_none());
         assert!(out.spec.validate().is_ok());
+    }
+
+    #[test]
+    fn decisions_without_cap_or_unlimited_ack_need_decision() {
+        let mut d = decisions();
+        d.max_calls = None;
+        let errs = synthesize(&input(), &d).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, SynthError::NeedsDecision(m) if m.contains("call cap"))));
+
+        d.unlimited_calls_acknowledged = true;
+        let out = synthesize(&input(), &d).unwrap();
+        assert!(out.spec.rules[0].state.is_empty());
+        assert!(out
+            .rationale
+            .iter()
+            .any(|line| line.contains("NO CALL CAP")));
+        assert!(out.spec.validate().is_ok());
+    }
+
+    #[test]
+    fn an_expiry_with_the_no_expiry_ack_is_contradictory() {
+        let mut d = decisions();
+        d.no_expiry_acknowledged = true;
+        let errs = synthesize(&input(), &d).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, SynthError::InvalidDecision(m) if m.contains("lifetime"))));
+    }
+
+    #[test]
+    fn a_call_cap_with_the_unlimited_ack_is_contradictory() {
+        let mut d = decisions();
+        d.unlimited_calls_acknowledged = true;
+        let errs = synthesize(&input(), &d).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, SynthError::InvalidDecision(m) if m.contains("call cap"))));
     }
 
     #[test]
@@ -2648,6 +2719,7 @@ pub mod fixtures {
             valid_until_ledger: Some(4_223_456),
             no_expiry_acknowledged: false,
             max_calls: Some(12),
+            unlimited_calls_acknowledged: false,
             widenings: vec![],
             spending_limit: Some(SpendingLimitChoice {
                 limit: "500000000".to_string(),

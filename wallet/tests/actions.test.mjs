@@ -51,7 +51,7 @@ test('deployment consent retains exact artifact and a review selects the actual 
   const f = deploymentFixture();
   const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
   assert.equal(preview.summary.wasmHash, f.artifact.wasmHash);
-  assert.equal(preview.summary.maxTotalFeeStroops, 110_000_000);
+  assert.equal(preview.summary.maxTotalFeeStroops, 160_000_000);
   assert.deepEqual(f.calls, []);
   const deployed = await f.actions['confirm-deploy']({ id: preview.action.id });
   assert.equal(deployed.policyAddress, f.policy);

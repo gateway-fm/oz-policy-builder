@@ -312,6 +312,11 @@ node lifecycle.mjs --run-dir R                # owner signs removal; needs the r
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
 
+`deploy-live-helper.mjs` runs setup, the owner transfer and the synthesis chain itself with its
+own throwaway keys, then deploys the [atomic live-enforcement helper](../docs/ATOMIC-LIVE-HELPER.md#testnet-deployment)
+and simulates one permit and one denial through it. It runs `ozpb` as the other steps do (`OZPB_BIN`,
+or Cargo) and needs `stellar`.
+
 CI runs both this suite and `npm test` in `testnet-harness/browser`, with locked dependencies
 and pinned Node. The installer tests run the real local CLI (`OZPB_BIN`, or Cargo) but mock
 the RPC and key boundaries; they require the Rust dependencies to be cached for offline use.
@@ -415,9 +420,12 @@ Its labels say what it is: post-install, state-dependent, simulation-only, never
 - It refuses the call with a changed amount, with a changed recipient, and past the call cap.
   Each refusal is the policy's own published error code.
 
-The new default wrapper also exercises owner removal and a post-removal denial, but those
-steps still need a reviewed live run at this revision. They are not part of the historical
-October 15 observations described below.
+The default native wrapper also exercises owner removal and a post-removal denial, but in that
+mode those steps still need a reviewed live run at this revision. They are not part of the
+historical October 15 observations described below. The
+[subscription](../docs/WALKTHROUGH-SEP41.md) and [Soroswap](../docs/WALKTHROUGH-PROTOCOLS.md)
+modes ran them live on 20 October 2026, at the commits recorded in
+[the testnet evidence](../docs/TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9.
 
 **Not shown, or not as you might assume:**
 
@@ -528,8 +536,10 @@ bash testnet-harness/run.sh
   None of this shows that a human approved the install, or that an agent with the same access
   could not approve itself. That claim needs a real wallet's protected approval screen.
   `run.json` records the decision under that label, with the exact operator-trusted identities.
-- It ran on testnet once per path, on 2026-10-15. Both runs used a passkey owner and an `ozpb`
-  built from the authority-check branch before those commands were integrated into this tree.
+- The refused path ran on testnet once, on 2026-10-15. The accepted path ran that day and
+  again in the 20 October W2 and W3 runs (see the testnet evidence, sections 8 and 9). Both
+  15 October runs used a passkey owner and an `ozpb` built from the authority-check branch
+  before those commands were integrated into this tree.
   One run was accepted: the intent, the
   decision, the screen, the re-check and the install all ran, and then the delegate's permit and
   denials. The other was refused: a second owner rule for an account the wallet does not trust,
@@ -560,8 +570,10 @@ and what does not.
   bundle separately. The historical runs documented above used offline imports instead.
 - **generate.** The wrapper now runs real synthesis with explicit test decisions and a signed
   registry, followed by code generation, the reference suite and artifact reproduction.
-  Synthesis admits the serialized recording as `self_supplied`. This executable path needs
-  a reviewed new live run before it is evidence at the delivered revision.
+  Synthesis admits the serialized recording as `self_supplied`. In the default native mode
+  this path needs a reviewed new live run before it is evidence at the delivered revision.
+  The subscription and Soroswap modes ran it live on 20 October 2026, at earlier commits
+  recorded in the testnet evidence.
 - **simulate.**
   - Runs: every transaction that carries the account's authorization is simulated in enforcing
     mode, with the signed entries, before the transaction is signed. Every denial is observed

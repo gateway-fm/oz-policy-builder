@@ -204,7 +204,7 @@ fn fixture() -> Fixture {
     };
     Fixture {
         envelope: encode(&envelope),
-        simulation: json!({"latestLedger":LEDGER,"transactionData":encode(&data),"results":[{"xdr":encode(&ScVal::Void),"auth":[encode(&auth)]}]}),
+        simulation: json!({"latestLedger":LEDGER,"transactionData":encode(&data),"minResourceFee":data.resource_fee.to_string(),"results":[{"xdr":encode(&ScVal::Void),"auth":[encode(&auth)]}]}),
         entries: json!({"latestLedger":LEDGER,"entries":([instance,balance,classic,archival,account_instance,account_code].into_iter().map(|entry|json!({"key":encode(&entry.to_key()),"xdr":encode(&entry),"lastModifiedLedgerSeq":999,"liveUntilLedgerSeq":if matches!(entry,LedgerEntryData::ContractData(_)|LedgerEntryData::ContractCode(_)){Some(900000)}else{None}})).collect::<Vec<_>>())}),
         header: json!({"ledgers":[{"sequence":LEDGER,"hash":hash.to_hex(),"ledgerCloseTime":"100000","headerXdr":encode(&header)}]}),
         nonce_key: encode(&nonce),
@@ -284,7 +284,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1),
-            "is archived at reported ledger",
+            "is archived at the captured ledger",
         ),
         (
             |f| f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER),
@@ -301,7 +301,7 @@ fn native_target_capture_refuses_incoherence_archive_and_unrelated_recording() {
             "exactly one recorded authorization root",
         ),
         (
-            |f| f.simulation["restorePreamble"] = json!({}),
+            |f| f.simulation["restorePreamble"] = valid_preamble(),
             "requires restoration",
         ),
         (
@@ -456,4 +456,398 @@ fn native_target_capture_refuses_unsupported_envelopes_before_any_rpc() {
         }
         assert!(fixture.calls.borrow().is_empty());
     }
+}
+
+/// The caller's own envelope is refused locally under the input codes the shells map
+/// (`E_RESOURCE_LIMIT`, `E_ENVELOPE_PARSE`, `E_UNSUPPORTED_ENVELOPE`), never as an endpoint
+/// fault, and nothing is sent.
+#[test]
+fn native_target_capture_names_input_refusals_by_code() {
+    let fixture = fixture();
+    let envelope = TransactionEnvelope::from_xdr_base64(&fixture.envelope, xdr_limits()).unwrap();
+    let edited = |edit: fn(&mut TransactionV1Envelope)| {
+        let mut changed = envelope.clone();
+        let TransactionEnvelope::Tx(v1) = &mut changed else {
+            panic!()
+        };
+        edit(v1);
+        encode(&changed)
+    };
+    let signed = edited(|v1| {
+        v1.signatures = vec![DecoratedSignature {
+            hint: SignatureHint([0; 4]),
+            signature: Signature(vec![1; 64].try_into().unwrap()),
+        }]
+        .try_into()
+        .unwrap();
+    });
+    let approve = edited(|v1| {
+        let mut operations = v1.tx.operations.to_vec();
+        let OperationBody::InvokeHostFunction(op) = &mut operations[0].body else {
+            panic!()
+        };
+        let HostFunction::InvokeContract(call) = &mut op.host_function else {
+            panic!()
+        };
+        call.function_name = "approve".try_into().unwrap();
+        v1.tx.operations = operations.try_into().unwrap();
+    });
+    let with_memo = edited(|v1| v1.tx.memo = Memo::Id(7));
+    let (head, tail) = fixture.envelope.split_at(fixture.envelope.len() / 2);
+    let spaced = format!("{head} {tail}");
+    let oversized = "A".repeat(crate::MAX_XDR_BASE64_BYTES + 1);
+    for (candidate, expected) in [
+        (
+            signed,
+            "E_UNSUPPORTED_ENVELOPE: native target capture refused",
+        ),
+        (
+            approve,
+            "E_UNSUPPORTED_ENVELOPE: native target capture refused",
+        ),
+        (with_memo, "E_UNSUPPORTED_ENVELOPE: "),
+        ("not-an-envelope".to_string(), "E_ENVELOPE_PARSE: "),
+        (spaced, "E_ENVELOPE_PARSE: "),
+        (oversized, "E_RESOURCE_LIMIT: "),
+    ] {
+        let error = capture_native_target(&fixture, NETWORK, &candidate)
+            .expect_err("an unsupported envelope was accepted");
+        assert!(error.to_string().starts_with(expected), "{error}");
+        assert!(fixture.calls.borrow().is_empty(), "{error}");
+    }
+}
+
+/// Answers the `nth` call of a method in place of the endpoint, or declines with `None`.
+type FaultFn<'a> = dyn Fn(&str, usize) -> Option<Result<Value, RpcError>> + 'a;
+
+/// A transport that answers through the fixture except where `fault` answers first.
+struct Faulty<'a> {
+    inner: &'a Fixture,
+    fault: Box<FaultFn<'a>>,
+    seen: RefCell<std::collections::BTreeMap<String, usize>>,
+}
+impl RpcTransport for Faulty<'_> {
+    fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+        let nth = {
+            let mut seen = self.seen.borrow_mut();
+            let count = seen.entry(method.to_string()).or_default();
+            *count += 1;
+            *count - 1
+        };
+        match (self.fault)(method, nth) {
+            Some(reply) => reply,
+            None => self.inner.call(method, params),
+        }
+    }
+}
+
+/// Once simulation has run, the endpoint holds the envelope and can put it in any later reply:
+/// an error message, a reported network name, a response ID. No endpoint text reaches the
+/// error, whichever request carried it.
+#[test]
+fn native_target_capture_withholds_endpoint_text() {
+    let fixture = fixture();
+    let secret = fixture.envelope.clone();
+    type Fault = fn(&str) -> Result<Value, RpcError>;
+    let echo: Fault = |s| Err(RpcError::Rpc(s.into()));
+    let named: Fault = |s| Ok(json!({"passphrase": s, "protocolVersion": 29}));
+    let gateway: Fault = |s| {
+        Err(RpcError::Transport(format!(
+            "HTTP 500 from the endpoint: {s}"
+        )))
+    };
+    let foreign_id: Fault = |s| {
+        Err(RpcError::Malformed(format!(
+            "response id \"{s}\" does not match"
+        )))
+    };
+    // (method, its nth call, the fault, whether the error must stay a network mismatch)
+    let cases: Vec<(&str, usize, Fault, bool)> = vec![
+        ("getNetwork", 0, echo, false),
+        ("getNetwork", 0, named, true),
+        ("simulateTransaction", 0, echo, false),
+        ("simulateTransaction", 0, gateway, false),
+        ("simulateTransaction", 0, foreign_id, false),
+        ("getNetwork", 1, echo, false),
+        ("getNetwork", 1, named, true),
+        ("getLedgerEntries", 0, echo, false),
+        ("getLedgers", 0, echo, false),
+        ("getLedgers", 0, gateway, false),
+    ];
+    for (method, nth, fault, mismatch) in cases {
+        let secret = secret.clone();
+        let transport = Faulty {
+            inner: &fixture,
+            fault: Box::new(move |called, seen| {
+                (called == method && seen == nth).then(|| fault(&secret))
+            }),
+            seen: RefCell::new(Default::default()),
+        };
+        let error = capture_native_target(&transport, NETWORK, &fixture.envelope)
+            .expect_err("an endpoint fault was accepted");
+        for text in [error.to_string(), format!("{error:?}")] {
+            assert!(
+                !text.contains(&fixture.envelope),
+                "{method}#{nth} reached the error: {text}"
+            );
+        }
+        // The category survives: a different network is still a network mismatch.
+        assert_eq!(
+            matches!(error, RpcError::NetworkMismatch { .. }),
+            mismatch,
+            "{method}#{nth}: {error}"
+        );
+    }
+}
+
+/// An envelope that does not decode is refused with one fixed description. The decoder's own
+/// message names an input byte and its offset, which is envelope content.
+#[test]
+fn native_target_capture_parse_refusals_are_fixed_descriptions() {
+    let fixture = fixture();
+    let (head, tail) = fixture.envelope.split_at(fixture.envelope.len() / 2);
+    for candidate in [
+        // Not base64 at a distinctive byte.
+        format!("{head}!{tail}"),
+        // Base64 that is not a transaction envelope.
+        "AAAA".to_string(),
+        // A truncated envelope.
+        head.chars().take(head.len() / 4 * 4).collect(),
+    ] {
+        let error = capture_native_target(&fixture, NETWORK, &candidate)
+            .expect_err("an undecodable envelope was accepted");
+        assert!(matches!(error, RpcError::EnvelopeParse(_)), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "E_ENVELOPE_PARSE: {}",
+                crate::preflight::ENVELOPE_DECODE_REFUSAL
+            )
+        );
+        assert!(fixture.calls.borrow().is_empty());
+    }
+}
+
+/// The simulation is classified as preflight classifies it: only a non-empty string error, with
+/// no results or restoration and a ledger the endpoint read, is the target refusing the call;
+/// a preamble, a success that restored archived entries, or an archived or expiring footprint
+/// entry is archived target state. Everything else stays an endpoint answer (`E_RPC`). No
+/// classification carries the endpoint's text, which could quote the envelope.
+#[test]
+fn native_target_capture_classifies_the_simulation_like_preflight() {
+    #[derive(Debug, PartialEq)]
+    enum Kind {
+        Refused,
+        Archived,
+        Rpc,
+    }
+    type Mutation = Box<dyn Fn(&mut Fixture)>;
+    let quoted = fixture().envelope;
+    let failed = |error: Value| -> Mutation {
+        Box::new(move |f: &mut Fixture| {
+            f.simulation["error"] = error.clone();
+            f.simulation.as_object_mut().unwrap().remove("results");
+        })
+    };
+    let archived = |indices: Vec<u32>| -> Mutation {
+        Box::new(move |f: &mut Fixture| {
+            let mut data = SorobanTransactionData::from_xdr_base64(
+                f.simulation["transactionData"].as_str().unwrap(),
+                xdr_limits(),
+            )
+            .unwrap();
+            data.ext = SorobanTransactionDataExt::V1(SorobanResourcesExtV0 {
+                archived_soroban_entries: indices.clone().try_into().unwrap(),
+            });
+            f.simulation["transactionData"] = json!(encode(&data));
+        })
+    };
+    // A success that restored entries is still malformed if its resource fee is not complete
+    // and consistent. It must remain an endpoint failure, never an archival-state diagnosis.
+    for fee in [
+        None,
+        Some(Value::Null),
+        Some(json!(123)),
+        Some(json!("not-a-fee")),
+        Some(json!("-1")),
+        Some(json!("18446744073709551616")),
+        Some(json!("1")),
+    ] {
+        let mut f = fixture();
+        archived(vec![2])(&mut f);
+        if let Some(fee) = fee {
+            f.simulation["minResourceFee"] = fee;
+        } else {
+            f.simulation
+                .as_object_mut()
+                .unwrap()
+                .remove("minResourceFee");
+        }
+        let error = capture_native_target(&f, NETWORK, &f.envelope).unwrap_err();
+        assert!(
+            matches!(error, RpcError::Malformed(_) | RpcError::Rpc(_)),
+            "{error}"
+        );
+    }
+    let refusal = format!("HostError: Error(Contract, #10) balance is not sufficient: {quoted}");
+    let preamble = |value: Value| -> Mutation {
+        Box::new(move |f: &mut Fixture| f.simulation["restorePreamble"] = value.clone())
+    };
+    let mut wrong_fee = valid_preamble();
+    wrong_fee["minResourceFee"] = json!("2");
+    let cases: Vec<(&str, Mutation, Kind)> = vec![
+        ("a failed simulation", failed(json!(refusal)), Kind::Refused),
+        ("an empty error", failed(json!("")), Kind::Rpc),
+        ("a null error", failed(Value::Null), Kind::Rpc),
+        (
+            "a non-string error",
+            failed(json!({ "message": refusal })),
+            Kind::Rpc,
+        ),
+        (
+            "an error alongside results",
+            Box::new(|f: &mut Fixture| f.simulation["error"] = json!("refused")),
+            Kind::Rpc,
+        ),
+        (
+            "an error alongside a restoration preamble",
+            Box::new(move |f: &mut Fixture| {
+                failed(json!("refused"))(f);
+                f.simulation["restorePreamble"] = json!({ "transactionData": "AAAA" });
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "an error before the endpoint read its ledger",
+            Box::new(move |f: &mut Fixture| {
+                failed(json!("refused"))(f);
+                f.simulation["latestLedger"] = json!(0);
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "a restoration preamble",
+            preamble(valid_preamble()),
+            Kind::Archived,
+        ),
+        // Preflight validates a preamble before reporting restoration; so does capture.
+        (
+            "an empty restoration preamble",
+            preamble(json!({})),
+            Kind::Rpc,
+        ),
+        (
+            "a preamble with undecodable transaction data",
+            preamble(json!({ "transactionData": quoted.clone(), "minResourceFee": "1" })),
+            Kind::Rpc,
+        ),
+        (
+            "a preamble whose fee is not its data's",
+            preamble(wrong_fee),
+            Kind::Rpc,
+        ),
+        (
+            "a malformed restoration preamble",
+            Box::new(|f: &mut Fixture| f.simulation["restorePreamble"] = json!("restore")),
+            Kind::Rpc,
+        ),
+        (
+            "a success that restored archived entries",
+            archived(vec![2]),
+            Kind::Archived,
+        ),
+        (
+            "an archived index outside the footprint",
+            archived(vec![9]),
+            Kind::Rpc,
+        ),
+        (
+            "an archived footprint entry",
+            Box::new(|f: &mut Fixture| {
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER - 1)
+            }),
+            Kind::Archived,
+        ),
+        (
+            // The reader judges archival at its own ledger: from a node behind or ahead of the
+            // simulation that says nothing about the call at L, so it is retried as any ledger
+            // mismatch, and a persistent one is an endpoint answer.
+            "an entry archived at a ledger other than the simulation's",
+            Box::new(|f: &mut Fixture| {
+                f.entries["latestLedger"] = json!(LEDGER + 1);
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER);
+            }),
+            Kind::Rpc,
+        ),
+        (
+            "a footprint entry expiring at the captured ledger",
+            Box::new(|f: &mut Fixture| {
+                f.entries["entries"][0]["liveUntilLedgerSeq"] = json!(LEDGER)
+            }),
+            Kind::Archived,
+        ),
+    ];
+    for (name, mutate, expected) in cases {
+        let mut fixture = fixture();
+        mutate(&mut fixture);
+        let error = capture_native_target(&fixture, NETWORK, &fixture.envelope)
+            .expect_err("a refused simulation was accepted");
+        let kind = match error {
+            RpcError::TargetRefused(_) => Kind::Refused,
+            RpcError::TargetArchived(_) => Kind::Archived,
+            _ => Kind::Rpc,
+        };
+        assert_eq!(kind, expected, "{name}: {error}");
+        // A refused or archived simulation is the call's outcome: nothing is read after it.
+        if matches!(
+            name,
+            "a failed simulation"
+                | "a restoration preamble"
+                | "a success that restored archived entries"
+        ) {
+            assert_eq!(
+                *fixture.calls.borrow(),
+                ["getNetwork", "simulateTransaction"],
+                "{name}"
+            );
+        }
+        if name == "an entry archived at a ledger other than the simulation's" {
+            assert!(
+                error
+                    .to_string()
+                    .contains("kept observing different ledgers"),
+                "{error}"
+            );
+            assert_eq!(
+                fixture
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|m| *m == "simulateTransaction")
+                    .count(),
+                CAPTURE_ATTEMPTS,
+                "retried as a ledger mismatch"
+            );
+        }
+        let code = match kind {
+            Kind::Refused => "E_TARGET_REFUSED: ",
+            Kind::Archived => "E_TARGET_ARCHIVED: ",
+            Kind::Rpc => "E_RPC: ",
+        };
+        assert!(error.to_string().starts_with(code), "{name}: {error}");
+        for text in [error.to_string(), format!("{error:?}")] {
+            assert!(!text.contains(&fixture.envelope), "{name}: {text}");
+            assert!(!text.contains("HostError"), "{name}: {text}");
+        }
+    }
+}
+
+/// A restoration preamble whose transaction data decodes and whose fee is that data's own, as
+/// preflight requires before it reports restoration.
+fn valid_preamble() -> Value {
+    let data = SorobanTransactionData {
+        resource_fee: 4321,
+        ..Default::default()
+    };
+    json!({ "transactionData": encode(&data), "minResourceFee": "4321" })
 }

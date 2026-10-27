@@ -8,10 +8,20 @@ one invocation installs the candidate rule through the account's own `add_contex
 makes one native-asset transfer under it. An enforce-mode simulation of that invocation runs the
 generated policy on live state, and nothing is installed because nothing is submitted.
 
-This package is the helper contract and its real-Wasm host tests only. **The `live_enforcement`
-layer remains `unavailable`.** The helper is not deployed on any network, no live simulation has
-been run with it, and the wallet-side preparation, consent and result validation it needs are
-not built yet (see [Outstanding](#outstanding)).
+This package is the helper contract, its real-Wasm host tests, a testnet deployment probed by
+the harness, the wallet's validators of a live case, and the wallet's consented live check that
+produces the `live_enforcement` layer. The helper is deployed on testnet and the harness has
+simulated one permit and one denial through it with automation keys
+([Testnet deployment](#testnet-deployment)). The validators decide what such a simulation must
+show to count ([How live use is meant to work](#how-live-use-is-meant-to-work)). The wallet
+prepares the two cases, gets the owner's consent and passkey signature, signs the delegate's part
+and validates both enforce-mode simulations
+([live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)). Its
+[22 October 2026 automation run](evidence/wallet-live-enforcement-testnet-2026-10-22.json) passed
+against the deployed helper with a passkey owner on a fresh account. The result is state-dependent
+simulation evidence for one grant shape. The wallet's
+[installation](POLLYWALLET-INTEGRATION.md#installation) requires this layer to have passed on recent
+evidence and the replay check to report the account unchanged.
 
 ## What the helper does
 
@@ -128,27 +138,71 @@ Each live case is one atomic simulation from unchanged network state: the captur
 expected to fail with `NoTupleMatched`. This is two named cases, not the derived deny suite; it
 cannot stand in for anything the reference, account-Wasm or captured-target layers must cover.
 
-Preconditions, none of which this package performs: the helper and candidate policy are already
-deployed and their code is read back and matched to reviewed hashes; the delegate is a funded
-classic account whose signer settings are checked; the wallet shows the owner both exact calls,
-the expiry and the replay warning and gets explicit consent before any signature exists. Only
-`simulateTransaction` in enforce mode is used, never `sendTransaction`. A recording-mode
-simulation only discovers the authorization shape and is never evidence.
+Preconditions, which the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+establishes before anything is signed: the helper and candidate policy are already deployed and
+their code is read back and matched to reviewed hashes; the delegate is a funded classic account
+whose signer settings are checked; the wallet shows the owner both exact calls, the expiry and the
+replay warning and gets explicit consent before any signature exists. Only `simulateTransaction` in
+enforce mode is used, never `sendTransaction`. The wallet builds every authorization itself; a
+recording-mode simulation is never used for them and is never evidence.
 
-Helper success is evidence only together with what the orchestrator checks itself:
+Helper success is evidence only together with what the orchestrator checks itself.
+`validateLiveCase` in [`wallet/shared/live-enforcement.mjs`](../wallet/shared/live-enforcement.mjs)
+makes these checks from the approved case, the exact transaction that was simulated and the RPC's
+raw enforce-mode simulation result, its XDR still base64. It returns `permit`, `deny` or `failed`
+with a reason. Only `permit` and `deny` are evidence:
 
-- the simulation's ledger changes include the installed rule, the candidate policy's counter
-  write for that rule and account, and exactly the expected balance changes;
+- the simulated transaction is one call of the helper for exactly the approved case, on the
+  testnet native asset, which the validator derives rather than accepts;
 - the account's authorization entry for the transfer has the exact transfer as its root and no
   sub-invocations, its `context_rule_ids` are exactly `[expected_rule_id]`, and its signers are
   exactly `{Delegated(delegate)}`;
-- the owner's entries cover only the installation.
+- the owner's entries cover only the installation, with the approved arguments and under the
+  owner's rule. Each delegated signer's own entry authorizes exactly the digest of its account
+  entry, and there is no other entry. Every entry expires at the approved ledger;
+- a permit's ledger changes are exactly these and nothing else: the account's and the recipient's
+  balances, by the amount; the installed rule with the account's bookkeeping for it (next rule ID,
+  rule count, and the delegate's and policy's registry entries); the candidate policy's
+  installation marker and its call counter for that rule and account, used once; and the nonce of
+  every entry, consumed once. The helper must return the rule the account stored. A simulation
+  that would restore archived entries is refused.
 
-A denial needs the
-`NoTupleMatched` error attributed to the candidate policy; a helper refusal such as
-`CandidateRuleNotExercised` is not a policy denial and settles nothing about the policy. The
-owner must never be asked to sign the transfer: an owner-signed transfer under rule 0 is a real
-transfer that no policy checks, should the signatures ever be submitted.
+A denial requires a top-level `Auth/InvalidAction` failure and rejects conflicting account
+errors in the printed log or transfer authorization events. It needs the `NoTupleMatched` error
+attributed to the candidate policy inside the asset's failed authentication of the account, with
+no ledger changes. It is read twice: from the printed
+event log as the harness reads it, matched only where the log starts an event so that a value it
+prints verbatim, such as the rule name, cannot pass for one, and from the structured diagnostic
+events. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial and settles
+nothing about the policy, and neither is an account error.
+
+A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
+address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
+which the RPC returns for a failed simulation too. In the order the host records them, they must
+show one top-level helper call with exactly the approved candidate, then the account's `__check_auth` for the
+installation and then for the transfer, once each, with that entry's signature payload (which
+covers its nonce and expiry), its signature and its contexts. Only the host's diagnostic events
+count; a contract can emit any topics as a contract event. For a permit every event comes from a
+successful call, and the result must echo exactly the envelope's four entries, which is what binds
+the classic signers' own entries. For a denial every event comes from a failed call, the helper
+never returns, and the policy's error follows the transfer's check and precedes any return of it. A
+failed response echoes nothing, so a denial vouches for the helper call and the account's two
+entries but not for the classic signers' entries, although `envelope_xdr_sha256` covers their
+bytes. The validator does not verify signatures, which the simulation's host did, and it neither
+signs nor simulates anything. Its tests use the addresses, amounts, rule and ledgers of the
+[testnet probe](#testnet-deployment) with entries, ledger changes, errors and events constructed in
+the shapes the probe and the host use. They also run it over real responses: a second,
+simulation-only probe the same day reused the deployed helper with a fresh throwaway account,
+automation keys and a new candidate, `CDTRH2NIFBKASKAF3FA2NCEYJ65O4XXI6NUPWDW6J4T3JYBHOLEYCHKF`,
+and kept the RPC's raw responses as
+[`wallet/tests/live-enforcement-testnet.json`](../wallet/tests/live-enforcement-testnet.json), with
+the two classic signer entries' Ed25519 signatures zeroed. On them the permit validates as
+`permit`, the adjacent amount as `deny`, and each case with the other's response as `failed`. The
+real responses matched the shapes the validator expects: the permit result echoes the four supplied
+entries, the fresh account's permit writes fourteen entries including the four nonces, and the
+denial's events, all from failed calls, are returned alongside its error. The owner must never be
+asked to sign the transfer: an owner-signed transfer under rule 0 is a real transfer that no policy
+checks, should the signatures ever be submitted.
 
 ## Signatures are real and usable without the helper
 
@@ -172,9 +226,111 @@ wallet must enforce the amount, recipient and a short expiry before it signs, an
 to a live case as consent to that installation and that transfer actually happening, for as long
 as the signatures are valid. The consent screen has to say so.
 
+## Testnet deployment
+
+[`testnet-harness/scripts/deploy-live-helper.mjs`](../testnet-harness/scripts/deploy-live-helper.mjs)
+deploys the helper on testnet and probes it once each way. It pins the testnet passphrase and
+refuses an RPC serving any other network before it builds, funds or signs anything. It:
+
+1. builds the helper with `stellar contract build --locked` and refuses unless the Wasm's SHA-256
+   is `EXPECTED_HELPER_HASH` from the host tests. Reproducing it needs the pinned rustc and
+   stellar-cli on the aarch64-apple-darwin host the hash was recorded on;
+2. runs the harness's own steps, as `run.sh` does: setup with Friendbot keys and an ed25519 owner,
+   a real owner transfer of 1,000,000 stroops under rule 0, and record → synthesize → generate →
+   verify. The candidate is a generated policy capped at one call, for exactly that transfer by
+   a separate delegate;
+3. uploads and deploys the candidate policy and the helper, refusing unless the network stores
+   the reviewed bytes and each instance reads back with that code hash;
+4. builds the four authorization entries itself, never from a recording simulation, with
+   signatures that expire 12 ledgers later, and runs one enforce-mode simulation of
+   `install_and_transfer` per case. Nothing is submitted for either case. The owner's and the
+   delegate's `__check_auth` entries carry classic (V1) address credentials, as elsewhere in the
+   harness, where the host tests sign all four entries as `AddressV2`;
+5. requires the permit case to return rule 1, to have the account store that rule, to change no
+   balance except the account's (down exactly 1,000,000 stroops) and the recipient's (up by the
+   same), and to create the candidate's installation with its call counter used once. The denial
+   case must fail with `NoTupleMatched` (6) raised by the candidate policy's contract ID inside the
+   account's failed authentication. A helper refusal (7001–7009) or an account error fails the
+   case; neither counts as a denial;
+6. waits until every case signature has expired, then reads back that the account's balance is
+   unchanged and that the candidate reports no installation;
+7. only then writes public addresses, hashes, ledgers and outcomes, never keys or signed entries,
+   to `docs/evidence/atomic-live-helper-testnet-<date>.json`. It deletes the throwaway keys on
+   success, on failure and on SIGINT, SIGTERM or SIGHUP. A signal stops the active harness
+   subprocess and its process group, waits for the child to close, and then deletes the keys;
+   no later harness step runs. Repeated signals cannot bypass that cleanup.
+
+The [21 October 2026 run](evidence/atomic-live-helper-testnet-2026-10-21.json) deployed the
+helper as `CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V`, which reads back with
+`EXPECTED_HELPER_HASH`. Both cases were simulated at ledger 5316206 against the candidate
+`CD6RHN5HQ6ZRZ3DTFCNPLDJWPDZXOSWX7TDOYHIWDDUTA6Y5IOVKZQWS`, on the throwaway account
+`CDQLZKNQHQGHZPIS4GATWI2XTLQVEVF47IETQQMWNV3QRGKBA6KD2L24`:
+
+- the permit case returned rule 1, moved exactly 1,000,000 stroops from the account to the
+  recipient, and used the candidate's one call;
+- the adjacent case failed with `Error(Auth, InvalidAction)`. The candidate policy's own contract
+  ID raised `NoTupleMatched` (6), inside the account's failed authentication. The policy runs
+  below the helper (helper → asset `transfer` → account `__check_auth` → policy `enforce`), and
+  attribution by contract ID survives that nesting, as it does at top level.
+
+After the last case signature expired at ledger 5316218, the account's balance was unchanged and
+the candidate reported no installation. When deployed, the helper's instance entry was live until
+ledger 5437165 and its code entry until ledger 5437164, about a week of testnet ledgers. After
+that the helper is archived and the script has to be run again. The evidence's `script_sha256`
+is the script as committed with it; the script was later restructured so that its gates and key
+handling are unit-tested, without changing what a run checks.
+
+This is a harness probe, not the live layer. The keys are throwaway automation keys held by the
+script, and no owner saw or approved anything. Each outcome describes testnet state at its
+simulation ledger. The signatures were real until they expired, as described
+[above](#signatures-are-real-and-usable-without-the-helper). They went to the testnet RPC endpoint
+inside the simulation request, and the script neither prints nor stores them.
+
+### Redeploying after a testnet reset
+
+A testnet reset removes the helper, the candidate, the pinned account code and every account
+built on it. To deploy again:
+
+1. Upload the pinned account Wasm, which `setup.mjs` deploys from its hash but never uploads.
+   `OZPB_VERIFIED_ACCOUNT_WASM_OUT=<file> bash scripts/verify-pinned-upstream.sh` rebuilds it and
+   checks the bytes against the pin; then
+   `stellar contract upload --wasm <file> --source <funded testnet key> --network testnet`.
+2. Run, from the repository root on the pinned build host:
+
+   ```
+   npm ci --prefix testnet-harness/scripts
+   OZPB_BIN=<built ozpb> node testnet-harness/scripts/deploy-live-helper.mjs
+   ```
+
+   It uploads the helper and a fresh candidate itself and needs nothing else from before the reset.
+3. Commit the new evidence file and replace the contract ID above; the old one is gone.
+
+The script always deploys a new instance. It never restores an archived one. Once the helper has
+been archived, step 2 deploys a new instance; whether its archived code entry has to be restored
+first has not been tried.
+
+### Keeping the helper live
+
+The wallet reads the helper's instance and code entries before every live check and reports the
+layer `unavailable` when either is archived or stays live only until the check's signatures would
+expire, naming the ledger. Nothing in this repository extends that lifetime automatically. Before
+it ends, an operator can extend both entries with the Stellar CLI, from any funded testnet key:
+
+```
+stellar contract extend --id <helper contract ID> --ledgers-to-extend <ledgers> \
+  --source-account <funded testnet key> --network testnet
+stellar contract extend --wasm-hash <EXPECTED_HELPER_HASH> \
+  --ledgers-to-extend <ledgers> --source-account <funded testnet key> --network testnet
+```
+
+The first extends the instance, the second the code, whose hash is `EXPECTED_HELPER_HASH`; they
+have not been run against this deployment. An entry that is already archived would have to be restored first
+(`stellar contract restore`), which has not been tried either; deploying again
+([above](#redeploying-after-a-testnet-reset)) is the tested path. Either way, update the
+operator's `liveHelper` if the contract ID changes.
+
 ## Outstanding
 
-- Deploying the helper on testnet and recognizing it by the reviewed hash.
-- The wallet-side preparation, consent, signing, enforce-mode simulation and result validation,
-  with its interface agreed before implementation.
-- A live run of both cases.
+- A live check with a human owner's passkey; the automation run uses a virtual authenticator.
+- Grant shapes beyond one exact native transfer of at most 1,000,000 stroops, and the derived
+  deny suite, which the two named cases do not stand in for.

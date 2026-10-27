@@ -55,6 +55,8 @@ ea7ac2b0a21688bc86dd78a5e531d9b53ef7ce0bed715b0c356aeadf869ed1d2|testnet-tx|owne
 146cd502db654587d1d62d6f1434e74d79c9d95013d2762390885c7dc1cb1b7e|testnet-tx|delegated swap at ledger 5295663, second Soroswap run
 41caba90fbcb5c22a3bca6c445ba250d9e0aa39393d886fee78786744d504def|testnet-tx|owner-authorized transfer-rule (ID 2) removal at ledger 5295825
 a7f56018934690ca6454641d4ebeb69f063241f9d2b8267bb0ff0ce80cc06987|testnet-tx|owner-authorized router-rule (ID 1) removal at ledger 5295829
+9b8bcbaacbb361f968f27c5e2114f7c1664260c688661aac114ca51da535cf7d|testnet-tx|wallet passkey-authorized rule 1 installation at ledger 5331779, 22 October install-and-revoke run
+a6646c5d06f7e17ff3de5b56b4bd01bf114a244cad332e104521515f210148ec|testnet-tx|wallet passkey-authorized rule 1 removal at ledger 5331783, 22 October install-and-revoke run
 
 # Controlled October 21 Blend claim run in docs/TESTNET-EVIDENCE-TRANCHE-2.md section 10;
 # public testnet outcomes, not recomputed or independently fetched by the offline gate.
@@ -110,3 +112,7 @@ ca3eede4a691b498f653526c701e307d7b2dc98df87f4aca4f7b433a45ea17ac|testnet-tx|owne
 92bfb858f95f768c7fd5ce180845d26d4af02bba7c43d8795999762226cee685|testnet-tx|delegated swap at ledger 5400698; independent live readback matched, not derivable by the offline gate
 bf08c657dd64b9f4b5854cb661c9c5873f341eb072a3ac98b1f4b60c201ebc40|testnet-tx|rule 1 removal at ledger 5400867; independent live readback matched, not derivable by the offline gate
 e7a8202fea1042021013194a7765d9e06a8ec63d20317fa5a481e30bae18f55d|testnet-tx|rule 2 removal at ledger 5400864; independent live readback matched, not derivable by the offline gate
+
+# October 26 wallet proposal-import lifecycle in docs/TESTNET-EVIDENCE-TRANCHE-2.md.
+5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290|testnet-tx|wallet passkey-authorized rule 1 installation at ledger 5402672, October 26 proposal-import run
+d558c505144dadceeefe823c7bd88e0bc22a43d646ff3fbff68c226451495c83|testnet-tx|wallet passkey-authorized rule 1 removal at ledger 5402675, October 26 proposal-import run

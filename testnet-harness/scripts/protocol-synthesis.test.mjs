@@ -40,6 +40,8 @@ for (const mutation of ['matching', 'simulation only', 'extra auth', 'missing ch
       assert.equal(inputs.calls.length, 2);
       assert.equal(inputs.calls[1].path, 'recordings[0]/auth[0]/sub[0]');
       assert.equal(inputs.decisions.widenings.length, 2);
+      assert.equal(inputs.decisions.max_calls, 1);
+      assert.equal(inputs.decisions.unlimited_calls_acknowledged, false);
       validateProtocolSynthesis(f.synthesis, f.run, inputs, f.synthesis.spec.registry_snapshot);
     } else assert.throws(() => protocolInputs(f.run, f.record));
   });

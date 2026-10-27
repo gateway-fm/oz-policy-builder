@@ -17,6 +17,8 @@
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
 mod authority;
+mod capture;
+mod dry_run;
 mod policy_check;
 mod preflight;
 mod verification;
@@ -199,6 +201,27 @@ enum Command {
         #[command(flatten)]
         build: BuildConfigArgs,
     },
+    /// Capture the target state of one unsigned native Stellar Asset Contract transfer through a
+    /// configured RPC source (network read; record-mode simulation is acquisition only, never
+    /// evidence that a policy permits the call). Prints the `rpc_reported` capture the native
+    /// worker's captured-target modes read; it does not run that layer, sign or submit.
+    CaptureTarget {
+        /// CaptureTargetInput JSON: network_id, rpc_source name, and the unsigned
+        /// envelope_xdr_base64 (confidential; kept out of process arguments).
+        #[arg(long)]
+        request: PathBuf,
+        /// JSON map of source name to {rpc_url, network_passphrase}. The request names a
+        /// source; it never carries a URL.
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+    },
+    /// Prepare a candidate and run the operator's native worker for the account-Wasm layer and,
+    /// with --capture-request, the captured-target layer; print one four-layer report. Signs
+    /// only offline-domain worker requests, with the spec delegate's key read from a 0600 file;
+    /// never signs for a live network, submits or installs. The live layer is reported
+    /// unavailable: it needs the wallet owner's consent. Exits 0 only when the report's
+    /// `acceptance` meets the permit/deny bar.
+    DryRun(dry_run::DryRunArgs),
     /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
     /// incomplete without the transaction result XDR).
     Import {
@@ -418,6 +441,11 @@ fn main() -> Result<()> {
             rpc_sources,
             build_config: build.resolve()?,
         })?,
+        Command::CaptureTarget {
+            request,
+            rpc_sources,
+        } => capture::run(&request, &rpc_sources)?,
+        Command::DryRun(args) => dry_run::run(args)?,
         Command::Import { bundle } => {
             let out = ozpb_toolkit::import_recording(
                 &read_import_document(&bundle)?,

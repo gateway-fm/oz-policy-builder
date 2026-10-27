@@ -703,8 +703,9 @@ endpoint; API role + isolated sandbox-worker role, §3).
 | `record_transaction` | network read | tx hash (+ network) → RecordingBundle (`rpc_reported`) |
 | `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`) |
 | `preflight_transaction` | network read, state-dependent; **confidential input**, and signed entries in it are live authorizations | exact envelope with its intended authorization entries → one RPC `authMode: enforce` simulation: outcome, endpoint-reported ledger, each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and, as advice only, declared instructions or fee below the endpoint's padded estimate. Not a policy, installation, or authority verdict, and never submits; a hosted server refuses envelopes carrying signatures |
+| `capture_target` | network read, state-dependent; **confidential input** | operator-configured `rpc_source` name (never a URL) + unsigned envelope whose only call is a native SAC `transfer(contract account, G recipient, amount)` → the `rpc_reported` target capture (ledger header, state-archival configuration, call, account Wasm hash and footprint entries at one ledger) that the captured-target layer reads. Record mode is acquisition only, never evidence that a policy permits the call; any other target is refused. Never signs, submits or runs the layer |
 | `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied` when the bundle's transaction result XDR backs its claimed outcome, `incomplete` without it — synthesis refuses the latter; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
-| `synthesize_policy` | pure | bundle(s) + user decisions → PolicySpec + per-constraint rationale + open questions |
+| `synthesize_policy` | pure | bundle(s) + user decisions → PolicySpec + per-constraint rationale; no questions are returned. A refusal carries its first failure's code (evidence and signer errors precede decision errors) and details listing the failures of the stage that stopped, with `E_NEEDS_DECISION` for each missing required decision; an invalid decision maps to `E_SPEC_INVALID` |
 | `evaluate_spec` | pure | PolicySpec + candidate invocation → reference-evaluator verdict for the generated scope; `indeterminate` if an attached reviewed policy is unmodelled |
 | `generate_code` | pure render + **sandboxed build** | PolicySpec → Rust source (pure) + reproducible wasm (resource-consuming compilation, isolated worker) + BuildManifest attestation |
 | `dry_run` | layered (see §4.5) | offline layers deterministic; live preflight = network read; any testnet deploy/submit mode = **mutating, explicitly gated** |
@@ -758,10 +759,15 @@ policy."*
   their output, and relays user decisions. All artifacts (spec, Rust, report, manifests)
   come from tool calls.
 - **Clarification is structural, not stylistic.** Exact-by-default synthesis (§4.3) means
-  every widening *requires* a user decision; the synthesizer emits the open questions
-  (semantic role, bound direction, headroom, lifetime, recipient generalization, frequency,
-  strict-vs-dynamic signer semantics, and — always — the delegate signer set), and the
-  skill is instructed to resolve each one explicitly before finalizing.
+  every widening *requires* a user decision. The synthesizer returns no list of questions; it
+  refuses. A refusal carries the code of its first failure (evidence and signer errors are
+  checked before decisions), and its details list the failures of the stage that stopped
+  synthesis, with `E_NEEDS_DECISION` for each missing or out-of-range required decision (the
+  delegate signer set, the lifetime unless a non-expiring grant is acknowledged, a
+  threshold). An invalid decision maps to `E_SPEC_INVALID`; a widening or composition that
+  cannot be applied gets its own `E_*` code. The skill is instructed to resolve those
+  refusals, and any widening (semantic role, bound direction, headroom, recipient
+  generalization, frequency), explicitly with the user before finalizing.
   High-blast-radius widenings are called out as such.
 - **Current stopping point:** deployment and signing are not MCP capabilities (§4.6). The
   skill shows the generated Rust, layer-1 reference report, verification dimensions, and a
@@ -775,11 +781,12 @@ policy."*
   never chain past confirmation into signing or submission.
 - **Packaging:** the Claude plugin bundles `skills/policy-builder/SKILL.md` and a stdio MCP
   server entry in `.claude-plugin/plugin.json`. The repository-level `.mcp.json` also works
-  for local tool use without the skill. A hosted endpoint is separate future work.
+  for local tool use without the skill. [SELF-HOSTING.md](SELF-HOSTING.md) packages the HTTP
+  server for one operator; a deployed hosted endpoint is separate future work.
 
 ### 4.8 Wallet integration (`wallet/`)
 
-> **Scope: Tranche 2.** Wallet integration is a second-milestone deliverable. Everything below is intended design, including the install flow and the authority-surface check it depends on.
+> **Scope: Tranche 2.** Wallet integration is a second-milestone deliverable. The authority-surface check, the advisory install steps built on it and the installed-rule check are implemented (`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction`, `check_against_policy`); the rest of this section, including the wallet install flow that depends on them, is intended design. [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md) states what the current integration actually supports.
 
 Target stack (the current OZ smart-account generation):
 
@@ -999,7 +1006,8 @@ verification steps that make it trustworthy:**
    preserves state correctly. No unqualified "atomic" claims are made.
 9. The delegated party (human with a session key, or an agent) now operates under the rule;
    `check_against_policy` lets an agent pre-flight its own transactions
-   (recognition-scoped, §4.6), with archived-state restoration handled in preflight. The UI
+   (recognition-scoped, §4.6); it returns `unsupported` for archived state and never restores
+   it, while `preflight_transaction` reports when a success needs restoration. The UI
    warns when the target contract's, account's, or a verifier's code hash no longer matches
    what was reviewed.
 
@@ -1010,7 +1018,7 @@ mainnet.
 
 ### 4.9 Building on `kalepail/pollywallet` — adopt / extend / replace
 
-> **Scope: Tranche 2.** An evaluation of an integration target for the second milestone, not a description of work completed.
+> **Scope: Tranche 2.** An evaluation of an integration target for the second milestone, not a description of work completed. The integration built on it so far, and its limits, are in [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md).
 
 Pollywallet already prototypes a policy builder (tx analysis → JSON schema → AI-generated
 Rust → sandbox compile/test → testnet deploy → passkey-signed `add_context_rule`). Honest
@@ -1405,7 +1413,7 @@ not** — they can encode private, never-submitted intentions. Controls:
 
 ## 7. The three end-to-end walkthroughs
 
-> **Scope: Tranche 2.** All three walkthroughs are second-milestone deliverables. The scenarios below define what will be demonstrated, not what has been.
+> **Scope: Tranche 2.** All three walkthroughs are second-milestone deliverables, and the scenarios below define the target. Controlled testnet harness runs of W2 and W3 are recorded in [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9, with operator-mode approval rather than a wallet's, and W3 with fixed harness widenings rather than a reviewed adapter. W1 has not run. [SCOPE.md](SCOPE.md) lists what remains.
 
 Each ships as documentation + fixtures + demo, and doubles as a permanent regression suite.
 Each walkthrough states its trust boundary (§6.1) and, where applicable, ships a

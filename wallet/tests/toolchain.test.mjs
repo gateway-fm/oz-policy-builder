@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
 import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
 import { WalletToolchain } from '../server/toolchain.mjs';
+import { proposalFixture } from './proposal-fixture.mjs';
+import { parseGrantProposal } from '../shared/proposal.mjs';
 
 function setup(t, change = () => {}, pipeline) {
   const root = mkdtempSync(join(tmpdir(), 'ozpb-wallet-tools-'));
@@ -23,8 +25,9 @@ function setup(t, change = () => {}, pipeline) {
   change(record);
   const calls = [];
   const raw = JSON.stringify(record).replace('"nonce":1', '"nonce":9223372036854775807');
-  const runner = async (executable, args) => {
-    calls.push({ executable, args });
+  const runner = async (executable, args, options = {}) => {
+    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}), ...(options.codes ? { codes: options.codes } : {}),
+      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
     return args[0] === 'record' ? raw : JSON.stringify(await pipeline(args));
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root,
@@ -87,6 +90,23 @@ test('generation retains bounded reproduced artifacts without claiming runtime a
   assert.equal(result.complete, undefined);
   assert.match(result.limitations[0], /do not constitute a complete four-layer/);
   assert.equal(Object.isFrozen(toolchain.artifact(result.artifactId).response), true);
+});
+
+test('generation states every decision, including that calls are not unlimited', async (t) => {
+  const account = fixture().wallet.contractId;
+  const delegate = Keypair.random().publicKey();
+  const pipeline = generatedPipeline(account, delegate);
+  let decisions;
+  const { toolchain } = setup(t, undefined, async (args) => {
+    if (args[0] === 'synthesize') decisions = JSON.parse(readFileSync(args[args.indexOf('--decisions') + 1], 'utf8'));
+    return pipeline(args);
+  });
+  const recorded = await toolchain.record({ transactionHash: '2'.repeat(64), accountAddress: account });
+  await toolchain.generate({ recordId: recorded.recordId, delegateAddress: delegate,
+    validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101 });
+  assert.equal(decisions.max_calls, 1);
+  assert.equal(decisions.unlimited_calls_acknowledged, false);
+  assert.equal(decisions.no_expiry_acknowledged, false);
 });
 
 for (const failure of ['source reproduction', 'wasm reproduction', 'spec conformance', 'path traversal', 'wrong wasm', 'unmodeled']) {
@@ -167,5 +187,64 @@ test('dry-run preparation sends retained artifact claims, a fresh nonce and the 
   assert.notEqual(first.request.run_nonce, second.request.run_nonce);
   for (const ruleId of [-1, 4294967296, 1.5, '4']) {
     await assert.rejects(() => toolchain.prepareDryRun({ artifactId: artifact.artifactId, candidate, candidateContextRuleId: ruleId }), /refused/);
+  }
+});
+
+test('target capture sends the envelope only in a private request file that does not outlive the CLI call', async (t) => {
+  const envelope = 'AAAAAgAAAAD' + 'CONFIDENTIAL-ENVELOPE'.replaceAll('-', 'A');
+  const capture = { schema: 1, provenance: 'rpc_reported', observed_ledger: 4294967295 };
+  const seen = [];
+  const { toolchain, calls, root } = setup(t, undefined, async (args) => {
+    const [, , path] = args;
+    seen.push({ path, text: readFileSync(path, 'utf8'), mode: statSync(path).mode & 0o777 });
+    if (seen.length === 2) throw new Error(`endpoint quoted ${envelope}`);
+    if (seen.length === 3) throw Object.assign(new Error(`E_TARGET_REFUSED: ${envelope}`), { code: 'E_TARGET_REFUSED' });
+    if (seen.length === 4) throw Object.assign(new Error('E_RPC'), { code: 'E_RPC' });
+    return capture;
+  });
+  const controller = new AbortController();
+  assert.deepEqual(await toolchain.captureTarget(envelope, { signal: controller.signal }), capture);
+  const call = calls.at(-1);
+  assert.deepEqual([call.args[0], call.args[1], ...call.args.slice(3)],
+    ['capture-target', '--request', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
+  assert.equal(call.signal, controller.signal, 'a client disconnect reaches the CLI process');
+  assert.deepEqual(call.codes, ['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED'], 'only the target outcomes may be surfaced');
+  assert.equal(call.timeoutMs, 120000);
+  assert.ok(seen[0].path.startsWith(root));
+  assert.equal(seen[0].mode, 0o600);
+  assert.deepEqual(JSON.parse(seen[0].text), { network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope });
+  assert.equal(existsSync(seen[0].path), false, 'the envelope is not retained after the capture');
+  assert.equal(existsSync(join(dirname(seen[0].path), 'capture-target.json')), false, 'nor is the capture, which repeats the call');
+  await assert.rejects(() => toolchain.captureTarget(envelope), (error) => /refused/.test(error.message) && !error.message.includes(envelope));
+  assert.equal(existsSync(seen[1].path), false, 'nor after a refused capture');
+  await assert.rejects(() => toolchain.captureTarget(envelope), (error) => error.code === 'E_TARGET_REFUSED'
+    && /refused/.test(error.message) && !error.message.includes(envelope));
+  await assert.rejects(() => toolchain.captureTarget(envelope), (error) => error.code === undefined, 'no other code is surfaced');
+  for (const bad of ['', 'not base64!', 7, 'A'.repeat(2 * 1024 * 1024)]) {
+    await assert.rejects(() => toolchain.captureTarget(bad), /refused/);
+  }
+  assert.equal(seen.length, 4, 'a malformed envelope never reaches the CLI');
+});
+
+for (const changed of [false, true]) test(`proposal grant comparison ${changed ? 'refuses before build' : 'allows independent regeneration'}`, async (t) => {
+  const f = proposalFixture();
+  f.proposal.decisions.max_calls = 1;
+  f.proposal.expected_grant.rules[0].max_calls = 1;
+  f.spec.rules[0].state[0].call_count_per_installation.max_calls = 1;
+  f.spec.registry_snapshot = '5'.repeat(64);
+  if (changed) f.spec.rules[0].allowed_calls[0].args[2].c.eq_i128.value = '1000001';
+  const pipeline = generatedPipeline(f.wallet.contractId, f.proposal.decisions.delegate, results => { results.synthesize.spec = f.spec; });
+  const { toolchain, calls } = setup(t, undefined, pipeline);
+  const recorded = await toolchain.record({ transactionHash: f.proposal.transaction_hash, accountAddress: f.wallet.contractId });
+  const generate = () => toolchain.generate({ recordId: recorded.recordId, delegateAddress: f.proposal.decisions.delegate,
+    validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101,
+    proposal: parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId) });
+  if (changed) {
+    await assert.rejects(generate, /refused/);
+    assert.deepEqual(calls.map(c => c.args[0]), ['record', 'synthesize']);
+  } else {
+    const artifact = await generate();
+    assert.equal(artifact.spec.smart_account.address, f.wallet.contractId);
+    assert.deepEqual(calls.map(c => c.args[0]), ['record', 'synthesize', 'reference-suite', 'generate', 'verify']);
   }
 });
