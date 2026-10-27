@@ -111,8 +111,9 @@ Run the `contracts` differential tests, Clippy, and formatting when that workspa
 `bash scripts/test-pinned-account-authorization.sh` (network, several minutes) when a change can
 alter the generated policy Wasm or the account authorization path: codegen or its templates,
 `policy-spec` normalization, the build runner or pinned build inputs, the example spec, the
-pinned account, or `contracts/differential/tests/account_wasm_auth.rs`. That test pins the
-generated Wasm hash; the nightly job runs it only after merge.
+pinned account, `contracts/differential/tests/account_wasm_auth.rs` or
+`contracts/differential/tests/account_wasm_invariants.rs`. Those tests pin the generated Wasm
+hash; the nightly job runs them only after merge.
 Run `bash scripts/check-dep-rules.sh`
 for crate-edge changes and the relevant part of `scripts/verify-phase1.sh` for changed
 first-milestone guarantees.

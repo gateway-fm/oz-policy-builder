@@ -92,6 +92,10 @@ fn check_auth_invocation(
     }
 }
 
+/// An entry whose signature expires at ledger 2000: enough for the suites that stay near the
+/// start of a test ledger. The state-invariant suite signs at ledgers past it.
+// That suite uses only `signed_delegate_auth_until`, so it would report this wrapper as unused.
+#[allow(dead_code)]
 pub fn signed_delegate_auth(
     env: &Env,
     account: &Address,
@@ -100,7 +104,18 @@ pub fn signed_delegate_auth(
     nonce: i64,
     forgery: Forgery,
 ) -> SorobanAuthorizationEntry {
-    let signature_expiration_ledger = 2000;
+    signed_delegate_auth_until(env, account, key, auth_digest, nonce, 2000, forgery)
+}
+
+pub fn signed_delegate_auth_until(
+    env: &Env,
+    account: &Address,
+    key: &SigningKey,
+    auth_digest: &Bytes,
+    nonce: i64,
+    signature_expiration_ledger: u32,
+    forgery: Forgery,
+) -> SorobanAuthorizationEntry {
     let root_invocation = check_auth_invocation(env, account, bytes_vec(auth_digest));
     let signed_invocation = match forgery {
         Forgery::SignsOtherDigest => {

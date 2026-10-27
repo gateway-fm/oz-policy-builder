@@ -598,10 +598,16 @@ impl GeneratedPolicy {
   - a call cap never resets **within an installation** due to inactivity, TTL expiry, or
     archival — an archived persistent entry is restored with its value preserved, so allowing
     the counter to archive cannot reset it. It is not a *lifetime* cap: `uninstall` removes the
-    counter entry and a later `install` legitimately starts from zero. Both are gated on
-    `smart_account.require_auth()`, so only the account's owner can reach that path, and it is
-    a new grant rather than a reset of an existing one — but the guarantee stated to a user must
-    be "per installation", never "lifetime".
+    counter entry and a later `install` starts from zero. Both are gated only on
+    `smart_account.require_auth()`. The account grants that authorization under any of its rules
+    that matches the policy's address (`Default` or `CallContract(policy)`), not only the
+    owner's. Whoever holds such a rule can therefore reset the cap of an existing grant
+    (`policy_address_rule_can_uninstall_and_call_surface_refuses_it` in
+    `contracts/differential/tests/account_wasm_invariants.rs`).
+    `check_policy_call_surface` lists every such rule before installation and refuses one the
+    agent's key can use alone. A rule added after installation is not monitored (see "full
+    call-surface monitoring" in [`SCOPE.md`](SCOPE.md)). The guarantee stated to a user must be
+    "per installation", never "lifetime".
 - **Rendering safety:** all symbols, strings, bytes, and `ScVal` values from recordings are
   untrusted data. They are never interpolated into Rust identifiers, and they reach a string
   or byte literal only through a **render-safe literal type** (`crates/codegen/src/render.rs`:
@@ -1495,7 +1501,9 @@ unverifiable claim about development chronology or every possible rejection path
   management/upgrade method; unknown management-method semantics failing unsupported;
   management methods beyond the three trait functions; authority-finding cases);
   **reconfiguration overlap tests** exercising both rule IDs and asserting aggregate
-  capability.
+  capability. Which state invariants and direct-call cases run today, through which account,
+  and which are still omitted is mapped in
+  [`SCOPE.md`](SCOPE.md#state-invariants-and-direct-calls).
 - **Registries:** signature verification, unknown-hash fail-closed behavior, rollback and
   freeze rejection, snapshot-pinning consistency, revocation-effect handling (alert +
   emergency removal, never silent), unknown-verifier failures; **rule-enumeration tests**
