@@ -285,6 +285,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: advisory exception guard regressions
+        run: python3 -B scripts/test-check-advisory-exception.py
       # Pinned, not latest — same reasoning as cargo-machete above. cargo-deny decides this
       # gate's verdict, and its advisory-database handling and lint defaults change between
       # releases, so a floating install can turn a green tree red (or the reverse) with no
