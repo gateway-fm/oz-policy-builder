@@ -42,6 +42,19 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   fee-payer keys. The demo script, the testnet harness and the local wallet backend do, on
   testnet only, with disposable keys they generate; the wallet's owner signs with the user's
   own passkey.
+- `ozpb dry-run` is the one CLI command that holds a key: the spec delegate's, read only from a
+  0600 file owned by the caller, never from an argument or the environment, and cleared on a
+  best-effort basis when the run ends (a moved value can leave a stack copy). It signs only the
+  native worker's requests whose preimage names the run's offline execution network, which it
+  derives itself and which can never equal the source, public, test or future network; it never
+  submits, deploys or installs. A delegate key is still a live credential on its own network, so
+  use a throwaway delegate for dry runs.
+- That signing guard stops a confused or buggy worker, not a hostile one. The native worker
+  runs unsandboxed as the caller's user and can read anything the caller can, including the key
+  file, whose path is on the command line. Run only a worker binary you built or otherwise
+  trust; the CLI refuses one that is writable by its group or others, or owned by neither the
+  caller nor root. File mode and owner are the only checks on the key file: an extended ACL
+  (macOS or POSIX) that grants someone else access to a 0600 file is not detected.
 - No independent third-party audit has been performed. The evidence that has actually been
   run is in `docs/TESTNET-EVIDENCE.md` and, for the second milestone's controlled testnet
   harness runs, `docs/TESTNET-EVIDENCE-TRANCHE-2.md`; those runs are local RPC observations,

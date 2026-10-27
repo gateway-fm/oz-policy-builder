@@ -17,6 +17,7 @@
 
 mod authority;
 mod capture;
+mod dry_run;
 mod policy_check;
 mod preflight;
 mod verification;
@@ -213,6 +214,13 @@ enum Command {
         #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
         rpc_sources: PathBuf,
     },
+    /// Prepare a candidate and run the operator's native worker for the account-Wasm layer and,
+    /// with --capture-request, the captured-target layer; print one four-layer report. Signs
+    /// only offline-domain worker requests, with the spec delegate's key read from a 0600 file;
+    /// never signs for a live network, submits or installs. The live layer is reported
+    /// unavailable: it needs the wallet owner's consent. Exits 0 only when the report's
+    /// `acceptance` meets the permit/deny bar.
+    DryRun(dry_run::DryRunArgs),
     /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
     /// incomplete without the transaction result XDR).
     Import {
@@ -436,6 +444,7 @@ fn main() -> Result<()> {
             request,
             rpc_sources,
         } => capture::run(&request, &rpc_sources)?,
+        Command::DryRun(args) => dry_run::run(args)?,
         Command::Import { bundle } => {
             let out = ozpb_toolkit::import_recording(
                 &read_import_document(&bundle)?,

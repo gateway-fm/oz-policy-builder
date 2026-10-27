@@ -8,6 +8,8 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
 import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
 import { WalletToolchain } from '../server/toolchain.mjs';
+import { proposalFixture } from './proposal-fixture.mjs';
+import { parseGrantProposal } from '../shared/proposal.mjs';
 
 function setup(t, change = () => {}, pipeline) {
   const root = mkdtempSync(join(tmpdir(), 'ozpb-wallet-tools-'));
@@ -88,6 +90,23 @@ test('generation retains bounded reproduced artifacts without claiming runtime a
   assert.equal(result.complete, undefined);
   assert.match(result.limitations[0], /do not constitute a complete four-layer/);
   assert.equal(Object.isFrozen(toolchain.artifact(result.artifactId).response), true);
+});
+
+test('generation states every decision, including that calls are not unlimited', async (t) => {
+  const account = fixture().wallet.contractId;
+  const delegate = Keypair.random().publicKey();
+  const pipeline = generatedPipeline(account, delegate);
+  let decisions;
+  const { toolchain } = setup(t, undefined, async (args) => {
+    if (args[0] === 'synthesize') decisions = JSON.parse(readFileSync(args[args.indexOf('--decisions') + 1], 'utf8'));
+    return pipeline(args);
+  });
+  const recorded = await toolchain.record({ transactionHash: '2'.repeat(64), accountAddress: account });
+  await toolchain.generate({ recordId: recorded.recordId, delegateAddress: delegate,
+    validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101 });
+  assert.equal(decisions.max_calls, 1);
+  assert.equal(decisions.unlimited_calls_acknowledged, false);
+  assert.equal(decisions.no_expiry_acknowledged, false);
 });
 
 for (const failure of ['source reproduction', 'wasm reproduction', 'spec conformance', 'path traversal', 'wrong wasm', 'unmodeled']) {
@@ -205,4 +224,27 @@ test('target capture sends the envelope only in a private request file that does
     await assert.rejects(() => toolchain.captureTarget(bad), /refused/);
   }
   assert.equal(seen.length, 4, 'a malformed envelope never reaches the CLI');
+});
+
+for (const changed of [false, true]) test(`proposal grant comparison ${changed ? 'refuses before build' : 'allows independent regeneration'}`, async (t) => {
+  const f = proposalFixture();
+  f.proposal.decisions.max_calls = 1;
+  f.proposal.expected_grant.rules[0].max_calls = 1;
+  f.spec.rules[0].state[0].call_count_per_installation.max_calls = 1;
+  f.spec.registry_snapshot = '5'.repeat(64);
+  if (changed) f.spec.rules[0].allowed_calls[0].args[2].c.eq_i128.value = '1000001';
+  const pipeline = generatedPipeline(f.wallet.contractId, f.proposal.decisions.delegate, results => { results.synthesize.spec = f.spec; });
+  const { toolchain, calls } = setup(t, undefined, pipeline);
+  const recorded = await toolchain.record({ transactionHash: f.proposal.transaction_hash, accountAddress: f.wallet.contractId });
+  const generate = () => toolchain.generate({ recordId: recorded.recordId, delegateAddress: f.proposal.decisions.delegate,
+    validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101,
+    proposal: parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId) });
+  if (changed) {
+    await assert.rejects(generate, /refused/);
+    assert.deepEqual(calls.map(c => c.args[0]), ['record', 'synthesize']);
+  } else {
+    const artifact = await generate();
+    assert.equal(artifact.spec.smart_account.address, f.wallet.contractId);
+    assert.deepEqual(calls.map(c => c.args[0]), ['record', 'synthesize', 'reference-suite', 'generate', 'verify']);
+  }
 });

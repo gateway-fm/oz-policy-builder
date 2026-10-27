@@ -9,8 +9,12 @@ import type { WalletState } from "../policy-builder/client/controller.mjs";
 import { verificationGate } from "../policy-builder/client/verification.mjs";
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, reviewIntent } from "../policy-builder/shared/approval.mjs";
 import { validateAssembly } from "../policy-builder/shared/assembly.mjs";
-import { validateSignedAuthorization } from "../policy-builder/shared/signature.mjs";
+import { validateLiveOwnerSignature, validateSignedAuthorization } from "../policy-builder/shared/signature.mjs";
+import { checkLiveOwnerEntry, consentDisplay, liveCases, statementHash } from "../policy-builder/shared/live-consent.mjs";
 import { reviewSample, validateSampleAssembly } from "../policy-builder/shared/sample.mjs";
+import { installConsent } from "../policy-builder/shared/install.mjs";
+import { reviewRemoval, revokeConsent, validateRemovalAssembly } from "../policy-builder/shared/revoke.mjs";
+import { MAX_PROPOSAL_BYTES, parseGrantProposal, checkProposalArtifact } from "../policy-builder/shared/proposal.mjs";
 
 export const Route = createFileRoute("/policy-builder")({ component: PolicyBuilder });
 const button = "rounded-lg bg-cyan-600 px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-40";
@@ -97,6 +101,86 @@ function VerificationLayers({ verification }: { verification: unknown }) {
   </ul>;
 }
 
+/** The consent statement, exactly as this browser derived it from the reviewed grant. */
+function LiveConsent({ display }: { display: unknown }) {
+  const d = object(display);
+  const owner = object(d.owner_signs);
+  return <div className="space-y-3 rounded-lg border border-amber-500 bg-amber-950/30 p-4 text-sm">
+    <h3 className="font-semibold">Consent to the live check</h3>
+    <p className="font-medium text-amber-200">{label(d.warning)}</p>
+    <p>Signatures expire at ledger <strong>{label(d.signature_expiration_ledger)}</strong> (ledger {label(d.current_ledger)} when prepared).
+      {" "}Labels: {items(d.labels).map(label).join(", ")}.</p>
+    <div className="rounded border border-slate-700 p-3">
+      <p className="font-medium">Your owner passkey signs: {label(owner.contract)}.{label(owner.function)}</p>
+      <p className="break-all text-slate-300">context {label(owner.context)}, name {label(owner.name)}, valid until {label(owner.valid_until)},
+        signers {items(owner.signers).map(label).join(", ")}, policies {items(owner.policies).map(label).join(", ")},
+        checked under owner rule {items(owner.context_rule_ids).map(label).join(", ")}</p>
+    </div>
+    {items(d.cases).map((raw, index) => {
+      const c = object(raw);
+      const call = object(c.simulated_call);
+      const transfer = object(c.delegate_signs);
+      return <div key={index} className="rounded border border-slate-700 p-3">
+        <p className="font-medium">{label(c.case)}: expected {label(c.expected)}</p>
+        <p className="break-all text-slate-300">Simulated call: {label(call.contract)}.{label(call.function)}({JSON.stringify(call.candidate)})</p>
+        <p className="break-all text-slate-300">The delegate signs: {label(transfer.contract)}.{label(transfer.function)}(from {label(transfer.from)},
+          to {label(transfer.to)}, {label(transfer.amount_stroops)} stroops) under rule {items(transfer.context_rule_ids).map(label).join(", ")}</p>
+      </div>;
+    })}
+    <p className="text-slate-400">Delegate {label(object(d.delegate).address)}: {label(object(d.delegate).key)}.</p>
+  </div>;
+}
+
+/** What the owner's installation signature does, exactly as this browser derived it from the review. */
+function InstallConsent({ display }: { display: unknown }) {
+  const d = object(display);
+  const owner = object(d.owner_signs);
+  const grant = object(d.grant);
+  const tx = object(d.transaction);
+  const fee = object(d.fee);
+  return <div className="space-y-3 rounded-lg border border-amber-500 bg-amber-950/30 p-4 text-sm">
+    <h3 className="font-semibold">Consent to install this grant</h3>
+    <p className="font-medium text-amber-200">{label(d.warning)}</p>
+    <div className="rounded border border-slate-700 p-3">
+      <p className="font-medium">Your owner passkey signs: {label(owner.contract)}.{label(owner.function)}</p>
+      <p className="break-all text-slate-300">context {label(owner.context)}, name {label(owner.name)}, valid until {label(owner.valid_until)},
+        signers {items(owner.signers).map(label).join(", ")}, policies {items(owner.policies).map(label).join(", ")},
+        checked under owner rule {items(owner.context_rule_ids).map(label).join(", ")}</p>
+    </div>
+    <div className="rounded border border-slate-700 p-3">
+      <p className="font-medium">What installing grants (rule ID {label(grant.rule_id)})</p>
+      <p className="break-all text-slate-300">Delegate {label(grant.delegate)} may call {label(grant.target)} at most {label(grant.max_calls)} time(s),
+        until ledger {label(grant.valid_until_ledger)}, only as follows:</p>
+      <ul className="mt-2 space-y-1">
+        {items(grant.allowed_calls).map((raw, index) => {
+          const call = object(raw);
+          return <li key={index} className="break-all text-slate-300">{label(call.function)}({items(call.args).map((arg) =>
+            `${label(object(arg).index)}: ${JSON.stringify(object(arg).constraint)}`).join(", ")})</li>;
+        })}
+      </ul>
+    </div>
+    <p>Transaction valid for ledgers {label(tx.min_ledger)}–{label(tx.max_ledger)}; your signature expires at ledger
+      {" "}<strong>{label(tx.signature_expiration_ledger)}</strong>. Prepared fee {xlm(fee.prepared_fee_stroops)}, at most
+      {" "}{xlm(fee.max_fee_stroops)}, paid by {label(fee.paid_by)}.</p>
+  </div>;
+}
+
+/** What the owner's removal signature does. */
+function RevokeConsent({ display }: { display: unknown }) {
+  const d = object(display);
+  const owner = object(d.owner_signs);
+  const tx = object(d.transaction);
+  const fee = object(d.fee);
+  return <div className="space-y-3 rounded-lg border border-amber-500 bg-amber-950/30 p-4 text-sm">
+    <h3 className="font-semibold">Consent to revoke this grant</h3>
+    <p className="font-medium text-amber-200">{label(d.warning)}</p>
+    <p className="break-all">Your owner passkey signs: {label(owner.contract)}.{label(owner.function)}({items(owner.args).map(label).join(", ")}),
+      checked under owner rule {items(owner.context_rule_ids).map(label).join(", ")}.</p>
+    <p>Your signature expires at ledger <strong>{label(tx.signature_expiration_ledger)}</strong>. Prepared fee {xlm(fee.prepared_fee_stroops)},
+      at most {xlm(fee.max_fee_stroops)}, paid by {label(fee.paid_by)}.</p>
+  </div>;
+}
+
 function PolicyBuilder() {
   const controller = useRef<WalletController | null>(null);
   const creatingRef = useRef(false);
@@ -105,6 +189,7 @@ function PolicyBuilder() {
   const [creating, setCreating] = useState(false);
   const [walletJson, setWalletJson] = useState("");
   const [transactionHash, setTransactionHash] = useState("");
+  const [proposalText, setProposalText] = useState("");
   const [delegateAddress, setDelegateAddress] = useState("");
   const [validUntilLedger, setValidUntilLedger] = useState("");
   const [maxCalls, setMaxCalls] = useState("1");
@@ -115,7 +200,8 @@ function PolicyBuilder() {
       const token = takeSessionToken(window.location, window.history);
       const instance = new WalletController({
         request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
-          reviewSample, validateSampleAssembly },
+          reviewSample, validateSampleAssembly, liveCases, consentDisplay, statementHash, checkLiveOwnerEntry, validateLiveOwnerSignature,
+          installConsent, reviewRemoval, validateRemovalAssembly, revokeConsent, parseGrantProposal, checkProposalArtifact },
         pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
         origin: window.location.origin, onChange: setState,
         sign: async ({ approval, checked }) => {
@@ -206,6 +292,37 @@ function PolicyBuilder() {
       </section>
       <section className={panel} aria-labelledby="record-heading">
         <h2 id="record-heading" className="text-xl font-semibold">2. Record and generate</h2>
+        <details className="space-y-3 rounded-lg border border-slate-600 p-4">
+          <summary className="cursor-pointer font-semibold">Import a grant proposal</summary>
+          <p className="text-sm text-slate-300">Import a capped, expiring grant for one exact native XLM transfer on testnet.
+            The wallet records the transaction again and regenerates the grant, refusing any permission difference.
+            You review deployment and installation separately. Installation requires the automation delegate
+            created in this wallet session.</p>
+          <label className="block text-sm" htmlFor="proposal-file">Choose a proposal JSON file (up to 16 KiB)</label>
+          <input id="proposal-file" type="file" accept="application/json,.json" disabled={busy}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              setProposalText("");
+              if (!file) return;
+              if (file.size > MAX_PROPOSAL_BYTES) { setMessage("Proposal file exceeds 16 KiB."); return; }
+              try { setProposalText(await file.text()); }
+              catch { setMessage("Could not read the proposal file."); }
+            }} />
+          <label className="block text-sm" htmlFor="proposal-json">Or paste the proposal JSON</label>
+          <textarea id="proposal-json" className={input} rows={6} maxLength={MAX_PROPOSAL_BYTES}
+            value={proposalText} disabled={busy} onChange={(event) => setProposalText(event.target.value)} />
+          <button className={button} disabled={busy || !state?.wallet || !proposalText || !state?.status?.capabilities.importProposal}
+            onClick={() => void run((value) => value.importProposal(proposalText))}>Import and verify proposal</button>
+        </details>
+        {state?.proposalReview && <div className="space-y-2 rounded-lg border border-cyan-700 p-4 text-sm">
+          <p>The regenerated permissions match the proposal. Review the grant below.</p>
+          <dl className="space-y-2 break-all">
+            <div><dt>Agent specification hash</dt><dd>{state.proposalReview.agentSpecHash}</dd></div>
+            <div><dt>Wallet specification hash</dt><dd>{state.proposalReview.walletSpecHash}</dd></div>
+          </dl>
+          {!state.proposalReview.hashesMatch && <p>Specification hashes include acquisition details and may differ even when permissions match.
+            The account, calls, signer requirements, expiry, cap and policy kinds were compared separately and match.</p>}
+        </div>}
         {state?.sample && <div className="space-y-3 rounded-lg border border-cyan-700 bg-cyan-950/20 p-4">
           <h3 className="font-semibold">Create a sample transaction with this new account</h3>
           <p className="text-sm">Transfer exactly 0.1 testnet XLM from the account to the local testnet fee payer.
@@ -241,11 +358,13 @@ function PolicyBuilder() {
         <Evidence title="Recorded authorization and evidence" value={state?.record} />
         <label htmlFor="delegate" className="block text-sm">Restricted delegate address</label>
         <input id="delegate" className={input} value={delegateAddress} onChange={(event) => setDelegateAddress(event.target.value)} />
-        {state?.status?.capabilities.accountCheck && <div className="space-y-2 text-sm">
+        {(state?.status?.capabilities.accountCheck || state?.status?.capabilities.liveCheck) && <div className="space-y-2 text-sm">
           <button className={button} disabled={busy || !!state.delegate}
             onClick={() => void run((value) => value.createDelegate())}>Create local automation delegate</button>
-          <p className="text-slate-400">The backend creates an Ed25519 delegate key held only in its memory and discarded when it stops.
-            It signs offline candidate-execution checks only. It is automation, not your owner passkey, and no key leaves the backend.</p>
+          <p className="text-slate-400">The backend creates an Ed25519 delegate key held only in its memory and discarded when it stops,
+            and creates its testnet account through Friendbot so that a grant can name it.
+            It signs offline candidate-execution checks and, only after you consent, the live check's two testnet transfers, which
+            the backend simulates and never submits. It is automation, not your owner passkey, and no key leaves the backend.</p>
         </div>}
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="text-sm">Grant name<input className={input} maxLength={20} value={grantName} onChange={(event) => setGrantName(event.target.value)} /></label>
@@ -281,17 +400,83 @@ function PolicyBuilder() {
           disabled={busy || !state?.review || !state?.delegate}
           onClick={() => void run((value) => value.checkAccount())}>Run local execution checks with the local delegate</button>}
         <p className="text-sm text-slate-300">Local verification: {gate.localReady ? "three required layers passed" : "incomplete"}.
-          {" "}Full acceptance: {gate.acceptanceReady ? "all four required layers passed" : "incomplete; signing is disabled"}.</p>
-        <button className={button} disabled={busy || !state?.review || !gate.acceptanceReady || !state?.status?.capabilities.install}
-          onClick={() => void run((value) => value.install())}>Approve exact grant with owner passkey and install</button>
-        <p className="text-sm text-slate-400">A refreshed unsigned envelope is checked against this review before the authenticator prompt.
-          Missing live-enforcement evidence remains unavailable. A virtual authenticator does not establish human approval.
-          The local checks run with an offline signing domain: account-Wasm in fresh synthetic state, then the exact transfer
-          against target state the operator RPC reports now. Neither is live-enforcement or installation evidence.</p>
+          {" "}Full acceptance: {gate.acceptanceReady ? "all four required layers passed" : "incomplete; installation is disabled"}.</p>
+        <p className="text-sm text-slate-400">The live-enforcement layer comes only from the consented live check below. A virtual
+          authenticator does not establish human approval. The local checks run with an offline signing domain: account-Wasm in fresh
+          synthetic state, then the exact transfer against target state the operator RPC reports now. Neither is live-enforcement or
+          installation evidence.</p>
       </section>
-      <Evidence title="Transaction receipts and installation result" value={{ receipt: state?.receipt, installation: state?.installation }} open />
-      <Evidence title="Backend capabilities, recognized code and verification limitations" value={state?.status} />
-      <p className="text-sm text-slate-400">Monitoring, revocation and replacement controls appear only when their backend checks are implemented.
+      <section className={panel} aria-labelledby="live-heading">
+        <h2 id="live-heading" className="text-xl font-semibold">5. Live enforcement check</h2>
+        <p className="text-sm text-slate-300">Simulates the reviewed grant on testnet through the atomic live helper: the exact transfer,
+          which the policy must permit, and one stroop more, which it must refuse. Nothing is submitted, but the signatures it needs are
+          real until they expire, so the check runs only after you consent to the statement below.</p>
+        {state?.status?.capabilities.liveCheck && <button className={button}
+          disabled={busy || !state?.review || !state?.delegate || !!state?.livePreview}
+          onClick={() => void run((value) => value.prepareLive())}>Prepare the live check</button>}
+        {state?.livePreview && <LiveConsent display={state.livePreview.display} />}
+        {state?.livePreview && <div className="flex flex-wrap gap-3">
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.consentLive())}>I consent: sign the installation with my owner passkey and simulate both cases</button>
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.cancelLive())}>Cancel live check</button>
+        </div>}
+        {state?.status?.capabilities.liveCheck && <button className={button} disabled={busy || !state?.review}
+          onClick={() => void run((value) => value.checkReplay())}>Check that the live-check signatures were not used</button>}
+        {state?.replay && state.replay.status === "closed" && <p className="rounded-lg border border-slate-700 p-3 text-sm">
+          Replay check: closed. Every released signature expired unused or was used by this session's installation
+          {" "}{items(state.replay.closedBy).map(label).join(", ")}.
+        </p>}
+        {state?.replay && state.replay.status !== "closed" && <p className={`rounded-lg border p-3 text-sm ${state.replay.status === "changed" ? "border-red-500 text-red-200" : "border-slate-700"}`}>
+          Replay check: {label(state.replay.status)} at ledger {label(state.replay.latestLedger)}; signatures valid until ledger {label(state.replay.signaturesValidUntil)}.
+          {" "}{label(state.replay.alert ?? (state.replay.status === "waiting" ? "Installation must wait until that ledger has passed." : "The account did not change."))}
+        </p>}
+      </section>
+      <section className={panel} aria-labelledby="install-heading">
+        <h2 id="install-heading" className="text-xl font-semibold">6. Install the reviewed grant</h2>
+        <p className="text-sm text-slate-300">Available only when all four layers passed for this review, their captured and live evidence
+          is recent, and the replay check shows the live-check signatures expired unused. The backend asks the CLI for a fresh unsigned
+          transaction, which this browser checks against the review before showing what your passkey would sign.
+          Installation is {state?.status?.capabilities.install ? "available" : "not available"} in this backend.
+          {typeof state?.status?.installOpensAfterLedger === "number" && <> An earlier released signature stays valid until ledger
+            {" "}{label(state.status.installOpensAfterLedger)}; no installation entry is released before that ledger has passed.</>}</p>
+        <button className={button}
+          disabled={busy || !state?.review || !gate.acceptanceReady || !state?.status?.capabilities.install || state?.installAttempted || !!state?.installPreview}
+          onClick={() => void run((value) => value.prepareInstall())}>Prepare installation</button>
+        {state?.installPreview && <InstallConsent display={state.installPreview.display} />}
+        {state?.installPreview && <div className="flex flex-wrap gap-3">
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.install())}>I consent: sign the installation with my owner passkey</button>
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.cancelInstall())}>Cancel installation</button>
+        </div>}
+        {state?.installAttempted && !state?.installation && <div className="space-y-2 text-sm text-amber-200">
+          <p>An installation was attempted. Further attempts are disabled. If the backend confirmed a transaction, its status lists it,
+            and this page adopts it so that it can be revoked; the journal keeps it too.</p>
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.refreshStatus())}>Refresh backend status</button>
+        </div>}
+        <Evidence title="Installation record" value={state?.installation} open />
+      </section>
+      <section className={panel} aria-labelledby="revoke-heading">
+        <h2 id="revoke-heading" className="text-xl font-semibold">7. Revoke</h2>
+        <p className="text-sm text-slate-300">Removes the installed rule with a transaction your owner passkey signs. It succeeds only when the
+          account reports the removal and the rule then reads back absent; whether the policy dropped its own state is reported separately.</p>
+        <button className={button}
+          disabled={busy || !state?.installation || !state?.status?.capabilities.lifecycle || state?.revokeAttempted || !!state?.revokePreview}
+          onClick={() => void run((value) => value.prepareRevoke())}>Prepare revocation</button>
+        {state?.revokePreview && <RevokeConsent display={state.revokePreview.display} />}
+        {state?.revokePreview && <div className="flex flex-wrap gap-3">
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.revoke())}>I consent: sign the removal with my owner passkey</button>
+          <button className={button} disabled={busy}
+            onClick={() => void run((value) => value.cancelRevoke())}>Cancel revocation</button>
+        </div>}
+        <Evidence title="Removal result" value={state?.removal} open />
+      </section>
+      <Evidence title="Transaction receipts" value={state?.receipt} open />
+      <Evidence title="Backend capabilities, installations, recognized code and verification limitations" value={state?.status} />
+      <p className="text-sm text-slate-400">Monitoring and replacement controls appear only when their backend checks are implemented.
         Keep this session on the local operator machine.</p>
     </div>
   </main>;

@@ -12,6 +12,7 @@ import { Account, Keypair } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution, targetEnvelopeXdr } from '../server/captured-execution.mjs';
 import { checkDryRunPreparation } from '../server/native-execution.mjs';
+import { offlineCapability } from '../server/native-protocol.mjs';
 import { RawJson, parseJsonExact, requestText } from '../server/raw-json.mjs';
 import { runTool } from '../server/tool.mjs';
 import { WalletToolchain } from '../server/toolchain.mjs';
@@ -106,7 +107,7 @@ test('the wallet captures the recorded testnet transfer through the actual CLI a
   const run = await captured(t);
   let signatures = 0;
   const layer = await runCapturedExecution({ executable: runtime, jobText: run.jobText, expected: run.expected, maxCalls: run.maxCalls,
-    signer: { address: delegate.publicKey(), sign: (bytes) => { signatures++; return delegate.sign(bytes); } } });
+    signer: offlineCapability({ publicKey: () => delegate.publicKey(), sign: (bytes) => { signatures++; return delegate.sign(bytes); }, verify: (b, s) => delegate.verify(b, s) }) });
   assert.equal(layer.status, 'passed');
   // The worker's own `ozpb:v1:target-capture` hash equals the wallet's independent one.
   assert.equal(layer.evidence.captureHash, run.checkedCapture.captureHash);
@@ -120,14 +121,14 @@ test('the actual captured worker report is refused against another review\'s amo
   const run = await captured(t);
   await assert.rejects(() => runCapturedExecution({ executable: runtime, jobText: run.jobText,
     expected: { ...run.expected, amount: run.expected.amount + 1n }, maxCalls: run.maxCalls,
-    signer: { address: delegate.publicKey(), sign: (bytes) => delegate.sign(bytes) } }), /refused/);
+    signer: offlineCapability(delegate) }), /refused/);
 });
 
 test('the actual captured worker preparation is refused for another capture', { skip }, async (t) => {
   const run = await captured(t);
   await assert.rejects(() => runCapturedExecution({ executable: runtime, jobText: run.jobText,
     expected: { ...run.expected, captureHash: '0'.repeat(64) }, maxCalls: run.maxCalls,
-    signer: { address: delegate.publicKey(), sign: () => assert.fail('no signature before preparation matches') } }), /refused/);
+    signer: offlineCapability({ publicKey: () => delegate.publicKey(), sign: () => assert.fail('no signature before preparation matches'), verify: (b, s) => delegate.verify(b, s) }) }), /refused/);
 });
 
 test('the actual capture is refused for a review naming another call', { skip }, async (t) => {

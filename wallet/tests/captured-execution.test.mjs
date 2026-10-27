@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Account, Keypair, Networks, StrKey, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
-import { offlineDomain } from '../server/native-protocol.mjs';
+import { offlineCapability, offlineDomain } from '../server/native-protocol.mjs';
 import { RawJson } from '../server/raw-json.mjs';
 import { capturedCall, capturedJobText, captureHash, checkCapturedPrepared, checkCapturedResult, checkTargetCapture,
   runCapturedExecution, targetEnvelopeXdr } from '../server/captured-execution.mjs';
@@ -30,7 +30,7 @@ function setup({ maxCalls = 2 } = {}) {
   const capture = captureFixture({ account: ACCOUNT, observedLedger: LEDGER });
   const hash = captureHash(capture);
   const frames = capturedFrames({ capture, captureHash: hash, account: ACCOUNT, delegate: key.publicKey(), policyAddress: POLICY, maxCalls });
-  return { key, capture, hash, ...frames, signer: { address: key.publicKey(), sign: (bytes) => key.sign(bytes) } };
+  return { key, capture, hash, ...frames, signer: offlineCapability(key) };
 }
 
 test('the captured call is derived only from one exact-amount native transfer rule', () => {
@@ -293,7 +293,7 @@ test('captured execution must repeat the retained preparation and use the bound 
   const other = Keypair.random();
   const { run: never, calls } = fakeRunner(f);
   await assert.rejects(() => runCapturedExecution({ executable: '/fixed/runtime', jobText: '{}', expected: f.expected,
-    maxCalls: f.maxCalls, signer: { address: other.publicKey(), sign: (b) => other.sign(b) }, run: never }), /refused/);
+    maxCalls: f.maxCalls, signer: offlineCapability(other), run: never }), /refused/);
   assert.equal(calls.length, 0);
 });
 
