@@ -11,12 +11,23 @@ for (const mode of ['matching', 'submitted hash differs', 'confirmed hash differ
   'source auth', 'create source auth', 'upload no auth', 'existing auth', 'wrong create source',
   'upload fee ceiling', 'upload fee above ceiling', 'upload bytes replaced', 'replacement upload bypass', 'explicit auth modes', 'submission checkpoint', 'checkpoint failure', 'send backpressure', 'unknown send status',
   'named fee ceiling', 'named fee above ceiling', 'named ceiling out of range',
+  'upload named fee 10.12 XLM', 'upload named fee at ceiling', 'upload named fee above ceiling',
+  'upload default fee 10.12 XLM', 'named call fee above ten', 'upload named ceiling out of range',
   'poll transient error', 'submission max time', 'readback error ledger']) {
   test(`RPC receipt and read identity: ${mode}`, () => {
     execFileSync(process.execPath, ['--experimental-vm-modules',
       fileURLToPath(new URL('./fixtures/submission-receipt.mjs', import.meta.url)), mode], { stdio: 'pipe' });
   });
 }
+
+test('only a Wasm upload may name more than 10 XLM, at most 20; the policy upload names 15', async () => {
+  const fees = await import('./rpc.mjs');
+  assert.equal(fees.MAX_TRANSACTION_FEE, 10_000_000n);
+  assert.equal(fees.MAX_NAMED_CALL_FEE, 100_000_000n);
+  assert.equal(fees.DEFAULT_WASM_UPLOAD_FEE, 100_000_000n);
+  assert.equal(fees.MAX_NAMED_UPLOAD_FEE, 200_000_000n);
+  assert.equal(fees.POLICY_WASM_UPLOAD_FEE, 150_000_000n);
+});
 
 test('secrets of this run are redacted from cleanup diagnostics; addresses and hashes are kept', async (t) => {
   const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');

@@ -38,7 +38,7 @@ fn run_command(command: &str, rpc_source: &str, sources: serde_json::Value) -> O
         .arg(&request_file)
         .arg("--registry-roots")
         .arg(format!("{root}/../../docs/examples/registry-roots.json"))
-        .args(["--registry-min-version", "3"])
+        .args(["--registry-min-version", "4"])
         .arg("--rpc-sources")
         .arg(&sources_file)
         .output()

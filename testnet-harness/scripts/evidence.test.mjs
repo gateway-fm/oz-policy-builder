@@ -835,12 +835,21 @@ const LEGACY_SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong
   'delegate_swap', 'count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
 const SWAP_STEPS = ['input_cap', 'output_floor', 'exact_deadline', 'wrong_signer', 'zero_signers', 'independent_token',
   'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+const ADAPTER_SWAP_STEPS = ['input_cap', 'output_floor', 'path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient',
+  'router_function', 'any_deadline', 'wrong_signer', 'zero_signers', 'independent_token', 'token_cap', 'delegate_swap', 'count_cap',
+  'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'];
+const ROUTER_CODE = '4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c';
+const CONSTRUCTED = ['path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient', 'router_function'];
+const ADAPTER_CONTROLS = [...CONSTRUCTED, 'any_deadline'];
+const DECISIONS = { schema: 'ozpb-soroswap-operator-decisions/v1', output_floor: { min: '100000', intent: SENTINEL },
+  transfer_cap: { max: '1000000', intent: SENTINEL }, adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) };
 function protocolFixture(names = SWAP_STEPS) {
   const run = fixture();
   delete run.policy; delete run.policy_wasm_hash; delete run.rule_id; delete run.tx.add_context_rule;
   run.invocations = []; run.valid_until_ledger = 200;
   const denial = { enforcer: ROOT_POLICY, code: 6 };
-  const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial,
+  const expected = { input_cap: denial, output_floor: denial, exact_deadline: denial, path_reordered: denial,
+    path_extended: denial, path_truncated: denial, router_function: { enforcer: ROOT_POLICY, code: 5 },
     wrong_signer: { enforcer: C, code: 3016 }, zero_signers: { enforcer: ROOT_POLICY, code: 1 },
     count_cap: { enforcer: ROOT_POLICY, code: 7 }, expired_rule: { enforcer: C, code: 3002 }, post_revocation: { enforcer: C, code: 3000 },
     token_cap: { enforcer: CHILD_POLICY, code: 6 }, token_count_cap: { enforcer: CHILD_POLICY, code: 7 } };
@@ -850,12 +859,16 @@ function protocolFixture(names = SWAP_STEPS) {
     if (name === 'expiry_wait') return { name, result: 'ledger_reached', target_ledger: 201, ledger: 201 };
     if (name === 'delegate_swap') return { name, result: 'confirmed', ledger, transaction: 'cd'.repeat(32) };
     if (name === 'independent_token') return { name, result: 'verified_independent_permission', ledger };
+    if (name === 'any_deadline') return { name, result: 'verified_disclosed_permission', ledger };
+    if (name === 'foreign_recipient') return { name, result: 'verified_recipient_refusal', ledger };
     return { name, result: 'verified_denial', ledger, ...expected[name] };
   });
   const invocations = [{ name: 'owner_record', control: 'baseline', signer: 'owner', rule_ids: [0, 0], status: 'confirmed',
     observation: 'submitted_transaction', transaction: HASH, ledger: 90, returned_amount: '150000', output_token: C,
     balance_before: '0', balance_after: '150000' },
-  ...steps.filter((s) => !['cleanup', 'expiry_wait'].includes(s.name)).map((s) => ({ name: s.name, control: 'baseline',
+  ...steps.filter((s) => !['cleanup', 'expiry_wait'].includes(s.name)).map((s) => ({ name: s.name,
+    control: ADAPTER_CONTROLS.includes(s.name) ? s.name : 'baseline',
+    ...(CONSTRUCTED.includes(s.name) ? { authorization: 'signed_without_recording' } : {}),
     signer: 'delegate', rule_ids: [8, 9], status: s.result, ledger: s.ledger,
     observation: s.transaction ? 'submitted_transaction' : 'enforcing_simulation',
     ...(s.transaction ? { transaction: s.transaction, returned_amount: '150000' } : {}),
@@ -872,17 +885,32 @@ function protocolFixture(names = SWAP_STEPS) {
     owner_transaction: { hash: HASH, ledger: 90, output_token: C, balance_before: '0', balance_after: '150000', returned_amount: '150000' },
     invocations, bundle: { status: 'installed', account: C, spec_hash: HASH, registry_root: HASH,
       entries: [entry(0, ROOT_POLICY), entry(1, CHILD_POLICY)], cleanup: { status: 'removed' } },
-    controls: { status: 'completed', ...(names === SWAP_STEPS ? { control_set: 2 } : {}), steps }, prerequisites: { note: SENTINEL } };
+    controls: { status: 'completed', ...(names === SWAP_STEPS ? { control_set: 2 } : names === ADAPTER_SWAP_STEPS
+      ? { control_set: 3 } : {}), steps }, prerequisites: { note: SENTINEL } };
+  if (names === ADAPTER_SWAP_STEPS) {
+    run.walkthrough.operator_decisions = structuredClone(DECISIONS);
+    run.registry_root = HASH;
+  }
   return run;
 }
 const protocolPipeline = { schema_version: 1, account: C, kind: 'soroswap_swap', recorded_transaction: HASH,
   recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
   spec_hash: HASH, reference_cases: 40, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
+  adapter: { name: 'soroswap-router@1', code_hash: ROUTER_CODE, rule_index: 0, registry_root: HASH, registry: 'development_root' },
+  high_blast_radius: [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4, constraint: 'any_value',
+    provenance: 'adapter_derived', blast_radius: 'high' }],
   artifacts: [0, 1].map((rule_index) => ({ rule_index, wasm_hash: wasmHash, normalized_input_hash: HASH })) };
+// The same pipeline as the published pre-adapter runs recorded it: no adapter fields at all.
+const legacyPipeline = Object.fromEntries(Object.entries(protocolPipeline).filter(([key]) => !['adapter', 'high_blast_radius'].includes(key)));
+const withPipeline = (t, run, pipeline = protocolPipeline) => {
+  const dir = setup(t, run);
+  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(pipeline));
+  return dir;
+};
 
 test('protocol walkthrough summary keeps typed bundle, controls and per-rule artifacts only', (t) => {
   const dir = setup(t, protocolFixture());
-  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(protocolPipeline));
+  writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify(legacyPipeline));
   for (const i of [0, 1]) {
     mkdirSync(join(dir, 'policies', `rule-${i}`), { recursive: true });
     writeFileSync(join(dir, 'policies', `rule-${i}`, 'policy.wasm'), wasm);
@@ -906,6 +934,136 @@ test('protocol walkthrough summary keeps typed bundle, controls and per-rule art
   // Native-setup funding fields say nothing about the swap; they are not exported as its target or amount.
   assert.deepEqual([report.run.target, report.run.recipient, report.run.amount], [null, null, null]);
   assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('W3 evidence refused without adapter identity', (t) => {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS);
+  assert.equal(exportEvidence(withPipeline(t, run)).protocol_pipeline.adapter.name, 'soroswap-router@1');
+  for (const [mode, change] of [
+    ['no adapter', (p) => { delete p.adapter; }],
+    ['a null adapter', (p) => { p.adapter = null; }],
+    ['another adapter', (p) => { p.adapter.name = 'soroswap-router@2'; }],
+    ['other router code', (p) => { p.adapter.code_hash = 'ef'.repeat(32); }],
+    ['another rule', (p) => { p.adapter.rule_index = 1; }],
+    ['a registry other than the installed one', (p) => { p.adapter.registry_root = 'ef'.repeat(32); }],
+    ['an unnamed registry', (p) => { p.adapter.registry = 'governance'; }],
+    ['a self-declared committed registry', (p) => { p.adapter.registry = 'committed_development'; }],
+  ]) {
+    const pipeline = structuredClone(protocolPipeline);
+    change(pipeline);
+    assert.throws(() => exportEvidence(withPipeline(t, structuredClone(run), pipeline)), /invalid or inconsistent/, mode);
+  }
+  // A Blend claim has no adapter, and claiming one is refused.
+  const blend = structuredClone(protocolPipeline);
+  Object.assign(blend, { kind: 'blend_claim', artifacts: blend.artifacts.slice(0, 1) });
+  const claim = protocolFixture();
+  claim.walkthrough.kind = 'blend_claim';
+  claim.walkthrough.invocations = claim.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  claim.walkthrough.invocations[0].rule_ids = [0];
+  claim.walkthrough.bundle.entries.pop();
+  delete claim.walkthrough.controls;
+  assert.throws(() => exportEvidence(withPipeline(t, structuredClone(claim), blend)), /invalid or inconsistent/);
+  Object.assign(blend, { adapter: null, high_blast_radius: [] });
+  assert.equal(exportEvidence(withPipeline(t, claim, blend)).protocol_pipeline.adapter, null);
+});
+
+test('report flags adapter deadline as high blast radius', (t) => {
+  const report = exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS)));
+  assert.deepEqual(report.protocol_pipeline.adapter, { name: 'soroswap-router@1', code_hash: ROUTER_CODE, rule_index: 0,
+    registry_root: HASH, registry: 'development_root', binding: 'development_registry_assertion_not_governance' });
+  assert.equal(report.protocol_pipeline.adapter_status, 'adapter_bound');
+  const operator = structuredClone(protocolPipeline);
+  operator.adapter.registry = 'operator_root';
+  assert.equal(exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS), operator)).protocol_pipeline.adapter.binding,
+    'operator_registry');
+  assert.deepEqual(report.protocol_pipeline.high_blast_radius, [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4,
+    constraint: 'any_value', provenance: 'adapter_derived', blast_radius: 'high' }]);
+  // The control that observes it is a disclosed permit, never a denial.
+  assert.equal(report.walkthrough.controls.steps.find((s) => s.name === 'any_deadline').result, 'verified_disclosed_permission');
+  for (const change of [(p) => { p.high_blast_radius = []; }, (p) => { p.high_blast_radius[0].blast_radius = 'medium'; },
+    (p) => { p.high_blast_radius[0].arg_index = 3; }, (p) => { delete p.high_blast_radius; }]) {
+    const pipeline = structuredClone(protocolPipeline);
+    change(pipeline);
+    assert.throws(() => exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS), pipeline)), /invalid or inconsistent/);
+  }
+});
+
+test('an adapter-bound W3 run exports its route, recipient, function and open-deadline controls and the operator decisions', (t) => {
+  const report = exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS)));
+  assert.equal(report.walkthrough.controls.status, 'completed');
+  assert.equal(report.walkthrough.controls.control_set, 'adapter_route_recipient_function_controls');
+  assert.deepEqual(report.walkthrough.controls.steps.map((s) => s.name).slice(0, 8), ADAPTER_SWAP_STEPS.slice(0, 8));
+  assert.deepEqual(report.walkthrough.controls.steps.find((s) => s.name === 'router_function').code, 5);
+  const recipient = report.walkthrough.controls.steps.find((s) => s.name === 'foreign_recipient');
+  assert.deepEqual([recipient.result, recipient.enforcer, recipient.code], ['verified_recipient_refusal', null, null]);
+  // The decisions, by value and file hash; the operator's free-text intents stay local.
+  assert.deepEqual(report.walkthrough.operator_decisions, { output_floor: '100000', transfer_cap: '1000000',
+    adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) });
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('W3 evidence from before the adapter re-exports, labeled pre-adapter', (t) => {
+  // The published 20 and 22 October runs: no operator decisions, control set 2, no adapter.
+  const legacy = structuredClone(protocolPipeline);
+  delete legacy.adapter; delete legacy.high_blast_radius;
+  const report = exportEvidence(withPipeline(t, protocolFixture(), legacy));
+  assert.deepEqual([report.protocol_pipeline.adapter, report.protocol_pipeline.adapter_status, report.protocol_pipeline.high_blast_radius],
+    [null, 'pre_adapter', []]);
+  assert.equal(report.walkthrough.controls.control_set, 'transfer_rule_denials_included');
+  // An adapter-derived pipeline next to a journal that claims an exact-deadline denial is mixed evidence.
+  assert.throws(() => exportEvidence(withPipeline(t, protocolFixture())), /invalid or inconsistent/);
+  const decided = protocolFixture();
+  decided.walkthrough.operator_decisions = structuredClone(DECISIONS);
+  assert.throws(() => exportEvidence(withPipeline(t, decided, legacy)), /invalid or inconsistent/);
+});
+
+test('constructed authorizations are exported and required for the controls signed without a recording', (t) => {
+  const report = exportEvidence(withPipeline(t, protocolFixture(ADAPTER_SWAP_STEPS)));
+  const byName = Object.fromEntries(report.walkthrough.invocations.map((i) => [i.name, i.authorization]));
+  for (const name of CONSTRUCTED) assert.equal(byName[name], 'signed_without_recording', name);
+  for (const name of ['any_deadline', 'input_cap', 'delegate_swap']) assert.equal(byName[name], 'recorded', name);
+  for (const change of [(r) => { delete r.walkthrough.invocations.find((i) => i.name === 'path_truncated').authorization; },
+    (r) => { r.walkthrough.invocations.find((i) => i.name === 'any_deadline').authorization = 'signed_without_recording'; }]) {
+    const run = protocolFixture(ADAPTER_SWAP_STEPS);
+    change(run);
+    assert.throws(() => exportEvidence(withPipeline(t, run)), /invalid or inconsistent/);
+  }
+});
+
+const adapterInvalid = {
+  'the open deadline recorded as a denial': (r) => Object.assign(r.walkthrough.controls.steps.find((s) => s.name === 'any_deadline'),
+    { result: 'verified_denial', enforcer: ROOT_POLICY, code: 6 }),
+  'a foreign recipient attributed to a policy': (r) => Object.assign(r.walkthrough.controls.steps.find((s) => s.name === 'foreign_recipient'),
+    { result: 'verified_denial', enforcer: ROOT_POLICY, code: 6 }),
+  'another router function refused for its arguments': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'router_function').code = 6; },
+  'a route denial from the transfer rule': (r) => { r.walkthrough.controls.steps.find((s) => s.name === 'path_truncated').enforcer = CHILD_POLICY; },
+  'a missing route control': (r) => { r.walkthrough.controls.steps = r.walkthrough.controls.steps.filter((s) => s.name !== 'path_extended'); },
+  'no operator decisions': (r) => { delete r.walkthrough.operator_decisions; },
+  'operator decisions without the deadline acceptance': (r) => { r.walkthrough.operator_decisions.adapter_deadline = 'exact'; },
+  'adapter controls on a Blend claim': (r) => { r.walkthrough.kind = 'blend_claim'; },
+};
+for (const [name, mutate] of Object.entries(adapterInvalid)) {
+  test(`adapter-bound W3 summary refuses ${name}`, (t) => {
+    const run = protocolFixture(ADAPTER_SWAP_STEPS);
+    mutate(run);
+    assert.throws(() => exportEvidence(withPipeline(t, run)), /invalid or inconsistent/);
+  });
+}
+
+test('an adapter-bound control journal without its pipeline is refused, completed or not', (t) => {
+  assert.throws(() => exportEvidence(setup(t, protocolFixture(ADAPTER_SWAP_STEPS))), /invalid or inconsistent/);
+  const partial = protocolFixture(ADAPTER_SWAP_STEPS);
+  partial.walkthrough.controls = { status: 'incomplete', control_set: 3, steps: partial.walkthrough.controls.steps.slice(0, 2) };
+  assert.throws(() => exportEvidence(setup(t, partial)), /invalid or inconsistent/);
+});
+
+test('the adapter names the registry the run resolved even before anything is installed', (t) => {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS);
+  delete run.walkthrough.bundle; delete run.walkthrough.controls;
+  run.walkthrough.invocations = run.walkthrough.invocations.filter((i) => i.name === 'owner_record');
+  assert.equal(exportEvidence(withPipeline(t, structuredClone(run))).protocol_pipeline.adapter.registry_root, HASH);
+  run.registry_root = 'ef'.repeat(32);
+  assert.throws(() => exportEvidence(withPipeline(t, run)), /invalid or inconsistent/);
 });
 
 test('a run with the earlier control set exports its actual steps and says which set it was', (t) => {
@@ -972,6 +1130,24 @@ test('an incomplete protocol walkthrough exports its partial journal without com
   assert.equal(report.walkthrough.bundle.entries[1].removal, null);
   assert.equal(report.walkthrough.bundle.entries[1].pending_removal.transaction, 'ef'.repeat(32));
   assert.equal(report.walkthrough.bundle.cleanup, 'incomplete');
+});
+
+test('a refused bundle exports no local approval stage or diagnostic text', (t) => {
+  const run = protocolFixture();
+  delete run.walkthrough.controls;
+  run.walkthrough.invocations = run.walkthrough.invocations.slice(0, 1);
+  run.walkthrough.bundle.status = 'incomplete';
+  run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
+  for (const entry of run.walkthrough.bundle.entries) {
+    delete entry.installation;
+    delete entry.readback;
+    delete entry.removal;
+    delete entry.tx.install;
+    entry.authority = { status: 'refused', stage: SENTINEL, reasons: [SENTINEL] };
+  }
+  const report = exportEvidence(setup(t, run));
+  assert.deepEqual(report.walkthrough.bundle.entries[0].authority, { status: 'refused' });
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
 });
 
 test('a single-rule Blend journal is not labelled with transfer-rule denials', (t) => {
@@ -1237,4 +1413,208 @@ test('no_installed_grants is refused while a removal is pending', (t) => {
   run.walkthrough.bundle.entries[1].pending_removal = { transaction: 'ef'.repeat(32), status: 'prepared_for_submission' };
   run.walkthrough.bundle.cleanup = { status: 'no_installed_grants' };
   assert.throws(() => exportEvidence(setup(t, run)), /invalid or inconsistent/);
+});
+
+// --- live derived denials -----------------------------------------------------------------------
+
+const D_ACCOUNT = 'CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526';
+const D_MERCHANT = 'CACAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAINCW';
+const D_DELEGATE = 'GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U';
+// Real StrKeys: the replay decodes these addresses, unlike the exporter's own fixtures.
+const D_GENERATED = 'CACQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQLC2U', D_SPENDING = 'CADAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMSST';
+const D_ROUTER_POLICY = 'CAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQMCJ', D_TRANSFER_POLICY = 'CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L';
+const derivedFile = (name) => readFileSync(new URL(`./fixtures/derived/${name}`, import.meta.url), 'utf8');
+
+/** The journal derived-denials.mjs writes for a completed replay of a committed fixture suite. */
+async function derivedReplay(run, walkthrough, order) {
+  const replay = await import('./derived-denials.mjs');
+  const emitted = JSON.parse(derivedFile(`${walkthrough}-cases.json`));
+  const rules = replay.liveRules(run, JSON.parse(derivedFile(`${walkthrough}-spec.json`)));
+  const plan = replay.planDerivedDenials({ cases: emitted.cases, rules, account: run.account, delegate: run.delegate,
+    standIns: (rule) => replay.liveStandIns(run, rule) });
+  const orderOf = (rule) => order.filter((a) => rule.policies.some((p) => p.address === a))
+    .map((a) => ({ ...rule.policies.find((p) => p.address === a), limit: 10000000n, spent: 0n }));
+  return {
+    schema_version: 1, status: 'completed', labels: { post_install: true, state_dependent: true, simulation_only: true, submitted: false },
+    suite: { spec_hash: emitted.spec_hash, suite_hash: emitted.suite_hash, total: emitted.total, minimum_denials: 5 },
+    selection: 'every deny case of a live-realizable class that the recorded call can carry, in suite order',
+    offline: plan.offline.map(({ rule_index, class: cls, reason, cases, ids }) => ({ rule_index, class: cls, reason, cases, ids })),
+    permits_not_replayed: plan.permits_not_replayed, policy_order: order,
+    originals: plan.originals.map((o) => ({ id: o.id, rule_index: o.rule_index, status: 'permitted', ledger: 100 })),
+    cases: plan.denials.map((d) => {
+      const expected = replay.predictEnforcer(d, rules[d.rule_index], orderOf(rules[d.rule_index]), run.account);
+      return { id: d.id, rule_index: d.rule_index, class: d.class, family: d.family, label: d.label, realization: d.realization,
+        stand_in: d.stand_in, expected, status: 'verified_denial', ledger: 101, observed: { result: 'deny', ...expected },
+        host_error: SENTINEL };
+    }),
+  };
+}
+
+async function w2Derived(t, { order = [D_SPENDING, D_GENERATED], mutate = () => {}, cases = derivedFile('w2-cases.json') } = {}) {
+  const run = { ...fixture(), payer: G, account: D_ACCOUNT, delegate: D_DELEGATE, recipient: D_MERCHANT,
+    sac: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC', policy: D_GENERATED, rule_id: 1 };
+  run.subscription = { schema_version: 1, mode: 'short_test_window', period_ledgers: 12, policy_address: D_SPENDING,
+    policy_code_hash: '4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c', other_token: D_TRANSFER_POLICY,
+    installation_readback: 'matched' };
+  run.invocations.push({ signer: 'owner', rule: 0, result: 'permit', hash: HASH, amount: run.amount, to: run.recipient });
+  run.derived_denials = await derivedReplay(run, 'w2', order);
+  mutate(run);
+  const dir = setup(t, run);
+  const spec = JSON.parse(derivedFile('w2-cases.json')).spec_hash;
+  writeFileSync(join(dir, 'pipeline.json'), JSON.stringify({ schema_version: 1, account: run.account, recorded_transaction: HASH,
+    recording_hash: HASH, acquisition_trust: 'rpc_reported', synthesis_recording_hash: HASH, synthesis_trust: 'self_supplied',
+    spec_hash: spec, normalized_input_hash: HASH, reference_cases: 30, artifact_reproduction: 'matched',
+    current_network_preflight: 'not_checked_here', models_all_policies: false, unmodeled_reviewed_policies: ['rule[0]: oz:spending_limit'] }));
+  if (cases !== null) writeFileSync(join(dir, 'derived-cases.json'), cases);
+  writeFileSync(join(dir, 'spec.json'), derivedFile('w2-spec.json'));
+  return { dir, run };
+}
+
+test('a W2 derived-denial replay exports suite identity, predictions and observations, not host errors', async (t) => {
+  const { dir } = await w2Derived(t);
+  const report = exportEvidence(dir);
+  const d = report.derived_denials;
+  assert.equal(d.status, 'completed');
+  assert.deepEqual(d.labels, { post_install: true, state_dependent: true, simulation_only: true, submitted: false });
+  assert.equal(d.suite.total, 30);
+  assert.equal(d.denials_verified, 10);
+  // Spending first: amounts over its limit and the empty signer set are its own refusals.
+  assert.deepEqual(d.cases.map((c) => [c.id, c.expected.code]), [['case-1', 3002], ['case-5', 6], ['case-7', 3221], ['case-8', 6],
+    ['case-9', 3221], ['case-10', 6], ['case-11', 3221], ['case-15', 3223], ['case-16', 3016], ['case-18', 3016]]);
+  assert.equal(d.cases[0].stand_in, 'w2_control_token');
+  assert.ok(d.offline.some((o) => o.class === 'time_boundary' && o.reason === 'ledger_time'));
+  assert.equal(report.artifacts.derived_cases.sha256, createHash('sha256').update(derivedFile('w2-cases.json')).digest('hex'));
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+
+test('derived replay exports an early failure with an incomplete policy order only before simulation', async (t) => {
+  for (const status of ['running', 'incomplete']) {
+    for (const order of [[], [D_SPENDING]]) {
+      const { dir } = await w2Derived(t, { mutate: (r) => {
+        Object.assign(r.derived_denials, { status, policy_order: order, originals: [], cases: [] });
+      } });
+      const report = exportEvidence(dir).derived_denials;
+      assert.equal(report.status, status);
+      assert.deepEqual(report.policy_order, order);
+      assert.equal(report.denials_verified, 0);
+    }
+  }
+  for (const change of [
+    (d) => { d.status = 'completed'; },
+    (d) => { d.originals = [{ id: 'case-0', rule_index: 0, status: 'started' }]; },
+    (d, original) => { d.cases = original.cases.slice(0, 1); },
+    (d) => { d.policy_order = [D_SPENDING, D_SPENDING]; },
+    (d) => { d.policy_order = [D_TRANSFER_POLICY]; },
+  ]) {
+    const { dir } = await w2Derived(t, { mutate: (r) => {
+      const original = structuredClone(r.derived_denials);
+      Object.assign(r.derived_denials, { status: 'incomplete', policy_order: [], originals: [], cases: [] });
+      change(r.derived_denials, original);
+    } });
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent/);
+  }
+});
+
+test('derived denials refuse an observation, prediction or suite that does not hold', async (t) => {
+  const mutations = {
+    'observed differs from a verified denial': (r) => { r.derived_denials.cases[1].observed.code = 7; },
+    'wrong signer attributed to a policy': (r) => { const c = r.derived_denials.cases[8];
+      c.expected = { enforcer: r.policy, code: 3016 }; c.observed = { result: 'deny', ...c.expected }; },
+    'argument refused by the account': (r) => { const c = r.derived_denials.cases[1];
+      c.expected = { enforcer: D_ACCOUNT, code: 6 }; c.observed = { result: 'deny', ...c.expected }; },
+    'empty signer set attributed against the live order': (r) => { const c = r.derived_denials.cases[7];
+      c.expected = { enforcer: D_GENERATED, code: 1 }; c.observed = { result: 'deny', ...c.expected }; },
+    'order that is not the installed policies': (r) => { r.derived_denials.policy_order = [D_SPENDING, C]; },
+    'spec hash differs from the pipeline': (r) => { r.derived_denials.suite.spec_hash = 'ef'.repeat(32); },
+    'suite size differs from the reference count': (r) => { r.derived_denials.suite.total = 31; },
+    'a denial silently dropped': (r) => { r.derived_denials.cases.splice(2, 1); },
+    'an offline reason another class owns': (r) => { r.derived_denials.offline.find((o) => o.class === 'time_boundary').reason = 'authorizer_replaced'; },
+    'fewer than five completed': (r) => { r.derived_denials.cases.splice(5); },
+    'original not permitted': (r) => { r.derived_denials.originals[0].status = 'unexpected_denial'; },
+    'original id swapped': (r) => { r.derived_denials.originals[0].id = 'case-17'; },
+    'original given another rule': (r) => { r.derived_denials.originals[0].rule_index = 1; },
+    'labelled as submitted': (r) => { r.derived_denials.labels.submitted = true; },
+    'stand-in from another walkthrough': (r) => { r.derived_denials.cases[0].stand_in = 'blend_pool_submit'; },
+    'case outside the suite': (r) => { r.derived_denials.cases[1].id = 'case-30'; },
+    'case relabelled': (r) => { r.derived_denials.cases[1].label = 'rule[0] hand-written control'; },
+    'case of another class': (r) => { r.derived_denials.cases[2].id = 'case-5'; },
+    'a verified case moved into offline': (r) => { const [moved] = r.derived_denials.cases.splice(1, 1);
+      const entry = r.derived_denials.offline.find((o) => o.class === 'different_address_arg');
+      entry.cases++; entry.ids.push(moved.id); },
+    'a verified case given another rule': (r) => { r.derived_denials.cases[1].rule_index = 1; },
+    'a permit case presented as a denial': (r) => { Object.assign(r.derived_denials.cases[9], { id: 'case-17' }); },
+    'permit accounting': (r) => { r.derived_denials.permits_not_replayed++; },
+    'offline ids that are not the plan\'s': (r) => { r.derived_denials.offline[0].ids = ['case-29']; },
+    'a realization the plan did not make': (r) => { Object.assign(r.derived_denials.cases[0], { realization: 'mutation_on_recorded_call', stand_in: null }); },
+    'permit labelled unattributed': (r) => { Object.assign(r.derived_denials.cases[1], { status: 'unattributed_denial',
+      observed: { result: 'permit', enforcer: null, code: null } }); },
+  };
+  for (const [name, mutate] of Object.entries(mutations)) {
+    const { dir } = await w2Derived(t, { mutate });
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/, name);
+  }
+  // The emitted suite must be present, unedited, and the one the journal names.
+  for (const [name, cases] of [['missing', null], ['empty', '{"cases":[]}'],
+    ['edited', derivedFile('w2-cases.json').replace('"10000001"', '"10000002"')]]) {
+    const { dir } = await w2Derived(t, { cases });
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/, name);
+  }
+  // A failed replay is exported as incomplete with what it saw, without completion claims.
+  const { dir } = await w2Derived(t, { mutate: (r) => {
+    r.derived_denials.status = 'incomplete';
+    Object.assign(r.derived_denials.cases[2], { status: 'unattributed_denial', observed: { result: 'deny', enforcer: D_GENERATED, code: 6 } });
+    r.derived_denials.cases.splice(3);
+  } });
+  const d = exportEvidence(dir).derived_denials;
+  assert.equal(d.status, 'incomplete');
+  assert.equal(d.denials_verified, 2);
+  assert.deepEqual(d.cases[2].observed, { result: 'deny', enforcer: D_GENERATED, code: 6 });
+});
+
+test('protocol derived denials are attributed to the rule each case exercises', async (t) => {
+  const make = async (mutate = () => {}) => {
+    const run = protocolFixture();
+    run.account = D_ACCOUNT; run.delegate = D_DELEGATE;
+    Object.assign(run.walkthrough, { account: D_ACCOUNT, deadline: 1792505380 });
+    run.walkthrough.bundle.account = D_ACCOUNT;
+    run.walkthrough.bundle.entries[0].policy = D_ROUTER_POLICY;
+    run.walkthrough.bundle.entries[1].policy = D_TRANSFER_POLICY;
+    // The hand-written controls name the exporter's own placeholder policies; they are not this test's subject.
+    delete run.walkthrough.controls;
+    run.derived_denials = await derivedReplay(run, 'w3', [D_ROUTER_POLICY, D_TRANSFER_POLICY]);
+    mutate(run);
+    const dir = setup(t, run);
+    const emitted = JSON.parse(derivedFile('w3-cases.json'));
+    writeFileSync(join(dir, 'protocol-pipeline.json'), JSON.stringify({ ...legacyPipeline, account: D_ACCOUNT,
+      spec_hash: emitted.spec_hash, reference_cases: emitted.total }));
+    writeFileSync(join(dir, 'derived-cases.json'), derivedFile('w3-cases.json'));
+    writeFileSync(join(dir, 'spec.json'), derivedFile('w3-spec.json'));
+    return dir;
+  };
+  const d = exportEvidence(await make()).derived_denials;
+  assert.equal(d.status, 'completed');
+  assert.deepEqual(d.originals.map((o) => o.rule_index), [0, 1]);
+  assert.deepEqual(d.cases.filter((c) => c.rule_index === 1 && c.expected.code === 6).map((c) => c.expected.enforcer),
+    [D_TRANSFER_POLICY, D_TRANSFER_POLICY]);
+  // A transfer-rule case is the transfer rule's policy's to refuse, not the router rule's.
+  const misattributed = await make((r) => {
+    const c = r.derived_denials.cases.find((x) => x.rule_index === 1 && x.expected.code === 6);
+    c.expected.enforcer = D_ROUTER_POLICY; c.observed.enforcer = D_ROUTER_POLICY;
+  });
+  assert.throws(() => exportEvidence(misattributed), /invalid or inconsistent evidence record/);
+  // Each original is the plan's, on its own rule: not the swap's twice, not the transfer's on the router rule.
+  for (const [name, mutate] of [['original id swapped', (r) => { r.derived_denials.originals[1].id = 'case-0'; }],
+    ['original given another rule', (r) => { r.derived_denials.originals[1].rule_index = 0; }]]) {
+    const dir = await make(mutate);
+    assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/, name);
+  }
+  // Every installed rule's original must be permitted before the replay counts as complete.
+  const unpermitted = await make((r) => { r.derived_denials.originals.pop(); r.derived_denials.permits_not_replayed++; });
+  assert.throws(() => exportEvidence(unpermitted), /invalid or inconsistent evidence record/);
+});
+
+test('a derived-denial journal without its spec cannot be rechecked and is refused', async (t) => {
+  const { dir } = await w2Derived(t);
+  rmSync(join(dir, 'spec.json'));
+  assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/);
 });

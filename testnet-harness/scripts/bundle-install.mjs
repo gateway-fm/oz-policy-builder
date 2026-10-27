@@ -31,9 +31,9 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
     entries: identities.map((identity) => ({ ...identity, tx: {} })),
   };
   save();
-  async function send(entry, operation, op) {
+  async function send(entry, operation, op, fee = {}) {
     requireThat(entry.pending === undefined, 'a bundle transaction is already pending');
-    const sent = await deps.submit(payer, op, { stage: `bundle rule ${entry.rule_index} ${operation}`,
+    const sent = await deps.submit(payer, op, { stage: `bundle rule ${entry.rule_index} ${operation}`, ...fee,
       onSubmitting: (transaction) => {
         requireThat(/^[0-9a-f]{64}$/.test(transaction), 'invalid pending transaction identity');
         entry.pending = { operation, transaction, status: 'prepared_for_submission' };
@@ -51,7 +51,9 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
   }
   try {
     for (const [index, entry] of journal.entries.entries()) {
-      const uploaded = await send(entry, 'upload', Operation.uploadContractWasm({ wasm: artifacts[index].wasm }));
+      // New code's rent and write fee can exceed the ten-XLM upload default (README: Keys).
+      const uploaded = await send(entry, 'upload', Operation.uploadContractWasm({ wasm: artifacts[index].wasm }),
+        { maxFee: rpc.POLICY_WASM_UPLOAD_FEE });
       same(Buffer.from(scValToNative(uploaded.returnValue)).toString('hex'), entry.wasm_hash, 'uploaded Wasm');
       const created = await send(entry, 'create', Operation.createCustomContract({
         address: new Address(payer.publicKey()), wasmHash: Buffer.from(entry.wasm_hash, 'hex'), salt: randomBytes(32),
@@ -72,8 +74,14 @@ export async function installPermissionBundle({ run, spec, artifacts, recording,
         account: run.account, networkId: spec.network_id, target: fromSpec.context, boundPolicies: policies,
         ruleIndex: entry.rule_index, specHash: entry.spec_hash, registrySnapshotRoot: spec.registry_snapshot,
       } });
-      entry.authority = approval.approved ? { ...approval.evidence, status: 'rechecked' } : { status: 'refused' };
+      entry.authority = approval.approved ? { ...approval.evidence, status: 'rechecked' }
+        : { status: 'refused', stage: approval.stage ?? 'unknown' };
       save();
+      if (approval.approved !== true) {
+        // Local diagnostics explain which guard refused. The public evidence exporter keeps
+        // only the refused status, and never copies free-form tool errors or this stage.
+        deps.log(rpc.redactSecrets(`Bundle rule ${entry.rule_index} refused at ${entry.authority.stage}: ${(approval.reasons ?? []).join('; ')}`));
+      }
       requireThat(approval.approved === true, 'the harness wallet did not approve the bundle rule');
       const ruleArgs = signedRuleArgs({ approved: approval.args, fromSpec, account: run.account });
       const operation = (auth = []) => Operation.invokeContractFunction({

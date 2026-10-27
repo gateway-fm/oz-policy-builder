@@ -117,7 +117,7 @@ export function runSynthesisFlow(runDirectory, env = process.env) {
   const trust = [env.OZPB_SIGNED_REGISTRY_SNAPSHOT, env.OZPB_REGISTRY_ROOTS_FILE, env.OZPB_REGISTRY_MIN_VERSION];
   requireThat(trust.every(Boolean) || trust.every((v) => !v), 'configure all three registry trust inputs, or none');
   const [snapshot, roots, minimum] = trust.every(Boolean) ? [resolve(trust[0]), resolve(trust[1]), trust[2]]
-    : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '3'];
+    : [join(ROOT, 'docs/examples/registry.signed.json'), join(ROOT, 'docs/examples/registry-roots.json'), '4'];
   requireThat(/^[1-9][0-9]*$/.test(minimum), 'registry minimum version must be a positive integer');
   requireThat(existsSync(snapshot) && existsSync(roots), 'registry trust files are missing');
   // Resolve caller-selected paths before launching under ROOT; bare names retain PATH lookup.

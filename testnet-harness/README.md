@@ -63,6 +63,10 @@ path is refused. Executable paths preserve filesystem traversal through symlinks
 so the digest identifies the file the shell selects. A symlinked checkout or reporting
 script still runs the startup checks, finalization and evidence export.
 Cargo mode records the checkout and explicitly leaves the executable hash unavailable.
+Provenance startup requires only Node's built-in modules and Git, so it can run before npm
+dependencies are installed. Evidence validation loads at finalization. If a derived replay
+fails while reading live policies, its unfinished journal can report a partial policy order
+only while no simulation has started; completed evidence always requires the full order.
 These observations describe startup, not changes made to the checkout or executable during
 the run. The exit status is process bookkeeping, not an acceptance verdict.
 
@@ -98,6 +102,10 @@ The export labels the pipeline as `recorded` only when its completion record exi
 RPC acquisition trust separate from the synthesis boundary's `self_supplied` trust and reports
 artifact reproduction separately from current-network preflight. These remain editable local
 observations. Older runs say `not_recorded`; they do not acquire results from the new pipeline.
+
+If a protocol bundle's approval or pre-sign recheck refuses, the local journal records the
+refusal stage and the terminal log includes the redacted reason. No install is signed after
+that refusal. Public evidence reports only the refused status, without diagnostic text.
 Lifecycle records likewise distinguish a confirmed removal transaction, its checked event,
 the rule readback and best-effort policy cleanup. A later readback failure does not erase the
 confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
@@ -158,7 +166,12 @@ runs separately and gives the field-by-field review procedure for a new summary.
   exactly one generated policy plus the pinned reviewed spending-limit policy, with both
   instances bound to their spec indices. Other compositions are refused before deployment.
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
-  each of its two independent scope+count rules separately through `bundle-command.mjs`.
+  each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
+  output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
+  (example: `soroswap-decisions.json`); the router's input bound and open deadline come from the
+  registry's reviewed adapter. That binding is a development-registry assertion, and the router's
+  Wasm was not reproduced from source
+  ([target adapters](../docs/TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -171,14 +184,21 @@ runs separately and gives the field-by-field review procedure for a new summary.
 
 ## Keys
 
-Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling of
-10,000,000 stroops (1 testnet XLM), including Soroban resources. Uploading a new Wasm has a
-separate fixed ceiling of 100,000,000 stroops (10 testnet XLM), selected only from the original
-intended upload operation. A read-only estimate on 20 October 2026 for a 21,607-byte generated
-policy at ledger 5293145 required 89,730,616 total stroops (8.9730616 testnet XLM); it exceeded
-the ordinary ceiling and was refused before signing. This observation explains the separate
-upload allowance, not a promised future fee. Before the payer signs,
-assembly must preserve the exact operation, authorization entries, source, sequence, memo,
+Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling,
+including Soroban resources. By default it is 10,000,000 stroops (1 testnet XLM). A call known to
+cost more names its own ceiling, at most 100,000,000 stroops (10 testnet XLM); the Blend calls
+name 3 XLM. A Wasm upload, classified only from the original intended operation, defaults to
+10 XLM. It is the only transaction that may name more, at most 200,000,000 stroops (20 testnet
+XLM). The W1, W2 and W3 installers name 150,000,000 stroops (15 testnet XLM) for each generated
+policy's upload; the default native run shares W2's installer, so its upload names it too.
+
+An upload pays the write fee and rent for a new code entry, and those follow the network's
+prices. A read-only estimate on 20 October 2026 for a 21,607-byte generated policy at ledger
+5293145 required 89,730,616 total stroops (8.97 XLM). On 22 October 2026 the W3 router rule's
+21,814-byte policy assembled at 101,220,139 stroops (10.12 XLM), so the ten-XLM ceiling refused
+it before signing; about an hour earlier the same upload had assembled at 99,760,084 stroops.
+Fifteen XLM leaves room for that drift on testnet. It is not a promised future fee and is not
+meant for mainnet. Before the payer signs, assembly must preserve the exact operation, authorization entries, source, sequence, memo,
 time bounds and network. Extra signatures, authorization or operations are refused. A
 resource estimate above the ceiling stops the run; the harness never raises it automatically.
 For a source-funded setup operation without existing authorization, the harness constructs
@@ -287,6 +307,7 @@ node synthesis-flow.mjs --run-dir R          # real record/synthesis/reference/b
 node install.mjs --run-dir R --wasm R/policy/<name>.wasm
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect permit
 node monitor.mjs --run-dir R                  # read-only grant/code observation; no signing key
+node derived-denials.mjs --run-dir R          # W1/W2/W3 only: this spec's suite, enforcing simulations
 node lifecycle.mjs --run-dir R                # owner signs removal; needs the run's keys
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
@@ -323,6 +344,61 @@ The same number from another contract does not count. The native SAC's #6, for e
 `AccountMissingError`. The passkey's negative control,
 `invoke.mjs --signer owner --rule 0 --wrong-challenge yes --expect deny:3114`, counts the code only
 when the WebAuthn verifier contract raised it.
+
+## Derived denials
+
+`derived-denials.mjs --run-dir R` runs right after installation in the W1, W2 and W3 modes,
+before any delegated call. It replays the spec's own layer-1 suite against the installed rules:
+
+- `ozpb reference-suite --spec R/spec.json --emit-cases` writes `R/derived-cases.json`. The
+  script requires three things of the emitted list:
+  - its spec hash is the installed artifacts' (`pipeline.json` or `protocol-pipeline.json`);
+  - its `suite_hash` recomputes over exactly those cases;
+  - its labels, classes and expectations are the ones the pre-install reference report agreed with.
+
+  The suite hash is a checksum, not a signature. What binds the cases to the grant is that the
+  script runs the CLI on the installed spec itself. To check a report, re-run that command on
+  the retained `spec.json` and compare.
+- Each rule's recorded call (the call the grant was synthesized from) must be permitted.
+- Every deny case of a live-realizable class is then replayed in suite order, not chosen by name:
+  argument mutations applied to the recorded call, the function and contract classes, and the
+  signer sets. Fewer than five such cases refuses the run before anything is simulated.
+- Each rule must have exactly one allowed tuple, because mutations are applied to the one call
+  the run recorded for it. A rule with several tuples is refused. Those are the only rules with
+  cross-product cases, so cross-product cases are never replayed live.
+- Some cases cannot be carried by a live call. They are listed under `offline` with a reason
+  and are not counted:
+  - `ledger_time`: time boundaries;
+  - `installation_state`: call-count, missing-state and strict-set cases;
+  - `host_rejects_before_authorization`: arity, type confusion, or a value of another type;
+  - `authorizer_replaced`: a mutation of the argument that asks the account to authorize, i.e.
+    the transfer or claim `from` or the swap `to`;
+  - `no_live_stand_in`: the suite's undeployed contract or absent function, unless a control has
+    already shown a live equivalent. W1 uses the pool's `submit`; W2 uses the funded control
+    token. Both are labeled `live_stand_in`.
+- Each case must be refused by the enforcer its class predicts, attributed by contract id as for
+  `invoke.mjs`:
+  - the account's `UnvalidatedContext` (3002) for another contract;
+  - the account's `UnauthorizedSigner` (3016) for an unrecognized signer;
+  - otherwise the first policy in the live rule's own order that refuses: generated `#1`, `#5`
+    or `#6`, or W2's spending policy `3223` or `3221`.
+- A permit or any other attribution fails the run, and the failure cleanup removes the grant.
+
+The suite's unrecognized signer sorts before any real delegate, so "authorized set plus an
+unrecognized signer" stops at the same account check as "unrecognized signer" alone. That is two
+suite cases but one live check.
+
+The account's authorization entries are built from the realized call, with a random nonce. The
+delegate signs them, and they are sent only to the RPC simulation. A signed original is a valid
+authorization of the real call until it expires, and the endpoint sees it, so it expires five
+ledgers after the latest one read. The journal (`run.json` → `derived_denials`, exported as `derived_denials`) records:
+
+- the suite and spec hashes;
+- the live policy order;
+- each case's id, class, realization, expected and observed enforcer and code, and ledger;
+- the offline list.
+
+Its labels say what it is: post-install, state-dependent, simulation-only, never submitted.
 
 ## What a run does and does not show
 
@@ -417,7 +493,7 @@ rule `install.mjs` builds from the spec.
 ```
 OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_BIN=<ozpb with the check commands> \
 OZPB_REGISTRY_SNAPSHOT_ROOT=<root of the signed snapshot> OZPB_SIGNED_REGISTRY_SNAPSHOT=registry.signed.json \
-OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=3 OZPB_RPC_SOURCES_FILE=sources.json \
+OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=4 OZPB_RPC_SOURCES_FILE=sources.json \
 [OZPB_RPC_SOURCE=testnet] [OZPB_HARNESS_CONFIRM=tty|operator] [OZPB_HARNESS_TRUST=trust.json] \
 bash testnet-harness/run.sh
 ```

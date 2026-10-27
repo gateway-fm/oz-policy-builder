@@ -1,0 +1,383 @@
+{
+  "report": {
+    "agreements": 30,
+    "coverage": [
+      [
+        "original",
+        1
+      ],
+      [
+        "different_contract",
+        1
+      ],
+      [
+        "different_function",
+        1
+      ],
+      [
+        "different_address_arg",
+        2
+      ],
+      [
+        "type_confusion",
+        3
+      ],
+      [
+        "arg_equality",
+        3
+      ],
+      [
+        "numeric_boundary",
+        2
+      ],
+      [
+        "arg_arity",
+        2
+      ],
+      [
+        "zero_signers",
+        1
+      ],
+      [
+        "wrong_signer",
+        1
+      ],
+      [
+        "signer_boundary",
+        2
+      ],
+      [
+        "strict_set_mutation",
+        2
+      ],
+      [
+        "time_boundary",
+        3
+      ],
+      [
+        "call_count_boundary",
+        5
+      ],
+      [
+        "missing_state",
+        1
+      ]
+    ],
+    "coverage_by_rule": {
+      "0": {
+        "arg_arity": 2,
+        "arg_equality": 3,
+        "call_count_boundary": 5,
+        "different_address_arg": 2,
+        "different_contract": 1,
+        "different_function": 1,
+        "missing_state": 1,
+        "numeric_boundary": 2,
+        "original": 1,
+        "signer_boundary": 2,
+        "strict_set_mutation": 2,
+        "time_boundary": 3,
+        "type_confusion": 3,
+        "wrong_signer": 1,
+        "zero_signers": 1
+      }
+    },
+    "disagreements": 0,
+    "disclaimer": "Tested permit/deny evidence over constraint-derived boundary classes — NOT a proof that every untested input is denied. Trust is bounded by the tested classes listed in `coverage`.",
+    "expected_classes": {
+      "0": [
+        "original",
+        "different_contract",
+        "different_function",
+        "arg_equality",
+        "numeric_boundary",
+        "different_address_arg",
+        "arg_arity",
+        "type_confusion",
+        "zero_signers",
+        "wrong_signer",
+        "signer_boundary",
+        "strict_set_mutation",
+        "time_boundary",
+        "call_count_boundary",
+        "missing_state"
+      ]
+    },
+    "layer": "layer1-reference-evaluator",
+    "outcomes": [
+      {
+        "actual": "permit",
+        "agree": true,
+        "class": "original",
+        "expected": "permit",
+        "label": "rule[0] original transfer",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoMatchingRule)",
+        "agree": true,
+        "class": "different_contract",
+        "expected": "deny",
+        "label": "rule[0] different target contract",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(FunctionNotAllowed)",
+        "agree": true,
+        "class": "different_function",
+        "expected": "deny",
+        "label": "rule[0] different function (transfer_x)",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "different_address_arg",
+        "expected": "deny",
+        "label": "rule[0] different address arg[0]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "type_confusion",
+        "expected": "deny",
+        "label": "rule[0] type: i128 where address arg[0]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "different_address_arg",
+        "expected": "deny",
+        "label": "rule[0] different address arg[1]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "type_confusion",
+        "expected": "deny",
+        "label": "rule[0] type: i128 where address arg[1]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_equality",
+        "expected": "deny",
+        "label": "rule[0] i128 +1 arg[2]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_equality",
+        "expected": "deny",
+        "label": "rule[0] i128 -1 arg[2]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_equality",
+        "expected": "deny",
+        "label": "rule[0] i128 *10 arg[2]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "numeric_boundary",
+        "expected": "deny",
+        "label": "rule[0] i128 zero arg[2]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "numeric_boundary",
+        "expected": "deny",
+        "label": "rule[0] i128 maximum arg[2]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "type_confusion",
+        "expected": "deny",
+        "label": "rule[0] type: address where i128 arg[2]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_arity",
+        "expected": "deny",
+        "label": "rule[0] extra argument",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_arity",
+        "expected": "deny",
+        "label": "rule[0] missing argument",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(ZeroSigners)",
+        "agree": true,
+        "class": "zero_signers",
+        "expected": "deny",
+        "label": "rule[0] zero authenticated signers",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(PredicateUnsatisfied)",
+        "agree": true,
+        "class": "wrong_signer",
+        "expected": "deny",
+        "label": "rule[0] unrecognized signer authenticates",
+        "rule_index": 0
+      },
+      {
+        "actual": "permit",
+        "agree": true,
+        "class": "signer_boundary",
+        "expected": "permit",
+        "label": "rule[0] duplicate signer does not double-count",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(PredicateUnsatisfied)",
+        "agree": true,
+        "class": "signer_boundary",
+        "expected": "deny",
+        "label": "rule[0] authorized signer set plus unrecognized signer",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(SignerSetDiverged)",
+        "agree": true,
+        "class": "strict_set_mutation",
+        "expected": "deny",
+        "label": "rule[0] strict set: live rule signer set grew",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(SignerSetDiverged)",
+        "agree": true,
+        "class": "strict_set_mutation",
+        "expected": "deny",
+        "label": "rule[0] strict set: live rule signer set swapped",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(RuleExpired)",
+        "agree": true,
+        "class": "time_boundary",
+        "expected": "deny",
+        "label": "rule[0] one ledger past valid_until",
+        "rule_index": 0
+      },
+      {
+        "actual": "permit",
+        "agree": true,
+        "class": "time_boundary",
+        "expected": "permit",
+        "label": "rule[0] exactly at valid_until (still valid)",
+        "rule_index": 0
+      },
+      {
+        "actual": "permit",
+        "agree": true,
+        "class": "time_boundary",
+        "expected": "permit",
+        "label": "rule[0] one ledger before valid_until",
+        "rule_index": 0
+      },
+      {
+        "actual": "permit",
+        "agree": true,
+        "class": "call_count_boundary",
+        "expected": "permit",
+        "label": "rule[0] call count zero",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(CallCountExceeded)",
+        "agree": true,
+        "class": "call_count_boundary",
+        "expected": "deny",
+        "label": "rule[0] call count exhausted",
+        "rule_index": 0
+      },
+      {
+        "actual": "permit",
+        "agree": true,
+        "class": "call_count_boundary",
+        "expected": "permit",
+        "label": "rule[0] one call left (still permits)",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(CallCountExceeded)",
+        "agree": true,
+        "class": "call_count_boundary",
+        "expected": "deny",
+        "label": "rule[0] call count above maximum",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(CallCountExceeded)",
+        "agree": true,
+        "class": "call_count_boundary",
+        "expected": "deny",
+        "label": "rule[0] call count u32 maximum",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(MissingState)",
+        "agree": true,
+        "class": "missing_state",
+        "expected": "deny",
+        "label": "rule[0] missing state",
+        "rule_index": 0
+      }
+    ],
+    "spec_hash": "256a3e96e4c8424813277f71b8b5a05c3a76db0e4bb7a17a41cdb45a05d3af0f",
+    "total": 30,
+    "unmodeled_policies": [
+      {
+        "kind": "oz:spending_limit",
+        "rule_index": 0
+      }
+    ]
+  },
+  "total": 30,
+  "disagreements": 0,
+  "all_agree": true,
+  "unmodeled_reviewed_policies": [
+    "rule[0]: oz:spending_limit"
+  ],
+  "coverage": [
+    "Original: 1",
+    "DifferentContract: 1",
+    "DifferentFunction: 1",
+    "DifferentAddressArg: 2",
+    "TypeConfusion: 3",
+    "ArgEquality: 3",
+    "NumericBoundary: 2",
+    "ArgArity: 2",
+    "ZeroSigners: 1",
+    "WrongSigner: 1",
+    "SignerBoundary: 2",
+    "StrictSetMutation: 2",
+    "TimeBoundary: 3",
+    "CallCountBoundary: 5",
+    "MissingState: 1"
+  ],
+  "missing_classes": [],
+  "permit_only_classes": []
+}

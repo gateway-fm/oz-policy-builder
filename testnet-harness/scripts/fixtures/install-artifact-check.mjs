@@ -59,7 +59,7 @@ try {
   let reachedNetwork = false;
   const unexpected = () => assert.fail('unexpected network or signing operation');
   const rpc = {
-    NETWORK_PASSPHRASE: sdk.Networks.TESTNET,
+    NETWORK_PASSPHRASE: sdk.Networks.TESTNET, POLICY_WASM_UPLOAD_FEE: 150_000_000n,
     args: () => opts,
     readJson: (path) => JSON.parse(readFileSync(path, 'utf8')),
     loadKey: () => { keyReads++; return {}; },

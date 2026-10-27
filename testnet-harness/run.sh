@@ -13,7 +13,8 @@
 #   OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_REGISTRY_SNAPSHOT_ROOT=<hex> … bash testnet-harness/run.sh
 #                                   # install through the wallet decision on the authority check
 #                                   # (README: "The wallet decision on the authority check")
-#   OZPB_HARNESS_WALKTHROUGH=soroswap OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator …
+#   OZPB_HARNESS_WALKTHROUGH=soroswap OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator \
+#   OZPB_SOROSWAP_DECISIONS=testnet-harness/soroswap-decisions.json …
 #                                   # W3: a real Soroswap swap, two independent rules installed
 #                                   # separately (docs/WALKTHROUGH-PROTOCOLS.md)
 #   OZPB_HARNESS_WALKTHROUGH=blend OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator …
@@ -48,6 +49,12 @@ case "$WALKTHROUGH" in
         [ "${OZPB_HARNESS_AUTHORITY_CHECK:-}" = cli ] || { echo "$WALKTHROUGH needs OZPB_HARNESS_AUTHORITY_CHECK=cli"; exit 1; }
         # Each rule of the bundle gets its own authority check; there is no terminal prompt per rule.
         [ "${OZPB_HARNESS_CONFIRM:-}" = operator ] || { echo "$WALKTHROUGH needs OZPB_HARNESS_CONFIRM=operator"; exit 1; }
+        if [ "$WALKTHROUGH" = soroswap ]; then
+            # The output floor and the transfer cap are the operator's decisions, and so is accepting
+            # the adapter's any-value deadline; the harness never picks them (soroswap-decisions.json).
+            [ -f "${OZPB_SOROSWAP_DECISIONS:-}" ] && [ ! -L "${OZPB_SOROSWAP_DECISIONS:-}" ] \
+                || { echo "soroswap needs OZPB_SOROSWAP_DECISIONS=FILE, a regular file (example: testnet-harness/soroswap-decisions.json)"; exit 1; }
+        fi
         ;;
     *) echo "OZPB_HARNESS_WALKTHROUGH is native, subscription, soroswap or blend"; exit 1 ;;
 esac
@@ -133,8 +140,9 @@ node "$SCRIPTS/setup.mjs" --run-dir "$RUN" --owner "$OWNER" ${OZPB_HARNESS_VERIF
 if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then
     if [ "$WALKTHROUGH" = soroswap ]; then
         say "2. inspect the pinned route, then swap as the owner to justify the grant"
-        # Fixed 0.1-XLM input and absolute output floor; the route's code and pair are re-read first.
-        node "$SCRIPTS/soroswap-preflight.mjs" --run-dir "$RUN"
+        # Fixed 0.1-XLM input; the operator's floor, transfer cap and deadline acceptance are journaled
+        # with the file's hash. The route's code and pair are re-read first.
+        node "$SCRIPTS/soroswap-preflight.mjs" --run-dir "$RUN" --decisions "$OZPB_SOROSWAP_DECISIONS"
     else
         say "2. refresh an expired emission only, inspect the pool, open the USDC supply, then claim as the owner"
         # gulp_emissions is called (and recorded) only when the claimed ID's emission has expired or
@@ -149,9 +157,13 @@ if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then
     ( cd contracts/golden-transfer-policy && cargo fetch --locked >/dev/null )
     node "$SCRIPTS/protocol-flow.mjs" --run-dir "$RUN"
 
-    say "4. install each rule separately after its own authority check, then read each back"
+    say "4. install each rule separately after its own authority check, read each back, replay derived denials"
     node "$SCRIPTS/bundle-command.mjs" install --run-dir "$RUN" --confirm operator
     node "$SCRIPTS/bundle-command.mjs" inspect --run-dir "$RUN"
+    # This spec's own reference suite (by suite hash), replayed against the installed rules:
+    # the recorded originals must permit and at least five derived denials must be refused by the
+    # enforcer each class predicts. Enforcing simulations only, before any delegated call.
+    node "$SCRIPTS/derived-denials.mjs" --run-dir "$RUN"
 
     say "5. tuple and signer controls, one delegated call, count cap, expiry, removal and post-removal denial"
     node "$SCRIPTS/protocol-controls.mjs" --run-dir "$RUN"
@@ -197,6 +209,11 @@ WASMS=("$RUN"/policy/*.wasm)
 say "4. install: deploy the policy, add_context_rule signed by the owner ($OWNER)"
 node "$SCRIPTS/install.mjs" --run-dir "$RUN" --wasm "${WASMS[0]}" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 node "$SCRIPTS/monitor.mjs" --run-dir "$RUN"
+if [ "$WALKTHROUGH" = subscription ]; then
+    # Derived denials from this spec's own suite, against the installed composition, before any
+    # charge (the spending policy must still be unexercised). Enforcing simulations only.
+    node "$SCRIPTS/derived-denials.mjs" --run-dir "$RUN"
+fi
 
 if [ "$WALKTHROUGH" = subscription ]; then
     say "5. verify subscription tuple, signer, rolling window and total call cap controls"
