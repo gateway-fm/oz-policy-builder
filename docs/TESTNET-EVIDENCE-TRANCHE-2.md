@@ -260,7 +260,79 @@ The same limits apply as for the first run: fixed harness widenings, no reviewed
 editable local RPC observations, non-atomic reads, no ledger proof and no protected
 wallet-approval claim.
 
-## 10. Evidence still needed
+## 10. Wallet installation and revocation, 22 October 2026
+
+One automation run went through the Pollywallet route's
+[installation](POLLYWALLET-INTEGRATION.md#installation) and
+[revocation](POLLYWALLET-INTEGRATION.md#revocation) on testnet. It used a fresh account
+`CAS6KU6W2MO57MVR7BMY4OE7P4STCXDMSSNRABDB2Z3GEZ6OL3QUPXGE` and a one-call grant for the fixed 0.1-XLM
+sample transfer. The [evidence file](evidence/wallet-install-revoke-testnet-2026-10-22.json) keeps
+public addresses, hashes, ledgers and verdicts only.
+
+| Step | Recorded observation | Limit |
+| --- | --- | --- |
+| Four layers | Reference, account-Wasm, captured-target (captured at ledger 5331737) and live enforcement (simulated at 5331741, signatures valid until 5331770) all passed; the report was complete. | State-dependent evidence for one grant shape; the native worker was built from another revision (stated in the file). |
+| Replay check | `waiting` until ledger 5331770, then `unchanged` at 5331772. | The account's counters, rules and the candidate's marker, as the operator RPC reported them. |
+| Installation | The browser showed its own consent (rule ID 1, fee at most 1 testnet XLM). The owner's passkey signed `add_context_rule`, and the fee payer submitted it once: [`9b8bcbaa…`](https://stellar.expert/explorer/testnet/tx/9b8bcbaacbb361f968f27c5e2114f7c1664260c688661aac114ca51da535cf7d), ledger 5331779. The record required exactly one `context_rule_added` for rule 1. The rule read back identical at 5331779, and the policy's marker was set. | The passkey was a Chrome virtual authenticator driven by Playwright: automation, `human_approval_attested: false`. |
+| Revocation | The owner's passkey signed `remove_context_rule(1)`: [`a6646c5d…`](https://stellar.expert/explorer/testnet/tx/a6646c5d06f7e17ff3de5b56b4bd01bf114a244cad332e104521515f210148ec), ledger 5331783. One `context_rule_removed` was observed, and `get_context_rule(1)` failed with the account's error 3000 at 5331783. Policy cleanup reported `not_installed`. | Receipts, events and reads are `rpc_reported`, not ledger proofs. |
+
+Read afterwards from the public RPC, outside the wallet, both transactions were `SUCCESS`. The
+account's `NextId` was 2 and its `Count` 1 at ledger 5331788. No delegated call was made under the
+installed rule: the delegate's key exists only inside the wallet backend, which has no
+delegate-call control. Delegated permits and denials under installed generated policies are
+exercised by the harness walkthroughs ([#85](https://github.com/gateway-fm/oz-policy-builder/pull/85),
+[#88](https://github.com/gateway-fm/oz-policy-builder/pull/88)).
+
+Four attempts the same day stopped earlier:
+
+- The first stopped at deployment, because the policy upload's fee was 101,422,794 stroops, above
+  the then 10-XLM upload ceiling, which is now 15 XLM.
+- The second stopped at preparing the installation, when the CLI's assembly exited with an error
+  the backend does not keep. The same request succeeded when re-run.
+- The third and fourth stopped when another local service took the wildcard port 3000 from under
+  the browser.
+
+Each earlier account read back with its owner rule only (`NextId` 1): nothing was installed.
+
+## 11. Wallet proposal import, installation and revocation, 26 October 2026
+
+The [allowlisted evidence](evidence/wallet-proposal-import-testnet-2026-10-26.json) records one
+successful automated run from 17:44:43 to 17:49:23 UTC on testnet. The current CLI and wallet
+were built/applied from the clean tracked revision recorded in the file. The native worker was
+a preserved older artifact with unchanged runtime sources, locks and toolchain; its byte digest
+and the source-compatibility limit are recorded separately. No reproducible-build attestation
+is inferred from the executable name.
+
+A fresh wallet `CCW5UOEUJTSJMH5XIZIRO33ZFCN27PR7OOF5BVQERSYLMWKJNIR6O5XK`
+authorized a 0.1-XLM sample transfer. An independent CLI recording and synthesis produced a
+bounded `ozpb-grant-proposal/v1` document using that backend session's automation delegate,
+a one-call cap and expiry ledger 5403229. Playwright uploaded the JSON file
+through the real wallet UI. The wallet recorded the transaction again and regenerated the
+artifact. Both recording and specification hashes differed between the two acquisitions, while
+the backend and browser accepted equal grant permissions. Generation and artifact reproduction
+completed before deployment.
+
+| Step | Recorded observation |
+| --- | --- |
+| Four verification layers | Reference, account-Wasm, captured-target at ledger 5402635 and live enforcement at 5402636 all passed. The live cases permitted the exact transfer and denied one stroop more with policy error 6. |
+| Replay check | The live signatures expired at ledger 5402666; the check reported `unchanged` at 5402667. |
+| Installation | Owner-passkey [transaction 5d35dbfd…](https://stellar.expert/explorer/testnet/tx/5d35dbfdd33acfd37cfe10cbc92a616ba85253582482d618c17478460d73e290) installed rule 1 at ledger 5402672. The account emitted the matching addition event; the rule read back identical and the policy marker was installed. |
+| Revocation | Owner-passkey [transaction d558c505…](https://stellar.expert/explorer/testnet/tx/d558c505144dadceeefe823c7bd88e0bc22a43d646ff3fbff68c226451495c83) removed rule 1 at ledger 5402675. The removal event was verified, the rule read back absent with account error 3000, and policy cleanup reported `not_installed`. |
+
+This is an automated independent CLI-to-wallet handoff with a Chrome virtual authenticator,
+`human_approval_attested: false`. It does not exercise a human clarification or permission-review
+session, protected human approval, or a delegated transaction under the installed rule. The
+four layers retain their distinct local, captured and live-simulation boundaries. Receipts
+and reads are editable local observations of RPC reports, not authenticated ledger proofs.
+The backend and browser stopped after verified removal; this run needed no retries or recovery.
+
+A separate read-only review fetched all eight reported transaction receipts from the public RPC:
+each was `SUCCESS` and its decoded envelope matched the reported hash. The install and removal
+events were independently decoded and checked. A final ledger-entry read at 5402699 found
+`NextId` 2, `Count` 1, owner rule 0 present, rule 1 absent and the policy installation marker
+absent. This post-run check has the same RPC trust and non-atomic observation limits.
+
+## 12. Evidence still needed
 
 The [SEP-41 subscription walkthrough](WALKTHROUGH-SEP41.md) and section 8 provide current live
 harness observations for composed scope/count plus spending limits, ledger-bounded repeats and
@@ -268,7 +340,8 @@ separate cleanup checks; the known reference-model gap remains explicit. Section
 two-rule Soroswap swap runs with expiry and per-rule removal; the second includes denials by the
 transfer rule's own policy.
 
-Phase 2 still needs a delivered wallet's protected approval and revoke flow, the Blend
+Phase 2 still needs a human owner's protected approval in the wallet's install and revoke flow
+(sections 10 and 11 are automation runs), the Blend
 walkthrough (its position setup is not implemented), a reviewed Soroswap adapter rather than fixed harness widenings, the remaining harness layers with their actual evidence boundaries,
 hosted-service deployment evidence, and the public demonstration/video. The controlled W2 and
 W3 runs do not close those requirements. See [SCOPE.md](SCOPE.md) for the implementation map.

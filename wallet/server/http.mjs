@@ -65,11 +65,15 @@ export function createWalletServer({ session, actions }) {
     }
     if (busy) { request.resume(); reply(409, { error: 'wallet session busy' }); return; }
     busy = true;
+    // A client that disconnects before its reply aborts the action: its child processes are
+    // killed and it settles, so `busy` is released instead of waiting for a worker deadline.
+    const disconnected = new AbortController();
+    response.once('close', () => { if (!response.writableFinished) disconnected.abort(); });
     try {
       let body;
       try { body = parseBody(await bodyBytes(request)); }
       catch { reply(400, { error: 'invalid wallet request' }); return; }
-      try { reply(200, await routes[name](body)); }
+      try { reply(200, await routes[name](body, { signal: disconnected.signal })); }
       catch { reply(422, { error: 'wallet action unavailable; refresh and review again' }); }
     } finally { busy = false; }
   });

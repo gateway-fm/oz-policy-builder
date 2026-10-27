@@ -20,10 +20,10 @@ function frame(bytes) {
 
 /** Fixed native modes only. Hooks belong to the trusted wallet controller, never HTTP input. */
 export async function runNative(executable, jobText, {
-  prepareOnly = false, validatePrepared, sign, validateResult, signal, timeoutMs = 120000,
+  prepareOnly = false, captured = false, validatePrepared, sign, validateResult, signal, timeoutMs = 120000,
 } = {}) {
   if (process.platform === 'win32' || !isAbsolute(executable) || typeof jobText !== 'string'
-    || Buffer.byteLength(jobText) >= START || typeof prepareOnly !== 'boolean'
+    || Buffer.byteLength(jobText) >= START || typeof prepareOnly !== 'boolean' || typeof captured !== 'boolean'
     || typeof validatePrepared !== 'function' || !prepareOnly && (typeof sign !== 'function' || typeof validateResult !== 'function')
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 || signal?.aborted) throw failure();
   let compact;
@@ -86,7 +86,9 @@ export async function runNative(executable, jobText, {
       } else throw failure();
     };
     try {
-      child = spawn(executable, prepareOnly ? ['--prepare'] : [], {
+      // The worker's four fixed modes; the captured-target pair reads a `CapturedTargetJob`.
+      const args = captured ? [prepareOnly ? '--prepare-captured' : '--captured'] : prepareOnly ? ['--prepare'] : [];
+      child = spawn(executable, args, {
         cwd: '/', env: { PATH: '/usr/bin:/bin', LANG: 'C' }, detached: true,
         stdio: ['pipe', 'pipe', 'pipe'], shell: false,
       });
