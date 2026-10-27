@@ -85,6 +85,7 @@ test('runs recording, synthesis, reference, generation and verification through 
   assert.ok(!syn.includes('--spending-limit-capability'));
   const decisions = JSON.parse(readFileSync(join(f.dir, 'decisions.json')));
   assert.equal(decisions.max_calls, 1);
+  assert.equal(decisions.unlimited_calls_acknowledged, false);
   assert.equal(decisions.spending_limit, null);
   assert.deepEqual(decisions.widenings, []);
   const ready = JSON.parse(readFileSync(join(f.dir, 'pipeline.json')));
@@ -118,6 +119,7 @@ test('subscription synthesis binds the exact reviewed cap and reports only its k
   assert.equal(result.status, 0, result.stderr);
   const decisions = JSON.parse(readFileSync(join(f.dir, 'decisions.json')));
   assert.equal(decisions.max_calls, 2);
+  assert.equal(decisions.unlimited_calls_acknowledged, false);
   assert.deepEqual(decisions.spending_limit, { limit: f.files['run.json'].amount, period_ledgers: 12 });
   assert.ok(f.commands()[1].args.includes(spendingPin));
   const pipeline = JSON.parse(readFileSync(join(f.dir, 'pipeline.json')));
