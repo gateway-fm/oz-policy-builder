@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { verificationGate } from '../overlay/files/src/policy-builder/client/verification.mjs';
 const bindings = { specHash: 'a'.repeat(64), wasmHash: 'b'.repeat(64), bindingSetHash: 'c'.repeat(64) };
 function report() {
-  return { ...bindings, runId: 'd'.repeat(64), complete: true, layers: [
+  return { ...bindings, runId: 'd'.repeat(64), complete: true, acceptance: { requiredRevertedDenials: 5, originalPermitted: true, meetsMinimum: true,
+    executedLayers: [{ layer: 'account_wasm', status: 'passed', originalPermitted: true, revertedDenials: 5 },
+      { layer: 'captured_target', status: 'passed', originalPermitted: true, revertedDenials: 2 }] }, layers: [
     'reference', 'account_wasm', 'captured_target', 'live_enforcement',
   ].map((layer) => ({ layer, status: 'passed' })) };
 }
@@ -24,6 +26,17 @@ test('first three layers remain distinct from unavailable live enforcement', () 
 });
 test('forged complete flag, duplicates, unknown layers or mismatched evidence fail closed', () => {
   for (const change of [
+    (v) => { delete v.acceptance; },
+    (v) => { v.acceptance.executedLayers = [null]; },
+    (v) => { v.acceptance.executedLayers[0].layer = 'live_enforcement'; },
+    (v) => { v.acceptance.executedLayers[1].layer = 'account_wasm'; },
+    (v) => { v.acceptance.executedLayers[0].revertedDenials = -1; },
+    (v) => { v.acceptance.executedLayers[0].revertedDenials = 5.5; },
+    (v) => { v.acceptance.executedLayers[1].status = 'failed'; },
+    (v) => { v.acceptance.executedLayers.pop(); },
+    (v) => { v.acceptance.meetsMinimum = false; },
+    (v) => { v.acceptance.executedLayers[0].revertedDenials = 4; },
+    (v) => { v.acceptance.originalPermitted = false; },
     (v) => v.layers.pop(),
     (v) => v.layers.push(v.layers[0]),
     (v) => { v.layers[3].layer = 'installation_preflight'; },

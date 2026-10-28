@@ -96,6 +96,20 @@ function VerificationLayers({ verification }: { verification: unknown }) {
       return <li key={index} className="rounded border border-slate-700 p-3">
         <span className="font-medium">{LAYER_NAMES[label(layer.layer)] ?? label(layer.layer)}: {label(layer.status)}</span>
         <p className="mt-1 text-slate-400">{label(layer.detail)}</p>
+        {items(object(layer.evidence).caseResults).length > 0 && <details className="mt-2">
+          <summary>Executed cases ({items(object(layer.evidence).caseResults).length})</summary>
+          <ul className="mt-2 space-y-2">
+            {items(object(layer.evidence).caseResults).map((rawCase, caseIndex) => {
+              const c = object(rawCase);
+              return <li key={caseIndex} className="rounded border border-slate-700 p-2">
+                <p>{label(c.label)} ({label(c.class)}): expected {c.expectedPermit === true ? "permit" : "deny"},
+                  {" "}observed {c.permitted === true ? "permit" : "deny"}; agreement {c.agree === true ? "yes" : "no"}.</p>
+                {c.permitted === false && <p>Refused by {label(c.refusedBy)}, code {label(c.refusalCode)};
+                  {" "}state unchanged: {c.stateUnchanged === true ? "yes" : "no"}.</p>}
+              </li>;
+            })}
+          </ul>
+        </details>}
       </li>;
     })}
   </ul>;
@@ -396,6 +410,9 @@ function PolicyBuilder() {
         {state?.review && <GrantSummary spec={state?.artifact?.spec} />}
         <Evidence title="Exact grant, owner authority and evidence" value={state?.review} />
         <VerificationLayers verification={state?.review?.verification} />
+        <p className="text-sm text-slate-300">Original permit and at least five reverted derived denials in one offline layer:
+          {" "}{object(object(state?.review?.verification).acceptance).meetsMinimum === true ? "met" : "not met"}.
+          {" "}Installation also requires all four layers to pass for this exact review.</p>
         {state?.status?.capabilities.accountCheck && <button className={button}
           disabled={busy || !state?.review || !state?.delegate}
           onClick={() => void run((value) => value.checkAccount())}>Run local execution checks with the local delegate</button>}

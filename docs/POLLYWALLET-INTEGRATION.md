@@ -258,6 +258,20 @@ deployment:
    controls and the stateful call-cap sequence, and requires a zero worker exit that leaves no
    process in the worker's group; any refusal kills the group members it can signal.
 
+The wallet retains every checked account/captured case: its label, mutation class, expected and
+observed outcome, refusal role/code and whether state stayed unchanged. The route shows these
+under each layer. Account denials must match the mutation class's predicted policy/account error,
+and each boundary case must start from its declared counter seed; worker verdicts alone are
+insufficient. Shared positive/negative vectors exercise this attribution contract in Rust and JS.
+
+The report also has an explicit `acceptance` block, matching the CLI's offline permit/deny bar:
+the reference passes, every executed offline layer permits its original and passes, and at least
+one layer reverts five derived denials with the predicted refusal and unchanged state. Denials
+from different layers are not summed. This bar can pass while live enforcement is unavailable;
+it does not make the four-layer report complete. The browser and backend require the bar in
+addition to all four passed layers before installation; the backend recomputes it from retained
+case observations at its installation gate.
+
 A passing result marks only the `account_wasm` layer. It is local execution in fresh synthetic
 state: no target contract, captured network state or live enforcement runs, and it proves no
 ownership of the real wallet. Every other outcome carries no evidence:

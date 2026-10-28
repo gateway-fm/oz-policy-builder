@@ -10,7 +10,9 @@ const INSTALL_DISPLAY = { owner_signs: { function: 'add_context_rule' }, grant: 
 const REVOKE_DISPLAY = { owner_signs: { function: 'remove_context_rule', args: [1] }, warning: 'Policy cleanup is best effort.' };
 const INSTALLATION = { installationId: hash('6'), status: 'installed', transactionHash: hash('e'), ruleId: 1, account: 'account' };
 function fixture() {
-  const verification = { complete: true, runId: hash('9'), specHash: hash('a'), wasmHash: hash('b'),
+  const verification = { complete: true, acceptance: { requiredRevertedDenials: 5, originalPermitted: true, meetsMinimum: true,
+    executedLayers: [{ layer: 'account_wasm', status: 'passed', originalPermitted: true, revertedDenials: 5 },
+      { layer: 'captured_target', status: 'passed', originalPermitted: true, revertedDenials: 2 }] }, runId: hash('9'), specHash: hash('a'), wasmHash: hash('b'),
     bindingSetHash: hash('c'), layers: ['reference', 'account_wasm', 'captured_target', 'live_enforcement']
       .map((layer) => ({ layer, status: 'passed' })) };
   const replies = {

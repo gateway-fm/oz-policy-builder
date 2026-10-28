@@ -2,6 +2,7 @@ import { createECDH, createHash, randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Address, Asset, Networks, Operation, StrKey, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
+import { dryRunAcceptance } from '../shared/dry-run.mjs';
 import { decodeBase64Url } from '../shared/base64url.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
@@ -59,9 +60,11 @@ function missingVerification(artifact, bindingSetHash, accountLayer, targetLayer
     targetLayer ?? { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
     liveLayer ?? { layer: 'live_enforcement', status: 'unavailable', detail: 'The live-enforcement check has not run.' },
   ];
-  // Complete only when every layer passed. Installation is gated separately, on this stored report (`installGate`).
+  const acceptance = dryRunAcceptance(layers);
+  // Complete only when every layer passed and the executed permit/deny bar is met. Installation is gated separately, on this stored report (`installGate`).
   return freezeCopy({ runId: id(), specHash: artifact?.specHash ?? null, wasmHash: artifact?.wasmHash ?? null,
-    bindingSetHash: bindingSetHash ?? null, complete: layers.every((layer) => layer.status === 'passed'), layers });
+    bindingSetHash: bindingSetHash ?? null, acceptance,
+    complete: acceptance.meetsMinimum && layers.every((layer) => layer.status === 'passed'), layers });
 }
 const accountLayer = (status, detail) => ({ layer: 'account_wasm', status, detail });
 const READBACK_ATTEMPTS = 5;

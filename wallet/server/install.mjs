@@ -2,6 +2,7 @@
 // the stored four-layer evidence, and the event-verified records of what the confirmed
 // transactions did (docs/POLLYWALLET-INTEGRATION.md#installation).
 import { StrKey, xdr } from '@stellar/stellar-sdk';
+import { dryRunAcceptance } from '../shared/dry-run.mjs';
 import { installCall } from '../shared/assembly.mjs';
 
 /**
@@ -36,7 +37,8 @@ export function installGate({ review, deployment, artifact, currentLedger }) {
     if (!integer(currentLedger) || !integer(ruleId) || report?.complete !== true || report.specHash !== artifact.specHash
       || report.wasmHash !== code || report.bindingSetHash !== deployment.response.bindingSetHash
       || !Array.isArray(report.layers) || report.layers.length !== LAYERS.length
-      || report.layers.some((layer, index) => layer?.layer !== LAYERS[index] || layer.status !== 'passed')) refuse();
+      || report.layers.some((layer, index) => layer?.layer !== LAYERS[index] || layer.status !== 'passed')
+      || report.acceptance?.meetsMinimum !== true || !dryRunAcceptance(report.layers).meetsMinimum) refuse();
     const [, local, captured, live] = report.layers;
     // The report is the one the layers wrote for this review, not a copy from elsewhere.
     if (JSON.stringify(local) !== JSON.stringify(review.accountLayer) || JSON.stringify(captured) !== JSON.stringify(review.targetLayer)
