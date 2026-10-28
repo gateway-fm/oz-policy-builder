@@ -49,7 +49,7 @@ versions other than 29. Generated policies use SDK 28.0.0 and the stellar-accoun
 The recognized account Wasm remains the separately pinned 0.7.2 implementation.
 See [dependency migration](SOROBAN-DEPENDENCIES.md) for the compatibility boundary.
 Only canonical XDR crosses this boundary. A shared [ABI vector](examples/native-runtime-abi.json)
-is checked against both the actual SDK-26 account/policy types and the runtime's SDK-29 wire
+is checked against both the actual SDK-28 policy/account-library types and the runtime's SDK-29 wire
 types; the source-built Wasm test additionally exercises the real account ABI.
 
 ## Machine protocol
