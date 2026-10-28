@@ -55,6 +55,8 @@ case "$WALKTHROUGH" in
             [ -f "${OZPB_SOROSWAP_DECISIONS:-}" ] && [ ! -L "${OZPB_SOROSWAP_DECISIONS:-}" ] \
                 || { echo "soroswap needs OZPB_SOROSWAP_DECISIONS=FILE, a regular file (example: testnet-harness/soroswap-decisions.json)"; exit 1; }
         fi
+        [ -n "${OZPB_NATIVE_WORKER:-}" ] && [ -x "$OZPB_NATIVE_WORKER" ] \
+            || { echo "$WALKTHROUGH needs OZPB_NATIVE_WORKER, the trusted native execution worker"; exit 1; }
         ;;
     *) echo "OZPB_HARNESS_WALKTHROUGH is native, subscription, soroswap or blend"; exit 1 ;;
 esac
@@ -156,6 +158,9 @@ if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then
     say "3. record, synthesize, reference-check, generate and reproduce every independent rule"
     ( cd contracts/golden-transfer-policy && cargo fetch --locked >/dev/null )
     node "$SCRIPTS/protocol-flow.mjs" --run-dir "$RUN"
+    # One selected-rule report per capability: original permit plus at least five real Wasm
+    # denials. These execute in fresh synthetic local state, before deployed rules exist.
+    node "$SCRIPTS/protocol-dry-run.mjs" --run-dir "$RUN"
 
     say "4. install each rule separately after its own authority check, read each back, replay derived denials"
     node "$SCRIPTS/bundle-command.mjs" install --run-dir "$RUN" --confirm operator

@@ -24,6 +24,35 @@ withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled r
 A run on 22 October 2026 repeated every W1 step with the [derived denials](#derived-denials) and
 passed ([section 12](TESTNET-EVIDENCE-TRANCHE-2.md#12-controlled-blend-claim-run-with-derived-denials-22-october-2026)).
 
+## Offline account-Wasm reports before installation
+
+Both modes now require `OZPB_NATIVE_WORKER` to name a trusted, executable
+`ozpb-execution-runtime` built from the checkout (`cargo build --locked --manifest-path
+execution-runtime/Cargo.toml`). After artifact reproduction, `protocol-dry-run.mjs` runs
+`ozpb dry-run` separately for every rule, retaining the full spec and all policy bindings.
+A failed report stops the run before any rule is installed. Each rule must permit its original
+call and revert at least five derived denials in the pinned account and generated policy Wasm.
+
+The ledger parameters and pinned account Wasm come from the operator's testnet RPC, using the
+wallet backend's checked source reader. Execution uses fresh synthetic local state, deterministic
+offline policy addresses and proposed context-rule IDs; these are not deployed-policy or actual
+installation-ID observations. The delegate seed reaches the CLI only in a temporary 0600 file,
+removed with the private request directory after success or failure. It signs only the CLI's
+offline domain. The separate authority check still gates every installation.
+
+The run retains `account-dry-run-N.json` and, only when every rule passes,
+`account-dry-runs.json`. The public evidence summary selects typed counts and identities and
+hashes the complete reports. Captured-target and live-enforcement layers remain unavailable in
+these offline reports, and `complete` remains false. Later live derived-denial simulations are
+reported separately. Existing published October runs predate this additional gate; they do not
+supply its execution evidence. W2's composed policy is outside this worker's supported scope.
+
+For the offline integration check, set `OZPB_BIN`, `OZPB_NATIVE_WORKER` and `OZPB_ACCOUNT_WASM`
+to trusted binaries and the pinned Wasm, then run
+`OZPB_PROTOCOL_DRY_RUN_E2E=1 node --test testnet-harness/scripts/protocol-dry-run.real.test.mjs`.
+This builds both policies of a synthetic Soroswap fixture and executes them through the real
+CLI and worker. Its ledger parameters are fixed test data, and no RPC or live transaction runs.
+
 ## W3 Soroswap
 
 ```bash

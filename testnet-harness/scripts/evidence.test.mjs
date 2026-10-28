@@ -1618,3 +1618,49 @@ test('a derived-denial journal without its spec cannot be rechecked and is refus
   rmSync(join(dir, 'spec.json'));
   assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/);
 });
+
+function withAccountReports(t) {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS), dir = withPipeline(t, run);
+  const network = createHash('sha256').update('Test SDF Network ; September 2015').digest('hex');
+  const reports = [ROOT_POLICY, CHILD_POLICY].map((policy_address, rule_index) => ({ rule_index,
+    run_hash: HASH, suite_hash: HASH, policy_address, policy_code_hash: wasmHash,
+    original_permitted: true, reverted_denials: 5, complete: false }));
+  const summary = { schema_version: 1, account: C, spec_hash: HASH,
+    execution: 'offline_synthetic_policy_addresses_and_proposed_rule_ids', source_ledger: 100, reports, private_note: SENTINEL };
+  const raw = reports.map((e) => ({ schema: 'ozpb:dry-run:v1', run_hash: HASH, complete: false,
+    artifact_verification: { matches: true }, binding: { spec_hash: HASH, account_address: C,
+      account_code_hash: run.account_code_hash, registry_snapshot_root: HASH, network_id: network,
+      rule_index: e.rule_index, candidate_context_rule_id: e.rule_index + 1, suite_hash: HASH },
+    layers: ['reference', 'account_wasm', 'captured_target', 'live_enforcement'].map((id, i) => ({ id,
+      status: i < 2 ? 'passed' : 'unavailable', writes_committed: false, cases: i === 1 ? 6 : 0,
+      ...(i === 1 ? { execution: { run_hash: HASH, suite_hash: HASH, source_ledger: 100,
+        source_network_id: network, execution_network_id: 'cd'.repeat(32), policy_address: e.policy_address,
+        policy_code_hash: wasmHash, cases: Array.from({ length: 6 }, (_, j) => ({ class: j ? 'arg_equality' : 'original',
+          expected_permit: j === 0, permitted: j === 0, agree: true, state_unchanged: j > 0,
+          refused_by: j ? 'policy' : null, refusal_code: j ? 6 : null, label: SENTINEL })) } } : {}) })),
+    acceptance: { required_reverted_denials: 5, original_permitted: true, meets_minimum: true }, private_note: SENTINEL }));
+  const save = () => {
+    writeFileSync(join(dir, 'account-dry-runs.json'), JSON.stringify(summary));
+    raw.forEach((r, i) => writeFileSync(join(dir, `account-dry-run-${i}.json`), JSON.stringify(r)));
+  };
+  save(); return { dir, summary, raw, save };
+}
+test('exports bound offline account report identities and counts without private labels', (t) => {
+  const f = withAccountReports(t), report = exportEvidence(f.dir);
+  assert.equal(report.account_dry_runs.status, 'recorded');
+  assert.deepEqual(report.account_dry_runs.reports.map((r) => r.reverted_denials), [5, 5]);
+  assert.equal(report.account_dry_runs.reports[1].complete, false);
+  assert.ok(report.artifacts.account_dry_run_rule_1.sha256);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+for (const [name, change] of [
+  ['invented count', (f) => { f.summary.reports[1].reverted_denials = 6; }],
+  ['report from another rule', (f) => { f.raw[1].binding.rule_index = 0; }],
+  ['different source ledger', (f) => { f.raw[1].layers[1].execution.source_ledger++; }],
+  ['different policy code', (f) => { f.raw[1].layers[1].execution.policy_code_hash = HASH; }],
+  ['claimed live enforcement', (f) => { f.raw[1].layers[3].status = 'passed'; }],
+  ['denial changed state', (f) => { f.raw[1].layers[1].execution.cases[1].state_unchanged = false; }],
+  ['duplicate policy identities', (f) => { f.summary.reports[1].policy_address = ROOT_POLICY; }],
+]) test(`account report export refuses ${name}`, (t) => {
+  const f = withAccountReports(t); change(f); f.save(); assert.throws(() => exportEvidence(f.dir));
+});

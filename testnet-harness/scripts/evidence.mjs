@@ -737,6 +737,48 @@ function failureCleanupRecord(value, run, lifecycle) {
   return record;
 }
 
+function protocolAccountReports(value, readReport, run, pipeline) {
+  if (value === undefined) return { status: 'not_recorded' };
+  const v = object(value);
+  if (v.schema_version !== 1 || pipeline.status !== 'recorded' || !run
+    || v.account !== run.account || v.spec_hash !== pipeline.spec_hash
+    || v.execution !== 'offline_synthetic_policy_addresses_and_proposed_rule_ids'
+    || !Array.isArray(v.reports) || v.reports.length !== pipeline.artifacts.length) fail();
+  const sourceLedger = uint(v.source_ledger);
+  const reports = v.reports.map((entry, index) => {
+    const e = object(entry), r = object(readReport(index)), b = object(r.binding);
+    const layers = r.layers;
+    if (e.rule_index !== index || e.original_permitted !== true || e.complete !== false
+      || r.schema !== 'ozpb:dry-run:v1' || r.complete !== false || r.artifact_verification?.matches !== true
+      || b.spec_hash !== v.spec_hash || b.account_address !== run.account || b.account_code_hash !== run.account_code_hash
+      || b.rule_index !== index || b.candidate_context_rule_id !== index + 1
+      || b.registry_snapshot_root !== run.registry_root
+      || b.network_id !== createHash('sha256').update(TESTNET).digest('hex')
+      || !Array.isArray(layers) || layers.length !== 4
+      || layers.some((l, i) => l?.id !== ['reference', 'account_wasm', 'captured_target', 'live_enforcement'][i]
+        || l.writes_committed !== false || l.status !== (i < 2 ? 'passed' : 'unavailable'))) fail();
+    const execution = object(layers[1].execution), cases = execution.cases;
+    if (r.run_hash !== e.run_hash || b.suite_hash !== e.suite_hash || execution.run_hash !== e.run_hash
+      || execution.suite_hash !== e.suite_hash || execution.source_ledger !== sourceLedger
+      || execution.policy_address !== e.policy_address || execution.policy_code_hash !== e.policy_code_hash
+      || execution.policy_code_hash !== pipeline.artifacts[index].wasm_hash
+      || execution.source_network_id !== b.network_id || execution.execution_network_id === b.network_id
+      || !Array.isArray(cases) || layers[1].cases !== cases.length || cases.length < 6) fail();
+    const counts = cases.filter((c) => c.expected_permit === false && c.permitted === false && c.agree === true
+      && c.state_unchanged === true && ['account', 'policy'].includes(c.refused_by) && Number.isSafeInteger(c.refusal_code)).length;
+    if (cases.some((c) => c.agree !== true || typeof c.expected_permit !== 'boolean' || c.permitted !== c.expected_permit)
+      || !cases.some((c) => c.class === 'original' && c.expected_permit === true && c.permitted === true)
+      || counts < 5 || counts !== e.reverted_denials || r.acceptance?.meets_minimum !== true
+      || r.acceptance?.required_reverted_denials !== 5 || r.acceptance?.original_permitted !== true) fail();
+    return { rule_index: index, run_hash: hash(e.run_hash), suite_hash: hash(e.suite_hash),
+      policy_address: address(e.policy_address), policy_code_hash: hash(e.policy_code_hash),
+      execution_network_id: hash(execution.execution_network_id), original_permitted: true,
+      reverted_denials: counts, cases: cases.length, complete: false };
+  });
+  if (new Set(reports.map((r) => r.policy_address)).size !== reports.length) fail();
+  return { status: 'recorded', execution: v.execution, source_ledger: sourceLedger, reports };
+}
+
 export function exportEvidence(runDir) {
   if (!lstatSync(runDir).isDirectory()) fail();
   const artifacts = {};
@@ -757,6 +799,9 @@ export function exportEvidence(runDir) {
     : { blend_emission_refresh: emissionRefreshRecord(rawRun.blend_emission_refresh) };
   const protocolPipeline = protocolPipelineRecord(
     decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
+  const accountReports = protocolAccountReports(decode(artifact('account_dry_runs', join(runDir, 'account-dry-runs.json'))),
+    (index) => decode(artifact(`account_dry_run_rule_${index}`, join(runDir, `account-dry-run-${index}.json`))),
+    run, protocolPipeline);
   if (run === null && source.status === 'unavailable') fail();
   // Adapter-bound controls mean something only next to the adapter they relied on, and the
   // controls run after the pipeline that names it, so a journal of them always has one.
@@ -825,7 +870,7 @@ export function exportEvidence(runDir) {
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
     provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup,
-    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), ...refresh, ...derived, artifacts,
+    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline, account_dry_runs: accountReports }), ...refresh, ...derived, artifacts,
   };
 }
 
