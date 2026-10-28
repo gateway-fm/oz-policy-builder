@@ -20,7 +20,7 @@ Independent source review covered:
 
 | Workspace | Dependency path |
 | --- | --- |
-| Contracts, native tests | soroban-sdk 26.1.0 → soroban-env-host 26.1.3 → elliptic-curve 0.13.8 → crypto-bigint 0.5.5 |
+| Contracts, native tests | soroban-sdk 28.0.0 → soroban-env-host 28.0.2 → elliptic-curve 0.13.8 → crypto-bigint 0.5.5 |
 | Native execution | soroban-sdk / soroban-env-host 29.0.1 → elliptic-curve 0.13.8 → crypto-bigint 0.5.5 |
 | Root CLI/MCP | No crypto-bigint dependency in the locked graph |
 
@@ -35,6 +35,22 @@ The native runtime dependency is **not test-only**. ECDSA signing features are e
 transitively even though no project signing call site was found. Offline Wasm normal/build
 graphs for the contract workspace and both generated policies contain no crypto-bigint;
 that does not remove the native runtime dependency.
+
+## Contracts dependency reassessment (28 October 2026)
+
+The generated policy and native contract-test dependencies move to SDK 28.0.0 /
+stellar-accounts 0.8.0. The contracts host resolves to 28.0.2. Its `src/crypto/mod.rs`
+is byte-identical to the previously reviewed hosts 26.1.3 and 29.0.1; its curve dependency
+requirements still select the same elliptic-curve, ECDSA, P256, K256 and crypto-bigint
+implementations. The affected verification/recovery arithmetic therefore remains reachable.
+The accounts policy interface is used by generated policies; native mock-account tests now
+exercise the 0.8 account implementation. Actual deployed-account compatibility is checked
+separately against the unchanged 0.7.2 account Wasm.
+
+The contracts fingerprint is reassessed for this dependency update. Root and runtime
+inventories, accepted limitations and the 10 November expiry remain unchanged. This is
+continued bounded risk acceptance, not advisory remediation. See
+[dependency compatibility](SOROBAN-DEPENDENCIES.md).
 
 ## Limits and removal
 

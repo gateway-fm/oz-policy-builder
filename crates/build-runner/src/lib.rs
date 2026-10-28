@@ -1594,7 +1594,7 @@ mod tests {
     /// here as fixture values, because what these tests need is two *distinguishable* revisions,
     /// not the current pins.
     const CLI_REVISION: &str = "5a7c5fe76530bf4248477ac812fc757146b98cc4";
-    const SDK_REVISION: &str = "175aa41306f383057a8cdfc84b68d931664fc34e";
+    const SDK_REVISION: &str = "48d506712f964094d14176e2f0b02afcd1054567";
 
     /// Minimal LEB128, as the wasm binary format writes section and name lengths.
     fn uleb128(mut value: usize) -> Vec<u8> {
@@ -1649,7 +1649,7 @@ mod tests {
     /// `rssdkver` by the SDK at compile time, `cliver` appended afterwards by
     /// `stellar contract build`. Measured on the golden policy, which carries exactly this shape.
     pub(crate) fn honest_wasm() -> Vec<u8> {
-        let sdk = format!("26.1.0#{SDK_REVISION}");
+        let sdk = format!("28.0.0#{SDK_REVISION}");
         let cli = format!("27.0.0#{CLI_REVISION}");
         wasm_with_meta(&[
             &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
@@ -1753,7 +1753,7 @@ mod tests {
         let message = manifest_from(&disagrees, honest_toolchain())
             .expect_err("a wasm built against an unpinned SDK must not be recorded as pinned")
             .to_string();
-        for expected in ["soroban_sdk_version", "rssdkver", "26.0.0", "26.1.0"] {
+        for expected in ["soroban_sdk_version", "rssdkver", "26.0.0", "28.0.0"] {
             assert!(
                 message.contains(expected),
                 "{expected:?} missing from {message:?}"
@@ -1792,7 +1792,7 @@ mod tests {
     /// halves are compared is declared per claim, and a claim that cannot be met has to say so.
     #[test]
     fn a_revision_stated_on_only_one_side_is_refused_rather_than_skipped() {
-        let sdk = format!("26.1.0#{SDK_REVISION}");
+        let sdk = format!("28.0.0#{SDK_REVISION}");
         let wasm_without_revision = wasm_with_meta(&[
             &[("rsver", "1.91.1"), ("rssdkver", &sdk)],
             &[("cliver", "27.0.0")],
@@ -1860,7 +1860,7 @@ mod tests {
     /// tampering at all.
     #[test]
     fn a_key_the_wasm_states_twice_is_refused_rather_than_resolved_by_walk_order() {
-        let sdk = format!("26.1.0#{SDK_REVISION}");
+        let sdk = format!("28.0.0#{SDK_REVISION}");
         let cli = format!("27.0.0#{CLI_REVISION}");
         let cases: [(&str, Vec<u8>, [&str; 3]); 4] = [
             (

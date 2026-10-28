@@ -7,7 +7,9 @@
 //! not every policy or all four dry-run layers.
 //!
 //! This test alone in the contracts workspace uses the harness. The existing differential
-//! tests retain their independent, hand-written cases.
+//! tests retain their independent, hand-written cases. This native account uses the
+//! current policy library (0.8); the pinned 0.7.2 Wasm account is exercised separately
+//! by account_wasm_auth and account_wasm_invariants.
 
 use generated_sub_transfer_r0::contract::{
     GeneratedPolicy, GeneratedPolicyClient, PolicyStorageKey,
@@ -332,7 +334,7 @@ fn generated_golden_denials_preserve_the_expected_reason() {
     for case in build_suite(&spec) {
         // These expected codes follow from the fixed fixture and one mutation at a
         // time. They are hand-stated here, not obtained from the evaluator or the
-        // generated policy. Account refusals use the pinned account's error numbers.
+        // generated policy. Account refusals use this native account library's error numbers.
         let expected_code = match case.class {
             MutationClass::DifferentContract => Some(3002), // UnvalidatedContext
             MutationClass::DifferentFunction => Some(5),    // FunctionNotAllowed

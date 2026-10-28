@@ -1120,7 +1120,7 @@ mod tests {
         )
         .unwrap();
         assert!(gen.files.contains_key("src/lib.rs"));
-        assert_eq!(gen.stellar_accounts_version, "0.7.2");
+        assert_eq!(gen.stellar_accounts_version, "0.8.0");
 
         // The generated scope permits, but the full spec also composes a reviewed
         // spending-limit policy that the Phase 1 evaluator deliberately does not simulate.

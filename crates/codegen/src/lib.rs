@@ -41,8 +41,8 @@ pub struct Pins {
 impl Default for Pins {
     fn default() -> Self {
         Pins {
-            soroban_sdk: "26.1.0".to_string(),
-            stellar_accounts: "0.7.2".to_string(),
+            soroban_sdk: "28.0.0".to_string(),
+            stellar_accounts: "0.8.0".to_string(),
             // Kept equal to this repository's own rust-toolchain.toml by
             // `the_pinned_channel_matches_the_repository_toolchain`.
             rust_channel: "1.91.1".to_string(),
@@ -3991,8 +3991,8 @@ mod tests {
         assert!(lib.contains("if x != 500000000i128"));
         // Pinned dependencies in the crate manifest.
         let manifest = &g.files["Cargo.toml"];
-        assert!(manifest.contains("soroban-sdk = \"=26.1.0\""));
-        assert!(manifest.contains("stellar-accounts = \"=0.7.2\""));
+        assert!(manifest.contains("soroban-sdk = \"=28.0.0\""));
+        assert!(manifest.contains("stellar-accounts = \"=0.8.0\""));
         // The two declarations OpenZeppelin's packages all carry. `doctest = false` sits under
         // `[lib]`, so the assertion pins the block it belongs to rather than the bare line —
         // `doctest` is a valid key in `[dev-dependencies]`-adjacent tables too, and a stray one
@@ -4347,8 +4347,8 @@ mod tests {
             .get("Cargo.lock")
             .expect("verified generated mode must be buildable with --locked");
         assert!(lockfile.contains("name = \"soroban-sdk\""));
-        assert!(lockfile.contains("version = \"26.1.0\""));
+        assert!(lockfile.contains("version = \"28.0.0\""));
         assert!(lockfile.contains("name = \"stellar-accounts\""));
-        assert!(lockfile.contains("version = \"0.7.2\""));
+        assert!(lockfile.contains("version = \"0.8.0\""));
     }
 }
