@@ -7,7 +7,7 @@
       }
     ]
   },
-  "name": "synthetic-blend-claim",
+  "name": "blend-claim-fixture",
   "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
   "registry_snapshot": "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf",
   "rules": [
