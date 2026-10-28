@@ -19,7 +19,7 @@ the owner can also consent to a [live-enforcement check](#live-enforcement-check
 enforce-mode simulations on testnet, never submitted. When all four layers passed on recent
 evidence and the live check's signatures expired unused, the owner can [install](#installation)
 the reviewed grant with one passkey-signed transaction and later [revoke](#revocation) it with
-another. Replacement and monitoring remain unavailable. A virtual authenticator's signature is
+another. Revoke-first replacement is available for verified session-local grants; monitoring remains unavailable. A virtual authenticator's signature is
 automation evidence, not a human acceptance decision.
 
 ## Apply to the supported upstream revision
@@ -713,7 +713,7 @@ this integration does not edit the generated route tree or suppress those upstre
 
 ## Revoke-first replacement
 
-After a session's installed grant is removed with a verified account event and absent-rule
+After a session's latest installed grant is removed with a verified account event and absent-rule
 readback, the route can prepare a replacement. The browser and backend independently derive
 the acknowledgement from the previous installation and removal transaction. It explicitly
 discloses that a new installation has a fresh counter: authority already used under the old
@@ -723,7 +723,7 @@ Preparation and confirmation each re-read the unchanged owner and every previous
 rule, within a bounded ledger window. A revived rule, stale read, changed owner, unverified
 removal or untracked installation attempt refuses replacement. Confirmation adds no authority
 and signs/submits no transaction. It discards old candidate reviews, deployments and pending
-actions; old artifact IDs remain spent, and removal history remains visible in backend status.
+actions; artifact IDs already attempted for deployment remain spent, and removal history remains visible in backend status. Earlier artifacts that were never deployed still need a fresh deployment, review and all checks.
 
 Record or import a new grant, generate/deploy a fresh artifact, review it, rerun all four layers
 and the replay checks, then approve the new installation with the owner passkey. The existing
@@ -734,6 +734,12 @@ is no add-before-remove path, automatic retry or rollover of old policy state. A
 response is recovered from an action-bound acknowledgement retained in backend status; the
 browser accepts it only for its pending action and independently derived removed-grant display. This flow is
 session-local; it does not import lifecycle records from a prior backend process.
+
+A lost `confirm-revoke` response is a separate limitation: status reports the removal
+transaction and prevents resubmission, but does not reconstruct the full verified removal
+record in the browser. The replacement button therefore stays closed in that browser.
+Do not retry removal or treat its summary alone as replacement consent; recover and verify
+the transaction outside this route. Automatic browser recovery of this case remains pending.
 
 ## Generated source support
 

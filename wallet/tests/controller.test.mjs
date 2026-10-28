@@ -767,3 +767,18 @@ test('later status refresh recovers a replacement after transient status failure
   await f.controller.refreshStatus();
   assert.equal(f.controller.state.installAttempted, false); assert.equal(f.controller.state.replacementPending, null);
 });
+
+for (const change of ['rederived display', 'wallet account']) test(`lost replacement acknowledgement rejects changed ${change}`, async () => {
+  const f = await removedForReplacement();
+  await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => {
+    f.replies.status.replacement = { replacementReady: true, actionId: hash('8'), display: REPLACEMENT_DISPLAY };
+    f.validators.replacementConsent = () => ({ ...REPLACEMENT_DISPLAY,
+      ...(change === 'wallet account' ? { account: 'another-account' } : { previousRuleId: 9 }) });
+    throw new Error('lost response');
+  };
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true);
+  assert.ok(f.controller.state.replacementPending);
+  assert.equal(f.controller.state.replacement, null);
+});

@@ -8,8 +8,7 @@ async function installed() {
   const result = await f.actions.submit({ id: assembly.action.id, signedAuthEntriesXdr: await signInstall(f, assembly) });
   return Object.assign(f, { installation: result.installation });
 }
-async function removed() {
-  const f = await installed();
+async function removeGrant(f) {
   const preparation = await f.actions['prepare-revoke']({ installationId: f.installation.installationId });
   const { xdr } = await import('@stellar/stellar-sdk');
   const envelope = xdr.TransactionEnvelope.fromXDR(preparation.assembly.envelope_xdr_base64, 'base64');
@@ -17,6 +16,7 @@ async function removed() {
   const result = await f.actions['confirm-revoke']({ id: preparation.action.id, signedAuthEntriesXdr: await f.signEntry(entry) });
   return Object.assign(f, { removal: result.removal });
 }
+async function removed() { return removeGrant(await installed()); }
 test('replacement needs verified removal, fresh owner/rule reads and explicit budget acknowledgement', async () => {
   const f = await removed();
   assert.equal((await f.actions.status({})).capabilities.replacement, true);
@@ -116,4 +116,67 @@ test('one backend can install a fresh checked grant after revocation and acknowl
   const history = (await f.actions.status({})).installations;
   assert.equal(history.length, 2); assert.equal(history[0].removal.status, 'removed'); assert.equal(history[1].removal, null);
   assert.equal((await f.actions.status({})).capabilities.replacement, false, 'second grant must also be revoked first');
+  // After a second removal, only that latest installation may anchor new consent.
+  const { removalFor, removedEvent } = await import('./install-fixture.mjs');
+  f.installation = result.installation;
+  f.network.prepareRemoval = async ({ wallet, ruleId }) => removalFor({ account: wallet.contractId, ruleId,
+    payer: f.network.payerAddress, sequence: f.sequence, ledger: f.state.ledger });
+  f.onSubmit = async (_envelope, stage) => {
+    assert.equal(stage, 'revoke-policy'); f.state.ledger++; f.state.installed = false;
+    const { xdr } = await import('@stellar/stellar-sdk');
+    return { hash: '5'.repeat(64), ledger: f.state.ledger, trust: 'rpc_reported', returnValue: xdr.ScVal.scvVoid(),
+      events: [removedEvent(f.f.wallet.contractId, 2)] };
+  };
+  await removeGrant(f);
+  await assert.rejects(f.actions['prepare-replacement']({ installationId: history[0].installationId }), /refused/);
+  const latest = await f.actions['prepare-replacement']({ installationId: result.installation.installationId });
+  assert.equal(latest.display.previousRuleId, 2);
+});
+
+for (const failure of ['ambiguous', 'confirmed unverified']) test(`replacement remains closed after ${failure} installation, even after any known rule is removed`, async () => {
+  const f = await installable(); await verified(f);
+  const assembly = await f.actions.assemble({ reviewId: f.review.reviewId });
+  const submit = f.network.submitEnvelope;
+  f.network.submitEnvelope = async (...args) => {
+    if (failure === 'ambiguous') throw new Error('unknown submission outcome');
+    const result = await submit(...args);
+    // Keep the real event/rule ID, but break verification of the returned rule.
+    const { xdr } = await import('@stellar/stellar-sdk');
+    return { ...result, returnValue: xdr.ScVal.scvVoid() };
+  };
+  await assert.rejects(f.actions.submit({ id: assembly.action.id, signedAuthEntriesXdr: await signInstall(f, assembly) }));
+  f.network.submitEnvelope = submit;
+  const status = await f.actions.status({});
+  if (failure === 'confirmed unverified') {
+    assert.equal(status.installations[0].status, 'confirmed_unverified');
+    f.installation = status.installations[0];
+    await removeGrant(f);
+  } else assert.equal(status.installations.length, 0);
+  assert.equal((await f.actions.status({})).capabilities.replacement, false);
+  await assert.rejects(f.actions['prepare-replacement']({ installationId: f.installation?.installationId ?? 'a'.repeat(64) }), /refused/);
+});
+for (const stage of ['prepare', 'confirm']) for (const change of ['owner behind anchor', 'owner beyond window', 'absence beyond window']) {
+  test(`replacement ${stage} rejects ${change} with otherwise unchanged authority`, async () => {
+    const f = await removed();
+    const p = stage === 'confirm' ? await f.actions['prepare-replacement']({ installationId: f.installation.installationId }) : null;
+    if (change === 'owner behind anchor') f.ownerLedgerOffset = -1;
+    if (change === 'owner beyond window') f.ownerLedgerOffset = 13;
+    if (change === 'absence beyond window') f.readback = () => ({ status: 'absent', ledger: f.state.ledger + 13 });
+    await assert.rejects(p
+      ? f.actions['confirm-replacement']({ id: p.action.id, consent: 'previously_used_authority_plus_new_cap' })
+      : f.actions['prepare-replacement']({ installationId: f.installation.installationId }), /refused/);
+    assert.equal((await f.actions.status({})).capabilities.install, false);
+  });
+}
+
+for (const field of ['attempts', 'display']) test(`confirmation rechecks retained replacement ${field}`, async () => {
+  const f = await removed();
+  const issue = f.session.issue.bind(f.session);
+  // Inject stale trusted-session data to exercise the independent confirmation guard.
+  f.session.issue = (kind, value) => issue(kind, kind !== 'replacement' ? value : {
+    ...value, ...(field === 'attempts' ? { attempts: value.attempts - 1 }
+      : { display: { ...value.display, previousRuleId: 999 } }) });
+  const p = await f.actions['prepare-replacement']({ installationId: f.installation.installationId });
+  await assert.rejects(f.actions['confirm-replacement']({ id: p.action.id, consent: 'previously_used_authority_plus_new_cap' }), /refused/);
+  assert.equal((await f.actions.status({})).capabilities.install, false);
 });
