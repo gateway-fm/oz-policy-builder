@@ -8,6 +8,7 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { PINNED_ACCOUNT_WASM } from './rpc.mjs';
 import { runProtocolDryRuns } from './protocol-dry-run.mjs';
 const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const blendSpec = JSON.parse(readFileSync(new URL('./fixtures/synthetic-blend-claim-spec.json', import.meta.url)));
 const H = (n) => String(n).repeat(64);
 function reportFor(request, ledger = 100) {
   const c = request.candidate;
@@ -31,7 +32,7 @@ function reportFor(request, ledger = 100) {
 function fixture(t, count = 2) {
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-protocol-reports '));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const spec = structuredClone(capture.synthesis.spec); spec.rules = spec.rules.slice(0, count);
+  const spec = structuredClone(count === 1 ? blendSpec : capture.synthesis.spec);
   const delegate = Keypair.random();
   for (const rule of spec.rules) rule.authorization.signers = [{ delegated: { address: delegate.publicKey() } }];
   const inventory = spec.rules.map((_r, i) => {
@@ -51,7 +52,8 @@ function fixture(t, count = 2) {
     walkthrough: { kind: count === 1 ? 'blend_claim' : 'soroswap_swap', artifacts: inventory } };
   writeFileSync(join(dir, 'run.json'), JSON.stringify(run)); writeFileSync(run.spec, JSON.stringify(spec));
   const snapshot = join(dir, 'snapshot.json'); writeFileSync(snapshot, '{"snapshot":{"integer":9223372036854775807}}');
-  const env = { ...process.env, OZPB_BIN: 'fake-ozpb', OZPB_NATIVE_WORKER: '/fake-worker',
+  const secrets = join(dir, 'private-secrets'); mkdirSync(secrets, { mode: 0o700 });
+  const env = { ...process.env, OZPB_HARNESS_SECRETS: join(secrets, 'keys.json'), OZPB_BIN: 'fake-ozpb', OZPB_NATIVE_WORKER: '/fake-worker',
     OZPB_REGISTRY_ROOTS_FILE: '/roots.json', OZPB_REGISTRY_MIN_VERSION: '4',
     OZPB_RPC_SOURCES_FILE: '/sources.json', OZPB_SIGNED_REGISTRY_SNAPSHOT: snapshot };
   const requests = [], temporary = [], state = { change: () => {}, exit: 0 };
@@ -82,7 +84,7 @@ for (const count of [1, 2]) test(`executes every indexed rule with the full spec
     assert.equal(request.artifact.rule_index, request.candidate.rule_index);
     assert.match(request.run_nonce, /^[0-9a-f]{64}$/);
   }
-  assert.ok(f.temporary.every((p) => !existsSync(p)));
+  assert.ok(f.temporary.every((p) => p.startsWith(join(f.dir, 'private-secrets')) && !existsSync(p)));
   assert.match(summary.execution, /offline_synthetic/);
   assert.equal(summary.reports[0].complete, false);
   assert.equal(JSON.stringify(summary).includes('fixture'), false);
@@ -106,12 +108,16 @@ for (const [name, change] of [
   await assert.rejects(f.execute());
   assert.ok(f.temporary.every((p) => !existsSync(p)));
   assert.equal(existsSync(join(f.dir, 'account-dry-runs.json')), false);
+  assert.ok(existsSync(join(f.dir, 'account-dry-run-0.failed.json')));
 });
 test('a second-rule process failure preserves only the first report and blocks retry', async (t) => {
   const f = fixture(t); f.state.change = (_r, request) => { if (request.candidate.rule_index === 0) f.state.exit = 0; else f.state.exit = 1; };
   await assert.rejects(f.execute(), /dry-run failed/);
   assert.ok(existsSync(join(f.dir, 'account-dry-run-0.json')));
   assert.equal(existsSync(join(f.dir, 'account-dry-run-1.json')), false);
+  const failed = join(f.dir, 'account-dry-run-1.failed.json');
+  assert.equal(JSON.parse(readFileSync(failed)).binding.rule_index, 1);
+  assert.equal(statSync(failed).mode & 0o777, 0o600);
   assert.equal(existsSync(join(f.dir, 'account-dry-runs.json')), false);
   assert.ok(f.temporary.every((p) => !existsSync(p)));
   await assert.rejects(f.execute(), /already exists/);

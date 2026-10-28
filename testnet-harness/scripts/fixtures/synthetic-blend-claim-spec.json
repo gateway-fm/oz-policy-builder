@@ -1,0 +1,101 @@
+{
+  "evidence": {
+    "recordings": [
+      {
+        "hash": "90c51b4af7b207a397b441609004a40f2c39c7df6c3a306215ff0fe8b84313d3",
+        "trust": "self_supplied"
+      }
+    ]
+  },
+  "name": "synthetic-blend-claim",
+  "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+  "registry_snapshot": "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf",
+  "rules": [
+    {
+      "allowed_calls": [
+        {
+          "fn": "claim",
+          "args": [
+            {
+              "i": 0,
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "prov": "observed_exact"
+            },
+            {
+              "i": 1,
+              "c": {
+                "eq_scval": {
+                  "xdr_base64": "AAAAEAAAAAEAAAABAAAAAwAAAAM="
+                }
+              },
+              "prov": "observed_exact"
+            },
+            {
+              "i": 2,
+              "c": {
+                "eq_address": {
+                  "value": "SELF"
+                }
+              },
+              "prov": "observed_exact"
+            }
+          ],
+          "justified_by": [
+            "recordings[0]/auth[0]"
+          ]
+        }
+      ],
+      "authorization": {
+        "kind": "any_of",
+        "signers": [
+          {
+            "delegated": {
+              "address": "GA6LQDHSGPDM5AKP26FNZN6MLNYX4Z4VAOOFEDTRHLPUSWNCQ67PZV3X"
+            }
+          }
+        ],
+        "strict_signer_set": true
+      },
+      "context": {
+        "type": "CallContract",
+        "contract": "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+        "target_code_hash": {
+          "hash": "a41fc53d6753b6c04eb15b021c55052366a4c8e0e21bc72700f461264ec1350e",
+          "observed_ledger": 5293646,
+          "on_drift": "warn",
+          "role": "evidence_only"
+        }
+      },
+      "policies": [
+        {
+          "generated": {
+            "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
+            "kind": "gen:scope+count",
+            "template_family": "policy-templates/scope@1"
+          }
+        }
+      ],
+      "state": [
+        {
+          "call_count_per_installation": {
+            "max_calls": 1
+          }
+        }
+      ],
+      "valid_until": {
+        "approx_time": null,
+        "ledger": 5294646
+      }
+    }
+  ],
+  "schema": "policy-spec/v1",
+  "smart_account": {
+    "address": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
+    "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
+    "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
+  }
+}

@@ -37,11 +37,17 @@ The ledger parameters and pinned account Wasm come from the operator's testnet R
 wallet backend's checked source reader. Execution uses fresh synthetic local state, deterministic
 offline policy addresses and proposed context-rule IDs; these are not deployed-policy or actual
 installation-ID observations. The delegate seed reaches the CLI only in a temporary 0600 file,
-removed with the private request directory after success or failure. It signs only the CLI's
+removed with the private request directory after normal success or failure. The directory
+is nested under the wrapper's private secrets directory, so its EXIT cleanup also removes
+it when the blocking child is interrupted. A standalone invocation needs an equivalent outer
+cleanup boundary. It signs only the CLI's
 offline domain. The separate authority check still gates every installation.
 
-The run retains `account-dry-run-N.json` and, only when every rule passes,
-`account-dry-runs.json`. The public evidence summary selects typed counts and identities and
+The run retains `account-dry-run-N.json` for a passing rule and
+`account-dry-run-N.failed.json` for a failing rule's bounded CLI stdout (or an explicit
+no-report failure record). Failed reports are private diagnostics, never passing export
+inventory. Stderr is not retained. Retry uses a fresh run directory. Only when every rule
+passes is `account-dry-runs.json` written. The public evidence summary selects typed counts and identities and
 hashes the complete reports. Captured-target and live-enforcement layers remain unavailable in
 these offline reports, and `complete` remains false. Later live derived-denial simulations are
 reported separately. Existing published October runs predate this additional gate; they do not
@@ -56,6 +62,7 @@ CLI and worker. Its ledger parameters are fixed test data, and no RPC or live tr
 ## W3 Soroswap
 
 ```bash
+OZPB_NATIVE_WORKER=/absolute/path/to/ozpb-execution-runtime \
 OZPB_HARNESS_WALKTHROUGH=soroswap \
 OZPB_HARNESS_AUTHORITY_CHECK=cli \
 OZPB_HARNESS_CONFIRM=operator \
@@ -248,6 +255,7 @@ cleanup `incomplete`, so the wrapper warns that grants may remain.
 ## W1 Blend
 
 ```bash
+OZPB_NATIVE_WORKER=/absolute/path/to/ozpb-execution-runtime \
 OZPB_HARNESS_WALKTHROUGH=blend \
 OZPB_HARNESS_AUTHORITY_CHECK=cli \
 OZPB_HARNESS_CONFIRM=operator \

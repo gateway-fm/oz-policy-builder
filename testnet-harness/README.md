@@ -137,6 +137,13 @@ on failure, one line with the stage or error and the run's secrets redacted, wit
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
 
+For W1/Blend and W3/Soroswap, first build the trusted native worker with
+`cargo build --locked --manifest-path execution-runtime/Cargo.toml` and set
+`OZPB_NATIVE_WORKER=/absolute/path/to/ozpb-execution-runtime` when invoking `run.sh`.
+The precheck requires a regular executable owned by the caller or root and not writable
+by group/others; it runs before live setup. The offline report gate applies to `run.sh`;
+a manual permission-bundle API invocation is a separate operator-controlled path.
+
 ## Prerequisites
 
 - Node ≥ 22.12 (required by `@stellar/stellar-sdk` 17), `stellar` CLI 27.0.0, and the Rust
@@ -612,3 +619,13 @@ and what does not.
 The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<pid>/` unless
 `OZPB_HARNESS_OUT` says otherwise). Every transaction hash in it can be looked up at
 `https://stellar.expert/explorer/testnet/tx/<hash>` until the next testnet reset.
+
+The opt-in `protocol-dry-run.real.test.mjs` integration runs the real CLI and native
+worker for both the two-rule Soroswap observation fixture and
+`scripts/fixtures/synthetic-blend-claim-spec.json`. The Blend fixture is a synthetic
+claim authorization with an exact reserve-index vector; it is not an RPC recording
+or evidence that the Blend target executed. The test reads hash-checked pinned
+account bytes from the committed capture unless `OZPB_ACCOUNT_WASM` is supplied.
+Enable it with `OZPB_PROTOCOL_DRY_RUN_E2E=1`, `OZPB_BIN` and
+`OZPB_NATIVE_WORKER`; it generates real policy Wasm and submits no transaction.
+The manual/nightly Linux toolchain job runs this integration.

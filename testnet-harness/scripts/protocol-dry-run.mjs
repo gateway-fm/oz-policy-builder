@@ -4,8 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StrKey } from '@stellar/stellar-sdk';
 import { WalletNetwork } from '../../wallet/server/network.mjs';
@@ -69,7 +68,7 @@ export async function runProtocolDryRuns(directory, env = process.env, overrides
     && ['blend_claim', 'soroswap_swap'].includes(run.walkthrough?.kind) && run.walkthrough.bundle === undefined,
   'offline protocol reports require a fresh W1/W3 testnet candidate');
   // Refuse repeated attempts, including a previous partial execution.
-  for (const name of ['account-dry-runs.json', ...spec.rules.map((_r, i) => `account-dry-run-${i}.json`)]) {
+  for (const name of ['account-dry-runs.json', ...spec.rules.flatMap((_r, i) => [`account-dry-run-${i}.json`, `account-dry-run-${i}.failed.json`])]) {
     try { lstatSync(join(dir, name)); throw new Error('account-Wasm report already exists'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -85,7 +84,7 @@ export async function runProtocolDryRuns(directory, env = process.env, overrides
   requireThat(delegate.publicKey() === run.delegate, 'offline delegate differs from run');
   const policies = artifacts.map((artifact, i) => StrKey.encodeContract(createHash('sha256')
     .update(`ozpb:walkthrough:offline-policy:v1:${run.account}:${i}:${artifact.manifest.wasm_hash}`).digest()));
-  const temporary = mkdtempSync(join(tmpdir(), 'ozpb-protocol-dry-run-'));
+  const temporary = mkdtempSync(join(dirname(resolve(required('OZPB_HARNESS_SECRETS'))), 'ozpb-protocol-dry-run-'));
   const reports = [];
   try {
     const source = await deps.nativeSource();
@@ -105,19 +104,29 @@ export async function runProtocolDryRuns(directory, env = process.env, overrides
       const buildFlags = [['--stellar-binary', env.OZPB_STELLAR_BINARY], ['--build-cache-dir', env.OZPB_BUILD_CACHE_DIR],
         ['--build-jobs', env.OZPB_BUILD_JOBS], ['--build-timeout-secs', env.OZPB_BUILD_TIMEOUT_SECS]]
         .flatMap(([flag, value]) => value ? [flag, String(value)] : []);
-      const result = deps.execute(binary.includes('/') ? resolve(binary) : binary, ['dry-run', '--request', requestPath,
+      let result;
+      try {
+        result = deps.execute(binary.includes('/') ? resolve(binary) : binary, ['dry-run', '--request', requestPath,
         '--registry-roots', roots, '--registry-min-version', minimum, '--rpc-sources', sources,
         '--native-worker', worker, '--delegate-key-file', join(temporary, 'delegate.key'),
         '--account-wasm', join(temporary, 'account.wasm'), '--source-ledger', join(temporary, 'ledger.json'), ...buildFlags],
       { cwd: ROOT, env, encoding: 'utf8', timeout: 600_000, maxBuffer: 64 * 1024 * 1024 });
-      // Never retain stderr or echo child diagnostics: this process temporarily holds a seed file.
-      requireThat(!result.error && result.status === 0, 'account-Wasm dry-run failed; no installation attempted');
-      const report = parseJsonExact(result.stdout);
-      const summary = checkProtocolDryRun(report, request, identities[index].spec_hash);
-      requireThat(report.layers[1].execution.source_ledger === source.ledger.sequence
-        && report.layers[1].execution.delegate_address === delegate.publicKey(), 'account-Wasm source or delegate changed');
-      save(join(dir, `account-dry-run-${index}.json`), result.stdout);
-      reports.push(summary);
+        // CLI stdout is its machine report, never the seed; stderr is never retained.
+        requireThat(!result.error && result.status === 0, 'account-Wasm CLI failed');
+        const report = parseJsonExact(result.stdout);
+        const summary = checkProtocolDryRun(report, request, identities[index].spec_hash);
+        requireThat(report.layers[1].execution.source_ledger === source.ledger.sequence
+          && report.layers[1].execution.delegate_address === delegate.publicKey(), 'account-Wasm source or delegate changed');
+        save(join(dir, `account-dry-run-${index}.json`), result.stdout);
+        reports.push(summary);
+      } catch {
+        // Failed/local reports are confidential diagnostics, not exported passing evidence.
+        const stdout = typeof result?.stdout === 'string' && Buffer.byteLength(result.stdout) <= 64 * 1024 * 1024
+          ? result.stdout : '';
+        save(join(dir, `account-dry-run-${index}.failed.json`), stdout || JSON.stringify({
+          status: 'failed_without_report', exit_status: result?.status ?? null, installation_attempted: false }));
+        throw new Error(`account-Wasm dry-run failed; no installation attempted; inspect account-dry-run-${index}.failed.json locally`);
+      }
     }
     const summary = { schema_version: 1, account: run.account, spec_hash: identities[0].spec_hash,
       execution: 'offline_synthetic_policy_addresses_and_proposed_rule_ids', source_ledger: source.ledger.sequence, reports };

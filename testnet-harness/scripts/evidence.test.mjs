@@ -1660,7 +1660,19 @@ for (const [name, change] of [
   ['different policy code', (f) => { f.raw[1].layers[1].execution.policy_code_hash = HASH; }],
   ['claimed live enforcement', (f) => { f.raw[1].layers[3].status = 'passed'; }],
   ['denial changed state', (f) => { f.raw[1].layers[1].execution.cases[1].state_unchanged = false; }],
-  ['duplicate policy identities', (f) => { f.summary.reports[1].policy_address = ROOT_POLICY; }],
+  ['duplicate policy identities', (f) => { f.summary.reports[1].policy_address = ROOT_POLICY;
+    f.raw[1].layers[1].execution.policy_address = ROOT_POLICY; }],
 ]) test(`account report export refuses ${name}`, (t) => {
   const f = withAccountReports(t); change(f); f.save(); assert.throws(() => exportEvidence(f.dir));
+});
+
+for (const [name, change] of [
+  ['installed code differs from gated artifacts', (r) => { for (const e of r.walkthrough.bundle.entries) e.wasm_hash = '98'.repeat(32); }],
+  ['installed spec differs from gated spec', (r) => { r.walkthrough.bundle.spec_hash = '98'.repeat(32); }],
+  ['installed entry spec differs from gated spec', (r) => { r.walkthrough.bundle.entries[1].spec_hash = '98'.repeat(32); }],
+]) test(`account reports refuse ${name}`, (t) => {
+  const f = withAccountReports(t);
+  const path = join(f.dir, 'run.json'), run = JSON.parse(readFileSync(path));
+  change(run); writeFileSync(path, JSON.stringify(run));
+  assert.throws(() => exportEvidence(f.dir));
 });

@@ -737,9 +737,14 @@ function failureCleanupRecord(value, run, lifecycle) {
   return record;
 }
 
-function protocolAccountReports(value, readReport, run, pipeline) {
+function protocolAccountReports(value, readReport, run, pipeline, rawBundle) {
   if (value === undefined) return { status: 'not_recorded' };
-  const v = object(value);
+  const v = object(value), bundle = object(rawBundle);
+  if (pipeline.status !== 'recorded' || !Array.isArray(pipeline.artifacts)) fail();
+  if (bundle.spec_hash !== v.spec_hash || !Array.isArray(bundle.entries)
+    || bundle.entries.length !== pipeline.artifacts.length
+    || bundle.entries.some((entry, index) => entry.rule_index !== index
+      || entry.spec_hash !== v.spec_hash || entry.wasm_hash !== pipeline.artifacts[index].wasm_hash)) fail();
   if (v.schema_version !== 1 || pipeline.status !== 'recorded' || !run
     || v.account !== run.account || v.spec_hash !== pipeline.spec_hash
     || v.execution !== 'offline_synthetic_policy_addresses_and_proposed_rule_ids'
@@ -801,7 +806,7 @@ export function exportEvidence(runDir) {
     decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
   const accountReports = protocolAccountReports(decode(artifact('account_dry_runs', join(runDir, 'account-dry-runs.json'))),
     (index) => decode(artifact(`account_dry_run_rule_${index}`, join(runDir, `account-dry-run-${index}.json`))),
-    run, protocolPipeline);
+    run, protocolPipeline, rawRun?.walkthrough?.bundle);
   if (run === null && source.status === 'unavailable') fail();
   // Adapter-bound controls mean something only next to the adapter they relied on, and the
   // controls run after the pipeline that names it, so a journal of them always has one.
