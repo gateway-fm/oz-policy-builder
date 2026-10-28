@@ -38,7 +38,10 @@ The required cross-version proof is `scripts/test-pinned-account-authorization.s
 built policy Wasm must run through the exact recognized 0.7.2 account Wasm, including signed
 delegate authorization, forged-signature refusal, persistent counters, rollback and the
 state-invariant suite. The native 0.8 mock-account tests and shared XDR vectors supplement
-that proof. They cannot replace it. A dependency change also requires reviewing changed
+that proof. They cannot replace it. The `nightly-live.yml` workflow also runs this gate
+on pull requests changing the spending evaluator, policy generator/specification, contract
+source/tests, native execution runtime, dependency locks/manifests or recorded gate inputs. The two parity tests must actually run and pass;
+scheduled/dispatch checks remain a backstop, not their only execution opportunity. A dependency change also requires reviewing changed
 policy, helper and target fixture Wasm hashes, byte reproducibility, and fresh testnet evidence
 at the delivered revision. Passing ordinary PR CI alone is insufficient for release.
 

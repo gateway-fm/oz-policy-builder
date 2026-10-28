@@ -60,6 +60,10 @@ run the complete release command or the additional Stellar CLI build.
 | Soroswap generated suite | Partial layer 2: test-account/native-policy permit and denial behavior for bounds, route, recipient, and deadline mutations. |
 | MCP stdio verification tests | Named verification tools have schemas, the reference operation returns evidence, and malformed specs retain structured errors. This does not test a hosted endpoint or successful real-builder verification over MCP. |
 
+The partial layer-2 tests use the SDK 28 / stellar-accounts 0.8 native account library.
+That is distinct from the recognized, separately source-built 0.7.2 account Wasm exercised
+by the pinned-account authorization gate; native library tests do not substitute for that gate.
+
 The partial layer-2 tests register natively compiled Rust in the local Soroban test host with
 test accounts (`HarnessAccount` and `SwapAccount`). They do not execute the generated Wasm
 artifact. Management setup and delegated-signer authentication are mocked. These tests do not

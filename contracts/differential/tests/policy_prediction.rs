@@ -32,7 +32,7 @@ fn actual_with_policy(
     current: u32,
     amount: i128,
     wasm: Option<&[u8]>,
-) -> bool {
+) -> Result<(), soroban_sdk::Error> {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().with_mut(|info| info.sequence_number = current);
@@ -90,9 +90,12 @@ fn actual_with_policy(
         fn_name: Symbol::new(&env, "transfer"),
         args,
     });
-    ReviewedWindowClient::new(&env, &policy)
-        .try_enforce(&context, &signers, &rule, &account)
-        .is_ok()
+    match ReviewedWindowClient::new(&env, &policy).try_enforce(&context, &signers, &rule, &account)
+    {
+        Ok(Ok(())) => Ok(()),
+        Err(Ok(error)) if error.is_type(soroban_sdk::xdr::ScErrorType::Contract) => Err(error),
+        other => panic!("policy oracle failed outside a contract refusal: {other:?}"),
+    }
 }
 
 fn actual(state: &SpendingLimitState, current: u32, amount: i128) -> bool {
@@ -105,7 +108,7 @@ fn actual(state: &SpendingLimitState, current: u32, amount: i128) -> bool {
         hash,
         ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM.0
     );
-    actual_with_policy(state, current, amount, Some(&wasm))
+    actual_with_policy(state, current, amount, Some(&wasm)).is_ok()
 }
 
 #[test]
@@ -177,7 +180,11 @@ fn current_library_semantics_are_not_the_legacy_policy_model() {
         evaluate_spending_limit(&state, 20, 1),
         SpendingVerdict::Permit
     );
-    assert!(!actual_with_policy(&state, 20, 1, None));
+    assert_eq!(
+        actual_with_policy(&state, 20, 1, None),
+        Err(soroban_sdk::Error::from_contract_error(3224)),
+        "the native helper must return HistoryCapacityExceeded, not a host resource failure"
+    );
     let state = SpendingLimitState {
         spending_history: vec![ModelEntry {
             amount: 101,
@@ -192,5 +199,5 @@ fn current_library_semantics_are_not_the_legacy_policy_model() {
         evaluate_spending_limit(&state, 20, 0),
         SpendingVerdict::Deny
     );
-    assert!(actual_with_policy(&state, 20, 0, None));
+    assert!(actual_with_policy(&state, 20, 0, None).is_ok());
 }
