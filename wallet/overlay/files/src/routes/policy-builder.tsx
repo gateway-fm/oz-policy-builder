@@ -193,6 +193,7 @@ function RevokeConsent({ display }: { display: unknown }) {
       checked under owner rule {items(owner.context_rule_ids).map(label).join(", ")}.</p>
     <p>Your signature expires at ledger <strong>{label(tx.signature_expiration_ledger)}</strong>. Prepared fee {xlm(fee.prepared_fee_stroops)},
       at most {xlm(fee.max_fee_stroops)}, paid by {label(fee.paid_by)}.</p>
+    {!!d.configurationChange && <Evidence title="Recorded and current rule configuration; the current rule will be removed" value={d.configurationChange} open />}
   </div>;
 }
 
@@ -481,7 +482,8 @@ function PolicyBuilder() {
         <p className="text-sm text-slate-300">Removes the installed rule with a transaction your owner passkey signs. It succeeds only when the
           account reports the removal and the rule then reads back absent; whether the policy dropped its own state is reported separately.</p>
         <button className={button}
-          disabled={busy || !state?.installation || !state?.status?.capabilities.lifecycle || state?.revokeAttempted || !!state?.revokePreview}
+          disabled={busy || !state?.installation || !state?.status?.capabilities.lifecycle || state?.revokeAttempted || !!state?.revokePreview || items(state?.monitor?.reasons).some((reason) =>
+            ["account_code_changed", "verifier_code_changed", "owner_rule_changed"].includes(label(reason)))}
           onClick={() => void run((value) => value.prepareRevoke())}>Prepare revocation</button>
         {state?.revokePreview && <RevokeConsent display={state.revokePreview.display} />}
         {state?.revokePreview && <div className="flex flex-wrap gap-3">
@@ -493,8 +495,25 @@ function PolicyBuilder() {
         <Evidence title="Removal result" value={state?.removal} open />
       </section>
       <Evidence title="Transaction receipts" value={state?.receipt} open />
+      <section className={panel} aria-labelledby="monitor-heading">
+        <h2 id="monitor-heading" className="text-xl font-semibold">8. Check the installed grant</h2>
+        <p className="text-sm text-slate-300">Read the recorded rule, account and policy code, native token executable and modeled
+          authority again. This is a manual observation while this page is open; it does not continuously watch the account.</p>
+        <button className={button} disabled={busy || !state?.installation || !!state?.removal || !state?.status?.capabilities.monitoring}
+          onClick={() => void run((value) => value.monitorGrant())}>Check installed grant now</button>
+        {state?.monitor && <>
+          <p className={state.monitor.status === "drift" ? "text-amber-200" : "text-sm text-slate-300"}>
+            Observation: {label(state.monitor.status)}. {state.monitor.status === "unchanged"
+              ? "The exact recorded grant and modeled authority matched in this ledger window."
+              : "Review the observations below; this is not a passing health check."}</p>
+          <Evidence title="Current grant observation and ledger bounds" value={state.monitor} open />
+          {state.monitor.status === "drift" && <p className="text-sm text-amber-200">Configuration or authority changed.
+            Review revocation above to remove this rule. A changed configuration is shown separately before signing.
+            Changed account/verifier code or owner identity blocks this flow and requires a trusted recovery interface.</p>}
+        </>}
+      </section>
       <section className={panel} aria-labelledby="replacement-heading">
-        <h2 id="replacement-heading" className="text-xl font-semibold">8. Replace after revocation</h2>
+        <h2 id="replacement-heading" className="text-xl font-semibold">9. Replace after revocation</h2>
         <p className="text-sm text-slate-300">Verify removal of the old grant before starting a new one. A new installation has a fresh
           counter: previously used authority is additional to its new cap. Replacement requires fresh review, all execution checks
           and owner approval of the new installation.</p>
@@ -509,7 +528,7 @@ function PolicyBuilder() {
         {state?.replacement && <Evidence title="Removed grant being replaced; record or import a new grant above" value={state.replacement} />}
       </section>
       <Evidence title="Backend capabilities, installations, recognized code and verification limitations" value={state?.status} />
-      <p className="text-sm text-slate-400">Monitoring is not yet available. Replacement starts only after verified removal and fresh-budget acknowledgement.
+      <p className="text-sm text-slate-400">Monitoring runs on demand. Replacement starts only after verified removal and fresh-budget acknowledgement.
         Keep this session on the local operator machine.</p>
     </div>
   </main>;

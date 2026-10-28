@@ -741,3 +741,39 @@ This integration supports the fixed `policy-templates/scope@1` generator and rep
 source/Wasm itself. Proposal import regenerates a permission description; it does not execute
 or install source code supplied in the proposal. Custom policy source is unavailable in this
 wallet. A custom-source review, risk acknowledgement and installation flow is not implemented.
+
+## On-demand installed-grant monitoring
+
+`Check installed grant now` performs fresh, bounded, non-atomic RPC reads while this page is
+open. It compares the exact recorded rule, account/policy/owner-verifier code and installation
+marker, and rechecks modeled authority against the InstallationRecord commitment. The
+supported native-token target has a Stellar Asset host executable, not a Wasm hash; monitoring
+checks its canonical native-testnet address, executable kind and protocol 29 explicitly.
+
+The ordinary install authority check correctly sees an already installed stateful rule as
+an overlapping grant. The separate `ozpb check-installed-grant` command instead validates
+the entire real scan first, requires the exact saved rule identity/ID vectors and the last
+allocated rule ID, and projects only that rule out of the authority model. It preserves shared
+closure entries and candidate-required classic/verifier observations. Its projected commitment
+must equal the preinstallation commitment; no new baseline is learned. Actual scan digests
+and ledger evidence remain separate from the counterfactual projection. This command returns
+a distinct monitoring observation and cannot prepare an installation.
+
+An `unchanged` result means the exact recorded grant and modeled authority matched within
+the displayed ledger window. It does not cover unmodeled storage, signer/policy allocation
+counters, storage reference counts, unrelated rule names, TTL continuity, policy-counter
+integrity or changes between observations. Expiry is `inactive`; later allocations or a
+changed rule/authority/code are `drift`; incomplete, archived, stale or failed reads are
+`unavailable`. Legitimate later rule allocations conservatively count as drift. This is
+detection only, with no background process, signature, submission or safety verdict.
+
+After fresh detected rule-configuration drift, revocation may remove that current rule only
+after separately showing the saved and current configuration. The browser and backend derive
+the same consent, including hashes of both configurations. Preparation requires the backend's
+own fresh monitor result; submission rechecks the exact current bytes. Account and owner
+verifier pins and the unchanged owner are checked before both steps, and removal of the owner
+rule is forbidden. Changed account/verifier code or owner identity requires a trusted recovery
+interface. Verified rule removal remains separate from best-effort policy cleanup. If the current policy
+configuration differs from the recorded one, cleanup is reported `not_checked`; an observation
+of the old policy is never attributed to the newly removed policy. Otherwise cleanup requires
+the expected policy code and fresh instance/code/marker observations.

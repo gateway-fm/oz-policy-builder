@@ -155,6 +155,8 @@ enum Command {
         #[command(flatten)]
         build: BuildConfigArgs,
     },
+    /// Observe modeled authority around an exact retained installed grant; never prepares installation.
+    CheckInstalledGrant(authority::InstalledGrantArgs),
     /// Run the live authority check and, only when nothing is refused or unresolved, print the
     /// exact `add_context_rule` arguments with the answer they were checked against. Never signs
     /// or submits; the wallet holding the owner key recomputes the check and decides. A refusal or an
@@ -402,6 +404,7 @@ fn main() -> Result<()> {
             },
             text,
         )?,
+        Command::CheckInstalledGrant(args) => authority::installed_grant(args)?,
         Command::PrepareInstallIntent {
             request,
             registry_roots,

@@ -20,7 +20,7 @@ export class WalletController {
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
-    removal: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, busy: false });
+    removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }) }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
@@ -34,7 +34,7 @@ export class WalletController {
     installPreview: null, revokePreview: null, replacementPreview: null }); }
   #clearLifecycle() { this.#set({ installation: null, receipt: null, installOwner: null,
     installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null,
-    revokeAttempted: false, removal: null, replacementPreview: null, replacementPending: null, replacement: null }); }
+    revokeAttempted: false, removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
@@ -394,7 +394,7 @@ export class WalletController {
         checked, signedAuthEntriesXdr, origin: this.#origin });
       // The owner identity a removal will need is kept before anything is submitted.
       this.#set({ installAttempted: true, installRuleId: display.grant.rule_id, review: null,
-        installOwner: { wallet: review.approval.wallet, ownerRuleId: review.approval.ownerRuleId, ownerRuleXdr: review.approval.ownerRuleXdr } });
+        installOwner: { wallet: review.approval.wallet, authorityCommitment: review.approval.commitment, ownerRuleId: review.approval.ownerRuleId, ownerRuleXdr: review.approval.ownerRuleXdr } });
       let submitted;
       try {
         submitted = await this.#request('submit', { id: installPreview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
@@ -423,6 +423,25 @@ export class WalletController {
    * Revocation, step 1: for this session's installation, the backend's unsigned removal is validated
    * here against the reviewed owner rule and the browser's own display. Nothing is signed.
    */
+  async monitorGrant() {
+    return this.#act(async () => {
+      this.#set({ monitor: null });
+      await this.#status(); this.#capability('monitoring');
+      const { installation } = this.#state;
+      if (!installation || this.#state.removal) throw refused();
+      const result = await this.#request('monitor-grant', { installationId: installation.installationId });
+      if (result?.schema !== 'ozpb:wallet-monitor:v1' || result.installationId !== installation.installationId
+        || result.account !== this.#state.wallet?.contractId || result.ruleId !== installation.ruleId
+        || !['unchanged', 'drift', 'unavailable', 'inactive'].includes(result.status)
+        || result.observation !== 'non_atomic_rpc_reported' || result.signaturesRequested !== false || result.submitted !== false
+        || !Array.isArray(result.reasons) || result.reasons.some((reason) => typeof reason !== 'string')
+        || !Number.isSafeInteger(result.currentLedger) || result.currentLedger < 1
+        || result.expectedAuthorityCommitment !== this.#state.installOwner?.authorityCommitment
+        || (result.status === 'unchanged' && (result.reasons.length !== 0
+          || result.projectedAuthorityCommitment !== result.expectedAuthorityCommitment))) throw refused();
+      this.#set({ monitor: result });
+    });
+  }
   async prepareReplacement() {
     return this.#act(async () => {
       this.#set({ replacementPreview: null });
@@ -473,14 +492,18 @@ export class WalletController {
       if (!HASH.test(result?.action?.id ?? '') || result.installation?.installationId !== installation.installationId
         || result.installation.ruleId !== installation.ruleId || result.installation.transactionHash !== installation.transactionHash
         || result.ownerRuleXdr !== installOwner.ownerRuleXdr || result.limits?.maxFeeStroops !== status.maxFeeStroops) throw refused();
-      const approval = this.#validators.reviewRemoval({ ...installOwner, installation: { account: installation.account,
-        ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
+      if (result.configurationChange && (this.#state.monitor?.status !== 'drift'
+        || this.#state.monitor.installationId !== installation.installationId
+        || (installation.ruleXdr && result.configurationChange.recordedRuleXdr !== installation.ruleXdr))) throw refused();
+      const approval = this.#validators.reviewRemoval({ ...installOwner, configurationChange: result.configurationChange ?? null,
+        installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: result.assembly,
         ownerRuleXdr: result.ownerRuleXdr, limits: result.limits });
       const display = this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops });
-      if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
+      if (JSON.stringify(display) !== JSON.stringify(result.display)
+        || (result.configurationChange && display.configurationChange?.observedRuleHash !== this.#state.monitor?.observedRuleHash)) throw refused();
       this.#set({ revokePreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
-        limits: result.limits, display } });
+        limits: result.limits, display, ...(result.configurationChange ? { configurationChange: result.configurationChange } : {}) } });
     });
   }
   cancelRevoke() {
@@ -493,8 +516,8 @@ export class WalletController {
       const { installation, installOwner, revokePreview, revokeAttempted, status } = this.#state;
       this.#set({ revokePreview: null });
       if (!installation || !installOwner || !revokePreview || revokeAttempted) throw refused();
-      const approval = this.#validators.reviewRemoval({ ...installOwner, installation: { account: installation.account,
-        ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
+      const approval = this.#validators.reviewRemoval({ ...installOwner, configurationChange: revokePreview.configurationChange ?? null,
+        installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: revokePreview.assembly,
         ownerRuleXdr: revokePreview.ownerRuleXdr, limits: revokePreview.limits });
       if (JSON.stringify(this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops }))
@@ -517,7 +540,7 @@ export class WalletController {
       if (removal?.status !== 'removed' || removal.event !== 'verified' || removal.ruleReadback !== 'absent'
         || removal.ruleId !== installation.ruleId || !HASH.test(removal.transactionHash ?? '')
         || confirmed.receipt?.hash !== removal.transactionHash) throw refused();
-      this.#set({ removal, receipt: confirmed.receipt });
+      this.#set({ removal, receipt: confirmed.receipt, monitor: null });
     });
   }
 }

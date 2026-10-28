@@ -38,7 +38,7 @@ function fixture() {
   const calls = [];
   const pauses = [];
   const validators = {
-    reviewIntent: (value) => ({ ...value, ownerRuleId: 7 }),
+    reviewIntent: (value) => ({ ...value, ownerRuleId: 7, commitment: hash('4') }),
     validateAssembly: () => ({ authEntriesXdr: ['unsigned'], ownerRuleId: 7, expirationLedger: 123 }),
     validateSignedAuthorization: async ({ signedAuthEntriesXdr }) => ({ signedAuthEntriesXdr }),
     installConsent: () => INSTALL_DISPLAY,
@@ -766,4 +766,49 @@ test('later status refresh recovers a replacement after transient status failure
     actionId: pending.actionId, display: REPLACEMENT_DISPLAY } };
   await f.controller.refreshStatus();
   assert.equal(f.controller.state.installAttempted, false); assert.equal(f.controller.state.replacementPending, null);
+});
+
+
+test('monitoring is a read-only observation bound to the browser installation and original authority', async () => {
+  const f = fixture(); await prepared(f); await f.controller.prepareInstall(); await f.controller.install();
+  f.replies.status.capabilities.monitoring = true;
+  const observation = { schema: 'ozpb:wallet-monitor:v1', installationId: INSTALLATION.installationId,
+    account: wallet.contractId, ruleId: 1, status: 'unchanged', reasons: [], observation: 'non_atomic_rpc_reported',
+    currentLedger: 200, expectedAuthorityCommitment: hash('4'), projectedAuthorityCommitment: hash('4'),
+    signaturesRequested: false, submitted: false };
+  f.replies['monitor-grant'] = observation;
+  const signed = f.calls.filter(([name]) => name === 'sign').length;
+  await f.controller.monitorGrant(); assert.deepEqual(f.controller.state.monitor, observation);
+  assert.equal(f.calls.filter(([name]) => name === 'sign').length, signed);
+  for (const change of [ { installationId: hash('8') }, { expectedAuthorityCommitment: hash('8') },
+    { account: 'different' }, { status: 'unchanged', reasons: ['authority_changed'] }, { signaturesRequested: true } ]) {
+    f.replies['monitor-grant'] = { ...observation, ...change };
+    await assert.rejects(f.controller.monitorGrant(), /refused/); assert.equal(f.controller.state.monitor, null);
+  }
+});
+
+test('changed-rule removal requires matching monitored bytes and independently derived drift consent', async () => {
+  const f = fixture(); await prepared(f); await f.controller.prepareInstall(); await f.controller.install();
+  f.replies.status.capabilities.monitoring = true; f.replies.status.capabilities.lifecycle = true;
+  f.replies['monitor-grant'] = { schema: 'ozpb:wallet-monitor:v1', installationId: INSTALLATION.installationId,
+    account: wallet.contractId, ruleId: 1, status: 'drift', reasons: ['recorded_rule_changed_or_missing'],
+    observation: 'non_atomic_rpc_reported', currentLedger: 200, expectedAuthorityCommitment: hash('4'),
+    projectedAuthorityCommitment: null, observedRuleHash: hash('8'), signaturesRequested: false, submitted: false };
+  await f.controller.monitorGrant();
+  const change = { recordedRuleXdr: 'recorded', observedRuleXdr: 'observed' };
+  const display = { ...REVOKE_DISPLAY, configurationChange: { observedRuleHash: hash('8'), recordedRuleHash: hash('9') } };
+  f.validators.reviewRemoval = (input) => ({ wallet: input.wallet, ownerRuleId: input.ownerRuleId,
+    ownerRuleXdr: input.ownerRuleXdr, commitment: hash('9'), configurationChange: input.configurationChange });
+  f.validators.revokeConsent = ({ approval }) => approval.configurationChange ? display : REVOKE_DISPLAY;
+  Object.assign(f.replies['prepare-revoke'], { configurationChange: change, display });
+  const signed = f.calls.filter(([name]) => name === 'sign').length;
+  await f.controller.prepareRevoke();
+  assert.deepEqual(f.controller.state.revokePreview.configurationChange, change);
+  f.controller.cancelRevoke();
+  f.replies['prepare-revoke'].display = { ...display, configurationChange: { ...display.configurationChange, observedRuleHash: hash('7') } };
+  await assert.rejects(f.controller.prepareRevoke(), /refused/);
+  assert.equal(f.calls.filter(([name]) => name === 'sign').length, signed);
+  f.replies['prepare-revoke'].display = display;
+  await f.controller.prepareRevoke(); await f.controller.revoke();
+  assert.equal(f.controller.state.removal.status, 'removed');
 });

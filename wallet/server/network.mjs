@@ -407,6 +407,20 @@ export class WalletNetwork {
       return data.result;
     } catch { refuse(); }
   }
+  /** The native SAC is a host executable, not Wasm. Keep that distinction in monitoring. */
+  async targetIdentity(contractId) {
+    if (contractId !== Asset.native().contractId(Networks.TESTNET)) refuse();
+    const net = await this.assertTestnet();
+    const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(contractId).toScAddress(),
+      key: xdr.ScVal.scvLedgerKeyContractInstance(), durability: xdr.ContractDataDurability.persistent }));
+    const { entry, ledger: observed } = await this.#entry(key);
+    const data = entry.val?.type === 'contractData' ? entry.val.contractData : null;
+    const value = data?.val;
+    if (!data || !same(data.contract, key.contractData.contract) || !same(data.key, key.contractData.key)
+      || data.durability?.name !== 'persistent' || value?.type !== 'scvContractInstance') refuse();
+    return { address: contractId, executable: value.instance.executable.type === 'contractExecutableStellarAsset'
+      ? 'stellar_asset' : value.instance.executable.type, protocolVersion: net.protocolVersion, ledger: observed };
+  }
   /**
    * Whether `contractId` exists and until when its instance and code stay live, read without
    * refusing an expired entry: `{ found: false, ledger }` or `{ found: true, wasmHash,
@@ -631,7 +645,7 @@ export class WalletNetwork {
       || Buffer.from(data.val.instance.executable.wasmHash.value).toString('hex') !== wasmHash) refuse();
     const code = await this.requireCode(wasmHash);
     if (code.ledger < observed || code.ledger - observed > 12) refuse();
-    return { contractId, wasmHash, ledger: code.ledger, nonAtomic: true };
+    return { contractId, wasmHash, ledger: code.ledger, instanceLedger: observed, codeLedger: code.ledger, nonAtomic: true };
   }
   async view(contract, name, args = []) {
     const tx = new TransactionBuilder(await this.source(), { fee: '100', networkPassphrase: Networks.TESTNET })

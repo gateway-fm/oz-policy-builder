@@ -151,7 +151,7 @@ export class WalletToolchain {
 
   /** Request objects come only from the trusted wallet controller's retained artifacts. */
   async authority(command, request) {
-    if (!['check-policy-call-surface', 'prepare-install-intent', 'assemble-install-transaction'].includes(command)) refuse();
+    if (!['check-policy-call-surface', 'prepare-install-intent', 'assemble-install-transaction', 'check-installed-grant'].includes(command)) refuse();
     const directory = this.#directory();
     save(join(directory, 'request.json'), requestText(request));
     return this.#call(directory, command, ['--request', join(directory, 'request.json'), ...this.#trustArgs,
