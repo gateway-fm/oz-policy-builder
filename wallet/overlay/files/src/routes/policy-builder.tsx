@@ -14,6 +14,7 @@ import { checkLiveOwnerEntry, consentDisplay, liveCases, statementHash } from ".
 import { reviewSample, validateSampleAssembly } from "../policy-builder/shared/sample.mjs";
 import { installConsent } from "../policy-builder/shared/install.mjs";
 import { reviewRemoval, revokeConsent, validateRemovalAssembly } from "../policy-builder/shared/revoke.mjs";
+import { replacementConsent } from "../policy-builder/shared/replacement.mjs";
 import { MAX_PROPOSAL_BYTES, parseGrantProposal, checkProposalArtifact } from "../policy-builder/shared/proposal.mjs";
 
 export const Route = createFileRoute("/policy-builder")({ component: PolicyBuilder });
@@ -215,7 +216,7 @@ function PolicyBuilder() {
       const instance = new WalletController({
         request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
           reviewSample, validateSampleAssembly, liveCases, consentDisplay, statementHash, checkLiveOwnerEntry, validateLiveOwnerSignature,
-          installConsent, reviewRemoval, validateRemovalAssembly, revokeConsent, parseGrantProposal, checkProposalArtifact },
+          installConsent, reviewRemoval, validateRemovalAssembly, revokeConsent, replacementConsent, parseGrantProposal, checkProposalArtifact },
         pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
         origin: window.location.origin, onChange: setState,
         sign: async ({ approval, checked }) => {
@@ -492,8 +493,23 @@ function PolicyBuilder() {
         <Evidence title="Removal result" value={state?.removal} open />
       </section>
       <Evidence title="Transaction receipts" value={state?.receipt} open />
+      <section className={panel} aria-labelledby="replacement-heading">
+        <h2 id="replacement-heading" className="text-xl font-semibold">8. Replace after revocation</h2>
+        <p className="text-sm text-slate-300">Verify removal of the old grant before starting a new one. A new installation has a fresh
+          counter: previously used authority is additional to its new cap. Replacement requires fresh review, all execution checks
+          and owner approval of the new installation.</p>
+        <button className={button} disabled={busy || !state?.removal || !state?.status?.capabilities.replacement || !!state?.replacementPreview}
+          onClick={() => void run((value) => value.prepareReplacement())}>Prepare replacement</button>
+        {state?.replacementPreview && <>
+          <Evidence title="Fresh-budget acknowledgement" value={state.replacementPreview.display} open />
+          <button className={button} disabled={busy} onClick={() => void run((value) => value.confirmReplacement())}>
+            I acknowledge the fresh budget: start a new grant</button>
+          <button className={button} disabled={busy} onClick={() => void run((value) => value.cancelReplacement())}>Cancel replacement</button>
+        </>}
+        {state?.replacement && <Evidence title="Removed grant being replaced; record or import a new grant above" value={state.replacement} />}
+      </section>
       <Evidence title="Backend capabilities, installations, recognized code and verification limitations" value={state?.status} />
-      <p className="text-sm text-slate-400">Monitoring and replacement controls appear only when their backend checks are implemented.
+      <p className="text-sm text-slate-400">Monitoring is not yet available. Replacement starts only after verified removal and fresh-budget acknowledgement.
         Keep this session on the local operator machine.</p>
     </div>
   </main>;

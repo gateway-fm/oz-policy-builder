@@ -20,7 +20,7 @@ export class WalletController {
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
-    removal: null, installOwner: null, proposalReview: null, busy: false });
+    removal: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }) }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
@@ -31,10 +31,10 @@ export class WalletController {
   // Proposal state may be discarded while an earlier grant still needs recovery or revocation.
   #clear() { this.#set({ record: null, artifact: null, deployment: null, review: null, proposalReview: null,
     accountPreview: null, deployPreview: null, samplePreview: null, livePreview: null, replay: null,
-    installPreview: null, revokePreview: null }); }
+    installPreview: null, revokePreview: null, replacementPreview: null }); }
   #clearLifecycle() { this.#set({ installation: null, receipt: null, installOwner: null,
     installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null,
-    revokeAttempted: false, removal: null }); }
+    revokeAttempted: false, removal: null, replacementPreview: null, replacementPending: null, replacement: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
@@ -54,6 +54,15 @@ export class WalletController {
     const status = await this.#request('status', {});
     if (status?.network !== 'testnet' || Object.keys(this.#pins).some((key) => status[key] !== this.#pins[key])) throw refused();
     this.#set({ status });
+    // A lost reset acknowledgement is recovered only for this browser's pending action and
+    // the independently derived removed-grant display. A stale receipt cannot reset a new cycle.
+    const pending = this.#state.replacementPending;
+    if (pending && status.replacement?.replacementReady === true && status.replacement.actionId === pending.actionId
+      && JSON.stringify(status.replacement.display) === JSON.stringify(pending.display)) {
+      const display = this.#validators.replacementConsent({ installation: this.#state.installation, removal: this.#state.removal });
+      if (display.account !== this.#state.wallet?.contractId || JSON.stringify(display) !== JSON.stringify(pending.display)) throw refused();
+      this.#clear(); this.#clearLifecycle(); this.#set({ replacement: display });
+    }
     // An attempted installation whose response never arrived is adopted once the backend lists it.
     const { installAttempted, installation, installRuleId } = this.#state;
     if (installAttempted && !installation && installRuleId !== null) {
@@ -414,6 +423,45 @@ export class WalletController {
    * Revocation, step 1: for this session's installation, the backend's unsigned removal is validated
    * here against the reviewed owner rule and the browser's own display. Nothing is signed.
    */
+  async prepareReplacement() {
+    return this.#act(async () => {
+      this.#set({ replacementPreview: null });
+      await this.#status(); this.#capability('replacement');
+      const { installation, removal } = this.#state;
+      const display = this.#validators.replacementConsent({ installation, removal });
+      const result = await this.#request('prepare-replacement', { installationId: installation.installationId });
+      if (!HASH.test(result?.action?.id ?? '') || JSON.stringify(result.display) !== JSON.stringify(display)) throw refused();
+      this.#set({ replacementPreview: { action: result.action, display } });
+    });
+  }
+  cancelReplacement() {
+    if (this.#busy) throw refused();
+    this.#set({ replacementPreview: null });
+  }
+  async confirmReplacement() {
+    return this.#act(async () => {
+      const { replacementPreview, installation, removal } = this.#state;
+      this.#set({ replacementPreview: null });
+      if (!replacementPreview) throw refused();
+      const display = this.#validators.replacementConsent({ installation, removal });
+      if (JSON.stringify(display) !== JSON.stringify(replacementPreview.display)) throw refused();
+      const actionId = replacementPreview.action.id;
+      this.#set({ replacementPending: { actionId, display } });
+      let result;
+      try {
+        result = await this.#request('confirm-replacement', { id: actionId, consent: 'previously_used_authority_plus_new_cap' });
+      } catch (error) {
+        await this.#statusWhenFree();
+        if (this.#state.replacementPending === null && this.#state.replacement) return;
+        throw error;
+      }
+      if (result?.replacementReady !== true || result.actionId !== actionId
+        || JSON.stringify(result.display) !== JSON.stringify(display)) throw refused();
+      this.#clear(); this.#clearLifecycle();
+      this.#set({ replacement: display });
+      await this.#status();
+    });
+  }
   async prepareRevoke() {
     return this.#act(async () => {
       this.#set({ revokePreview: null });

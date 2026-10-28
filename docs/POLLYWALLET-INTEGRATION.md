@@ -476,8 +476,9 @@ and runs no local execution check alongside it.
 ## Installation
 
 Installation needs the native worker and the live helper, so that all four layers can run. It is
-offered for one review at a time, and once per backend session. Status reports `install: true`
-only while some review has a complete report and no installation was attempted in this backend,
+offered for one review at a time, with one installation allowance. Verified revoke-first
+replacement can open the next allowance. Status reports `install: true` only while some review
+has a complete report and this allowance has not been spent,
 and `installOpensAfterLedger` while an earlier released signature is still valid. Nothing is
 released or spent while the fee payer cannot submit, for example after an uncertain result.
 Starting another recording or generation for the same wallet clears proposal consent and
@@ -709,3 +710,34 @@ At the pinned upstream revision, `pnpm exec tsc --noEmit` already reports five e
 `src/hooks/useWallet.ts` and `src/lib/tx-analyzer.ts`. The unchanged upstream checkout produces
 the same diagnostics. Generate the route tree with `pnpm build` before comparing type checks;
 this integration does not edit the generated route tree or suppress those upstream errors.
+
+## Revoke-first replacement
+
+After a session's installed grant is removed with a verified account event and absent-rule
+readback, the route can prepare a replacement. The browser and backend independently derive
+the acknowledgement from the previous installation and removal transaction. It explicitly
+discloses that a new installation has a fresh counter: authority already used under the old
+grant is additional to the new cap, rather than carried forward as a remaining allowance.
+
+Preparation and confirmation each re-read the unchanged owner and every previously removed
+rule, within a bounded ledger window. A revived rule, stale read, changed owner, unverified
+removal or untracked installation attempt refuses replacement. Confirmation adds no authority
+and signs/submits no transaction. It discards old candidate reviews, deployments and pending
+actions; old artifact IDs remain spent, and removal history remains visible in backend status.
+
+Record or import a new grant, generate/deploy a fresh artifact, review it, rerun all four layers
+and the replay checks, then approve the new installation with the owner passkey. The existing
+live-check admission guard still waits until earlier released signatures expire, including a
+previous installation entry. This can require waiting before the new live check. A cancelled
+or refused replacement preserves the removed grant and the spent installation guard. There
+is no add-before-remove path, automatic retry or rollover of old policy state. A lost confirmation
+response is recovered from an action-bound acknowledgement retained in backend status; the
+browser accepts it only for its pending action and independently derived removed-grant display. This flow is
+session-local; it does not import lifecycle records from a prior backend process.
+
+## Generated source support
+
+This integration supports the fixed `policy-templates/scope@1` generator and reproduces its
+source/Wasm itself. Proposal import regenerates a permission description; it does not execute
+or install source code supplied in the proposal. Custom policy source is unavailable in this
+wallet. A custom-source review, risk acknowledgement and installation flow is not implemented.

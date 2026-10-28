@@ -685,3 +685,85 @@ test('new recording and generation retain confirmed and uncertain installation r
     }
   }
 });
+
+const REPLACEMENT_DISPLAY = { schema: 'wallet-revoke-first-replacement/v1', account: wallet.contractId,
+  previousInstallationId: INSTALLATION.installationId, previousRuleId: 1, installationTransactionHash: hash('e'),
+  removalTransactionHash: hash('f'), budget: 'previously_used_authority_plus_new_cap', warning: 'Fresh budget' };
+async function removedForReplacement() {
+  const f = fixture();
+  f.replies.status.capabilities.lifecycle = true;
+  f.replies.status.capabilities.replacement = true;
+  f.replies['prepare-revoke'].limits.maxFeeStroops = f.replies.status.maxFeeStroops;
+  f.validators.replacementConsent = () => REPLACEMENT_DISPLAY;
+  f.replies['prepare-replacement'] = { action: { id: hash('8') }, display: REPLACEMENT_DISPLAY };
+  f.replies['confirm-replacement'] = { replacementReady: true, actionId: hash('8'), display: REPLACEMENT_DISPLAY };
+  await prepared(f); await f.controller.prepareInstall(); await f.controller.install();
+  await f.controller.prepareRevoke(); await f.controller.revoke();
+  return f;
+}
+test('replacement has separate consent, signs nothing, discards the old review and resets lifecycle only on success', async () => {
+  const f = await removedForReplacement();
+  const signed = f.calls.filter(([name]) => name === 'sign').length;
+  await f.controller.prepareReplacement();
+  assert.deepEqual(f.controller.state.replacementPreview.display, REPLACEMENT_DISPLAY);
+  assert.equal(f.controller.state.installAttempted, true);
+  await f.controller.confirmReplacement();
+  assert.equal(f.calls.filter(([name]) => name === 'sign').length, signed);
+  assert.equal(f.controller.state.review, null); assert.equal(f.controller.state.artifact, null);
+  assert.equal(f.controller.state.installAttempted, false); assert.equal(f.controller.state.revokeAttempted, false);
+  assert.equal(f.controller.state.installation, null); assert.deepEqual(f.controller.state.replacement, REPLACEMENT_DISPLAY);
+  await assert.rejects(f.controller.prepareInstall(), /refused/, 'new candidate and checks required');
+});
+test('cancelled or refused replacement retains the removed grant and spent installation state', async () => {
+  const f = await removedForReplacement();
+  await f.controller.prepareReplacement(); f.controller.cancelReplacement();
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true); assert.ok(f.controller.state.removal);
+  await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = new Error('refused');
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true); assert.ok(f.controller.state.installation);
+});
+test('substituted replacement consent cannot reset the browser installation guard', async () => {
+  const f = await removedForReplacement();
+  f.replies['prepare-replacement'] = { action: { id: hash('8') }, display: { ...REPLACEMENT_DISPLAY, previousRuleId: 9 } };
+  await assert.rejects(f.controller.prepareReplacement(), /refused/);
+  assert.equal(f.controller.state.replacementPreview, null); assert.equal(f.controller.state.installAttempted, true);
+});
+
+test('lost replacement confirmation recovers only its exact action-bound acknowledgement', async () => {
+  const f = await removedForReplacement();
+  await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => {
+    f.replies.status.replacement = { replacementReady: true, actionId: hash('8'), display: REPLACEMENT_DISPLAY };
+    f.replies.status.capabilities.replacement = false;
+    throw new Error('lost response after backend commit');
+  };
+  await f.controller.confirmReplacement();
+  assert.equal(f.controller.state.installAttempted, false);
+  assert.equal(f.controller.state.replacementPending, null);
+  assert.deepEqual(f.controller.state.replacement, REPLACEMENT_DISPLAY);
+  assert.equal(f.calls.filter(([name]) => name === 'confirm-replacement').length, 1, 'no automatic retry');
+});
+for (const kind of ['different action', 'different display', 'not committed']) test(`replacement recovery refuses ${kind}`, async () => {
+  const f = await removedForReplacement(); await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => {
+    f.replies.status.replacement = { replacementReady: kind !== 'not committed',
+      actionId: kind === 'different action' ? hash('9') : hash('8'),
+      display: kind === 'different display' ? { ...REPLACEMENT_DISPLAY, previousRuleId: 2 } : REPLACEMENT_DISPLAY };
+    throw new Error('lost response');
+  };
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true); assert.ok(f.controller.state.installation);
+  assert.ok(f.controller.state.replacementPending);
+});
+test('later status refresh recovers a replacement after transient status failures', async () => {
+  const f = await removedForReplacement(); await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => { f.replies.status = new Error('disconnected'); throw new Error('lost response'); };
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  const pending = f.controller.state.replacementPending;
+  f.replies.status = { ...pins, network: 'testnet', capabilities: {}, replacement: { replacementReady: true,
+    actionId: pending.actionId, display: REPLACEMENT_DISPLAY } };
+  await f.controller.refreshStatus();
+  assert.equal(f.controller.state.installAttempted, false); assert.equal(f.controller.state.replacementPending, null);
+});
