@@ -12,7 +12,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
 };
-use stellar_xdr::WriteXdr as _;
 
 type StoredEntries = BTreeMap<String, (Rc<sdk_xdr::LedgerEntry>, Option<u32>)>;
 

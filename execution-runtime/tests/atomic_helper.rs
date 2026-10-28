@@ -1,4 +1,4 @@
-//! Real protocol-29 execution of the SDK-26 helper, pinned account and generated policy.
+//! Real protocol-29 execution of the SDK-28 helper, pinned account and generated policy.
 //! Every authorization is signed with a distinct synthetic owner or delegate key.
 use ed25519_dalek::{Signer as _, SigningKey};
 use ozpb_domain::{pinned_upstream::OZ_SMART_ACCOUNT_WASM, sha256};

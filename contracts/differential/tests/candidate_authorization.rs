@@ -37,8 +37,8 @@ use stellar_xdr::{
     ContractCodeEntry, ContractCodeEntryExt, ContractDataDurability, ContractDataEntry,
     ContractExecutable, ContractId, ExtensionPoint, Hash, HostFunction, InvokeContractArgs,
     LedgerEntryData, LedgerFootprint, LedgerKey, LedgerKeyContractCode, LedgerKeyContractData,
-    OperationBody, ReadXdr as _, ScAddress, ScContractInstance, ScVal, SorobanTransactionData,
-    TransactionEnvelope, TransactionExt, WriteXdr as _,
+    OperationBody, ScAddress, ScContractInstance, ScVal, SorobanTransactionData,
+    TransactionEnvelope, TransactionExt,
 };
 
 const NETWORK: &str = "Test SDF Network ; September 2015";
@@ -65,7 +65,11 @@ fn rebind_address(source: &Env, destination: &Env, address: &Address) -> Address
 }
 
 fn rpc_scval<T: IntoVal<Env, Val>>(env: &Env, value: T) -> ScVal {
-    ScVal::from_xdr(bytes_vec(&value.to_xdr(env)), stellar_xdr::Limits::none()).unwrap()
+    <ScVal as stellar_xdr::ReadXdr>::from_xdr(
+        bytes_vec(&value.to_xdr(env)),
+        stellar_xdr::Limits::none(),
+    )
+    .unwrap()
 }
 
 fn contract() -> ScAddress {

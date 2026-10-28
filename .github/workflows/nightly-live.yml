@@ -337,5 +337,18 @@ jobs:
           restore-keys: |
             pinned-account-auth-${{ runner.os }}-${{ runner.arch }}-cli${{ env.STELLAR_CLI_VERSION }}-
 
+      # Print independently built fixture identities before the strict authorization gate.
+      # These are diagnostics for reviewing a dependency migration, never adopted as pins.
+      # The following gate still compares against the reviewed constants in the tests.
+      - name: source fixture Wasm identities
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target wasm32v1-none \
+            --manifest-path contracts/Cargo.toml -p ozpb-authorized-target-fixture
+          stellar contract build --locked --manifest-path contracts/atomic-live-helper/Cargo.toml \
+            --package ozpb-atomic-live-helper
+          shasum -a 256 contracts/target/wasm32v1-none/release/ozpb_authorized_target_fixture.wasm
+          shasum -a 256 contracts/target/wasm32v1-none/release/ozpb_atomic_live_helper.wasm
+
       - name: pinned account authorization and signed target fixture
         run: bash scripts/test-pinned-account-authorization.sh
