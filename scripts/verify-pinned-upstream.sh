@@ -181,6 +181,10 @@ PY
                 cp "$wasm" "$OZPB_VERIFIED_ACCOUNT_WASM_OUT"
             fi
         fi
+        if [ "$const" = "OZ_SPENDING_LIMIT_POLICY_WASM" ] \
+            && [ -n "${OZPB_VERIFIED_SPENDING_POLICY_WASM_OUT:-}" ]; then
+            cp "$wasm" "$OZPB_VERIFIED_SPENDING_POLICY_WASM_OUT"
+        fi
         case "$const" in
             OZ_ED25519_VERIFIER_WASM | OZ_WEBAUTHN_VERIFIER_WASM)
                 # An owner verifier must be immutable and stateless: exactly the reviewed

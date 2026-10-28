@@ -22,6 +22,18 @@ recognition or wallet signing support for a 0.8 account. Unknown account code re
 Do not change the old account/verifier/spending-policy trust anchors or historical run evidence
 to make a newly built library appear compatible.
 
+Newly generated artifacts have new dependency metadata, source manifests and Wasm hashes.
+Current verification regenerates with the current pins: an SDK 26 artifact must not be
+relabeled or accepted as an SDK 28 reproduction. Use its original recorded repository
+revision to reproduce historical artifacts; regenerate and review proposals intended for
+new installation. Existing installed Wasm is not upgraded by changing these dependencies.
+
+The 0.8 spending-limit helper also changes behavior: it caps history at 815 entries and
+permits zero transfers before checking an already exceeded budget. The production prediction
+model continues to describe the exact recognized 0.7.2 policy. Its boundary/capacity parity
+tests therefore execute that hash-checked Wasm in the pinned-account gate, rather than treating
+the new native library as a substitute. Separate native tests pin these intentional differences.
+
 The required cross-version proof is `scripts/test-pinned-account-authorization.sh`: newly
 built policy Wasm must run through the exact recognized 0.7.2 account Wasm, including signed
 delegate authorization, forged-signature refusal, persistent counters, rollback and the

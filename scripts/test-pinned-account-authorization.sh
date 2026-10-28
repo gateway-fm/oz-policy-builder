@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 account_wasm="$work/pinned-account.wasm"
+spending_wasm="$work/pinned-spending-policy.wasm"
 
 # The account pin is byte-exact and reproduces only from one build host. An
 # overriding artifact built elsewhere fails the test's hash assertion, which
@@ -27,8 +28,28 @@ else
     # On a mismatch its diagnosis names the build host and the host the account
     # pin needs.
     OZPB_VERIFIED_ACCOUNT_WASM_OUT="$account_wasm" \
+        OZPB_VERIFIED_SPENDING_POLICY_WASM_OUT="$spending_wasm" \
         env -u CARGO_TARGET_DIR bash scripts/verify-pinned-upstream.sh
 fi
+
+# The prediction model recognizes the old policy hash, not the current native library.
+# Reproduce that exact Wasm too; a caller-supplied optimization is hash-checked by the test.
+if [ -n "${OZPB_SPENDING_POLICY_WASM:-}" ]; then
+    cp "$OZPB_SPENDING_POLICY_WASM" "$spending_wasm"
+elif [ ! -f "$spending_wasm" ]; then
+    OZPB_VERIFIED_SPENDING_POLICY_WASM_OUT="$spending_wasm" \
+        env -u CARGO_TARGET_DIR bash scripts/verify-pinned-upstream.sh
+fi
+export OZPB_SPENDING_POLICY_WASM="$spending_wasm"
+( cd contracts && cargo test --locked -p ozpb-differential \
+    --test policy_prediction -- --ignored ) | tee "$work/prediction.log"
+for test in rolling_window_and_amount_boundaries_agree_with_pinned_policy \
+    history_capacity_is_applied_after_upstream_cleanup; do
+    grep -qx "test $test ... ok" "$work/prediction.log" || {
+        echo "required pinned-policy prediction test did not run and pass: $test" >&2
+        exit 1
+    }
+done
 
 python3 - docs/examples/subscription-spec.json "$work/signable-spec.json" <<'PY'
 import json
@@ -99,8 +120,9 @@ case "$target_dir" in
     /*) ;;
     *) target_dir="$PWD/$target_dir" ;;
 esac
-CARGO_TARGET_DIR="$target_dir" cargo build --locked --release --target wasm32v1-none \
-    --manifest-path contracts/authorized-target-fixture/Cargo.toml
+CARGO_TARGET_DIR="$target_dir" stellar contract build --locked \
+    --manifest-path contracts/authorized-target-fixture/Cargo.toml \
+    --package ozpb-authorized-target-fixture
 export OZPB_TARGET_WASM="$target_dir/wasm32v1-none/release/ozpb_authorized_target_fixture.wasm"
 
 ( cd contracts && cargo test --locked -p ozpb-differential \
