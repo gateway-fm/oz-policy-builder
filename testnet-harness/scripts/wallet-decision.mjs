@@ -26,7 +26,8 @@ function assertExactNumbers(value, what) {
  *   - the signed snapshot goes as raw JSON, byte for byte, and nothing else re-serialized here
  *     may hold a number JavaScript cannot represent exactly.
  */
-export function checkRequest({ spec, ruleIndex, manifest, policyAddress, resolutionReference, signedRegistrySnapshot, rpcSource }) {
+export function checkRequest({ spec, ruleIndex, manifest, policyAddress, resolutionReference, signedRegistrySnapshot, rpcSource,
+  reviewedPolicies = [] }) {
   if (!(signedRegistrySnapshot instanceof RawJson)) throw new Error('the signed registry snapshot must be passed as raw JSON (RawJson)');
   assertExactNumbers(spec, 'the spec');
   assertExactNumbers(manifest, 'the build manifest');
@@ -41,6 +42,30 @@ export function checkRequest({ spec, ruleIndex, manifest, policyAddress, resolut
   if (policyAddress === account) throw new Error('the policy binding is at the account address');
   if (!String(resolutionReference ?? '').trim()) throw new Error('a binding needs a non-empty resolution reference');
   if (!isHash(spec.network_id)) throw new Error('the spec has no network id');
+  const policies = spec.rules?.[ruleIndex]?.policies;
+  if (!Array.isArray(policies)) throw new Error('missing spec policies');
+  const used = new Set();
+  let generated = 0;
+  const bindings = policies.map((policy, policyIndex) => {
+    const reviewed = reviewedPolicies.find((p) => p.policy_index === policyIndex);
+    if (policy.generated?.kind === 'gen:scope+count') {
+      if (reviewed) throw new Error('reviewed binding supplied for generated policy');
+      generated++;
+      return { rule_index: ruleIndex, policy_index: policyIndex, contract_address: policyAddress,
+        observed_wasm_hash: manifest.wasm_hash, recognition: { kind: 'verified_generated_manifest', build_manifest: manifest },
+        resolution_reference: resolutionReference };
+    }
+    if (!reviewed || policy.reviewed?.kind !== 'oz:spending_limit'
+      || reviewed.observed_wasm_hash !== policy.reviewed.capability || !isHash(reviewed.observed_wasm_hash)
+      || !StrKey.isValidContract(reviewed.contract_address) || reviewed.contract_address === account
+      || !String(reviewed.resolution_reference ?? '').trim()) throw new Error('missing or mismatched reviewed binding');
+    used.add(reviewed);
+    return { rule_index: ruleIndex, policy_index: policyIndex, contract_address: reviewed.contract_address,
+      observed_wasm_hash: reviewed.observed_wasm_hash, resolution_reference: reviewed.resolution_reference,
+      recognition: { kind: 'reviewed_registry' } };
+  });
+  if (generated !== 1 || used.size !== reviewedPolicies.length
+    || new Set(bindings.map((p) => p.contract_address)).size !== bindings.length) throw new Error('duplicate or extra policy binding');
   return {
     spec,
     rule_index: ruleIndex,
@@ -48,14 +73,7 @@ export function checkRequest({ spec, ruleIndex, manifest, policyAddress, resolut
       schema: 'policy-binding-set/v1',
       spec_hash: manifest.spec_hash,
       network_id: spec.network_id,
-      bindings: [{
-        rule_index: ruleIndex,
-        policy_index: 0,
-        contract_address: policyAddress,
-        observed_wasm_hash: manifest.wasm_hash,
-        recognition: { kind: 'verified_generated_manifest', build_manifest: manifest },
-        resolution_reference: resolutionReference,
-      }],
+      bindings,
     },
     signed_registry_snapshot: signedRegistrySnapshot,
     account_address: account,

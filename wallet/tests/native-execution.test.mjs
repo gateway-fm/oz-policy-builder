@@ -5,6 +5,7 @@ import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
 import { RawJson } from '../server/raw-json.mjs';
 import { DelegateCapabilities, checkDryRunPreparation, checkNativeResult, checkPrepared, nativeCaseIds,
   nativeJobText, runAccountExecution } from '../server/native-execution.mjs';
+import { offlineCapability } from '../server/native-protocol.mjs';
 import { POLICY, nativeFixture } from './native-execution-fixture.mjs';
 
 const H = (n) => n.repeat(64);
@@ -16,14 +17,20 @@ test('delegate capabilities stay in backend memory and sign only for their own r
   assert.deepEqual(Object.keys(created).sort(), ['address', 'capabilityId']);
   assert.match(created.capabilityId, /^[0-9a-f]{64}$/);
   assert.ok(Keypair.fromPublicKey(created.address));
-  const signer = capabilities.signer(created.capabilityId, created.address);
-  const message = Buffer.alloc(32, 7);
-  assert.ok(Keypair.fromPublicKey(created.address).verify(message, Buffer.from(signer.sign(message))));
+  const signer = capabilities.offline(created.capabilityId, created.address);
+  const live = capabilities.live(created.capabilityId, created.address, { consent: 'c'.repeat(64), network_id: NETWORK_ID,
+    account: POLICY, recipient: Keypair.random().publicKey(), expected_rule_id: 1, signature_expiration_ledger: 130, read_ledger: 100,
+    amounts: ['1000000', '1000001'] });
+  assert.equal(typeof signer.sign, 'undefined', 'no raw signing of supplied bytes');
+  assert.throws(() => signer.signPreimage(Buffer.alloc(32, 7).toString('base64'), {}), /refused/);
   assert.equal(JSON.stringify(signer), `{"address":"${created.address}"}`, 'no key material is serializable');
-  assert.throws(() => capabilities.signer(created.capabilityId, Keypair.random().publicKey()), /refused/);
-  assert.throws(() => capabilities.signer(H('0'), created.address), /refused/);
+  assert.equal(JSON.stringify(live), `{"address":"${created.address}"}`, 'no key material is serializable');
+  for (const kind of ['offline', 'live', 'check']) {
+    assert.throws(() => capabilities[kind](created.capabilityId, Keypair.random().publicKey()), /refused/);
+    assert.throws(() => capabilities[kind](H('0'), created.address), /refused/);
+  }
   const other = capabilities.create();
-  assert.throws(() => capabilities.signer(other.capabilityId, created.address), /refused/, 'one capability cannot sign for another');
+  assert.throws(() => capabilities.offline(other.capabilityId, created.address), /refused/, 'one capability cannot sign for another');
   for (let i = 2; i < 8; i++) capabilities.create();
   assert.throws(() => capabilities.create(), /refused/, 'at most eight capabilities per backend');
 });
@@ -188,6 +195,6 @@ test('a signer for a different delegate is refused before any worker starts', as
   const { run, calls } = fakeRunner(f);
   const other = Keypair.random();
   await assert.rejects(() => runAccountExecution({ executable: '/fixed/runtime', jobText: '{}', expected: f.expected,
-    reference: f.reference, maxCalls: f.maxCalls, signer: { address: other.publicKey(), sign: (b) => other.sign(b) }, run }), /refused/);
+    reference: f.reference, maxCalls: f.maxCalls, signer: offlineCapability(other), run }), /refused/);
   assert.equal(calls.length, 0);
 });

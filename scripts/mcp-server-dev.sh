@@ -10,8 +10,23 @@
 #
 # The roots are read from the committed file rather than pasted into `.mcp.json`, so there is one
 # copy to keep correct instead of two.
+#
+# It also configures one RPC source, named `testnet`, for the tools that read through an operator
+# source rather than a URL in the request (`check_policy_call_surface`, `prepare_install_intent`,
+# `assemble_install_transaction`, `check_against_policy`, `capture_target`; `prepare_dry_run`
+# validates it without reading). Testnet only: the passphrase is fixed here and any
+# `OZPB_RPC_SOURCES_JSON` already in the environment is replaced. The endpoint defaults to SDF's
+# public testnet RPC; `OZPB_DEV_TESTNET_RPC_URL` may name another plain `https://` endpoint for
+# the same network; the reads compare the network an endpoint reports with that passphrase.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TESTNET_RPC_URL="${OZPB_DEV_TESTNET_RPC_URL:-https://soroban-testnet.stellar.org}"
+# Strict enough that the value cannot leave its JSON string: host, optional port and path only.
+if [[ ! "$TESTNET_RPC_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+    echo "mcp-server-dev.sh: OZPB_DEV_TESTNET_RPC_URL must be a plain https:// URL" \
+        "(host, port, path)" >&2
+    exit 2
+fi
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${CLAUDE_PLUGIN_DATA:-$HERE}/target}"
 BIN="$CARGO_TARGET_DIR/release/ozpb-mcp-server"
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] || [ ! -x "$BIN" ]; then
@@ -21,8 +36,9 @@ if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] || [ ! -x "$BIN" ]; then
     cargo build --locked --release -p ozpb-mcp-server --manifest-path "$HERE/Cargo.toml" >&2
 fi
 export OZPB_REGISTRY_ROOTS_JSON="$(cat "$HERE/docs/examples/registry-roots.json")"
-export OZPB_REGISTRY_MIN_VERSION="${OZPB_REGISTRY_MIN_VERSION:-3}"
+export OZPB_REGISTRY_MIN_VERSION="${OZPB_REGISTRY_MIN_VERSION:-4}"
 # The snapshot a request may omit, so an agent holding a recording can synthesize without
 # transcribing a signed document. Verified against the roots above either way.
 export OZPB_REGISTRY_SNAPSHOT_JSON="$(cat "$HERE/docs/examples/registry.signed.json")"
+export OZPB_RPC_SOURCES_JSON="{\"testnet\":{\"rpc_url\":\"$TESTNET_RPC_URL\",\"network_passphrase\":\"Test SDF Network ; September 2015\"}}"
 exec "$BIN" "$@"

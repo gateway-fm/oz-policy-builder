@@ -20,7 +20,7 @@
 import { addContextRuleArgs } from './lib.mjs';
 import { TRUST_OPERATOR, confirmationScreen, decide, intentMismatches, recheck } from './wallet-decision.mjs';
 
-const refusal = (reasons) => ({ approved: false, reasons });
+const refusal = (stage, reasons) => ({ approved: false, stage, reasons });
 
 export async function approveInstall({ runner, request, trust, expect, confirm, log }) {
   let intent;
@@ -31,30 +31,30 @@ export async function approveInstall({ runner, request, trust, expect, confirm, 
     // A refused intent returns no answer to decide on, only its findings: show them.
     log([`The authority check returned nothing to sign: ${e.message}`, ...(e.details ?? []).map((d) => `  - ${d}`),
       'REFUSED by this wallet.'].join('\n'));
-    return refusal([`the check refused or could not answer: ${e.message}`, ...(e.details ?? [])]);
+    return refusal('intent', [`the check refused or could not answer: ${e.message}`, ...(e.details ?? [])]);
   }
 
   const mismatches = intentMismatches(intent);
-  if (mismatches.length) return refusal(mismatches.map((m) => `intent: ${m}`));
+  if (mismatches.length) return refusal('intent_mismatch', mismatches.map((m) => `intent: ${m}`));
 
   const check = intent.authority;
   const decision = decide(check, { trust, expect });
   const screen = confirmationScreen({ check, decision });
   log(screen);
-  if (!decision.accept) return refusal(decision.reasons);
-  if (!(await confirm(screen))) return refusal(['the operator declined']);
+  if (!decision.accept) return refusal('authority_decision', decision.reasons);
+  if (!(await confirm(screen))) return refusal('confirmation', ['the operator declined']);
 
   let fresh;
   try {
     fresh = await runner.checkPolicyCallSurface(request);
   } catch (e) {
     if (!e.code) throw e;
-    return refusal([`the pre-sign re-check could not answer: ${e.message}`, ...(e.details ?? [])]);
+    return refusal('recheck_error', [`the pre-sign re-check could not answer: ${e.message}`, ...(e.details ?? [])]);
   }
   const again = recheck(decision, fresh, { trust, expect });
-  if (!again.accept) return refusal(again.reasons);
+  if (!again.accept) return refusal('recheck_decision', again.reasons);
   const drift = intentMismatches({ ...intent, authority: fresh });
-  if (drift.length) return refusal(drift.map((m) => `the re-check's grant differs from the intent: ${m}`));
+  if (drift.length) return refusal('recheck_intent_mismatch', drift.map((m) => `the re-check's grant differs from the intent: ${m}`));
 
   return {
     approved: true,

@@ -43,10 +43,17 @@ Two shells over one library (`crates/toolkit`): a CLI (`ozpb`) and an MCP server
 record → synthesize → reference_suite (layer 1) → generate → verify
 ```
 
-The complete `dry_run` is a scheduled operation, not a CLI or MCP command. The live authority
+`ozpb dry-run` runs the native worker's account-Wasm layer and, with a capture request, its
+captured-target layer, signing only offline-domain requests with the spec delegate's key from a
+0600 file; its live layer stays unavailable, so its report is never complete. It is a CLI
+command only: the MCP server holds no keys and has no signing dry run. The live authority
 check (`ozpb check-policy-call-surface`, `check_policy_call_surface`) and the install intent
 built on it (`ozpb prepare-install-intent`, `prepare_install_intent`) are both; they are
-advisory wherever they run. `reference_suite` is layer-1 evidence only;
+advisory wherever they run. `ozpb capture-target` and `capture_target` read, through the same
+kind of operator-configured source, the target state of one unsigned native Stellar Asset
+Contract transfer for the native worker's
+[captured-target layer](CAPTURED-TARGET-EXECUTION.md#producing-a-capture); they do not run that
+layer, and `prepare_dry_run` still reports it unavailable. `reference_suite` is layer-1 evidence only;
 `verify` reproduces source and Wasm but does not perform live preflight. `evaluate_spec` is
 an optional pure check of a candidate invocation and returns `indeterminate` when a
 reviewed policy would make a whole-composition verdict unsafe.
@@ -118,6 +125,13 @@ python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["spec"], sys.stdout)
 
 ozpb reference-suite --spec spec.json
 
+# The same suite as replayable cases rather than outcomes: every case's invocation (i128 values as
+# decimal strings) and evaluation context, in suite order, with the spec hash and a `suite_hash`
+# over exactly that list (format `ozpb-reference-suite-cases/v1`; the hash is
+# sha256("ozpb-reference-suite-cases/v1\n" + spec_hash + "\n" + compact JSON of `cases`)). The
+# testnet harness replays its live-realizable denials against an installed rule from this output.
+ozpb reference-suite --spec spec.json --emit-cases > cases.json
+
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
 ozpb generate --spec spec.json --rule 0 --out ./generated
 
@@ -137,6 +151,21 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
   --rpc-url https://rpc.testnet.stellar.gateway.fm \
   --network "Test SDF Network ; September 2015"
+
+# Optional: run the account-Wasm layer through the operator's native worker and print a
+# four-layer report. The delegate key is read only from a 0600 file and signs only requests for
+# the run's derived offline network; the live layer is reported unavailable. Exits 0 only when
+# the report's `acceptance` meets the permit/deny bar.
+ozpb dry-run --request dry-run-request.json --registry-roots registry-roots.json \
+  --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --native-worker /abs/path/ozpb-execution-runtime --delegate-key-file delegate.key \
+  --account-wasm pinned-account.wasm --source-ledger ledger.json > dry-run.json
+
+# Optional: capture the target state of one unsigned native SAC transfer for the native
+# worker's captured-target layer. The request names an operator source and network and carries
+# the confidential envelope: {"network_id", "rpc_source", "envelope_xdr_base64"}.
+# Record-mode simulation here is acquisition only, never evidence that a policy permits the call.
+ozpb capture-target --request capture-request.json --rpc-sources rpc-sources.json > capture.json
 
 ```
 
@@ -285,11 +314,14 @@ that rather than claiming an upstream-signed artifact.
 
 ### MCP server
 
-`docs/MCP-WALKTHROUGH.md` covers the server and the `policy-builder` Claude skill. The
-repository's `.mcp.json` exposes the server for local tool use; `claude --plugin-dir .` loads
-the packaged skill and its server entry. The wrapper refreshes a plugin binary from source
-in Claude's persistent plugin data directory and launches a stdio server per session. The
-walkthrough also covers tool inputs and raw JSON-RPC.
+`docs/MCP-WALKTHROUGH.md` covers the server, the `policy-builder` Claude skill and the
+human-invoked `policy-builder-install` skill that hands a confirmed grant off. Do not
+pre-approve `prepare_install_intent`, `assemble_install_transaction` or `capture_target` in
+Claude Code permissions; each call should prompt. The repository's `.mcp.json` exposes the
+server for local tool use; `claude --plugin-dir .` loads the packaged skill and its server
+entry. The wrapper refreshes a plugin binary from source in Claude's persistent plugin data
+directory and launches a stdio server per session. The walkthrough also covers tool inputs and
+raw JSON-RPC.
 
 ```bash
 cargo build -r -p ozpb-mcp-server
@@ -317,20 +349,50 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
   exact `add_context_rule` arguments derived from the grant the commitment covers, with the
   answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
   or submits.
-- **Scheduled, not exposed** — `dry_run`, `check_against_policy`. The full dry-run harness
-  needs its own evidence before exposure.
+- **Unsigned install assembly (advisory)** — `assemble_install_transaction` reruns that check
+  and returns bounded unsigned XDR with current sequence and fees. It never signs or
+  submits; the wallet must validate it, recheck authority and enforce-simulate before signing
+  ([INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md)).
+- **Installed-rule prediction (advisory)** — `check_against_policy` predicts permit, deny or
+  `unsupported` for one call against one explicitly selected installed rule at one reported
+  ledger. It is recognition-scoped and does not verify signatures
+  ([LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md)).
+- **Dry-run preparation** — `prepare_dry_run` recognizes the candidate, reproduces its
+  artifact and derives the selected-rule reference suite. It reports the account-Wasm,
+  captured-target and live layers as unavailable
+  ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md)).
+- **Target capture (read-only)** — `capture_target` reads, through an operator-configured
+  RPC source, the `rpc_reported` target state of one unsigned native Stellar Asset Contract
+  transfer: the capture the native worker's captured-target layer reads
+  ([CAPTURED-TARGET-EXECUTION.md](CAPTURED-TARGET-EXECUTION.md#producing-a-capture)). It does
+  not run that layer. A failed simulation of the call is `E_TARGET_REFUSED` and archived call
+  state (a preamble, restored entries, or an archived or expiring footprint entry)
+  `E_TARGET_ARCHIVED`; every other endpoint answer or fault is `E_RPC`.
+  The envelope is confidential input that no result or error echoes, but over MCP it passes
+  through the conversation, and the capture repeats its call; prefer the CLI or a local stdio
+  server.
+- **CLI only, not exposed** — the signing dry run. `ozpb dry-run` runs the account-Wasm and
+  supported captured-target layers with an offline-domain delegate key; this server holds no
+  keys, so it serves `prepare_dry_run` and `capture_target` instead. A complete four-layer run
+  needs the wallet's live layer.
 
 This list separates tools the server exposes from operations still under development. Errors
 carry stable machine-readable codes (`E_*`). The server never deploys,
 signs, or holds keys.
 
-`check_policy_call_surface` and `prepare_install_intent` read through a source the operator
-names in `OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
+`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction`,
+`check_against_policy` and `capture_target` read through a source the operator names in
+`OZPB_RPC_SOURCES_JSON` — `{"testnet": {"rpc_url": "https://…",
 "network_passphrase": "Test SDF Network ; September 2015"}}` — and the request names only the
-source; it never carries a URL.
-The source must be for the request's network, a hosted server also requires its URL on
-`OZPB_RPC_ALLOWLIST`, and the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`,
-`OZPB_REGISTRY_MIN_VERSION`) bounds the read and recognizes the code. The CLI takes the same
+source; it never carries a URL. `prepare_dry_run` takes the same request and validates its
+source, but reads nothing through it. `scripts/mcp-server-dev.sh` configures exactly one source,
+`testnet` (SDF's public testnet RPC unless `OZPB_DEV_TESTNET_RPC_URL` names another `https://`
+endpoint), and replaces any map already in the environment; it never configures another
+network.
+The source must be for the request's network, and a hosted server also requires its URL on
+`OZPB_RPC_ALLOWLIST`. For every one of them except `capture_target`, which needs no registry
+trust, the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`, `OZPB_REGISTRY_MIN_VERSION`)
+bounds the read and recognizes the code. The CLI takes the same
 map from `--rpc-sources` (or `OZPB_RPC_SOURCES_FILE`).
 
 `--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
@@ -346,16 +408,23 @@ stream before the tool runs and a build outlives a client that disconnects:
 |---|---|---|
 | `OZPB_HTTP_REQUESTS_PER_MINUTE` | 60 | HTTP requests admitted per fixed one-minute window, across all clients. A tool call is one request; opening a session takes several. A fixed window can admit up to twice the limit across a window boundary. |
 | `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
-| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks and install-intent planning. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
+| `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks, install-intent planning, unsigned install assembly, installed-rule checks and dry-run preparation. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
 
-Zero or a malformed value stops startup. Authority checks and install-intent planning also
-share a separate one-operation limit across all sessions, held until their blocking work
-ends even if a client disconnects. That limit is independent of build capacity; their binding
-rebuilds acquire the same build slots as other tools. The RPC reads (`record_*`,
-`preflight_transaction`) and pure tools use neither limit and remain bounded by the quota
+Zero or a malformed value stops startup. Authority checks, install-intent planning, unsigned
+install assembly, installed-rule checks, dry-run preparation and target capture, every tool
+that names an operator-configured source, also share a separate one-operation limit across
+all sessions, held until their blocking work ends even if a client disconnects. That limit is
+independent of build capacity; their binding rebuilds acquire the same build slots as other
+tools. The RPC reads that take a caller-named endpoint (`record_*`, `preflight_transaction`)
+and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
-at a reverse proxy in front of it. OS-level compile isolation, a no-secrets worker role, and
-per-tool quotas are still owed before genuine multi-tenant public hosting.
+at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
+supplies OS-level compile isolation and a no-secrets worker role; per-tool quotas and request
+cancellation are still owed before genuine multi-tenant public hosting.
+
+The [self-hosting package](SELF-HOSTING.md) supplies a pinned container build, TLS proxy,
+operator configuration and disposable endpoint/offline-build checks for one operator with
+trusted clients. Its service resource limits do not establish the separate worker boundary.
 
 ## 2. How the synthesizer decides scope
 
@@ -375,6 +444,14 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).
+- **Lifetime and call cap are required decisions.** `valid_until_ledger`, or
+  `no_expiry_acknowledged: true`; `max_calls`, or `unlimited_calls_acknowledged: true` (absent
+  reads as `false`). Neither answer is an `E_NEEDS_DECISION` finding; both answers to one
+  question (a cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry
+  acknowledgement) are contradictory, an `E_INVALID_DECISION` finding. A refusal lists every
+  finding in `details` under the first one's code. Before v0.2.0 a null `max_calls` alone produced
+  an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
+  in the [release notes](release-notes/v0.2.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).

@@ -1,0 +1,9 @@
+{
+  "image": "sha256:REPLACE_WITH_REVIEWED_LOCAL_IMAGE_ID",
+  "timeout_seconds": 600,
+  "cpus": 2,
+  "memory_mib": 4096,
+  "pids": 256,
+  "tmpfs_mib": 3072,
+  "jobs": 1
+}

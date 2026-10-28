@@ -45,6 +45,16 @@ impl AdapterSemantics {
     }
 }
 
+/// The code of the Soroswap router deployed on testnet at
+/// `CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD`, read from the network. It is
+/// not reproduced from source: a rebuild of the public router source (`soroswap/core` tag
+/// `v1.0`, unchanged since) differs from it in the order of internal functions only, so the
+/// development registry binds it as a labeled assertion (`docs/TARGET-ADAPTERS.md`).
+pub const SOROSWAP_ROUTER_TESTNET_WASM: Hash32 = Hash32([
+    0x4b, 0x95, 0xbb, 0xf9, 0xca, 0xec, 0x2c, 0x6e, 0x00, 0xc7, 0x86, 0xf5, 0x3c, 0x5f, 0x39, 0x2c,
+    0x2f, 0xcd, 0xb8, 0x43, 0x5a, 0xc0, 0xa8, 0x62, 0xab, 0x5e, 0x06, 0x45, 0xeb, 0x65, 0x82, 0x4c,
+]);
+
 pub fn soroswap_router() -> AdapterSemantics {
     use ArgumentRole::{CallerChosen, ExactOnly, MaxInput, MinOutput};
     use ArgumentType::{Address, AddressVector, I128, U64};

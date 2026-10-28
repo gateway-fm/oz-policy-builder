@@ -31,7 +31,7 @@ configuration. Run the CLI with the same trust files as the authority commands:
 
 ```sh
 ozpb assemble-install-transaction --request assembly-request.json \
-  --registry-roots registry-roots.json --registry-min-version 3 \
+  --registry-roots registry-roots.json --registry-min-version 4 \
   --rpc-sources rpc-sources.json > unsigned-assembly.json
 ```
 
@@ -69,6 +69,11 @@ The `restoration` field distinguishes three outcomes:
 | `none` | Unsigned installation draft. Independently review and complete it in the wallet. |
 | `automatic_within_invocation` | Installation draft includes protocol-level restoration resources. Review those resources during wallet preflight. |
 | `separate_transaction_reassemble_required` | Only a `RestoreFootprint` transaction is returned. After wallet-approved restoration succeeds, acquire a new authority check and assemble again. There is no installation envelope to reuse. |
+
+The pinned account never extends its own instance or code, so an installed grant can find them
+archived later, whether it was used or not. Either keep them alive with `ExtendFootprintTTL`, or
+expect the next call's simulation to restore them and charge for it. Archival does not end a
+grant; to end one, remove its rule.
 
 Restoration is limited to contract code or persistent contract data. A separate restoration
 may include only keys already present in the invocation footprint; automatic restoration

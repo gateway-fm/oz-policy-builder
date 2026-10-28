@@ -10,12 +10,15 @@
 //!     < syn.json > spec.json
 //!   ozpb generate --spec spec.json --rule 0 --out ./generated
 //!   ozpb reference-suite --spec spec.json
+//!   ozpb reference-suite --spec spec.json --emit-cases   # the suite's cases and suite hash
 //!   ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \\
 //!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
 //!     --manifest ./generated/build-manifest.json
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
 mod authority;
+mod capture;
+mod dry_run;
 mod policy_check;
 mod preflight;
 mod verification;
@@ -46,6 +49,9 @@ struct Cli {
 /// shells are configured identically.
 #[derive(Args, Clone, Debug)]
 struct BuildConfigArgs {
+    /// Fixed operator-owned executable that runs a disposable build worker.
+    #[arg(long, env = ozpb_toolkit::ENV_BUILD_WORKER_LAUNCHER)]
+    build_worker_launcher: Option<PathBuf>,
     /// Wall-clock limit for one policy build, in seconds.
     #[arg(long, env = ozpb_toolkit::ENV_BUILD_TIMEOUT_SECS)]
     build_timeout_secs: Option<u64>,
@@ -65,7 +71,10 @@ impl BuildConfigArgs {
     /// Note there is no flag for the builder kind: the hermetic stub emits unattestable wasm
     /// and must never be selectable by configuration.
     fn resolve(&self) -> Result<ozpb_toolkit::BuildConfig> {
-        let mut config = ozpb_toolkit::BuildConfig::default();
+        let mut config = ozpb_toolkit::BuildConfig {
+            worker_launcher: self.build_worker_launcher.clone(),
+            ..ozpb_toolkit::BuildConfig::default()
+        };
         if let Some(seconds) = self.build_timeout_secs {
             config.timeout = std::time::Duration::from_secs(seconds);
         }
@@ -192,6 +201,27 @@ enum Command {
         #[command(flatten)]
         build: BuildConfigArgs,
     },
+    /// Capture the target state of one unsigned native Stellar Asset Contract transfer through a
+    /// configured RPC source (network read; record-mode simulation is acquisition only, never
+    /// evidence that a policy permits the call). Prints the `rpc_reported` capture the native
+    /// worker's captured-target modes read; it does not run that layer, sign or submit.
+    CaptureTarget {
+        /// CaptureTargetInput JSON: network_id, rpc_source name, and the unsigned
+        /// envelope_xdr_base64 (confidential; kept out of process arguments).
+        #[arg(long)]
+        request: PathBuf,
+        /// JSON map of source name to {rpc_url, network_passphrase}. The request names a
+        /// source; it never carries a URL.
+        #[arg(long, env = "OZPB_RPC_SOURCES_FILE")]
+        rpc_sources: PathBuf,
+    },
+    /// Prepare a candidate and run the operator's native worker for the account-Wasm layer and,
+    /// with --capture-request, the captured-target layer; print one four-layer report. Signs
+    /// only offline-domain worker requests, with the spec delegate's key read from a 0600 file;
+    /// never signs for a live network, submits or installs. The live layer is reported
+    /// unavailable: it needs the wallet owner's consent. Exits 0 only when the report's
+    /// `acceptance` meets the permit/deny bar.
+    DryRun(dry_run::DryRunArgs),
     /// Record from an imported raw-XDR evidence bundle (offline; self_supplied at most —
     /// incomplete without the transaction result XDR).
     Import {
@@ -411,6 +441,11 @@ fn main() -> Result<()> {
             rpc_sources,
             build_config: build.resolve()?,
         })?,
+        Command::CaptureTarget {
+            request,
+            rpc_sources,
+        } => capture::run(&request, &rpc_sources)?,
+        Command::DryRun(args) => dry_run::run(args)?,
         Command::Import { bundle } => {
             let out = ozpb_toolkit::import_recording(
                 &read_import_document(&bundle)?,
@@ -639,6 +674,7 @@ mod tests {
 
     fn args() -> BuildConfigArgs {
         BuildConfigArgs {
+            build_worker_launcher: None,
             build_timeout_secs: None,
             build_cache_dir: None,
             build_jobs: None,
@@ -649,6 +685,7 @@ mod tests {
     #[test]
     fn build_flags_can_never_select_the_unattestable_stub_builder() {
         let resolved = BuildConfigArgs {
+            build_worker_launcher: None,
             build_timeout_secs: Some(30),
             build_cache_dir: Some(PathBuf::from("/operator/cache")),
             build_jobs: Some(2),

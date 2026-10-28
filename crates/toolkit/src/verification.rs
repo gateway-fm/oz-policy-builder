@@ -44,6 +44,17 @@ pub fn reference_suite(input: &ReferenceSuiteInput) -> Result<ReferenceSuiteOutp
     })
 }
 
+/// Emit the same layer-1 suite as replayable cases with the hash that names it
+/// (`ozpb reference-suite --emit-cases`). The cases are not evaluated again here; the report
+/// from [`reference_suite`] carries their layer-1 outcomes under the same labels.
+pub fn reference_suite_cases(
+    input: &ReferenceSuiteInput,
+) -> Result<ozpb_harness::SuiteCases, ToolError> {
+    let spec: PolicySpec = from_value(&input.spec)?;
+    let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
+    ozpb_harness::emit_cases(&validated).map_err(|e| ToolError::new(EC::EInternal, e.to_string()))
+}
+
 /// Verification builds one rule's artifact, so its behavioral evidence must describe that
 /// same rule even when the supplied spec contains other rules.
 struct RuleBehavior {
@@ -201,6 +212,31 @@ mod tests {
         assert!(!output.coverage.is_empty());
         assert_eq!(output.missing_classes.len(), report.missing_classes().len());
         assert!(!output.unmodeled_reviewed_policies.is_empty());
+    }
+
+    #[test]
+    fn reference_suite_cases_emit_the_reported_suite_with_its_hash() {
+        let spec = serde_json::to_value(wire_spec().spec()).unwrap();
+        let input = ReferenceSuiteInput { spec };
+        let output = reference_suite(&input).unwrap();
+        let cases = reference_suite_cases(&input).unwrap();
+        let report: ozpb_harness::EvidenceReport = serde_json::from_value(output.report).unwrap();
+        assert_eq!(cases.spec_hash, report.spec_hash);
+        assert_eq!(cases.total, output.total);
+        assert_eq!(
+            cases.cases.iter().map(|c| &c.label).collect::<Vec<_>>(),
+            report.outcomes.iter().map(|o| &o.label).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ozpb_harness::suite_hash(&cases.spec_hash, &cases.cases).unwrap(),
+            cases.suite_hash
+        );
+        // An invalid spec is refused the same way the report refuses it.
+        let error = reference_suite_cases(&ReferenceSuiteInput {
+            spec: serde_json::json!({"schema": "policy-spec/v0"}),
+        })
+        .unwrap_err();
+        assert!(!error.message.is_empty());
     }
 
     #[test]

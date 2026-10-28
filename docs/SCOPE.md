@@ -14,22 +14,87 @@ feature or an automated check is not by itself evidence that the whole milestone
 
 | Area | Available evidence or implementation | Still required |
 | --- | --- | --- |
-| Agent workflow | The policy-builder skill, plugin and MCP recording/synthesis tools. | An exercised clarification, permission review and wallet confirmation flow. |
-| Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification and [candidate-bound preparation](DRY-RUN-PREPARATION.md). | Complete layer-by-layer execution evidence, state invariants and adversarial direct-call coverage; preparation explicitly reports missing runtime layers and cannot authorize installation. |
+| Agent workflow | The policy-builder skill with its confirm-before-deploy card, the human-invoked install skill and its `ozpb-grant-proposal/v1` handoff, the plugin, the MCP tools, a session-transcript checker and [wallet proposal import](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal) with independent grant regeneration. An [automated CLI-to-wallet testnet run](evidence/wallet-proposal-import-testnet-2026-10-26.json) imported, verified, installed and revoked one exact-transfer grant. | An exercised human clarification, permission review and confirmation session through the final wallet lifecycle. |
+| Reference and contract checks | The reference suite, generated mutation suites, native contract tests, artifact verification, [candidate-bound preparation](DRY-RUN-PREPARATION.md), the CLI `dry-run`, which runs the account-Wasm and supported captured-target layers, and a pinned-account [state-invariant and direct-call suite](#state-invariants-and-direct-calls). | Complete layer-by-layer execution evidence and the cases that section lists as not covered; preparation explicitly reports missing runtime layers, and no report authorizes installation. |
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
 | Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |
-| Testnet installation | The harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. | A wallet-product install and revoke flow, protected human approval, safe reconfiguration, and monitoring. Composed rules are refused. |
-| Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
-| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; the live harness uses the native SAC. | All three end-to-end protocol walkthroughs, including the relevant denials and adapter/code-hash evidence. |
-| Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. | Deployment configuration and a deployed service with TLS, client authorization, worker isolation and operational evidence. |
+| Live enforcement | The [atomic live helper](ATOMIC-LIVE-HELPER.md), deployed and probed on testnet, and the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check): after the owner consents to the exact calls and expiry, an owner passkey installation and the wallet's automation delegate transfer, simulated in enforce mode for the exact amount and one stroop more and validated case by case. Separate signing capabilities keep the delegate's testnet and offline signatures apart, and a replay check after the signatures expire. One automation run on testnet, [22 October 2026](evidence/wallet-live-enforcement-testnet-2026-10-22.json), passed with a virtual-authenticator owner. State-dependent simulation only, for one grant shape. | A run with a human owner's passkey, other grant shapes, and the derived deny suite live. |
+| Wallet installation and revocation | The wallet's [installation](POLLYWALLET-INTEGRATION.md#installation) of a reviewed grant whose four layers all passed, on captured and live evidence at most 360 ledgers old, after the replay check: CLI assembly, independent re-validation in the backend and the browser, a fresh authority recheck, the owner's passkey and one fee-payer submission, recorded only with the account's own `context_rule_added` event, a matching read-back and the policy's marker. Each released entry is a replay obligation until it expires. [Revocation](POLLYWALLET-INTEGRATION.md#revocation) signs `remove_context_rule` and succeeds only with the removal event and the rule reading back absent (#3000); policy cleanup is reported separately. One automation run on testnet, [22 October 2026](evidence/wallet-install-revoke-testnet-2026-10-22.json), installed and revoked a one-call grant with a virtual-authenticator owner. | A run with a human owner's passkey, delegated calls through the wallet, replacement and monitoring, other grant shapes, and installation that needs a separate restoration. |
+| Testnet installation | The default harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. The [subscription mode](WALKTHROUGH-SEP41.md) composes that policy with the pinned reviewed spending-limit policy, and the [Soroswap mode](WALKTHROUGH-PROTOCOLS.md) installs two independent rules separately. Lifecycle scripts observe grant/code configuration, remove each rule and check a post-removal denial. Live W2 and W3 runs record that lifecycle ([testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9), with operator-mode approval and throwaway keys or an exportable virtual passkey. | A live lifecycle run of the default mode, protected human approval of the [wallet's install and revoke flow](POLLYWALLET-INTEGRATION.md#installation), safe reconfiguration, and full call-surface monitoring. The default installer refuses composed rules; the subscription mode refuses any composition but its own. |
+| Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. The native-transfer wrapper now runs RPC recording, synthesis, reference checks and artifact reproduction before installation. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
+| Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; executable native-SAC, composed SEP-41 subscription, [Soroswap two-rule](WALKTHROUGH-PROTOCOLS.md) and Blend claim harness flows; the Blend flow opens and withdraws its own USDC supply position, with controlled live runs. The Soroswap flow now takes its router bounds from the development registry's adapter binding and its floor and transfer cap from an operator file; a [controlled live run](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026) completed with that binding. | Reviewed current live walkthrough evidence, including relevant denials, wallet approval and adapter/code-hash evidence. |
+| Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. [Self-hosting](SELF-HOSTING.md) deployment configuration behind a TLS proxy, and a [disposable build-worker mode](ISOLATED-BUILDS.md) that isolates each compilation. | Per-client authorization, per-tool and per-client quotas, request cancellation, host provisioning, a published image, and a deployed testnet endpoint with operational evidence. |
 | Verification and demonstration | Phase 1 gates and the [Phase 2 gate and guide](TRANCHE-2-VERIFICATION.md). | The complete acceptance run, public demonstration and video. |
 
 [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) distinguishes historical
 observations from current checks and explains how to collect and review a new run. The
 [harness README](../testnet-harness/README.md) maps each wallet-flow step to what actually runs.
-In particular, the harness fills a checked template; it does not demonstrate synthesis of
-the grant. Passkey-owner support there does not change the toolkit's restriction on generated
+The default harness now runs synthesis with explicit test decisions and signed development
+registry trust; the 15 October runs filled a checked template and do not demonstrate that
+chain. The controlled 20 October W2 and W3 runs ran it on live testnet, from RPC recording
+through artifact reproduction, with operator-mode approval and an external CLI identified by
+digest only; the default native mode has no recorded live run of that chain.
+Passkey-owner support there does not change the toolkit's restriction on generated
 grants using External signers.
+
+## State invariants and direct calls
+
+This maps the generated-policy state invariants and the adversarial direct-call suite listed
+in §8 of `architecture.md` to the tests that exercise them. Tests in
+`contracts/differential/tests/account_wasm_invariants.rs` run the exact pinned account Wasm and
+one reviewed generated scope+count policy Wasm with real delegated Ed25519 signatures, including
+for the owner's rule management; `scripts/test-pinned-account-authorization.sh` builds both
+artifacts and runs them. In that suite every transaction runs in a fresh host over the ledger
+the previous one committed. The ledger source refuses a persistent entry whose TTL has run out,
+as the network refuses a transaction that touches an archived entry without restoring it, and a
+restoration brings back the archived value, live for the minimum persistent TTL. TTL settings
+are the SDK test defaults, not testnet's or mainnet's.
+
+The policy's `install`, `enforce` and `uninstall` require only the account's authorization and
+take the context rule, whose id keys the policy's state, from the caller. The account grants
+that authorization under any rule that matches the policy's address: `Default` or
+`CallContract(policy)`.
+
+| Invariant | Tests | What they show |
+| --- | --- | --- |
+| Direct calls without account authorization | `generated_suite.rs` `direct_mutating_calls_require_the_smart_account_authorization` | All three methods fail and leave the installation unchanged (library account, mocked setup). |
+| Direct calls under the grant's own rule and rule 0 | `grant_rule_cannot_reach_its_policy_and_rule_zero_is_listed_authority` | The grant's `CallContract(target)` rule cannot reach the policy: the account refuses with `UnvalidatedContext`. The owner's `Default` rule 0 alone can remove, recreate and spend the grant's state. Before installation, the call-surface check lists rule 0 with its signer. |
+| Direct calls under a rule scoped to the policy's address | `policy_address_rule_can_uninstall_and_call_surface_refuses_it`, `policy_address_rule_held_by_another_key_is_listed_with_its_signer` | Held by the agent's key, the rule lets the agent alone remove the grant's state, which then denies as `MissingState`. The agent can also recreate it with a fresh cap, and spend a call with no transfer while the policy still publishes its enforced event. The check refuses that rule with `E_DELEGATE_HAS_AUTHORITY`. Held by another key, the rule is listed with that signer and the agent cannot use it. |
+| Direct calls under rules scoped to other contracts | `alternate_contract_rule_cannot_reach_policy_methods` | The account refuses all three methods under a rule for an unrelated contract and under an unlimited agent rule for the target. The check lists the first as a coverage exclusion and refuses the second as an overlap. |
+| Missing-state denial | `differential.rs` `missing_state_denies_in_both`; `ttl.rs` `remaining_calls_refuses_an_installation_whose_marker_is_gone`; the policy-address test above | Absent state denies; it never reads as zero. |
+| Install-only initialization, double install | `differential.rs` `install_is_the_only_initializer_and_double_install_fails` | A second install is refused with `AlreadyInstalled`. |
+| TTL and max-TTL bounds | `ttl.rs` (11 tests) | Conditional extension, the clamp to the compiled expiry and the network maximum, no rent on reads, denials or uninstall. |
+| Archival and restoration | `archived_counter_denies_until_restored` | With the marker and counter archived, the grant, a fresh install and an uninstall all fail until the entries are restored. The suite models restoration as keeping the archived value, so the count continues; the host and protocol evidence that the network keeps it is in [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md). |
+| Rule-expiration extension | `extended_rule_validity_does_not_outlive_the_compiled_expiry` | Without an extension the account refuses past the rule's expiry. If the owner extends the rule, the policy still refuses with `RuleExpired`, and a fresh install after the expiry is refused too. |
+| Reinstall as a new grant | `differential.rs` `uninstall_obeys_upstream_lifecycle_and_reinstall_resets_state`; `stale_policy_state_is_refused_not_adopted` | Removing and re-adding the rule through the account gives a new rule id and a fresh count. |
+| Stale-state collisions | `stale_policy_state_is_refused_not_adopted`; `differential.rs` `installation_markers_are_isolated_by_account_and_rule` | The account never reuses a rule id, and the call-surface check reads past the removed id. State created in advance for the next id, here pre-spent through a policy-address rule, makes the owner's `add_context_rule` fail with `AlreadyInstalled`; it is never adopted. Installations are isolated by account and rule. |
+| Rollback of failed compositions | `failed_composition_rolls_back_the_permitting_policy`; `generated_suite.rs` `later_policy_denial_rolls_back_an_earlier_policy_counter` | With two generated-policy instances on one rule, the first permits and the second's denial rolls back the first one's increment. |
+| N+1 and multi-context rollback | `account_wasm_auth.rs` `pinned_account_wasm_full_authorization`; the native worker's [stateful sequence](NATIVE-EXECUTION.md) | The cap holds across ledger advances; a two-context authorization that exceeds it rolls back entirely. |
+| Survival across inactivity | `grant_survives_inactivity_until_its_shortest_ttl` | An idle grant's authorization permits, with its count intact, until the first account or policy entry it reads expires. The target's own entries are not part of this check. After that, a transaction that does not restore the archived entries is refused. A normally simulated submission restores them automatically and pays for it, so archival is not revocation. In this suite the first to expire are the account's own instance and code: nothing on the authorization path extends them, for an active grant as for an idle one. The account extends its rule, signer and policy entries to 30 days when it reads them (stellar-accounts 0.7.2, `smart_account/mod.rs:520-521`), so with real network TTLs one of those may expire first. The policy extends its own entries, instance and code to the compiled expiry. |
+
+Not covered:
+
+- **A reviewed policy in a composition.** The suites compose two generated instances. No
+  reviewed policy Wasm is pinned (item 3 below).
+- **Other generated policies and accounts.** The state suite runs one generated fixture
+  against one account code hash.
+- **The live check end to end.** The direct-call tests feed the scan, projection and pure
+  call-surface check from the local test ledger and supply the generated policy's recognition
+  themselves. They do not exercise the request, the registry, the artifact rebuild or a live
+  endpoint, and they scan with the reader's default bounds, not bounds declared by a signed
+  registry entry.
+- **Network durations.** The TTL values are the SDK test defaults. How long a real deployment
+  survives idle depends on the TTLs its entries were deployed or extended with.
+- **The authority-surface tests in §8.** Apart from the rules above, none of them is executed
+  through the account here. They include:
+  - weak account-address rules creating a policy-address rule, adding a signer or removing a
+    policy;
+  - expired rules revived through `update_context_rule_valid_until`;
+  - archived rules restored and used in the same invocation;
+  - wrappers with custom or unknown management methods;
+  - reconfiguration overlap.
+
+  The call-surface core's unit tests analyse many of these shapes over constructed states.
 
 ## Implementation boundaries
 
@@ -53,9 +118,13 @@ The source-reviewed account method inventory and its limits are described in
    `ozpb check-policy-call-surface` and the MCP tool `check_policy_call_surface`: it validates
    the request against the pinned registry trust (rebuilding generated bindings) before it
    reads anything, reads through an operator-named RPC source (never a request URL), and
-   returns the structured answer with a plain-words `summary`. Over MCP it is advisory; it has
-   not yet been run against a live testnet account in this repository's tests, which use
-   constructed scans and refuse-before-read paths.
+   returns the structured answer with a plain-words `summary`. Over MCP it is advisory. The CLI
+   command has run against live testnet accounts in the controlled W2 and W3 harness runs
+   ([testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9), through an external
+   `ozpb` binary whose byte digest, not source revision, was recorded. The MCP tool has not,
+   and this repository's tests use constructed scans, refuse-before-read paths and, in the
+   [state-invariant suite](#state-invariants-and-direct-calls), the scan, projection and pure
+   check over state the pinned account Wasm wrote in a local test ledger.
 
    `source-rpc` can read bounded contract-instance Wasm hashes and caller-specified contract-data
    keys. It distinguishes live entries, returned archived entries, and omitted keys. A pure
@@ -98,7 +167,11 @@ The source-reviewed account method inventory and its limits are described in
    65 key bytes; a credential id is ignored). A verifier vouches for an owner only when its
    observed code is one whose key handling was reviewed from source (compiled in per exact
    hash, like the method inventory) and its signed entry agrees; older binaries refuse the
-   version-3 entry's new fields. Its public development signing key
+   version-3 entry's new fields. Version 4 adds one target-adapter binding: the testnet Soroswap
+   router's exact code to `soroswap-router@1`. That binding is a development-registry assertion,
+   and the router's Wasm was not reproduced from source
+   ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+   Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
    authority evidence. The operator reader below refuses that root unless its pinned network
    is testnet.
@@ -130,11 +203,15 @@ The source-reviewed account method inventory and its limits are described in
 2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
    §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
    canonicalization version, build target). The builder is labelled `local-unattested`, which
-   is what it is. Adding manifest fields rehashes every manifest, so the container and the
-   fields land together at a release gate. The memory, disk and cgroup limits in §4.6 are part
-   of that work and are **not** claimed today. §6.3 carries a scope note listing the fields the
-   manifest holds against the ones it does not, so the gap is stated rather than left for a
-   reader to find by diffing the document against the struct.
+   is what it is, in every build mode. Adding manifest fields rehashes every manifest, so those
+   fields land at a release gate. The memory, disk and cgroup limits in §4.6 are claimed only
+   for the optional [worker mode](ISOLATED-BUILDS.md), which runs each build in a disposable
+   rootless container with CPU, memory, PID and tmpfs limits, which its acceptance suite
+   checks on the chosen host.
+   The default host builder and the [Compose package](SELF-HOSTING.md) do **not** isolate one
+   build from another, and no manifest records a container image. §6.3 carries a scope note
+   listing the fields the manifest holds against the ones it does not, so the gap is stated
+   rather than left for a reader to find by diffing the document against the struct.
 
 3. **A real reviewed policy wasm at layer 2** (F5d). The blocker is not a dependency bump:
    `stellar-accounts` 0.7.2 ships `src/policies/*.rs` as *library helpers*, and its
@@ -159,7 +236,8 @@ The source-reviewed account method inventory and its limits are described in
    account and policy logic, but do not test the delegate's digest-bound signature.
    The golden fixture also checks that direct `install`, `enforce`, and `uninstall` calls
    without account authorization fail without changing its installed state. This checks
-   the generated policy's gate; it does not exercise a weaker alternate account rule.
+   the generated policy's gate. Alternate account rules are exercised through the pinned
+   account in the [state-invariant suite](#state-invariants-and-direct-calls).
    A separate Wasm gate (`scripts/test-pinned-account-authorization.sh`) builds the exact
    recognized account from pinned public source and a generated transfer policy with a fixed
    test signer. The account reproduces byte-for-byte only on an Apple Silicon build host
@@ -234,11 +312,20 @@ The source-reviewed account method inventory and its limits are described in
    captured balances and, for a capped rule, advance the counter, and an amount-plus-one and
    an unsigned call must be refused by the policy with unchanged state. Recorded testnet
    responses for the public Pollywallet sample account replay offline through the same path.
-   It is offline and counterfactual, covers no other target, and no CLI or MCP command runs it
-   yet.
+   It is offline and counterfactual and covers no other target. `ozpb capture-target` and the
+   MCP `capture_target` tool only produce its captured input through an operator-configured RPC
+   source; `ozpb dry-run --capture-request` runs the layer from the CLI, the local Pollywallet
+   backend runs it for the grant it generates from its sample transfer, and no MCP command runs
+   it.
 
 6. **Complete four-layer dry run** (§4.5). `reference_suite` is deterministic layer-1
    evidence, while the fixture suites above provide partial account-path layer-2 evidence.
+   `ozpb dry-run` runs the native worker's account-Wasm layer for the selected rule and, for the
+   supported native transfer, its captured-target layer, with the CLI's offline-domain signer,
+   and reports whether the original was permitted and at least five derived denials reverted
+   ([DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)). Its live
+   layer is always unavailable, because that needs the wallet owner's consent, so its report is
+   never complete; the MCP server has no signing dry run.
    `source-rpc::preflight_transaction` now makes a separate `simulateTransaction` request with
    `authMode=enforce` for one caller-supplied envelope, after refusing locally an envelope the
    endpoint would refuse before simulating, such as one with a memo. It records the endpoint's
@@ -266,8 +353,9 @@ The source-reviewed account method inventory and its limits are described in
    must supply signed authorization entries in the envelope where the invocation needs them.
    The source adapter does not return raw RPC error details that could echo confidential
    envelope contents. General disposable execution against complete captured target and
-   dependency state with a full ledger context, and a policy-bound live preflight remain
-   scheduled.
+   dependency state with a full ledger context, and a policy-bound live preflight for anything
+   beyond the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check)
+   of one exact native transfer remain scheduled.
 
    The CLI `preflight-transaction` command and the MCP `preflight_transaction` tool expose this
    observation for one exact envelope, with the failing dimensions in

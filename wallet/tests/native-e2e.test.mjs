@@ -8,6 +8,7 @@ import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { checkDryRunPreparation, nativeJobText, runAccountExecution } from '../server/native-execution.mjs';
+import { offlineCapability } from '../server/native-protocol.mjs';
 import { RawJson, parseJsonExact, requestText } from '../server/raw-json.mjs';
 import { runTool } from '../server/tool.mjs';
 
@@ -38,7 +39,7 @@ async function prepared({ candidateContextRuleId = 3 } = {}) {
   const path = join(work, `request-${request.run_nonce}.json`);
   writeFileSync(path, requestText(request), { mode: 0o600, flag: 'wx' });
   const output = parseJsonExact(await runTool(cli, ['prepare-dry-run', '--request', path,
-    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '3',
+    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '4',
     '--rpc-sources', join(work, 'rpc-sources.json')]));
   const checked = checkDryRunPreparation(output, { specHash: manifest.spec_hash, bindingSetHash: output.binding.binding_set_hash,
     accountAddress: spec.smart_account.address, delegateAddress: delegate.publicKey(), policyAddress: POLICY,
@@ -53,7 +54,7 @@ test('the wallet runs the actual worker and accepts only its independently check
   let signatures = 0;
   const layer = await runAccountExecution({ executable: runtime, jobText: run.jobText, expected: run.expected,
     reference: run.reference, maxCalls: run.maxCalls,
-    signer: { address: delegate.publicKey(), sign: (bytes) => { signatures++; return delegate.sign(bytes); } } });
+    signer: offlineCapability({ publicKey: () => delegate.publicKey(), sign: (bytes) => { signatures++; return delegate.sign(bytes); }, verify: (b, s) => delegate.verify(b, s) }) });
   assert.equal(layer.status, 'passed');
   assert.equal(layer.evidence.cases, run.reference.outcomes.length);
   assert.equal(layer.evidence.stateful.successfulCalls, run.maxCalls);
@@ -66,12 +67,12 @@ test('the actual worker report is refused against a changed independent expectat
   const outcomes = run.reference.outcomes.map((outcome, index) => index === 1 ? { ...outcome, expected: 'permit' } : outcome);
   await assert.rejects(() => runAccountExecution({ executable: runtime, jobText: run.jobText, expected: run.expected,
     reference: { ...run.reference, outcomes }, maxCalls: run.maxCalls,
-    signer: { address: delegate.publicKey(), sign: (bytes) => delegate.sign(bytes) } }), /refused/);
+    signer: offlineCapability(delegate) }), /refused/);
 });
 
 test('the actual worker preparation is refused for another proposed rule ID', { skip }, async () => {
   const run = await prepared();
   await assert.rejects(() => runAccountExecution({ executable: runtime, jobText: run.jobText,
     expected: { ...run.expected, candidateContextRuleId: 4 }, reference: run.reference, maxCalls: run.maxCalls,
-    signer: { address: delegate.publicKey(), sign: () => assert.fail('no signature before preparation matches') } }), /refused/);
+    signer: offlineCapability({ publicKey: () => delegate.publicKey(), sign: () => assert.fail('no signature before preparation matches'), verify: (b, s) => delegate.verify(b, s) }) }), /refused/);
 });

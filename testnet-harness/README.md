@@ -17,32 +17,43 @@ authenticator, behind the pinned OpenZeppelin WebAuthn verifier: the kind of acc
 wallet such as pollywallet creates. Everything else is the same in both runs, the delegate
 included.
 
-One run, on fresh throwaway keys:
+The default native-transfer run, on fresh throwaway keys:
 
 1. **setup** deploys the pinned OpenZeppelin account example from its wasm hash. It checks that
    the code hash the network reports is the pin in `ozpb_domain::pinned_upstream`, reads rule 0
    back (Default context, exactly the owner, no policy, no expiry), then funds the account. With a
    passkey owner it first deploys the [pinned WebAuthn verifier](#the-pinned-webauthn-verifier)
    from its hash, checks the code hash, and creates the passkey.
-2. **record** has the account's owner authorize a real 1 XLM transfer out of the account,
-   through rule 0. `ozpb import` decodes the executed transaction into a recording. With a
-   passkey owner, a negative control follows: the passkey signs random bytes instead of the
-   account's digest, and the verifier must refuse that with its own `ChallengeInvalid` (#3114).
-3. **spec** fills in `native-sac-policy-spec.json` from that recording: exactly that transfer,
-   `from = SELF`, granted to a different signer (the delegate), at most once.
-4. **generate**: `ozpb generate` builds the policy crate and its wasm.
-5. **install** deploys the wasm. It then calls `add_context_rule` on the account, with the owner
-   (key or passkey) signing. The policy's own `install` runs inside that call. The script reads
-   back `is_installed` from the policy.
-6. **permit/deny**: the delegate makes the account call the native SAC's `transfer`.
+2. **owner transfer** has the owner authorize a real 1 XLM transfer through rule 0 and
+   retains its raw-XDR import bundle. With a passkey owner, a signature over the wrong challenge
+   must be refused by the verifier with `ChallengeInvalid` (#3114).
+3. **record → synthesize → reference → generate → verify** runs the selected `ozpb` CLI.
+   `record` reads the executed transaction and the account's executable through RPC. The
+   harness checks the exact transfer and observed account code, then makes its test decisions
+   explicit: a separate delegated signer, one call, a one-day ledger horizon, no widening, and
+   no composed spending policy. `synthesize` resolves the signed registry and revalidates the
+   supplied recording; crossing that JSON boundary lowers its trust to `self_supplied`.
+   The reference suite must have no disagreements, missing boundary classes, or unmodeled
+   policies. After generation, `verify` must reproduce the source, Wasm and manifest and pass
+   its modeled behavior checks. A zero CLI exit alone is insufficient. All reports remain in
+   the run directory; only a fully completed chain writes `pipeline.json`.
+4. **install** deploys the verified Wasm, then calls `add_context_rule` with the owner signing.
+   The policy's own `install` runs inside that call. The script reads back `is_installed`.
+5. **permit/deny**: the delegate makes the account call the native SAC's `transfer`.
    - The exact recorded transfer is permitted once.
    - One stroop more is refused with the policy's `NoTupleMatched` (#6).
    - Another recipient is refused with #6.
    - The exact transfer a second time is refused with `CallCountExceeded` (#7).
+6. **observe/revoke** reads the installed grant and its account/policy code pins, then has
+   the owner sign removal of exactly that rule. It verifies the pinned account's removal
+   event, checks that the rule is absent and separately observes policy cleanup. A final
+   delegate attempt must fail with the account's `ContextRuleNotFound` (#3000). The already
+   exhausted policy's #7 does not satisfy that control. The earlier installation record is
+   retained alongside the removal journal.
 
 Every address, transaction hash and outcome goes into `runs/<timestamp>-<pid>/run.json`, which
-is gitignored. The run directory also holds the import bundle, the recording, the spec and the
-generated crate.
+is gitignored. The run directory also holds the import bundle, RPC recording, explicit decisions, synthesis
+response, spec, reference report, generated crate and reproduction report.
 
 `run.sh` requires an empty output directory. It records the checkout commit, dirty state,
 Node version, and start/end timestamps in `provenance.json`. With `OZPB_BIN`, it hashes the
@@ -52,6 +63,10 @@ path is refused. Executable paths preserve filesystem traversal through symlinks
 so the digest identifies the file the shell selects. A symlinked checkout or reporting
 script still runs the startup checks, finalization and evidence export.
 Cargo mode records the checkout and explicitly leaves the executable hash unavailable.
+Provenance startup requires only Node's built-in modules and Git, so it can run before npm
+dependencies are installed. Evidence validation loads at finalization. If a derived replay
+fails while reading live policies, its unfinished journal can report a partial policy order
+only while no simulation has started; completed evidence always requires the full order.
 These observations describe startup, not changes made to the checkout or executable during
 the run. The exit status is process bookkeeping, not an acceptance verdict.
 
@@ -83,6 +98,42 @@ file bytes, including whitespace in JSON; they are not the canonical spec hash o
 Wasm reproduction. Local records can be edited, and neither a zero exit nor this summary
 establishes authenticated ledger state or completion of the milestone.
 
+The export labels the pipeline as `recorded` only when its completion record exists. It keeps
+RPC acquisition trust separate from the synthesis boundary's `self_supplied` trust and reports
+artifact reproduction separately from current-network preflight. These remain editable local
+observations. Older runs say `not_recorded`; they do not acquire results from the new pipeline.
+
+If a protocol bundle's approval or pre-sign recheck refuses, the local journal records the
+refusal stage and the terminal log includes the redacted reason. No install is signed after
+that refusal. Public evidence reports only the refused status, without diagnostic text.
+Lifecycle records likewise distinguish a confirmed removal transaction, its checked event,
+the rule readback and best-effort policy cleanup. A later readback failure does not erase the
+confirmed transaction. The observations come from the configured RPC; they are not ledger proofs.
+
+A failed run with a confirmed installation attempts owner removal before discarding its
+temporary keys. The cleanup binds the saved run bytes and rechecks the exact account, rule and
+policy configuration. Its entire child process group has a fixed 600-second deadline and a
+five-second termination grace. A requested kill must be followed by the child's close event
+before the wrapper reconciles the journal. If termination cannot be confirmed, the separate
+`cleanup-termination.json` marker records that uncertainty; the wrapper discards keys but
+leaves the child-owned run/provenance files unfinalized. The original failure status is preserved. `failure_cleanup: incomplete` means the live grant may
+remain; secret deletion does not revoke it. A `run.json` that exists but cannot be read is
+reported the same way (`incomplete (unreadable_journal)` on stderr; nothing is written back),
+since it may have been cut short after recording an installation. The journal records a removal hash before send,
+so an interrupted or unconfirmed submission remains `pending_removal` and is never sent again.
+The next cleanup checks the network first, then reconciles it from its hash. One that landed
+is verified and marked `reconciled`. One that failed is kept by hash under `failed_removals`, and
+so is one the endpoint has not seen. The second case counts only when the endpoint's latest
+ledger closed after the transaction's validity window and it still retains the window's start,
+both by close time and by the ledger the submission was simulated at. The close times must be
+well-formed and ordered; the local clock never decides it. One fresh removal may then follow, never a third; anything else
+stays pending. Polling is bounded, and the cleanup child prepares a removal only while 240
+seconds remain before its deadline, so it stops before the kill. Removal readbacks count only
+from an endpoint at or after the removal's ledger; a stale read is retried, never recorded.
+Journals are replaced atomically (synced temporary file, then rename). The cleanup child's stdout
+and stderr go to a new private `cleanup-child.log` in the run directory: transaction hashes and,
+on failure, one line with the stage or error and the run's secrets redacted, with no stack.
+
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
 
@@ -100,13 +151,27 @@ runs separately and gives the field-by-field review procedure for a new summary.
 - `ozpb` comes from `cargo run -p ozpb-cli`, or from `OZPB_BIN`. `ozpb generate` builds with
   cargo offline in its build cache (`OZPB_BUILD_CACHE_DIR`), so `run.sh` first fetches the golden
   crate's locked dependencies.
+- Synthesis uses the committed testnet development registry by default. To use operator trust,
+  set all three of `OZPB_SIGNED_REGISTRY_SNAPSHOT`, `OZPB_REGISTRY_ROOTS_FILE` and
+  `OZPB_REGISTRY_MIN_VERSION`. Partial configuration is refused. The development root is public
+  test configuration, not production governance. An authority-check run also requires
+  `OZPB_REGISTRY_SNAPSHOT_ROOT`; synthesis must resolve exactly that root.
 - Before installing, `ozpb reference-suite` validates and canonically hashes the current spec.
   Its hash must match the adjacent build manifest, alongside the Wasm hash, rule index and
   registry root. This runs on both install paths with the same `OZPB_BIN` (or local Cargo CLI)
   as generation. It catches stale artifacts; it trusts the local generator's manifest rather
-  than reproducing the Wasm. Use `ozpb verify` for independent artifact reproduction.
-- The installer accepts exactly one generated scope+count policy. Composed rules, including
-  a reviewed spending limit, are refused before deployment rather than installed incompletely.
+  than reproducing the Wasm. The default wrapper also runs `ozpb verify` and requires successful artifact reproduction.
+- The default installer accepts exactly one generated scope+count policy. The explicit
+  [subscription mode](../docs/WALKTHROUGH-SEP41.md) requires the full authority-check path and
+  exactly one generated policy plus the pinned reviewed spending-limit policy, with both
+  instances bound to their spec indices. Other compositions are refused before deployment.
+  The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
+  each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
+  output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
+  (example: `soroswap-decisions.json`); the router's input bound and open deadline come from the
+  registry's reviewed adapter. That binding is a development-registry assertion, and the router's
+  Wasm was not reproduced from source
+  ([target adapters](../docs/TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -118,6 +183,27 @@ runs separately and gives the field-by-field review procedure for a new summary.
   verifier instance instead of deploying one; its code hash is checked the same way.
 
 ## Keys
+
+Every harness submission uses explicit enforcing simulation and a fixed total fee ceiling,
+including Soroban resources. By default it is 10,000,000 stroops (1 testnet XLM). A call known to
+cost more names its own ceiling, at most 100,000,000 stroops (10 testnet XLM); the Blend calls
+name 3 XLM. A Wasm upload, classified only from the original intended operation, defaults to
+10 XLM. It is the only transaction that may name more, at most 200,000,000 stroops (20 testnet
+XLM). The W1, W2 and W3 installers name 150,000,000 stroops (15 testnet XLM) for each generated
+policy's upload; the default native run shares W2's installer, so its upload names it too.
+
+An upload pays the write fee and rent for a new code entry, and those follow the network's
+prices. A read-only estimate on 20 October 2026 for a 21,607-byte generated policy at ledger
+5293145 required 89,730,616 total stroops (8.97 XLM). On 22 October 2026 the W3 router rule's
+21,814-byte policy assembled at 101,220,139 stroops (10.12 XLM), so the ten-XLM ceiling refused
+it before signing; about an hour earlier the same upload had assembled at 99,760,084 stroops.
+Fifteen XLM leaves room for that drift on testnet. It is not a promised future fee and is not
+meant for mainnet. Before the payer signs, assembly must preserve the exact operation, authorization entries, source, sequence, memo,
+time bounds and network. Extra signatures, authorization or operations are refused. A
+resource estimate above the ceiling stops the run; the harness never raises it automatically.
+For a source-funded setup operation without existing authorization, the harness constructs
+one source-account entry locally from that exact host function, with no nested calls.
+Contract uploads need none. It does not accept authorization entries supplied by RPC.
 
 `setup.mjs` generates these keys with `Keypair.random()` and funds them from Friendbot:
 
@@ -202,7 +288,7 @@ and not `update_current_contract_wasm`, the only way an instance's code can chan
 instance of this hash gives the same answer for the same input, and nobody, its deployer
 included, can change that.
 
-It is pinned for this harness only. The capability registry does not recognize it yet, and
+The version-3 development registry recognizes this exact verifier.
 `scripts/verify-pinned-upstream.sh` does not rebuild it. pollywallet's verifier is not this
 code: its contract metadata shows a different soroban-sdk and stellar-cli, so it does not
 reproduce from our pinned inputs.
@@ -217,18 +303,42 @@ export OZPB_HARNESS_SECRETS=$(mktemp -d)/keys.json
 node setup.mjs --run-dir R                     # or --owner passkey, after npm ci in ../browser
 node invoke.mjs --run-dir R --signer owner --rule 0 --amount 10000000 --to <recipient> \
     --expect permit --bundle R/import-bundle.json
-ozpb import --bundle R/import-bundle.json > R/recording.json
-node write-spec.mjs --run-dir R
-ozpb generate --spec R/spec.json --rule 0 --out R/policy
+node synthesis-flow.mjs --run-dir R          # real record/synthesis/reference/build/verify
 node install.mjs --run-dir R --wasm R/policy/<name>.wasm
 node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect permit
+node monitor.mjs --run-dir R                  # read-only grant/code observation; no signing key
+node derived-denials.mjs --run-dir R          # W1/W2/W3 only: this spec's suite, enforcing simulations
+node lifecycle.mjs --run-dir R                # owner signs removal; needs the run's keys
+node invoke.mjs --run-dir R --amount 10000000 --to <recipient> --expect deny-account:3000
 ```
+
+`deploy-live-helper.mjs` runs setup, the owner transfer and the synthesis chain itself with its
+own throwaway keys, then deploys the [atomic live-enforcement helper](../docs/ATOMIC-LIVE-HELPER.md#testnet-deployment)
+and simulates one permit and one denial through it. It runs `ozpb` as the other steps do (`OZPB_BIN`,
+or Cargo) and needs `stellar`.
 
 CI runs both this suite and `npm test` in `testnet-harness/browser`, with locked dependencies
 and pinned Node. The installer tests run the real local CLI (`OZPB_BIN`, or Cargo) but mock
 the RPC and key boundaries; they require the Rust dependencies to be cached for offline use.
 The browser suite tests the passkey modules without launching a browser. Neither suite signs
 or submits a live transaction.
+
+`monitor.mjs` is a one-shot configuration observation, not a background service. It checks
+this rule's target, name, expiry, signer and policy identities and the account/policy code pins.
+Each account-code, policy-code and rule read retains its own RPC ledger number. These are
+explicitly non-atomic observations, not a common-ledger snapshot or authenticated proof.
+It records drift or unavailable observations and fails closed; it does not enumerate the
+account's complete authority surface or prevent changes after its reads. The wrapper runs it
+after installation and before removal. Full wallet-owned call-surface monitoring remains required.
+
+The removal decoder follows the exact pinned account's embedded event specification, captured
+in `scripts/fixtures/context-rule-removed-spec.json`: `context_rule_removed`, a `u32` rule topic,
+and an empty map. The release's function comment says `[]`, but the compiled event's
+`data_format` is `map`. It checks the successful transaction/envelope identity, the exact
+removal call, event contract and rule, and refuses missing or conflicting removal events.
+OpenZeppelin's pinned removal implementation attempts policy uninstall on a best-effort basis,
+so a removed rule and a policy still reporting installed are distinct outcomes. The journal
+retains both. Neither these offline controls nor the executable flow is a new live observation.
 
 `invoke.mjs --expect deny:<code>` passes only if both of these hold:
 
@@ -239,6 +349,61 @@ The same number from another contract does not count. The native SAC's #6, for e
 `AccountMissingError`. The passkey's negative control,
 `invoke.mjs --signer owner --rule 0 --wrong-challenge yes --expect deny:3114`, counts the code only
 when the WebAuthn verifier contract raised it.
+
+## Derived denials
+
+`derived-denials.mjs --run-dir R` runs right after installation in the W1, W2 and W3 modes,
+before any delegated call. It replays the spec's own layer-1 suite against the installed rules:
+
+- `ozpb reference-suite --spec R/spec.json --emit-cases` writes `R/derived-cases.json`. The
+  script requires three things of the emitted list:
+  - its spec hash is the installed artifacts' (`pipeline.json` or `protocol-pipeline.json`);
+  - its `suite_hash` recomputes over exactly those cases;
+  - its labels, classes and expectations are the ones the pre-install reference report agreed with.
+
+  The suite hash is a checksum, not a signature. What binds the cases to the grant is that the
+  script runs the CLI on the installed spec itself. To check a report, re-run that command on
+  the retained `spec.json` and compare.
+- Each rule's recorded call (the call the grant was synthesized from) must be permitted.
+- Every deny case of a live-realizable class is then replayed in suite order, not chosen by name:
+  argument mutations applied to the recorded call, the function and contract classes, and the
+  signer sets. Fewer than five such cases refuses the run before anything is simulated.
+- Each rule must have exactly one allowed tuple, because mutations are applied to the one call
+  the run recorded for it. A rule with several tuples is refused. Those are the only rules with
+  cross-product cases, so cross-product cases are never replayed live.
+- Some cases cannot be carried by a live call. They are listed under `offline` with a reason
+  and are not counted:
+  - `ledger_time`: time boundaries;
+  - `installation_state`: call-count, missing-state and strict-set cases;
+  - `host_rejects_before_authorization`: arity, type confusion, or a value of another type;
+  - `authorizer_replaced`: a mutation of the argument that asks the account to authorize, i.e.
+    the transfer or claim `from` or the swap `to`;
+  - `no_live_stand_in`: the suite's undeployed contract or absent function, unless a control has
+    already shown a live equivalent. W1 uses the pool's `submit`; W2 uses the funded control
+    token. Both are labeled `live_stand_in`.
+- Each case must be refused by the enforcer its class predicts, attributed by contract id as for
+  `invoke.mjs`:
+  - the account's `UnvalidatedContext` (3002) for another contract;
+  - the account's `UnauthorizedSigner` (3016) for an unrecognized signer;
+  - otherwise the first policy in the live rule's own order that refuses: generated `#1`, `#5`
+    or `#6`, or W2's spending policy `3223` or `3221`.
+- A permit or any other attribution fails the run, and the failure cleanup removes the grant.
+
+The suite's unrecognized signer sorts before any real delegate, so "authorized set plus an
+unrecognized signer" stops at the same account check as "unrecognized signer" alone. That is two
+suite cases but one live check.
+
+The account's authorization entries are built from the realized call, with a random nonce. The
+delegate signs them, and they are sent only to the RPC simulation. A signed original is a valid
+authorization of the real call until it expires, and the endpoint sees it, so it expires five
+ledgers after the latest one read. The journal (`run.json` → `derived_denials`, exported as `derived_denials`) records:
+
+- the suite and spec hashes;
+- the live policy order;
+- each case's id, class, realization, expected and observed enforcer and code, and ledger;
+- the offline list.
+
+Its labels say what it is: post-install, state-dependent, simulation-only, never submitted.
 
 ## What a run does and does not show
 
@@ -255,22 +420,27 @@ when the WebAuthn verifier contract raised it.
 - It refuses the call with a changed amount, with a changed recipient, and past the call cap.
   Each refusal is the policy's own published error code.
 
+The default native wrapper also exercises owner removal and a post-removal denial, but in that
+mode those steps still need a reviewed live run at this revision. They are not part of the
+historical October 15 observations described below. The
+[subscription](../docs/WALKTHROUGH-SEP41.md) and [Soroswap](../docs/WALKTHROUGH-PROTOCOLS.md)
+modes ran them live on 20 October 2026, at the commits recorded in
+[the testnet evidence](../docs/TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9.
+
 **Not shown, or not as you might assume:**
 
-- **Synthesis does not run.** Step 3 writes the spec by hand, because `ozpb synthesize` cannot
-  run against testnet on this tree. There are two reasons:
-  - The RPC recorder refuses protocol 29 (`crates/source-rpc` decodes at most 28).
-    `ozpb simulate` against testnet fails with `E_RPC: unsupported protocol`.
-  - A recording made by `ozpb import` has no observation of the account's executable, and
-    synthesis requires one (`E_INCOMPATIBLE_ACCOUNT`).
-
-  `write-spec.mjs` requires the template's exact shape and checks the call constraints
-  (contract, function, from, to, amount) and the network against the recording. It cites the
-  recording's real hash and `self_supplied` trust. The signer, expiry and call cap are the run's
-  decisions, not observations. Nothing in the spec was resolved against the signed registry:
-  `registry_snapshot` is all zeroes and `registry_resolution` says so. The
-  committed template's own evidence entry is a zero hash labelled `incomplete`, so
-  `ozpb generate` refuses the unfilled template.
+- **The default pipeline now synthesizes the grant.** Protocol 29 is supported by the RPC
+  recorder. Its executable observations are acquired after the transaction, so they describe
+  the endpoint's later state, not an authenticated historical state. `synthesize` verifies
+  raw/decoded coherence, resolves the registry and treats supplied JSON as `self_supplied`.
+  The output records the same exact transfer and the harness's explicit test decisions.
+  `write-spec.mjs` and its template remain only for inspecting/reproducing the historical
+  manual workflow; the wrapper does not call them.
+- **Reproduction is not a complete dry run.** The default wrapper requires matching source,
+  Wasm and manifest and complete layer-1 coverage for its single scope+count policy. It does
+  not establish arbitrary captured-target execution or a wallet product's consent. The Blend
+  and Soroswap paths are [separate modes](../docs/WALKTHROUGH-PROTOCOLS.md); Blend opens and
+  withdraws its own USDC supply position. Enforcing network simulations remain a separate later observation.
 - **Denials have no transaction hash.** Each one is observed in the enforcing simulation, which
   runs `__check_auth` and the policy exactly as the network would. The authorization entries are
   signed, but the transaction is not, nothing is submitted, and the call count is not spent.
@@ -331,22 +501,21 @@ rule `install.mjs` builds from the spec.
 ```
 OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_BIN=<ozpb with the check commands> \
 OZPB_REGISTRY_SNAPSHOT_ROOT=<root of the signed snapshot> OZPB_SIGNED_REGISTRY_SNAPSHOT=registry.signed.json \
-OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=3 OZPB_RPC_SOURCES_FILE=sources.json \
+OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=4 OZPB_RPC_SOURCES_FILE=sources.json \
 [OZPB_RPC_SOURCE=testnet] [OZPB_HARNESS_CONFIRM=tty|operator] [OZPB_HARNESS_TRUST=trust.json] \
 bash testnet-harness/run.sh
 ```
 
 - **The binary.** `OZPB_BIN` must be an `ozpb` built from a tree that has
-  `check-policy-call-surface` and `prepare-install-intent`, which this tree does not. `run.sh` uses
+  `check-policy-call-surface` and `prepare-install-intent`, both included in this tree. `run.sh` uses
   the same binary for `ozpb generate`, so the check's rebuild of the policy can match.
   `OZPB_RPC_SOURCE` names the entry in the sources file, `testnet` by default. `run.sh` checks all
   of these before setup starts.
 
-- **The registry root.** `write-spec.mjs --registry-root` writes the root into the spec before
-  `ozpb generate`. The check refuses a spec whose `registry_snapshot` is not the root of the
-  signed snapshot it is given, and a zero root. That names the registry the check uses; nothing in
-  the spec is resolved against it. For the development snapshot, recognition rests on a public
-  development root, which is testnet only.
+- **The registry root.** Synthesis resolves the signed registry and writes its root into the
+  spec before generation. The pipeline requires it to match `OZPB_REGISTRY_SNAPSHOT_ROOT`;
+  the authority check independently requires the same signed snapshot. For the development
+  snapshot, recognition rests on a public development root, which is testnet only.
 - **The policy binding.** It carries the policy's build manifest unmodified, and its deploy
   transaction as `resolution_reference`. The signed snapshot goes into the request byte for byte.
   Parsing it in JavaScript would turn its 64-bit integers into different numbers, and the check
@@ -367,8 +536,10 @@ bash testnet-harness/run.sh
   None of this shows that a human approved the install, or that an agent with the same access
   could not approve itself. That claim needs a real wallet's protected approval screen.
   `run.json` records the decision under that label, with the exact operator-trusted identities.
-- It ran on testnet once per path, on 2026-10-15. Both runs used a passkey owner and an `ozpb`
-  built from the authority-check branch before those commands were integrated into this tree.
+- The refused path ran on testnet once, on 2026-10-15. The accepted path ran that day and
+  again in the 20 October W2 and W3 runs (see the testnet evidence, sections 8 and 9). Both
+  15 October runs used a passkey owner and an `ozpb` built from the authority-check branch
+  before those commands were integrated into this tree.
   One run was accepted: the intent, the
   decision, the screen, the re-check and the install all ran, and then the delegate's permit and
   denials. The other was refused: a second owner rule for an account the wallet does not trust,
@@ -394,21 +565,21 @@ RFP 7 asks for wallet integration with at least one Stellar smart-account wallet
 record → generate → simulate → sign → install. For each link: what runs in this directory today,
 and what does not.
 
-- **record.**
-  - Runs, offline only: a transfer the account really executed, decoded by `ozpb import`, with
-    `self_supplied` trust.
-  - Does not run: the live RPC recorder (`ozpb record`, `ozpb simulate`). It refuses
-    protocol-29 testnet on this tree.
-- **generate.**
-  - Runs: codegen (`ozpb generate`).
-  - Does not run: synthesis. `write-spec.mjs` fills the template by hand and checks the call
-    constraints against the recording; no registry resolution happens.
+- **record.** The default wrapper calls `ozpb record` for the owner's executed transfer,
+  obtaining an RPC-labeled recording with executable observations. It retains the raw import
+  bundle separately. The historical runs documented above used offline imports instead.
+- **generate.** The wrapper now runs real synthesis with explicit test decisions and a signed
+  registry, followed by code generation, the reference suite and artifact reproduction.
+  Synthesis admits the serialized recording as `self_supplied`. In the default native mode
+  this path needs a reviewed new live run before it is evidence at the delivered revision.
+  The subscription and Soroswap modes ran it live on 20 October 2026, at earlier commits
+  recorded in the testnet evidence.
 - **simulate.**
   - Runs: every transaction that carries the account's authorization is simulated in enforcing
     mode, with the signed entries, before the transaction is signed. Every denial is observed
     there.
-  - Not run on the generated policy here: the offline dry-run harness (`crates/harness`) and
-    `ozpb evaluate`.
+  - Runs in the default pipeline: the layer-1 reference suite and modeled behavior checks
+    within `verify`. These are not the full four-layer dry-run harness.
 - **sign.**
   - Runs, on chain, with `OZPB_HARNESS_OWNER=passkey`: the account's owner is a passkey. It signs
     the recorded transfer and `add_context_rule` through WebAuthn, and the pinned OpenZeppelin
@@ -432,6 +603,11 @@ and what does not.
   - Does not run: installing into a stock pollywallet account. Its account wasm is not pinned and
     its verifier does not reproduce from our pinned inputs. pollywallet's UI cannot create the
     pinned account either, because it deploys its own wasm through its own relayer.
+- **revoke and observe.** The wrapper now removes its own grant through owner authorization,
+  verifies the removal event and checks a delegate denial attributed to the missing account
+  rule. It separately observes policy cleanup and grant/code drift. This is an executable
+  harness path awaiting current live evidence, not pollywallet's protected revocation UI or
+  the complete post-install call-surface monitoring requirement.
 
 The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<pid>/` unless
 `OZPB_HARNESS_OUT` says otherwise). Every transaction hash in it can be looked up at

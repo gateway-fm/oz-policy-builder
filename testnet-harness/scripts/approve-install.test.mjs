@@ -120,6 +120,7 @@ test('a re-check that reads a different authority state means asking again', asy
   const r = await approveInstall({ runner: fakeRunner({ fresh }), request: REQUEST, trust, expect: EXPECT, confirm: yes, log: quiet });
   assert.equal(r.approved, false);
   assert.match(r.reasons.join('\n'), /ask again/i);
+  assert.equal(r.stage, 'recheck_decision');
 });
 
 test('a re-check whose grant differs from the intent is refused, even under the same commitment', async () => {
@@ -154,6 +155,7 @@ test('a re-check that cannot answer is a refusal', async () => {
   });
   assert.equal(r.approved, false);
   assert.match(r.reasons.join('\n'), /E_RPC/);
+  assert.equal(r.stage, 'recheck_error');
 });
 
 // --- the CLI seam ------------------------------------------------------------------------------
@@ -183,7 +185,8 @@ test('the signed registry snapshot reaches the tool byte for byte, large integer
   // the same path install.mjs uses: file text → RawJson → checkRequest → the request file.
   const snapshotText = '{\n  "snapshot": {\n    "not_before_unix": -9223372036854775808,\n    "valid_until_unix": 9223372036854775807,\n    "version": 3\n  },\n  "signatures": []\n}\n';
   const manifest = { spec_hash: '11'.repeat(32), wasm_hash: '99'.repeat(32), rule_index: 0, registry_snapshot: 'a0'.repeat(32) };
-  const spec = { name: 'native-sub', network_id: EXPECT.networkId, registry_snapshot: 'a0'.repeat(32), smart_account: { address: EXPECT.account } };
+  const spec = { name: 'native-sub', network_id: EXPECT.networkId, registry_snapshot: 'a0'.repeat(32), smart_account: { address: EXPECT.account },
+    rules: [{ policies: [{ generated: { kind: 'gen:scope+count' } }] }] };
   const request = checkRequest({
     spec, ruleIndex: 0, manifest, policyAddress: EXPECT.boundPolicies[0], resolutionReference: 'deploy tx',
     signedRegistrySnapshot: new RawJson(snapshotText), rpcSource: 'testnet',

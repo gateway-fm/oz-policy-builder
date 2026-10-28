@@ -451,11 +451,48 @@ test('add_context_rule arguments, written out from the contract signature', () =
     hex(X.scMap([[X.scAddress(policy), Buffer.concat([X.u32(3), X.u32(0)])]])),
   ]);
   assert.equal(hex(addContextRuleArgs({ context: sac, name: 'cap', validUntil: null, signers: [], policies: [] })[2].toXDR()), '00000001');
-  // Only the generated policy's install parameter is encoded here.
   assert.throws(() => addContextRuleArgs({
     context: sac, name: 'cap', validUntil: null, signers: [],
-    policies: [{ address: policy, install_params: { kind: 'spending_limit', spending_limit: '1', period_ledgers: 1 } }],
-  }), /spending_limit/);
+    policies: [{ address: policy, install_params: { kind: 'unknown' } }],
+  }), /unknown/);
   const generated = { address: policy, install_params: { kind: 'generated' } };
-  assert.throws(() => addContextRuleArgs({ context: sac, name: 'cap', validUntil: null, signers: [], policies: [generated, generated] }), /at most one/);
+  assert.throws(() => addContextRuleArgs({ context: sac, name: 'cap', validUntil: null, signers: [], policies: [generated, generated] }), /duplicate/);
+});
+
+test('composed install parameters are exact i128/u32 and map keys follow contract-address bytes', () => {
+  const smaller = StrKey.encodeContract(Buffer.alloc(32, 1));
+  const larger = StrKey.encodeContract(Buffer.alloc(32, 2));
+  const policies = [
+    { address: larger, install_params: { kind: 'generated' } },
+    { address: smaller, install_params: { kind: 'spending_limit', spending_limit: '9007199254740993', period_ledgers: 12 } },
+  ];
+  const input = { context: TOKEN, name: 'sub', validUntil: 55, signers: [], policies };
+  const expected = X.scMap([
+    [X.scAddress(smaller), X.scMap([
+      [X.scSymbol('period_ledgers'), Buffer.concat([X.u32(3), X.u32(12)])],
+      [X.scSymbol('spending_limit'), X.scI128(9007199254740993n)],
+    ])],
+    [X.scAddress(larger), Buffer.concat([X.u32(3), X.u32(0)])],
+  ]);
+  assert.equal(hex(addContextRuleArgs(input)[4].toXDR()), hex(expected));
+  for (const bad of ['0', '-1', '01', (1n << 127n).toString()]) {
+    policies[1].install_params.spending_limit = bad;
+    assert.throws(() => addContextRuleArgs(input), /spending limit/);
+  }
+  policies[1].install_params.spending_limit = '1';
+  for (const bad of [0, -1, 1.2, 0x1_0000_0000]) {
+    policies[1].install_params.period_ledgers = bad;
+    assert.throws(() => addContextRuleArgs(input), /period/);
+  }
+});
+
+test('a Delegated signer map is ordered by key and refuses what it cannot order', async () => {
+  const { delegatedSignersPayload } = await import('./lib.mjs');
+  const low = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 0)), high = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 0xff));
+  const signers = (payload) => payload.map.find((e) => e.key.sym.toString() === 'signers').val.map
+    .map((e) => Address.fromScAddress(e.key.vec[1].address).toString());
+  assert.deepEqual(signers(delegatedSignersPayload([high, low], [3])), [low, high]);
+  assert.deepEqual(signers(delegatedSignersPayload([], [3])), []);
+  assert.throws(() => delegatedSignersPayload([low, low], [3]), /cannot repeat/);
+  assert.throws(() => delegatedSignersPayload([StrKey.encodeContract(Buffer.alloc(32, 1))], [3]), /ed25519/);
 });

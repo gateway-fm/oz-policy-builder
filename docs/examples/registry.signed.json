@@ -1,9 +1,9 @@
 {
   "snapshot": {
     "schema": "registry/v1",
-    "version": 3,
-    "log_index": 3,
-    "previous_root": "4474ec405262f83c3d125cffde8f362eefcf4c90120cefa5cae74aec4e929ed9",
+    "version": 4,
+    "log_index": 4,
+    "previous_root": "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f",
     "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
     "valid_from_unix": -9223372036854775808,
     "expires_at_unix": 9223372036854775807,
@@ -56,6 +56,13 @@
         "review_reference": "OpenZeppelin/stellar-contracts examples/multisig-smart-account/webauthn-verifier @ v0.7.2 (a9c4216), built here with rustc 1.91.1 and stellar-cli 27.0.0 — provenance in ozpb_domain::pinned_upstream. No storage, constructor, upgrade or admin; Wasm imports no ledger functions. Our build of their source, not an upstream-published artifact."
       }
     },
+    "target_adapters": {
+      "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c": {
+        "implementation": "soroswap-router@1",
+        "semantics_digest": "da6b4c209e48dac98d9473599622c3c17ec52101d2b3bca4bea7ecdf081a2f13",
+        "review_reference": "Development-registry assertion, not governance: anyone can sign with this snapshot's development root. Roles of swap_exact_tokens_for_tokens read from the public router source, soroswap/core contracts/router at tag v1.0 (unchanged since 8a35511): amount_in is the exact input taken from `to`, amount_out_min an absolute output floor, path the exact route, `to` both payer and recipient and the only address asked to authorize, deadline compared with the ledger timestamp only. The deployed testnet code (router CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD) was not reproduced byte for byte: a rebuild with rustc 1.83.0 and soroban-sdk 20.2.0, the versions its metadata names, optimized as soroban-cli 22.0.1 does, differs only in the order of seven internal functions. See docs/TARGET-ADAPTERS.md."
+      }
+    },
     "templates": {
       "policy-templates/scope@1": {
         "capability_schema": "15fbc6fa21090cba820dc97afbf9a0b2f4402016646dae87a2ec8a3839d17e61",
@@ -79,6 +86,6 @@
     "revocations": {}
   },
   "signatures": {
-    "legacy": "2b3bafc7bce0311427007efd86d612c17b7b7ec640694322cf1fb3fd9737597bf2bb96eb16d75607266bce26b15bdd773f704742cd0cbc67e06fe59f2fbe800b"
+    "legacy": "ff5a2a8e71be972275b9464c2b5868948f92b18fa9f4083bc8881d68411dd3d65abdfd290ca90a5e32105b0643c71b6a5caf61b6687b068e267290bd3e508706"
   }
 }

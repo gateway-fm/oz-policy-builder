@@ -1,15 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { StrKey } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
 import { RawJson, parseJsonExact, requestText } from './raw-json.mjs';
 import { runTool } from './tool.mjs';
+import { checkProposalSpec } from '../shared/proposal.mjs';
 
 const NETWORK = 'Test SDF Network ; September 2015';
 const HASH = /^[0-9a-f]{64}$/;
 const FILES = ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'rustfmt.toml', 'src/contract.rs', 'src/lib.rs'];
-const refuse = () => { throw new Error('wallet pipeline refused; refresh and review again'); };
+const refuse = (code) => {
+  throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), code ? { code } : {});
+};
+// `capture-target` codes that name the call's own outcome rather than an endpoint fault.
+const TARGET_CODES = Object.freeze(['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED']);
 const integer = (n, low, high) => Number.isSafeInteger(n) && n >= low && n <= high;
 const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const display = (value) => JSON.parse(JSON.stringify(value, (_key, part) => typeof part === 'bigint' ? part.toString() : part));
@@ -37,9 +42,16 @@ export class WalletToolchain {
 
   #directory() { return mkdtempSync(join(this.#root, 'operation-')); }
   #get(map, id) { if (typeof id !== 'string' || !HASH.test(id) || !map.has(id)) refuse(); return map.get(id); }
-  async #call(directory, command, args, parser = parseJsonExact) {
+  async #call(directory, command, args, parser = parseJsonExact, { signal, timeoutMs, codes = [] } = {}) {
+    let raw;
     try {
-      const raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment });
+      raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment,
+        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(codes.length ? { codes } : {}) });
+    } catch (error) {
+      // Only a code this call allowlisted survives; the runner never returns the CLI's text.
+      refuse(codes.includes(error?.code) ? error.code : undefined);
+    }
+    try {
       if (typeof raw !== 'string' || Buffer.byteLength(raw) > 16 * 1024 * 1024) refuse();
       save(join(directory, `${command}.json`), raw);
       return parser(raw);
@@ -72,7 +84,7 @@ export class WalletToolchain {
     } catch { refuse(); }
   }
 
-  async generate({ recordId, delegateAddress, validUntilLedger, maxCalls, grantName, currentLedger }) {
+  async generate({ recordId, delegateAddress, validUntilLedger, maxCalls, grantName, currentLedger, proposal }) {
     try {
       const record = this.#get(this.#records, recordId);
       if (this.#artifacts.size >= 8 || !StrKey.isValidEd25519PublicKey(delegateAddress)
@@ -82,7 +94,7 @@ export class WalletToolchain {
       const directory = this.#directory();
       const decisions = { grant_name: grantName, delegate_signers: [{ delegated: { address: delegateAddress } }],
         predicate: 'any_of', valid_until_ledger: validUntilLedger, no_expiry_acknowledged: false,
-        max_calls: maxCalls, widenings: [], spending_limit: null };
+        max_calls: maxCalls, unlimited_calls_acknowledged: false, widenings: [], spending_limit: null };
       const account = { address: record.response.accountAddress, observed_code_hash: ACCOUNT_WASM,
         registry_resolution: 'resolved from the wallet operator signed registry' };
       save(join(directory, 'account.json'), JSON.stringify(account));
@@ -97,6 +109,8 @@ export class WalletToolchain {
         || rule.valid_until?.ledger !== validUntilLedger || JSON.stringify(rule.authorization?.signers) !== JSON.stringify(decisions.delegate_signers)
         || rule.policies?.length !== 1 || rule.policies[0].generated?.kind !== 'gen:scope+count'
         || JSON.stringify(rule.state) !== JSON.stringify([{ call_count_per_installation: { max_calls: maxCalls } }])) refuse();
+      // Imported permissions must match before compilation or retaining a deployable artifact.
+      if (proposal !== undefined) checkProposalSpec(proposal, spec);
       save(join(directory, 'spec.json'), JSON.stringify(spec));
       const reference = await this.#call(directory, 'reference-suite', ['--spec', join(directory, 'spec.json')]);
       if (reference.report?.spec_hash !== synthesis.spec_hash || reference.all_agree !== true || reference.disagreements !== 0
@@ -148,7 +162,7 @@ export class WalletToolchain {
    * CLI preparation for one retained artifact and its binding request. The fresh nonce and
    * artifact claims come only from this process; the returned request is the native job's input.
    */
-  async prepareDryRun({ artifactId, candidate, candidateContextRuleId }) {
+  async prepareDryRun({ artifactId, candidate, candidateContextRuleId, signal }) {
     const held = this.artifact(artifactId);
     if (!integer(candidateContextRuleId, 0, 0xffffffff) || candidate?.spec !== held.response.spec || candidate.rule_index !== 0) refuse();
     const files = Object.fromEntries(FILES.filter((name) => name !== 'Cargo.lock').map((name) => [name, held.response.files[name]]));
@@ -158,8 +172,29 @@ export class WalletToolchain {
     const directory = this.#directory();
     save(join(directory, 'request.json'), requestText(request));
     const output = await this.#call(directory, 'prepare-dry-run', ['--request', join(directory, 'request.json'), ...this.#trustArgs,
-      '--rpc-sources', join(this.#root, 'rpc-sources.json')]);
+      '--rpc-sources', join(this.#root, 'rpc-sources.json')], parseJsonExact, { signal });
     return { request, output };
+  }
+
+  /**
+   * `capture-target` through the operator's `testnet` source for one unsigned envelope the
+   * backend built itself. The envelope is confidential input: it reaches the CLI only in a
+   * private request file. Neither it nor the capture is kept once the CLI exits, and no refusal
+   * repeats either; the worker evidence binds the capture by its hash.
+   */
+  async captureTarget(envelope, { signal } = {}) {
+    if (typeof envelope !== 'string' || envelope.length > 64 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope)) refuse();
+    const directory = this.#directory();
+    const request = join(directory, 'request.json');
+    try {
+      save(request, JSON.stringify({ network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope }));
+      // A read, not a build: bounded well below the build deadline so the whole check stays bounded.
+      return await this.#call(directory, 'capture-target', ['--request', request, '--rpc-sources', join(this.#root, 'rpc-sources.json')],
+        parseJsonExact, { signal, timeoutMs: 120_000, codes: TARGET_CODES });
+    } finally {
+      // The capture repeats the call (account, recipient, amount), so it is as confidential as the envelope.
+      rmSync(request, { force: true }); rmSync(join(directory, 'capture-target.json'), { force: true });
+    }
   }
 
   bindingRequest(artifactId, policyAddress, resolutionReference) {

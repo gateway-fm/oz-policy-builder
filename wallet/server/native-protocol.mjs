@@ -39,20 +39,48 @@ export function offlineDomain(binding) {
   } catch { refuse(); }
 }
 
+/**
+ * The offline capability of one in-memory key (`publicKey`, `sign`, `verify`): it signs only a
+ * canonical `HashIdPreimage::SorobanAuthorization` whose network is the execution network it derives
+ * itself from `binding`, never a digest or other bytes. That network is never mainnet, testnet,
+ * futurenet or the source network (`offlineDomain`), so nothing it signs is valid on a live network;
+ * the live capability (live-signing.mjs) is the only one that signs testnet authorizations.
+ */
+export function offlineCapability(key) {
+  const address = key.publicKey();
+  if (!StrKey.isValidEd25519PublicKey(address)) refuse();
+  return Object.freeze({
+    address,
+    signPreimage(preimageXdr, binding) {
+      try {
+        const domain = offlineDomain(binding);
+        const preimage = decode(preimageXdr, xdr.HashIdPreimage);
+        if (binding.delegate_address !== address || preimage.type !== 'envelopeTypeSorobanAuthorization'
+          || Buffer.from(preimage.sorobanAuthorization.networkId.value).toString('hex') !== domain.networkId) refuse();
+        const bytes = Buffer.from(hash(preimage.toXDR()));
+        const signature = Buffer.from(key.sign(bytes));
+        if (signature.length !== 64 || !key.verify(bytes, signature)) refuse();
+        return signature;
+      } catch { return refuse(); }
+    },
+  });
+}
+
 /** A per-run signing capability. Caller metadata must come from trusted preparation. */
 export function createOfflineSigner({ prepared, caseIds, signer }) {
   try {
     const retained = structuredClone(prepared);
     const domain = offlineDomain(retained.binding);
     if (retained.execution_network_id !== domain.networkId || signer?.address !== retained.binding.delegate_address
-      || typeof signer.sign !== 'function' || !Array.isArray(caseIds) || caseIds.length < 1 || caseIds.length > 10000
-      || caseIds.some((id) => typeof id !== 'string' || !/^(case:(0|[1-9][0-9]*)|control:(signature_bit|nonce_binding|payload_binding|context_rule_binding|nonce_replay)|sequence:((0|[1-9][0-9]*)|partial_rollback|overflow))$/.test(id))
+      || typeof signer.signPreimage !== 'function' || !Array.isArray(caseIds) || caseIds.length < 1 || caseIds.length > 10000
+      || caseIds.some((id) => typeof id !== 'string' || !/^(case:(0|[1-9][0-9]*)|control:(signature_bit|nonce_binding|payload_binding|context_rule_binding|nonce_replay)|sequence:((0|[1-9][0-9]*)|partial_rollback|overflow)|target:(original|argument-denial):0)$/.test(id))
       || new Set(caseIds).size !== caseIds.length || !Array.isArray(retained.signature_expiration_ledgers)
       || retained.signature_expiration_ledgers.length < 1 || retained.signature_expiration_ledgers.length > 256
       || retained.signature_expiration_ledgers.some((ledger) => !integer(ledger))) refuse();
     const allowed = new Set(caseIds), expirations = new Set(retained.signature_expiration_ledgers);
     const usedCases = new Set(), usedNonces = new Set();
-    const key = Keypair.fromPublicKey(signer.address), sign = signer.sign;
+    // The capability itself refuses any preimage outside the execution network it derives.
+    const key = Keypair.fromPublicKey(signer.address), signPreimage = signer.signPreimage, binding = structuredClone(retained.binding);
     let count = 0, failed = false;
     return (request) => {
       try {
@@ -81,7 +109,8 @@ export function createOfflineSigner({ prepared, caseIds, signer }) {
         }));
         if (preimage.toXDR('base64') !== expectedPreimage.toXDR('base64') || digest(preimage.toXDR()) !== request.digest_hex) refuse();
         count++; usedCases.add(request.case_id); usedNonces.add(request.nonce);
-        const bytes = Buffer.from(request.digest_hex, 'hex'), signature = Buffer.from(sign(bytes));
+        const bytes = Buffer.from(request.digest_hex, 'hex');
+        const signature = Buffer.from(signPreimage(expectedPreimage.toXDR('base64'), binding));
         if (signature.length !== 64 || !key.verify(bytes, signature)) refuse();
         return Object.freeze({ type: 'signature', request_id: request.request_id,
           public_key_hex: Buffer.from(key.rawPublicKey()).toString('hex'), signature_hex: signature.toString('hex') });

@@ -12,6 +12,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Check the expiry and reviewed dependency inventory before any advisory can be ignored.
+python3 scripts/check-advisory-exception.py
+
 # Pinned: advisory-database handling and lint defaults are part of this gate's meaning, so a
 # different version can legitimately produce a different verdict. CI installs exactly this one.
 EXPECTED_DENY_VERSION="0.20.2"
@@ -26,7 +29,7 @@ if [ "$HAVE" != "$EXPECTED_DENY_VERSION" ]; then
 fi
 
 echo "== toolkit workspace: licenses · bans · sources =="
-cargo deny check licenses bans sources
+cargo deny --locked check licenses bans sources
 
 echo "== contracts workspace (on-chain deliverables): licenses · bans · sources =="
 # One shared config over two very different dependency graphs, so each run reports entries the
@@ -36,23 +39,23 @@ echo "== contracts workspace (on-chain deliverables): licenses · bans · source
 #
 # Here: every allowed licence and the `webpki-roots` exception belong to the toolkit tree, so this
 # run has nothing to say about them. A rejected licence or a disallowed source still fails.
-cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check licenses bans sources \
+cargo deny --locked --manifest-path contracts/Cargo.toml --config deny.toml check licenses bans sources \
     -A license-not-encountered -A license-exception-not-encountered
 
 echo "== native execution workspace: licenses · bans · sources =="
-cargo deny --manifest-path execution-runtime/Cargo.toml --config deny.toml check licenses bans sources \
+cargo deny --locked --manifest-path execution-runtime/Cargo.toml --config deny.toml check licenses bans sources \
     -A license-not-encountered -A license-exception-not-encountered
 
 echo "== security advisories (RustSec; all workspaces; fail closed) =="
 # Runs over all workspaces — contracts and native execution have separate
 # Soroban SDK dependency graphs. A missing/unreachable database is not evidence that the dependency
 # tree is safe, so cargo-deny's non-zero verdict is propagated unchanged.
-# The one `ignore` entry belongs to the contracts tree (an unmaintained build-time macro crate in
-# the Soroban SDK stack), so it is this run that cannot match it — the same shared-config artefact
-# as above, silenced on the side that does not own it. The contracts run below keeps the warning,
+# The shared ignores belong to the Soroban trees (the temporary crypto-bigint exception
+# and an unmaintained build-time macro crate), so this run cannot match them. This is
+# the shared-config artefact above, silenced on the side that does not own it. The contracts run below keeps the warning,
 # which is where a genuinely stale ignore would surface.
-cargo deny check advisories -A advisory-not-detected
-cargo deny --manifest-path contracts/Cargo.toml --config deny.toml check advisories
-cargo deny --manifest-path execution-runtime/Cargo.toml --config deny.toml check advisories -A advisory-not-detected
+cargo deny --locked check advisories -A advisory-not-detected
+cargo deny --locked --manifest-path contracts/Cargo.toml --config deny.toml check advisories
+cargo deny --locked --manifest-path execution-runtime/Cargo.toml --config deny.toml check advisories -A advisory-not-detected
 
 echo "LICENSE & SUPPLY-CHAIN GATE PASSED"
