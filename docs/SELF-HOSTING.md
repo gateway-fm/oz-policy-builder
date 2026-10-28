@@ -4,6 +4,19 @@ This package runs the versioned MCP endpoint for **one operator and trusted clie
 works on a Linux Docker host independently of any hosting provider. It does not provision
 cloud infrastructure, publish an image, or establish that an endpoint has been deployed.
 
+The hosted testnet deliverable means running the MCP tools behind an authenticated HTTPS
+address for authorized remote clients. It is not a wallet or a Stellar validator/RPC node:
+it records, synthesizes, builds and verifies policies through operator-allowed testnet RPC
+sources. User signing and installation approval remain in the wallet. A working local image
+or this guide alone does not establish that the hosted service is running.
+
+Use the disposable-worker mode below when preparing the hosted testnet deployment. Choosing
+its hosting provider is an operational decision, not a separate milestone requirement.
+Present the actual account, hostname/TLS plan, image digest, client access boundary, cost,
+budget alert and stop condition before creating paid resources. Production availability and
+mainnet operation belong to Tranche 3; the testnet deployment still needs its own security
+and operational acceptance checks.
+
 **The API and compiler still share a trust domain.** Container resource limits, Cargo's
 offline setting and environment filtering are useful bounds, but they do not isolate each
 compilation from API secrets, other jobs or RPC networking. Do not use this package as a
