@@ -45,7 +45,7 @@ const NETWORK: &str = "Test SDF Network ; September 2015";
 const START_BALANCE: i128 = 2_000_000_000;
 const AMOUNT: i128 = 500_000_000;
 const EXPECTED_TARGET_HASH: &str =
-    "d3766fbdf07170a55da903b75ef2262e3e84541e0304ac93425261c812032098";
+    "075c0e31d154fb52bb4d2c6bc85c6086cce851437a776bc4a3537fd94cb1f86a";
 const EXPECTED_POLICY_HASH: &str =
     "2a9beb1a8a7a73cbfc13173e245f4a712185376bd9a3fce3f7f8d7d2cf9b04be";
 /// Generated policy error for a context that no accepted call tuple admits.

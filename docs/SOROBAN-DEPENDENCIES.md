@@ -42,6 +42,19 @@ that proof. They cannot replace it. A dependency change also requires reviewing 
 policy, helper and target fixture Wasm hashes, byte reproducibility, and fresh testnet evidence
 at the delivered revision. Passing ordinary PR CI alone is insufficient for release.
 
+## Live-helper rollout
+
+The SDK update also changes the helper's built Wasm hash. The wallet's reviewed helper pin
+and the native execution test pin move together. Existing historical testnet receipts retain
+their original hash; they are not evidence for the new helper build. Deploy the new source-built
+helper with `testnet-harness/scripts/deploy-live-helper.mjs`, verify its readback receipt, and
+configure the wallet server with that new address before repeating live-layer checks.
+The manually dispatched `nightly-live.yml` workflow accepts `helper_probe=true` to run this
+probe after the pinned-account gates; its public receipt is retained in the job log. It uses
+throwaway automation keys, not wallet consent or human approval. A server
+still configured with an old helper address is refused by the new hash check. No installed
+account or policy is automatically upgraded by this rollout.
+
 ## Security follow-up
 
 This update does **not** resolve [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).

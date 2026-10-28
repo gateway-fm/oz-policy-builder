@@ -29,7 +29,13 @@ on:
   schedule:
     # 03:17 UTC — off the hour, so it does not pile up with everyone else's cron.
     - cron: "17 3 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      helper_probe:
+        description: "Deploy and probe the reviewed helper on testnet with throwaway automation keys"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -352,3 +358,31 @@ jobs:
 
       - name: pinned account authorization and signed target fixture
         run: bash scripts/test-pinned-account-authorization.sh
+
+
+      - name: Node for optional testnet helper probe
+        if: github.event_name == 'workflow_dispatch' && inputs.helper_probe
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: optional reviewed-helper testnet probe (automation, no human approval)
+        if: github.event_name == 'workflow_dispatch' && inputs.helper_probe
+        env:
+          OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
+        run: |
+          set -euo pipefail
+          npm ci --prefix testnet-harness/scripts --no-audit --no-fund
+          npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
+          cargo build --locked -p ozpb-cli
+          node testnet-harness/scripts/deploy-live-helper.mjs \
+            --evidence "$RUNNER_TEMP/atomic-live-helper-sdk28.json"
+          # Only the probe's explicit public receipt goes to the log. No run-directory
+          # upload: it contains more material than the allowlisted receipt.
+          python3 - "$RUNNER_TEMP/atomic-live-helper-sdk28.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as file:
+              receipt = json.load(file)
+          print("OZPB_PUBLIC_HELPER_EVIDENCE=" + json.dumps(receipt, separators=(",", ":")))
+          PY
