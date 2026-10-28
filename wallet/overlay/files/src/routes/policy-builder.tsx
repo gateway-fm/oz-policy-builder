@@ -411,7 +411,7 @@ function PolicyBuilder() {
         <Evidence title="Exact grant, owner authority and evidence" value={state?.review} />
         <VerificationLayers verification={state?.review?.verification} />
         <p className="text-sm text-slate-300">Original permit and at least five reverted derived denials in one offline layer:
-          {" "}{object(object(state?.review?.verification).acceptance).meetsMinimum === true ? "met" : "not met"}.
+          {" "}{gate.offlineAcceptanceReady ? "met" : "not met"}.
           {" "}Installation also requires all four layers to pass for this exact review.</p>
         {state?.status?.capabilities.accountCheck && <button className={button}
           disabled={busy || !state?.review || !state?.delegate}

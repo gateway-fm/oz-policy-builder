@@ -11,7 +11,7 @@ function report() {
 }
 test('only the exact four passed bound layers enable final acceptance', () => {
   const value = report();
-  assert.deepEqual(verificationGate(value, bindings), { localReady: true, acceptanceReady: true });
+  assert.deepEqual(verificationGate(value, bindings), { localReady: true, offlineAcceptanceReady: true, acceptanceReady: true });
   for (const layer of value.layers) {
     layer.status = 'unavailable';
     assert.equal(verificationGate(value, bindings).acceptanceReady, false);
@@ -22,7 +22,7 @@ test('first three layers remain distinct from unavailable live enforcement', () 
   const value = report();
   value.complete = false;
   value.layers[3].status = 'unavailable';
-  assert.deepEqual(verificationGate(value, bindings), { localReady: true, acceptanceReady: false });
+  assert.deepEqual(verificationGate(value, bindings), { localReady: true, offlineAcceptanceReady: true, acceptanceReady: false });
 });
 test('forged complete flag, duplicates, unknown layers or mismatched evidence fail closed', () => {
   for (const change of [
@@ -51,4 +51,20 @@ test('forged complete flag, duplicates, unknown layers or mismatched evidence fa
     assert.equal(verificationGate(value, bindings).acceptanceReady, false);
   }
   assert.equal(verificationGate(report(), { ...bindings, bindingSetHash: undefined }).acceptanceReady, false);
+});
+
+
+test('the displayed offline bar rejects malformed minima and either layer missing its original permit', () => {
+  for (const required of [undefined, 0, 4, 6, '5']) {
+    const value = report(); value.acceptance.requiredRevertedDenials = required;
+    const gate = verificationGate(value, bindings);
+    assert.equal(gate.offlineAcceptanceReady, false);
+    assert.equal(gate.acceptanceReady, false);
+  }
+  for (const index of [0, 1]) {
+    const value = report(); value.acceptance.executedLayers[index].originalPermitted = false;
+    const gate = verificationGate(value, bindings);
+    assert.equal(gate.offlineAcceptanceReady, false);
+    assert.equal(gate.acceptanceReady, false);
+  }
 });

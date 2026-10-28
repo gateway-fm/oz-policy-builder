@@ -1,6 +1,6 @@
 const LAYERS = ['reference', 'account_wasm', 'captured_target', 'live_enforcement'];
 const HASH = /^[0-9a-f]{64}$/;
-const closed = () => ({ localReady: false, acceptanceReady: false });
+const closed = () => ({ localReady: false, offlineAcceptanceReady: false, acceptanceReady: false });
 
 /** Installation preflight is never counted as behavioral live-enforcement evidence. */
 export function verificationGate(report, expected) {
@@ -23,5 +23,6 @@ export function verificationGate(report, expected) {
       && Number.isSafeInteger(l.revertedDenials) && l.revertedDenials >= 0)
     && executed.some((l) => l.revertedDenials >= 5);
   const localReady = LAYERS.slice(0, 3).every((name) => byName.get(name) === 'passed');
-  return { localReady, acceptanceReady: minimum && localReady && byName.get('live_enforcement') === 'passed' && report.complete === true };
+  const offlineAcceptanceReady = minimum && byName.get('reference') === 'passed';
+  return { localReady, offlineAcceptanceReady, acceptanceReady: offlineAcceptanceReady && localReady && byName.get('live_enforcement') === 'passed' && report.complete === true };
 }

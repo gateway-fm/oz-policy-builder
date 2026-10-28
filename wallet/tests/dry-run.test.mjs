@@ -23,6 +23,7 @@ test('original plus five denials in one executed layer meets the offline bar whi
 });
 for (const [name, change] of [
   ['missing original', (l) => { l[1].evidence.caseResults.shift(); }],
+  ['a permitted mutation in place of the original', (l) => { l[1].evidence.caseResults[0].class = 'arg_equality'; }],
   ['four denials', (l) => { l[1].evidence.caseResults.pop(); }],
   ['wrong refusal code', (l) => { l[1].evidence.caseResults[1].refusalCode = 7; }],
   ['wrong refusal enforcer', (l) => { l[1].evidence.caseResults[1].refusedBy = 'account'; }],
