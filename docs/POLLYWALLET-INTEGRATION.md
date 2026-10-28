@@ -19,8 +19,9 @@ the owner can also consent to a [live-enforcement check](#live-enforcement-check
 enforce-mode simulations on testnet, never submitted. When all four layers passed on recent
 evidence and the live check's signatures expired unused, the owner can [install](#installation)
 the reviewed grant with one passkey-signed transaction and later [revoke](#revocation) it with
-another. Replacement and monitoring remain unavailable. A virtual authenticator's signature is
-automation evidence, not a human acceptance decision.
+another. [Revoke-first replacement](#revoke-first-replacement) and
+[on-demand monitoring](#on-demand-installed-grant-monitoring) are available within the scope
+below. A virtual authenticator's signature is automation evidence, not a human acceptance decision.
 
 ## Apply to the supported upstream revision
 
@@ -600,8 +601,11 @@ entries, then review again.
 
 `Prepare revocation` (`prepare-revoke`) is offered for an installation from this session:
 
-1. The backend reads the owner rule, which must be unchanged.
-2. It reads the installed rule, which must still be present and identical to the recorded one.
+1. The backend checks fresh account and owner-verifier code observations against their pins
+   and reads the owner rule, which must be unchanged. Removal of the owner rule is forbidden.
+2. It reads the installed rule, which must be present. Ordinarily it must match the recorded
+   bytes; after fresh detected rule drift, the separate monitoring flow below may instead
+   bind removal to the exact current bytes, with explicit saved-versus-current consent.
 3. The fee payer's record-mode simulation drafts `remove_context_rule(rule_id)`. It must record
    exactly the account's own authorization of exactly that call, as for the sample transfer.
 4. Browser and backend validate the draft (`validateRemovalAssembly`) against a removal approval
@@ -762,8 +766,9 @@ a distinct monitoring observation and cannot prepare an installation.
 An `unchanged` result means the exact recorded grant and modeled authority matched within
 the displayed ledger window. It does not cover unmodeled storage, signer/policy allocation
 counters, storage reference counts, unrelated rule names, TTL continuity, policy-counter
-integrity or changes between observations. Expiry is `inactive`; later allocations or a
-changed rule/authority/code are `drift`; incomplete, archived, stale or failed reads are
+integrity or changes between observations. Expiry alone is `inactive`: the modeled-authority
+comparison continues after expiry, and simultaneous authority/code/rule drift remains `drift`.
+Later allocations or a changed rule/authority/code are `drift`; incomplete, archived, stale or failed reads are
 `unavailable`. Legitimate later rule allocations conservatively count as drift. This is
 detection only, with no background process, signature, submission or safety verdict.
 

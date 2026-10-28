@@ -41,6 +41,18 @@ async function fixture() {
   const execute = () => monitorInstallation({ network, toolchain, record, owner, candidate });
   return { f, record, candidate, authority, values, network, toolchain, execute };
 }
+function expire(f) {
+  const ledger = f.record.validUntilLedger + 1;
+  f.f.state.ledger = ledger;
+  for (const value of Object.values(f.values)) {
+    value.ledger = ledger;
+    if ('instanceLiveUntil' in value) value.instanceLiveUntil = ledger + 500;
+    if ('codeLiveUntil' in value) value.codeLiveUntil = ledger + 500;
+  }
+  f.authority.observed_ledger = ledger;
+  f.authority.projected_authority.verdict.observed_ledger = ledger;
+  f.authority.reason = 'installed_rule_expired';
+}
 test('monitor compares the exact retained rule and projected authority without signing or adopting a baseline', async () => {
   const f = await fixture(); const result = await f.execute();
   assert.equal(result.status, 'unchanged'); assert.deepEqual(result.reasons, []);
@@ -69,17 +81,37 @@ for (const [name, change, status] of [
   ['missing account', (f) => { f.values.account.found = false; }, 'unavailable'],
   ['foreign CLI account', (f) => { f.authority.projected_authority.verdict.account_address = 'different'; }, 'unavailable'],
   ['unsupported CLI schema', (f) => { f.authority.schema = 'different'; }, 'unavailable'],
-  ['expired grant', (f) => { f.record.validUntilLedger = f.f.state.ledger - 1; }, 'inactive'],
+  ['expired grant', expire, 'inactive'],
 ]) test(`monitor detects ${name}`, async () => {
   const f = await fixture(); const originalCommitment = f.record.authorityCommitment;
   change(f); const result = await f.execute(); assert.equal(result.status, status);
   assert.ok(result.reasons.length); assert.equal(f.record.authorityCommitment, originalCommitment);
 });
-test('later allocations and an expired installed rule remain explicit', async () => {
-  for (const reason of ['later_rule_allocation_or_changed_next_id', 'installed_rule_expired']) {
-    const f = await fixture(); Object.assign(f.authority, { status: 'changed', reason, projected_authority: null });
-    const result = await f.execute(); assert.equal(result.status, reason.includes('expired') ? 'inactive' : 'drift');
-  }
+test('later allocations remain drift', async () => {
+  const f = await fixture();
+  Object.assign(f.authority, { status: 'changed', reason: 'later_rule_allocation_or_changed_next_id', projected_authority: null });
+  assert.equal((await f.execute()).status, 'drift');
+});
+test('expiry preserves the authority comparison and unrelated drift wins over inactivity', async () => {
+  const f = await fixture(); expire(f);
+  const inactive = await f.execute();
+  assert.equal(inactive.status, 'inactive');
+  assert.equal(inactive.projectedAuthorityCommitment, f.record.authorityCommitment);
+  assert.ok(inactive.reasons.includes('installed_rule_expired'));
+  f.authority.projected_authority.verdict.authority_commitment = H('9');
+  const drift = await f.execute();
+  assert.equal(drift.status, 'drift');
+  assert.ok(drift.reasons.includes('modeled_authority_changed'));
+  assert.ok(drift.reasons.includes('grant_expired'));
+});
+test('expiry cannot substitute for a missing modeled-authority projection', async () => {
+  const f = await fixture(); expire(f);
+  Object.assign(f.authority, { status: 'changed', projected_authority: null });
+  assert.equal((await f.execute()).status, 'unavailable');
+});
+test('the CLI expiry reason must match the recorded deadline at its observation ledger', async () => {
+  const f = await fixture(); f.authority.reason = 'installed_rule_expired';
+  assert.equal((await f.execute()).status, 'unavailable');
 });
 test('an authority RPC/CLI failure is unavailable, never a silently learned baseline', async () => {
   const f = await fixture(); f.toolchain.authority = async () => { throw new Error('confidential diagnostic'); };

@@ -37,10 +37,13 @@ export async function monitorInstallation({ network, toolchain, record, owner, c
       || !HASH.test(authority.actual_account_state_digest) || !HASH.test(authority.actual_raw_entry_digest)) refuse();
     if (authority.status === 'changed' && authority.projected_authority === null) {
       const allowed = ['later_rule_allocation_or_changed_next_id', 'installed_rule_missing', 'installed_rule_changed',
-        'installed_rule_expired', 'installed_signer_changed', 'installed_policy_changed', 'rule_id_overflow', 'invalid_rule_count'];
+        'installed_signer_changed', 'installed_policy_changed', 'rule_id_overflow', 'invalid_rule_count'];
       if (!allowed.includes(authority.reason)) refuse();
-      (authority.reason === 'installed_rule_expired' ? inactive : reasons).push(authority.reason);
-    } else if (authority.status === 'observed' && authority.reason === null) {
+      reasons.push(authority.reason);
+    } else if (authority.status === 'observed') {
+      const expired = identity.valid_until !== null && authority.observed_ledger > identity.valid_until;
+      if (authority.reason !== (expired ? 'installed_rule_expired' : null)) refuse();
+      if (expired) inactive.push('installed_rule_expired');
       const p = authority.projected_authority, v = p?.verdict;
       if (p?.spec_hash !== record.specHash || p.binding_set_hash !== record.bindingSetHash
         || p.registry_snapshot_root !== candidate.spec.registry_snapshot || v?.account_address !== record.account

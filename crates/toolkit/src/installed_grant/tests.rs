@@ -224,7 +224,8 @@ fn an_exact_but_expired_installed_rule_is_inactive_not_unchanged() {
     after.rules.get_mut(&1).unwrap().valid_until = Some(until);
     let result = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
     assert_eq!(result.reason.as_deref(), Some("installed_rule_expired"));
-    assert!(result.projected_authority.is_none());
+    assert_eq!(result.status, "observed");
+    assert!(result.projected_authority.is_some());
 }
 
 #[test]
@@ -250,6 +251,67 @@ fn candidate_classic_signer_configuration_is_not_pruned_with_the_stored_signer()
         .contains_key(address));
     assert_ne!(
         projected.verdict.authority_commitment,
+        original.verdict.authority_commitment
+    );
+}
+
+#[test]
+fn expiry_does_not_hide_candidate_classic_authority_drift() {
+    let (mut plan, before, mut after, mut expected) = installed();
+    let until = after.reported_latest_ledger.0 - 1;
+    plan.prepared.grant.valid_until = Some(until);
+    expected.valid_until = Some(until);
+    after.rules.get_mut(&1).unwrap().valid_until = Some(until);
+    let original = finish_call_surface_check(&plan, "fixture", &before).unwrap();
+    let clean = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(clean.reason.as_deref(), Some("installed_rule_expired"));
+    assert_eq!(
+        clean
+            .projected_authority
+            .unwrap()
+            .verdict
+            .authority_commitment,
+        original.verdict.authority_commitment
+    );
+    let StoredSignerKey::Delegated { address } = &plan.prepared.grant.signers[0] else {
+        panic!("classic fixture");
+    };
+    let ozpb_call_surface_core::ClassicAccount::Found {
+        medium_threshold, ..
+    } = after.classic_accounts.get_mut(address).unwrap()
+    else {
+        panic!("funded fixture");
+    };
+    *medium_threshold = 2;
+    let observed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(observed.reason.as_deref(), Some("installed_rule_expired"));
+    assert_ne!(
+        observed
+            .projected_authority
+            .unwrap()
+            .verdict
+            .authority_commitment,
+        original.verdict.authority_commitment
+    );
+}
+
+#[test]
+fn installed_policy_addresses_are_matched_independently_of_spec_order() {
+    let (mut plan, before, after, expected) = installed();
+    assert!(
+        plan.prepared.grant.policies.len() > 1,
+        "exercise actual order difference"
+    );
+    plan.prepared.grant.policies.reverse();
+    let original = finish_call_surface_check(&plan, "fixture", &before).unwrap();
+    let observed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(observed.status, "observed");
+    assert_eq!(
+        observed
+            .projected_authority
+            .unwrap()
+            .verdict
+            .authority_commitment,
         original.verdict.authority_commitment
     );
 }

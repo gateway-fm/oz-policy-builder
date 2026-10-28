@@ -41,21 +41,28 @@ fn without_recorded_grant(
     {
         return Err("installed_rule_changed");
     }
-    if grant
-        .valid_until
-        .is_some_and(|until| scan.reported_latest_ledger.0 > until)
-    {
-        return Err("installed_rule_expired");
-    }
     for (id, signer) in rule.signer_ids.iter().zip(&grant.signers) {
         if state.signers.get(id).map(|entry| &entry.key) != Some(signer) {
             return Err("installed_signer_changed");
         }
     }
-    for (id, policy) in rule.policy_ids.iter().zip(&grant.policies) {
-        if state.policies.get(id).map(|entry| &entry.address) != Some(&policy.address) {
-            return Err("installed_policy_changed");
-        }
+    // Account installation takes a Map keyed by policy address, not spec order. Bind the
+    // same address multiset while preserving exact recorded ID-vector checks above.
+    let mut actual_policies = rule
+        .policy_ids
+        .iter()
+        .map(|id| state.policies.get(id).map(|entry| entry.address.as_str()))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("installed_policy_changed")?;
+    let mut expected_policies: Vec<_> = grant
+        .policies
+        .iter()
+        .map(|policy| policy.address.as_str())
+        .collect();
+    actual_policies.sort_unstable();
+    expected_policies.sort_unstable();
+    if actual_policies != expected_policies {
+        return Err("installed_policy_changed");
     }
     // Prune only closure entries solely referenced by this exact rule. The validated real
     // scan remains untouched; model entries have no storage reference counters to rewrite.
@@ -105,7 +112,10 @@ pub fn check_installed_grant_from_scan(
     let (status, reason, authority) = match projected {
         Ok(state) => (
             "observed",
-            None,
+            expected
+                .valid_until
+                .is_some_and(|until| scan.reported_latest_ledger.0 > until)
+                .then(|| "installed_rule_expired".to_string()),
             Some(finish_call_surface_with_state(
                 plan,
                 source_name,
