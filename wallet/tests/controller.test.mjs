@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+const caseResults = (denials) => [
+  { class: 'original', expectedPermit: true, permitted: true, agree: true },
+  ...Array.from({ length: denials }, () => ({ class: 'arg_equality', expectedPermit: false, permitted: false,
+    agree: true, stateUnchanged: true, refusedBy: 'policy', refusalCode: 6 })),
+];
 import { WalletController } from '../overlay/files/src/policy-builder/client/controller.mjs';
 
 const hash = (c) => c.repeat(64);
@@ -14,7 +19,8 @@ function fixture() {
     executedLayers: [{ layer: 'account_wasm', status: 'passed', originalPermitted: true, revertedDenials: 5 },
       { layer: 'captured_target', status: 'passed', originalPermitted: true, revertedDenials: 2 }] }, runId: hash('9'), specHash: hash('a'), wasmHash: hash('b'),
     bindingSetHash: hash('c'), layers: ['reference', 'account_wasm', 'captured_target', 'live_enforcement']
-      .map((layer) => ({ layer, status: 'passed' })) };
+      .map((layer) => ({ layer, status: 'passed',
+    ...(['account_wasm', 'captured_target'].includes(layer) ? { evidence: { caseResults: caseResults(layer === 'account_wasm' ? 5 : 2) } } : {}) })) };
   const replies = {
     status: { ...pins, network: 'testnet', capabilities: { record: true, generate: true, deploy: true, install: true } },
     record: { recordId: 'record1', accountAddress: wallet.contractId, transactionHash: hash('d') },

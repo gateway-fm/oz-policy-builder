@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "imports": {
-    "#wallet-stellar-sdk": "@stellar/stellar-sdk"
+    "#wallet-stellar-sdk": "@stellar/stellar-sdk",
+    "#wallet-dry-run": "./shared/dry-run.mjs"
   },
   "engines": {
     "node": ">=22.12.0"
