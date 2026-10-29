@@ -1,8 +1,8 @@
 {
   "format": "ozpb-reference-suite-cases/v1",
   "spec_hash": "f31880a1f2963728054f925df0c2dc5500d421f7cad76d1ba328444cda698cd4",
-  "suite_hash": "6784aabdbbf115cf4b664e8b6c303045dcc34604a29d083ad9ade56a63dd0ed8",
-  "total": 63,
+  "suite_hash": "6587670f6fd9485c66b83cacefedc3f0fcf31011304f86abc489212c9f043507",
+  "total": 65,
   "cases": [
     {
       "id": "case-0",
@@ -777,6 +777,102 @@
       "index": 16,
       "rule_index": 0,
       "class": "arg_equality",
+      "label": "rule[0] u64 plus one arg[4]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+        "fn_name": "swap_exact_tokens_for_tokens",
+        "args": [
+          {
+            "i128": "1000000"
+          },
+          {
+            "i128": "100000"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAABQAAAABq13Yl"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5295819,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-17",
+      "index": 17,
+      "rule_index": 0,
+      "class": "arg_equality",
+      "label": "rule[0] u64 maximum arg[4]",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+        "fn_name": "swap_exact_tokens_for_tokens",
+        "args": [
+          {
+            "i128": "1000000"
+          },
+          {
+            "i128": "100000"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAABf//////////"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5295819,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-18",
+      "index": 18,
+      "rule_index": 0,
+      "class": "arg_equality",
       "label": "rule[0] different scval arg[4]",
       "expect_permit": false,
       "invocation": {
@@ -821,8 +917,8 @@
       }
     },
     {
-      "id": "case-17",
-      "index": 17,
+      "id": "case-19",
+      "index": 19,
       "rule_index": 0,
       "class": "arg_arity",
       "label": "rule[0] extra argument",
@@ -872,8 +968,8 @@
       }
     },
     {
-      "id": "case-18",
-      "index": 18,
+      "id": "case-20",
+      "index": 20,
       "rule_index": 0,
       "class": "arg_arity",
       "label": "rule[0] missing argument",
@@ -917,8 +1013,8 @@
       }
     },
     {
-      "id": "case-19",
-      "index": 19,
+      "id": "case-21",
+      "index": 21,
       "rule_index": 0,
       "class": "zero_signers",
       "label": "rule[0] zero authenticated signers",
@@ -959,8 +1055,8 @@
       }
     },
     {
-      "id": "case-20",
-      "index": 20,
+      "id": "case-22",
+      "index": 22,
       "rule_index": 0,
       "class": "wrong_signer",
       "label": "rule[0] unrecognized signer authenticates",
@@ -1007,8 +1103,8 @@
       }
     },
     {
-      "id": "case-21",
-      "index": 21,
+      "id": "case-23",
+      "index": 23,
       "rule_index": 0,
       "class": "signer_boundary",
       "label": "rule[0] duplicate signer does not double-count",
@@ -1060,8 +1156,8 @@
       }
     },
     {
-      "id": "case-22",
-      "index": 22,
+      "id": "case-24",
+      "index": 24,
       "rule_index": 0,
       "class": "signer_boundary",
       "label": "rule[0] authorized signer set plus unrecognized signer",
@@ -1113,8 +1209,8 @@
       }
     },
     {
-      "id": "case-23",
-      "index": 23,
+      "id": "case-25",
+      "index": 25,
       "rule_index": 0,
       "class": "strict_set_mutation",
       "label": "rule[0] strict set: live rule signer set grew",
@@ -1166,8 +1262,8 @@
       }
     },
     {
-      "id": "case-24",
-      "index": 24,
+      "id": "case-26",
+      "index": 26,
       "rule_index": 0,
       "class": "strict_set_mutation",
       "label": "rule[0] strict set: live rule signer set swapped",
@@ -1214,8 +1310,8 @@
       }
     },
     {
-      "id": "case-25",
-      "index": 25,
+      "id": "case-27",
+      "index": 27,
       "rule_index": 0,
       "class": "time_boundary",
       "label": "rule[0] one ledger past valid_until",
@@ -1262,8 +1358,8 @@
       }
     },
     {
-      "id": "case-26",
-      "index": 26,
+      "id": "case-28",
+      "index": 28,
       "rule_index": 0,
       "class": "time_boundary",
       "label": "rule[0] exactly at valid_until (still valid)",
@@ -1310,8 +1406,8 @@
       }
     },
     {
-      "id": "case-27",
-      "index": 27,
+      "id": "case-29",
+      "index": 29,
       "rule_index": 0,
       "class": "time_boundary",
       "label": "rule[0] one ledger before valid_until",
@@ -1358,107 +1454,11 @@
       }
     },
     {
-      "id": "case-28",
-      "index": 28,
-      "rule_index": 0,
-      "class": "call_count_boundary",
-      "label": "rule[0] call count zero",
-      "expect_permit": true,
-      "invocation": {
-        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
-        "fn_name": "swap_exact_tokens_for_tokens",
-        "args": [
-          {
-            "i128": "1000000"
-          },
-          {
-            "i128": "100000"
-          },
-          {
-            "scval_xdr": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
-          },
-          {
-            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
-          },
-          {
-            "scval_xdr": "AAAABQAAAABq13Yk"
-          }
-        ]
-      },
-      "context": {
-        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
-        "current_ledger": 5295819,
-        "authenticated_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "rule_live_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "call_count_so_far": 0
-      }
-    },
-    {
-      "id": "case-29",
-      "index": 29,
-      "rule_index": 0,
-      "class": "call_count_boundary",
-      "label": "rule[0] call count exhausted",
-      "expect_permit": false,
-      "invocation": {
-        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
-        "fn_name": "swap_exact_tokens_for_tokens",
-        "args": [
-          {
-            "i128": "1000000"
-          },
-          {
-            "i128": "100000"
-          },
-          {
-            "scval_xdr": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
-          },
-          {
-            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
-          },
-          {
-            "scval_xdr": "AAAABQAAAABq13Yk"
-          }
-        ]
-      },
-      "context": {
-        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
-        "current_ledger": 5295819,
-        "authenticated_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "rule_live_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "call_count_so_far": 1
-      }
-    },
-    {
       "id": "case-30",
       "index": 30,
       "rule_index": 0,
       "class": "call_count_boundary",
-      "label": "rule[0] one call left (still permits)",
+      "label": "rule[0] call count zero",
       "expect_permit": true,
       "invocation": {
         "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
@@ -1506,6 +1506,102 @@
       "index": 31,
       "rule_index": 0,
       "class": "call_count_boundary",
+      "label": "rule[0] call count exhausted",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+        "fn_name": "swap_exact_tokens_for_tokens",
+        "args": [
+          {
+            "i128": "1000000"
+          },
+          {
+            "i128": "100000"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAABQAAAABq13Yk"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5295819,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 1
+      }
+    },
+    {
+      "id": "case-32",
+      "index": 32,
+      "rule_index": 0,
+      "class": "call_count_boundary",
+      "label": "rule[0] one call left (still permits)",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD",
+        "fn_name": "swap_exact_tokens_for_tokens",
+        "args": [
+          {
+            "i128": "1000000"
+          },
+          {
+            "i128": "100000"
+          },
+          {
+            "scval_xdr": "AAAAEAAAAAEAAAACAAAAEgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABIAAAABdzXb/GhQ6ew0s7O50Z6JRl8DhqojSEYZAE3VPdRfEpc="
+          },
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "scval_xdr": "AAAABQAAAABq13Yk"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5295819,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-33",
+      "index": 33,
+      "rule_index": 0,
+      "class": "call_count_boundary",
       "label": "rule[0] call count above maximum",
       "expect_permit": false,
       "invocation": {
@@ -1550,8 +1646,8 @@
       }
     },
     {
-      "id": "case-32",
-      "index": 32,
+      "id": "case-34",
+      "index": 34,
       "rule_index": 0,
       "class": "call_count_boundary",
       "label": "rule[0] call count u32 maximum",
@@ -1598,8 +1694,8 @@
       }
     },
     {
-      "id": "case-33",
-      "index": 33,
+      "id": "case-35",
+      "index": 35,
       "rule_index": 0,
       "class": "missing_state",
       "label": "rule[0] missing state",
@@ -1646,8 +1742,8 @@
       }
     },
     {
-      "id": "case-34",
-      "index": 34,
+      "id": "case-36",
+      "index": 36,
       "rule_index": 1,
       "class": "original",
       "label": "rule[1] original transfer",
@@ -1688,8 +1784,8 @@
       }
     },
     {
-      "id": "case-35",
-      "index": 35,
+      "id": "case-37",
+      "index": 37,
       "rule_index": 1,
       "class": "different_contract",
       "label": "rule[1] different target contract",
@@ -1730,8 +1826,8 @@
       }
     },
     {
-      "id": "case-36",
-      "index": 36,
+      "id": "case-38",
+      "index": 38,
       "rule_index": 1,
       "class": "different_function",
       "label": "rule[1] different function (transfer_x)",
@@ -1772,8 +1868,8 @@
       }
     },
     {
-      "id": "case-37",
-      "index": 37,
+      "id": "case-39",
+      "index": 39,
       "rule_index": 1,
       "class": "different_address_arg",
       "label": "rule[1] different address arg[0]",
@@ -1814,8 +1910,8 @@
       }
     },
     {
-      "id": "case-38",
-      "index": 38,
+      "id": "case-40",
+      "index": 40,
       "rule_index": 1,
       "class": "type_confusion",
       "label": "rule[1] type: i128 where address arg[0]",
@@ -1856,8 +1952,8 @@
       }
     },
     {
-      "id": "case-39",
-      "index": 39,
+      "id": "case-41",
+      "index": 41,
       "rule_index": 1,
       "class": "different_address_arg",
       "label": "rule[1] different address arg[1]",
@@ -1898,8 +1994,8 @@
       }
     },
     {
-      "id": "case-40",
-      "index": 40,
+      "id": "case-42",
+      "index": 42,
       "rule_index": 1,
       "class": "type_confusion",
       "label": "rule[1] type: i128 where address arg[1]",
@@ -1940,8 +2036,8 @@
       }
     },
     {
-      "id": "case-41",
-      "index": 41,
+      "id": "case-43",
+      "index": 43,
       "rule_index": 1,
       "class": "numeric_boundary",
       "label": "rule[1] below upper bound arg[2]",
@@ -1982,8 +2078,8 @@
       }
     },
     {
-      "id": "case-42",
-      "index": 42,
+      "id": "case-44",
+      "index": 44,
       "rule_index": 1,
       "class": "numeric_boundary",
       "label": "rule[1] at upper bound arg[2]",
@@ -2024,8 +2120,8 @@
       }
     },
     {
-      "id": "case-43",
-      "index": 43,
+      "id": "case-45",
+      "index": 45,
       "rule_index": 1,
       "class": "numeric_boundary",
       "label": "rule[1] above upper bound arg[2]",
@@ -2066,8 +2162,8 @@
       }
     },
     {
-      "id": "case-44",
-      "index": 44,
+      "id": "case-46",
+      "index": 46,
       "rule_index": 1,
       "class": "numeric_boundary",
       "label": "rule[1] i128 minimum arg[2]",
@@ -2108,8 +2204,8 @@
       }
     },
     {
-      "id": "case-45",
-      "index": 45,
+      "id": "case-47",
+      "index": 47,
       "rule_index": 1,
       "class": "type_confusion",
       "label": "rule[1] type: address where i128 arg[2]",
@@ -2150,8 +2246,8 @@
       }
     },
     {
-      "id": "case-46",
-      "index": 46,
+      "id": "case-48",
+      "index": 48,
       "rule_index": 1,
       "class": "arg_arity",
       "label": "rule[1] extra argument",
@@ -2195,8 +2291,8 @@
       }
     },
     {
-      "id": "case-47",
-      "index": 47,
+      "id": "case-49",
+      "index": 49,
       "rule_index": 1,
       "class": "arg_arity",
       "label": "rule[1] missing argument",
@@ -2234,8 +2330,8 @@
       }
     },
     {
-      "id": "case-48",
-      "index": 48,
+      "id": "case-50",
+      "index": 50,
       "rule_index": 1,
       "class": "zero_signers",
       "label": "rule[1] zero authenticated signers",
@@ -2270,8 +2366,8 @@
       }
     },
     {
-      "id": "case-49",
-      "index": 49,
+      "id": "case-51",
+      "index": 51,
       "rule_index": 1,
       "class": "wrong_signer",
       "label": "rule[1] unrecognized signer authenticates",
@@ -2312,8 +2408,8 @@
       }
     },
     {
-      "id": "case-50",
-      "index": 50,
+      "id": "case-52",
+      "index": 52,
       "rule_index": 1,
       "class": "signer_boundary",
       "label": "rule[1] duplicate signer does not double-count",
@@ -2359,8 +2455,8 @@
       }
     },
     {
-      "id": "case-51",
-      "index": 51,
+      "id": "case-53",
+      "index": 53,
       "rule_index": 1,
       "class": "signer_boundary",
       "label": "rule[1] authorized signer set plus unrecognized signer",
@@ -2406,8 +2502,8 @@
       }
     },
     {
-      "id": "case-52",
-      "index": 52,
+      "id": "case-54",
+      "index": 54,
       "rule_index": 1,
       "class": "strict_set_mutation",
       "label": "rule[1] strict set: live rule signer set grew",
@@ -2453,8 +2549,8 @@
       }
     },
     {
-      "id": "case-53",
-      "index": 53,
+      "id": "case-55",
+      "index": 55,
       "rule_index": 1,
       "class": "strict_set_mutation",
       "label": "rule[1] strict set: live rule signer set swapped",
@@ -2495,8 +2591,8 @@
       }
     },
     {
-      "id": "case-54",
-      "index": 54,
+      "id": "case-56",
+      "index": 56,
       "rule_index": 1,
       "class": "time_boundary",
       "label": "rule[1] one ledger past valid_until",
@@ -2537,8 +2633,8 @@
       }
     },
     {
-      "id": "case-55",
-      "index": 55,
+      "id": "case-57",
+      "index": 57,
       "rule_index": 1,
       "class": "time_boundary",
       "label": "rule[1] exactly at valid_until (still valid)",
@@ -2579,8 +2675,8 @@
       }
     },
     {
-      "id": "case-56",
-      "index": 56,
+      "id": "case-58",
+      "index": 58,
       "rule_index": 1,
       "class": "time_boundary",
       "label": "rule[1] one ledger before valid_until",
@@ -2621,95 +2717,11 @@
       }
     },
     {
-      "id": "case-57",
-      "index": 57,
-      "rule_index": 1,
-      "class": "call_count_boundary",
-      "label": "rule[1] call count zero",
-      "expect_permit": true,
-      "invocation": {
-        "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-        "fn_name": "transfer",
-        "args": [
-          {
-            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
-          },
-          {
-            "address": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
-          },
-          {
-            "i128": "1000000"
-          }
-        ]
-      },
-      "context": {
-        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
-        "current_ledger": 5295819,
-        "authenticated_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "rule_live_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "call_count_so_far": 0
-      }
-    },
-    {
-      "id": "case-58",
-      "index": 58,
-      "rule_index": 1,
-      "class": "call_count_boundary",
-      "label": "rule[1] call count exhausted",
-      "expect_permit": false,
-      "invocation": {
-        "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-        "fn_name": "transfer",
-        "args": [
-          {
-            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
-          },
-          {
-            "address": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
-          },
-          {
-            "i128": "1000000"
-          }
-        ]
-      },
-      "context": {
-        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
-        "current_ledger": 5295819,
-        "authenticated_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "rule_live_signers": [
-          {
-            "delegated": {
-              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
-            }
-          }
-        ],
-        "call_count_so_far": 1
-      }
-    },
-    {
       "id": "case-59",
       "index": 59,
       "rule_index": 1,
       "class": "call_count_boundary",
-      "label": "rule[1] one call left (still permits)",
+      "label": "rule[1] call count zero",
       "expect_permit": true,
       "invocation": {
         "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -2751,6 +2763,90 @@
       "index": 60,
       "rule_index": 1,
       "class": "call_count_boundary",
+      "label": "rule[1] call count exhausted",
+      "expect_permit": false,
+      "invocation": {
+        "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "fn_name": "transfer",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "address": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
+          },
+          {
+            "i128": "1000000"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5295819,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 1
+      }
+    },
+    {
+      "id": "case-61",
+      "index": 61,
+      "rule_index": 1,
+      "class": "call_count_boundary",
+      "label": "rule[1] one call left (still permits)",
+      "expect_permit": true,
+      "invocation": {
+        "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "fn_name": "transfer",
+        "args": [
+          {
+            "address": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526"
+          },
+          {
+            "address": "CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB"
+          },
+          {
+            "i128": "1000000"
+          }
+        ]
+      },
+      "context": {
+        "smart_account": "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        "current_ledger": 5295819,
+        "authenticated_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "rule_live_signers": [
+          {
+            "delegated": {
+              "address": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+            }
+          }
+        ],
+        "call_count_so_far": 0
+      }
+    },
+    {
+      "id": "case-62",
+      "index": 62,
+      "rule_index": 1,
+      "class": "call_count_boundary",
       "label": "rule[1] call count above maximum",
       "expect_permit": false,
       "invocation": {
@@ -2789,8 +2885,8 @@
       }
     },
     {
-      "id": "case-61",
-      "index": 61,
+      "id": "case-63",
+      "index": 63,
       "rule_index": 1,
       "class": "call_count_boundary",
       "label": "rule[1] call count u32 maximum",
@@ -2831,8 +2927,8 @@
       }
     },
     {
-      "id": "case-62",
-      "index": 62,
+      "id": "case-64",
+      "index": 64,
       "rule_index": 1,
       "class": "missing_state",
       "label": "rule[1] missing state",

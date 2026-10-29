@@ -64,6 +64,15 @@ for (const kind of ['blend_claim', 'soroswap_swap']) test(`real CLI and worker a
     for (let i = 0; i < spec.rules.length; i++) {
       const raw = readFileSync(join(dir, `account-dry-run-${i}.json`), 'utf8');
       assert.ok(!raw.includes(delegate.secret()));
+      if (kind === 'soroswap_swap' && i === 0) {
+        const report = JSON.parse(raw), cases = report.layers[1].execution.cases;
+        for (const label of ['u64 plus one', 'u64 maximum']) {
+          const boundary = cases.find((c) => c.label.includes('arg[4]') && c.label.includes(label));
+          assert.ok(boundary, `missing executed deadline boundary: ${label}`);
+          assert.equal(boundary.permitted, false); assert.equal(boundary.refused_by, 'policy');
+          assert.equal(boundary.refusal_code, 6); assert.equal(boundary.state_unchanged, true);
+        }
+      }
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

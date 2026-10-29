@@ -23,6 +23,7 @@ use ozpb_policy_spec::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use stellar_xdr::{ReadXdr, WriteXdr};
 
 /// A single test case in the suite, with the class it exercises and the expectation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -995,6 +996,29 @@ fn arg_mutations(
             ));
         }
         (ArgValue::ScvalXdr(current), Some(Constraint::EqScval { .. })) => {
+            // Exact u64 arguments (including swap deadlines) also need same-type boundary
+            // denials, so a type-confusion rejection alone cannot stand in for a time bound.
+            if let Ok(stellar_xdr::ScVal::U64(value)) =
+                stellar_xdr::ScVal::from_xdr_base64(current, stellar_xdr::Limits::none())
+            {
+                for (label, changed) in [
+                    ("u64 plus one", value.checked_add(1)),
+                    ("u64 maximum", (value != u64::MAX).then_some(u64::MAX)),
+                ] {
+                    if let Some(changed) = changed {
+                        if let Ok(encoded) = stellar_xdr::ScVal::U64(changed)
+                            .to_xdr_base64(stellar_xdr::Limits::none())
+                        {
+                            out.push((
+                                label.into(),
+                                ArgValue::ScvalXdr(encoded),
+                                MutationClass::ArgEquality,
+                                false,
+                            ));
+                        }
+                    }
+                }
+            }
             // Two canonical `SCV_BOOL`s, false and true: discriminant plus the four-byte
             // body the type requires. The previous pair was `AAAAAA==`/`AAAAAQ==`, four
             // bytes each — a bare discriminant. `AAAAAA==` names SCV_BOOL and then stops
@@ -1650,6 +1674,42 @@ mod tests {
             suite_hash(&golden.spec_hash, &golden.cases).unwrap(),
             golden.suite_hash
         );
+    }
+
+    #[test]
+    fn exact_u64_boundaries_are_canonical_and_never_wrap_to_a_permitted_value() {
+        for approved in [0, 2000, u64::MAX - 1, u64::MAX] {
+            let encoded = stellar_xdr::ScVal::U64(approved)
+                .to_xdr_base64(stellar_xdr::Limits::none())
+                .unwrap();
+            let mutations = arg_mutations(
+                &ArgValue::ScvalXdr(encoded.clone()),
+                Some(&Constraint::EqScval {
+                    xdr_base64: encoded,
+                }),
+            );
+            let mut values = Vec::new();
+            for (_, value, _, permit) in mutations {
+                assert!(!permit);
+                let ArgValue::ScvalXdr(value) = value else {
+                    panic!("exact-XDR mutation changed representation");
+                };
+                if let stellar_xdr::ScVal::U64(value) =
+                    stellar_xdr::ScVal::from_xdr_base64(value, stellar_xdr::Limits::none()).unwrap()
+                {
+                    assert_ne!(value, approved);
+                    values.push(value);
+                }
+            }
+            if let Some(later) = approved.checked_add(1) {
+                assert!(values.contains(&later));
+            }
+            if approved != u64::MAX {
+                assert!(values.contains(&u64::MAX));
+            } else {
+                assert!(values.is_empty());
+            }
+        }
     }
 
     #[test]

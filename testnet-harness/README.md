@@ -175,8 +175,8 @@ a manual permission-bundle API invocation is a separate operator-controlled path
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
   each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
   output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
-  (example: `soroswap-decisions.json`); the router's input bound and open deadline come from the
-  registry's reviewed adapter. That binding is a development-registry assertion, and the router's
+  (example: `soroswap-decisions.json`); the router's input bound comes from registry adapter v2,
+  and the approved recorded deadline stays exact. That binding is a development-registry assertion, and the router's
   Wasm was not reproduced from source
   ([target adapters](../docs/TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
