@@ -33,6 +33,7 @@ export interface WalletState {
   readonly revokePreview: (Details & { display: Details }) | null;
   readonly revokeAttempted: boolean;
   readonly removal: Details | null;
+  readonly monitor: Details | null;
   readonly replacementPreview: Details | null;
   readonly replacementPending: Details | null;
   readonly replacement: Details | null;
@@ -90,6 +91,7 @@ export class WalletController {
   prepareInstall(): Promise<void>;
   cancelInstall(): void;
   install(): Promise<void>;
+  monitorGrant(): Promise<void>;
   prepareReplacement(): Promise<void>;
   cancelReplacement(): void;
   confirmReplacement(): Promise<void>;

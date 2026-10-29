@@ -42,6 +42,8 @@ pub use call_surface_live::{
     finish_call_surface_check, plan_call_surface_read, resolve_rpc_source, rpc_sources_from_json,
     scan_tool_error, CallSurfaceReadPlan, RpcSource,
 };
+mod installed_grant;
+pub use installed_grant::check_installed_grant_from_scan;
 mod install_intent;
 pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod install_assembly;

@@ -266,7 +266,7 @@ function entryServer(mode = 'valid') {
 test('instance recognition checks exact live keys, retained code bytes and separate observation ledgers', async (t) => {
   const { server, wasmHash } = entryServer();
   const { network } = networkFixture(t, (stub) => { stub.getLedgerEntries = server.getLedgerEntries; });
-  assert.deepEqual(await network.requireInstance(contract, wasmHash), { contractId: contract, wasmHash, ledger: 100, nonAtomic: true });
+  assert.deepEqual(await network.requireInstance(contract, wasmHash), { contractId: contract, wasmHash, ledger: 100, instanceLedger: 100, codeLedger: 100, nonAtomic: true });
 });
 for (const mode of ['wrong key', 'wrong value key', 'wrong code hash', 'wrong code bytes', 'wrong instance hash',
   'wrong type', 'wrong durability', 'native executable', 'future modification', 'expired', 'drift', 'backwards']) {
@@ -464,4 +464,34 @@ test('a policy Wasm upload may cost up to 15 testnet XLM; nothing else above 1',
   envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(101_421_794).build());
   assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET),
     original.toEnvelope().toXDR()), /refused/, 'a contract call above 1 XLM stays refused');
+});
+
+test('target identity reports the canonical native SAC builtin without inventing a Wasm hash', async () => {
+  const { captureFixture } = await import('./captured-execution-fixture.mjs');
+  const capture = captureFixture({ account: contract });
+  const stored = capture.entries.map((item) => ({ ...item, key: xdr.LedgerKey.fromXDR(item.key_xdr, 'base64') }))
+    .find((item) => item.key.type === 'contractData' && item.key.contractData.key.type === 'scvLedgerKeyContractInstance');
+  const server = { getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 29 }),
+    getLedgerEntries: async (key) => ({ latestLedger: capture.observed_ledger, entries: [{ key,
+      val: xdr.LedgerEntryData.fromXDR(stored.data_xdr, 'base64'), lastModifiedLedgerSeq: stored.last_modified_ledger,
+      liveUntilLedgerSeq: stored.live_until_ledger }] }) };
+  const network = new WalletNetwork({ server });
+  assert.deepEqual(await network.targetIdentity(contract), { address: contract, executable: 'stellar_asset',
+    protocolVersion: 29, ledger: capture.observed_ledger });
+  await assert.rejects(network.targetIdentity(Keypair.random().publicKey()), /refused/);
+  const original = server.getLedgerEntries;
+  for (const mode of ['foreign contract', 'foreign key', 'temporary durability']) {
+    server.getLedgerEntries = async (key) => {
+      const response = await original(key);
+      const data = response.entries[0].val.contractData;
+      if (mode === 'foreign contract') data.contract = new Address(new Asset('USD', Keypair.random().publicKey()).contractId(Networks.TESTNET)).toScAddress();
+      if (mode === 'foreign key') data.key = xdr.ScVal.scvSymbol('foreign');
+      if (mode === 'temporary durability') data.durability = xdr.ContractDataDurability.temporary;
+      return response;
+    };
+    await assert.rejects(network.targetIdentity(contract), /refused/, mode);
+  }
+  server.getLedgerEntries = original;
+  server.getNetwork = async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 });
+  await assert.rejects(network.targetIdentity(contract), /refused/);
 });

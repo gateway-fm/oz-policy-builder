@@ -28,6 +28,13 @@ fn run_command(command: &str, rpc_source: &str, sources: serde_json::Value) -> O
         "network_id": spec["network_id"],
         "rpc_source": rpc_source
     });
+    let request = if command == "check-installed-grant" {
+        serde_json::json!({"candidate": request, "installed_rule": {"id": 1, "name": "retained grant",
+            "context_contract": spec["rules"][0]["context"]["contract"], "valid_until": null,
+            "signer_ids": [1], "policy_ids": [0]}})
+    } else {
+        request
+    };
     let request_file = directory.path().join("request.json");
     std::fs::write(&request_file, request.to_string()).unwrap();
     let sources_file = directory.path().join("sources.json");
@@ -80,4 +87,20 @@ fn a_source_for_another_network_is_refused_before_any_read() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("E_NETWORK_MISMATCH"), "{stderr}");
+}
+
+#[test]
+fn installed_monitoring_refuses_an_unconfigured_source_before_any_build_or_read() {
+    let output = run_command(
+        "check-installed-grant",
+        "anywhere",
+        serde_json::json!({
+        "testnet": {"rpc_url": "https://rpc.invalid", "network_passphrase": TESTNET}}),
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("E_RPC") && stderr.contains("anywhere"),
+        "{stderr}"
+    );
 }

@@ -492,3 +492,6 @@ mod tests {
         assert!(serde_json::from_value::<RecordTransactionInput>(value).is_err());
     }
 }
+
+mod installed_grant;
+pub use installed_grant::*;
