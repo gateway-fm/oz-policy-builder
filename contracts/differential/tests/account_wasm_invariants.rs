@@ -1564,6 +1564,10 @@ fn weak_account_rule_can_create_a_policy_reset_rule() {
             &[Key::Agent],
         )
         .expect("agent alone creates a policy-address rule through management");
+    assert!(
+        refusals(&w.surface()).contains(&(FindingCode::DelegateHasAuthority, Some(reset))),
+        "a fresh surface check catches the agent-created reset authority"
+    );
     assert_eq!(
         w.direct(Method::Uninstall, reset, &[Key::Agent], grant),
         Outcome::Permitted
