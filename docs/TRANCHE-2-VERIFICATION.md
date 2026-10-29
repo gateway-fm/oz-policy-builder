@@ -6,6 +6,83 @@ evidence for the checked revision and named fixtures. It does not establish comp
 four-layer harness, wallet integration, hosted service, or three end-to-end walkthroughs.
 Read [SCOPE.md](SCOPE.md) and the [change review plan](CHANGE-REVIEW-PLAN.md) alongside it.
 
+## Contracted outcome and milestone boundary
+
+[Issue #3](https://github.com/gateway-fm/oz-policy-builder/issues/3) records the Tranche 2
+requirements. [Architecture Phase 2](architecture.md#10-delivery-plan) gives their technical
+design and evidence expectations. Both matter: an implementation limit must be stated against
+that design, rather than silently counted as complete or moved to the next milestone.
+
+| Contracted item | Implementation and retained evidence | Closure still needed |
+| --- | --- | --- |
+| Dry-run: original permits and at least five auto-mutated denials revert | Constraint-derived suites, native differential tests, real account-Wasm execution, narrow captured-target execution and live derived-denial reports exist. | Current delivered-revision reports with executed cases, layer/enforcer attribution and explicit unsupported cases. Counts from the reference evaluator alone do not establish Wasm execution. |
+| Claude skill: clarification and confirm-before-deploy | Installed skill, permission-review card, human-invoked install handoff, transcript checker and independently regenerated wallet import exist. | An executed clarification → permission review → explicit confirmation → wallet handoff session. A skill file or scripted CLI import alone does not demonstrate this conversation. |
+| W1: Blend yield claim | Supply-position setup, nonzero claim, withdrawal and historical live derived-denial evidence are recorded in the [protocol walkthrough](WALKTHROUGH-PROTOCOLS.md). | Fresh target/emissions preflight and delivered-revision permit/deny/lifecycle reports. A zero-reward claim is not a passing positive case. |
+| W2: SEP-41 subscription | The [subscription walkthrough](WALKTHROUGH-SEP41.md) composes the generated scope policy and the exact pinned spending-limit policy, with historical live permit/deny and revocation evidence. | Delivered-revision reports; explicitly retain the unsupported composed account-Wasm layer rather than treating native-transfer coverage as composition coverage. |
+| W3: bounded Soroswap | Two independent rules, explicit floor/cap decisions, a code-hash-bound router adapter, route/recipient/function controls and historical live derived denials exist. | Bounded router-deadline implementation or an explicitly accepted scope disposition remains open. Also retain delivered-revision reports, tuple-cross-product applicability/coverage and the development-registry/source-reproduction limit below. |
+| Wallet integration | [Pollywallet integration](POLLYWALLET-INTEGRATION.md) imports, checks, deploys, installs and revokes a supported native-transfer grant; automated virtual-passkey testnet runs are retained. | Integrate the pending wallet work below and record its current behavior and refusals. Distinguish automated signature mechanics from an actual user's permission decisions. |
+| Hosted testnet endpoint | Authenticated HTTP, TLS packaging and disposable build workers have container/containment tests. | A running reachable testnet service, a published self-hostable image, remaining quotas/cancellation and acceptance checks against that deployed service. A container build is not a deployment. |
+| Public demo and video with passing reports | Walkthrough runners and historical records exist. | Assemble the final demonstration, reports and artifact inventory; record and publish the video. This is an explicit deliverable. |
+
+Production hosting, security-audit remediation/publication, OpenZeppelin generated-code
+sign-off and a mainnet wallet installation belong to
+[issue #4 / Tranche 3](https://github.com/gateway-fm/oz-policy-builder/issues/4).
+The full documentation/test-suite delivery is also listed there. Tranche 2 still needs the
+usage, test coverage, limitations and reproduction instructions for what it actually ships.
+Monitoring, revocation, stateful-overlap handling and isolated testnet hosting are already
+part of the public Phase 2 design; they are not new mainnet prerequisites added here.
+
+### Integrated code versus pending pull requests
+
+Status checked on **28 October 2026** against public `main` after PR #64. The following
+independently reviewed increments are open, not integrated into that baseline. Their CI or
+branch-local results must not be presented as evidence for an unchanged `main` checkout.
+
+| Pull request | Prepared increment | Integration/evidence still needed |
+| --- | --- | --- |
+| [#95](https://github.com/gateway-fm/oz-policy-builder/pull/95) | W1/W3 per-rule account-Wasm report gate and bound evidence export | Merge and rerun the walkthroughs at the delivered revision. |
+| [#96](https://github.com/gateway-fm/oz-policy-builder/pull/96) | Wallet per-case evidence, refusal parity and explicit acceptance | Merge and repeat the wallet acceptance run. |
+| [#97](https://github.com/gateway-fm/oz-policy-builder/pull/97) | Verified revoke-first replacement with explicit fresh-budget acknowledgement | Stacked on #96; integrate and exercise the complete replacement lifecycle. |
+| [#98](https://github.com/gateway-fm/oz-policy-builder/pull/98) | On-demand installed-grant monitoring and consented drift removal | Stacked on #97; integrate and retain current observations/refusals within its stated modeled-authority scope. |
+| [#99](https://github.com/gateway-fm/oz-policy-builder/pull/99) | Supported generated-policy/contract-test SDK migration with pinned-account compatibility checks | Integrate the changed build hashes and helper rollout before final evidence. It does not remove the temporary crypto advisory exception. |
+
+PR status changes over time; follow the linked PRs for their current heads and reviews.
+Historical evidence keeps its original revision, hashes and limitations.
+
+### Deviations and open gaps against the Phase 2 design
+
+These limits describe the supported surface; they are not passing evidence for missing
+features. The final acceptance record must resolve or explicitly retain each relevant limit.
+
+| Design area | Actual boundary or remaining gap |
+| --- | --- |
+| Four-layer harness | All four layers are available together only for the supported one-rule native-SAC transfer shape. W1/W3 account-Wasm checks do not execute their real targets offline. W2's reviewed-policy composition is unsupported by that account-Wasm path. General captured-target execution is not delivered. See [native](NATIVE-EXECUTION.md) and [captured-target](CAPTURED-TARGET-EXECUTION.md) scope. |
+| Signing dry-run over MCP | The CLI performs offline-domain signing from a protected key file; MCP prepares evidence and captures supported unsigned target state. It holds no user key and exposes no signing `dry_run`. The wallet owns live consent, signatures and submission. |
+| Authority and reconfiguration invariants | The exact-account [state-invariant suite](SCOPE.md#state-invariants-and-direct-calls) covers direct calls, archive/expiry, stale state, inactivity and rollback. Broader management-rule, restore-and-use, expiration revival and overlap/replacement coverage remains to be completed and named precisely. |
+| Blend adapter and conversion | W1 uses an exact recorded claim and explicit decisions; it has no reviewed Blend semantic adapter. The architecture's claim-then-convert permission bundle is not delivered by that single-claim walkthrough. Conversion is an architecture extension beyond issue #3's yield-claim wording, not an implemented ordered workflow. |
+| Soroswap binding | The adapter is implemented, but its current router binding is a development-registry assertion. The deployed router Wasm was not reproduced from reviewed source. The caller-chosen router deadline remains unconstrained: the rule's `valid_until` limits authorization time but is not a bound on that argument. This is an open acceptance gap: disclosure or a grant-widening acknowledgement alone does not close the bounded-deadline requirement. Implement the bound or record an explicitly accepted scope disposition; see [target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4). |
+| Custom source | Custom edits do not inherit generated-mode reproduction or execution guarantees. Report unavailable checks explicitly; do not turn an unsupported check into permission to install. |
+| Build provenance | The BuildManifest records build inputs and hashes but labels the builder `local-unattested`; disposable worker isolation is a separately tested execution boundary. It is not a signed build-service provenance attestation. |
+| Hosted operation | The packaged shared-token configuration serves one operator and trusted clients. Public multi-tenant accounts, billing and production availability are not established by it. State the chosen client boundary and test authentication, quotas, cancellation, isolation, RPC restrictions and privacy on the actual testnet host. |
+
+### Work that can run without the wallet owner
+
+Invariant tests, software/virtual-passkey automation, testnet walkthroughs with throwaway
+identities, documentation and deployment preparation can run independently. Label virtual
+credentials and scripted approvals as automation. Neither the milestone wording nor signature
+mechanics require one named person or physical Touch ID.
+
+An actual user or authorized tester must make the clarification/permission/confirmation
+choices when evidence claims that conversation occurred. A real wallet grant additionally
+requires its owner's consent and signing capability. These are specific actions, not a
+requirement to involve the owner in every test or to invent human approval for automation.
+
+The hosted endpoint is the remote MCP tool service, not a wallet or blockchain node. An
+operator can prepare its configuration and tests independently. Provisioning requires an
+authorized hosting account, client access policy, hostname/TLS ownership and an approved
+budget/stop condition if it incurs cost. The owner need not choose the server technology;
+those decisions should be presented as a concrete deployment proposal.
+
 ## Run the automated checks
 
 Use the revision being reviewed and record `git rev-parse HEAD` and `git status --short` with
