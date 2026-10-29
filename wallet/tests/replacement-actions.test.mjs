@@ -180,3 +180,28 @@ for (const field of ['attempts', 'display']) test(`confirmation rechecks retaine
   await assert.rejects(f.actions['confirm-replacement']({ id: p.action.id, consent: 'previously_used_authority_plus_new_cap' }), /refused/);
   assert.equal((await f.actions.status({})).capabilities.install, false);
 });
+
+for (const mode of ['signatures still live', 'account changed after expiry', 'expired unchanged']) {
+  test(`replacement replay guard handles ${mode} from a later read-only live check`, async () => {
+    const f = await removed();
+    f.state.ledger = Math.max(f.state.ledger, ...f.obligations.map(o => o.signatureExpirationLedger + 1));
+    // A removed session may still review and test its retained deployment before opening a
+    // replacement allowance. This releases fresh live-check signatures for the next rule ID.
+    f.f.intent.authority.verdict.evidence.enumeration_evidence.next_id = 2;
+    f.review = await f.actions.review({ deploymentId: f.deployed.deploymentId, wallet: f.f.wallet });
+    const { stubNativeChecks } = await import('./native-actions-fixture.mjs');
+    stubNativeChecks(f, f.delegate, f.holder, { maxCalls: 1, captureLedger: f.state.ledger });
+    for (const frame of [f.holder.frames.prepared, f.holder.frames.result, f.holder.captured.prepared, f.holder.captured.result]) frame.candidate_context_rule_id = 2;
+    f.holder.frames.expected.candidateContextRuleId = 2;
+    const checks = await verified(f, { expire: false });
+    if (mode !== 'signatures still live') f.state.ledger = checks.signaturesValidUntil + 1;
+    const prepared = await f.actions['prepare-replacement']({ installationId: f.installation.installationId });
+    if (mode === 'account changed after expiry') f.state.nextId++;
+    const confirm = () => f.actions['confirm-replacement']({ id: prepared.action.id, consent: 'previously_used_authority_plus_new_cap' });
+    if (mode === 'expired unchanged') assert.equal((await confirm()).replacementReady, true);
+    else {
+      await assert.rejects(confirm(), /refused/);
+      assert.equal((await f.actions.status({})).capabilities.install, false);
+    }
+  });
+}
