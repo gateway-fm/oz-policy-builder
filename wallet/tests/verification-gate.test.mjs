@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+const caseResults = (denials) => [
+  { class: 'original', expectedPermit: true, permitted: true, agree: true },
+  ...Array.from({ length: denials }, () => ({ class: 'arg_equality', expectedPermit: false, permitted: false,
+    agree: true, stateUnchanged: true, refusedBy: 'policy', refusalCode: 6 })),
+];
 import { verificationGate } from '../overlay/files/src/policy-builder/client/verification.mjs';
 const bindings = { specHash: 'a'.repeat(64), wasmHash: 'b'.repeat(64), bindingSetHash: 'c'.repeat(64) };
 function report() {
@@ -7,7 +12,8 @@ function report() {
     executedLayers: [{ layer: 'account_wasm', status: 'passed', originalPermitted: true, revertedDenials: 5 },
       { layer: 'captured_target', status: 'passed', originalPermitted: true, revertedDenials: 2 }] }, layers: [
     'reference', 'account_wasm', 'captured_target', 'live_enforcement',
-  ].map((layer) => ({ layer, status: 'passed' })) };
+  ].map((layer) => ({ layer, status: 'passed',
+    ...(['account_wasm', 'captured_target'].includes(layer) ? { evidence: { caseResults: caseResults(layer === 'account_wasm' ? 5 : 2) } } : {}) })) };
 }
 test('only the exact four passed bound layers enable final acceptance', () => {
   const value = report();
@@ -67,4 +73,23 @@ test('the displayed offline bar rejects malformed minima and either layer missin
     assert.equal(gate.offlineAcceptanceReady, false);
     assert.equal(gate.acceptanceReady, false);
   }
+});
+
+for (const [name, change] of [
+  ['inflated denial count', (r) => { r.layers[1].evidence.caseResults.pop(); }],
+  ['missing original', (r) => { r.layers[1].evidence.caseResults[0].class = 'arg_equality'; }],
+  ['wrong refusal attribution', (r) => { r.layers[1].evidence.caseResults[1].refusalCode = 7; }],
+  ['denial changed state', (r) => { r.layers[1].evidence.caseResults[1].stateUnchanged = false; }],
+  ['missing case results', (r) => { delete r.layers[1].evidence.caseResults; }],
+  ['malformed cases', (r) => { r.layers[1].evidence.caseResults = [null]; }],
+]) test(`browser rejects a claimed acceptance with ${name}`, () => {
+  const value = report(); change(value);
+  assert.equal(verificationGate(value, bindings).offlineAcceptanceReady, false);
+  assert.equal(verificationGate(value, bindings).acceptanceReady, false);
+});
+test('browser accepts equivalent summary fields independent of JSON key order', () => {
+  const value = report();
+  value.acceptance.executedLayers = value.acceptance.executedLayers.map(l => ({ revertedDenials: l.revertedDenials,
+    originalPermitted: l.originalPermitted, status: l.status, layer: l.layer }));
+  assert.equal(verificationGate(value, bindings).acceptanceReady, true);
 });

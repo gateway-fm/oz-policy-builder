@@ -1,3 +1,5 @@
+import { dryRunAcceptance } from '#wallet-dry-run';
+
 const LAYERS = ['reference', 'account_wasm', 'captured_target', 'live_enforcement'];
 const HASH = /^[0-9a-f]{64}$/;
 const closed = () => ({ localReady: false, offlineAcceptanceReady: false, acceptanceReady: false });
@@ -12,7 +14,15 @@ export function verificationGate(report, expected) {
   const byName = new Map(report.layers.map((item) => [item?.layer, item?.status]));
   if (byName.size !== LAYERS.length || LAYERS.some((name) =>
     !['passed', 'failed', 'unavailable', 'unsupported'].includes(byName.get(name)))) return closed();
-  const acceptance = report.acceptance;
+  let recomputed;
+  try { recomputed = dryRunAcceptance(report.layers); } catch { return closed(); }
+  const supplied = report.acceptance;
+  if (!supplied || supplied.requiredRevertedDenials !== recomputed.requiredRevertedDenials
+    || supplied.originalPermitted !== recomputed.originalPermitted || supplied.meetsMinimum !== recomputed.meetsMinimum
+    || !Array.isArray(supplied.executedLayers) || supplied.executedLayers.length !== recomputed.executedLayers.length
+    || supplied.executedLayers.some((layer, i) => !layer
+      || ['layer', 'status', 'originalPermitted', 'revertedDenials'].some((key) => layer[key] !== recomputed.executedLayers[i][key]))) return closed();
+  const acceptance = recomputed;
   const executed = acceptance?.executedLayers;
   const expectedExecuted = ['account_wasm', 'captured_target'].filter((name) => ['passed', 'failed'].includes(byName.get(name)));
   const minimum = acceptance?.meetsMinimum === true && acceptance.originalPermitted === true

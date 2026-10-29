@@ -270,7 +270,8 @@ one layer reverts five derived denials with the predicted refusal and unchanged 
 from different layers are not summed. This bar can pass while live enforcement is unavailable;
 it does not make the four-layer report complete. The browser and backend require the bar in
 addition to all four passed layers before installation; the backend recomputes it from retained
-case observations at its installation gate.
+case observations at its installation gate. The browser independently recomputes the same bar
+from the displayed per-case observations and rejects any mismatch with the supplied summary.
 
 A passing result marks only the `account_wasm` layer. It is local execution in fresh synthetic
 state: no target contract, captured network state or live enforcement runs, and it proves no
