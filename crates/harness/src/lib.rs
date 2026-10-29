@@ -1003,7 +1003,7 @@ fn arg_mutations(
             {
                 for (label, changed) in [
                     ("u64 plus one", value.checked_add(1)),
-                    ("u64 maximum", (value != u64::MAX).then_some(u64::MAX)),
+                    ("u64 maximum", (value < u64::MAX - 1).then_some(u64::MAX)),
                 ] {
                     if let Some(changed) = changed {
                         if let Ok(encoded) = stellar_xdr::ScVal::U64(changed)
@@ -1678,7 +1678,7 @@ mod tests {
 
     #[test]
     fn exact_u64_boundaries_are_canonical_and_never_wrap_to_a_permitted_value() {
-        for approved in [0, 2000, u64::MAX - 1, u64::MAX] {
+        for approved in [0, 2000, u64::MAX - 2, u64::MAX - 1, u64::MAX] {
             let encoded = stellar_xdr::ScVal::U64(approved)
                 .to_xdr_base64(stellar_xdr::Limits::none())
                 .unwrap();
@@ -1701,6 +1701,11 @@ mod tests {
                     values.push(value);
                 }
             }
+            assert_eq!(
+                values.iter().copied().collect::<BTreeSet<_>>().len(),
+                values.len(),
+                "each denial must exercise a distinct u64 input"
+            );
             if let Some(later) = approved.checked_add(1) {
                 assert!(values.contains(&later));
             }

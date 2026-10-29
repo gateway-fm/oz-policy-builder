@@ -16,11 +16,11 @@ step below; an earlier run that day predates the two transfer-rule denials
 A run on 22 October 2026 repeated every W3 step with the [derived denials](#derived-denials) and
 passed ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
 Those runs used widenings the harness wrote itself. Current W3 takes the router's input bound
-from the registry's v2 adapter and preserves the approved recorded deadline exactly. The
+from the registry's [v2 adapter](TARGET-ADAPTERS.md#current-binding-development-registry-version-5) and preserves the approved recorded deadline exactly. The
 operator's decisions file supplies the floor and transfer cap. Route, recipient and function
 controls remain. The adapter binding is a
 development-registry assertion, and the router's Wasm was not reproduced from source
-([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)). A controlled run on 26 October completed all 19 controls with the historical v1 binding and ten verified
+([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)). A controlled run on 26 October completed all 19 controls with the historical v1 binding and ten verified
 derived denials ([section 14](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026)).
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
@@ -136,8 +136,8 @@ complete spec. This document names them by role, because the account numbers rul
   exact pair.
 
 The router rule's input bound is `adapter_derived` from `soroswap-router@2`; its deadline
-remains `observed_exact` from the recorded call. The committed development registry (version 5) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
-router's Wasm was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+remains `observed_exact` from the recorded call. The [committed development registry (version 5)](TARGET-ADAPTERS.md#current-binding-development-registry-version-5) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
+router's Wasm was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)).
 The harness writes only the operator's two decisions into the synthesis inputs, as
 `user_widened` with their intents: the output floor and the transfer cap. `protocol-synthesis.mjs`
 refuses a synthesized spec whose input bound did not come from that adapter and code hash,

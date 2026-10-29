@@ -1,4 +1,3 @@
-import { xdr } from '@stellar/stellar-sdk';
 // Export local observations, not a verdict or a cryptographic attestation. Only explicitly
 // selected, typed fields leave the run directory. Raw RPC errors and paths never do.
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,6 +6,7 @@ import {
   renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { xdr } from '@stellar/stellar-sdk';
 import { isMainModule } from './cli-entry.mjs';
 import {
   CASES_FORMAT, MIN_DERIVED_DENIALS, SELECTION, liveRules, liveStandIns, planDerivedDenials, predictEnforcer, suiteHash,
