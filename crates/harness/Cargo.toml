@@ -14,9 +14,7 @@ ozpb-evaluator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 stellar-strkey = { workspace = true }
+stellar-xdr = { workspace = true }
 
 [dev-dependencies]
 ozpb-synthesizer = { workspace = true }
-# Check that substituted ScVal fixtures decode as real XDR. Layer 2 must be able to
-# replay every case the reference evaluator sees.
-stellar-xdr = { workspace = true }

@@ -12,9 +12,9 @@ function fixture(kind = 'soroswap_swap') {
   const payer = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 1)), delegate = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 2));
   const account = C(3), policy = C(4);
   const plan = { kind, account, amount_in: '1000000', minimum_out: '100000', deadline: 2_000_000_000,
-    ...(kind === 'soroswap_swap' ? { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v1',
+    ...(kind === 'soroswap_swap' ? { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v2',
       output_floor: { min: '100000', intent: 'floor' }, transfer_cap: { max: '1000000', intent: 'cap' },
-      adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) } } : {}) };
+      adapter_deadline: 'keep_recorded_deadline', source_sha256: 'cd'.repeat(32) } } : {}) };
   const run = { network: NETWORK_PASSPHRASE, account, account_code_hash: PINNED_ACCOUNT_WASM,
     payer: payer.publicKey(), delegate: delegate.publicKey(), walkthrough: { ...plan, bundle: {
       status: 'installed', entries: (kind === 'blend_claim' ? [0] : [0, 1]).map((rule_index) => ({
@@ -144,19 +144,19 @@ for (const mode of ['the account was asked', 'permitted', 'another address refus
     assert.equal(f.sends.length, 0);
   });
 }
-test('any deadline is a disclosed permit, observed only by simulation with a short-lived signature', async () => {
-  const f = fixture(); f.controls.permit = true;
-  const result = await f.execute({ name: 'any_deadline', control: 'any_deadline', expected: { permit: true } });
-  assert.equal(result.status, 'verified_disclosed_permission');
-  assert.equal(scValToNative(simulatedCall(f).args[4]), (1n << 64n) - 1n);
-  assert.equal(f.recordings.length, 1, 'the network asks for exactly this tree');
-  assert.equal(f.simulated[0].body.invokeHostFunctionOp.auth[0].credentials.address.signatureExpirationLedger, 105);
+for (const control of ['deadline_plus_one', 'maximum_deadline']) test(`a ${control} is denied by a bounded simulation authorization`, async () => {
+  const f = fixture();
+  const result = await f.execute({ name: control, control });
+  assert.equal(result.status, 'verified_denial');
+  assert.equal(scValToNative(simulatedCall(f).args[4]), control === 'deadline_plus_one'
+    ? BigInt(f.run.walkthrough.deadline) + 1n : (1n << 64n) - 1n);
+  assert.equal(f.simulated[0].body.invokeHostFunctionOp.auth[0].credentials.address.signatureExpirationLedger, 200);
   assert.equal(f.sends.length, 0);
-  f.controls.permit = false;
-  const g = fixture();
-  await assert.rejects(g.execute({ name: 'any_deadline', control: 'any_deadline', expected: { permit: true } }), /not observed/);
-  assert.equal(g.run.walkthrough.invocations[0].status, 'disclosed_permission_not_observed');
+  const g = fixture(); g.controls.permit = true;
+  await assert.rejects(g.execute({ name: control, control }), /permitted|denial|unexpected/);
+  assert.equal(g.sends.length, 0);
 });
+
 test('the floor and transfer-cap controls step just past the operator\'s decisions', async () => {
   const f = fixture();
   Object.assign(f.run.walkthrough, { minimum_out: '150000' });

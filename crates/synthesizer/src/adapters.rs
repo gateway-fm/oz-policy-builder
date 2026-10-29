@@ -134,7 +134,7 @@ impl Adapter {
 pub fn soroswap_router_adapter(target_code_hash: Hash32) -> Adapter {
     Adapter::from_semantics(
         target_code_hash,
-        ozpb_domain::target_adapters::soroswap_router(),
+        ozpb_domain::target_adapters::soroswap_router_v2(),
     )
 }
 
@@ -156,7 +156,7 @@ mod tests {
         );
         assert_eq!(
             a.role("swap_exact_tokens_for_tokens", 4),
-            Some(&ArgRole::CallerChosen)
+            Some(&ArgRole::ExactOnly)
         );
         assert_eq!(a.role("unknown_fn", 0), None);
     }

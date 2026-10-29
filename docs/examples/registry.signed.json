@@ -1,9 +1,9 @@
 {
   "snapshot": {
     "schema": "registry/v1",
-    "version": 4,
-    "log_index": 4,
-    "previous_root": "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f",
+    "version": 5,
+    "log_index": 5,
+    "previous_root": "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf",
     "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
     "valid_from_unix": -9223372036854775808,
     "expires_at_unix": 9223372036854775807,
@@ -58,9 +58,9 @@
     },
     "target_adapters": {
       "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c": {
-        "implementation": "soroswap-router@1",
-        "semantics_digest": "da6b4c209e48dac98d9473599622c3c17ec52101d2b3bca4bea7ecdf081a2f13",
-        "review_reference": "Development-registry assertion, not governance: anyone can sign with this snapshot's development root. Roles of swap_exact_tokens_for_tokens read from the public router source, soroswap/core contracts/router at tag v1.0 (unchanged since 8a35511): amount_in is the exact input taken from `to`, amount_out_min an absolute output floor, path the exact route, `to` both payer and recipient and the only address asked to authorize, deadline compared with the ledger timestamp only. The deployed testnet code (router CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD) was not reproduced byte for byte: a rebuild with rustc 1.83.0 and soroban-sdk 20.2.0, the versions its metadata names, optimized as soroban-cli 22.0.1 does, differs only in the order of seven internal functions. See docs/TARGET-ADAPTERS.md."
+        "implementation": "soroswap-router@2",
+        "semantics_digest": "69f4ec7627ec27a1fa07eac40f3f127004ac13d8933900400f66107b9da94215",
+        "review_reference": "Development-registry assertion, not governance: anyone can sign with this snapshot's development root. Roles of swap_exact_tokens_for_tokens read from the public router source, soroswap/core contracts/router at tag v1.0 (unchanged since 8a35511): amount_in is the exact input taken from `to`, amount_out_min an absolute output floor, path the exact route, `to` both payer and recipient and the only address asked to authorize, deadline compared with the ledger timestamp only. The deployed testnet code (router CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD) was not reproduced byte for byte: a rebuild with rustc 1.83.0 and soroban-sdk 20.2.0, the versions its metadata names, optimized as soroban-cli 22.0.1 does, differs only in the order of seven internal functions. See docs/TARGET-ADAPTERS.md. Version 2 preserves the recorded deadline exactly instead of widening it; its input cap and other argument roles are unchanged."
       }
     },
     "templates": {
@@ -86,6 +86,6 @@
     "revocations": {}
   },
   "signatures": {
-    "legacy": "ff5a2a8e71be972275b9464c2b5868948f92b18fa9f4083bc8881d68411dd3d65abdfd290ca90a5e32105b0643c71b6a5caf61b6687b068e267290bd3e508706"
+    "legacy": "129393110bf7b1db6e6a880acdaa8e1b238dc4e6b61aa70217017c8e962428412d8c9da54c4a2af8ff74d36281acab29e618f7afa9eefdd4a9acf790fbbe4f00"
   }
 }

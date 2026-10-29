@@ -38,8 +38,8 @@ const CONSTRUCTED = new Set(['path_reordered', 'path_extended', 'path_truncated'
 // A permit observation signs a live authorization of a real call, and the endpoint sees it; it lasts
 // only long enough to be simulated.
 const PERMIT_AUTH_LEDGERS = 5;
-const PERMITS = Object.freeze({ direct_token: 'verified_independent_permission', any_deadline: 'verified_disclosed_permission' });
-const UNOBSERVED = Object.freeze({ direct_token: 'independent_permission_not_observed', any_deadline: 'disclosed_permission_not_observed' });
+const PERMITS = Object.freeze({ direct_token: 'verified_independent_permission' });
+const UNOBSERVED = Object.freeze({ direct_token: 'independent_permission_not_observed' });
 
 export function protocolControlInvocation(plan, control, foreign) {
   const intended = protocolInvocation(plan);
@@ -64,7 +64,10 @@ export function protocolControlInvocation(plan, control, foreign) {
       // The router's other swap, by the account, for the same route: exact output, bounded input.
       return contractCall(PROTOCOL_TARGETS.router, 'swap_tokens_for_exact_tokens', [i128(BigInt(plan.minimum_out)),
         i128(BigInt(plan.amount_in)), call.args[2], A(plan.account), xdr.ScVal.scvU64(BigInt(plan.deadline))]);
-    } else if (control === 'any_deadline') call.args[4] = xdr.ScVal.scvU64(U64_MAX);
+    } else if (control === 'deadline_plus_one') {
+      requireThat(BigInt(plan.deadline) < U64_MAX, 'deadline cannot be incremented');
+      call.args[4] = xdr.ScVal.scvU64(BigInt(plan.deadline) + 1n);
+    } else if (control === 'maximum_deadline') call.args[4] = xdr.ScVal.scvU64(U64_MAX);
     else if (control === 'direct_token') return intended.subInvocations[0];
     else if (control === 'direct_token_cap') {
       const child = intended.subInvocations[0];
@@ -91,12 +94,12 @@ export async function invokeProtocol({ run, name, mode, signer = 'delegate', con
   requireThat(mode !== 'execute' || (control === 'baseline' && ['owner', 'delegate'].includes(signer) && expected === undefined),
     'negative protocol controls are only simulated');
   // Each simulated control names one kind of expected outcome, and only the controls that can have
-  // it: a permit (the independent transfer, the adapter's open deadline), the recipient's own refusal
+  // it: a permit (the independent transfer), the recipient's own refusal
   // (a foreign `to`), or a denial attributed to an enforcer.
   const swap = run.walkthrough.kind === 'soroswap_swap' && signer === 'delegate';
   const expectsPermit = swap && expected?.permit === true && Object.hasOwn(PERMITS, control);
   const expectsRecipient = swap && expected?.recipient_refusal === true && control === 'foreign_recipient';
-  // The open deadline can only be permitted and a foreign recipient only refused before the account;
+  // A foreign recipient is refused before the account; deadline mutations must fail at the policy;
   // a denial claimed for either is refused. The direct transfer is also denied (above its cap or
   // count), so only its permit observation is keyed on the expectation.
   const expectsDenial = Boolean(expected?.enforcer) && Number.isInteger(expected?.code)

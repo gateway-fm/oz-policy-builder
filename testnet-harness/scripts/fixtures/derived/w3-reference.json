@@ -1,6 +1,6 @@
 {
   "report": {
-    "agreements": 63,
+    "agreements": 65,
     "coverage": [
       [
         "original",
@@ -24,7 +24,7 @@
       ],
       [
         "arg_equality",
-        2
+        4
       ],
       [
         "different_address_arg",
@@ -66,7 +66,7 @@
     "coverage_by_rule": {
       "0": {
         "arg_arity": 2,
-        "arg_equality": 2,
+        "arg_equality": 4,
         "call_count_boundary": 5,
         "different_address_arg": 1,
         "different_contract": 1,
@@ -263,6 +263,22 @@
         "class": "type_confusion",
         "expected": "deny",
         "label": "rule[0] type: i128 where address arg[3]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_equality",
+        "expected": "deny",
+        "label": "rule[0] u64 plus one arg[4]",
+        "rule_index": 0
+      },
+      {
+        "actual": "deny(NoTupleMatched)",
+        "agree": true,
+        "class": "arg_equality",
+        "expected": "deny",
+        "label": "rule[0] u64 maximum arg[4]",
         "rule_index": 0
       },
       {
@@ -643,10 +659,10 @@
       }
     ],
     "spec_hash": "f31880a1f2963728054f925df0c2dc5500d421f7cad76d1ba328444cda698cd4",
-    "total": 63,
+    "total": 65,
     "unmodeled_policies": []
   },
-  "total": 63,
+  "total": 65,
   "disagreements": 0,
   "all_agree": true,
   "unmodeled_reviewed_policies": [],

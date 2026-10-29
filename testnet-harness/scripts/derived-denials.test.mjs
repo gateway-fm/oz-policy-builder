@@ -291,9 +291,9 @@ test('W3 replays both rules with their recorded trees and keeps type-changing mu
   assert.deepEqual(router.rule_ids, [8, 9]);
   assert.equal(router.tree.subInvocations.length, 1);
   assert.deepEqual(transfer.rule_ids, [9]);
-  assert.equal(p.denials.length, 10);
+  assert.equal(p.denials.length, 12);
   assert.deepEqual(p.denials.map((d) => `${d.rule_index}:${d.class}`), [
-    '0:numeric_boundary', '0:numeric_boundary', '0:zero_signers', '0:wrong_signer', '0:signer_boundary',
+    '0:numeric_boundary', '0:numeric_boundary', '0:arg_equality', '0:arg_equality', '0:zero_signers', '0:wrong_signer', '0:signer_boundary',
     '1:different_address_arg', '1:numeric_boundary', '1:zero_signers', '1:wrong_signer', '1:signer_boundary',
   ]);
   // A router mutation keeps the recorded transfer child, so it needs both rule IDs; a transfer-rule
@@ -307,6 +307,8 @@ test('W3 replays both rules with their recorded trees and keeps type-changing mu
   assert.equal(scValToNative(cap.args[0]), 1000001n);
   assert.equal(scValToNative(floor.args[1]), 99999n);
   assert.equal(cap.args[4].type, 'scvU64');
+  assert.equal(scValToNative(p.denials.find(d => d.label.includes('u64 plus one')).args[4]), 1792505381n);
+  assert.equal(scValToNative(p.denials.find(d => d.label.includes('u64 maximum')).args[4]), (1n << 64n) - 1n);
   // A bool where the route or deadline is would be refused by the router before authorization.
   const reasons = p.offline.filter((o) => o.rule_index === 0).map((o) => `${o.class}:${o.reason}`);
   assert.ok(reasons.includes('arg_equality:host_rejects_before_authorization'));

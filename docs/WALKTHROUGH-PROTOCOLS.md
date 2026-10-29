@@ -1,3 +1,7 @@
+> Current W3 uses adapter v2 and registry v5 with an exact recorded deadline. Earlier
+> receipts and the v1/set-3 descriptions below remain historical evidence of their original
+> open-deadline permission; they are not relabeled as passing the new deadline checks.
+
 # Protocol walkthroughs: W3 Soroswap and W1 Blend
 
 These harness modes take a real protocol call by a fresh pinned smart account through the same
@@ -11,11 +15,12 @@ step below; an earlier run that day predates the two transfer-rule denials
 ([section 9 of the testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md#9-controlled-soroswap-swap-runs-20-october-2026)).
 A run on 22 October 2026 repeated every W3 step with the [derived denials](#derived-denials) and
 passed ([section 13](TESTNET-EVIDENCE-TRANCHE-2.md#13-controlled-soroswap-swap-run-with-derived-denials-22-october-2026)).
-Those runs used widenings the harness wrote itself. W3 now takes the router's input bound and
-open deadline from the registry's reviewed adapter, the floor and transfer cap from an operator
-decisions file, and adds route, recipient and function controls. The adapter binding is a
+Those runs used widenings the harness wrote itself. Current W3 takes the router's input bound
+from the registry's [v2 adapter](TARGET-ADAPTERS.md#current-binding-development-registry-version-5) and preserves the approved recorded deadline exactly. The
+operator's decisions file supplies the floor and transfer cap. Route, recipient and function
+controls remain. The adapter binding is a
 development-registry assertion, and the router's Wasm was not reproduced from source
-([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)). A controlled run on 26 October completed all 19 controls with that binding and ten verified
+([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)). A controlled run on 26 October completed all 19 controls with the historical v1 binding and ten verified
 derived denials ([section 14](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026)).
 W1 is executable through `run.sh`: it opens the bounded USDC supply its claim is earned on and
 withdraws it before the keys are discarded (see [W1](#w1-blend)). A controlled run on 21 October
@@ -84,10 +89,10 @@ root. Without it the run stops before setup.
 
 ```json
 {
-  "schema": "ozpb-soroswap-operator-decisions/v1",
+  "schema": "ozpb-soroswap-operator-decisions/v2",
   "output_floor": { "min": "100000", "intent": "…" },
   "transfer_cap": { "max": "1000000", "intent": "…" },
-  "adapter_deadline": "accept_any_value_high_blast_radius"
+  "adapter_deadline": "keep_recorded_deadline"
 }
 ```
 
@@ -113,7 +118,7 @@ The owner then calls `swap_exact_tokens_for_tokens` once through the account's o
 | Output floor | The operator's `output_floor.min`, an absolute amount of the output token, checked against the live quote. |
 | Transfer cap | The operator's `transfer_cap.max`, at least the input. |
 | Route | Exactly `[native, output token]`; recipient is the account itself. |
-| Deadline | Preflight time plus one hour in the recorded call. The adapter then leaves it open. |
+| Deadline | Preflight time plus one hour in the recorded call, retained exactly in the generated policy. |
 | Grant | 180 ledgers after the recorded ledger, one call per rule. |
 
 The run requires a confirmed nonzero output and an equal balance increase before recording.
@@ -126,24 +131,25 @@ complete spec. This document names them by role, because the account numbers rul
 (its owner rule is ID 0, and each installed rule gets the next free ID):
 
 - **Router rule** (spec index 0): input at most the recorded amount, output at least the
-  operator's floor, the exact route and recipient, and **any deadline**.
+  operator's floor, the exact route and recipient, and **the exact recorded deadline**.
 - **Transfer rule** (spec index 1): at most the operator's transfer cap, from the account to the
   exact pair.
 
-The router rule's input bound and open deadline are `adapter_derived`. Synthesis takes them
-from `soroswap-router@1`, which the committed development registry (version 4) binds to the
-router's exact code. That binding is a development-registry assertion, not governance, and the
-router's Wasm was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+The router rule's input bound is `adapter_derived` from `soroswap-router@2`; its deadline
+remains `observed_exact` from the recorded call. The [committed development registry (version 5)](TARGET-ADAPTERS.md#current-binding-development-registry-version-5) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
+router's Wasm was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)).
 The harness writes only the operator's two decisions into the synthesis inputs, as
 `user_widened` with their intents: the output floor and the transfer cap. `protocol-synthesis.mjs`
-refuses a synthesized spec whose router input bound or deadline did not come from that adapter
-and that code hash, or whose router hash is not `adapter_required` with `refuse` on drift. The
+refuses a synthesized spec whose input bound did not come from that adapter and code hash,
+or whose exact deadline differs from the recorded approved value, or whose router hash is not `adapter_required` with `refuse` on drift. The
 Blend pool's hash stays an `evidence_only` observation; it has no adapter.
 
-**The open deadline is high blast radius.** A delegate may name any deadline, including one that
-never passes, so the router's own time check no longer limits when the swap executes; the rule's
-expiry and each signature's own expiry ledger still do. Synthesis says so in its rationale, the
-pipeline record flags it, and the operator's decisions file must accept it explicitly.
+**The deadline is a fixed approved cutoff.** Adapter v2 preserves its exact recorded `u64`
+value. Raising it by one or using `u64::MAX` must be denied by the router-rule policy (`#6`).
+The router applies its own timestamp check; grant expiry and signature expiry remain separate
+ledger limits. The one-call cap here is a controlled-demo setting, not a requirement that all
+Soroswap grants be single-use. A configured larger cap can permit repeated swaps before the
+same cutoff, with the amount limit applied to each call.
 
 The rules are independent capabilities, not an atomic workflow. The transfer rule alone lets the
 delegate move up to the operator's `transfer_cap` to the pair. **XLM sent to the pair that way is
@@ -173,9 +179,9 @@ the spec's own layer-1 suite against both installed rules
 ([harness README](../testnet-harness/README.md#derived-denials)). Each rule's recorded call must be
 permitted in simulation: the router rule's swap with its transfer child signed for both rules,
 and the transfer rule's direct transfer. Then every live-realizable deny case is replayed in
-suite order. For the W3 spec that is ten cases, five per rule:
+suite order. For the current W3 spec that is twelve cases: seven for the router rule and five for the transfer rule:
 
-- input above the cap and output below the floor on the router rule (`#6`);
+- input above the cap, output below the floor, deadline plus one and maximum deadline on the router rule (`#6`);
 - the transfer rule's cap and a stranger recipient (`#6` from the transfer rule's own policy);
 - for each rule, an empty signer set (`#1`), an unrecognized signer and the delegate plus an
   unrecognized signer (the account's `3016`).
@@ -183,8 +189,9 @@ suite order. For the W3 spec that is ten cases, five per rule:
 The route mutation replaces a `Vec` with a bool, which the router's argument decoding rejects
 before authorization. It stays offline with the other listed classes. So do the `to` mutation,
 which moves the authorization off the account, and the suite's undeployed contract and absent
-function, which have no live equivalent here. The adapter leaves the deadline open, so the suite
-has no deadline denial; its cases for the deadline expect a permit and are not replayed. The
+function, which have no live equivalent here. The historical v1 adapter left the deadline open, so its suite had no deadline denial;
+those cases expected a permit and were not replayed. Current v2 derives denials for
+deadline-plus-one and the maximum u64 value. The
 section 13 run predates the adapter and replayed the same ten denials against an exact deadline.
 The [section 14 run](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026)
 uses the adapter-bound 64-case suite and reports the open deadline as a disclosed permission.
@@ -219,7 +226,7 @@ to authorize, before it reads the route. The journal and the export mark these i
 | Route reordered, extended, truncated | Router-rule policy refusal `#6` for each: `[output, native]`, `[native, output, native]`, `[native]`. |
 | Foreign recipient | Refused before the account is asked: the host reports the recipient's missing authorization (`Unauthorized function call for address`) and no account authentication failure. The router asks `to`, and only `to`, to authorize and takes the input from it (`SOROSWAP_FOREIGN_RECIPIENT` in `protocol-invoke.mjs`, a contract address derived from a label). |
 | Another router function | `swap_tokens_for_exact_tokens` by the account for the same route, signed for the router rule alone: `FunctionNotAllowed` (`#5`). |
-| Any deadline | The largest `u64` deadline is **permitted** in simulation, signed for five ledgers only. This is the disclosed high-blast-radius authority, not a denial. |
+| Later / maximum deadline | The recorded deadline plus one and the largest `u64` deadline are each denied in simulation by the router rule's policy (`#6`). Neither is submitted. |
 | Wrong signer | The account's `UnauthorizedSigner` (`#3016`). |
 | Empty signer set | Router-rule policy `ZeroSigners` (`#1`). |
 | Direct transfer to the pair | The transfer rule alone permits it in simulation; this is the disclosed independent authority. |
@@ -371,12 +378,14 @@ authority answer, readback, pending submissions and removals, and the control st
 `protocol_pipeline`. The native setup's transfer target, recipient and amount are exported as
 `null` for these runs: they only fund the account. A Soroswap journal without the
 transfer-rule denials is labelled `router_rule_denials_only`, one with them but before the
-adapter `transfer_rule_denials_included`, the adapter-bound set
-`adapter_route_recipient_function_controls`, and a Blend journal `single_rule`. A W3 plan with
+adapter `transfer_rule_denials_included`, the historical v1 adapter-bound set
+`adapter_route_recipient_function_controls`, the v2 set `adapter_exact_deadline_controls`,
+and a Blend journal `single_rule`. A W3 plan with
 operator decisions is adapter-bound: its `protocol_pipeline` must name the adapter
-(`soroswap-router@1`, the router's code hash, rule 0 and the registry root the run resolved and
-installed under) and flag the open deadline in `high_blast_radius`, and W3 evidence without that
-identity is refused. The pipeline also says who could sign the binding: `development_root` when
+(its versioned identity, the router's code hash, rule 0 and the registry root the run resolved
+and installed under). Historical v1 reports flag the open deadline in `high_blast_radius`;
+current v2 reports instead identify the exact `deadline_unix` and check it against the spec.
+Mixed versions, decisions or control sets are refused. The pipeline also says who could sign the binding: `development_root` when
 the configured roots include the public development key, exported as
 `development_registry_assertion_not_governance`, whichever files the operator named; otherwise
 `operator_root`. A plan without operator decisions predates the adapter (the 20 and 22 October

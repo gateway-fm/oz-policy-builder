@@ -7,9 +7,9 @@ function fixture(kind = 'soroswap_swap') {
   const rules = kind === 'blend_claim' ? [0] : [0, 1];
   const run = { account: C(1), payer: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)), valid_until_ledger: 280,
     walkthrough: { kind, grant_duration_ledgers: 180, ...(kind === 'blend_claim' ? { accrual_ledgers: 2,
-      owner_transaction: { ledger: 276 } } : { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v1',
+      owner_transaction: { ledger: 276 } } : { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v2',
       output_floor: { min: '100000', intent: 'floor' }, transfer_cap: { max: '1000000', intent: 'cap' },
-      adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) } }),
+      adapter_deadline: 'keep_recorded_deadline', source_sha256: 'cd'.repeat(32) } }),
     bundle: { status: 'installed', entries: rules.map((rule_index) => ({ rule_index, policy: C(2 + rule_index),
       installation: { rule_id: 8 + rule_index, transaction: 'aa'.repeat(32) } })) } } };
   const calls = [], control = {};
@@ -40,7 +40,7 @@ test('W3 controls prove bounded calls, independent token authority, actual expir
   const f = fixture();
   assert.equal((await f.execute()).status, 'completed');
   assert.deepEqual(f.calls.map((call) => call.name), ['input_cap', 'output_floor', 'path_reordered', 'path_extended',
-    'path_truncated', 'foreign_recipient', 'router_function', 'any_deadline',
+    'path_truncated', 'foreign_recipient', 'router_function', 'deadline_plus_one', 'maximum_deadline',
     'wrong_signer', 'zero_signers', 'independent_token', 'token_cap', 'delegate_swap', 'count_cap', 'token_count_cap',
     'expired_rule', 'cleanup', 'post_revocation']);
   // The transfer rule's own policy must refuse something the delegate could otherwise use alone.
@@ -48,7 +48,7 @@ test('W3 controls prove bounded calls, independent token authority, actual expir
   assert.equal(f.calls.find((call) => call.name === 'token_cap').control, 'direct_token_cap');
   assert.deepEqual(expected(f, 'token_count_cap'), { enforcer: C(3), code: 7 });
   assert.equal(f.calls.find((call) => call.name === 'token_count_cap').control, 'direct_token');
-  assert.equal(f.run.walkthrough.controls.control_set, 3);
+  assert.equal(f.run.walkthrough.controls.control_set, 4);
   assert.equal(f.calls.filter((call) => call.mode === 'execute').length, 1);
   assert.deepEqual(expected(f, 'input_cap'), { enforcer: C(2), code: 6 });
   assert.deepEqual(expected(f, 'wrong_signer'), { enforcer: C(1), code: 3016 });
@@ -124,13 +124,13 @@ test('W3 controls tamper the route three ways, name a foreign recipient and anot
   assert.equal(step.enforcer, undefined);
 });
 
-test('a different deadline is a disclosed high-blast-radius permit, not a denial', async () => {
-  const f = fixture();
-  await f.execute();
-  assert.deepEqual(expected(f, 'any_deadline'), { permit: true });
-  assert.equal(f.calls.find((call) => call.name === 'any_deadline').mode, 'simulate');
-  assert.equal(f.run.walkthrough.controls.steps.find((s) => s.name === 'any_deadline').result, 'verified_disclosed_permission');
-  assert.equal(f.calls.some((call) => call.name === 'exact_deadline'), false);
+test('later and maximum deadlines are denied by the router policy without submission', async () => {
+  const f = fixture(); await f.execute();
+  for (const name of ['deadline_plus_one', 'maximum_deadline']) {
+    assert.deepEqual(expected(f, name), { enforcer: C(2), code: 6 });
+    assert.equal(f.calls.find((call) => call.name === name).mode, 'simulate');
+    assert.equal(f.run.walkthrough.controls.steps.find((s) => s.name === name).result, 'verified_denial');
+  }
 });
 
 test('W3 controls refuse a plan without journaled operator decisions before any call', async () => {

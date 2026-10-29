@@ -120,6 +120,7 @@ export function runProtocolFlow(runDirectory, env = process.env) {
     reference_cases: reference.total, artifact_reproduction: 'matched', current_network_preflight: 'not_checked_here',
     adapter: disclosure.adapter && { ...disclosure.adapter, registry_root: spec.registry_snapshot, registry: registryLabel },
     high_blast_radius: disclosure.high_blast_radius,
+    ...(run.walkthrough.kind === 'soroswap_swap' ? { deadline_unix: String(run.walkthrough.deadline) } : {}),
     artifacts: artifacts.map(({ rule_index, wasm_hash, normalized_input_hash }) => ({ rule_index, wasm_hash, normalized_input_hash })) });
   return artifacts;
 }

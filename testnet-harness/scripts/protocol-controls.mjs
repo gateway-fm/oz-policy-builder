@@ -37,8 +37,9 @@ export function negatives(kind, account, root, transfer) {
     ['foreign_recipient', { control: 'foreign_recipient', expected: { recipient_refusal: true } }],
     // The generated policy checks the function name before any argument: FunctionNotAllowed.
     ['router_function', { control: 'router_function', expected: { enforcer: root, code: 5 } }],
-    // The adapter leaves the deadline open. This observes that disclosed high-blast-radius authority.
-    ['any_deadline', { control: 'any_deadline', expected: { permit: true } }], ...signers,
+    // The approved deadline is exact: later timestamps must fail at the policy.
+    ['deadline_plus_one', { control: 'deadline_plus_one', expected: tuple }],
+    ['maximum_deadline', { control: 'maximum_deadline', expected: tuple }], ...signers,
     // The child token rule is independently usable; this observes that disclosed authority, and
     // that the transfer rule's own policy still bounds a direct transfer.
     ['independent_token', { control: 'direct_token', expected: { permit: true } }],
@@ -82,7 +83,7 @@ export async function runProtocolControls(input, overrides = {}) {
 
   // Control set 2 adds the transfer rule's own cap and count denials (soroswap only); set 3 the
   // adapter-bound router's route, recipient, function and open-deadline controls (soroswap only).
-  const journal = { status: 'running', control_set: plan.kind === 'soroswap_swap' ? 3 : 2, steps: [] };
+  const journal = { status: 'running', control_set: plan.kind === 'soroswap_swap' ? 4 : 2, steps: [] };
   plan.controls = journal;
   save();
   const record = (step) => { journal.steps.push(step); save(); };
