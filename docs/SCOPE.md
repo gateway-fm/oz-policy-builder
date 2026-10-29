@@ -61,6 +61,9 @@ that authorization under any rule that matches the policy's address: `Default` o
 | Direct calls under the grant's own rule and rule 0 | `grant_rule_cannot_reach_its_policy_and_rule_zero_is_listed_authority` | The grant's `CallContract(target)` rule cannot reach the policy: the account refuses with `UnvalidatedContext`. The owner's `Default` rule 0 alone can remove, recreate and spend the grant's state. Before installation, the call-surface check lists rule 0 with its signer. |
 | Direct calls under a rule scoped to the policy's address | `policy_address_rule_can_uninstall_and_call_surface_refuses_it`, `policy_address_rule_held_by_another_key_is_listed_with_its_signer` | Held by the agent's key, the rule lets the agent alone remove the grant's state, which then denies as `MissingState`. The agent can also recreate it with a fresh cap, and spend a call with no transfer while the policy still publishes its enforced event. The check refuses that rule with `E_DELEGATE_HAS_AUTHORITY`. Held by another key, the rule is listed with that signer and the agent cannot use it. |
 | Direct calls under rules scoped to other contracts | `alternate_contract_rule_cannot_reach_policy_methods` | The account refuses all three methods under a rule for an unrelated contract and under an unlimited agent rule for the target. The check lists the first as a coverage exclusion and refuses the second as an overlap. |
+| Weak account-management authority | `weak_account_rule_can_create_a_policy_reset_rule` | The call-surface check refuses the agent's account-address rule. Deliberately bypassing that refusal shows that the agent can create a policy-address rule, remove exhausted policy state and reinstall a fresh cap. The account-address rule itself still cannot directly call the policy. |
+| Grant revival through weak management | `weak_management_can_revive_an_expired_rule_without_resetting_its_counter` | The agent can extend an expired target rule through a separately live account-management rule. Authorization resumes before the policy's compiled expiry, preserving the used count. The original management authority is refused by the call-surface check. |
+| Overlapping real-account grants | `overlapping_real_account_grants_have_independent_caps` | Bypassing the check's overlap refusal installs two rule IDs on the same policy instance. Each has its own cap; exhausting or removing one does not refresh the other. These are signed account authorization tests, not token-transfer executions. |
 | Missing-state denial | `differential.rs` `missing_state_denies_in_both`; `ttl.rs` `remaining_calls_refuses_an_installation_whose_marker_is_gone`; the policy-address test above | Absent state denies; it never reads as zero. |
 | Install-only initialization, double install | `differential.rs` `install_is_the_only_initializer_and_double_install_fails` | A second install is refused with `AlreadyInstalled`. |
 | TTL and max-TTL bounds | `ttl.rs` (11 tests) | Conditional extension, the clamp to the compiled expiry and the network maximum, no rent on reads, denials or uninstall. |
@@ -87,12 +90,13 @@ Not covered:
   survives idle depends on the TTLs its entries were deployed or extended with.
 - **The authority-surface tests in §8.** Apart from the rules above, none of them is executed
   through the account here. They include:
-  - weak account-address rules creating a policy-address rule, adding a signer or removing a
-    policy;
-  - expired rules revived through `update_context_rule_valid_until`;
+  - weak account-address rules adding a signer to an existing protected rule or removing its
+    policy (creation of a policy-address rule is covered above);
+  - expired weak management or policy-address rules revived through
+    `update_context_rule_valid_until` (target-grant revival is covered above);
   - archived rules restored and used in the same invocation;
   - wrappers with custom or unknown management methods;
-  - reconfiguration overlap.
+  - the complete reconfiguration workflow (independent overlapping rule-ID budgets are covered above).
 
   The call-surface core's unit tests analyse many of these shapes over constructed states.
 
