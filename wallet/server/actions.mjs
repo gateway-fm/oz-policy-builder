@@ -713,11 +713,12 @@ export function createWalletActions({ session, toolchain, network, native = null
       return observation;
     },
     // Revoke first, then explicitly acknowledge the fresh budget. No add_context_rule is released
-    // here. Every prior review/deployment/action is discarded; existing artifact IDs stay spent.
+    // here. Every prior review/deployment/action is discarded; artifact IDs already attempted for deployment stay spent.
     'prepare-replacement': async (input) => {
       exact(input, ['installationId']);
       if (!replaceable() || accountCheckRunning || liveRunning) refuse();
       const held = get(installations, input.installationId);
+      if (input.installationId !== [...installations.keys()].at(-1)) refuse();
       const display = replacementConsent({ installation: held.record, removal: held.removal });
       await replacementState(held);
       session.invalidate('replacement');

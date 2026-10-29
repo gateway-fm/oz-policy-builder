@@ -419,10 +419,7 @@ export class WalletController {
       && HASH.test(item.installationId ?? '') && HASH.test(item.transactionHash ?? ''));
     return listed.length === 1 ? listed[0] : null;
   }
-  /**
-   * Revocation, step 1: for this session's installation, the backend's unsigned removal is validated
-   * here against the reviewed owner rule and the browser's own display. Nothing is signed.
-   */
+  /** Read the installed grant without signing or submitting. */
   async monitorGrant() {
     return this.#act(async () => {
       this.#set({ monitor: null });
@@ -481,6 +478,10 @@ export class WalletController {
       await this.#status();
     });
   }
+  /**
+   * Revocation, step 1: for this session's installation, the backend's unsigned removal is validated
+   * here against the reviewed owner rule and the browser's own display. Nothing is signed.
+   */
   async prepareRevoke() {
     return this.#act(async () => {
       this.#set({ revokePreview: null });
