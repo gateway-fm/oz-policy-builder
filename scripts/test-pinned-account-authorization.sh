@@ -105,7 +105,10 @@ for test in \
     extended_rule_validity_does_not_outlive_the_compiled_expiry \
     stale_policy_state_is_refused_not_adopted \
     grant_survives_inactivity_until_its_shortest_ttl \
-    failed_composition_rolls_back_the_permitting_policy; do
+    failed_composition_rolls_back_the_permitting_policy \
+    weak_account_rule_can_create_a_policy_reset_rule \
+    weak_management_can_revive_an_expired_rule_without_resetting_its_counter \
+    overlapping_real_account_grants_have_independent_caps; do
     grep -qx "test $test ... ok" "$work/invariants.log" || {
         echo "required state-invariant test did not run and pass: $test" >&2
         exit 1
