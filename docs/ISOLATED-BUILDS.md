@@ -101,6 +101,13 @@ The API retains the job's capacity slot and returns a fixed, redacted error. Ins
 any remaining containers under the dedicated service account, then restart the API to restore
 capacity. A normal compilation failure releases capacity only after confirmed removal.
 
+When a client cancels the request, the API sends the launcher SIGTERM, no earlier than two
+seconds after starting it so that its handler is installed, and waits up to 45 seconds. The
+launcher stops the running job, removes its container and writes the usual frame with a null
+result; a stop requested before launch runs nothing. That confirmation releases the slot. A
+launcher that does not confirm in time is handled as one that died: its slot stays retained
+until the operator has cleaned up.
+
 ## Launcher contract for another provider
 
 The API starts the configured executable with no arguments, a private file on stdin, bounded
@@ -109,7 +116,8 @@ stdout capture, and a minimal host environment. The input is JSON with schema
 `jobs`. Time and parallelism originate in operator configuration, and the launcher must check
 them against its own ceilings. The six paths are exactly `Cargo.toml`, `Cargo.lock`,
 `rust-toolchain.toml`, `rustfmt.toml`, `src/lib.rs`, and `src/contract.rs`, with no duplicates.
-Combined UTF-8 source is at most 2 MiB and encoded input is at most 16 MiB.
+Combined UTF-8 source is at most 2 MiB and encoded input is at most 16 MiB. SIGTERM means the
+request was cancelled: stop the job, prove its removal and frame a null result.
 
 The worker's bounded JSON result has schema `build-worker-result/v1` and `artifact`, either
 null for a failed build or an object containing `wasm_base64`, `wasm_hash`, and `toolchain`.

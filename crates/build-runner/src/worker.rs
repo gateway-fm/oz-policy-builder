@@ -15,6 +15,46 @@ const LAUNCHER_GRACE: Duration = Duration::from_secs(90);
 // Exercise the identical timeout path without waiting for production startup/probe grace.
 #[cfg(test)]
 const LAUNCHER_GRACE: Duration = Duration::from_secs(1);
+/// How long a cancelled launcher has to remove its job and confirm it: the bounded container
+/// removal and existence check in `deployment/worker-launcher.py` take at most 25 s.
+#[cfg(not(test))]
+const CANCEL_CONFIRMATION: Duration = Duration::from_secs(45);
+#[cfg(test)]
+const CANCEL_CONFIRMATION: Duration = Duration::from_secs(2);
+
+/// The earliest a launcher is signalled after it starts. A launcher installs its SIGTERM
+/// handler first thing, but a signal that arrives before then kills it, which leaves its job's
+/// removal unconfirmed and its slot retained until an operator restart. Without this floor a
+/// client could lose a slot by cancelling at once.
+const LAUNCHER_STARTUP: Duration = Duration::from_secs(2);
+
+/// Ask a running launcher to stop (SIGTERM to the launcher alone, which removes its job and
+/// frames that removal), and wait for it to exit. `None` if it does not exit in time.
+fn request_launcher_stop(
+    child: &mut std::process::Child,
+    started: std::time::Instant,
+) -> Option<std::process::ExitStatus> {
+    // It may also finish on its own while it is too young to signal.
+    let young = LAUNCHER_STARTUP.saturating_sub(started.elapsed());
+    if !young.is_zero() {
+        if let Some(status) = child.wait_timeout(young).ok()? {
+            return Some(status);
+        }
+    }
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+        let pid = i32::try_from(child.id()).ok()?;
+        kill(Pid::from_raw(pid), Signal::SIGTERM).ok()?;
+    }
+    #[cfg(not(unix))]
+    {
+        // No graceful stop without a signal: nothing can confirm the job is gone.
+        return None;
+    }
+    child.wait_timeout(CANCEL_CONFIRMATION).ok().flatten()
+}
 const FILES: [&str; 6] = [
     "Cargo.lock",
     "Cargo.toml",
@@ -222,6 +262,7 @@ pub(crate) fn build(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    let started = std::time::Instant::now();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => {
@@ -240,9 +281,28 @@ pub(crate) fn build(
         let _ = sender.send(read.map(|_| bytes));
     });
     // The runtime owns the actual job deadline. This adds bounded startup, probes and cleanup.
-    let status = child.wait_timeout(config.timeout + LAUNCHER_GRACE);
+    let (status, cancelled) = wait_until(
+        &mut child,
+        config.timeout + LAUNCHER_GRACE,
+        config.cancel.as_ref(),
+    );
     let status = match status {
         Ok(Some(status)) => status,
+        // Cancelled: ask the launcher to remove its job. Killing it would leave the container's
+        // fate unknown, so only its own confirmation, through the normal frame, can release
+        // capacity; a launcher that does not confirm in time is treated as a dead one.
+        Ok(None) if cancelled => match request_launcher_stop(&mut child, started) {
+            Some(status) => status,
+            None => {
+                #[cfg(unix)]
+                let _ = terminate_process_group(&child);
+                #[cfg(not(unix))]
+                let _ = terminate_process_group(&mut child);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(());
+            }
+        },
         _ => {
             #[cfg(unix)]
             let _ = terminate_process_group(&child);
@@ -269,9 +329,13 @@ pub(crate) fn build(
     }
     // After trusted confirmation, malformed compiler output is an ordinary failed job.
     Ok((|| {
-        let result = frame
-            .result
-            .ok_or_else(|| BuildError::Failed("disposable compilation failed".into()))?;
+        let result = frame.result.ok_or_else(|| {
+            if cancelled {
+                BuildError::Cancelled
+            } else {
+                BuildError::Failed("disposable compilation failed".into())
+            }
+        })?;
         if result.schema != RESULT_SCHEMA {
             return Err(unavailable());
         }
@@ -438,6 +502,65 @@ print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256
         let start = std::time::Instant::now();
         assert!(run(&generated(), &config).is_err());
         assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(slots.available(), 0);
+    }
+
+    /// A launcher that, like `deployment/worker-launcher.py`, answers SIGTERM by removing its
+    /// job and confirming that removal with no result.
+    const CANCELLABLE: &str = r#"import hashlib,json,signal,sys,time
+data=sys.stdin.buffer.read()
+def stop(*_):
+    print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256(data).hexdigest(),'containment':'removed','result':None}))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+time.sleep(30)"#;
+
+    fn cancelled_after(delay: Duration) -> BuildCancel {
+        let start = std::time::Instant::now();
+        BuildCancel::new(move || start.elapsed() >= delay)
+    }
+
+    #[test]
+    fn cancelled_build_with_confirmed_cleanup_releases_capacity() {
+        let (_directory, mut config, slots) = launcher(CANCELLABLE);
+        config.timeout = Duration::from_secs(30);
+        config.cancel = Some(cancelled_after(Duration::from_millis(300)));
+        let start = std::time::Instant::now();
+        assert_eq!(run(&generated(), &config), Err(BuildError::Cancelled));
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert_eq!(slots.available(), 1, "the launcher confirmed removal");
+    }
+
+    #[test]
+    fn an_immediate_cancellation_waits_for_the_launcher_to_start() {
+        // Takes half a second to install its handler, like an interpreter on a loaded host; an
+        // immediate SIGTERM would kill it and strand the slot.
+        let slow = CANCELLABLE.replace(
+            "import hashlib",
+            "import time\ntime.sleep(0.5)\nimport hashlib",
+        );
+        let (_directory, mut config, slots) = launcher(&slow);
+        config.timeout = Duration::from_secs(30);
+        config.cancel = Some(BuildCancel::new(|| true));
+        assert_eq!(run(&generated(), &config), Err(BuildError::Cancelled));
+        assert_eq!(
+            slots.available(),
+            1,
+            "the launcher lived to confirm removal"
+        );
+    }
+
+    #[test]
+    fn cancelled_build_without_confirmed_cleanup_retains_capacity() {
+        // Ignores SIGTERM, so nothing confirms that its job is gone.
+        let (_directory, mut config, slots) = launcher(
+            "import signal,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)",
+        );
+        config.timeout = Duration::from_secs(30);
+        config.cancel = Some(cancelled_after(Duration::from_millis(300)));
+        let start = std::time::Instant::now();
+        assert!(run(&generated(), &config).is_err());
+        assert!(start.elapsed() < Duration::from_secs(10));
         assert_eq!(slots.available(), 0);
     }
 
