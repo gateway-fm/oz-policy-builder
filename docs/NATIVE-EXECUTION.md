@@ -45,9 +45,11 @@ context; both counter and nonce writes must roll back before a final single call
 This establishes local account authorization behavior, not the target's effects or network fees.
 
 The runtime pins SDK 29.0.1 and its host 29.0.1 in its own lockfile, and rejects source protocol
-versions other than 29. Generated contracts retain SDK 26.1.0 and the pinned account release.
+versions other than 29. Generated policies use SDK 28.0.0 and the stellar-accounts 0.8.0 policy interface.
+The recognized account Wasm remains the separately pinned 0.7.2 implementation.
+See [dependency migration](SOROBAN-DEPENDENCIES.md) for the compatibility boundary.
 Only canonical XDR crosses this boundary. A shared [ABI vector](examples/native-runtime-abi.json)
-is checked against both the actual SDK-26 account/policy types and the runtime's SDK-29 wire
+is checked against both the actual SDK-28 policy/account-library types and the runtime's SDK-29 wire
 types; the source-built Wasm test additionally exercises the real account ABI.
 
 ## Machine protocol

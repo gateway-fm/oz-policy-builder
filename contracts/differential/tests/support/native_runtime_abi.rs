@@ -1,4 +1,4 @@
-//! One known XDR vector is consumed by both SDK 26 account types and SDK 29
+//! One known XDR vector is consumed by both SDK 28 policy/account-library types and SDK 29
 //! runtime wire types. The fixture follows protocol XDR, independent of serde.
 use super::{AuthPayload, ContextRule, ContextRuleType, PolicyStorageKey, Signer};
 use soroban_sdk::xdr::{Limits, ScVal, WriteXdr};

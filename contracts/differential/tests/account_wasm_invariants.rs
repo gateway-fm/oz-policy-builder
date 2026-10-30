@@ -66,7 +66,7 @@ use stellar_accounts::smart_account::{AuthPayload, ContextRule, ContextRuleType,
 const PASSPHRASE: &str = "Test SDF Network ; September 2015";
 /// The reviewed generated policy: the golden subscription spec with the fixed test signer.
 const REVIEWED_POLICY_WASM: &str =
-    "27980fdd1b892397fdd25ea511eccc1825b1209c2a9ae8e48359a1d70a22287d";
+    "2a9beb1a8a7a73cbfc13173e245f4a712185376bd9a3fce3f7f8d7d2cf9b04be";
 /// Compiled into that policy, as in `differential.rs`.
 const VALID_UNTIL: u32 = 4_223_456;
 const MAX_CALLS: u32 = 12;
@@ -144,6 +144,8 @@ impl Method {
 enum Scope {
     /// The grant's target, the token.
     Target,
+    /// The account's own management surface.
+    Account,
     /// The generated policy's own address.
     Policy,
     /// A contract unrelated to the grant.
@@ -249,6 +251,7 @@ impl Parties {
     fn scope(&self, scope: Scope) -> Address {
         match scope {
             Scope::Target => self.token.clone(),
+            Scope::Account => self.account.clone(),
             Scope::Policy => self.policy.clone(),
             Scope::Other => self.other.clone(),
         }
@@ -660,6 +663,19 @@ impl World {
         policies: &[PolicyOf],
         valid_until: Option<u32>,
     ) -> Result<u32, Outcome> {
+        self.add_rule_as(scope, signers, policies, valid_until, 0, &[Key::Owner])
+    }
+
+    /// A selected existing rule authorizes management; this is deliberately not owner-only.
+    fn add_rule_as(
+        &mut self,
+        scope: Scope,
+        signers: &[Key],
+        policies: &[PolicyOf],
+        valid_until: Option<u32>,
+        authorizing_rule: u32,
+        authorizing_keys: &[Key],
+    ) -> Result<u32, Outcome> {
         let next = self.next_rule_id();
         let outcome = self.call(
             |p| p.account.clone(),
@@ -682,8 +698,8 @@ impl World {
                     installed.into_val(env)
                 ]
             },
-            0,
-            &[Key::Owner],
+            authorizing_rule,
+            authorizing_keys,
         );
         match outcome {
             Outcome::Permitted => {
@@ -1512,5 +1528,139 @@ fn failed_composition_rolls_back_the_permitting_policy() {
         w.remaining_on(first, grant),
         Ok(MAX_CALLS),
         "the first policy's permitted write rolls back with the failed composition"
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned account and generated policy Wasm; run scripts/test-pinned-account-authorization.sh"]
+fn weak_account_rule_can_create_a_policy_reset_rule() {
+    let mut w = World::new();
+    let management = w
+        .add_rule(Scope::Account, &[Key::Agent], &[], None)
+        .expect("owner creates an account-address rule");
+    assert_eq!(
+        refusals(&w.surface()),
+        vec![(FindingCode::DelegateHasAuthority, Some(management))],
+        "management authority is refused before a policy-address rule exists"
+    );
+    // Deliberately bypass the advisory refusal to demonstrate the authority it protects.
+    let grant = w.install_grant().expect("owner installs anyway");
+    for _ in 0..MAX_CALLS {
+        assert_eq!(w.grant_call(grant), Outcome::Permitted);
+    }
+    assert_eq!(w.grant_call(grant), Outcome::Policy(CALL_COUNT_EXCEEDED));
+    assert_eq!(
+        w.direct(Method::Uninstall, management, &[Key::Agent], grant),
+        Outcome::Account(UNVALIDATED_CONTEXT),
+        "the account-address rule cannot itself call the policy"
+    );
+    let reset = w
+        .add_rule_as(
+            Scope::Policy,
+            &[Key::Agent],
+            &[],
+            None,
+            management,
+            &[Key::Agent],
+        )
+        .expect("agent alone creates a policy-address rule through management");
+    assert!(
+        refusals(&w.surface()).contains(&(FindingCode::DelegateHasAuthority, Some(reset))),
+        "a fresh surface check catches the agent-created reset authority"
+    );
+    assert_eq!(
+        w.direct(Method::Uninstall, reset, &[Key::Agent], grant),
+        Outcome::Permitted
+    );
+    assert_eq!(w.remaining(grant), Err(Outcome::Policy(MISSING_STATE)));
+    assert_eq!(
+        w.direct(Method::Install, reset, &[Key::Agent], grant),
+        Outcome::Permitted
+    );
+    assert_eq!(w.remaining(grant), Ok(MAX_CALLS));
+    assert_eq!(w.grant_call(grant), Outcome::Permitted);
+    assert_eq!(w.remaining(grant), Ok(MAX_CALLS - 1));
+}
+
+#[test]
+#[ignore = "requires the pinned account and generated policy Wasm; run scripts/test-pinned-account-authorization.sh"]
+fn weak_management_can_revive_an_expired_rule_without_resetting_its_counter() {
+    let mut w = World::new();
+    let management = w
+        .add_rule(Scope::Account, &[Key::Agent], &[], None)
+        .expect("owner creates weak management authority");
+    assert_eq!(
+        refusals(&w.surface()),
+        vec![(FindingCode::DelegateHasAuthority, Some(management))]
+    );
+    let grant = w
+        .add_rule(
+            Scope::Target,
+            &[Key::Agent],
+            &[|p| p.policy.clone()],
+            Some(START + 5),
+        )
+        .expect("owner adds a short-lived grant anyway");
+    assert_eq!(w.grant_call(grant), Outcome::Permitted);
+    assert_eq!(w.remaining(grant), Ok(MAX_CALLS - 1));
+    w.advance_to(START + 6);
+    assert_eq!(w.grant_call(grant), Outcome::Account(UNVALIDATED_CONTEXT));
+    assert_eq!(
+        w.call(
+            |p| p.account.clone(),
+            "update_context_rule_valid_until",
+            |env, _| svec![env, grant.into_val(env), Some(START + 100).into_val(env)],
+            management,
+            &[Key::Agent],
+        ),
+        Outcome::Permitted,
+        "the agent alone revives the account rule before the policy's compiled expiry"
+    );
+    assert_eq!(
+        w.remaining(grant),
+        Ok(MAX_CALLS - 1),
+        "revival is not a new installation"
+    );
+    assert_eq!(w.grant_call(grant), Outcome::Permitted);
+    assert_eq!(w.remaining(grant), Ok(MAX_CALLS - 2));
+}
+
+#[test]
+#[ignore = "requires the pinned account and generated policy Wasm; run scripts/test-pinned-account-authorization.sh"]
+fn overlapping_real_account_grants_have_independent_caps() {
+    let mut w = World::new();
+    let first = w.install_grant().expect("first grant installs");
+    assert!(
+        refusals(&w.surface()).contains(&(FindingCode::DelegateGrantOverlap, Some(first))),
+        "the existing stateful grant must refuse installation of another overlapping grant"
+    );
+    // Account APIs do not enforce our install policy: bypass it deliberately to measure
+    // the aggregate capability of two independent rule IDs on the same policy instance.
+    let second = w.install_grant().expect("owner installs an overlap anyway");
+    assert_ne!(first, second);
+    for _ in 0..MAX_CALLS {
+        assert_eq!(w.grant_call(first), Outcome::Permitted);
+    }
+    assert_eq!(w.grant_call(first), Outcome::Policy(CALL_COUNT_EXCEEDED));
+    assert_eq!(w.remaining(second), Ok(MAX_CALLS));
+    for _ in 0..MAX_CALLS {
+        assert_eq!(w.grant_call(second), Outcome::Permitted);
+    }
+    assert_eq!(w.grant_call(second), Outcome::Policy(CALL_COUNT_EXCEEDED));
+    assert_eq!(w.remaining(first), Ok(0));
+    assert_eq!(w.remaining(second), Ok(0));
+    assert_eq!(
+        w.manage("remove_context_rule", |env, _| svec![
+            env,
+            first.into_val(env)
+        ]),
+        Outcome::Permitted
+    );
+    assert!(!w.is_installed(first));
+    assert!(w.is_installed(second));
+    assert_eq!(
+        w.remaining(second),
+        Ok(0),
+        "removal cannot refresh the other grant's cap"
     );
 }

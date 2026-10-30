@@ -15,8 +15,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use stellar_xdr::{
     ContractCodeEntry, ContractCodeEntryExt, ContractDataDurability, ContractDataEntry,
     ContractExecutable, ContractId, ExtensionPoint, Hash, LedgerEntryData, LedgerKey,
-    LedgerKeyContractCode, LedgerKeyContractData, ReadXdr as _, ScAddress, ScContractInstance,
-    ScVal, WriteXdr as _,
+    LedgerKeyContractCode, LedgerKeyContractData, ScAddress, ScContractInstance, ScVal,
 };
 
 const NETWORK: &str = "Test SDF Network ; September 2015";

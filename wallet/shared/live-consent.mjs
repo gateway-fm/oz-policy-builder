@@ -19,7 +19,7 @@ import { decodeBase64Url } from './base64url.mjs';
 import { liveCase } from './live-enforcement.mjs';
 
 /** The reviewed helper Wasm (`EXPECTED_HELPER_HASH` in execution-runtime/tests/atomic_helper.rs). */
-export const LIVE_HELPER_WASM = '4ca1510cf2fcc5bc7deb22b8563aa6ee8064898c6b92afc06785a6b04966c6fb';
+export const LIVE_HELPER_WASM = '0d0128a499f20bb176b64232d6c1d047311b23081b882c4c487072bf9a355e94';
 /** How far past the ledger read at preparation the case signatures stay valid: about two and a half minutes. */
 export const LIVE_SIGNATURE_LEDGERS = 30;
 /** Consent is refused, before anything signable exists, unless at least this many ledgers remain. */

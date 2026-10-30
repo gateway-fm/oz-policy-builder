@@ -242,8 +242,8 @@ mod test {
     use soroban_sdk::xdr::{Limits, ScVal, WriteXdr};
     use soroban_sdk::{vec, Address, Env, IntoVal, String, TryFromVal, Val};
 
-    /// The mirrors encode exactly as the account types do in the vector the SDK-26 account
-    /// types and the SDK-29 runtime are already checked against.
+    /// The mirrors encode exactly as the SDK-28 policy/account-library types do in the
+    /// vector also checked against the SDK-29 runtime wire types.
     #[test]
     fn wire_mirrors_match_the_shared_protocol_vector() {
         let env = Env::default();
