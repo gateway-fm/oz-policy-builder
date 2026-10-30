@@ -3,10 +3,13 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -183,6 +186,54 @@ class LauncherTests(unittest.TestCase):
             frame = worker.launch(json.dumps(job()).encode(), config())
         run.assert_not_called()
         self.assertEqual(frame["containment"], "removed")
+
+    def _stop_state(self):
+        # Each test starts with no stop requested and restores the default SIGTERM action.
+        worker.STOP.update(armed=False, requested=False)
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.SIG_DFL)
+        self.addCleanup(worker.STOP.update, armed=False, requested=False)
+
+    def test_sigterm_during_the_job_removes_it_and_frames_no_result(self):
+        self._stop_state()
+        worker.install_stop_handler()
+        removed = mock.Mock(return_value=True)
+        def run(*_):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(5)  # the handler interrupts this
+            return 0, json.dumps(result()).encode()
+        started = time.monotonic()
+        with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "bounded", run), \
+                mock.patch.object(worker, "removed", removed):
+            frame = worker.launch(json.dumps(job()).encode(), config())
+        self.assertLess(time.monotonic() - started, 4)
+        removed.assert_called_once()
+        self.assertEqual(frame["containment"], "removed")
+        self.assertIsNone(frame["result"])
+
+    def test_a_stop_requested_before_launch_runs_nothing(self):
+        self._stop_state()
+        worker.stop_requested(signal.SIGTERM, None)
+        with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "bounded") as run, \
+                mock.patch.object(worker, "removed") as removed:
+            frame = worker.launch(json.dumps(job()).encode(), config())
+        run.assert_not_called()
+        removed.assert_not_called()
+        self.assertEqual(frame["containment"], "removed")
+        self.assertIsNone(frame["result"])
+
+    def test_sigterm_during_removal_does_not_interrupt_it(self):
+        self._stop_state()
+        worker.install_stop_handler()
+        def removed(_):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.2)  # a raising handler would surface here
+            return True
+        with mock.patch.object(worker, "preflight"), \
+                mock.patch.object(worker, "bounded", return_value=(0, json.dumps(result()).encode())), \
+                mock.patch.object(worker, "removed", removed):
+            frame = worker.launch(json.dumps(job()).encode(), config())
+        self.assertEqual(frame["containment"], "removed")
+        self.assertTrue(worker.STOP["requested"])
 
     def test_output_capture_is_actually_bounded(self):
         with self.assertRaises(worker.Refused):

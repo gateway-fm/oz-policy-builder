@@ -30,6 +30,24 @@ class Refused(Exception):
     """A fixed, redacted launcher failure."""
 
 
+# A cancelled request reaches the launcher as SIGTERM from the API. While the job runs, the
+# signal ends the run, so its container is removed and that removal is framed with no result;
+# before launch it skips the run. During removal and framing it is only recorded: interrupting
+# the removal would leave nothing able to confirm it, and the API would retain the capacity.
+STOP = {"armed": False, "requested": False}
+
+
+def stop_requested(signum, frame):
+    STOP["requested"] = True
+    if STOP["armed"]:
+        STOP["armed"] = False
+        raise Refused()
+
+
+def install_stop_handler():
+    signal.signal(signal.SIGTERM, stop_requested)
+
+
 def integer(value, low, high):
     if type(value) is not int or not low <= value <= high:
         raise Refused()
@@ -210,6 +228,8 @@ def launch(raw, config):
         preflight()
     except (Refused, ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
         return frame(None)
+    if STOP["requested"]:
+        return frame(None)
     name = "ozpb-job-" + uuid.uuid4().hex
     result = None
     # A file descriptor avoids a blocked writer and is never mounted into the container.
@@ -217,6 +237,7 @@ def launch(raw, config):
         source.write(raw)
         source.seek(0)
         try:
+            STOP["armed"] = True
             status, output = bounded(command(config, name, job), job["timeout_seconds"] + 45,
                                      MAX_OUTPUT, source)
             if status == 0:
@@ -224,6 +245,7 @@ def launch(raw, config):
         except (Refused, ValueError, TypeError, OSError, subprocess.SubprocessError, RecursionError):
             result = None
         finally:
+            STOP["armed"] = False
             if not removed(name):
                 raise Refused()
     return frame(result)
@@ -233,6 +255,7 @@ def main():
     try:
         if len(sys.argv) != 1:
             raise Refused()
+        install_stop_handler()
         raw = sys.stdin.buffer.read(MAX_JOB + 1)
         frame = launch(raw, load_config())
         encoded = json.dumps(frame, separators=(",", ":")).encode()

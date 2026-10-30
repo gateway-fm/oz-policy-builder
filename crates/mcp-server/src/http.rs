@@ -36,7 +36,7 @@ impl RequestQuota {
         }
     }
 
-    fn admit(&self) -> bool {
+    pub(crate) fn admit(&self) -> bool {
         self.admit_at(Instant::now())
     }
 
@@ -154,6 +154,7 @@ fn env_var(name: &str) -> anyhow::Result<Option<String>> {
 pub(crate) struct HostedLimits {
     pub(crate) requests_per_minute: u32,
     pub(crate) max_body_bytes: usize,
+    pub(crate) tool_limits: crate::tool_limits::ToolLimitConfig,
     /// The operator's build configuration plus one set of build slots. rmcp builds a handler
     /// per session and each holds a clone; clones share the slots, so the limit holds across
     /// sessions rather than per session.
@@ -174,6 +175,10 @@ where
         parse_positive(name, get(name)?.as_deref(), default)
     };
     let requests_per_minute = positive("OZPB_HTTP_REQUESTS_PER_MINUTE", 60)?;
+    let tool_limits = crate::tool_limits::ToolLimitConfig::parse(
+        positive("OZPB_HTTP_TOOL_REQUESTS_PER_MINUTE", 60)?,
+        get("OZPB_HTTP_TOOL_LIMITS_JSON")?.as_deref(),
+    )?;
     // Builds are CPU- and memory-heavy. The build slots and Cargo's worker count form one
     // resource budget; validating their product prevents four simultaneous builds from each
     // starting an almost-machine-wide compile. Operators can trade build concurrency for
@@ -199,6 +204,7 @@ where
     Ok(HostedLimits {
         requests_per_minute,
         max_body_bytes,
+        tool_limits,
         build_config: ozpb_toolkit::BuildConfig {
             slots: Some(ozpb_toolkit::BuildSlots::new(max_concurrency)?),
             ..build_config
@@ -241,7 +247,13 @@ pub(crate) async fn serve(
 
     let ct = tokio_util::sync::CancellationToken::new();
     let service = StreamableHttpService::new(
-        http_session_factory(registry_trust, rpc_policy, rpc_sources, build_config),
+        http_session_factory(
+            registry_trust,
+            rpc_policy,
+            rpc_sources,
+            build_config,
+            limits.tool_limits,
+        )?,
         LocalSessionManager::default().into(),
         Default::default(),
     );
