@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { predictedRefusal } from '../shared/dry-run.mjs';
 import { createLiveCapability } from './live-signing.mjs';
 import { createOfflineSigner, offlineCapability, offlineDomain } from './native-protocol.mjs';
 import { runNative } from './native-process.mjs';
@@ -187,9 +188,10 @@ export const checkNativeResult = guarded((frame, { prepared, reference, maxCalls
       || item.expected_permit !== (outcome.expected === 'permit') || item.permitted !== item.expected_permit || item.agree !== true
       || !HASH.test(item.state_before_hash) || !HASH.test(item.state_after_hash) || item.state_changed !== !unchanged
       || !u32(item.ledger) || !nullableU32(item.counter_seed) || !nullableU32(item.counter_before)
-      || !nullableU32(item.counter_after) || !counted
+      || !nullableU32(item.counter_after) || item.counter_seed !== item.counter_before || !counted
       || (item.permitted ? item.refusal_contract !== null || item.refusal_code !== null
-        : ![account, policy].includes(item.refusal_contract) || !u32(item.refusal_code) || !unchanged)) refuse();
+        : !predictedRefusal(item.class, item.refusal_contract === account ? 'account'
+          : item.refusal_contract === policy ? 'policy' : null, item.refusal_code) || !unchanged)) refuse();
   });
   if (!Array.isArray(frame.controls) || frame.controls.length !== CONTROLS.length) refuse();
   frame.controls.forEach((item, index) => {
@@ -211,6 +213,10 @@ export const checkNativeResult = guarded((frame, { prepared, reference, maxCalls
       executionNetworkId: prepared.execution_network_id, delegateAddress: prepared.binding.delegate_address,
       policyAddress: policy, policyCodeHash: prepared.policy_code_hash, hostVersion: HOST,
       candidateContextRuleId: prepared.candidate_context_rule_id, cases: frame.cases.length,
+      caseResults: frame.cases.map((c) => ({ caseId: c.case_id, label: c.label, class: c.class,
+        expectedPermit: c.expected_permit, permitted: c.permitted, agree: true,
+        refusedBy: c.refusal_contract === account ? 'account' : c.refusal_contract === policy ? 'policy' : null,
+        refusalCode: c.refusal_code, stateUnchanged: c.state_before_hash === c.state_after_hash })),
       controls: CONTROLS.map(([name]) => name), stateful: stateful === null ? null : { successfulCalls: stateful.successful_calls },
       provenance: PROVENANCE, complete: false } });
 });

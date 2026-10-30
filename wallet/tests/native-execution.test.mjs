@@ -55,10 +55,10 @@ test('trusted preparation frame must match the CLI preparation and offline domai
 
 test('signature inventory is derived from trusted preparation and the retained call cap', () => {
   const f = nativeFixture({ maxCalls: 2 });
-  assert.deepEqual(nativeCaseIds(f.prepared, 2), ['case:0', 'case:1', 'case:2', 'control:signature_bit',
+  assert.deepEqual(nativeCaseIds(f.prepared, 2), ['case:0', 'case:1', 'case:2', 'case:3', 'case:4', 'case:5', 'control:signature_bit',
     'control:nonce_binding', 'control:payload_binding', 'control:context_rule_binding', 'control:nonce_replay',
     'sequence:0', 'sequence:1', 'sequence:partial_rollback', 'sequence:overflow']);
-  assert.equal(nativeCaseIds(f.prepared, null).length, 8);
+  assert.equal(nativeCaseIds(f.prepared, null).length, 11);
   for (const bad of [0, 513, 1.5, '2']) assert.throws(() => nativeCaseIds(f.prepared, bad), /refused/);
 });
 
@@ -67,7 +67,10 @@ test('a passing native report is accepted only when every case, control and coun
   const layer = checkNativeResult(clone(f.result), f);
   assert.equal(layer.layer, 'account_wasm');
   assert.equal(layer.status, 'passed');
-  assert.equal(layer.evidence.cases, 3);
+  assert.equal(layer.evidence.cases, 6);
+  assert.equal(layer.evidence.caseResults.length, 6);
+  assert.deepEqual(layer.evidence.caseResults[1], { caseId: 'case:1', label: 'different function', class: 'different_function',
+    expectedPermit: false, permitted: false, agree: true, refusedBy: 'policy', refusalCode: 5, stateUnchanged: true });
   assert.equal(layer.evidence.complete, false);
   assert.equal(layer.evidence.executionNetworkId, f.prepared.execution_network_id);
   assert.match(layer.detail, /synthetic/);
@@ -87,6 +90,9 @@ for (const [name, change] of [
   ['missing case', (r) => { r.cases.pop(); }],
   ['reordered cases', (r) => { r.cases.reverse(); }],
   ['unattributed refusal', (r) => { r.cases[2].refusal_contract = Keypair.random().publicKey(); }],
+  ['wrong refusal code for class', (r) => { r.cases[1].refusal_code = 6; }],
+  ['wrong refusal enforcer for class', (r) => { r.cases[1].refusal_contract = r.binding.account_address; }],
+  ['unseeded counter', (r) => { r.cases[1].counter_seed = 1; }],
   ['refusal with state change', (r) => { r.cases[2].state_after_hash = H('d'); r.cases[2].state_changed = true; }],
   ['misreported state change', (r) => { r.cases[0].state_changed = false; }],
   ['counter not advanced', (r) => { r.cases[0].counter_after = 0; }],
@@ -122,9 +128,9 @@ test('dry-run preparation must come from the CLI for this exact request and cand
     spec_hash: H('1'), binding_set_hash: H('2'), registry_snapshot_root: H('3'), account_address: f.expected.accountAddress,
     account_code_hash: ACCOUNT_WASM, network_id: NETWORK_ID, rule_index: 0, candidate_context_rule_id: 7,
     suite_hash: f.expected.suiteHash, policy_code_hashes: { [POLICY]: H('9') } },
-    artifact_verification: { matches: true }, reference_report: { total: 3, agreements: 3, disagreements: 0,
+    artifact_verification: { matches: true }, reference_report: { total: 6, agreements: 6, disagreements: 0,
       outcomes: f.reference.outcomes, expected_classes: { 0: f.reference.requiredClasses } },
-    layers: [{ id: 'reference', status: 'passed', reason: 'independent_reference_cases_agree', cases: 3, state_dependent: false, writes_committed: false },
+    layers: [{ id: 'reference', status: 'passed', reason: 'independent_reference_cases_agree', cases: 6, state_dependent: false, writes_committed: false },
       ...['account_wasm', 'captured_target', 'live_enforcement'].map((id) => ({ id, status: 'unavailable', reason: 'x', cases: 0,
         state_dependent: id === 'live_enforcement', writes_committed: false }))],
     complete: false, disclaimer: 'x' };

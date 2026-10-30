@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
+import { dryRunAcceptance } from '../shared/dry-run.mjs';
 import { NETWORK_ID } from '../shared/approval.mjs';
 import { checkDryRunPreparation, nativeJobText, runAccountExecution } from '../server/native-execution.mjs';
 import { offlineCapability } from '../server/native-protocol.mjs';
@@ -56,6 +57,9 @@ test('the wallet runs the actual worker and accepts only its independently check
     reference: run.reference, maxCalls: run.maxCalls,
     signer: offlineCapability({ publicKey: () => delegate.publicKey(), sign: (bytes) => { signatures++; return delegate.sign(bytes); }, verify: (b, s) => delegate.verify(b, s) }) });
   assert.equal(layer.status, 'passed');
+  assert.equal(layer.evidence.caseResults.length, run.reference.outcomes.length);
+  assert.ok(layer.evidence.caseResults.every((c) => c.agree));
+  assert.equal(dryRunAcceptance([{ layer: 'reference', status: 'passed' }, layer]).meetsMinimum, true);
   assert.equal(layer.evidence.cases, run.reference.outcomes.length);
   assert.equal(layer.evidence.stateful.successfulCalls, run.maxCalls);
   assert.equal(layer.evidence.complete, false);

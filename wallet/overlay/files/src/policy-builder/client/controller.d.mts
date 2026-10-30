@@ -33,6 +33,10 @@ export interface WalletState {
   readonly revokePreview: (Details & { display: Details }) | null;
   readonly revokeAttempted: boolean;
   readonly removal: Details | null;
+  readonly monitor: Details | null;
+  readonly replacementPreview: Details | null;
+  readonly replacementPending: Details | null;
+  readonly replacement: Details | null;
   readonly proposalReview: ProposalReview | null;
 }
 export class WalletController {
@@ -55,6 +59,7 @@ export class WalletController {
       reviewRemoval(input: unknown): Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>;
       validateRemovalAssembly(input: unknown): CheckedAssembly;
       revokeConsent(input: unknown): Details;
+      replacementConsent(input: unknown): Details;
     };
     sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly | LiveOwnerChecked }): Promise<string[]>;
     origin: string;
@@ -86,6 +91,10 @@ export class WalletController {
   prepareInstall(): Promise<void>;
   cancelInstall(): void;
   install(): Promise<void>;
+  monitorGrant(): Promise<void>;
+  prepareReplacement(): Promise<void>;
+  cancelReplacement(): void;
+  confirmReplacement(): Promise<void>;
   prepareRevoke(): Promise<void>;
   cancelRevoke(): void;
   revoke(): Promise<void>;

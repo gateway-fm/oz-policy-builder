@@ -1,7 +1,10 @@
 import { createECDH, createHash, randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Address, Asset, Networks, Operation, StrKey, xdr } from '@stellar/stellar-sdk';
+import { Address, Asset, Networks, Operation, StrKey, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
+import { monitorInstallation } from './monitor.mjs';
+import { replacementConsent } from '../shared/replacement.mjs';
+import { dryRunAcceptance } from '../shared/dry-run.mjs';
 import { decodeBase64Url } from '../shared/base64url.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
@@ -59,9 +62,11 @@ function missingVerification(artifact, bindingSetHash, accountLayer, targetLayer
     targetLayer ?? { layer: 'captured_target', status: 'unavailable', detail: 'Captured target execution has not run.' },
     liveLayer ?? { layer: 'live_enforcement', status: 'unavailable', detail: 'The live-enforcement check has not run.' },
   ];
-  // Complete only when every layer passed. Installation is gated separately, on this stored report (`installGate`).
+  const acceptance = dryRunAcceptance(layers);
+  // Complete only when every layer passed and the executed permit/deny bar is met. Installation is gated separately, on this stored report (`installGate`).
   return freezeCopy({ runId: id(), specHash: artifact?.specHash ?? null, wasmHash: artifact?.wasmHash ?? null,
-    bindingSetHash: bindingSetHash ?? null, complete: layers.every((layer) => layer.status === 'passed'), layers });
+    bindingSetHash: bindingSetHash ?? null, acceptance,
+    complete: acceptance.meetsMinimum && layers.every((layer) => layer.status === 'passed'), layers });
 }
 const accountLayer = (status, detail) => ({ layer: 'account_wasm', status, detail });
 const READBACK_ATTEMPTS = 5;
@@ -85,6 +90,12 @@ export function createWalletActions({ session, toolchain, network, native = null
   /** Obligations a confirmed, verified installation closed, with its transaction hash. */
   const closedRecords = new Map();
   let installAttempts = 0;
+  let installAllowance = 0;
+  let lastReplacement = null;
+  // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
+  // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
+  const replaceable = () => installAttempts > installAllowance && installAttempts === installations.size
+    && [...installations.values()].every((held) => held.record.status === 'installed' && held.removal?.status === 'removed');
   let accountCheckRunning = false;
   let liveRunning = false;
   let accountAttempted = false;
@@ -101,9 +112,9 @@ export function createWalletActions({ session, toolchain, network, native = null
     const approval = reviewSample({ ...sampleAccount, ownerRuleXdr });
     return { ownerRuleXdr, approval, ownerReadLedger: observed.ledger };
   }
-  // A review whose report every layer passed, while no installation was attempted in this backend.
+  // A complete review with one unused installation allowance (initially, or after verified replacement consent).
   const installable = (review) => native !== null && live !== null && review.verification?.complete === true
-    && !review.installAttempted && installAttempts === 0;
+    && !review.installAttempted && installAttempts === installAllowance;
   /** Replay obligations no confirmed installation has closed yet. */
   const openRecords = () => liveRecords.filter((record) => !closedRecords.has(record));
   /** The owner rule the review matched, read again: it must still be byte-identical. */
@@ -146,6 +157,31 @@ export function createWalletActions({ session, toolchain, network, native = null
   }
   const readbackAfter = (account, ruleId, ledger) => readAfter(() => network.ruleReadback(account, ruleId), ledger);
   const markerAfter = (account, policy, ruleId, ledger) => readAfter(() => network.liveState({ account, policy, ruleId }), ledger);
+  async function removalPins(record, owner) {
+    const anchor = await clockedLedger(network);
+    const account = await network.requireInstance(record.account, ACCOUNT_WASM);
+    const verifier = await network.requireInstance(owner.wallet.verifier, WEBAUTHN_WASM);
+    if (account.contractId !== record.account || account.wasmHash !== ACCOUNT_WASM
+      || verifier.contractId !== owner.wallet.verifier || verifier.wasmHash !== WEBAUTHN_WASM) refuse();
+    return { anchor, ledgers: [account.instanceLedger, account.codeLedger, verifier.instanceLedger, verifier.codeLedger] };
+  }
+  function removalReadWindow(pins, owner, rule, currentLedger, installedLedger) {
+    if (!Number.isSafeInteger(currentLedger) || currentLedger < pins.anchor || currentLedger - pins.anchor > 12
+      || [...pins.ledgers, owner.ledger, rule.ledger].some((ledger) => !Number.isSafeInteger(ledger)
+        || ledger < Math.max(installedLedger, pins.anchor) || ledger > currentLedger || currentLedger - ledger > 12)) refuse();
+  }
+  async function replacementState(held) {
+    await network.assertTestnet();
+    const anchor = await clockedLedger(network);
+    const owner = await ownerRead(held.owner.wallet, held.owner.ownerRuleId, held.owner.ownerRuleXdr);
+    if (owner.ledger < anchor || owner.ledger - anchor > 12) refuse();
+    // All earlier installations must still be absent, including those removed in earlier cycles.
+    for (const previous of installations.values()) {
+      const absent = await readbackAfter(previous.record.account, previous.record.ruleId,
+        Math.max(owner.ledger, previous.removal.ledger));
+      if (absent.status !== 'absent' || absent.ledger - owner.ledger > 12) refuse();
+    }
+  }
   /** Public summaries, so a lost response can be recovered from `status`. */
   const summaries = () => [...installations.values()].map(({ record, removal, removalAttempted }) => ({
     installationId: record.installationId, status: record.status, account: record.account, ruleId: record.ruleId,
@@ -157,9 +193,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
         capabilities: { record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
-          liveCheck: live !== null, install: [...reviews.values()].some(installable),
+          liveCheck: live !== null, monitoring: [...installations.values()].some((held) => held.record.status === 'installed' && !held.removal), replacement: replaceable(), install: [...reviews.values()].some(installable),
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)) },
-        installations: summaries(),
+        installations: summaries(), replacement: lastReplacement,
         // No installation entry is released while an earlier signature the wallet released is still valid.
         installOpensAfterLedger: openRecords().length ? Math.max(...openRecords().map((r) => r.signatureExpirationLedger)) : null,
         verification: missingVerification() };
@@ -634,7 +670,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         const installationId = id();
         const owners = { wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr: approval.ownerRuleXdr };
         installations.set(installationId, { record: freezeCopy({ installationId, status: 'confirmed_unverified', account, policy,
-          ruleId: addedRuleId(submitted, account), transactionHash: submitted.hash, ledger: submitted.ledger, ruleXdr: null }),
+          ruleId: addedRuleId(submitted, account), transactionHash: submitted.hash, ledger: submitted.ledger,
+          policyCodeHash: artifact.wasmHash, ruleXdr: null }),
         owner: owners, removalAttempted: false, removal: null });
         let record;
         try {
@@ -661,10 +698,51 @@ export function createWalletActions({ session, toolchain, network, native = null
           // Confirmed but not verified: no installation record; the confirmed identity stays listed in `status`.
           refuse();
         }
-        installations.set(installationId, { record, owner: owners, removalAttempted: false, removal: null });
+        installations.set(installationId, { record, owner: owners, removalAttempted: false, removal: null, monitorCandidate: deployment.request });
         // This installation used its own entry; every earlier signature had expired unused (checked above).
         for (const obligation of openRecords()) closedRecords.set(obligation, record.transactionHash);
         return freezeCopy({ receipt: receipt(submitted), installation: record });
+      });
+    },
+    'monitor-grant': async (input) => {
+      exact(input, ['installationId']);
+      const held = get(installations, input.installationId);
+      if (held.removal || held.record.status !== 'installed') refuse();
+      const observation = await monitorInstallation({ network, toolchain, record: held.record, owner: held.owner, candidate: held.monitorCandidate });
+      held.lastMonitor = observation;
+      return observation;
+    },
+    // Revoke first, then explicitly acknowledge the fresh budget. No add_context_rule is released
+    // here. Every prior review/deployment/action is discarded; artifact IDs already attempted for deployment stay spent.
+    'prepare-replacement': async (input) => {
+      exact(input, ['installationId']);
+      if (!replaceable() || accountCheckRunning || liveRunning) refuse();
+      const held = get(installations, input.installationId);
+      if (input.installationId !== [...installations.keys()].at(-1)) refuse();
+      const display = replacementConsent({ installation: held.record, removal: held.removal });
+      await replacementState(held);
+      session.invalidate('replacement');
+      const action = session.issue('replacement', { installationId: input.installationId, attempts: installAttempts, display });
+      return freezeCopy({ action, display });
+    },
+    'confirm-replacement': async (input) => {
+      exact(input, ['id', 'consent']);
+      if (input.consent !== 'previously_used_authority_plus_new_cap') refuse();
+      return session.consume(input.id, 'replacement', async ({ installationId, attempts, display }) => {
+        if (!replaceable() || attempts !== installAttempts || accountCheckRunning || liveRunning) refuse();
+        const held = get(installations, installationId);
+        if (JSON.stringify(display) !== JSON.stringify(replacementConsent({ installation: held.record, removal: held.removal }))) refuse();
+        await replacementState(held);
+        // An earlier released but unsigned install entry may still be signed later. Re-establish
+        // its expiry and unchanged snapshot rather than treating UI cancellation as revocation.
+        const open = openRecords();
+        if (open.length) await requireNoReplay({ network, records: open });
+        for (const kind of ['create_account', 'record', 'generate', 'deploy', 'install', 'submit', 'restore', 'revoke', 'reconfigure', 'sample',
+          'live', 'live_sign', 'replacement']) session.invalidate(kind);
+        reviews.clear(); deployments.clear();
+        installAllowance = installAttempts;
+        lastReplacement = freezeCopy({ replacementReady: true, actionId: input.id, display });
+        return lastReplacement;
       });
     },
     // Revocation, step 1: the recorded rule must still be on the account (exactly as installed, for a
@@ -677,19 +755,31 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (held.removalAttempted || !Number.isSafeInteger(record.ruleId)) refuse();
       session.invalidate('revoke');
       await network.assertTestnet();
+      const pins = await removalPins(record, owner);
       const fresh = await ownerRead(owner.wallet, owner.ownerRuleId, owner.ownerRuleXdr);
       const rule = await network.ruleReadback(record.account, record.ruleId);
-      if (rule.status !== 'present' || (record.ruleXdr === null
-        ? !xdr.ScVal.fromXDR(rule.xdr, 'base64').map.some((e) => e.key.sym?.toString() === 'id' && e.val.u32 === record.ruleId)
-        : rule.xdr !== record.ruleXdr)) refuse();
-      const approval = reviewRemoval({ ...owner, ownerRuleXdr: fresh.ownerRuleXdr,
+      if (rule.status !== 'present') refuse();
+      let configurationChange = null;
+      if (record.ruleXdr === null) {
+        if (!xdr.ScVal.fromXDR(rule.xdr, 'base64').map.some((e) => e.key.sym?.toString() === 'id' && e.val.u32 === record.ruleId)) refuse();
+      } else if (rule.xdr !== record.ruleXdr) {
+        const monitor = held.lastMonitor, now = await clockedLedger(network);
+        if (monitor?.status !== 'drift' || !monitor.reasons.includes('recorded_rule_changed_or_missing')
+          || now < monitor.currentLedger || now - monitor.currentLedger > 12 || rule.ledger < monitor.currentLedger
+          || createHash('sha256').update(rule.xdr).digest('hex') !== monitor.observedRuleHash) refuse();
+        configurationChange = { recordedRuleXdr: record.ruleXdr, observedRuleXdr: rule.xdr };
+      }
+      const approval = reviewRemoval({ ...owner, ownerRuleXdr: fresh.ownerRuleXdr, configurationChange,
         installation: { account: record.account, ruleId: record.ruleId, transactionHash: record.transactionHash } });
       const prepared = await network.prepareRemoval({ wallet: owner.wallet, ruleId: record.ruleId, ownerReadLedger: fresh.ledger });
       const checked = validateRemovalAssembly({ approval, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits });
+      const releaseLedger = await clockedLedger(network);
+      removalReadWindow(pins, fresh, rule, releaseLedger, record.ledger);
+      if (releaseLedger + 1 >= checked.maxLedger) refuse();
       const display = revokeConsent({ approval, checked, maxFeeStroops: REMOVAL_MAX_FEE_STROOPS });
       const action = session.issue('revoke', { installationId: input.installationId, approval, checked, ruleXdr: rule.xdr });
       return freezeCopy({ action, installation: record, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr,
-        limits: prepared.limits, display });
+        limits: prepared.limits, display, ...(configurationChange ? { configurationChange } : {}) });
     },
     // Revocation, step 2: the owner's passkey signature of exactly the released removal, submitted once.
     // Success needs the account's `context_rule_removed` and the rule reading back absent (#3000) at or
@@ -701,10 +791,12 @@ export function createWalletActions({ session, toolchain, network, native = null
         if (held.removalAttempted || network.canSubmit !== true) refuse();
         const { record, owner } = held;
         await network.assertTestnet();
+        const pins = await removalPins(record, owner);
         const fresh = await ownerRead(owner.wallet, owner.ownerRuleId, approval.ownerRuleXdr);
         const rule = await network.ruleReadback(record.account, record.ruleId);
         const source = await network.sourceCapture();
         const currentLedger = await network.latestLedger();
+        removalReadWindow(pins, fresh, rule, currentLedger, record.ledger);
         if (rule.status !== 'present' || rule.xdr !== ruleXdr || source.sourceSequence !== String(sourceOf(checked.envelopeXdr))
           || currentLedger + 1 >= checked.maxLedger || currentLedger < fresh.ledger || currentLedger - fresh.ledger > 12) refuse();
         const signed = await validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr: input.signedAuthEntriesXdr,
@@ -726,10 +818,17 @@ export function createWalletActions({ session, toolchain, network, native = null
           const readback = await readbackAfter(record.account, record.ruleId, event.ledger);
           if (readback.status !== 'absent') refuse();
           let cleanup = { policyCleanup: 'not_checked', cleanupLedger: null };
-          try {
+          const change = approval.configurationChange;
+          const policiesChanged = change && JSON.stringify(scValToNative(xdr.ScVal.fromXDR(change.recordedRuleXdr, 'base64')).policies)
+            !== JSON.stringify(scValToNative(xdr.ScVal.fromXDR(change.observedRuleXdr, 'base64')).policies);
+          if (policiesChanged) cleanup.cleanupReason = 'policy_configuration_changed';
+          else try {
+            const policy = await network.requireInstance(record.policy, record.policyCodeHash);
             const marker = await markerAfter(record.account, record.policy, record.ruleId, event.ledger);
+            if ([policy.instanceLedger, policy.codeLedger, marker.ledger].some((ledger) => !Number.isSafeInteger(ledger)
+              || ledger < event.ledger || ledger > marker.ledger || marker.ledger - ledger > 12)) refuse();
             cleanup = { policyCleanup: marker.installed ? 'still_installed' : 'not_installed', cleanupLedger: marker.ledger };
-          } catch { /* reported as not_checked: cleanup is a separate observation from the removal */ }
+          } catch { /* not_checked: cleanup needs the expected code and its own fresh observation */ }
           removal = freezeCopy({ status: 'removed', ruleId: record.ruleId, transactionHash: event.transactionHash, ledger: event.ledger,
             event: 'verified', ruleReadback: 'absent', readbackLedger: readback.ledger, ...cleanup, owner: OWNER });
         } catch { refuse(); }
