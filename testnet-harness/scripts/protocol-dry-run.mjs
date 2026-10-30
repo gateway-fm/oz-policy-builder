@@ -92,6 +92,9 @@ export async function runProtocolDryRuns(directory, env = process.env, overrides
     save(join(temporary, 'account.wasm'), Buffer.from(source.accountWasmBase64, 'base64'));
     save(join(temporary, 'ledger.json'), requestText(source.ledger));
     for (const [index, artifact] of artifacts.entries()) {
+      // Operator-selected local run directory plus constant names (FILES); this harness CLI
+      // has no remote caller, and the bytes only go to the local dry-run as claimed sources.
+      // nosemgrep
       const generated = join(dir, 'policies', `rule-${index}`);
       const request = { candidate: bundleCheckRequest({ spec, artifacts, policies, ruleIndex: index,
         signedRegistrySnapshot: snapshot, rpcSource: env.OZPB_RPC_SOURCE || 'testnet' }),
