@@ -10,11 +10,18 @@ fn request() -> DryRunInput {
 }
 
 fn request_with_composition(composed: bool) -> DryRunInput {
+    request_for_rule(composed, 0)
+}
+
+fn request_for_rule(composed: bool, rule_index: usize) -> DryRunInput {
     let mut spec = wire_spec().spec().clone();
     if !composed {
         spec.rules[0]
             .policies
             .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+    }
+    if rule_index == 1 {
+        spec.rules.push(spec.rules[0].clone());
     }
     let signed: SignedSnapshot = serde_json::from_value(signed_registry_json()).unwrap();
     spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
@@ -23,7 +30,7 @@ fn request_with_composition(composed: bool) -> DryRunInput {
     let generated = generate_code_with_build_config(
         &GenerateCodeInput {
             spec: json.clone(),
-            rule_index: 0,
+            rule_index,
         },
         &build_config(),
     )
@@ -31,12 +38,12 @@ fn request_with_composition(composed: bool) -> DryRunInput {
     DryRunInput {
         candidate: CheckPolicyCallSurfaceInput {
             spec: json.clone(),
-            rule_index: 0,
+            rule_index,
             binding_set: PolicyBindingSet {
                 schema: POLICY_BINDING_SET_SCHEMA.to_string(),
                 spec_hash: spec.hash().to_hex(),
                 network_id: spec.spec().network_id.0.to_hex(),
-                bindings: spec.spec().rules[0]
+                bindings: spec.spec().rules[rule_index]
                     .policies
                     .iter()
                     .enumerate()
@@ -53,7 +60,7 @@ fn request_with_composition(composed: bool) -> DryRunInput {
                             }
                         };
                         PolicyBinding {
-                            rule_index: 0,
+                            rule_index,
                             policy_index: index,
                             contract_address: format!(
                                 "{}",
@@ -73,7 +80,7 @@ fn request_with_composition(composed: bool) -> DryRunInput {
         },
         artifact: VerifyInput {
             spec: json,
-            rule_index: 0,
+            rule_index,
             claimed_generated_files: generated
                 .files
                 .into_iter()
@@ -192,5 +199,33 @@ fn run_identity_binds_nonce_rule_id_rpc_source_and_every_artifact_claim() {
         let out = prepare_dry_run_with_build_config(&changed, &registry_trust(), &build_config())
             .unwrap();
         assert_ne!(out.run_hash, baseline.run_hash);
+    }
+}
+
+#[test]
+fn preparation_case_ledgers_follow_the_selected_reference_suite() {
+    for rule_index in [0, 1] {
+        let input = request_for_rule(false, rule_index);
+        let out =
+            prepare_dry_run_with_build_config(&input, &registry_trust(), &build_config()).unwrap();
+        let spec: ozpb_policy_spec::PolicySpec =
+            serde_json::from_value(input.candidate.spec.clone()).unwrap();
+        let spec = spec.validate().unwrap();
+        let cases: Vec<_> = ozpb_harness::build_suite(&spec)
+            .into_iter()
+            .filter(|case| case.rule_index == input.candidate.rule_index)
+            .collect();
+        let expected: Vec<_> = cases
+            .iter()
+            .map(|case| case.context.current_ledger.0)
+            .collect();
+        assert_eq!(out.reference_case_ledgers.as_ref(), Some(&expected));
+        assert_eq!(
+            expected.len(),
+            out.reference_report["outcomes"].as_array().unwrap().len()
+        );
+        assert!(cases
+            .iter()
+            .any(|case| case.class == ozpb_harness::MutationClass::TimeBoundary));
     }
 }
