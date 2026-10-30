@@ -12,7 +12,7 @@ Tranche 1's record-and-generate release remains distinct from the Phase 2 accept
 The following map describes the integrated implementation in this tree. A
 feature or an automated check is not by itself evidence that the whole milestone is complete.
 The [acceptance crosswalk](TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
-separates the contracted outcome, architecture gaps, pending PRs #95–#99 and Tranche 3.
+separates the contracted outcome, architecture gaps and Tranche 3.
 
 | Area | Available evidence or implementation | Still required |
 | --- | --- | --- |

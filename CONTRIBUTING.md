@@ -68,6 +68,15 @@ right there. Where a change narrows a claim the code could not keep, say which c
 verified something by running it, say what you ran. The history is part of what a reviewer of
 this repository reads, so it is written for them.
 
+## Documentation
+
+Documents describe the tree they are committed in. Do not cite this repository's own pull
+requests, branches or their merge status in them ("prepared in PR #N", "pending #N"): that
+status changes with every merge, and the sentence is wrong as soon as #N lands. Pending work
+and its review state belong in the pull request or the tracking issue; a document describes a
+change once the change is merged. Other projects' pull requests are fine where they explain a
+dependency or a limit.
+
 ## Adding a policy primitive or a constraint kind
 
 `docs/DEVELOPERS.md` walks the whole path: the vocabulary in `domain`, validation in

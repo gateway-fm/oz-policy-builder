@@ -795,11 +795,11 @@ policy."*
 ### 4.8 Wallet integration (`wallet/`)
 
 > **Scope: Tranche 2.** Authority/intent/assembly operations, supported wallet dry-run and
-> live checks, installation and revocation are implemented. This section describes the design;
-> it is not a claim that every account, policy or target shape is supported. Replacement and
-> monitoring updates are prepared in PRs #97–#98. [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md)
-> describes the integrated flow, and the [acceptance crosswalk](TRANCHE-2-VERIFICATION.md#integrated-code-versus-pending-pull-requests)
-> distinguishes pending code from delivered-revision evidence.
+> live checks, installation, revocation, revoke-first replacement and on-demand monitoring are
+> implemented. This section describes the design; it is not a claim that every account, policy
+> or target shape is supported. [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md)
+> describes the integrated flow, and the [acceptance crosswalk](TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
+> distinguishes implemented code from delivered-revision evidence.
 
 Target stack (the current OZ smart-account generation):
 
