@@ -47,11 +47,11 @@ fn dev_registry(version: u64) -> Registry {
 #[test]
 fn dev_registry_resolves_soroswap_router_adapter_for_pinned_hash() {
     let router = target_adapters::SOROSWAP_ROUTER_TESTNET_WASM;
-    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 4);
+    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 5);
     let current = dev_registry(dev::SIGNED_EXAMPLE_VERSION);
     assert_eq!(
         current.resolve_target_adapter(&router).unwrap(),
-        Some(target_adapters::soroswap_router())
+        Some(target_adapters::soroswap_router_v2())
     );
     // Bound to that code alone: another build of the router stays exact.
     assert_eq!(
@@ -69,7 +69,7 @@ fn dev_registry_resolves_soroswap_router_adapter_for_pinned_hash() {
         serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json")).unwrap();
     assert_eq!(committed.snapshot.target_adapters.len(), 1);
     let binding = &committed.snapshot.target_adapters[&router.to_hex()];
-    assert_eq!(binding.implementation, "soroswap-router@1");
+    assert_eq!(binding.implementation, "soroswap-router@2");
     for disclosure in [
         "development-registry assertion",
         "not governance",
@@ -199,4 +199,33 @@ fn adapters_cannot_alias_other_code_roles_or_malformed_hashes() {
         );
         assert!(matches!(load(changed), Err(RegistryError::Parse(_))));
     }
+}
+
+#[test]
+fn v5_extends_v4_without_reinterpreting_its_deadline() {
+    let text = include_str!("published-v4.signed.json");
+    let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+    assert_eq!(dev::dev_trust_files(network, 4).unwrap().0, text);
+    let old: SignedSnapshot = serde_json::from_str(text).unwrap();
+    let new = sign_snapshot(
+        &dev::dev_signing_key(),
+        dev::soroswap_deadline_successor(network).unwrap(),
+    )
+    .unwrap();
+    let router = target_adapters::SOROSWAP_ROUTER_TESTNET_WASM;
+    let mut registry = Registry::with_pinned_roots(RootPolicy {
+        threshold: 1,
+        keys: BTreeMap::from([("legacy".into(), dev::dev_root_verifying_bytes())]),
+    })
+    .unwrap();
+    registry.load(&old).unwrap();
+    assert_eq!(
+        registry.resolve_target_adapter(&router).unwrap(),
+        Some(target_adapters::soroswap_router())
+    );
+    registry.load(&new).unwrap();
+    assert_eq!(
+        registry.resolve_target_adapter(&router).unwrap(),
+        Some(target_adapters::soroswap_router_v2())
+    );
 }

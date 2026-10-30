@@ -13,11 +13,11 @@
 #   OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_REGISTRY_SNAPSHOT_ROOT=<hex> … bash testnet-harness/run.sh
 #                                   # install through the wallet decision on the authority check
 #                                   # (README: "The wallet decision on the authority check")
-#   OZPB_HARNESS_WALKTHROUGH=soroswap OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator \
+#   OZPB_NATIVE_WORKER=/abs/ozpb-execution-runtime OZPB_HARNESS_WALKTHROUGH=soroswap OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator \
 #   OZPB_SOROSWAP_DECISIONS=testnet-harness/soroswap-decisions.json …
 #                                   # W3: a real Soroswap swap, two independent rules installed
 #                                   # separately (docs/WALKTHROUGH-PROTOCOLS.md)
-#   OZPB_HARNESS_WALKTHROUGH=blend OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator …
+#   OZPB_NATIVE_WORKER=/abs/ozpb-execution-runtime OZPB_HARNESS_WALKTHROUGH=blend OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_HARNESS_CONFIRM=operator …
 #                                   # W1: a real Blend claim on a bounded USDC supply the run opens
 #                                   # and withdraws (docs/WALKTHROUGH-PROTOCOLS.md)
 #
@@ -55,6 +55,16 @@ case "$WALKTHROUGH" in
             [ -f "${OZPB_SOROSWAP_DECISIONS:-}" ] && [ ! -L "${OZPB_SOROSWAP_DECISIONS:-}" ] \
                 || { echo "soroswap needs OZPB_SOROSWAP_DECISIONS=FILE, a regular file (example: testnet-harness/soroswap-decisions.json)"; exit 1; }
         fi
+        [ -n "${OZPB_NATIVE_WORKER:-}" ] && node -e '
+          try {
+            const fs = require("node:fs"), path = require("node:path");
+            const p = path.resolve(process.argv[1]), m = fs.statSync(p);
+            fs.accessSync(p, fs.constants.X_OK);
+            process.exit(m.isFile() && (m.mode & 0o111) !== 0 && (m.mode & 0o022) === 0
+              && (m.uid === process.getuid() || m.uid === 0) ? 0 : 1);
+          } catch { process.exit(1); }
+        ' "$OZPB_NATIVE_WORKER" \
+            || { echo "$WALKTHROUGH needs OZPB_NATIVE_WORKER, a trusted regular executable not writable by group/others"; exit 1; }
         ;;
     *) echo "OZPB_HARNESS_WALKTHROUGH is native, subscription, soroswap or blend"; exit 1 ;;
 esac
@@ -156,6 +166,9 @@ if [ "$WALKTHROUGH" = soroswap ] || [ "$WALKTHROUGH" = blend ]; then
     say "3. record, synthesize, reference-check, generate and reproduce every independent rule"
     ( cd contracts/golden-transfer-policy && cargo fetch --locked >/dev/null )
     node "$SCRIPTS/protocol-flow.mjs" --run-dir "$RUN"
+    # One selected-rule report per capability: original permit plus at least five real Wasm
+    # denials. These execute in fresh synthetic local state, before deployed rules exist.
+    node "$SCRIPTS/protocol-dry-run.mjs" --run-dir "$RUN"
 
     say "4. install each rule separately after its own authority check, read each back, replay derived denials"
     node "$SCRIPTS/bundle-command.mjs" install --run-dir "$RUN" --confirm operator

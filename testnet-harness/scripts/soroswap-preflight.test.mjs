@@ -34,10 +34,10 @@ function fixture() {
       return { value, ledger: 101 };
     },
   };
-  const decided = { schema: 'ozpb-soroswap-operator-decisions/v1',
+  const decided = { schema: 'ozpb-soroswap-operator-decisions/v2',
     output_floor: { min: '100000', intent: 'Absolute output floor for the controlled test swap' },
     transfer_cap: { max: '1000000', intent: 'Bounded native transfer to the exact pair' },
-    adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) };
+    adapter_deadline: 'keep_recorded_deadline', source_sha256: 'cd'.repeat(32) };
   return { run, control, deps, decided };
 }
 test('Soroswap preflight records inspected route and an explicit fixed positive output floor without keys', async () => {
@@ -92,7 +92,7 @@ test('operator decisions are read from a regular file and journaled with its has
   const bytes = readFileSync(DECISIONS);
   const decided = readSoroswapDecisions(DECISIONS.pathname);
   assert.equal(decided.source_sha256, createHash('sha256').update(bytes).digest('hex'));
-  assert.equal(decided.adapter_deadline, 'accept_any_value_high_blast_radius');
+  assert.equal(decided.adapter_deadline, 'keep_recorded_deadline');
   const write = (name, value) => { const path = join(dir, name); writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value)); return path; };
   const base = JSON.parse(bytes);
   for (const [mode, value] of [
@@ -102,7 +102,7 @@ test('operator decisions are read from a regular file and journaled with its has
     ['a floor its control cannot lower', { ...base, output_floor: { ...base.output_floor, min: '1' } }],
     ['a missing intent', { ...base, transfer_cap: { max: '1000000' } }],
     ['a numeric amount', { ...base, transfer_cap: { ...base.transfer_cap, max: 1000000 } }],
-    ['an incomplete document', '{"schema":"ozpb-soroswap-operator-decisions/v1"}'],
+    ['an incomplete document', '{"schema":"ozpb-soroswap-operator-decisions/v2"}'],
     ['not JSON', 'floor = 100000'],
   ]) assert.throws(() => readSoroswapDecisions(write(`${mode}.json`, value)), /decisions|JSON/, mode);
   const link = join(dir, 'link.json');

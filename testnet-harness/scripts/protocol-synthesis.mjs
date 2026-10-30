@@ -83,7 +83,7 @@ export function protocolInputs(run, recording) {
     intent, blast_radius });
   let widenings = [];
   if (plan.kind === 'soroswap_swap') {
-    // Only the operator's two decisions. The router's input bound and its any-value deadline come
+    // Only the operator's two decisions. The router's input bound comes
     // from the registry's reviewed adapter; validateProtocolSynthesis refuses a spec without them.
     const decided = soroswapDecisions(plan.operator_decisions, { journal: true });
     requireThat(decided.output_floor.min === plan.minimum_out, 'output floor: the recorded call names another floor than the operator decided');
@@ -105,11 +105,10 @@ export function protocolInputs(run, recording) {
 }
 
 const ADAPTED = { adapter_derived: { adapter: ROUTER_ADAPTER, code_hash: PROTOCOL_TARGETS.router_code } };
-/** What the adapter itself contributes to the router rule: the input bound and the open deadline. */
+/** What the adapter itself contributes to the router rule: the input bound; the deadline stays exact. */
 function adapterConstraint(call, i) {
   if (call.contract !== PROTOCOL_TARGETS.router) return null;
   if (i === 0) return { i, c: { le_i128: { max: scValToNative(call.args[0]).toString() } }, prov: ADAPTED };
-  if (i === ROUTER_DEADLINE_ARG) return { i, c: 'any_value', prov: ADAPTED };
   return null;
 }
 

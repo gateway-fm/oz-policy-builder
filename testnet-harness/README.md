@@ -137,6 +137,13 @@ on failure, one line with the stage or error and the run's secrets redacted, wit
 The [Tranche 2 evidence record](../docs/TESTNET-EVIDENCE-TRANCHE-2.md) describes the historical
 runs separately and gives the field-by-field review procedure for a new summary.
 
+For W1/Blend and W3/Soroswap, first build the trusted native worker with
+`cargo build --locked --manifest-path execution-runtime/Cargo.toml` and set
+`OZPB_NATIVE_WORKER=/absolute/path/to/ozpb-execution-runtime` when invoking `run.sh`.
+The precheck requires a regular executable owned by the caller or root and not writable
+by group/others; it runs before live setup. The offline report gate applies to `run.sh`;
+a manual permission-bundle API invocation is a separate operator-controlled path.
+
 ## Prerequisites
 
 - Node ≥ 22.12 (required by `@stellar/stellar-sdk` 17), `stellar` CLI 27.0.0, and the Rust
@@ -168,10 +175,10 @@ runs separately and gives the field-by-field review procedure for a new summary.
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
   each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
   output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
-  (example: `soroswap-decisions.json`); the router's input bound and open deadline come from the
-  registry's reviewed adapter. That binding is a development-registry assertion, and the router's
+  (example: `soroswap-decisions.json`); the router's input bound comes from [registry adapter v2](../docs/TARGET-ADAPTERS.md#current-binding-development-registry-version-5),
+  and the approved recorded deadline stays exact. That binding is a development-registry assertion, and the router's
   Wasm was not reproduced from source
-  ([target adapters](../docs/TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
+  ([target adapters](../docs/TARGET-ADAPTERS.md#reproduction-attempt)).
   Once deployment succeeds, its address, Wasm hash and transaction hashes are saved before
   asking the wallet to approve. A refused or declined attempt retains those identifiers;
   a rule ID and install transaction are recorded immediately after the install is confirmed,
@@ -612,3 +619,13 @@ and what does not.
 The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<pid>/` unless
 `OZPB_HARNESS_OUT` says otherwise). Every transaction hash in it can be looked up at
 `https://stellar.expert/explorer/testnet/tx/<hash>` until the next testnet reset.
+
+The opt-in `protocol-dry-run.real.test.mjs` integration runs the real CLI and native
+worker for both the two-rule Soroswap observation fixture and
+`scripts/fixtures/synthetic-blend-claim-spec.json`. The Blend fixture is a synthetic
+claim authorization with an exact reserve-index vector; it is not an RPC recording
+or evidence that the Blend target executed. The test reads hash-checked pinned
+account bytes from the committed capture unless `OZPB_ACCOUNT_WASM` is supplied.
+Enable it with `OZPB_PROTOCOL_DRY_RUN_E2E=1`, `OZPB_BIN` and
+`OZPB_NATIVE_WORKER`; it generates real policy Wasm and submits no transaction.
+The manual/nightly Linux toolchain job runs this integration.

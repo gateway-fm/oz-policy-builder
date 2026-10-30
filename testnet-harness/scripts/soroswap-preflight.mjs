@@ -107,6 +107,6 @@ if (isMainModule(import.meta.url)) {
   rpc.writeJson(path, run);
   const { quote } = run.walkthrough.prerequisites;
   console.log(`operator decisions ${decided.source_sha256}: output floor ${decided.output_floor.min}, transfer cap `
-    + `${decided.transfer_cap.max}, adapter deadline accepted as any value (high blast radius)`);
+    + `${decided.transfer_cap.max}, deadline fixed to ${run.walkthrough.deadline} (Unix seconds)`);
   console.log(`route quote ${quote.amount_out} for ${quote.amount_in} at ledger ${quote.ledger}; floor ${run.walkthrough.minimum_out}`);
 }

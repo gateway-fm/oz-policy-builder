@@ -1048,7 +1048,7 @@ pub mod dev {
     /// Version of the committed, signed development example. Versions 1 to 3 remain
     /// historical parents; changing their contents would fork persisted checkpoints. The same
     /// holds for this version once published, so tests pin every root.
-    pub const SIGNED_EXAMPLE_VERSION: u64 = 4;
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 5;
 
     /// Deterministic development root key (NOT a production root; production roots are
     /// threshold-held and pinned at release time).
@@ -1072,6 +1072,7 @@ pub mod dev {
         version: u64,
     ) -> Result<(String, String), RegistryError> {
         let snapshot = match version {
+            5 => soroswap_deadline_successor(network_id)?,
             4 => soroswap_router_successor(network_id)?,
             3 => verifier_successor(network_id)?,
             2 => account_authority_successor(network_id)?,
@@ -1196,6 +1197,29 @@ pub mod dev {
                     .to_string(),
             },
         );
+        Ok(snapshot)
+    }
+
+    /// Version 5 preserves v4 and replaces its router binding with v2's exact deadline.
+    pub fn soroswap_deadline_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        use ozpb_domain::target_adapters;
+        let previous = soroswap_router_successor(network_id)?;
+        let mut snapshot = previous.clone();
+        snapshot.version = 5;
+        snapshot.log_index = 5;
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let semantics = target_adapters::soroswap_router_v2();
+        let binding = snapshot
+            .target_adapters
+            .get_mut(&target_adapters::SOROSWAP_ROUTER_TESTNET_WASM.to_hex())
+            .ok_or_else(|| RegistryError::Internal("historical router binding is absent".into()))?;
+        binding.implementation = semantics.name.clone();
+        binding.semantics_digest = semantics
+            .digest()
+            .map_err(|error| RegistryError::Internal(error.to_string()))?;
+        binding.review_reference.push_str(" Version 2 preserves the recorded deadline exactly instead of widening it; its input cap and other argument roles are unchanged.");
         Ok(snapshot)
     }
 
@@ -1342,7 +1366,7 @@ mod tests {
             "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf";
         assert_eq!(
             dev::SIGNED_EXAMPLE_VERSION,
-            4,
+            5,
             "a new signed example version must pin its own published root here"
         );
         // Version 2 is a published parent: the verifier fields it never carried must not move
@@ -1367,12 +1391,15 @@ mod tests {
             "published development example v4 changed; publish new contents as a new version"
         );
         assert_eq!(v4.previous_root, Some(snapshot_root(&v3).unwrap()));
+        let v5 = dev::soroswap_deadline_successor(network()).unwrap();
+        assert_eq!(v5.previous_root, Some(snapshot_root(&v4).unwrap()));
         let committed: SignedSnapshot =
             serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
                 .unwrap();
+        assert_eq!(v5, committed.snapshot);
         assert_eq!(
-            snapshot_root(&committed.snapshot).unwrap().to_hex(),
-            PUBLISHED_V4_ROOT
+            snapshot_root(&v5).unwrap().to_hex(),
+            "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6"
         );
     }
 
@@ -1465,13 +1492,23 @@ mod tests {
             registry.load_at(signed, 100).unwrap();
         }
         let v3_checkpoint = registry.checkpoint().unwrap();
-        assert_eq!(committed.snapshot.previous_root, Some(v3_checkpoint.root));
+        let v4 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::soroswap_router_successor(network()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v4.snapshot.previous_root, Some(v3_checkpoint.root));
         let mut restored = Registry::with_pinned_roots_for_network_at_checkpoint(
             roots(),
             network(),
             v3_checkpoint,
         )
         .unwrap();
+        restored.load_at(&v4, 100).unwrap();
+        assert_eq!(
+            committed.snapshot.previous_root,
+            Some(restored.checkpoint().unwrap().root)
+        );
         restored.load_at(&committed, 100).unwrap();
         restored
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)

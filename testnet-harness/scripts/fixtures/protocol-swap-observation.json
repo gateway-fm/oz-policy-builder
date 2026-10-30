@@ -6,7 +6,7 @@
     "minimum_out": "100000",
     "deadline": 1792495419,
     "operator_decisions": {
-      "schema": "ozpb-soroswap-operator-decisions/v1",
+      "schema": "ozpb-soroswap-operator-decisions/v2",
       "output_floor": {
         "min": "100000",
         "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
@@ -15,7 +15,7 @@
         "max": "1000000",
         "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
       },
-      "adapter_deadline": "accept_any_value_high_blast_radius",
+      "adapter_deadline": "keep_recorded_deadline",
       "source_sha256": "f60e747c82cc22422d11fad0169730b15a6226f65ef130aa7f1612c93c101e5f"
     }
   },
@@ -116,7 +116,7 @@
       },
       "name": "soroswap-swap",
       "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
-      "registry_snapshot": "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf",
+      "registry_snapshot": "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6",
       "rules": [
         {
           "allowed_calls": [
@@ -131,7 +131,7 @@
                   "i": 0,
                   "prov": {
                     "adapter_derived": {
-                      "adapter": "soroswap-router@1",
+                      "adapter": "soroswap-router@2",
                       "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
                     }
                   }
@@ -169,14 +169,13 @@
                   "prov": "observed_exact"
                 },
                 {
-                  "c": "any_value",
                   "i": 4,
-                  "prov": {
-                    "adapter_derived": {
-                      "adapter": "soroswap-router@1",
-                      "code_hash": "4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c"
+                  "c": {
+                    "eq_scval": {
+                      "xdr_base64": "AAAABQAAAABq1087"
                     }
-                  }
+                  },
+                  "prov": "observed_exact"
                 }
               ],
               "fn": "swap_exact_tokens_for_tokens",
@@ -315,14 +314,14 @@
         "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
       }
     },
-    "spec_hash": "8a9b164a6d4ef9b58a458a737556f08da358a78cd739ee658e556ee8f6cd0ac8",
+    "spec_hash": "84672a0c3364e75f530c668d99289f317e33a690e72d31b58b5238b5e18ce9e4",
     "rationale": [
       "permission bundle: 2 independent rules (one per contract); ordering and dependency between them are NOT enforced",
-      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: adapter 'soroswap-router@1' derived a code-hash-bound widening from its reviewed argument role (valid only while the target's code hash holds)",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: adapter 'soroswap-router@2' derived a code-hash-bound widening from its reviewed argument role (valid only while the target's code hash holds)",
       "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 1: user-widened (Absolute output floor chosen for this controlled test swap; not a price or slippage model), blast radius Medium",
-      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 4: adapter 'soroswap-router@1' leaves this argument UNCONSTRAINED (any value) from its reviewed caller-chosen role \u2014 a high blast radius widening no user decided; valid only while the target's code hash holds",
       "target CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC is the built-in Stellar Asset contract; it has no Wasm code hash",
-      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded native transfer to the exact pair as an independent capability), blast radius Medium"
+      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded native transfer to the exact pair as an independent capability), blast radius Medium",
+      "swap_exact_tokens_for_tokens arg 4: preserve the recorded deadline exactly"
     ]
   }
 }

@@ -683,11 +683,13 @@ The section 8–10 runs predate that step. Two rules from an interrupted W3 atte
 expired and spent, on a throwaway account (section 13).
 
 The W3 runs in sections 9 and 13 used widenings the harness wrote itself and `evidence_only`
-router hashes. The harness now takes the router's input bound and open deadline from the
+router hashes. For the section-14 run, the harness took the router's input bound and open deadline from the
 development registry's `soroswap-router@1` binding, a development-registry assertion whose Wasm
 was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)),
 and the floor and transfer cap from an operator decisions file. Section 14 records the first
 completed live run through that binding, including route, recipient and function controls.
+These remain historical v1 results; [registry v5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5)
+now preserves the recorded deadline exactly.
 
 Sections 15 and 16 add automated wallet installation and revocation, including an independent
 CLI proposal import. Both use a virtual authenticator and do not attest to human approval.
