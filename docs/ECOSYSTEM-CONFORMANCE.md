@@ -414,13 +414,13 @@ entry, after which `install` is possible and the counter starts from zero. Both 
 address (`Default` or `CallContract(policy)`), not only the owner's. Whoever holds such a rule
 can therefore reset an existing grant's cap. `account_wasm_invariants.rs` demonstrates this
 through the pinned account. `check_policy_call_surface` lists such rules before installation and
-refuses one the agent's key can use alone. Rules added later are detected only by the wallet's
-on-demand check, which counts any later rule allocation as drift (see "On-demand installed-grant
-monitoring" in `docs/POLLYWALLET-INTEGRATION.md`); nothing monitors in the background. The
-architecture states the cap per installation —
-`docs/architecture.md:598-600` says "within an installation" rather than "lifetime", and the
-reinstall invariant at `:586-591` is scoped to the installer flow instead of being asserted of the
-policy contract, which cannot enforce it. The generated contract enforces its half of that
+refuses one the agent's key can use alone. A rule added later is detected only when someone
+runs the wallet's on-demand check, and only for a grant installed by the running backend; it
+counts any later rule allocation as drift (see "On-demand installed-grant monitoring" in
+`docs/POLLYWALLET-INTEGRATION.md`). Nothing monitors in the background. The architecture
+states the cap per installation — `docs/architecture.md:598-600` says "within an installation"
+rather than "lifetime", and the reinstall invariant at `:586-591` is scoped to the installer
+flow instead of being asserted of the policy contract, which cannot enforce it. The generated contract enforces its half of that
 scoping since the hardening pass: `install` refuses a second installation (`AlreadyInstalled`),
 `uninstall` of something never installed refuses (`NotInstalled`), `uninstall` removes the
 policy-owned state, and `enforce` fails closed (`MissingState`) when the installation marker is
