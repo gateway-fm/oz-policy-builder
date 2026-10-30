@@ -18,15 +18,17 @@ use ozpb_api_types::{
     SynthesizeInput, SynthesizeOutput, ToolError,
 };
 use ozpb_recorder_core::RecordOptions;
-use ozpb_source_rpc::HttpTransport;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 mod authority;
+mod cancel;
 mod capture;
 mod http;
 mod policy_check;
 mod preflight;
+mod tool_limits;
 mod verification;
 
 #[derive(Clone)]
@@ -94,6 +96,7 @@ struct PolicyBuilderServer {
     /// caller-chosen timeout would be resource exhaustion and a caller-chosen builder path
     /// arbitrary execution.
     build_config: ozpb_toolkit::BuildConfig,
+    tool_quotas: Option<tool_limits::ToolQuotas>,
 }
 
 impl PolicyBuilderServer {
@@ -117,6 +120,7 @@ impl PolicyBuilderServer {
             rpc_policy,
             rpc_sources,
             build_config,
+            tool_quotas: None,
         }
     }
 
@@ -135,10 +139,19 @@ fn http_session_factory(
     rpc_policy: RpcEndpointPolicy,
     rpc_sources: Arc<std::collections::BTreeMap<String, ozpb_toolkit::RpcSource>>,
     build_config: ozpb_toolkit::BuildConfig,
-) -> impl Fn() -> Result<PolicyBuilderServer, std::io::Error> {
-    let server =
+    limits: tool_limits::ToolLimitConfig,
+) -> anyhow::Result<impl Fn() -> Result<PolicyBuilderServer, std::io::Error>> {
+    let mut server =
         PolicyBuilderServer::new(registry_trust, Some(rpc_policy), rpc_sources, build_config);
-    move || Ok(server.clone())
+    server.tool_quotas = Some(tool_limits::ToolQuotas::new(
+        server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned()),
+        limits,
+    )?);
+    Ok(move || Ok(server.clone()))
 }
 
 /// Map a toolkit ToolError into an rmcp tool-execution error carrying the structured
@@ -190,10 +203,12 @@ impl PolicyBuilderServer {
     async fn record_transaction(
         &self,
         Parameters(input): Parameters<RecordTransactionInput>,
+        ct: CancellationToken,
     ) -> Result<Json<RecordOutput>, CallToolResult> {
         let rpc_url = self.authorized_rpc_url(&input.rpc_url).map_err(tool_err)?;
+        let request = ct.clone();
         let out = tokio::task::spawn_blocking(move || {
-            let transport = HttpTransport::new(rpc_url);
+            let transport = cancel::transport(rpc_url, &request);
             let snapshot = ozpb_source_rpc::get_transaction(
                 &transport,
                 &input.network_passphrase,
@@ -207,8 +222,8 @@ impl PolicyBuilderServer {
             ozpb_toolkit::record_snapshot(&snapshot, options)
         })
         .await
-        .map_err(internal_tool_err)?
-        .map_err(tool_err)?;
+        .map_err(internal_tool_err)?;
+        let out = cancel::unless_cancelled(&ct, out.map_err(tool_err))?;
         Ok(Json(out))
     }
 
@@ -223,10 +238,12 @@ impl PolicyBuilderServer {
     async fn record_simulation(
         &self,
         Parameters(input): Parameters<RecordSimulationInput>,
+        ct: CancellationToken,
     ) -> Result<Json<RecordOutput>, CallToolResult> {
         let rpc_url = self.authorized_rpc_url(&input.rpc_url).map_err(tool_err)?;
+        let request = ct.clone();
         let out = tokio::task::spawn_blocking(move || {
-            let transport = HttpTransport::new(rpc_url);
+            let transport = cancel::transport(rpc_url, &request);
             let snapshot = ozpb_source_rpc::simulate_transaction(
                 &transport,
                 &input.network_passphrase,
@@ -236,8 +253,8 @@ impl PolicyBuilderServer {
             ozpb_toolkit::record_snapshot(&snapshot, RecordOptions::default())
         })
         .await
-        .map_err(internal_tool_err)?
-        .map_err(tool_err)?;
+        .map_err(internal_tool_err)?;
+        let out = cancel::unless_cancelled(&ct, out.map_err(tool_err))?;
         Ok(Json(out))
     }
 
@@ -291,14 +308,15 @@ impl PolicyBuilderServer {
     async fn generate_code(
         &self,
         Parameters(input): Parameters<GenerateCodeInput>,
+        ct: CancellationToken,
     ) -> Result<Json<GenerateCodeOutput>, CallToolResult> {
-        let build = self.build_config.clone();
+        let build = cancel::build_config(&self.build_config, &ct);
         let out = tokio::task::spawn_blocking(move || {
             ozpb_toolkit::generate_code_with_build_config(&input, &build)
         })
         .await
-        .map_err(internal_tool_err)?
-        .map_err(tool_err)?;
+        .map_err(internal_tool_err)?;
+        let out = cancel::unless_cancelled(&ct, out.map_err(tool_err))?;
         Ok(Json(out))
     }
 
@@ -334,6 +352,27 @@ impl PolicyBuilderServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for PolicyBuilderServer {
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Unknown methods keep the router's ordinary error; they do not spend another tool's budget.
+        if self.tool_router.has_route(&request.name)
+            && self
+                .tool_quotas
+                .as_ref()
+                .is_some_and(|quotas| !quotas.admit(&request.name))
+        {
+            return Ok(tool_err(ToolError::new(
+                ozpb_api_types::ErrorCode::EResourceLimit,
+                "tool request quota exceeded; retry after the current 60-second window",
+            )));
+        }
+        let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(call).await
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "OZ Accounts Policy Builder. Record a Stellar transaction, synthesize a \
@@ -499,14 +538,22 @@ pub(crate) mod tests {
         };
         let running = slots.try_take().expect("the free slot");
         assert_eq!(
-            refusal_code(server.generate_code(Parameters(input())).await),
+            refusal_code(
+                server
+                    .generate_code(Parameters(input()), Default::default())
+                    .await
+            ),
             "E_BUILD_BUSY"
         );
         drop(running);
         // Control: with the slot free the call reaches the builder, whose path does not exist,
         // and gives the slot back.
         assert_eq!(
-            refusal_code(server.generate_code(Parameters(input())).await),
+            refusal_code(
+                server
+                    .generate_code(Parameters(input()), Default::default())
+                    .await
+            ),
             "E_BUILD_UNAVAILABLE"
         );
         assert_eq!(slots.available(), 1);
@@ -519,7 +566,9 @@ pub(crate) mod tests {
             RpcEndpointPolicy::from_csv("https://rpc.example").unwrap(),
             Default::default(),
             hosted().build_config,
-        );
+            tool_limits::ToolLimitConfig::parse(60, None).unwrap(),
+        )
+        .unwrap();
         let first = factory().unwrap();
         let second = factory().unwrap();
         let running_work = first
@@ -554,7 +603,9 @@ pub(crate) mod tests {
             RpcEndpointPolicy::from_csv("https://rpc.example").unwrap(),
             Default::default(),
             hosted().build_config,
-        );
+            tool_limits::ToolLimitConfig::parse(60, None).unwrap(),
+        )
+        .unwrap();
         let first = factory().unwrap();
         let second = factory().unwrap();
         let taken = first

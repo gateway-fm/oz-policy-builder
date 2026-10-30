@@ -95,6 +95,10 @@ error_codes! {
     /// Every build slot on a hosted server is in use. Retryable by design: the same request
     /// can succeed once a running build finishes.
     EBuildBusy => "E_BUILD_BUSY",
+    /// The caller cancelled the request (or its session ended) and the server stopped the
+    /// work: a build was terminated or a read stopped before its next RPC call. MCP sends the
+    /// cancelling client no response, so this is the outcome's name, not a wire answer to it.
+    ECancelled => "E_CANCELLED",
     // registry
     ERegistrySignature => "E_REGISTRY_SIGNATURE",
     ERegistryRollback => "E_REGISTRY_ROLLBACK",
