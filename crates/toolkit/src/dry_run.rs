@@ -67,6 +67,26 @@ pub fn prepare_dry_run_with_build_config(
                 .collect()
         })
         .unwrap_or_default();
+    if suite.len() != reference.outcomes.len()
+        || suite
+            .iter()
+            .zip(&reference.outcomes)
+            .any(|(case, outcome)| {
+                case.rule_index != outcome.rule_index
+                    || case.label != outcome.label
+                    || case.class != outcome.class
+                    || outcome.expected != if case.expect_permit { "permit" } else { "deny" }
+            })
+    {
+        return Err(ToolError::new(
+            EC::EInternal,
+            "reference suite ordering mismatch",
+        ));
+    }
+    let reference_case_ledgers = suite
+        .iter()
+        .map(|case| case.context.current_ledger.0)
+        .collect();
     reference.total = reference.outcomes.len();
     reference.agreements = reference
         .outcomes
@@ -134,6 +154,7 @@ pub fn prepare_dry_run_with_build_config(
         binding,
         artifact_verification,
         reference_report: to_value(&reference)?,
+        reference_case_ledgers: Some(reference_case_ledgers),
         layers: vec![
             DryRunLayer {
                 id: Layer::Reference,

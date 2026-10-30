@@ -1,4 +1,5 @@
 /target
+/execution-runtime/target
 contracts/**/target/
 **/*.rs.bk
 .DS_Store
