@@ -693,7 +693,7 @@ were valid until ledger 5469283: the router rule (account rule ID 1) and the tra
 | --- | --- |
 | Owner recording and artifact chain | [Owner swap](https://stellar.expert/explorer/testnet/tx/3193d810e0fc4b13bfef3999be6ea8f84106de211946d28eef5abd3492424ded) of 0.1 XLM confirmed at 5469103 with 165760 output units and a matching balance increase. It went through the real RPC recorder, synthesis, the 65-case reference suite and matching source/Wasm/manifest reproduction for both rules. |
 | Account-Wasm reports | Before installation, the offline `ozpb dry-run` report for each rule permitted its original call and reverted its derived denials in the pinned account and generated policy Wasm: 24 for the router rule (36 cases) and 20 for the transfer rule (29 cases). Synthetic local state and proposed rule IDs; not live observations. |
-| Policy uploads | Read back from the network after the run (not part of the summary): the router-rule policy's upload carried a fee of 12,202,044 stroops and was charged 9,742,036; the transfer-rule policy's carried 11,974,255. |
+| Policy uploads | Read back from the network after the run (not part of the summary): the router-rule policy's upload carried a fee of 12,202,044 stroops and was charged 9,742,036; the transfer-rule policy's carried 11,974,255. Both are well within the 15-XLM upload ceiling. |
 | Install | The [router rule](https://stellar.expert/explorer/testnet/tx/ce5f0c9bb9e901fe8db5becf6b1d1c0bf4435521bd00e5c5bcb31114e8d80bf6) was checked at 5469110, rechecked at 5469111, installed at 5469112 and read back matched at 5469112. The [transfer rule](https://stellar.expert/explorer/testnet/tx/aa9b323ff88c2e831db9915fbf716b26dea6a1258f3ae353fb073a3b32aa3f47) was checked at 5469113, rechecked at 5469114, installed at 5469115 and read back matched at 5469115. |
 | Derived denials | The CLI emitted the installed spec's 65-case suite and the replay verified its suite hash. Both recorded calls (`case-0`, the swap, and `case-36`, the transfer) were permitted in simulation at 5469117. All twelve live-realizable deny cases were refused at 5469117–5469120 by the predicted enforcer. The 32 deny cases that stay offline are listed by class and reason, and the 19 other permit cases stay layer-1 only. Nothing was submitted. |
 | Deadline controls | The recorded deadline plus one and the largest `u64` deadline each returned the router-rule policy's code 6 at 5469123. Neither was submitted. |
@@ -738,8 +738,8 @@ assertion, not governance, and the router's deployed Wasm was not reproduced fro
 ([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)). These remain editable local RPC
 observations, with non-atomic reads and no ledger proof or protected wallet-approval claim.
 
-An attempt at 13:40 UTC the same day, on `CBY7KUOOIYVIN6FTNO2MUH5D72G2W7JRAEKDACXW7RL4HO3GW54A3T6S`,
-stopped at policy generation: the host's C toolchain refused to link because its Xcode license had
+An attempt at 13:40 UTC the same day, with an earlier build of the CLI, on
+`CBY7KUOOIYVIN6FTNO2MUH5D72G2W7JRAEKDACXW7RL4HO3GW54A3T6S`, stopped at policy generation: the host's C toolchain refused to link because its Xcode license had
 not been accepted. Its owner swap had confirmed; nothing was uploaded, deployed or installed, the
 cleanup reported nothing to remove, and the keys were deleted at exit. It is not counted.
 
@@ -875,14 +875,16 @@ Sections 15 and 16 add automated wallet installation and revocation, including a
 CLI proposal import. Both use a virtual authenticator and do not attest to human approval.
 
 Sections 17, 18 and 19 add a W3, a W2 and a W1 run at revision `60e1da70`, each passing under
-[§7's definition](#what-a-passing-permitdeny-report-is). Section 17 is the first live run through
+[§7's definition](#what-a-passing-permitdeny-report-is). That is not the final delivered
+revision; reports at that revision remain needed. Section 17 is the first live run through
 `soroswap-router@2` with the exact recorded deadline: the deadline-plus-one and maximum-deadline
 controls and derived cases were all refused by the router-rule policy's code 6. Sections 17 and
 19 are also the first live W3 and W1 runs whose per-rule offline account-Wasm reports passed
 before installation. Their limits are the spending-limit Wasm's archival around 6 November
 (section 18) and the Blend emission window ending 2 November (section 19).
 
-Phase 2 still needs a human owner's protected approval in the wallet's install and revoke flow,
+Phase 2 still needs walkthrough and wallet reports at the final delivered revision, a human
+owner's protected approval in the wallet's install and revoke flow,
 a reviewed Blend adapter rather than an `evidence_only` code observation, the remaining harness
 layers with their actual evidence boundaries, hosted-service deployment
 evidence, and the public demonstration/video. The controlled W1, W2 and W3 runs do not close
