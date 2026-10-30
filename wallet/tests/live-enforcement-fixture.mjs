@@ -238,8 +238,8 @@ export function permitChanges(entries, {
         dataEntry(P.asset, keyed('Balance', addr(recipient)), sacBalance((recipientBefore ?? 0n) + received)))
       : change(accountKey(recipient), accountEntryOf(recipient, RECIPIENT_BALANCE), accountEntryOf(recipient, RECIPIENT_BALANCE + received)),
     instance: change(dataKey(P.account, instanceKey),
-      dataEntry(P.account, instanceKey, instance({ Count: 1, NextId: 1, NextSignerId: 1 })),
-      dataEntry(P.account, instanceKey, instance({ Count: 2, NextId: 2, NextPolicyId: 1, NextSignerId: 2 }))),
+      dataEntry(P.account, instanceKey, instance({ Count: 1, NextId: ruleId, NextSignerId: 1 })),
+      dataEntry(P.account, instanceKey, instance({ Count: 2, NextId: ruleId + 1, NextPolicyId: 1, NextSignerId: 2 }))),
     rule: change(dataKey(P.account, keyed('ContextRuleData', u32(ruleId))), null,
       dataEntry(P.account, keyed('ContextRuleData', u32(ruleId)), rule)),
     signer: change(dataKey(P.account, keyed('SignerData', u32(1))), null,

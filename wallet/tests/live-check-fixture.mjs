@@ -112,7 +112,7 @@ export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, 
     const expiry = entries[0].credentials.addressV2.signatureExpirationLedger;
     const P = { helper: HELPER, account: f.f.wallet.contractId, accountCodeHash: ACCOUNT_WASM, policy: f.policy,
       policyCodeHash: f.artifact.wasmHash, ruleName: f.f.intent.rule_name, validUntil: f.f.intent.valid_until_ledger,
-      delegate: delegate.address, recipient: RECIPIENT, ruleId: nextId, expiry, simulationLedger: state.ledger + 1,
+      delegate: delegate.address, recipient: RECIPIENT, ruleId: state.nextId, expiry, simulationLedger: state.ledger + 1,
       permitAmount: 1000000n, denialAmount: 1000001n, denialCode: 6, accountBalance: 9_000_000n };
     const kind = amount === 1000000n ? 'permit' : 'denial';
     const custom = respond?.(kind, entries, P);

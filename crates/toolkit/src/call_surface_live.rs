@@ -38,8 +38,8 @@ pub struct CallSurfaceReadPlan {
     pub classic_addresses: Vec<String>,
     /// From the signed account capability, never from the request.
     pub bounds: AccountScanBounds,
-    input: CheckPolicyCallSurfaceInput,
-    prepared: PreparedCallSurfaceCheck,
+    pub(crate) input: CheckPolicyCallSurfaceInput,
+    pub(crate) prepared: PreparedCallSurfaceCheck,
 }
 
 impl CallSurfaceReadPlan {
@@ -120,6 +120,16 @@ fn finish_call_surface_check_at(
     scan: &AccountStateScan,
     now: std::time::SystemTime,
 ) -> Result<CheckPolicyCallSurfaceOutput, ToolError> {
+    finish_call_surface_with_state(plan, source_name, scan, now, None)
+}
+
+pub(crate) fn finish_call_surface_with_state(
+    plan: &CallSurfaceReadPlan,
+    source_name: &str,
+    scan: &AccountStateScan,
+    now: std::time::SystemTime,
+    projected_state: Option<ozpb_call_surface_core::AccountState>,
+) -> Result<CheckPolicyCallSurfaceOutput, ToolError> {
     let now_unix = now
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| ToolError::new(EC::EInternal, format!("invalid trusted time: {error}")))?
@@ -194,7 +204,7 @@ fn finish_call_surface_check_at(
         network_id: plan.network_id.clone(),
         account_address: plan.account_address.clone(),
         account_code_hash: scan.account_wasm_hash.to_hex(),
-        account_state: projection.account_state,
+        account_state: projected_state.unwrap_or(projection.account_state),
         bound_policies,
         classic_accounts: projection.classic_accounts,
         verifier_code_hashes,

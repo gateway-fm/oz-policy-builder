@@ -4,7 +4,7 @@ const LIFETIME_MS = 120_000;
 const MAX_PENDING = 16;
 const MAX_VALUE_BYTES = 16 * 1024 * 1024;
 const KINDS = new Set(['create_account', 'record', 'generate', 'deploy', 'install', 'submit', 'restore', 'revoke', 'reconfigure', 'sample',
-  'live', 'live_sign']);
+  'live', 'live_sign', 'replacement']);
 const denied = () => new Error('wallet request unauthorized');
 const unavailable = () => new Error('wallet action unavailable; review again');
 

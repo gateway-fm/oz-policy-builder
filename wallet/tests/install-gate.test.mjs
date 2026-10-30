@@ -37,6 +37,10 @@ const captured = (input) => input.review.targetLayer.evidence.observedLedger;
 const liveLedgers = (input) => input.review.liveLayer.evidence.cases.map((c) => c.simulationLedger);
 
 const GATE = {
+  'missing acceptance': (i) => { delete i.review.verification.acceptance; },
+  'failed acceptance': (i) => { i.review.verification.acceptance.meetsMinimum = false; },
+  'only four retained denials despite a passing summary': both(1, (l) => { l.evidence.caseResults = l.evidence.caseResults.slice(0, 5); }),
+  'wrong retained refusal attribution': both(1, (l) => { l.evidence.caseResults[1].refusalCode = 6; }),
   'an incomplete report': (i) => { i.review.verification.complete = false; },
   'a failed reference layer': both(0, (l) => { l.status = 'failed'; }),
   'a failed account layer': both(1, (l) => { l.status = 'failed'; }),

@@ -108,6 +108,11 @@ export async function installable({ captureLedger = CAPTURE_LEDGER } = {}) {
   f.artifact.spec.rules[0].valid_until = { ledger: VALID_UNTIL };
   stubNativeChecks(f, f.delegate, holder, { maxCalls: 1, captureLedger });
   const n = f.network;
+  const requireInstance = n.requireInstance;
+  n.requireInstance = async (contractId, wasmHash) => {
+    await requireInstance(contractId, wasmHash);
+    return { contractId, wasmHash, ledger: f.state.ledger, instanceLedger: f.state.ledger, codeLedger: f.state.ledger, nonAtomic: true };
+  };
   const authority = [];
   const submissions = [];
   const intent = f.f.intent;

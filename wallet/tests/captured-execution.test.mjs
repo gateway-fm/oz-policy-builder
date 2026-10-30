@@ -189,6 +189,10 @@ test('a captured report passes only with exact balances, counter, nonces and pol
   assert.equal(layer.evidence.captureHash, f.hash);
   assert.equal(layer.evidence.observedLedger, LEDGER);
   assert.deepEqual(layer.evidence.cases, CASE_IDS);
+  assert.equal(layer.evidence.caseResults.length, 3);
+  assert.equal(layer.evidence.caseResults[1].refusedBy, 'policy');
+  assert.equal(layer.evidence.caseResults[1].refusalCode, 6);
+  assert.equal(layer.evidence.caseResults[1].stateUnchanged, true);
   assert.equal(layer.evidence.complete, false);
   assert.ok(Object.isFrozen(layer));
   const g = setup({ maxCalls: null });
