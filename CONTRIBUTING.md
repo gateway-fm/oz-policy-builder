@@ -70,12 +70,13 @@ this repository reads, so it is written for them.
 
 ## Documentation
 
-Documents describe the tree they are committed in. Do not cite this repository's own pull
-requests, branches or their merge status in them ("prepared in PR #N", "pending #N"): that
-status changes with every merge, and the sentence is wrong as soon as #N lands. Pending work
-and its review state belong in the pull request or the tracking issue; a document describes a
-change once the change is merged. Other projects' pull requests are fine where they explain a
-dependency or a limit.
+Documents describe the tree they are committed in. Do not describe this repository's open
+pull requests or branches in them ("prepared in PR #N", "pending #N", a table of open PRs):
+that status changes with every merge, and the sentence is wrong as soon as #N lands. Pending
+work and its review state belong in the pull request or the tracking issue. A document
+describes a change in the commit that makes it, never while the change still sits in another
+pull request. Citing a merged change as the source of a recorded result, or another project's
+pull request that explains a dependency or a limit, is fine.
 
 ## Adding a policy primitive or a constraint kind
 

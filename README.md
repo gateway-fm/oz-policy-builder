@@ -38,9 +38,10 @@ monitoring, and self-hosting/worker packages; see the
 for what is implemented and the evidence still required.
 
 A deployed hosted testnet MCP endpoint and its operational checks, final-revision reports,
-remaining invariant coverage, a live Soroswap run with the exact approved deadline, the
-executed agent workflow, and the public demo/video still need closure. Production hosting, audit remediation, OpenZeppelin sign-off and mainnet wallet
-integration are [Tranche 3](https://github.com/gateway-fm/oz-policy-builder/issues/4).
+remaining invariant coverage, a live Soroswap run through adapter v2, the executed agent
+workflow, and the public demo/video still need closure. Production hosting, audit
+remediation, OpenZeppelin sign-off and mainnet wallet integration are
+[Tranche 3](https://github.com/gateway-fm/oz-policy-builder/issues/4).
 
 ## The pipeline
 
