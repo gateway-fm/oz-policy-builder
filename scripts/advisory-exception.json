@@ -5,7 +5,7 @@
   "expires_utc": "2026-11-10",
   "lock_inventories": {
     "Cargo.lock": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-    "contracts/Cargo.lock": "fe7c527fec61e26153dd7555d77f00e0fe4df36692d532a3f737f52f38277f23",
+    "contracts/Cargo.lock": "fd617fcb1ed3fe9ebe52b1ddfbe65a08ae66014e2dfb308db18d92a1abb6dbc0",
     "execution-runtime/Cargo.lock": "b9b8549e21ebe30412d1563fef689cf9d3a9892800430a74cfbf057e0d495c24"
   },
   "tracking_issue": "https://github.com/gateway-fm/oz-policy-builder/issues/94"

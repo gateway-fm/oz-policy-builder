@@ -44,7 +44,7 @@ function fixture() {
   const calls = [];
   const pauses = [];
   const validators = {
-    reviewIntent: (value) => ({ ...value, ownerRuleId: 7 }),
+    reviewIntent: (value) => ({ ...value, ownerRuleId: 7, commitment: hash('4') }),
     validateAssembly: () => ({ authEntriesXdr: ['unsigned'], ownerRuleId: 7, expirationLedger: 123 }),
     validateSignedAuthorization: async ({ signedAuthEntriesXdr }) => ({ signedAuthEntriesXdr }),
     installConsent: () => INSTALL_DISPLAY,
@@ -690,4 +690,146 @@ test('new recording and generation retain confirmed and uncertain installation r
       assert.equal(f.controller.state.installAttempted, false);
     }
   }
+});
+
+const REPLACEMENT_DISPLAY = { schema: 'wallet-revoke-first-replacement/v1', account: wallet.contractId,
+  previousInstallationId: INSTALLATION.installationId, previousRuleId: 1, installationTransactionHash: hash('e'),
+  removalTransactionHash: hash('f'), budget: 'previously_used_authority_plus_new_cap', warning: 'Fresh budget' };
+async function removedForReplacement() {
+  const f = fixture();
+  f.replies.status.capabilities.lifecycle = true;
+  f.replies.status.capabilities.replacement = true;
+  f.replies['prepare-revoke'].limits.maxFeeStroops = f.replies.status.maxFeeStroops;
+  f.validators.replacementConsent = () => REPLACEMENT_DISPLAY;
+  f.replies['prepare-replacement'] = { action: { id: hash('8') }, display: REPLACEMENT_DISPLAY };
+  f.replies['confirm-replacement'] = { replacementReady: true, actionId: hash('8'), display: REPLACEMENT_DISPLAY };
+  await prepared(f); await f.controller.prepareInstall(); await f.controller.install();
+  await f.controller.prepareRevoke(); await f.controller.revoke();
+  return f;
+}
+test('replacement has separate consent, signs nothing, discards the old review and resets lifecycle only on success', async () => {
+  const f = await removedForReplacement();
+  const signed = f.calls.filter(([name]) => name === 'sign').length;
+  await f.controller.prepareReplacement();
+  assert.deepEqual(f.controller.state.replacementPreview.display, REPLACEMENT_DISPLAY);
+  assert.equal(f.controller.state.installAttempted, true);
+  await f.controller.confirmReplacement();
+  assert.equal(f.calls.filter(([name]) => name === 'sign').length, signed);
+  assert.equal(f.controller.state.review, null); assert.equal(f.controller.state.artifact, null);
+  assert.equal(f.controller.state.installAttempted, false); assert.equal(f.controller.state.revokeAttempted, false);
+  assert.equal(f.controller.state.installation, null); assert.deepEqual(f.controller.state.replacement, REPLACEMENT_DISPLAY);
+  await assert.rejects(f.controller.prepareInstall(), /refused/, 'new candidate and checks required');
+});
+test('cancelled or refused replacement retains the removed grant and spent installation state', async () => {
+  const f = await removedForReplacement();
+  await f.controller.prepareReplacement(); f.controller.cancelReplacement();
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true); assert.ok(f.controller.state.removal);
+  await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = new Error('refused');
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true); assert.ok(f.controller.state.installation);
+});
+test('substituted replacement consent cannot reset the browser installation guard', async () => {
+  const f = await removedForReplacement();
+  f.replies['prepare-replacement'] = { action: { id: hash('8') }, display: { ...REPLACEMENT_DISPLAY, previousRuleId: 9 } };
+  await assert.rejects(f.controller.prepareReplacement(), /refused/);
+  assert.equal(f.controller.state.replacementPreview, null); assert.equal(f.controller.state.installAttempted, true);
+});
+
+test('lost replacement confirmation recovers only its exact action-bound acknowledgement', async () => {
+  const f = await removedForReplacement();
+  await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => {
+    f.replies.status.replacement = { replacementReady: true, actionId: hash('8'), display: REPLACEMENT_DISPLAY };
+    f.replies.status.capabilities.replacement = false;
+    throw new Error('lost response after backend commit');
+  };
+  await f.controller.confirmReplacement();
+  assert.equal(f.controller.state.installAttempted, false);
+  assert.equal(f.controller.state.replacementPending, null);
+  assert.deepEqual(f.controller.state.replacement, REPLACEMENT_DISPLAY);
+  assert.equal(f.calls.filter(([name]) => name === 'confirm-replacement').length, 1, 'no automatic retry');
+});
+for (const kind of ['different action', 'different display', 'not committed']) test(`replacement recovery refuses ${kind}`, async () => {
+  const f = await removedForReplacement(); await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => {
+    f.replies.status.replacement = { replacementReady: kind !== 'not committed',
+      actionId: kind === 'different action' ? hash('9') : hash('8'),
+      display: kind === 'different display' ? { ...REPLACEMENT_DISPLAY, previousRuleId: 2 } : REPLACEMENT_DISPLAY };
+    throw new Error('lost response');
+  };
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true); assert.ok(f.controller.state.installation);
+  assert.ok(f.controller.state.replacementPending);
+});
+test('later status refresh recovers a replacement after transient status failures', async () => {
+  const f = await removedForReplacement(); await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => { f.replies.status = new Error('disconnected'); throw new Error('lost response'); };
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  const pending = f.controller.state.replacementPending;
+  f.replies.status = { ...pins, network: 'testnet', capabilities: {}, replacement: { replacementReady: true,
+    actionId: pending.actionId, display: REPLACEMENT_DISPLAY } };
+  await f.controller.refreshStatus();
+  assert.equal(f.controller.state.installAttempted, false); assert.equal(f.controller.state.replacementPending, null);
+});
+
+
+test('monitoring is a read-only observation bound to the browser installation and original authority', async () => {
+  const f = fixture(); await prepared(f); await f.controller.prepareInstall(); await f.controller.install();
+  f.replies.status.capabilities.monitoring = true;
+  const observation = { schema: 'ozpb:wallet-monitor:v1', installationId: INSTALLATION.installationId,
+    account: wallet.contractId, ruleId: 1, status: 'unchanged', reasons: [], observation: 'non_atomic_rpc_reported',
+    currentLedger: 200, expectedAuthorityCommitment: hash('4'), projectedAuthorityCommitment: hash('4'),
+    signaturesRequested: false, submitted: false };
+  f.replies['monitor-grant'] = observation;
+  const signed = f.calls.filter(([name]) => name === 'sign').length;
+  await f.controller.monitorGrant(); assert.deepEqual(f.controller.state.monitor, observation);
+  assert.equal(f.calls.filter(([name]) => name === 'sign').length, signed);
+  for (const change of [ { installationId: hash('8') }, { expectedAuthorityCommitment: hash('8') },
+    { account: 'different' }, { status: 'unchanged', reasons: ['authority_changed'] }, { signaturesRequested: true } ]) {
+    f.replies['monitor-grant'] = { ...observation, ...change };
+    await assert.rejects(f.controller.monitorGrant(), /refused/); assert.equal(f.controller.state.monitor, null);
+  }
+});
+
+test('changed-rule removal requires matching monitored bytes and independently derived drift consent', async () => {
+  const f = fixture(); await prepared(f); await f.controller.prepareInstall(); await f.controller.install();
+  f.replies.status.capabilities.monitoring = true; f.replies.status.capabilities.lifecycle = true;
+  f.replies['monitor-grant'] = { schema: 'ozpb:wallet-monitor:v1', installationId: INSTALLATION.installationId,
+    account: wallet.contractId, ruleId: 1, status: 'drift', reasons: ['recorded_rule_changed_or_missing'],
+    observation: 'non_atomic_rpc_reported', currentLedger: 200, expectedAuthorityCommitment: hash('4'),
+    projectedAuthorityCommitment: null, observedRuleHash: hash('8'), signaturesRequested: false, submitted: false };
+  await f.controller.monitorGrant();
+  const change = { recordedRuleXdr: 'recorded', observedRuleXdr: 'observed' };
+  const display = { ...REVOKE_DISPLAY, configurationChange: { observedRuleHash: hash('8'), recordedRuleHash: hash('9') } };
+  f.validators.reviewRemoval = (input) => ({ wallet: input.wallet, ownerRuleId: input.ownerRuleId,
+    ownerRuleXdr: input.ownerRuleXdr, commitment: hash('9'), configurationChange: input.configurationChange });
+  f.validators.revokeConsent = ({ approval }) => approval.configurationChange ? display : REVOKE_DISPLAY;
+  Object.assign(f.replies['prepare-revoke'], { configurationChange: change, display });
+  const signed = f.calls.filter(([name]) => name === 'sign').length;
+  await f.controller.prepareRevoke();
+  assert.deepEqual(f.controller.state.revokePreview.configurationChange, change);
+  f.controller.cancelRevoke();
+  f.replies['prepare-revoke'].display = { ...display, configurationChange: { ...display.configurationChange, observedRuleHash: hash('7') } };
+  await assert.rejects(f.controller.prepareRevoke(), /refused/);
+  assert.equal(f.calls.filter(([name]) => name === 'sign').length, signed);
+  f.replies['prepare-revoke'].display = display;
+  await f.controller.prepareRevoke(); await f.controller.revoke();
+  assert.equal(f.controller.state.removal.status, 'removed');
+});
+
+for (const change of ['rederived display', 'wallet account']) test(`lost replacement acknowledgement rejects changed ${change}`, async () => {
+  const f = await removedForReplacement();
+  await f.controller.prepareReplacement();
+  f.replies['confirm-replacement'] = () => {
+    f.replies.status.replacement = { replacementReady: true, actionId: hash('8'), display: REPLACEMENT_DISPLAY };
+    f.validators.replacementConsent = () => ({ ...REPLACEMENT_DISPLAY,
+      ...(change === 'wallet account' ? { account: 'another-account' } : { previousRuleId: 9 }) });
+    throw new Error('lost response');
+  };
+  await assert.rejects(f.controller.confirmReplacement(), /refused/);
+  assert.equal(f.controller.state.installAttempted, true);
+  assert.ok(f.controller.state.replacementPending);
+  assert.equal(f.controller.state.replacement, null);
 });

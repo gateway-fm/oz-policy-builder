@@ -1521,7 +1521,10 @@ mod tests {
             .get_mut(&crate::fixtures::golden_token_strkey())
             .unwrap()
             .executable = ObservedExecutable::Wasm { code_hash };
-        input.adapters = vec![adapters::soroswap_router_adapter(code_hash)];
+        input.adapters = vec![adapters::Adapter::from_semantics(
+            code_hash,
+            ozpb_domain::target_adapters::soroswap_router(),
+        )];
         input.spending_limit_capability = None;
         let mut decisions = crate::fixtures::golden_decisions();
         decisions.spending_limit = None;

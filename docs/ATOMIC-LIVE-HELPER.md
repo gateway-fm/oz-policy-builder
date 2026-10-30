@@ -260,9 +260,29 @@ refuses an RPC serving any other network before it builds, funds or signs anythi
    subprocess and its process group, waits for the child to close, and then deletes the keys;
    no later harness step runs. Repeated signals cannot bypass that cleanup.
 
+### Current SDK 28 helper deployment
+
+The [28 October 2026 receipt](evidence/atomic-live-helper-testnet-2026-10-28.json) records the
+current helper at `CBFSOXRVL4KTZJD6JAIBB7EHRQKOFYKMXQX6YMCLONAS45RQ77MKNOOA`, read back at
+ledger 5435087 with the current `EXPECTED_HELPER_HASH` / wallet helper pin. Configure new
+wallet live checks with that address, subject to their fresh code/liveness checks. Its instance
+was live until ledger 5556046 and code until 5556045 when observed; these are observations,
+not a promise that the contract remains live.
+
+The original 1,000,000-stroop simulation permitted and the adjacent amount was denied by the
+candidate policy's `NoTupleMatched` (6). After signature expiry at ledger 5435099, readback at
+5435100 showed unchanged balance and no installed candidate. The receipt retains code revision
+`5c7ec41a9d84e07ce1131dc5c018f3ef76ce806c`, script/tool identities and `checkout_dirty: true`.
+It is automated, state-dependent simulation evidence, not human approval or a clean-clone
+release attestation. The throwaway keys were deleted.
+
+### Historical SDK 26 deployment
+
 The [21 October 2026 run](evidence/atomic-live-helper-testnet-2026-10-21.json) deployed the
-helper as `CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V`, which reads back with
-`EXPECTED_HELPER_HASH`. Both cases were simulated at ledger 5316206 against the candidate
+older SDK 26 helper as `CC4KNOAXRNRQNQKZ4ZOH65W6TTK4DN7FYJIB6VI7KQ6ZOCKFQFVS556V`.
+Its historical receipt carries that build's hash; it does not match the current helper pin
+and must not be used for the updated wallet configuration. Both cases were simulated at
+ledger 5316206 against the candidate
 `CD6RHN5HQ6ZRZ3DTFCNPLDJWPDZXOSWX7TDOYHIWDDUTA6Y5IOVKZQWS`, on the throwaway account
 `CDQLZKNQHQGHZPIS4GATWI2XTLQVEVF47IETQQMWNV3QRGKBA6KD2L24`:
 

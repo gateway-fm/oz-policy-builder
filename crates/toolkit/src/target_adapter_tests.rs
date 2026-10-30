@@ -138,13 +138,15 @@ fn committed_development_registry_derives_the_testnet_router_bounds() {
     let args = &rule.allowed_calls[0].args;
     assert!(matches!(&args[0].constraint, Constraint::LeI128 { max } if max == "1000"));
     assert!(matches!(&args[1].constraint, Constraint::EqI128 { value } if value == "950"));
-    assert!(matches!(args[4].constraint, Constraint::AnyValue));
-    for i in [0, 4] {
-        assert!(
-            matches!(&args[i].provenance, Provenance::AdapterDerived { adapter, code_hash }
-            if adapter == "soroswap-router@1" && *code_hash == router)
-        );
-    }
+    assert!(
+        matches!(&args[4].constraint, Constraint::EqScval { xdr_base64 }
+        if xdr_base64 == &stellar_xdr::ScVal::U64(2000).to_xdr_base64(Limits::none()).unwrap())
+    );
+    assert_eq!(args[4].provenance, Provenance::ObservedExact);
+    assert!(
+        matches!(&args[0].provenance, Provenance::AdapterDerived { adapter, code_hash }
+        if adapter == "soroswap-router@2" && *code_hash == router)
+    );
     let target = rule.context.target_code_hash.as_ref().unwrap();
     assert_eq!(
         (target.hash, target.role, target.on_drift),

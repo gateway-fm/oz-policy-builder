@@ -11,6 +11,8 @@ Section numbers refer to `docs/architecture.md`.
 Tranche 1's record-and-generate release remains distinct from the Phase 2 acceptance outcome.
 The following map describes the integrated implementation in this tree. A
 feature or an automated check is not by itself evidence that the whole milestone is complete.
+The [acceptance crosswalk](TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
+separates the contracted outcome, architecture gaps, pending PRs #95–#99 and Tranche 3.
 
 | Area | Available evidence or implementation | Still required |
 | --- | --- | --- |
@@ -19,11 +21,11 @@ feature or an automated check is not by itself evidence that the whole milestone
 | Account authority | Bounded storage acquisition, authority analysis, live CLI/MCP checks and install intents, alongside transaction preflight and captured-state execution. | Wallet-owned trust/approval and current integration evidence; endpoint observations are not authenticated ledger proofs. |
 | Installed-rule prediction | [Live policy check](LIVE-POLICY-CHECK.md) with verified recognition, a bounded ledger/hash capture, exact configuration/state evidence and modeled spending/call limits. | Fresh wallet recheck and enforce simulation of actual authorization; additional policy/authentication models and live integration evidence. |
 | Live enforcement | The [atomic live helper](ATOMIC-LIVE-HELPER.md), deployed and probed on testnet, and the wallet's [live-enforcement check](POLLYWALLET-INTEGRATION.md#live-enforcement-check): after the owner consents to the exact calls and expiry, an owner passkey installation and the wallet's automation delegate transfer, simulated in enforce mode for the exact amount and one stroop more and validated case by case. Separate signing capabilities keep the delegate's testnet and offline signatures apart, and a replay check after the signatures expire. One automation run on testnet, [22 October 2026](evidence/wallet-live-enforcement-testnet-2026-10-22.json), passed with a virtual-authenticator owner. State-dependent simulation only, for one grant shape. | A run with a human owner's passkey, other grant shapes, and the derived deny suite live. |
-| Wallet installation and revocation | The wallet's [installation](POLLYWALLET-INTEGRATION.md#installation) of a reviewed grant whose four layers all passed, on captured and live evidence at most 360 ledgers old, after the replay check: CLI assembly, independent re-validation in the backend and the browser, a fresh authority recheck, the owner's passkey and one fee-payer submission, recorded only with the account's own `context_rule_added` event, a matching read-back and the policy's marker. Each released entry is a replay obligation until it expires. [Revocation](POLLYWALLET-INTEGRATION.md#revocation) signs `remove_context_rule` and succeeds only with the removal event and the rule reading back absent (#3000); policy cleanup is reported separately. One automation run on testnet, [22 October 2026](evidence/wallet-install-revoke-testnet-2026-10-22.json), installed and revoked a one-call grant with a virtual-authenticator owner. | A run with a human owner's passkey, delegated calls through the wallet, replacement and monitoring, other grant shapes, and installation that needs a separate restoration. |
-| Testnet installation | The default harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. The [subscription mode](WALKTHROUGH-SEP41.md) composes that policy with the pinned reviewed spending-limit policy, and the [Soroswap mode](WALKTHROUGH-PROTOCOLS.md) installs two independent rules separately. Lifecycle scripts observe grant/code configuration, remove each rule and check a post-removal denial. Live W2 and W3 runs record that lifecycle ([testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9), with operator-mode approval and throwaway keys or an exportable virtual passkey. | A live lifecycle run of the default mode, protected human approval of the [wallet's install and revoke flow](POLLYWALLET-INTEGRATION.md#installation), safe reconfiguration, and full call-surface monitoring. The default installer refuses composed rules; the subscription mode refuses any composition but its own. |
+| Wallet installation and revocation | The wallet's [installation](POLLYWALLET-INTEGRATION.md#installation) of a reviewed grant whose four layers all passed, on captured and live evidence at most 360 ledgers old, after the replay check: CLI assembly, independent re-validation in the backend and the browser, a fresh authority recheck, the owner's passkey and one fee-payer submission, recorded only with the account's own `context_rule_added` event, a matching read-back and the policy's marker. Each released entry is a replay obligation until it expires. [Revocation](POLLYWALLET-INTEGRATION.md#revocation) signs `remove_context_rule` and succeeds only with the removal event and the rule reading back absent (#3000); policy cleanup is reported separately. One automation run on testnet, [22 October 2026](evidence/wallet-install-revoke-testnet-2026-10-22.json), installed and revoked a one-call grant with a virtual-authenticator owner. | A run with a human owner's passkey, delegated calls through the wallet, testnet evidence for the implemented session-local revoke-first replacement, monitoring, other grant shapes, and installation that needs a separate restoration. |
+| Testnet installation | The default harness installs one generated scope+count policy on a fresh pinned account, with a delegated or software-passkey owner; its optional authority path takes a compatible external CLI. The [subscription mode](WALKTHROUGH-SEP41.md) composes that policy with the pinned reviewed spending-limit policy, and the [Soroswap mode](WALKTHROUGH-PROTOCOLS.md) installs two independent rules separately. Lifecycle scripts observe grant/code configuration, remove each rule and check a post-removal denial. Live W2 and W3 runs record that lifecycle ([testnet evidence](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9), with operator-mode approval and throwaway keys or an exportable virtual passkey. | Current lifecycle evidence, an actual user's decisions when claiming human approval of the [wallet's install and revoke flow](POLLYWALLET-INTEGRATION.md#installation), replacement and call-surface monitoring integration. The default installer refuses composed rules; the subscription mode refuses any composition but its own. |
 | Run evidence | Checkout/CLI provenance and an allowlisted summary of available artifacts, successful transactions and simulation denials. The native-transfer wrapper now runs RPC recording, synthesis, reference checks and artifact reproduction before installation. | Reviewed current runs at the delivered revision. An export does not attest to local files or complete milestone acceptance. |
 | Walkthroughs | Blend, subscription and Soroswap example inputs and local fixtures; executable native-SAC, composed SEP-41 subscription, [Soroswap two-rule](WALKTHROUGH-PROTOCOLS.md) and Blend claim harness flows; the Blend flow opens and withdraws its own USDC supply position, with controlled live runs. The Soroswap flow now takes its router bounds from the development registry's adapter binding and its floor and transfer cap from an operator file; a [controlled live run](TESTNET-EVIDENCE-TRANCHE-2.md#14-controlled-soroswap-adapter-run-26-october-2026) completed with that binding. | Reviewed current live walkthrough evidence, including relevant denials, wallet approval and adapter/code-hash evidence. |
-| Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. [Self-hosting](SELF-HOSTING.md) deployment configuration behind a TLS proxy, and a [disposable build-worker mode](ISOLATED-BUILDS.md) that isolates each compilation. | Per-client authorization, per-tool and per-client quotas, request cancellation, host provisioning, a published image, and a deployed testnet endpoint with operational evidence. |
+| Hosted MCP | Streamable HTTP with bearer authentication, a request quota, bounded bodies, shared build slots and separate shared authority-read capacity. [Self-hosting](SELF-HOSTING.md) deployment configuration behind a TLS proxy, and a [disposable build-worker mode](ISOLATED-BUILDS.md) that isolates each compilation. | Per-tool quotas, request cancellation, host provisioning, a published image, and a deployed testnet endpoint with operational evidence. Document the shared-token/trusted-client boundary; per-client customer accounts and billing are not supplied by this package. |
 | Verification and demonstration | Phase 1 gates and the [Phase 2 gate and guide](TRANCHE-2-VERIFICATION.md). | The complete acceptance run, public demonstration and video. |
 
 [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) distinguishes historical
@@ -61,6 +63,9 @@ that authorization under any rule that matches the policy's address: `Default` o
 | Direct calls under the grant's own rule and rule 0 | `grant_rule_cannot_reach_its_policy_and_rule_zero_is_listed_authority` | The grant's `CallContract(target)` rule cannot reach the policy: the account refuses with `UnvalidatedContext`. The owner's `Default` rule 0 alone can remove, recreate and spend the grant's state. Before installation, the call-surface check lists rule 0 with its signer. |
 | Direct calls under a rule scoped to the policy's address | `policy_address_rule_can_uninstall_and_call_surface_refuses_it`, `policy_address_rule_held_by_another_key_is_listed_with_its_signer` | Held by the agent's key, the rule lets the agent alone remove the grant's state, which then denies as `MissingState`. The agent can also recreate it with a fresh cap, and spend a call with no transfer while the policy still publishes its enforced event. The check refuses that rule with `E_DELEGATE_HAS_AUTHORITY`. Held by another key, the rule is listed with that signer and the agent cannot use it. |
 | Direct calls under rules scoped to other contracts | `alternate_contract_rule_cannot_reach_policy_methods` | The account refuses all three methods under a rule for an unrelated contract and under an unlimited agent rule for the target. The check lists the first as a coverage exclusion and refuses the second as an overlap. |
+| Weak account-management authority | `weak_account_rule_can_create_a_policy_reset_rule` | The call-surface check refuses the agent's account-address rule. Deliberately bypassing that refusal shows that the agent can create a policy-address rule, remove exhausted policy state and reinstall a fresh cap. The account-address rule itself still cannot directly call the policy. |
+| Grant revival through weak management | `weak_management_can_revive_an_expired_rule_without_resetting_its_counter` | The agent can extend an expired target rule through a separately live account-management rule. Authorization resumes before the policy's compiled expiry, preserving the used count. The original management authority is refused by the call-surface check. |
+| Overlapping real-account grants | `overlapping_real_account_grants_have_independent_caps` | Bypassing the check's overlap refusal installs two rule IDs on the same policy instance. Each has its own cap; exhausting or removing one does not refresh the other. These are signed account authorization tests, not token-transfer executions. |
 | Missing-state denial | `differential.rs` `missing_state_denies_in_both`; `ttl.rs` `remaining_calls_refuses_an_installation_whose_marker_is_gone`; the policy-address test above | Absent state denies; it never reads as zero. |
 | Install-only initialization, double install | `differential.rs` `install_is_the_only_initializer_and_double_install_fails` | A second install is refused with `AlreadyInstalled`. |
 | TTL and max-TTL bounds | `ttl.rs` (11 tests) | Conditional extension, the clamp to the compiled expiry and the network maximum, no rent on reads, denials or uninstall. |
@@ -74,8 +79,9 @@ that authorization under any rule that matches the policy's address: `Default` o
 
 Not covered:
 
-- **A reviewed policy in a composition.** The suites compose two generated instances. No
-  reviewed policy Wasm is pinned (item 3 below).
+- **A reviewed policy in a composition.** The state suites compose two generated instances.
+  The reviewed spending-policy Wasm is pinned and used by the live subscription walkthrough;
+  that does not establish its offline composed account-Wasm execution here (item 3 below).
 - **Other generated policies and accounts.** The state suite runs one generated fixture
   against one account code hash.
 - **The live check end to end.** The direct-call tests feed the scan, projection and pure
@@ -87,12 +93,13 @@ Not covered:
   survives idle depends on the TTLs its entries were deployed or extended with.
 - **The authority-surface tests in §8.** Apart from the rules above, none of them is executed
   through the account here. They include:
-  - weak account-address rules creating a policy-address rule, adding a signer or removing a
-    policy;
-  - expired rules revived through `update_context_rule_valid_until`;
+  - weak account-address rules adding a signer to an existing protected rule or removing its
+    policy (creation of a policy-address rule is covered above);
+  - expired weak management or policy-address rules revived through
+    `update_context_rule_valid_until` (target-grant revival is covered above);
   - archived rules restored and used in the same invocation;
   - wrappers with custom or unknown management methods;
-  - reconfiguration overlap.
+  - the complete reconfiguration workflow (independent overlapping rule-ID budgets are covered above).
 
   The call-surface core's unit tests analyse many of these shapes over constructed states.
 
@@ -168,7 +175,9 @@ The source-reviewed account method inventory and its limits are described in
    observed code is one whose key handling was reviewed from source (compiled in per exact
    hash, like the method inventory) and its signed entry agrees; older binaries refuse the
    version-3 entry's new fields. Version 4 adds one target-adapter binding: the testnet Soroswap
-   router's exact code to `soroswap-router@1`. That binding is a development-registry assertion,
+   router's exact code to `soroswap-router@1`. Version 5 extends v4 and rebinds that router
+   to [`soroswap-router@2`](TARGET-ADAPTERS.md#current-binding-development-registry-version-5),
+   preserving the recorded deadline exactly. Both bindings are development-registry assertions,
    and the router's Wasm was not reproduced from source
    ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
    Its public development signing key
@@ -213,12 +222,14 @@ The source-reviewed account method inventory and its limits are described in
    listing the fields the manifest holds against the ones it does not, so the gap is stated
    rather than left for a reader to find by diffing the document against the struct.
 
-3. **A real reviewed policy wasm at layer 2** (F5d). The blocker is not a dependency bump:
-   `stellar-accounts` 0.7.2 ships `src/policies/*.rs` as *library helpers*, and its
-   `#[contract]` wrappers exist only under `src/*/test/` — so **OpenZeppelin publishes no
-   policy wasm**. Pinning one means building a policy contract from their source and deciding
-   what review status that artifact has. Related: `simple_threshold` and `weighted_threshold`
-   appear in the documentation and never in code.
+3. **Reviewed-policy composition at the account-Wasm layer** (F5d). The spending-limit
+   example is already built from the pinned OpenZeppelin source, recognized by its exact
+   `OZ_SPENDING_LIMIT_POLICY_WASM` hash and used by the [subscription walkthrough](WALKTHROUGH-SEP41.md).
+   This is our source build, not an upstream-published Wasm artifact. The remaining gap is
+   execution of that reviewed policy together with the generated policy in the offline
+   account-Wasm dry-run and its stateful mutation suite. A hash pin or separate spending-model
+   parity check cannot establish that composition. Broader threshold-policy composition is
+   also outside the implemented model.
 
 4. **Encoded-literal rendering** — template-pack v2, and one deliberate artifact-hash break.
 

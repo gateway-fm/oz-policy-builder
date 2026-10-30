@@ -1,3 +1,4 @@
+import { xdr } from '@stellar/stellar-sdk';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -1617,4 +1618,104 @@ test('a derived-denial journal without its spec cannot be rechecked and is refus
   const { dir } = await w2Derived(t);
   rmSync(join(dir, 'spec.json'));
   assert.throws(() => exportEvidence(dir), /invalid or inconsistent evidence record/);
+});
+
+function withAccountReports(t) {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS), dir = withPipeline(t, run);
+  const network = createHash('sha256').update('Test SDF Network ; September 2015').digest('hex');
+  const reports = [ROOT_POLICY, CHILD_POLICY].map((policy_address, rule_index) => ({ rule_index,
+    run_hash: HASH, suite_hash: HASH, policy_address, policy_code_hash: wasmHash,
+    original_permitted: true, reverted_denials: 5, complete: false }));
+  const summary = { schema_version: 1, account: C, spec_hash: HASH,
+    execution: 'offline_synthetic_policy_addresses_and_proposed_rule_ids', source_ledger: 100, reports, private_note: SENTINEL };
+  const raw = reports.map((e) => ({ schema: 'ozpb:dry-run:v1', run_hash: HASH, complete: false,
+    artifact_verification: { matches: true }, binding: { spec_hash: HASH, account_address: C,
+      account_code_hash: run.account_code_hash, registry_snapshot_root: HASH, network_id: network,
+      rule_index: e.rule_index, candidate_context_rule_id: e.rule_index + 1, suite_hash: HASH },
+    layers: ['reference', 'account_wasm', 'captured_target', 'live_enforcement'].map((id, i) => ({ id,
+      status: i < 2 ? 'passed' : 'unavailable', writes_committed: false, cases: i === 1 ? 6 : 0,
+      ...(i === 1 ? { execution: { run_hash: HASH, suite_hash: HASH, source_ledger: 100,
+        source_network_id: network, execution_network_id: 'cd'.repeat(32), policy_address: e.policy_address,
+        policy_code_hash: wasmHash, cases: Array.from({ length: 6 }, (_, j) => ({ class: j ? 'arg_equality' : 'original',
+          expected_permit: j === 0, permitted: j === 0, agree: true, state_unchanged: j > 0,
+          refused_by: j ? 'policy' : null, refusal_code: j ? 6 : null, label: SENTINEL })) } } : {}) })),
+    acceptance: { required_reverted_denials: 5, original_permitted: true, meets_minimum: true }, private_note: SENTINEL }));
+  const save = () => {
+    writeFileSync(join(dir, 'account-dry-runs.json'), JSON.stringify(summary));
+    raw.forEach((r, i) => writeFileSync(join(dir, `account-dry-run-${i}.json`), JSON.stringify(r)));
+  };
+  save(); return { dir, summary, raw, save };
+}
+test('exports bound offline account report identities and counts without private labels', (t) => {
+  const f = withAccountReports(t), report = exportEvidence(f.dir);
+  assert.equal(report.account_dry_runs.status, 'recorded');
+  assert.deepEqual(report.account_dry_runs.reports.map((r) => r.reverted_denials), [5, 5]);
+  assert.equal(report.account_dry_runs.reports[1].complete, false);
+  assert.ok(report.artifacts.account_dry_run_rule_1.sha256);
+  assert.ok(!JSON.stringify(report).includes(SENTINEL));
+});
+for (const [name, change] of [
+  ['invented count', (f) => { f.summary.reports[1].reverted_denials = 6; }],
+  ['report from another rule', (f) => { f.raw[1].binding.rule_index = 0; }],
+  ['different source ledger', (f) => { f.raw[1].layers[1].execution.source_ledger++; }],
+  ['different policy code', (f) => { f.raw[1].layers[1].execution.policy_code_hash = HASH; }],
+  ['claimed live enforcement', (f) => { f.raw[1].layers[3].status = 'passed'; }],
+  ['denial changed state', (f) => { f.raw[1].layers[1].execution.cases[1].state_unchanged = false; }],
+  ['duplicate policy identities', (f) => { f.summary.reports[1].policy_address = ROOT_POLICY;
+    f.raw[1].layers[1].execution.policy_address = ROOT_POLICY; }],
+]) test(`account report export refuses ${name}`, (t) => {
+  const f = withAccountReports(t); change(f); f.save(); assert.throws(() => exportEvidence(f.dir));
+});
+
+for (const [name, change] of [
+  ['installed code differs from gated artifacts', (r) => { for (const e of r.walkthrough.bundle.entries) e.wasm_hash = '98'.repeat(32); }],
+  ['installed spec differs from gated spec', (r) => { r.walkthrough.bundle.spec_hash = '98'.repeat(32); }],
+  ['installed entry spec differs from gated spec', (r) => { r.walkthrough.bundle.entries[1].spec_hash = '98'.repeat(32); }],
+]) test(`account reports refuse ${name}`, (t) => {
+  const f = withAccountReports(t);
+  const path = join(f.dir, 'run.json'), run = JSON.parse(readFileSync(path));
+  change(run); writeFileSync(path, JSON.stringify(run));
+  assert.throws(() => exportEvidence(f.dir));
+});
+
+function exactDeadlineEvidence(t, change = () => {}) {
+  const run = protocolFixture(ADAPTER_SWAP_STEPS), w = run.walkthrough;
+  w.operator_decisions.schema = 'ozpb-soroswap-operator-decisions/v2';
+  w.operator_decisions.adapter_deadline = 'keep_recorded_deadline';
+  w.controls.control_set = 4;
+  const replace = (old, invocation) => ['deadline_plus_one', 'maximum_deadline'].map((name) => ({
+    ...old, name, ...(invocation ? { control: name, status: 'verified_denial' } : { result: 'verified_denial' }),
+    enforcer: ROOT_POLICY, code: 6 }));
+  w.controls.steps = w.controls.steps.flatMap(s => s.name === 'any_deadline' ? replace(s, false) : [s]);
+  w.invocations = w.invocations.flatMap(s => s.name === 'any_deadline' ? replace(s, true) : [s]);
+  const pipeline = structuredClone(protocolPipeline); pipeline.adapter.name = 'soroswap-router@2';
+  pipeline.high_blast_radius = []; pipeline.deadline_unix = String(w.deadline);
+  const spec = structuredClone(JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url))).synthesis.spec);
+  spec.registry_snapshot = HASH; spec.smart_account.address = C;
+  spec.rules[0].allowed_calls[0].args[4].c.eq_scval.xdr_base64 = xdr.ScVal.scvU64(BigInt(w.deadline)).toXDR('base64');
+  change({ run, pipeline, spec });
+  const dir = withPipeline(t, run, pipeline); writeFileSync(join(dir, 'spec.json'), JSON.stringify(spec));
+  return dir;
+}
+test('v2 deadline evidence exports the exact cutoff and both policy denials', (t) => {
+  const report = exportEvidence(exactDeadlineEvidence(t));
+  assert.equal(report.walkthrough.operator_decisions.deadline_unix, '1');
+  assert.equal(report.protocol_pipeline.deadline_unix, '1');
+  assert.equal(report.protocol_pipeline.adapter.name, 'soroswap-router@2');
+  assert.deepEqual(report.protocol_pipeline.high_blast_radius, []);
+  assert.equal(report.walkthrough.controls.control_set, 'adapter_exact_deadline_controls');
+  for (const name of ['deadline_plus_one', 'maximum_deadline']) {
+    const step = report.walkthrough.controls.steps.find(s => s.name === name);
+    assert.equal(step.result, 'verified_denial'); assert.equal(step.code, 6);
+  }
+});
+for (const [name, change] of [
+  ['v1 adapter', ({ pipeline }) => { pipeline.adapter.name = 'soroswap-router@1'; }],
+  ['v1 control set', ({ run }) => { run.walkthrough.controls.control_set = 3; }],
+  ['pipeline cutoff changed', ({ pipeline }) => { pipeline.deadline_unix = '2'; }],
+  ['spec cutoff changed', ({ spec }) => { spec.rules[0].allowed_calls[0].args[4].c.eq_scval.xdr_base64 = xdr.ScVal.scvU64(2n).toXDR('base64'); }],
+  ['spec any-value override', ({ spec }) => { spec.rules[0].allowed_calls[0].args[4].c = 'any_value'; }],
+  ['denial relabeled permit', ({ run }) => { run.walkthrough.controls.steps.find(s => s.name === 'maximum_deadline').result = 'verified_disclosed_permission'; }],
+]) test(`v2 evidence rejects ${name}`, (t) => {
+  assert.throws(() => exportEvidence(exactDeadlineEvidence(t, change)), /invalid or inconsistent/);
 });

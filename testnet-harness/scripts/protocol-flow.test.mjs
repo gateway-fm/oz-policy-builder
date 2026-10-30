@@ -92,21 +92,20 @@ for (const [mode, pattern, ran] of [
   });
 }
 
-test('protocol pipeline records the adapter identity and flags its open deadline as high blast radius', (t) => {
+test('protocol pipeline records the adapter identity with an exact deadline', (t) => {
   const f = fixture(t);
   f.execute();
   const pipeline = JSON.parse(readFileSync(join(f.dir, 'protocol-pipeline.json')));
-  assert.deepEqual(pipeline.adapter, { name: 'soroswap-router@1', rule_index: 0,
+  assert.deepEqual(pipeline.adapter, { name: 'soroswap-router@2', rule_index: 0,
     code_hash: '4b95bbf9caec2c6e00c786f53c5f392c2fcdb8435ac0a862ab5e0645eb65824c',
     registry_root: capture.synthesis.spec.registry_snapshot, registry: 'development_root' });
-  assert.deepEqual(pipeline.high_blast_radius, [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4,
-    constraint: 'any_value', provenance: 'adapter_derived', blast_radius: 'high' }]);
+  assert.deepEqual(pipeline.high_blast_radius, []);
 });
 
 test('a W3 synthesis without the adapter stops before any artifact is generated', (t) => {
   const f = fixture(t);
   const args = f.files['synthesize.json'].spec.rules[0].allowed_calls[0].args;
-  args[4] = { i: 4, c: { eq_scval: { xdr_base64: 'AAAABQAAAABq1087' } }, prov: 'observed_exact' };
+  args[0].prov = 'observed_exact';
   assert.throws(f.execute, /allowed tuple/);
   assert.deepEqual(commands(f), ['record', 'synthesize']);
   assert.equal(existsSync(join(f.dir, 'protocol-pipeline.json')), false);

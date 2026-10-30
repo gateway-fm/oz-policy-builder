@@ -1,3 +1,4 @@
+//! Native account-library 0.8 coverage; pinned account-Wasm compatibility is a separate gate.
 //! Partial contract-integration evidence for the generated Soroswap swap fixture.
 //!
 //! The harness derives mutations from this fixture's constraints. Each case runs through

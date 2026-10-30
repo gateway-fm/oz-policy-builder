@@ -1,3 +1,4 @@
+import { xdr } from '@stellar/stellar-sdk';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -9,7 +10,7 @@ function fixture() {
   const f = structuredClone(capture);
   // This is a validation fixture, never evidence of an executed swap. The preserved capture
   // itself is an unsigned simulation; the execution rejection below tests that boundary. Its
-  // spec is the adapter-derived shape the CLI synthesizes under the version-4 development registry.
+  // spec is the adapter-derived shape the CLI synthesizes under the version-5 development registry.
   f.record.bundle.execution = 'executed_success';
   f.run = { network: 'Test SDF Network ; September 2015', account: f.plan.account,
     account_code_hash: f.synthesis.spec.smart_account.observed_code_hash,
@@ -58,7 +59,7 @@ for (const mutation of ['drop child rule', 'extra rule', 'reorder rules', 'floor
     if (mutation === 'reorder rules') spec.rules.reverse();
     if (mutation === 'floor removed') spec.rules[0].allowed_calls[0].args[1].c = { any_value: null };
     if (mutation === 'path broadened') spec.rules[0].allowed_calls[0].args[2].c = { any_value: null };
-    if (mutation === 'deadline narrowed') Object.assign(spec.rules[0].allowed_calls[0].args[4], { c: { eq_scval: { xdr_base64: 'AAAABQAAAABq1087' } }, prov: 'observed_exact' });
+    if (mutation === 'deadline narrowed') Object.assign(spec.rules[0].allowed_calls[0].args[4], { c: 'any_value', prov: ADAPTED });
     if (mutation === 'deadline as a user decision') spec.rules[0].allowed_calls[0].args[4].prov = { user_widened: { intent: 'any deadline', blast_radius: 'high' } };
     if (mutation === 'input cap raised') spec.rules[0].allowed_calls[0].args[0].c.le_i128.max = '1000001';
     if (mutation === 'adapter of other code') spec.rules[0].allowed_calls[0].args[0].prov.adapter_derived.code_hash = 'ab'.repeat(32);
@@ -92,7 +93,7 @@ test('router input bound comes from the adapter', () => {
   const spec = validateProtocolSynthesis(f.synthesis, f.run, inputs, f.synthesis.spec.registry_snapshot);
   const [input, , , , deadline] = spec.rules[0].allowed_calls[0].args;
   assert.deepEqual(input, { i: 0, c: { le_i128: { max: f.plan.amount_in } }, prov: ADAPTED });
-  assert.deepEqual(deadline, { i: 4, c: 'any_value', prov: ADAPTED });
+  assert.deepEqual(deadline, capture.synthesis.spec.rules[0].allowed_calls[0].args[4]);
   assert.deepEqual([spec.rules[0].context.target_code_hash.role, spec.rules[0].context.target_code_hash.on_drift],
     ['adapter_required', 'refuse']);
   // The shape the harness used to write itself: its own input cap and an evidence-only hash.
@@ -128,14 +129,13 @@ test('protocol inputs take the floor and transfer cap from the journaled operato
   }
 });
 
-test('the adapter identity and its high-blast-radius deadline are read from the validated spec', () => {
+test('the adapter identity and its fixed deadline are read from the validated spec', () => {
   const f = fixture();
   const inputs = protocolInputs(f.run, f.record);
   const spec = validateProtocolSynthesis(f.synthesis, f.run, inputs, f.synthesis.spec.registry_snapshot);
   assert.deepEqual(adapterDisclosure(spec), {
     adapter: { name: ROUTER_ADAPTER, code_hash: PROTOCOL_TARGETS.router_code, rule_index: 0 },
-    high_blast_radius: [{ rule_index: 0, fn: 'swap_exact_tokens_for_tokens', arg_index: 4, constraint: 'any_value',
-      provenance: 'adapter_derived', blast_radius: 'high' }],
+    high_blast_radius: [],
   });
   const noAdapter = structuredClone(spec);
   noAdapter.rules[0].allowed_calls[0].args[4] = { i: 4, c: { eq_scval: { xdr_base64: 'AAAABQAAAABq1087' } }, prov: 'observed_exact' };
@@ -155,4 +155,15 @@ test('a transfer cap above the recorded input is a high-blast-radius decision', 
   assert.deepEqual(radius(capture.plan.amount_in), [['swap_exact_tokens_for_tokens', 'medium'], ['transfer', 'medium']]);
   assert.deepEqual(radius('1000001'), [['swap_exact_tokens_for_tokens', 'medium'], ['transfer', 'high']]);
   assert.deepEqual(radius('10000000'), [['swap_exact_tokens_for_tokens', 'medium'], ['transfer', 'high']]);
+});
+
+for (const value of [1792495420n, (1n << 64n) - 1n]) test(`W3 refuses a changed approved deadline ${value}`, () => {
+  const f = fixture(), inputs = protocolInputs(f.run, f.record);
+  f.synthesis.spec.rules[0].allowed_calls[0].args[4].c.eq_scval.xdr_base64 = xdr.ScVal.scvU64(value).toXDR('base64');
+  assert.throws(() => validateProtocolSynthesis(f.synthesis, f.run, inputs, f.synthesis.spec.registry_snapshot), /allowed tuple/);
+});
+test('current W3 refuses legacy open-deadline approval', () => {
+  const f = fixture(); f.plan.operator_decisions.schema = 'ozpb-soroswap-operator-decisions/v1';
+  f.plan.operator_decisions.adapter_deadline = 'accept_any_value_high_blast_radius';
+  assert.throws(() => protocolInputs(f.run, f.record), /schema/);
 });

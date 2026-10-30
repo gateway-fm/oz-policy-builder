@@ -3,8 +3,9 @@
 # Separate from `ci.yml` on purpose. A cold policy build is ~6 minutes on a fast machine and
 # longer on a hosted runner, and it is the *only* thing here that needs `stellar contract
 # build`. Paying that on every push would slow every PR for a property that changes only when
-# codegen, the pinned SDK, or the toolchain changes — so it runs nightly and on demand, and
-# `ci.yml` keeps fast, toolchain-free feedback.
+# codegen, the pinned SDK, or the toolchain changes. It runs nightly and on demand; a
+# path-filtered PR trigger also checks pinned-account/policy compatibility before merge.
+# Ordinary `ci.yml` jobs keep the faster, toolchain-free feedback.
 #
 # It also exercises the **live acquisition path**, which no offline gate can cover and which
 # was silently broken for three weeks: the RPC's `getLedgerEntries` puts `LedgerEntryData` in
@@ -26,10 +27,40 @@
 name: nightly live
 
 on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/evaluator/**'
+      - 'crates/codegen/**'
+      - 'crates/policy-spec/**'
+      - 'crates/build-runner/**'
+      - 'crates/harness/**'
+      - 'crates/domain/**'
+      - 'crates/toolkit/src/dry_run*'
+      - 'crates/cli/src/dry_run/**'
+      - 'contracts/**'
+      - 'execution-runtime/**'
+      - 'rust-toolchain.toml'
+      - 'scripts/test-pinned-account-authorization.sh'
+      - 'scripts/verify-pinned-upstream.sh'
+      - 'scripts/recorded-build-inputs.sh'
+      - 'scripts/check-build-input-pins.sh'
+      - 'scripts/test-native-execution.sh'
+      - 'scripts/test-atomic-live-helper.sh'
+      - 'scripts/test-captured-target.sh'
+      - 'scripts/*-fixture.py'
+      - '.github/workflows/nightly-live.yml'
   schedule:
     # 03:17 UTC — off the hour, so it does not pile up with everyone else's cron.
     - cron: "17 3 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      helper_probe:
+        description: "Deploy and probe the reviewed helper on testnet with throwaway automation keys"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -44,7 +75,7 @@ env:
   #
   #     $ stellar contract info meta --wasm <artifact>
   #      • rsver: 1.91.1
-  #      • rssdkver: 26.1.0#175aa41306f383057a8cdfc84b68d931664fc34e
+  #      • rssdkver: 28.0.0#48d506712f964094d14176e2f0b02afcd1054567
   #      • cliver: 27.0.0#5a7c5fe76530bf4248477ac812fc757146b98cc4
   #
   # `cliver` lands *inside* the wasm, so it is part of the wasm hash — both halves of it, version
@@ -79,6 +110,9 @@ env:
 
 jobs:
   wasm:
+    # PRs exercise the pinned-account compatibility job only; live writes remain opt-in
+    # dispatch/scheduled work, with no user signing material in either mode.
+    if: github.event_name != 'pull_request'
     name: wasm build + byte-reproducibility (real stellar toolchain)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -102,8 +136,9 @@ jobs:
           set -euo pipefail
           asset="stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           url="https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${asset}"
-          curl -sSfL "$url" -o "$asset"
-          echo "${STELLAR_CLI_SHA256}  ${asset}" | sha256sum -c -
+          archive="$RUNNER_TEMP/$asset"
+          curl -sSfL "$url" -o "$archive"
+          echo "${STELLAR_CLI_SHA256}  ${archive}" | sha256sum -c -
 
           # Its own directory, not /usr/local/bin. Extracting alongside whatever the runner image
           # ships leaves which binary wins to PATH order, and a preinstalled `stellar` reporting
@@ -112,7 +147,7 @@ jobs:
           # measuring a CLI this job never verified. A dedicated directory placed first removes
           # the ambiguity instead of testing for it.
           mkdir -p "${RUNNER_TEMP}/stellar-cli"
-          tar -xzf "$asset" -C "${RUNNER_TEMP}/stellar-cli" stellar
+          tar -xzf "$archive" -C "${RUNNER_TEMP}/stellar-cli" stellar
           # `$GITHUB_PATH` takes effect for *subsequent* steps, not this one, so the assertions
           # below invoke the extracted binary by absolute path.
           echo "${RUNNER_TEMP}/stellar-cli" >> "$GITHUB_PATH"
@@ -214,6 +249,24 @@ jobs:
       - name: real-compile tests (normally #[ignore]d)
         run: cargo test -p ozpb-build-runner -- --ignored --test-threads=1
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+      - name: offline walkthrough report integration dependencies
+        run: |
+          npm ci --prefix testnet-harness/scripts
+          npm ci --prefix wallet
+      - name: offline walkthrough CLI and native worker
+        run: |
+          cargo build --locked -p ozpb-cli
+          cargo build --locked --manifest-path execution-runtime/Cargo.toml
+      - name: real Blend and Soroswap account-Wasm report gate (offline)
+        env:
+          OZPB_PROTOCOL_DRY_RUN_E2E: '1'
+          OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
+          OZPB_NATIVE_WORKER: ${{ github.workspace }}/execution-runtime/target/debug/ozpb-execution-runtime
+        run: node --test testnet-harness/scripts/protocol-dry-run.real.test.mjs
+
       # The Tranche-1 outcome, executed against live testnet from scratch: deploy an OZ smart
       # account, record a transfer's authorization, synthesize, generate, compile. This is the
       # only check that touches the network, so it is the only one that can catch acquisition
@@ -284,13 +337,14 @@ jobs:
           set -euo pipefail
           asset="stellar-cli-${STELLAR_CLI_VERSION}-aarch64-apple-darwin.tar.gz"
           url="https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${asset}"
-          curl -sSfL "$url" -o "$asset"
+          archive="$RUNNER_TEMP/$asset"
+          curl -sSfL "$url" -o "$archive"
           # macOS has `shasum`, not `sha256sum`.
-          echo "${STELLAR_CLI_SHA256_AARCH64_APPLE_DARWIN}  ${asset}" | shasum -a 256 -c -
+          echo "${STELLAR_CLI_SHA256_AARCH64_APPLE_DARWIN}  ${archive}" | shasum -a 256 -c -
 
           # Its own directory placed first on PATH, as in the `wasm` job.
           mkdir -p "${RUNNER_TEMP}/stellar-cli"
-          tar -xzf "$asset" -C "${RUNNER_TEMP}/stellar-cli" stellar
+          tar -xzf "$archive" -C "${RUNNER_TEMP}/stellar-cli" stellar
           # `$GITHUB_PATH` takes effect for *subsequent* steps, not this one, so the assertions
           # below invoke the extracted binary by absolute path.
           echo "${RUNNER_TEMP}/stellar-cli" >> "$GITHUB_PATH"
@@ -337,5 +391,46 @@ jobs:
           restore-keys: |
             pinned-account-auth-${{ runner.os }}-${{ runner.arch }}-cli${{ env.STELLAR_CLI_VERSION }}-
 
+      # Print independently built fixture identities before the strict authorization gate.
+      # These are diagnostics for reviewing a dependency migration, never adopted as pins.
+      # The following gate still compares against the reviewed constants in the tests.
+      - name: source fixture Wasm identities
+        run: |
+          set -euo pipefail
+          stellar contract build --locked --manifest-path contracts/authorized-target-fixture/Cargo.toml \
+            --package ozpb-authorized-target-fixture
+          stellar contract build --locked --manifest-path contracts/atomic-live-helper/Cargo.toml \
+            --package ozpb-atomic-live-helper
+          shasum -a 256 contracts/target/wasm32v1-none/release/ozpb_authorized_target_fixture.wasm
+          shasum -a 256 contracts/target/wasm32v1-none/release/ozpb_atomic_live_helper.wasm
+
       - name: pinned account authorization and signed target fixture
         run: bash scripts/test-pinned-account-authorization.sh
+
+
+      - name: Node for optional testnet helper probe
+        if: github.event_name == 'workflow_dispatch' && inputs.helper_probe
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: optional reviewed-helper testnet probe (automation, no human approval)
+        if: github.event_name == 'workflow_dispatch' && inputs.helper_probe
+        env:
+          OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
+        run: |
+          set -euo pipefail
+          npm ci --prefix testnet-harness/scripts --no-audit --no-fund
+          npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
+          cargo build --locked -p ozpb-cli
+          node testnet-harness/scripts/deploy-live-helper.mjs \
+            --evidence "$RUNNER_TEMP/atomic-live-helper-sdk28.json"
+          # Only the probe's explicit public receipt goes to the log. No run-directory
+          # upload: it contains more material than the allowlisted receipt.
+          python3 - "$RUNNER_TEMP/atomic-live-helper-sdk28.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as file:
+              receipt = json.load(file)
+          print("OZPB_PUBLIC_HELPER_EVIDENCE=" + json.dumps(receipt, separators=(",", ":")))
+          PY

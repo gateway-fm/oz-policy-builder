@@ -636,9 +636,11 @@ impl GeneratedPolicy {
 
 ### 4.5 Dry-run harness (`crates/harness`)
 
-> **Scope: Tranche 2.** Layer-1 reference evaluation and a golden generated-contract
-> comparison are present. The complete four-layer dry-run described below remains scheduled;
-> present evidence must not be read as a full dry-run.
+> **Scope: Tranche 2.** Reference evaluation, native differential checks and real
+> account-Wasm/captured-target execution are implemented. The wallet combines all four layers
+> only for its supported native-transfer shape; other shapes retain explicit unavailable
+> layers. Read the [acceptance crosswalk](TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
+> and [scope map](SCOPE.md), rather than treating this design as general execution coverage.
 
 Trust is earned by demonstrated permit/deny behavior. The harness produces **evidence, not
 proof**: mutation testing shows tested cases behave correctly; it cannot show that every
@@ -792,7 +794,12 @@ policy."*
 
 ### 4.8 Wallet integration (`wallet/`)
 
-> **Scope: Tranche 2.** Wallet integration is a second-milestone deliverable. The authority-surface check, the advisory install steps built on it and the installed-rule check are implemented (`check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction`, `check_against_policy`); the rest of this section, including the wallet install flow that depends on them, is intended design. [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md) states what the current integration actually supports.
+> **Scope: Tranche 2.** Authority/intent/assembly operations, supported wallet dry-run and
+> live checks, installation and revocation are implemented. This section describes the design;
+> it is not a claim that every account, policy or target shape is supported. Replacement and
+> monitoring updates are prepared in PRs #97–#98. [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md)
+> describes the integrated flow, and the [acceptance crosswalk](TRANCHE-2-VERIFICATION.md#integrated-code-versus-pending-pull-requests)
+> distinguishes pending code from delivered-revision evidence.
 
 Target stack (the current OZ smart-account generation):
 
@@ -1419,7 +1426,13 @@ not** — they can encode private, never-submitted intentions. Controls:
 
 ## 7. The three end-to-end walkthroughs
 
-> **Scope: Tranche 2.** All three walkthroughs are second-milestone deliverables, and the scenarios below define the target. Controlled testnet harness runs of W2 and W3 are recorded in [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md), sections 8 and 9, with operator-mode approval rather than a wallet's, and W3 with fixed harness widenings rather than a reviewed adapter. W1 has not run. [SCOPE.md](SCOPE.md) lists what remains.
+> **Scope: Tranche 2.** The scenarios below define the walkthrough targets. Historical
+> controlled testnet runs exist for W1, W2 and W3. Later W3 evidence uses the code-hash-bound
+> router adapter with a development-registry assertion; earlier runs used harness widenings.
+> These are automation/operator-mode observations, not a human wallet approval.
+> [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) preserves each run's revision and
+> limits. Fresh delivered-revision reports and the [open architecture gaps](TRANCHE-2-VERIFICATION.md#deviations-and-open-gaps-against-the-phase-2-design)
+> still need review.
 
 Each ships as documentation + fixtures + demo, and doubles as a permanent regression suite.
 Each walkthrough states its trust boundary (§6.1) and, where applicable, ships a

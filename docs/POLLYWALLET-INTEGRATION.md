@@ -19,8 +19,10 @@ the owner can also consent to a [live-enforcement check](#live-enforcement-check
 enforce-mode simulations on testnet, never submitted. When all four layers passed on recent
 evidence and the live check's signatures expired unused, the owner can [install](#installation)
 the reviewed grant with one passkey-signed transaction and later [revoke](#revocation) it with
-another. Replacement and monitoring remain unavailable. A virtual authenticator's signature is
-automation evidence, not a human acceptance decision.
+another. [Revoke-first replacement](#revoke-first-replacement) is available for verified
+session-local grants, and [on-demand monitoring](#on-demand-installed-grant-monitoring) is
+available within the scope below. A virtual authenticator's signature is automation evidence,
+not a human acceptance decision.
 
 ## Apply to the supported upstream revision
 
@@ -484,8 +486,9 @@ and runs no local execution check alongside it.
 ## Installation
 
 Installation needs the native worker and the live helper, so that all four layers can run. It is
-offered for one review at a time, and once per backend session. Status reports `install: true`
-only while some review has a complete report and no installation was attempted in this backend,
+offered for one review at a time, with one installation allowance. Verified revoke-first
+replacement can open the next allowance. Status reports `install: true` only while some review
+has a complete report and this allowance has not been spent,
 and `installOpensAfterLedger` while an earlier released signature is still valid. Nothing is
 released or spent while the fee payer cannot submit, for example after an uncertain result.
 Starting another recording or generation for the same wallet clears proposal consent and
@@ -607,8 +610,11 @@ entries, then review again.
 
 `Prepare revocation` (`prepare-revoke`) is offered for an installation from this session:
 
-1. The backend reads the owner rule, which must be unchanged.
-2. It reads the installed rule, which must still be present and identical to the recorded one.
+1. The backend checks fresh account and owner-verifier code observations against their pins
+   and reads the owner rule, which must be unchanged. Removal of the owner rule is forbidden.
+2. It reads the installed rule, which must be present. Ordinarily it must match the recorded
+   bytes; after fresh detected rule drift, the separate monitoring flow below may instead
+   bind removal to the exact current bytes, with explicit saved-versus-current consent.
 3. The fee payer's record-mode simulation drafts `remove_context_rule(rule_id)`. It must record
    exactly the account's own authorization of exactly that call, as for the sample transfer.
 4. Browser and backend validate the draft (`validateRemovalAssembly`) against a removal approval
@@ -717,3 +723,77 @@ At the pinned upstream revision, `pnpm exec tsc --noEmit` already reports five e
 `src/hooks/useWallet.ts` and `src/lib/tx-analyzer.ts`. The unchanged upstream checkout produces
 the same diagnostics. Generate the route tree with `pnpm build` before comparing type checks;
 this integration does not edit the generated route tree or suppress those upstream errors.
+
+## Revoke-first replacement
+
+After a session's latest installed grant is removed with a verified account event and absent-rule
+readback, the route can prepare a replacement. The browser and backend independently derive
+the acknowledgement from the previous installation and removal transaction. It explicitly
+discloses that a new installation has a fresh counter: authority already used under the old
+grant is additional to the new cap, rather than carried forward as a remaining allowance.
+
+Preparation and confirmation each re-read the unchanged owner and every previously removed
+rule, within a bounded ledger window. A revived rule, stale read, changed owner, unverified
+removal or untracked installation attempt refuses replacement. Confirmation adds no authority
+and signs/submits no transaction. It discards old candidate reviews, deployments and pending
+actions; artifact IDs already attempted for deployment remain spent, and removal history remains visible in backend status. Earlier artifacts that were never deployed still need a fresh deployment, review and all checks.
+
+Record or import a new grant, generate/deploy a fresh artifact, review it, rerun all four layers
+and the replay checks, then approve the new installation with the owner passkey. The existing
+live-check admission guard still waits until earlier released signatures expire, including a
+previous installation entry. This can require waiting before the new live check. A cancelled
+or refused replacement preserves the removed grant and the spent installation guard. There
+is no add-before-remove path, automatic retry or rollover of old policy state. A lost confirmation
+response is recovered from an action-bound acknowledgement retained in backend status; the
+browser accepts it only for its pending action and independently derived removed-grant display. This flow is
+session-local; it does not import lifecycle records from a prior backend process.
+
+A lost `confirm-revoke` response is a separate limitation: status reports the removal
+transaction and prevents resubmission, but does not reconstruct the full verified removal
+record in the browser. The replacement button therefore stays closed in that browser.
+Do not retry removal or treat its summary alone as replacement consent; recover and verify
+the transaction outside this route. Automatic browser recovery of this case remains pending.
+
+## Generated source support
+
+This integration supports the fixed `policy-templates/scope@1` generator and reproduces its
+source/Wasm itself. Proposal import regenerates a permission description; it does not execute
+or install source code supplied in the proposal. Custom policy source is unavailable in this
+wallet. A custom-source review, risk acknowledgement and installation flow is not implemented.
+
+## On-demand installed-grant monitoring
+
+`Check installed grant now` performs fresh, bounded, non-atomic RPC reads while this page is
+open. It compares the exact recorded rule, account/policy/owner-verifier code and installation
+marker, and rechecks modeled authority against the InstallationRecord commitment. The
+supported native-token target has a Stellar Asset host executable, not a Wasm hash; monitoring
+checks its canonical native-testnet address, executable kind and protocol 29 explicitly.
+
+The ordinary install authority check correctly sees an already installed stateful rule as
+an overlapping grant. The separate `ozpb check-installed-grant` command instead validates
+the entire real scan first, requires the exact saved rule identity/ID vectors and the last
+allocated rule ID, and projects only that rule out of the authority model. It preserves shared
+closure entries and candidate-required classic/verifier observations. Its projected commitment
+must equal the preinstallation commitment; no new baseline is learned. Actual scan digests
+and ledger evidence remain separate from the counterfactual projection. This command returns
+a distinct monitoring observation and cannot prepare an installation.
+
+An `unchanged` result means the exact recorded grant and modeled authority matched within
+the displayed ledger window. It does not cover unmodeled storage, signer/policy allocation
+counters, storage reference counts, unrelated rule names, TTL continuity, policy-counter
+integrity or changes between observations. Expiry alone is `inactive`: the modeled-authority
+comparison continues after expiry, and simultaneous authority/code/rule drift remains `drift`.
+Later allocations or a changed rule/authority/code are `drift`; incomplete, archived, stale or failed reads are
+`unavailable`. Legitimate later rule allocations conservatively count as drift. This is
+detection only, with no background process, signature, submission or safety verdict.
+
+After fresh detected rule-configuration drift, revocation may remove that current rule only
+after separately showing the saved and current configuration. The browser and backend derive
+the same consent, including hashes of both configurations. Preparation requires the backend's
+own fresh monitor result; submission rechecks the exact current bytes. Account and owner
+verifier pins and the unchanged owner are checked before both steps, and removal of the owner
+rule is forbidden. Changed account/verifier code or owner identity requires a trusted recovery
+interface. Verified rule removal remains separate from best-effort policy cleanup. If the current policy
+configuration differs from the recorded one, cleanup is reported `not_checked`; an observation
+of the old policy is never attributed to the newly removed policy. Otherwise cleanup requires
+the expected policy code and fresh instance/code/marker observations.

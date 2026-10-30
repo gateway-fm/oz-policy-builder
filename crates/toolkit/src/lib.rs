@@ -42,6 +42,8 @@ pub use call_surface_live::{
     finish_call_surface_check, plan_call_surface_read, resolve_rpc_source, rpc_sources_from_json,
     scan_tool_error, CallSurfaceReadPlan, RpcSource,
 };
+mod installed_grant;
+pub use installed_grant::check_installed_grant_from_scan;
 mod install_intent;
 pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod install_assembly;
@@ -1120,7 +1122,7 @@ mod tests {
         )
         .unwrap();
         assert!(gen.files.contains_key("src/lib.rs"));
-        assert_eq!(gen.stellar_accounts_version, "0.7.2");
+        assert_eq!(gen.stellar_accounts_version, "0.8.0");
 
         // The generated scope permits, but the full spec also composes a reviewed
         // spending-limit policy that the Phase 1 evaluator deliberately does not simulate.

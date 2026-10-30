@@ -1,5 +1,5 @@
 {
-  "schema": "ozpb-soroswap-operator-decisions/v1",
+  "schema": "ozpb-soroswap-operator-decisions/v2",
   "output_floor": {
     "min": "100000",
     "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
@@ -8,5 +8,5 @@
     "max": "1000000",
     "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
   },
-  "adapter_deadline": "accept_any_value_high_blast_radius"
+  "adapter_deadline": "keep_recorded_deadline"
 }

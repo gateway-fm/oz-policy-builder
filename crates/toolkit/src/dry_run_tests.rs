@@ -22,6 +22,7 @@ fn request_for_rule(composed: bool, rule_index: usize) -> DryRunInput {
     }
     if rule_index == 1 {
         spec.rules.push(spec.rules[0].clone());
+        spec.rules[1].valid_until.as_mut().unwrap().ledger.0 += 17;
     }
     let signed: SignedSnapshot = serde_json::from_value(signed_registry_json()).unwrap();
     spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
@@ -43,33 +44,49 @@ fn request_for_rule(composed: bool, rule_index: usize) -> DryRunInput {
                 schema: POLICY_BINDING_SET_SCHEMA.to_string(),
                 spec_hash: spec.hash().to_hex(),
                 network_id: spec.spec().network_id.0.to_hex(),
-                bindings: spec.spec().rules[rule_index]
-                    .policies
+                bindings: spec
+                    .spec()
+                    .rules
                     .iter()
                     .enumerate()
-                    .map(|(index, policy)| {
-                        let (hash, recognition) = match policy {
-                            PolicyRef::Generated { .. } => (
-                                generated.wasm_hash.clone(),
-                                PolicyRecognition::VerifiedGeneratedManifest {
-                                    build_manifest: generated.build_manifest.clone(),
-                                },
-                            ),
-                            PolicyRef::Reviewed { capability, .. } => {
-                                (capability.to_hex(), PolicyRecognition::ReviewedRegistry)
-                            }
-                        };
-                        PolicyBinding {
-                            rule_index,
-                            policy_index: index,
-                            contract_address: format!(
-                                "{}",
-                                stellar_strkey::Contract([40 + index as u8; 32])
-                            ),
-                            observed_wasm_hash: hash,
-                            recognition,
-                            resolution_reference: "candidate policy instance".into(),
-                        }
+                    .flat_map(|(index, rule)| {
+                        let artifact = generate_code_with_build_config(
+                            &GenerateCodeInput {
+                                spec: json.clone(),
+                                rule_index: index,
+                            },
+                            &build_config(),
+                        )
+                        .unwrap();
+                        rule.policies
+                            .iter()
+                            .enumerate()
+                            .map(move |(policy_index, policy)| {
+                                let (hash, recognition) = match policy {
+                                    PolicyRef::Generated { .. } => (
+                                        artifact.wasm_hash.clone(),
+                                        PolicyRecognition::VerifiedGeneratedManifest {
+                                            build_manifest: artifact.build_manifest.clone(),
+                                        },
+                                    ),
+                                    PolicyRef::Reviewed { capability, .. } => {
+                                        (capability.to_hex(), PolicyRecognition::ReviewedRegistry)
+                                    }
+                                };
+                                PolicyBinding {
+                                    rule_index: index,
+                                    policy_index,
+                                    contract_address: format!(
+                                        "{}",
+                                        stellar_strkey::Contract(
+                                            [40 + (index * 4 + policy_index) as u8; 32],
+                                        )
+                                    ),
+                                    observed_wasm_hash: hash,
+                                    recognition,
+                                    resolution_reference: "candidate policy instance".into(),
+                                }
+                            })
                     })
                     .collect(),
             },
@@ -220,6 +237,14 @@ fn preparation_case_ledgers_follow_the_selected_reference_suite() {
             .map(|case| case.context.current_ledger.0)
             .collect();
         assert_eq!(out.reference_case_ledgers.as_ref(), Some(&expected));
+        if rule_index == 1 {
+            let other: Vec<_> = ozpb_harness::build_suite(&spec)
+                .into_iter()
+                .filter(|case| case.rule_index == 0)
+                .map(|case| case.context.current_ledger.0)
+                .collect();
+            assert_ne!(expected, other);
+        }
         assert_eq!(
             expected.len(),
             out.reference_report["outcomes"].as_array().unwrap().len()

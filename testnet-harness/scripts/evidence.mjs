@@ -6,11 +6,12 @@ import {
   renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { xdr } from '@stellar/stellar-sdk';
 import { isMainModule } from './cli-entry.mjs';
 import {
   CASES_FORMAT, MIN_DERIVED_DENIALS, SELECTION, liveRules, liveStandIns, planDerivedDenials, predictEnforcer, suiteHash,
 } from './derived-plan.mjs';
-import { PROTOCOL_TARGETS, ROUTER_ADAPTER, ROUTER_DEADLINE_ARG, soroswapDecisions } from './protocol-calls.mjs';
+import { PROTOCOL_TARGETS, ROUTER_ADAPTER, LEGACY_ROUTER_ADAPTER, ROUTER_DEADLINE_ARG, soroswapDecisions } from './protocol-calls.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const ADDRESS = /^[CG][A-Z2-7]{55}$/;
@@ -222,7 +223,8 @@ const WALKTHROUGH_STEPS = {
     'router_function', 'any_deadline', 'wrong_signer', 'zero_signers', 'independent_token', 'token_cap', 'delegate_swap',
     'count_cap', 'token_count_cap', 'expiry_wait', 'expired_rule', 'cleanup', 'post_revocation'] },
 };
-const CONTROL_SETS = { 2: 'transfer_rule_denials_included', 3: 'adapter_route_recipient_function_controls' };
+WALKTHROUGH_STEPS[4] = { soroswap_swap: WALKTHROUGH_STEPS[3].soroswap_swap.flatMap((n) => n === 'any_deadline' ? ['deadline_plus_one', 'maximum_deadline'] : [n]) };
+const CONTROL_SETS = { 4: 'adapter_exact_deadline_controls', 2: 'transfer_rule_denials_included', 3: 'adapter_route_recipient_function_controls' };
 /** Controls the harness signs over a tree it built, without recording the call first. */
 const CONSTRUCTED_CONTROLS = ['path_reordered', 'path_extended', 'path_truncated', 'foreign_recipient', 'router_function'];
 const SUBMITTED = ['started', 'pending', 'confirmed_unverified', 'confirmed'];
@@ -296,7 +298,7 @@ function walkthroughRecord(value, run) {
     if (denial !== (i.code !== undefined) || denial !== (i.enforcer !== undefined)) fail();
     const control = choice(i.control, ['baseline', 'input_cap', 'output_floor', 'deadline', 'direct_token', 'direct_token_cap',
       'reserve_ids', 'claim_recipient', 'pool_function', 'path_reordered', 'path_extended', 'path_truncated',
-      'foreign_recipient', 'router_function', 'any_deadline']);
+      'foreign_recipient', 'router_function', 'any_deadline', 'deadline_plus_one', 'maximum_deadline']);
     // Which authorizations were signed over a built tree instead of a recorded one, and only those.
     const authorization = i.authorization === undefined ? 'recorded' : choice(i.authorization, ['signed_without_recording']);
     if (CONSTRUCTED_CONTROLS.includes(control) !== (authorization === 'signed_without_recording')) fail();
@@ -393,19 +395,22 @@ function walkthroughRecord(value, run) {
   if (w.operator_decisions !== undefined) {
     if (kind !== 'soroswap_swap') fail();
     let d;
-    try { d = soroswapDecisions(w.operator_decisions, { journal: true }); } catch { fail(); }
+    try { d = soroswapDecisions(w.operator_decisions, { journal: true, allowLegacy: true }); } catch { fail(); }
+    if (d.adapter_deadline === 'keep_recorded_deadline' && (!Number.isSafeInteger(w.deadline) || w.deadline <= 0)) fail();
     decisions = { operator_decisions: { output_floor: amount(d.output_floor.min), transfer_cap: amount(d.transfer_cap.max),
-      adapter_deadline: d.adapter_deadline, source_sha256: hash(d.source_sha256) } };
+      adapter_deadline: d.adapter_deadline, source_sha256: hash(d.source_sha256),
+      ...(d.adapter_deadline === 'keep_recorded_deadline' ? { deadline_unix: String(w.deadline) } : {}) } };
   }
   if (w.controls === undefined) {
     return { kind, owner_transaction: owner, invocations, bundle, ...position, ...decisions, controls: { status: 'not_recorded', steps: [] } };
   }
   const c = object(w.controls);
   const status = choice(c.status, ['running', 'incomplete', 'completed']);
-  const set = c.control_set === undefined ? 1 : choice(c.control_set, [2, 3]);
+  const set = c.control_set === undefined ? 1 : choice(c.control_set, [2, 3, 4]);
   // The adapter-bound controls step past the operator's journaled floor and transfer cap, and a plan
   // with those decisions has the adapter's open deadline, which the older sets would call denied.
-  if ((set === 3) !== (decisions.operator_decisions !== undefined)) fail();
+  if ((set >= 3) !== (decisions.operator_decisions !== undefined)) fail();
+  if (set >= 3 && (set === 4) !== (decisions.operator_decisions.adapter_deadline === 'keep_recorded_deadline')) fail();
   const names = WALKTHROUGH_STEPS[set][kind] ?? fail();
   if (!Array.isArray(c.steps) || c.steps.length > 20) fail();
   const steps = c.steps.map((item) => {
@@ -430,7 +435,7 @@ function walkthroughRecord(value, run) {
     const root = bundle?.entries[0]?.policy, transfer = bundle?.entries[1]?.policy;
     const valid = run.valid_until_ledger;
     const positive = kind === 'blend_claim' ? 'delegate_claim' : 'delegate_swap';
-    const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], reserve_ids: [root, 6],
+    const expected = { input_cap: [root, 6], output_floor: [root, 6], exact_deadline: [root, 6], deadline_plus_one: [root, 6], maximum_deadline: [root, 6], reserve_ids: [root, 6],
       path_reordered: [root, 6], path_extended: [root, 6], path_truncated: [root, 6], router_function: [root, 5],
       claim_recipient: [root, 6], pool_function: [root, 5], wrong_signer: [run.account, 3016], zero_signers: [root, 1],
       count_cap: [root, 7], expired_rule: [run.account, 3002], post_revocation: [run.account, 3000],
@@ -571,12 +576,21 @@ function adapterRecord(p, run, walkthrough) {
   if (p.kind !== 'soroswap_swap') return none('not_applicable');
   if (walkthrough.operator_decisions === undefined) return none('pre_adapter');
   const a = object(p.adapter);
-  if (a.name !== ROUTER_ADAPTER || a.code_hash !== PROTOCOL_TARGETS.router_code || a.rule_index !== 0) fail();
+  const legacy = walkthrough.operator_decisions.adapter_deadline === 'accept_any_value_high_blast_radius';
+  if (a.name !== (legacy ? LEGACY_ROUTER_ADAPTER : ROUTER_ADAPTER) || a.code_hash !== PROTOCOL_TARGETS.router_code || a.rule_index !== 0) fail();
   // The registry the run resolved and, once installed, the one its bundle was approved under.
   const root = hash(a.registry_root);
   if ((run.registry_root === null && !walkthrough.bundle) || (run.registry_root !== null && run.registry_root !== root)
     || (walkthrough.bundle && walkthrough.bundle.registry_root !== root)) fail();
   const registry = choice(a.registry, ['development_root', 'operator_root']);
+  if (!legacy) {
+    if (!Array.isArray(p.high_blast_radius) || p.high_blast_radius.length !== 0
+      || p.deadline_unix !== walkthrough.operator_decisions.deadline_unix) fail();
+    return { adapter_status: 'adapter_bound',
+      adapter: { name: a.name, code_hash: hash(a.code_hash), rule_index: 0, registry_root: root, registry,
+        binding: registry === 'development_root' ? 'development_registry_assertion_not_governance' : 'operator_registry' },
+      high_blast_radius: [], deadline_unix: p.deadline_unix };
+  }
   const open = Array.isArray(p.high_blast_radius) && p.high_blast_radius.length === 1 ? object(p.high_blast_radius[0]) : fail();
   if (open.rule_index !== 0 || open.fn !== 'swap_exact_tokens_for_tokens' || open.arg_index !== ROUTER_DEADLINE_ARG
     || open.constraint !== 'any_value' || open.provenance !== 'adapter_derived' || open.blast_radius !== 'high') fail();
@@ -737,6 +751,53 @@ function failureCleanupRecord(value, run, lifecycle) {
   return record;
 }
 
+function protocolAccountReports(value, readReport, run, pipeline, rawBundle) {
+  if (value === undefined) return { status: 'not_recorded' };
+  const v = object(value), bundle = object(rawBundle);
+  if (pipeline.status !== 'recorded' || !Array.isArray(pipeline.artifacts)) fail();
+  if (bundle.spec_hash !== v.spec_hash || !Array.isArray(bundle.entries)
+    || bundle.entries.length !== pipeline.artifacts.length
+    || bundle.entries.some((entry, index) => entry.rule_index !== index
+      || entry.spec_hash !== v.spec_hash || entry.wasm_hash !== pipeline.artifacts[index].wasm_hash)) fail();
+  if (v.schema_version !== 1 || pipeline.status !== 'recorded' || !run
+    || v.account !== run.account || v.spec_hash !== pipeline.spec_hash
+    || v.execution !== 'offline_synthetic_policy_addresses_and_proposed_rule_ids'
+    || !Array.isArray(v.reports) || v.reports.length !== pipeline.artifacts.length) fail();
+  const sourceLedger = uint(v.source_ledger);
+  const reports = v.reports.map((entry, index) => {
+    const e = object(entry), r = object(readReport(index)), b = object(r.binding);
+    const layers = r.layers;
+    if (e.rule_index !== index || e.original_permitted !== true || e.complete !== false
+      || r.schema !== 'ozpb:dry-run:v1' || r.complete !== false || r.artifact_verification?.matches !== true
+      || b.spec_hash !== v.spec_hash || b.account_address !== run.account || b.account_code_hash !== run.account_code_hash
+      || b.rule_index !== index || b.candidate_context_rule_id !== index + 1
+      || b.registry_snapshot_root !== run.registry_root
+      || b.network_id !== createHash('sha256').update(TESTNET).digest('hex')
+      || !Array.isArray(layers) || layers.length !== 4
+      || layers.some((l, i) => l?.id !== ['reference', 'account_wasm', 'captured_target', 'live_enforcement'][i]
+        || l.writes_committed !== false || l.status !== (i < 2 ? 'passed' : 'unavailable'))) fail();
+    const execution = object(layers[1].execution), cases = execution.cases;
+    if (r.run_hash !== e.run_hash || b.suite_hash !== e.suite_hash || execution.run_hash !== e.run_hash
+      || execution.suite_hash !== e.suite_hash || execution.source_ledger !== sourceLedger
+      || execution.policy_address !== e.policy_address || execution.policy_code_hash !== e.policy_code_hash
+      || execution.policy_code_hash !== pipeline.artifacts[index].wasm_hash
+      || execution.source_network_id !== b.network_id || execution.execution_network_id === b.network_id
+      || !Array.isArray(cases) || layers[1].cases !== cases.length || cases.length < 6) fail();
+    const counts = cases.filter((c) => c.expected_permit === false && c.permitted === false && c.agree === true
+      && c.state_unchanged === true && ['account', 'policy'].includes(c.refused_by) && Number.isSafeInteger(c.refusal_code)).length;
+    if (cases.some((c) => c.agree !== true || typeof c.expected_permit !== 'boolean' || c.permitted !== c.expected_permit)
+      || !cases.some((c) => c.class === 'original' && c.expected_permit === true && c.permitted === true)
+      || counts < 5 || counts !== e.reverted_denials || r.acceptance?.meets_minimum !== true
+      || r.acceptance?.required_reverted_denials !== 5 || r.acceptance?.original_permitted !== true) fail();
+    return { rule_index: index, run_hash: hash(e.run_hash), suite_hash: hash(e.suite_hash),
+      policy_address: address(e.policy_address), policy_code_hash: hash(e.policy_code_hash),
+      execution_network_id: hash(execution.execution_network_id), original_permitted: true,
+      reverted_denials: counts, cases: cases.length, complete: false };
+  });
+  if (new Set(reports.map((r) => r.policy_address)).size !== reports.length) fail();
+  return { status: 'recorded', execution: v.execution, source_ledger: sourceLedger, reports };
+}
+
 export function exportEvidence(runDir) {
   if (!lstatSync(runDir).isDirectory()) fail();
   const artifacts = {};
@@ -757,15 +818,25 @@ export function exportEvidence(runDir) {
     : { blend_emission_refresh: emissionRefreshRecord(rawRun.blend_emission_refresh) };
   const protocolPipeline = protocolPipelineRecord(
     decode(artifact('protocol_pipeline', join(runDir, 'protocol-pipeline.json'))), run, walkthrough);
+  const accountReports = protocolAccountReports(decode(artifact('account_dry_runs', join(runDir, 'account-dry-runs.json'))),
+    (index) => decode(artifact(`account_dry_run_rule_${index}`, join(runDir, `account-dry-run-${index}.json`))),
+    run, protocolPipeline, rawRun?.walkthrough?.bundle);
   if (run === null && source.status === 'unavailable') fail();
   // Adapter-bound controls mean something only next to the adapter they relied on, and the
   // controls run after the pipeline that names it, so a journal of them always has one.
-  if (walkthrough.controls?.control_set === CONTROL_SETS[3] && protocolPipeline.status !== 'recorded') fail();
+  if ([CONTROL_SETS[3], CONTROL_SETS[4]].includes(walkthrough.controls?.control_set) && protocolPipeline.status !== 'recorded') fail();
   // Operator-selected local run directory plus a constant basename, as for the artifacts below.
   // nosemgrep
   const emittedCases = artifact('derived_cases', join(runDir, 'derived-cases.json'));
   // nosemgrep
   const specBytes = artifact('spec', join(runDir, 'spec.json'));
+  if (protocolPipeline.status === 'recorded' && walkthrough.operator_decisions?.adapter_deadline === 'keep_recorded_deadline') {
+    const spec = decode(specBytes), deadline = walkthrough.operator_decisions.deadline_unix;
+    const arg = spec?.rules?.[0]?.allowed_calls?.[0]?.args?.find((a) => a.i === ROUTER_DEADLINE_ARG);
+    if (spec?.registry_snapshot !== run.registry_root || spec?.smart_account?.address !== run.account
+      || arg?.prov !== 'observed_exact'
+      || arg?.c?.eq_scval?.xdr_base64 !== xdr.ScVal.scvU64(BigInt(deadline)).toXDR('base64')) fail();
+  }
   let derived = {};
   if (rawRun?.derived_denials !== undefined) {
     const protocol = walkthrough.status !== 'not_recorded';
@@ -825,7 +896,7 @@ export function exportEvidence(runDir) {
       'A recorded reproduction result is a local observation; it is not live preflight or a wallet acceptance verdict.',
     ],
     provenance: source, run, pipeline, lifecycle, failure_cleanup: failureCleanup,
-    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline }), ...refresh, ...derived, artifacts,
+    ...(walkthrough.status === 'not_recorded' ? {} : { walkthrough, protocol_pipeline: protocolPipeline, account_dry_runs: accountReports }), ...refresh, ...derived, artifacts,
   };
 }
 
