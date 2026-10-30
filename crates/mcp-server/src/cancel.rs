@@ -156,7 +156,7 @@ mod tests {
         std::fs::write(
             &builder,
             format!(
-                "#!/bin/sh\n/bin/sleep 30 &\necho $! > {}\nwait\n",
+                "#!/bin/sh\n/bin/sleep 30 &\necho $! > {0}.tmp && /bin/mv {0}.tmp {0}\nwait\n",
                 pidfile.display()
             ),
         )

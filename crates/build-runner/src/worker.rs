@@ -533,11 +533,11 @@ time.sleep(30)"#;
 
     #[test]
     fn an_immediate_cancellation_waits_for_the_launcher_to_start() {
-        // Takes a second to install its handler, like an interpreter on a loaded host; an
+        // Takes half a second to install its handler, like an interpreter on a loaded host; an
         // immediate SIGTERM would kill it and strand the slot.
         let slow = CANCELLABLE.replace(
             "import hashlib",
-            "import time\ntime.sleep(1)\nimport hashlib",
+            "import time\ntime.sleep(0.5)\nimport hashlib",
         );
         let (_directory, mut config, slots) = launcher(&slow);
         config.timeout = Duration::from_secs(30);

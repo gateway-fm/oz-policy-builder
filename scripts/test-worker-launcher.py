@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -105,7 +106,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_success_is_framed_only_after_confirmed_removal(self):
         events = []
-        def run(args, *_):
+        def run(args, *_, **__):
             events.append("run")
             return 0, b'{"schema":"build-worker-result/v1","artifact":null}'
         def removed(_):
@@ -189,23 +190,43 @@ class LauncherTests(unittest.TestCase):
 
     def _stop_state(self):
         # Each test starts with no stop requested and restores the default SIGTERM action.
-        worker.STOP.update(armed=False, requested=False)
+        worker.STOP.update(requested=False)
         self.addCleanup(signal.signal, signal.SIGTERM, signal.SIG_DFL)
-        self.addCleanup(worker.STOP.update, armed=False, requested=False)
+        self.addCleanup(worker.STOP.update, requested=False)
 
-    def test_sigterm_during_the_job_removes_it_and_frames_no_result(self):
+    def _child(self, directory):
+        """A stand-in for the runtime client: records its pid, then runs for 30 s."""
+        pidfile = Path(directory) / "client.pid"
+        code = (f"import os,time\nopen({str(pidfile)!r}+'.tmp','w').write(str(os.getpid()))\n"
+                f"os.replace({str(pidfile)!r}+'.tmp',{str(pidfile)!r})\ntime.sleep(30)")
+        return [sys.executable, "-c", code], pidfile
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def test_sigterm_during_the_job_kills_its_client_then_removes_it_and_frames_no_result(self):
         self._stop_state()
         worker.install_stop_handler()
         removed = mock.Mock(return_value=True)
-        def run(*_):
-            os.kill(os.getpid(), signal.SIGTERM)
-            time.sleep(5)  # the handler interrupts this
-            return 0, json.dumps(result()).encode()
-        started = time.monotonic()
-        with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "bounded", run), \
-                mock.patch.object(worker, "removed", removed):
-            frame = worker.launch(json.dumps(job()).encode(), config())
-        self.assertLess(time.monotonic() - started, 4)
+        with tempfile.TemporaryDirectory() as directory:
+            client, pidfile = self._child(directory)
+            def stop_once_running():
+                while not pidfile.exists():
+                    time.sleep(0.02)
+                os.kill(os.getpid(), signal.SIGTERM)
+            threading.Thread(target=stop_once_running, daemon=True).start()
+            started = time.monotonic()
+            with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "command", return_value=client), \
+                    mock.patch.object(worker, "removed", removed):
+                frame = worker.launch(json.dumps(job()).encode(), config())
+            self.assertLess(time.monotonic() - started, 10)
+            pid = int(pidfile.read_text())
+            self.assertFalse(self._alive(pid), "the runtime client survived the stop")
         removed.assert_called_once()
         self.assertEqual(frame["containment"], "removed")
         self.assertIsNone(frame["result"])
@@ -221,19 +242,46 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(frame["containment"], "removed")
         self.assertIsNone(frame["result"])
 
-    def test_sigterm_during_removal_does_not_interrupt_it(self):
+    def test_a_stop_after_the_check_still_never_starts_the_client(self):
+        # SIGTERM between launch's early check and the client start (while the job file is
+        # written) is honoured by the run itself, before it starts anything.
+        self._stop_state()
+        removed = mock.Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as directory:
+            client, pidfile = self._child(directory)
+            def command(*_):
+                worker.stop_requested(signal.SIGTERM, None)
+                return client
+            with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "command", command), \
+                    mock.patch.object(worker, "removed", removed):
+                frame = worker.launch(json.dumps(job()).encode(), config())
+            time.sleep(0.3)
+            self.assertFalse(pidfile.exists(), "the client was started after the stop")
+        removed.assert_called_once()
+        self.assertIsNone(frame["result"])
+
+    def test_sigterm_during_removal_or_failure_handling_interrupts_nothing(self):
         self._stop_state()
         worker.install_stop_handler()
         def removed(_):
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(0.2)  # a raising handler would surface here
             return True
-        with mock.patch.object(worker, "preflight"), \
-                mock.patch.object(worker, "bounded", return_value=(0, json.dumps(result()).encode())), \
+        def run(*_args, **_kwargs):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.2)
+            raise worker.Refused()  # the job failed; its handling must still frame removal
+        with mock.patch.object(worker, "preflight"), mock.patch.object(worker, "bounded", run), \
                 mock.patch.object(worker, "removed", removed):
             frame = worker.launch(json.dumps(job()).encode(), config())
         self.assertEqual(frame["containment"], "removed")
+        self.assertIsNone(frame["result"])
         self.assertTrue(worker.STOP["requested"])
+
+    def test_an_unrequested_stoppable_run_is_unaffected(self):
+        self._stop_state()
+        self.assertEqual(worker.bounded([sys.executable, "-c", "print('ok')"], 5, 1024, stoppable=True),
+                         (0, b"ok\n"))
 
     def test_output_capture_is_actually_bounded(self):
         with self.assertRaises(worker.Refused):

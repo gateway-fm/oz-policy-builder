@@ -409,7 +409,7 @@ stream before the tool runs and a build outlives a client that disconnects:
 | `OZPB_HTTP_REQUESTS_PER_MINUTE` | 60 | HTTP requests admitted per fixed one-minute window, across all clients. A tool call is one request; opening a session takes several. A fixed window can admit up to twice the limit across a window boundary. |
 | `OZPB_HTTP_MAX_BODY_BYTES` | 1048576 | Request body size, at most 25165824. Raise it to serve `verify` of a large artifact or `synthesize_policy` over large recordings: a 2 MiB Wasm alone is about 2.7 MiB of base64, and each recording may carry 1 MiB of base64 evidence. |
 | `OZPB_HTTP_TOOL_REQUESTS_PER_MINUTE` | 60 | Calls admitted per fixed one-minute window to each tool, across all sessions and after the request quota. Tools that build or read an RPC endpoint (`generate_code`, `verify`, `prepare_dry_run`, `record_transaction`, `record_simulation`, `preflight_transaction`, `check_policy_call_surface`, `prepare_install_intent`, `assemble_install_transaction`, `check_against_policy`, `capture_target`) default to the smaller of this and 4. A refused call answers `E_RESOURCE_LIMIT`; a call that reached its tool is counted even if it then fails. |
-| `OZPB_HTTP_TOOL_LIMITS_JSON` | unset | A JSON object from tool name to its own positive per-minute limit, overriding the default above, e.g. `{"generate_code":2,"reference_suite":120}`. An unknown tool name, a zero, or anything but positive integers stops startup. |
+| `OZPB_HTTP_TOOL_LIMITS_JSON` | unset | A JSON object from tool name to its own positive per-minute limit, overriding the default above, e.g. `{"generate_code":2,"reference_suite":120}`. Empty means no overrides. An unknown tool name, a zero, or anything but positive integers stops startup. |
 | `OZPB_HTTP_MAX_CONCURRENCY` | 1 | Policy builds running at once across all sessions, including `generate_code`, `verify`, and binding rebuilds during authority checks, install-intent planning, unsigned install assembly, installed-rule checks and dry-run preparation. One more is refused at once with `E_BUILD_BUSY`, which is retryable by design. A build holds its slot until it ends. Multiplied by `OZPB_BUILD_JOBS` it must not exceed the machine's available parallelism. With the one shared build cache, cargo serializes compiles, so a second slot queues a build behind the first on its own timeout rather than running it alongside. |
 
 Zero or a malformed value stops startup. Authority checks, install-intent planning, unsigned
@@ -428,8 +428,8 @@ work that call started; as MCP specifies, the cancelled call gets no response. A
 is killed and its slot released. A disposable worker's launcher is asked to stop (SIGTERM); its
 slot is released only when the launcher confirms the job's removal, and otherwise retained as
 after a launcher failure. Network reads make no further RPC call; a call already in flight ends
-on its own transport timeout. Work that passes its own deadline is stopped the same way, so the
-slots it holds are not kept past the answer.
+on its own transport timeout. Work that passes its own deadline is stopped the same way, and the
+slots it holds are released when that stopped work ends.
 
 The [self-hosting package](SELF-HOSTING.md) supplies a pinned container build, TLS proxy,
 operator configuration and disposable endpoint/offline-build checks for one operator with

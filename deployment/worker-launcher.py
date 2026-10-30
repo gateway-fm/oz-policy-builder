@@ -30,18 +30,17 @@ class Refused(Exception):
     """A fixed, redacted launcher failure."""
 
 
-# A cancelled request reaches the launcher as SIGTERM from the API. While the job runs, the
-# signal ends the run, so its container is removed and that removal is framed with no result;
-# before launch it skips the run. During removal and framing it is only recorded: interrupting
-# the removal would leave nothing able to confirm it, and the API would retain the capacity.
-STOP = {"armed": False, "requested": False}
+# A cancelled request reaches the launcher as SIGTERM from the API. The handler only records
+# it. The job's run checks that record before it starts the runtime client and on every poll,
+# and stops there, where its client is killed and its container is then removed and that removal
+# framed with no result. Nothing else is interrupted: raising from the handler at an arbitrary
+# line could skip killing the client, run the removal before the container exists, or lose a
+# confirmation already made, and the API would then free capacity a job still holds or strand it.
+STOP = {"requested": False}
 
 
 def stop_requested(signum, frame):
     STOP["requested"] = True
-    if STOP["armed"]:
-        STOP["armed"] = False
-        raise Refused()
 
 
 def install_stop_handler():
@@ -120,11 +119,14 @@ def validate_job(raw, config):
     return job
 
 
-def bounded(command, timeout, limit, source=None):
+def bounded(command, timeout, limit, source=None, stoppable=False):
     """Capture bounded stdout and discard stderr; terminate only the local client on failure.
 
     This is not the container boundary. Conmon's separate deadline survives client death.
+    A `stoppable` run also ends when a stop is requested, before it starts or while it runs.
     """
+    if stoppable and STOP["requested"]:
+        raise Refused()
     process = subprocess.Popen(command, stdin=source or subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     deadline, result = time.monotonic() + timeout, bytearray()
@@ -132,6 +134,8 @@ def bounded(command, timeout, limit, source=None):
         with selectors.DefaultSelector() as poll:
             poll.register(process.stdout, selectors.EVENT_READ)
             while poll.get_map():
+                if stoppable and STOP["requested"]:
+                    raise Refused()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise Refused()
@@ -237,15 +241,13 @@ def launch(raw, config):
         source.write(raw)
         source.seek(0)
         try:
-            STOP["armed"] = True
             status, output = bounded(command(config, name, job), job["timeout_seconds"] + 45,
-                                     MAX_OUTPUT, source)
+                                     MAX_OUTPUT, source, stoppable=True)
             if status == 0:
                 result = worker_result(output)
         except (Refused, ValueError, TypeError, OSError, subprocess.SubprocessError, RecursionError):
             result = None
         finally:
-            STOP["armed"] = False
             if not removed(name):
                 raise Refused()
     return frame(result)

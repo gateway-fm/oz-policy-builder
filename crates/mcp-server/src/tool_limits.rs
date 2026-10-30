@@ -3,6 +3,29 @@ use crate::http::RequestQuota;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Tools that build or read an RPC endpoint, limited to at most 4 calls a minute by default.
+const HEAVY: [&str; 11] = [
+    "generate_code",
+    "verify",
+    "prepare_dry_run",
+    "record_transaction",
+    "record_simulation",
+    "preflight_transaction",
+    "check_policy_call_surface",
+    "prepare_install_intent",
+    "assemble_install_transaction",
+    "check_against_policy",
+    "capture_target",
+];
+/// Pure tools: bounded by their own size limits and the ordinary per-tool default.
+#[cfg(test)]
+const PURE: [&str; 4] = [
+    "synthesize_policy",
+    "evaluate_spec",
+    "import_recording",
+    "reference_suite",
+];
+
 #[derive(Clone)]
 pub(crate) struct ToolLimitConfig {
     pub(crate) default_per_minute: u32,
@@ -29,21 +52,7 @@ impl ToolLimitConfig {
     }
     fn limit(&self, name: &str) -> u32 {
         self.overrides.get(name).copied().unwrap_or_else(|| {
-            if [
-                "generate_code",
-                "verify",
-                "prepare_dry_run",
-                "record_transaction",
-                "record_simulation",
-                "preflight_transaction",
-                "check_policy_call_surface",
-                "prepare_install_intent",
-                "assemble_install_transaction",
-                "check_against_policy",
-                "capture_target",
-            ]
-            .contains(&name)
-            {
+            if HEAVY.contains(&name) {
                 self.default_per_minute.min(4)
             } else {
                 self.default_per_minute
@@ -99,6 +108,24 @@ mod tests {
         assert!(quotas.admit("reference_suite"));
         assert!(!quotas.admit("unknown"));
     }
+    /// Every tool is classified, so a new one cannot silently get the light default.
+    #[test]
+    fn every_routed_tool_is_classified_heavy_or_pure() {
+        let routed: std::collections::BTreeSet<String> = crate::tests::hosted()
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        let classified: std::collections::BTreeSet<String> = HEAVY
+            .iter()
+            .chain(PURE.iter())
+            .map(|name| name.to_string())
+            .collect();
+        assert_eq!(routed, classified);
+        assert!(HEAVY.iter().all(|name| !PURE.contains(name)));
+    }
+
     #[test]
     fn malformed_limits_and_unknown_overrides_refuse_startup() {
         for json in [

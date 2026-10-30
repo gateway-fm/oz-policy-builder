@@ -177,7 +177,10 @@ where
     let requests_per_minute = positive("OZPB_HTTP_REQUESTS_PER_MINUTE", 60)?;
     let tool_limits = crate::tool_limits::ToolLimitConfig::parse(
         positive("OZPB_HTTP_TOOL_REQUESTS_PER_MINUTE", 60)?,
-        get("OZPB_HTTP_TOOL_LIMITS_JSON")?.as_deref(),
+        // Empty means no overrides: the compose file passes the variable through unset as "".
+        get("OZPB_HTTP_TOOL_LIMITS_JSON")?
+            .as_deref()
+            .filter(|json| !json.trim().is_empty()),
     )?;
     // Builds are CPU- and memory-heavy. The build slots and Cargo's worker count form one
     // resource budget; validating their product prevents four simultaneous builds from each
@@ -434,6 +437,29 @@ mod tests {
             .slots
             .expect("a hosted server bounds its builds");
         assert_eq!(slots.available(), 1);
+    }
+
+    #[test]
+    fn an_empty_tool_override_means_none_and_a_bad_one_stops_startup() {
+        // The compose file passes an unset override through as "".
+        for empty in ["", "  "] {
+            let limits = hosted_limits(
+                env(&[
+                    ("OZPB_HTTP_TOOL_LIMITS_JSON", empty),
+                    ("OZPB_HTTP_TOOL_REQUESTS_PER_MINUTE", "9"),
+                ]),
+                one_job(),
+                4,
+            )
+            .expect("an empty override is no override");
+            assert_eq!(limits.tool_limits.default_per_minute, 9);
+        }
+        assert!(hosted_limits(
+            env(&[("OZPB_HTTP_TOOL_LIMITS_JSON", "{\"generate_code\":0}")]),
+            one_job(),
+            4
+        )
+        .is_err());
     }
 
     #[test]

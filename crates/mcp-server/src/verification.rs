@@ -43,7 +43,7 @@ impl PolicyBuilderServer {
         // Binding recognition reproduces each generated rule. Artifact verification
         // then builds the selected rule again and needs its own timeout allowance.
         let (trust, _source, _url, deadline, slot) = self.authority_setup(&input.candidate, 1)?;
-        // The work also stops at the deadline, so its slot is not held past the answer.
+        // The work is also stopped at the deadline; its slot is released when it ends.
         let work_ct = ct.child_token();
         let build = cancel::build_config(&self.build_config, &work_ct);
         let work = tokio::task::spawn_blocking(move || {

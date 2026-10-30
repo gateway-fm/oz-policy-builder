@@ -2393,7 +2393,10 @@ mod tests {
         let pidfile = dir.path().join("grandchild.pid");
         let script = fixture_script(
             dir.path(),
-            &format!("sleep 30 &\necho $! > {}\nwait", pidfile.display()),
+            &format!(
+                "sleep 30 &\necho $! > {0}.tmp && mv {0}.tmp {0}\nwait",
+                pidfile.display()
+            ),
         );
 
         // Generous headroom so the fixture certainly reaches `echo` even under load; the
@@ -2461,7 +2464,10 @@ mod tests {
         let pidfile = dir.path().join("grandchild.pid");
         let script = fixture_script(
             dir.path(),
-            &format!("sleep 30 &\necho $! > {}\nwait", pidfile.display()),
+            &format!(
+                "sleep 30 &\necho $! > {0}.tmp && mv {0}.tmp {0}\nwait",
+                pidfile.display()
+            ),
         );
         // The caller cancels as soon as the build has started its grandchild, long before the
         // 30s timeout could end it.
