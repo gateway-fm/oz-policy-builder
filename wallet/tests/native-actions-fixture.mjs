@@ -78,9 +78,9 @@ export function stubNativeChecks(f, delegate, holder, { maxCalls = 2, captureCha
         binding_set_hash: f.f.expected.bindingSetHash, registry_snapshot_root: 'c'.repeat(64), account_address: f.f.wallet.contractId,
         account_code_hash: ACCOUNT_WASM, network_id: NETWORK_ID, rule_index: 0, candidate_context_rule_id: input.candidateContextRuleId,
         suite_hash: frames.expected.suiteHash, policy_code_hashes: { [f.policy]: f.artifact.wasmHash } },
-      artifact_verification: { matches: true }, reference_report: { total: 3, disagreements: 0,
+      artifact_verification: { matches: true }, reference_report: { total: frames.reference.outcomes.length, disagreements: 0,
         outcomes: frames.reference.outcomes, expected_classes: { 0: frames.reference.requiredClasses } },
-      layers: [{ id: 'reference', status: 'passed', cases: 3 }, { id: 'account_wasm', status: 'unavailable' },
+      layers: [{ id: 'reference', status: 'passed', cases: frames.reference.outcomes.length }, { id: 'account_wasm', status: 'unavailable' },
         { id: 'captured_target', status: 'unavailable' }, { id: 'live_enforcement', status: 'unavailable' }],
       complete: false, disclaimer: 'x' } };
   };

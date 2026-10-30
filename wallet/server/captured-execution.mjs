@@ -307,7 +307,11 @@ export const checkCapturedResult = guarded((frame, { prepared, expected, maxCall
       captureProvenance: 'rpc_reported', observedLedger: prepared.observed_ledger, executionNetworkId: prepared.execution_network_id,
       delegateAddress: prepared.binding.delegate_address, policyAddress: policy, policyCodeHash: prepared.policy_code_hash,
       targetContract: SAC, hostVersion: HOST, candidateContextRuleId: prepared.candidate_context_rule_id,
-      cases: [...TARGET_CASE_IDS], counterSeed: capped ? 0 : null, provenance: PROVENANCE, complete: false } });
+      cases: [...TARGET_CASE_IDS],
+      caseResults: frame.cases.map((c) => ({ caseId: c.case_id, label: c.label, class: c.class,
+        expectedPermit: c.expected_permit, permitted: c.permitted, agree: true,
+        refusedBy: c.refusal_contract === policy ? 'policy' : null, refusalCode: c.refusal_code,
+        stateUnchanged: c.state_before_hash === c.state_after_hash })), counterSeed: capped ? 0 : null, provenance: PROVENANCE, complete: false } });
 });
 
 /**

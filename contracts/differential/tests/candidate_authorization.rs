@@ -37,17 +37,17 @@ use stellar_xdr::{
     ContractCodeEntry, ContractCodeEntryExt, ContractDataDurability, ContractDataEntry,
     ContractExecutable, ContractId, ExtensionPoint, Hash, HostFunction, InvokeContractArgs,
     LedgerEntryData, LedgerFootprint, LedgerKey, LedgerKeyContractCode, LedgerKeyContractData,
-    OperationBody, ReadXdr as _, ScAddress, ScContractInstance, ScVal, SorobanTransactionData,
-    TransactionEnvelope, TransactionExt, WriteXdr as _,
+    OperationBody, ScAddress, ScContractInstance, ScVal, SorobanTransactionData,
+    TransactionEnvelope, TransactionExt,
 };
 
 const NETWORK: &str = "Test SDF Network ; September 2015";
 const START_BALANCE: i128 = 2_000_000_000;
 const AMOUNT: i128 = 500_000_000;
 const EXPECTED_TARGET_HASH: &str =
-    "d3766fbdf07170a55da903b75ef2262e3e84541e0304ac93425261c812032098";
+    "075c0e31d154fb52bb4d2c6bc85c6086cce851437a776bc4a3537fd94cb1f86a";
 const EXPECTED_POLICY_HASH: &str =
-    "27980fdd1b892397fdd25ea511eccc1825b1209c2a9ae8e48359a1d70a22287d";
+    "2a9beb1a8a7a73cbfc13173e245f4a712185376bd9a3fce3f7f8d7d2cf9b04be";
 /// Generated policy error for a context that no accepted call tuple admits.
 const NO_TUPLE_MATCHED: u32 = 6;
 
@@ -65,7 +65,11 @@ fn rebind_address(source: &Env, destination: &Env, address: &Address) -> Address
 }
 
 fn rpc_scval<T: IntoVal<Env, Val>>(env: &Env, value: T) -> ScVal {
-    ScVal::from_xdr(bytes_vec(&value.to_xdr(env)), stellar_xdr::Limits::none()).unwrap()
+    <ScVal as stellar_xdr::ReadXdr>::from_xdr(
+        bytes_vec(&value.to_xdr(env)),
+        stellar_xdr::Limits::none(),
+    )
+    .unwrap()
 }
 
 fn contract() -> ScAddress {

@@ -140,7 +140,7 @@ Some of the keys the toolchain writes **itself**. Checked on our own artifact:
 ```
 $ stellar contract info meta --wasm <our wasm>
  • rsver: 1.91.1                                                    (Rust version)
- • rssdkver: 26.1.0#175aa41306f383057a8cdfc84b68d931664fc34e        (SDK + commit)
+ • rssdkver: 28.0.0#48d506712f964094d14176e2f0b02afcd1054567        (SDK + commit)
  • rssdk_spec_shaking: 2
  • cliver: 27.0.0#5a7c5fe76530bf4248477ac812fc757146b98cc4          (CLI + commit)
 ```
@@ -821,7 +821,7 @@ The knobs and caps the release ships with, and what each one does and does not p
 
 | Setting | Interpretation |
 |---|---|
-| Rust 1.91.1 / CLI 27.0.0 / SDK 26.1.0 / OZ 0.7.2 | Intentional reproducibility set; upgrades change artifact hashes and require review. |
+| Generated policies: Rust 1.91.1 / CLI 27.0.0 / SDK 28.0.0 / OZ 0.8.0 | Current policy build set. Recognized upstream account/verifier/policy artifacts retain their independent SDK 26 / OZ 0.7.2 provenance. Upgrades change artifact hashes and require review. |
 | Build timeout 600 s | Reasonable for a cold local build; hosted infrastructure still needs an outer deadline and hard quotas (§13). |
 | Build jobs CPU−1, minimum 1 | Appropriate for one local build; HTTP defaults to one concurrent build and enforces a combined CPU budget. |
 | HTTP request body 1 MiB / RPC response 24 MiB | Transport ceilings; nested domain and per-XDR limits still apply before evidence is accepted. |

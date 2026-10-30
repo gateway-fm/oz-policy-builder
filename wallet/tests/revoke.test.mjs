@@ -119,3 +119,22 @@ test('removal validation refuses an owner entry whose credentials name another a
   value.assembly.envelope_xdr_sha256 = Buffer.from(hash(envelope.toXDR())).toString('hex');
   assert.throws(() => validateRemovalAssembly(value), /refused/);
 });
+
+test('changed-rule consent commits and displays exact saved and current configuration', async () => {
+  const { installedRule } = await import('./install-fixture.mjs');
+  const value = removal();
+  const recordedRuleXdr = installedRule(value.f.intent).toXDR('base64');
+  const changed = installedRule(value.f.intent, { signerIds: [9] });
+  changed.map.find((entry) => entry.key.sym.toString() === 'name').val = xdr.ScVal.scvString('changed grant');
+  const configurationChange = { recordedRuleXdr, observedRuleXdr: changed.toXDR('base64') };
+  const approval = reviewRemoval({ ...value.approval, configurationChange });
+  assert.notEqual(approval.commitment, value.approval.commitment);
+  const checked = validateRemovalAssembly({ ...value, approval });
+  const display = revokeConsent({ approval, checked, maxFeeStroops: 10000000 });
+  assert.equal(display.configurationChange.observed.name, 'changed grant');
+  assert.deepEqual(display.configurationChange.observed.signerIds, [9]);
+  assert.match(display.warning, /current configuration/);
+  assert.notEqual(display.configurationChange.recordedRuleHash, display.configurationChange.observedRuleHash);
+  assert.throws(() => reviewRemoval({ ...value.approval,
+    configurationChange: { ...configurationChange, observedRuleXdr: value.f.ownerRuleXdr } }), /refused/);
+});

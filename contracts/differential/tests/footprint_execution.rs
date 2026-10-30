@@ -19,8 +19,8 @@ use stellar_xdr::{
     ContractCodeEntry, ContractCodeEntryExt, ContractDataDurability, ContractDataEntry,
     ContractExecutable, ContractId, ExtensionPoint, Hash, HostFunction, InvokeContractArgs,
     LedgerEntryData, LedgerFootprint, LedgerKey, LedgerKeyContractCode, LedgerKeyContractData,
-    OperationBody, ReadXdr as _, ScAddress, ScContractInstance, ScVal, SorobanTransactionData,
-    TransactionEnvelope, TransactionExt, VecM, WriteXdr as _,
+    OperationBody, ScAddress, ScContractInstance, ScVal, SorobanTransactionData,
+    TransactionEnvelope, TransactionExt, VecM,
 };
 
 const NETWORK: &str = "Test SDF Network ; September 2015";

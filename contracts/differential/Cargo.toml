@@ -11,8 +11,8 @@ publish = false
 [dev-dependencies]
 generated-sub-transfer-r0 = { path = "../golden-transfer-policy" }
 generated-soroswap-swap-r0 = { path = "../soroswap-swap-policy" }
-soroban-sdk = { version = "=26.1.0", features = ["testutils"] }
-stellar-accounts = "=0.7.2"
+soroban-sdk = { version = "=28.0.0", features = ["testutils"] }
+stellar-accounts = "=0.8.0"
 ozpb-domain = { path = "../../crates/domain" }
 ozpb-policy-spec = { path = "../../crates/policy-spec" }
 ozpb-evaluator = { path = "../../crates/evaluator" }
@@ -28,7 +28,7 @@ ozpb-source-rpc = { path = "../../crates/source-rpc", default-features = false }
 # The pure authority check, run over account state the source-rpc scan reads from a test ledger.
 ozpb-call-surface-core = { path = "../../crates/call-surface-core" }
 ozpb-recorder-core = { path = "../../crates/recorder-core" }
-soroban-ledger-snapshot = "=26.1.0"
+soroban-ledger-snapshot = "=28.0.0"
 hex = "0.4"
 
 # The generated suite test exercises the harness cases against the compiled golden policy.

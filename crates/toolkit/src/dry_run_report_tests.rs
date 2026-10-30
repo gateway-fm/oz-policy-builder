@@ -760,3 +760,28 @@ fn contract_delegates_are_outside_native_scope_before_any_key_is_read() {
     });
     assert!(native_scope(&request).unwrap_err().contains("Ed25519"));
 }
+
+#[test]
+fn native_refusals_match_shared_wallet_vectors() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/examples/native-refusal-vectors.json"
+    ))
+    .unwrap();
+    for class in vectors["classes"].as_array().unwrap() {
+        for enforcer in vectors["enforcers"].as_array().unwrap() {
+            for code in vectors["codes"].as_array().unwrap() {
+                let tuple = json!([class, enforcer, code]);
+                let expected = vectors["allowed"].as_array().unwrap().contains(&tuple);
+                assert_eq!(
+                    predicted_refusal(
+                        serde_json::from_value(class.clone()).unwrap(),
+                        serde_json::from_value(enforcer.clone()).unwrap(),
+                        code.as_u64().unwrap() as u32,
+                    ),
+                    expected,
+                    "{tuple}"
+                );
+            }
+        }
+    }
+}

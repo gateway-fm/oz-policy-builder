@@ -19,6 +19,9 @@ export function nativeFixture({ maxCalls = 2, accountAddress = vector.binding.ac
     { label: 'original', rule_index: 0, class: 'original', expected: 'permit', actual: 'permit', agree: true },
     { label: 'different function', rule_index: 0, class: 'different_function', expected: 'deny', actual: 'deny(FunctionNotAllowed)', agree: true },
     { label: 'wrong signer', rule_index: 0, class: 'wrong_signer', expected: 'deny', actual: 'deny(PredicateUnsatisfied)', agree: true },
+    { label: 'wrong address', rule_index: 0, class: 'different_address_arg', expected: 'deny', actual: 'deny(NoTupleMatched)', agree: true },
+    { label: 'empty signers', rule_index: 0, class: 'zero_signers', expected: 'deny', actual: 'deny(NoSigners)', agree: true },
+    { label: 'wrong arity', rule_index: 0, class: 'arg_arity', expected: 'deny', actual: 'deny(NoTupleMatched)', agree: true },
   ];
   const requiredClasses = ['original', 'different_function', 'wrong_signer'];
   const expected = { runHash: binding.run_hash, suiteHash: binding.suite_hash, accountAddress: binding.account_address,
@@ -30,9 +33,10 @@ export function nativeFixture({ maxCalls = 2, accountAddress = vector.binding.ac
   const cases = outcomes.map((outcome, index) => {
     const permitted = outcome.expected === 'permit';
     return { case_id: `case:${index}`, label: outcome.label, class: outcome.class, expected_permit: permitted,
-      permitted, agree: true, refusal_contract: permitted ? null : (index === 1 ? policyAddress : binding.account_address),
-      refusal_code: permitted ? null : 3, state_before_hash: H('a'), state_after_hash: permitted ? H('b') : H('a'),
-      state_changed: permitted, ledger: 1000, counter_seed: null, counter_before: 0, counter_after: permitted ? 1 : 0 };
+      permitted, agree: true, refusal_contract: permitted ? null : (index === 2 ? binding.account_address : policyAddress),
+      refusal_code: [null, 5, 3016, 6, 1, 6][index], state_before_hash: H('a'), state_after_hash: permitted ? H('b') : H('a'),
+      state_changed: permitted, ledger: 1000, counter_seed: maxCalls === null ? null : 0, counter_before: maxCalls === null ? null : 0,
+      counter_after: maxCalls === null ? null : permitted ? 1 : 0 };
   });
   const result = { type: 'result', schema: 1, binding, execution_network_id: prepared.execution_network_id,
     account_code_hash: ACCOUNT_WASM, policy_address: policyAddress, policy_code_hash: policyCodeHash,
