@@ -1,15 +1,16 @@
 name: publish image
 
-# Publishes the self-hosted API and TLS proxy images to GHCR for a published GitHub Release,
+# Publishes the self-hosted API and TLS proxy images to Docker Hub (`gatewayfm/oz-policy-builder`
+# and `gatewayfm/oz-policy-builder-proxy`) for a published GitHub Release,
 # after every check the self-hosted workflow runs (build-context boundary, TLS and offline
 # reproduction, rootless worker containment), on each architecture. It deploys nothing and runs
 # no service. A pull request that changes this file runs the same build and checks on both
 # architectures without logging in or pushing.
 #
-# Permissions: the build job needs `packages: write` to push on a release, and a job's
-# permissions cannot depend on the event, so a same-repository pull request's run holds it too
-# (a fork's token is read-only). Its push steps do not run on pull requests, and checkout does
-# not persist the token into the repository the job's scripts run in.
+# Credentials: the organization's Docker Hub secrets (`DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`),
+# read only by the release-only push steps; a pull request's run never references them, and a
+# fork's run cannot. The GitHub token stays read-only except for the provenance attestation,
+# and checkout does not persist it into the repository the job's scripts run in.
 on:
   release:
     types: [published]
@@ -39,13 +40,12 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
-      packages: write
     env:
       ARCH: ${{ matrix.arch }}
+      REPOSITORY: docker.io/gatewayfm/oz-policy-builder
       # Through the environment, not interpolated into scripts: the tag comes from the event
       # payload.
       RELEASE_TAG: ${{ github.event.release.tag_name }}
-      OWNER: ${{ github.repository_owner }}
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/hosted-context.py HEAD > "$RUNNER_TEMP/ozpb-context.tar"
-          # The source label links the GHCR packages to this repository.
+          # The source label names the repository each image was built from.
           docker build --pull --target proxy --file deployment/Dockerfile \
             --label "org.opencontainers.image.source=$SOURCE_URL" \
             --tag ozpb-proxy:check - < "$RUNNER_TEMP/ozpb-context.tar"
@@ -99,15 +99,16 @@ jobs:
       - name: push this architecture's images
         if: github.event_name == 'release'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          repository="ghcr.io/${OWNER,,}/oz-policy-builder"
-          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker tag ozpb-self-host:check "$repository:$RELEASE_TAG-$ARCH"
-          docker tag ozpb-proxy:check "$repository-proxy:$RELEASE_TAG-$ARCH"
-          docker push "$repository:$RELEASE_TAG-$ARCH"
-          docker push "$repository-proxy:$RELEASE_TAG-$ARCH"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          docker tag ozpb-self-host:check "$REPOSITORY:$RELEASE_TAG-$ARCH"
+          docker tag ozpb-proxy:check "$REPOSITORY-proxy:$RELEASE_TAG-$ARCH"
+          docker push "$REPOSITORY:$RELEASE_TAG-$ARCH"
+          docker push "$REPOSITORY-proxy:$RELEASE_TAG-$ARCH"
+          docker logout docker.io
 
   publish:
     name: publish multi-architecture images
@@ -117,21 +118,21 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      packages: write
       id-token: write
       attestations: write
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name }}
-      OWNER: ${{ github.repository_owner }}
+      REPOSITORY: docker.io/gatewayfm/oz-policy-builder
     steps:
       - name: combine both architectures under the release tag
         id: index
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          repository="ghcr.io/${OWNER,,}/oz-policy-builder"
-          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          repository="$REPOSITORY"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
           for image in "$repository" "$repository-proxy"; do
             docker buildx imagetools create --tag "$image:$RELEASE_TAG" \
               "$image:$RELEASE_TAG-amd64" "$image:$RELEASE_TAG-arm64"
@@ -149,17 +150,20 @@ jobs:
             echo "proxy_name=$repository-proxy"
             echo "proxy_digest=$proxy_digest"
           } >> "$GITHUB_OUTPUT"
+      # The attestations are stored with GitHub and checked by digest
+      # (`gh attestation verify oci://<reference>`); nothing extra is pushed to Docker Hub, whose
+      # repositories keep tags immutable.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.index.outputs.api_name }}
           subject-digest: ${{ steps.index.outputs.api_digest }}
-          push-to-registry: true
+          push-to-registry: false
           create-storage-record: false
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.index.outputs.proxy_name }}
           subject-digest: ${{ steps.index.outputs.proxy_digest }}
-          push-to-registry: true
+          push-to-registry: false
           create-storage-record: false
       - name: record the immutable references
         env:
