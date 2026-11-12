@@ -413,7 +413,11 @@ trust, the pinned registry trust (`OZPB_REGISTRY_ROOTS_JSON`, `OZPB_REGISTRY_MIN
 bounds the read and recognizes the code. The CLI takes the same
 map from `--rpc-sources` (or `OZPB_RPC_SOURCES_FILE`).
 
-`--http` mode is **localhost-only** and refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
+`--http` mode binds **loopback only** unless `OZPB_HTTP_ALLOWED_HOSTS` names the public hosts
+an authenticated, TLS-terminating ingress forwards (a comma-separated `host[:port]` list, no
+wildcards) that is not loopback. Only then does it accept a routable address, and it then answers
+only those hosts; any other `Host`, loopback names included, is refused (`403`), as is any request
+with an `Origin` header, in either mode. It refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
 (≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
 full `https://` URLs the record tools may reach: each entry is parsed as a URL, so a bare
 hostname is refused at startup rather than at first use. Every request to `/v1/mcp` then
