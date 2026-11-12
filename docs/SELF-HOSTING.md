@@ -67,16 +67,18 @@ than a mutable tag. `self-hosted.yml` builds and tests in CI and never pushes.
 For each published GitHub Release whose tag (`v` plus the workspace version in `Cargo.toml`)
 contains it, `publish-image.yml` builds both images for amd64 and arm64 from the release tag,
 runs every check `self-hosted.yml` runs on each, and publishes them to
-`ghcr.io/gateway-fm/oz-policy-builder` and `ghcr.io/gateway-fm/oz-policy-builder-proxy` under
+`docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy` under
 the release tag, with a GitHub build-provenance attestation. The workflow summary lists both
 `@sha256` references; use those, and check them with
 `gh attestation verify oci://<reference> --repo gateway-fm/oz-policy-builder`. A published
 image is software for operators to run; it does not mean an endpoint is running.
 
-GHCR creates a new package as private. After the first publication an organization owner makes
-both packages public once, under the package's settings; GitHub does not allow making a public
-package private again. Until then, pulls and attestation checks from outside the organization
-are refused. `v0.1.0` predates the workflow and has no images.
+Both Docker Hub repositories must exist and be public before the first release that publishes
+to them: an organization owner creates them once, with immutable tags. A push to a missing
+repository would create it with the namespace's default visibility. The pre-releases up to
+`v0.2.0-rc.2` were published to `ghcr.io/gateway-fm/oz-policy-builder` and
+`ghcr.io/gateway-fm/oz-policy-builder-proxy` instead, and stay there. `v0.1.0` predates the
+workflow and has no images.
 
 ## Configure the operator boundary
 
