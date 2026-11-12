@@ -18,8 +18,9 @@ the reviewed grant. When the operator names the deployed [atomic live helper](AT
 the owner can also consent to a [live-enforcement check](#live-enforcement-check): two
 enforce-mode simulations on testnet, never submitted. When all four layers passed on recent
 evidence and the live check's signatures expired unused, the owner can [install](#installation)
-the reviewed grant with one passkey-signed transaction and later [revoke](#revocation) it with
-another. [Revoke-first replacement](#revoke-first-replacement) is available for verified
+the reviewed grant with one passkey-signed transaction, watch the automation delegate
+[use it](#using-the-grant) once with no passkey and the same payment then refused by the policy's
+call cap, and [revoke](#revocation) it with another passkey-signed transaction. [Revoke-first replacement](#revoke-first-replacement) is available for verified
 session-local grants, and [on-demand monitoring](#on-demand-installed-grant-monitoring) is
 available within the scope below. A virtual authenticator's signature is automation evidence,
 not a human acceptance decision.
@@ -93,6 +94,14 @@ an operator JSON file using absolute canonical paths:
 }
 ```
 
+`rpcUrl` is used by the backend and the CLI alike. Any standard Stellar RPC endpoint works, but the
+sample transfer, installation and removal must finish their reads within 12 ledgers (about a
+minute), so the endpoint has to answer in about a second a request or better. On 10 November 2026
+SDF's public testnet endpoint answered in 8–9 s a request and the sample was refused at
+submission, while Gateway's public testnet endpoint (`https://rpc.testnet.stellar.gateway.fm`, no
+key needed) answered in 0.2–0.5 s and the whole flow, removal included, completed. A refusal for
+this reason says `rpc_too_slow` where the backend can tell.
+
 Set the minimum registry version to the operator's accepted rollback floor. Optional
 `stellarBinary`, `cargoHome`, `rustupHome`, and `buildCacheDir` fields select existing local
 toolchain paths; the cache directory also requires mode `0700`. Optional `nativeExecutable`
@@ -133,8 +142,10 @@ Use **Connect Claude** on the Policy Builder page to pair the local agent sessio
 wallet. After the final permission card is confirmed, Claude can deliver an unverified draft
 without a separate install-skill command or copying proposal JSON. The wallet shows a
 notification; select **Review proposal from Claude** to enter the same independent regeneration
-and permission-comparison path described below. Delivery alone starts no RPC, build, deployment
-or signing, and retains the current review and grant recovery controls. This is a same-machine,
+and permission-comparison path described below. Its result appears in section 2, **The grant**;
+the folded **Record and generate here, without Claude** controls are not needed on this path.
+Delivery alone starts no RPC, build, deployment or signing, and retains the current review and
+grant recovery controls. This is a same-machine,
 local-stdio integration; remote hosted MCP has no access to the user's loopback wallet.
 Keep the page open from **Connect Claude** until you review the proposal: a reopened page
 shows the earlier connection and offers **Disconnect Claude**, but cannot review its draft.
@@ -143,7 +154,7 @@ disconnect semantics. Paste/file import remains the fallback.
 
 ## Importing an agent proposal
 
-After attaching the account, open **Import a grant proposal** under **Record and generate**.
+After attaching the account, open **Import a grant proposal** under **2. The grant**.
 Paste an `ozpb-grant-proposal/v1` document or choose a JSON file up to 16 KiB, then select
 **Import and verify proposal**. The accepted grant is one exact native XLM transfer from this
 account to a G-address recipient on testnet: one strict `any_of` delegated signer, an expiry
@@ -190,6 +201,9 @@ and no delegated transaction was submitted under the installed rule.
 1. Create a passkey using Pollywallet's existing authenticator helper, then separately review
    and confirm recognized account deployment. Alternatively attach the public locator of an
    existing recognized account. Retain that locator to reconnect; it contains no private key.
+   The backend creates one account per session, so once it has, the page does not offer a new
+   passkey again; attaching a locator remains available. An expired account preview is shown
+   again for the same passkey.
 2. For an account created in this session, prepare the fixed sample transfer, review its
    sender, recipient and fee, then separately approve it with the owner passkey. It transfers
    exactly 0.1 testnet XLM back to the local fee payer, which pays at most one testnet XLM in
@@ -223,8 +237,21 @@ Account and policy deployment confirmations are distinct from owner authorizatio
 or refused signing attempt consumes the prepared review. Sample preparation is available only
 for the exact wallet created in this backend session and checks its retained full owner-zero
 getter, including the fresh constructor's empty `policy_ids` and `signer_ids: [0]`.
-A new preparation invalidates the old action; its 120-second token can expire sooner
-under the ledger freshness checks. Cancellation before submission permits another preparation.
+A new preparation invalidates the old action. Cancellation before submission permits another
+preparation.
+
+Every prepared review shows the seconds it stays open, and the browser stops offering it before
+the backend would refuse it: the action's 120 seconds, counted from before the request, or sooner
+where approval checks a ledger bound again, less five seconds for the submission to arrive. The
+sample's owner read may be at most 12 ledgers old; live consent needs 8 ledgers of signature
+validity left, and the run 3. The browser counts a testnet ledger as five seconds (200 consecutive
+ledgers measured on 10 November 2026), so a sample review stays open for about 50 seconds. A
+window closes on the wall clock too, because ledgers keep closing while a sleeping computer's
+monotonic clock may not. An expired review asks no passkey, and one that ends while the passkey is
+open is not sent: its signature never leaves the browser. The review can then be prepared again,
+except where the backend has already released an entry for it: an expired installation review,
+or a live check whose run window ended during the passkey, keeps that entry valid until its
+ledger, and the next one is released only after that ledger has passed.
 After any sample submission attempt, the client disables further attempts, including when a
 response is lost. Backend enforcement, fresh code/owner/sequence checks and the journal still
 apply before the fee payer signs or sends anything. The confirmed hash is offered for a
@@ -247,10 +274,11 @@ costs the fee payer nothing: the authority review refuses a grant whose delegate
 exist, and the host checks the delegate's signatures against that account. If that account cannot
 be created, the key is dropped and its slot freed, so the step can be retried. Use that address as the grant's restricted delegate. The owner passkey never stands in for
 it, and a grant naming any other delegate address cannot run these checks. The key never signs
-supplied bytes. It signs through two capabilities only, each refusing the other's network: the
-offline capability signs authorization preimages in the derived offline execution network, and
-the [live capability](#live-enforcement-check) builds and signs the two testnet transfers of one
-consented live check.
+supplied bytes. It signs through three capabilities only. The offline capability signs
+authorization preimages in the derived offline execution network and refuses testnet. The
+[live capability](#live-enforcement-check) builds and signs the two testnet transfers of one
+consented live check. The [use capability](#using-the-grant) builds and signs one use of an
+installed one-call grant on testnet. The two testnet capabilities refuse every other network.
 
 `Run local execution checks` runs this layer and then the
 [captured-target layer](#captured-target-execution) from one CLI preparation, so both report the
@@ -405,8 +433,10 @@ two named cases, not the derived deny suite.
    `NextId`, and the candidate's installation marker for the next rule ID, which must be the one
    the review established. It reads back the delegate's classic testnet account, which must be
    signable by its master key alone, and creates it through Friendbot if it is missing. It then
-   fixes the expiry ledger N, 30 ledgers
-   (about two and a half minutes) after the latest ledger, and returns the consent statement.
+   fixes the expiry ledger N, 12 ledgers (about one minute) after the latest ledger, and returns
+   the consent statement. The window is short because installation waits until it has passed: the
+   owner has about 20 seconds to consent, and the passkey and both simulations the rest, which a
+   fast RPC (under a second a request) allows.
    Nothing is signed, and nothing signable has been released.
 2. **Consent.** The browser derives the statement itself from the reviewed grant and the
    backend's inputs (helper, candidate hash, rule ID, ledgers) and shows it: both exact calls,
@@ -416,7 +446,7 @@ two named cases, not the derived deny suite.
    none of them names the helper; all of them reach the operator's RPC endpoint inside the
    simulation requests; and the replay check after N compares the account with the state read
    before they existed. Consent returns the statement's SHA-256. The backend accepts it only for
-   the statement it prepared and only while at least 15 ledgers remain before N. Only then does
+   the statement it prepared and only while at least 8 ledgers remain before N. Only then does
    it journal the replay obligation (below) and release the unsigned owner entry with a fresh
    nonce. The browser checks that entry is exactly the reviewed installation before the passkey
    sees it.
@@ -620,6 +650,58 @@ Before installing again after a restart, the operator:
 An installation that needs a separate restoration transaction is refused. Restore the archived
 entries, then review again.
 
+## Using the grant
+
+Once a one-call exact native transfer is installed and verified, section 8 of the page shows what
+the grant is for: the automation delegate acting alone. Neither step asks for the owner's passkey.
+
+`Pay with the automation key` (`use-grant`) makes the granted payment once, for real:
+
+1. The backend reads, each from a node at or past one ledger: the installed rule, which must read
+   back exactly as recorded; the policy's `CallCount(account, rule)`, which must be 0; that the
+   recipient exists and the account's balance covers the amount; and the fee payer's sequence. A
+   counter already above 0 means someone else used the grant with the delegate's signatures:
+   refused as `grant_already_used`, with nothing signed. Reads that leave fewer than 15 ledgers of
+   the signatures' window are refused as `rpc_too_slow` before anything is signed.
+2. The delegate's use capability builds and signs both of its entries for exactly
+   `transfer(account, recipient, amount)` on the testnet native asset, checked under exactly
+   `[rule]` and signed by `Delegated(delegate)`, as the live check builds them. Their signatures
+   expire 30 ledgers after the ledger read in step 1 (`USE_SIGNATURE_LEDGERS`), before the grant
+   does. The capability signs once.
+3. The fee payer's envelope is valid only below that expiry ledger, so it cannot land, and fail,
+   after the signatures expire. It is sent only while at least 15 of those ledgers remain
+   (`USE_SUBMIT_MIN_LEDGERS`); otherwise nothing is sent and the step can be tried again.
+4. The fee payer enforce-simulates, signs and submits once, as for every submission. The use is
+   recorded `used` only with the native asset's one `transfer` event from the account to the
+   recipient for exactly the amount, and the policy's counter read at 1 from a node at or past the
+   payment's ledger. A confirmed payment that fails those checks stays listed in `status` as
+   `confirmed_unverified`.
+
+A use that may have reached the network is never attempted again. A send whose result is uncertain
+leaves the fee payer unable to submit anything else in this session, revocation included, as for
+any submission. A refusal that leaves the fee payer able to submit sent no transaction, and the use
+can be tried again. Its signed entries did reach the operator's RPC inside the enforce-mode
+simulation and stay valid until they expire; the policy's one use bounds what they can do, and
+whoever spends it first makes every later use `grant_already_used`. The delegate signs at most
+three uses per installation.
+
+`Try the same payment again` (`try-grant-again`), after a verified use, signs the same transfer
+under fresh signatures with the same bounds, reads the counter at 1 first, and only simulates it in
+enforce mode. It is never submitted. Only an answer from a node at or past the payment's ledger is
+judged. The result counts as the call cap refusing only when the response is the generated
+policy's own `CallCountExceeded` (7). That code must come from the account's authentication of
+exactly this envelope's entry, in the printed log and in the structured events, with the same
+attribution rules as a [live denial](#live-enforcement-check). A permit of exactly this envelope
+(its entries echoed, a successful record of this transfer and this entry's check) is recorded as
+the cap not holding (`permitted`). Either is the verdict, recorded once per use. Any other answer
+settles nothing and the try may be made again, three signatures at most. Those signatures stay
+valid for up to 30 ledgers and reach the operator's RPC inside the simulation request. While the
+use is spent the policy refuses them; after a `permitted` verdict they could move funds until they
+expire, so the page asks for revocation at once.
+
+The journal records the payment like every submission (stage `use-grant`) and the second try's
+verdict as a `repeat-use` entry: public addresses, ledgers and the verdict only.
+
 ## Revocation
 
 `Prepare revocation` (`prepare-revoke`) is offered for an installation from this session:
@@ -634,6 +716,13 @@ entries, then review again.
 4. Browser and backend validate the draft (`validateRemovalAssembly`) against a removal approval
    bound to the wallet's owner rule and the installation's account, rule ID and transaction. The
    browser shows its own consent statement.
+
+Every read in steps 1–3 and the ledger read after the draft must fall within 12 ledgers of an
+anchor ledger read first. The code, owner-rule and rule reads are independent, so they are made
+at the same time after the anchor; one after another they could not fit the window on a slow RPC
+(testnet answered in 0.5 to 8.6 s a request on 10 November 2026). A read from a node behind the
+anchor is asked again. Reads that still miss the window are refused as `rpc_too_slow` before
+anything is released, and removal can be prepared again.
 
 `confirm-revoke` repeats those reads, checks the owner's signature and submits once, as
 installation does. A removal that was refused before anything was sent can be prepared again:
@@ -655,6 +744,28 @@ of these hold:
 A rule that still reads back, or any other answer, refuses success. Policy cleanup is reported
 separately, from the policy's installation marker: `not_installed`, `still_installed`, or
 `not_checked`. The pinned account removes a rule's policies on a best effort basis.
+
+## When the wallet refuses
+
+A refused action names at most one reason from a closed set, and nothing from the request or the
+error. The page explains it and says what to do; anything else is shown as a plain refusal. After a
+sample or installation submission was attempted, the browser passes on no reason: that attempt
+cannot be repeated in the session, whatever the cause.
+
+| Reason | Meaning |
+| --- | --- |
+| `busy` | The backend is still serving an earlier request; try again shortly. |
+| `rpc_too_slow` | The RPC answered too slowly for the reads to fit their ledger window; the backend stopped before submitting anything. |
+| `evidence_stale` | The captured or live evidence is older than the installation allows (360 ledgers); run the checks again. |
+| `signatures_still_valid` | Signatures the wallet released earlier, by a live check or an installation entry, have not expired yet; wait for their ledger. |
+| `account_changed` | The replay check found the account changed while released signatures were valid. |
+| `review_expired` | The prepared action is no longer available, in the backend or in this browser: it expired or was already used. |
+| `grant_already_used` | The policy counted a use of the installed grant that this page did not make; nothing was signed or sent. Revoke the grant. |
+
+The installation section shows the last ledger at which this review's evidence is still accepted
+(`installDeadline`), from the captured and live evidence the browser already holds. Submission
+checks the evidence again after the backend's authority recheck, so the installation should start
+a little earlier.
 
 ## Report layers
 
@@ -709,7 +820,10 @@ Toolkit tests exercise session authentication, one-shot state, transport limits,
 and signature checks, and the client controller's refusal paths. The installation and
 revocation tests drive all four layers with a fake worker and RPC, then the gate, the replay
 obligations, the authority recheck, single submission, and the event and read-back checks
-against receipts in the shapes testnet returns. They are fixture evidence, not a testnet run. The apply-script tests cover
+against receipts in the shapes testnet returns. The grant-use tests take that installation through
+one use by the delegate (single submission, the transfer event, the counter from 0 to 1) and the
+second try, judged against synthesized enforce-mode responses: the call cap's refusal, a permit,
+another policy code, and responses bound to another envelope. They are fixture evidence, not a testnet run. The apply-script tests cover
 immutable inputs, dirty/different upstream checkouts, symlinks, missing lock metadata, and
 binary/rename patches that omit ordinary text headers.
 
@@ -732,6 +846,12 @@ helpers at the supported `localhost` origin, independently verifies installation
 sample-transfer signatures, and submits no transaction. It removes its temporary browser
 module afterward. Omit
 `OZPB_BROWSER_CHANNEL` to use the installed Playwright Chromium instead of local Chrome.
+
+`OZPB_BROWSER_CHANNEL=chrome node scripts/test-wallet-page-browser.mjs http://localhost:3000`
+drives the route's new-account path against controlled backend dependencies and a virtual
+authenticator: the sample transfer follows the account, a spent passkey or open review is not
+offered again, the review window is shown, and a review past its window asks no passkey and is
+prepared again before a single submission. It makes no chain or signing claim.
 
 At the pinned upstream revision, `pnpm exec tsc --noEmit` already reports five errors in
 `src/hooks/useWallet.ts` and `src/lib/tx-analyzer.ts`. The unchanged upstream checkout produces

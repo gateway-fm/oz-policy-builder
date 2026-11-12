@@ -1,7 +1,11 @@
+import { REFUSAL_REASONS } from './client.mjs';
 import { verificationGate } from './verification.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const refused = () => new Error('wallet action refused; refresh and review the exact grant');
+// A refusal may say why, in one word from the closed set the page explains (client.mjs REFUSAL_REASONS).
+const because = (reason) => Object.assign(refused(), { reason });
+const expired = () => because('review_expired');
 const copy = (value) => {
   const result = JSON.parse(JSON.stringify(value));
   const freeze = (part) => {
@@ -12,19 +16,30 @@ const copy = (value) => {
 };
 const sameWallet = (a, b) => ['contractId', 'credentialId', 'publicKey', 'verifier'].every((key) => a?.[key] === b?.[key]);
 const LAYERS = ['reference', 'account_wasm', 'captured_target', 'live_enforcement'];
+// Testnet closes a ledger every 5 s (200 consecutive ledgers measured on 10 November 2026).
+const LEDGER_MS = 5_000;
+// A submission still has to reach the backend before the backend's own deadline.
+const MARGIN_MS = 5_000;
+// Ledger bounds the backend checks again when the owner approves: the sample's owner read may be at
+// most 12 ledgers old (shared/sample.mjs); live consent needs 8 ledgers of signature validity left,
+// and the run 3 (shared/live-consent.mjs).
+const OWNER_READ_LEDGERS = 12;
+const LIVE_CONSENT_MIN_LEDGERS = 8;
+const LIVE_RUN_MIN_LEDGERS = 3;
 
 /** The route supplies the real validators; only serialized XDR crosses SDK versions. */
 export class WalletController {
-  #request; #validators; #sign; #origin; #pins; #notify; #pause; #busy = false; #agentEpoch = 0;
+  #request; #validators; #sign; #origin; #pins; #notify; #pause; #now; #wall; #deadlines = {}; #busy = false; #agentEpoch = 0;
   #state = copy({ status: null, wallet: null, record: null, artifact: null, deployment: null,
     review: null, accountPreview: null, deployPreview: null, installation: null, receipt: null,
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
-    removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, agent: null, agentStale: null, busy: false });
+    removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, agent: null, agentStale: null,
+    grantUse: null, grantRepeat: null, windows: {}, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
-    pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }) }) {
+    pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }), now = () => performance.now(), wall = () => Date.now() }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
-    this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange; this.#pause = pause;
+    this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange; this.#pause = pause; this.#now = now; this.#wall = wall;
   }
   get state() { return this.#state; }
   #set(values) { this.#state = copy({ ...this.#state, ...values }); this.#notify(this.#state); }
@@ -34,14 +49,42 @@ export class WalletController {
     installPreview: null, revokePreview: null, replacementPreview: null }); }
   #clearLifecycle() { this.#set({ installation: null, receipt: null, installOwner: null,
     installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null,
-    revokeAttempted: false, removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null }); }
+    revokeAttempted: false, removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null,
+    grantUse: null, grantRepeat: null }); }
   #clearSample() { this.#set({ sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false }); }
   async #act(operation) {
     if (this.#busy) throw refused();
     this.#busy = true; this.#set({ busy: true });
     try { return await operation(); }
-    catch { throw refused(); }
+    catch (error) { throw REFUSAL_REASONS.has(error?.reason) ? because(error.reason) : refused(); }
     finally { this.#busy = false; this.#set({ busy: false }); }
+  }
+  /** Both clocks: the monotonic one may stop while the computer sleeps, but ledgers keep closing. */
+  #started() { return { mono: this.#now(), wall: this.#wall() }; }
+  /**
+   * When this browser stops offering a prepared review: the backend's action lifetime counted from
+   * before the request was sent, or sooner where the backend re-checks a ledger bound on approval,
+   * less the time a submission needs to arrive. A review without a valid lifetime is refused rather
+   * than left open.
+   */
+  #window(started, action, ledgers = Infinity) {
+    const seconds = action?.expires_in_seconds;
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 120 || !(ledgers > 0)) throw refused();
+    const length = Math.min(seconds * 1000, ledgers * LEDGER_MS) - MARGIN_MS;
+    return { mono: started.mono + length, wall: started.wall + length };
+  }
+  #within(window) { return Boolean(window) && this.#now() < window.mono && this.#wall() < window.wall; }
+  /** Records the review's window; the state shows its monotonic end. */
+  #windows(kind, window) {
+    this.#deadlines = { ...this.#deadlines, [kind]: window };
+    return { ...this.#state.windows, [kind]: window.mono };
+  }
+  #open(kind) { return this.#within(this.#deadlines[kind]); }
+  /** Ledgers left before the owner read in these limits is too old for the backend to accept. */
+  #ownerReadLedgers(limits) {
+    const { currentLedger, ownerReadLedger } = limits ?? {};
+    return Number.isSafeInteger(currentLedger) && Number.isSafeInteger(ownerReadLedger)
+      ? OWNER_READ_LEDGERS - (currentLedger - ownerReadLedger) : NaN;
   }
   #capability(name) {
     if (this.#state.status?.capabilities?.[name] !== true) throw refused();
@@ -69,7 +112,20 @@ export class WalletController {
       const listed = this.#confirmed(installRuleId);
       if (listed) this.#set({ installation: listed });
     }
+    // A payment by the automation key whose response never arrived is adopted once the backend lists it.
+    if (this.#state.installation && !this.#state.grantUse && this.#state.delegate) {
+      const listed = (status.installations ?? []).find((item) => item?.installationId === this.#state.installation.installationId);
+      if (listed?.use?.status === 'used' && this.#usedExactly(listed.use)) this.#set({ grantUse: listed.use });
+    }
     return status;
+  }
+  /** Exactly one use of this session's installation by this session's delegate, the counter from 0 to 1. */
+  #usedExactly(use) {
+    const { installation, delegate } = this.#state, count = use?.callCount;
+    return use?.status === 'used' && use.installationId === installation?.installationId && use.ruleId === installation.ruleId
+      && use.delegate === delegate?.address && use.signedBy === 'automation_delegate_only' && use.ownerAsked === false
+      && HASH.test(use.transactionHash ?? '') && count?.before === 0 && count.after === 1 && count.max === 1
+      && /^[1-9][0-9]{0,18}$/.test(use.amountStroops ?? '');
   }
   /** The backend serves one request at a time: while it still works on a lost request, ask again. */
   async #statusWhenFree() {
@@ -116,19 +172,21 @@ export class WalletController {
       if (this.#state.agent) throw refused();
       this.#clear();
       this.#clearSample();
+      const started = this.#started();
       const result = await this.#request('prepare-account', credential);
       if (!result.action?.id || result.summary?.accountWasm !== this.#pins.accountWasm
         || result.summary?.verifierWasm !== this.#pins.verifierWasm
         || result.summary?.credentialId !== credential.credentialId || result.summary?.publicKey !== credential.publicKey) throw refused();
-      this.#set({ accountPreview: result });
+      this.#set({ accountPreview: result, windows: this.#windows('account', this.#window(started, result.action)) });
     });
   }
   async confirmAccount() {
     return this.#act(async () => {
       if (this.#state.agent) throw refused();
-      const preview = this.#state.accountPreview;
+      const preview = this.#state.accountPreview, open = this.#open('account');
       this.#set({ accountPreview: null });
       if (!preview) throw refused();
+      if (!open) throw expired();
       const result = await this.#request('confirm-account', { id: preview.action.id });
       if (result.wallet?.credentialId !== preview.summary.credentialId
         || result.wallet?.publicKey !== preview.summary.publicKey || !result.wallet?.contractId || !result.wallet?.verifier) throw refused();
@@ -144,6 +202,7 @@ export class WalletController {
       this.#capability('sampleTransfer');
       const { wallet, sample, sampleAttempted } = this.#state;
       if (!wallet || !sample || sampleAttempted) throw refused();
+      const started = this.#started();
       const result = await this.#request('prepare-sample', { wallet });
       if (!HASH.test(result.action?.id) || !Number.isInteger(result.action?.expires_in_seconds)
         || result.action.expires_in_seconds < 1 || result.action.expires_in_seconds > 120) throw refused();
@@ -151,7 +210,8 @@ export class WalletController {
       this.#validators.validateSampleAssembly({ approval, assembly: result.assembly,
         ownerRuleXdr: result.ownerRuleXdr, limits: result.limits });
       this.#set({ samplePreview: { action: result.action, assembly: result.assembly,
-        ownerRuleXdr: result.ownerRuleXdr, limits: result.limits } });
+        ownerRuleXdr: result.ownerRuleXdr, limits: result.limits },
+        windows: this.#windows('sample', this.#window(started, result.action, this.#ownerReadLedgers(result.limits))) });
     });
   }
   cancelSample() {
@@ -161,20 +221,27 @@ export class WalletController {
   async approveSample() {
     return this.#act(async () => {
       const { wallet, sample, samplePreview, sampleAttempted } = this.#state;
+      const open = this.#open('sample');
       this.#set({ samplePreview: null });
       this.#capability('sampleTransfer');
       if (!wallet || !sample || !samplePreview || sampleAttempted) throw refused();
+      if (!open) throw expired();
       const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: samplePreview.ownerRuleXdr });
       const checked = this.#validators.validateSampleAssembly({ approval, assembly: samplePreview.assembly,
         ownerRuleXdr: samplePreview.ownerRuleXdr, limits: samplePreview.limits });
       const signedAuthEntriesXdr = await this.#sign({ approval, checked });
       const signed = await this.#validators.validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr,
         origin: this.#origin });
+      // A review that ended while the passkey was open is not sent; its signature has not left this browser.
+      if (!this.#open('sample')) throw expired();
       // A lost response cannot establish whether submission happened. Require a fresh
       // session rather than exposing another signing or submission attempt.
       this.#set({ sampleAttempted: true });
-      const submitted = await this.#request('submit-sample', { id: samplePreview.action.id,
-        signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
+      // Attempted: whatever the backend says, this session cannot try again, so no reason is passed on.
+      let submitted;
+      try {
+        submitted = await this.#request('submit-sample', { id: samplePreview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
+      } catch { throw refused(); }
       if (!HASH.test(submitted?.transactionHash) || submitted.receipt?.hash !== submitted.transactionHash) throw refused();
       this.#set({ sampleTransactionHash: submitted.transactionHash, receipt: submitted.receipt });
     });
@@ -314,16 +381,18 @@ export class WalletController {
       this.#capability('deploy');
       const artifact = this.#state.artifact;
       if (!artifact || this.#state.deployment) throw refused();
+      const started = this.#started();
       const result = await this.#request('prepare-deploy', { artifactId: artifact.artifactId });
       if (!result.action?.id || result.summary?.specHash !== artifact.specHash || result.summary?.wasmHash !== artifact.wasmHash) throw refused();
-      this.#set({ deployPreview: result });
+      this.#set({ deployPreview: result, windows: this.#windows('deploy', this.#window(started, result.action)) });
     });
   }
   async confirmDeploy() {
     return this.#act(async () => {
-      const preview = this.#state.deployPreview;
+      const preview = this.#state.deployPreview, open = this.#open('deploy');
       this.#set({ deployPreview: null });
       if (!preview) throw refused();
+      if (!open) throw expired();
       const deployment = await this.#request('confirm-deploy', { id: preview.action.id });
       if (!deployment.deploymentId || !deployment.policyAddress || !HASH.test(deployment.bindingSetHash)
         || deployment.wasmHash !== this.#state.artifact.wasmHash) throw refused();
@@ -384,6 +453,7 @@ export class WalletController {
       const { review, delegate, artifact, deployment } = this.#state;
       const signers = artifact?.spec?.rules?.[0]?.authorization?.signers;
       if (!review || !delegate || !deployment || signers?.length !== 1 || signers[0].delegated?.address !== delegate.address) throw refused();
+      const started = this.#started();
       const result = await this.#request('prepare-live', { reviewId: review.reviewId, capabilityId: delegate.capabilityId });
       if (result?.live === null) {
         this.#set({ review: { ...review, verification: this.#verification(result) } });
@@ -397,7 +467,9 @@ export class WalletController {
       const display = this.#validators.consentDisplay(cases, { currentLedger: inputs.currentLedger });
       const statementSha256 = this.#validators.statementHash(display);
       if (statementSha256 !== result.live.statementSha256 || JSON.stringify(display) !== JSON.stringify(result.live.display)) throw refused();
-      this.#set({ livePreview: { action: result.live.action, display, statementSha256, cases } });
+      const consentLedgers = display.signature_expiration_ledger - LIVE_CONSENT_MIN_LEDGERS - inputs.currentLedger;
+      this.#set({ livePreview: { action: result.live.action, display, statementSha256, cases },
+        windows: this.#windows('live', this.#window(started, result.live.action, consentLedgers)) });
     });
   }
   cancelLive() {
@@ -412,16 +484,22 @@ export class WalletController {
   async consentLive() {
     return this.#act(async () => {
       const { review, livePreview } = this.#state;
+      const open = this.#open('live');
       this.#set({ livePreview: null, replay: null });
       this.#capability('liveCheck');
       if (!review || !livePreview) throw refused();
+      if (!open) throw expired();
+      const started = this.#started();
       const consent = await this.#request('consent-live', { id: livePreview.action.id, statementSha256: livePreview.statementSha256 });
       if (!HASH.test(consent?.action?.id ?? '') || consent.signatureExpirationLedger !== livePreview.display.signature_expiration_ledger) throw refused();
+      // Accepted consent leaves at least this many ledgers for the run.
+      const run = this.#window(started, consent.action, LIVE_CONSENT_MIN_LEDGERS - LIVE_RUN_MIN_LEDGERS);
       const checked = this.#validators.checkLiveOwnerEntry({ approval: review.approval, cases: livePreview.cases,
         ownerEntryXdr: consent.ownerEntryXdr });
       const signedAuthEntriesXdr = await this.#sign({ approval: review.approval, checked });
       const owner = await this.#validators.validateLiveOwnerSignature({ approval: review.approval, checked, signedAuthEntriesXdr,
         origin: this.#origin });
+      if (!this.#within(run)) throw expired();
       const result = await this.#request('run-live', { id: consent.action.id, signedAuthEntriesXdr: [owner.signedEntryXdr] });
       this.#set({ review: { ...review, verification: this.#verification(result) } });
     });
@@ -455,6 +533,7 @@ export class WalletController {
       const status = await this.#status();
       this.#capability('install');
       if (!review || installAttempted || !verificationGate(review.verification, this.#bindings()).acceptanceReady) throw refused();
+      const started = this.#started();
       const result = await this.#request('assemble', { reviewId: review.reviewId });
       try {
         if (!HASH.test(result?.action?.id ?? '') || !Number.isInteger(result.action.expires_in_seconds)
@@ -467,7 +546,7 @@ export class WalletController {
           maxFeeStroops: status.maxFeeStroops, ruleId: this.#ruleId(review.verification) });
         if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
         this.#set({ installPreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
-          limits: result.limits, display } });
+          limits: result.limits, display }, windows: this.#windows('install', this.#window(started, result.action)) });
       } catch (error) {
         this.#set({ review: null });
         throw error;
@@ -486,9 +565,11 @@ export class WalletController {
   async install() {
     return this.#act(async () => {
       const { review, artifact, installPreview, installAttempted, status } = this.#state;
+      const open = this.#open('install');
       this.#set({ installPreview: null });
       this.#capability('install');
       if (!review || !installPreview || installAttempted) throw refused();
+      if (!open) await this.#expiredInstall();
       const checked = this.#validators.validateAssembly({ approval: review.approval, assembly: installPreview.assembly,
         ownerRuleXdr: installPreview.ownerRuleXdr, limits: installPreview.limits });
       const display = this.#validators.installConsent({ approval: review.approval, checked, spec: artifact.spec,
@@ -497,6 +578,7 @@ export class WalletController {
       const signedAuthEntriesXdr = await this.#sign({ approval: review.approval, checked });
       const signed = await this.#validators.validateSignedAuthorization({ approval: review.approval,
         checked, signedAuthEntriesXdr, origin: this.#origin });
+      if (!this.#open('install')) await this.#expiredInstall();
       // The owner identity a removal will need is kept before anything is submitted.
       this.#set({ installAttempted: true, installRuleId: display.grant.rule_id, review: null,
         installOwner: { wallet: review.approval.wallet, authorityCommitment: review.approval.commitment, ownerRuleId: review.approval.ownerRuleId, ownerRuleXdr: review.approval.ownerRuleXdr } });
@@ -505,9 +587,10 @@ export class WalletController {
         submitted = await this.#request('submit', { id: installPreview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
       } catch (error) {
         // A confirmed transaction the backend could not verify, or whose response was lost, is still
-        // listed there: the status read adopts it, so that it can be seen and removed.
+        // listed there: the status read adopts it, so that it can be seen and removed. The attempt
+        // cannot be repeated, so its reason is not passed on.
         await this.#statusWhenFree();
-        throw error;
+        throw refused();
       }
       await this.#status().catch(() => {});
       const installation = submitted?.installation;
@@ -516,6 +599,14 @@ export class WalletController {
         || installation.account !== this.#state.wallet?.contractId || installation.ruleId !== display.grant.rule_id) throw refused();
       this.#set({ receipt: submitted.receipt, installation });
     });
+  }
+  /**
+   * The entry released for an expired installation review stays valid until its ledger; the review is
+   * kept, and the status read says when the backend can release the next one.
+   */
+  async #expiredInstall() {
+    await this.#status().catch(() => {});
+    throw expired();
   }
   /** The one confirmed installation the backend lists for this wallet, not removed, or null. */
   #confirmed(ruleId) {
@@ -544,15 +635,60 @@ export class WalletController {
       this.#set({ monitor: result });
     });
   }
+  /**
+   * The automation key uses this session's installed grant once, for real and alone: no passkey is
+   * asked. Accepted only as exactly one use of this installation's rule by this session's delegate,
+   * with the policy's counter read at 1 after the payment.
+   */
+  async useGrant() {
+    return this.#act(async () => {
+      await this.#status(); this.#capability('grantUse');
+      const { installation, delegate, removal, revokeAttempted, grantUse } = this.#state;
+      if (!installation || !delegate || removal || revokeAttempted || grantUse) throw refused();
+      let result;
+      try {
+        result = await this.#request('use-grant', { installationId: installation.installationId, capabilityId: delegate.capabilityId });
+      } catch (error) {
+        // A use the backend lists as confirmed cannot be tried again; its reason is not passed on.
+        await this.#statusWhenFree();
+        const listed = (this.#state.status?.installations ?? []).find((item) => item?.installationId === installation.installationId);
+        throw listed?.use ? refused() : error;
+      }
+      const use = result?.use;
+      if (!this.#usedExactly(use) || result.receipt?.hash !== use.transactionHash) throw refused();
+      this.#set({ grantUse: use, receipt: result.receipt });
+      await this.#status().catch(() => {});
+    });
+  }
+  /** The same payment again after the use: simulated only, and judged by the backend; a refusal counts only as the cap. */
+  async tryGrantAgain() {
+    return this.#act(async () => {
+      await this.#status(); this.#capability('grantRepeat');
+      const { installation, delegate, removal, grantUse, grantRepeat } = this.#state;
+      // A refusal by the cap, or a permit, is the verdict; another answer may be asked again.
+      if (!installation || !delegate || removal || grantUse?.status !== 'used'
+        || grantRepeat?.outcome === 'deny' || grantRepeat?.reason === 'permitted') throw refused();
+      const result = await this.#request('try-grant-again', { installationId: installation.installationId, capabilityId: delegate.capabilityId });
+      await this.#status().catch(() => {});
+      const repeat = result?.repeat;
+      const denied = repeat?.outcome === 'deny' && repeat.reason === 'call_count_exceeded' && repeat.code === 7 && repeat.submitted === false
+        && repeat.usedBy === grantUse.transactionHash;
+      const failed = repeat?.outcome === 'failed' && typeof repeat.reason === 'string';
+      if (!denied && !failed) throw refused();
+      this.#set({ grantRepeat: repeat });
+    });
+  }
   async prepareReplacement() {
     return this.#act(async () => {
       this.#set({ replacementPreview: null });
       await this.#status(); this.#capability('replacement');
       const { installation, removal } = this.#state;
       const display = this.#validators.replacementConsent({ installation, removal });
+      const started = this.#started();
       const result = await this.#request('prepare-replacement', { installationId: installation.installationId });
       if (!HASH.test(result?.action?.id ?? '') || JSON.stringify(result.display) !== JSON.stringify(display)) throw refused();
-      this.#set({ replacementPreview: { action: result.action, display } });
+      this.#set({ replacementPreview: { action: result.action, display },
+        windows: this.#windows('replacement', this.#window(started, result.action)) });
     });
   }
   cancelReplacement() {
@@ -562,8 +698,10 @@ export class WalletController {
   async confirmReplacement() {
     return this.#act(async () => {
       const { replacementPreview, installation, removal } = this.#state;
+      const open = this.#open('replacement');
       this.#set({ replacementPreview: null });
       if (!replacementPreview) throw refused();
+      if (!open) throw expired();
       const display = this.#validators.replacementConsent({ installation, removal });
       if (JSON.stringify(display) !== JSON.stringify(replacementPreview.display)) throw refused();
       const actionId = replacementPreview.action.id;
@@ -594,6 +732,7 @@ export class WalletController {
       const status = await this.#status();
       this.#capability('lifecycle');
       if (!installation || !installOwner || revokeAttempted) throw refused();
+      const started = this.#started();
       const result = await this.#request('prepare-revoke', { installationId: installation.installationId });
       if (!HASH.test(result?.action?.id ?? '') || result.installation?.installationId !== installation.installationId
         || result.installation.ruleId !== installation.ruleId || result.installation.transactionHash !== installation.transactionHash
@@ -609,7 +748,8 @@ export class WalletController {
       if (JSON.stringify(display) !== JSON.stringify(result.display)
         || (result.configurationChange && display.configurationChange?.observedRuleHash !== this.#state.monitor?.observedRuleHash)) throw refused();
       this.#set({ revokePreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
-        limits: result.limits, display, ...(result.configurationChange ? { configurationChange: result.configurationChange } : {}) } });
+        limits: result.limits, display, ...(result.configurationChange ? { configurationChange: result.configurationChange } : {}) },
+        windows: this.#windows('revoke', this.#window(started, result.action)) });
     });
   }
   cancelRevoke() {
@@ -620,8 +760,10 @@ export class WalletController {
   async revoke() {
     return this.#act(async () => {
       const { installation, installOwner, revokePreview, revokeAttempted, status } = this.#state;
+      const open = this.#open('revoke');
       this.#set({ revokePreview: null });
       if (!installation || !installOwner || !revokePreview || revokeAttempted) throw refused();
+      if (!open) throw expired();
       const approval = this.#validators.reviewRemoval({ ...installOwner, configurationChange: revokePreview.configurationChange ?? null,
         installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: revokePreview.assembly,
@@ -630,6 +772,7 @@ export class WalletController {
         !== JSON.stringify(revokePreview.display)) throw refused();
       const signedAuthEntriesXdr = await this.#sign({ approval, checked });
       const signed = await this.#validators.validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr, origin: this.#origin });
+      if (!this.#open('revoke')) throw expired();
       this.#set({ revokeAttempted: true });
       let confirmed;
       try {
@@ -639,7 +782,8 @@ export class WalletController {
         const refreshed = (await this.#statusWhenFree()) !== null;
         const listed = (this.#state.status?.installations ?? []).find((item) => item?.installationId === installation.installationId);
         if (refreshed && listed && listed.removal === null && listed.removalAttempted === false) this.#set({ revokeAttempted: false });
-        throw error;
+        // Its reason is passed on only when the removal can be prepared again.
+        throw this.#state.revokeAttempted ? refused() : error;
       }
       await this.#status().catch(() => {});
       const removal = confirmed?.removal;

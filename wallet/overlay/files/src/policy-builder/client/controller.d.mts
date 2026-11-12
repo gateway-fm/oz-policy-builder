@@ -46,6 +46,11 @@ export interface WalletState {
   readonly replacementPending: Details | null;
   readonly replacement: Details | null;
   readonly proposalReview: ProposalReview | null;
+  /** The automation key's one real use of the installed grant, and the same payment tried again (simulated). */
+  readonly grantUse: Details | null;
+  readonly grantRepeat: Details | null;
+  /** When each prepared review stops being offered, in ms on the controller's monotonic clock. */
+  readonly windows: Readonly<Record<string, number>>;
 }
 export class WalletController {
   constructor(options: {
@@ -74,6 +79,10 @@ export class WalletController {
     pins: { networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
     pause?(ms: number): Promise<void>;
+    /** Monotonic milliseconds; defaults to performance.now(). */
+    now?(): number;
+    /** Wall-clock milliseconds, which keep counting while the computer sleeps; defaults to Date.now(). */
+    wall?(): number;
   });
   readonly state: WalletState;
   connect(): Promise<void>;
@@ -105,6 +114,8 @@ export class WalletController {
   cancelInstall(): void;
   install(): Promise<void>;
   monitorGrant(): Promise<void>;
+  useGrant(): Promise<void>;
+  tryGrantAgain(): Promise<void>;
   prepareReplacement(): Promise<void>;
   cancelReplacement(): void;
   confirmReplacement(): Promise<void>;

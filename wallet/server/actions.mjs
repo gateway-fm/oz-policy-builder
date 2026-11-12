@@ -1,6 +1,6 @@
 import { createECDH, createHash, randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Address, Asset, Networks, Operation, StrKey, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Asset, Networks, Operation, StrKey, TransactionBuilder, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
 import { monitorInstallation } from './monitor.mjs';
 import { replacementConsent } from '../shared/replacement.mjs';
@@ -18,8 +18,15 @@ import { AgentHandoff } from './agent-handoff.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
 import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
 import { LIVE_ORIGIN, clockedLedger, consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, requireNoReplay, runLive } from './live-check.mjs';
+import { USE_SIGNATURE_LEDGERS, USE_SUBMIT_MIN_LEDGERS } from './live-signing.mjs';
+import { liveShape } from '../shared/live-consent.mjs';
+import { validateRepeatedUse } from '../shared/live-enforcement.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
+/** Reads that did not fit their ledger window: the RPC answered too slowly, or from a lagging node. */
+class SlowReads extends Error {
+  constructor() { super('wallet action refused; refresh and review again'); this.reason = 'rpc_too_slow'; }
+}
 const HASH = /^[a-f0-9]{64}$/;
 const id = () => randomBytes(32).toString('hex');
 const get = (map, key) => { if (typeof key !== 'string' || !HASH.test(key) || !map.has(key)) refuse(); return map.get(key); };
@@ -74,6 +81,40 @@ const READBACK_ATTEMPTS = 5;
 const READBACK_PAUSE_MS = 2000;
 const OWNER = Object.freeze({ authentication: 'webauthn_user_verified', human_approval_attested: false });
 const targetLayer = (status, detail) => ({ layer: 'captured_target', status, detail });
+const SAC = Asset.native().contractId(Networks.TESTNET);
+/** How many uses the automation key signs for one installation: attempts that sent nothing, and second tries. */
+const MAX_USE_SIGNATURES = 3;
+const MAX_REPEAT_SIGNATURES = 3;
+const nonce = () => randomBytes(8).readBigInt64BE().toString();
+const contractHex = (address) => Buffer.from(StrKey.decodeContract(address)).toString('hex');
+
+/** The fee payer's unsigned envelope for the native asset's `transfer`, carrying the delegate's two entries. */
+function useEnvelope(source, { account, recipient, amount }, signed, { readLedger, expiry }) {
+  const call = new xdr.InvokeContractArgs({ contractAddress: new Address(SAC).toScAddress(), functionName: 'transfer',
+    args: [new Address(account).toScVal(), new Address(recipient).toScVal(), xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: BigInt(amount) }))] });
+  const auth = [signed.transferEntryXdr, signed.delegateEntryXdr].map((entry) => xdr.SorobanAuthorizationEntry.fromXDR(entry, 'base64'));
+  // Valid only below the signatures' expiry ledger: it cannot land, and fail, after they expire.
+  return new TransactionBuilder(new Account(source.accountId(), source.sequenceNumber()), { fee: '1000000', networkPassphrase: Networks.TESTNET })
+    .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth }))
+    .setLedgerbounds(readLedger, expiry).setTimeout(0).build().toEnvelope().toXDR('base64');
+}
+
+/**
+ * The native asset's one `transfer` event of the confirmed payment: from the account to the recipient,
+ * exactly `amount` (CAP-67 topics `[transfer, from, to, "native"]`, data the i128 amount).
+ */
+function transferredExactly(events, { account, recipient, amount }) {
+  if (!Array.isArray(events)) return false;
+  const transfers = events.filter((event) => event?.type?.name === 'contract' && event.contractId
+    && Buffer.from(event.contractId.toXDR()).toString('hex') === contractHex(SAC)
+    && event.body?.v0?.topics?.[0]?.type === 'scvSymbol' && event.body.v0.topics[0].sym.toString() === 'transfer');
+  if (transfers.length !== 1) return false;
+  const { topics, data } = transfers[0].body.v0;
+  const same = (a, b) => a.toXDR('base64') === b.toXDR('base64');
+  return [3, 4].includes(topics.length) && same(topics[1], new Address(account).toScVal()) && same(topics[2], new Address(recipient).toScVal())
+    && (topics.length === 3 || same(topics[3], xdr.ScVal.scvString('native')))
+    && same(data, xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: BigInt(amount) })));
+}
 
 /** Closed HTTP operations. Every privileged input comes from retained state or operator configuration. */
 export function createWalletActions({ session, toolchain, network, native = null, live = null, delegates = new DelegateCapabilities(),
@@ -102,16 +143,27 @@ export function createWalletActions({ session, toolchain, network, native = null
   let accountAttempted = false;
   let sampleAccount = null;
   let sampleSubmitted = false;
-  async function sampleOwner() {
+  /** Independent reads at once; every one settles before the first failure is reported. */
+  async function settled(reads) {
+    const results = await Promise.allSettled(reads);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    return results.map((result) => result.value);
+  }
+  async function sampleOwner(alongside = async () => null) {
     await network.assertTestnet();
-    const account = await network.requireInstance(sampleAccount.wallet.contractId, ACCOUNT_WASM);
-    const verifier = await network.requireInstance(sampleAccount.wallet.verifier, WEBAUTHN_WASM);
-    const observed = await network.view(sampleAccount.wallet.contractId, 'get_context_rule', [xdr.ScVal.scvU32(0)]);
+    // The account and verifier code and the owner rule are read at once, not one after another; the
+    // owner read must still come from at or after both code reads, so a lagging answer is asked again.
+    const ownerRule = () => network.view(sampleAccount.wallet.contractId, 'get_context_rule', [xdr.ScVal.scvU32(0)]);
+    const [account, verifier, early, also] = await settled([network.requireInstance(sampleAccount.wallet.contractId, ACCOUNT_WASM),
+      network.requireInstance(sampleAccount.wallet.verifier, WEBAUTHN_WASM), ownerRule(), alongside()]);
+    const after = Math.max(account.ledger, verifier.ledger);
+    const observed = early.ledger >= after ? early : await readAfter(ownerRule, after);
     if (observed.ledger < account.ledger || observed.ledger < verifier.ledger
       || observed.ledger - account.ledger > 12 || observed.ledger - verifier.ledger > 12) refuse();
     const ownerRuleXdr = observed.value.toXDR('base64');
     const approval = reviewSample({ ...sampleAccount, ownerRuleXdr });
-    return { ownerRuleXdr, approval, ownerReadLedger: observed.ledger };
+    return { ownerRuleXdr, approval, ownerReadLedger: observed.ledger, also };
   }
   // A complete review with one unused installation allowance (initially, or after verified replacement consent).
   const installable = (review) => native !== null && live !== null && review.verification?.complete === true
@@ -158,18 +210,34 @@ export function createWalletActions({ session, toolchain, network, native = null
   }
   const readbackAfter = (account, ruleId, ledger) => readAfter(() => network.ruleReadback(account, ruleId), ledger);
   const markerAfter = (account, policy, ruleId, ledger) => readAfter(() => network.liveState({ account, policy, ruleId }), ledger);
-  async function removalPins(record, owner) {
+  /**
+   * A removal's reads after one anchor ledger: the account's and verifier's pinned code, the owner
+   * rule and the rule being removed. They are independent, so they are asked at once: one after
+   * another, a slow RPC (seconds a request) cannot fit them in the 12-ledger window removal checks.
+   * Each must still come from a node at or past the anchor; a lagging node is asked again. Reads
+   * that still miss the window refuse as `rpc_too_slow`; the owner can prepare again.
+   */
+  async function removalReads(record, owner, ownerRuleXdr, alongside = async () => null) {
     const anchor = await clockedLedger(network);
-    const account = await network.requireInstance(record.account, ACCOUNT_WASM);
-    const verifier = await network.requireInstance(owner.wallet.verifier, WEBAUTHN_WASM);
-    if (account.contractId !== record.account || account.wasmHash !== ACCOUNT_WASM
-      || verifier.contractId !== owner.wallet.verifier || verifier.wasmHash !== WEBAUTHN_WASM) refuse();
-    return { anchor, ledgers: [account.instanceLedger, account.codeLedger, verifier.instanceLedger, verifier.codeLedger] };
+    const pinned = (contractId, wasmHash) => readAfter(async () => {
+      const read = await network.requireInstance(contractId, wasmHash);
+      if (read.contractId !== contractId || read.wasmHash !== wasmHash) refuse();
+      return { ...read, ledger: Math.min(read.instanceLedger, read.codeLedger) };
+    }, anchor);
+    // Every read settles before the action answers, so none outlives the request that started it.
+    const [account, verifier, fresh, rule, also] = await settled([
+      pinned(record.account, ACCOUNT_WASM), pinned(owner.wallet.verifier, WEBAUTHN_WASM),
+      readAfter(() => ownerRead(owner.wallet, owner.ownerRuleId, ownerRuleXdr), anchor),
+      readAfter(() => network.ruleReadback(record.account, record.ruleId), anchor), alongside()]);
+    return { pins: { anchor, ledgers: [account.instanceLedger, account.codeLedger, verifier.instanceLedger, verifier.codeLedger] },
+      fresh, rule, also };
   }
   function removalReadWindow(pins, owner, rule, currentLedger, installedLedger) {
     if (!Number.isSafeInteger(currentLedger) || currentLedger < pins.anchor || currentLedger - pins.anchor > 12
       || [...pins.ledgers, owner.ledger, rule.ledger].some((ledger) => !Number.isSafeInteger(ledger)
-        || ledger < Math.max(installedLedger, pins.anchor) || ledger > currentLedger || currentLedger - ledger > 12)) refuse();
+        || ledger < Math.max(installedLedger, pins.anchor) || ledger > currentLedger || currentLedger - ledger > 12)) {
+      throw new SlowReads();
+    }
   }
   async function replacementState(held) {
     await network.assertTestnet();
@@ -198,10 +266,58 @@ export function createWalletActions({ session, toolchain, network, native = null
       return { record, artifact, proposalReview: checkProposalArtifact(proposal, artifact) };
     };
   /** Public summaries, so a lost response can be recovered from `status`. */
-  const summaries = () => [...installations.values()].map(({ record, removal, removalAttempted }) => ({
+  const summaries = () => [...installations.values()].map(({ record, removal, removalAttempted, use, repeat }) => ({
     installationId: record.installationId, status: record.status, account: record.account, ruleId: record.ruleId,
     transactionHash: record.transactionHash, ledger: record.ledger, removalAttempted,
-    removal: removal ? { status: removal.status, transactionHash: removal.transactionHash } : null }));
+    removal: removal ? { status: removal.status, transactionHash: removal.transactionHash } : null,
+    use: use ?? null, repeat: repeat ?? null }));
+  const unremoved = (held) => !held.removal && !held.removalAttempted;
+  /** An installed one-use grant the automation delegate has not tried to use yet. */
+  const usable = (held) => held.record.status === 'installed' && held.grant && !held.use && !held.useAttempted && unremoved(held)
+    && held.useSignatures < MAX_USE_SIGNATURES;
+  // One recorded second try per use; a try whose simulation did not answer may be repeated, a few times.
+  const repeatable = (held) => held.use?.status === 'used' && unremoved(held) && !held.repeat && held.repeatSignatures < MAX_REPEAT_SIGNATURES;
+  /**
+   * What a use or a second try reads before the delegate signs anything: the installed rule exactly as
+   * recorded, the policy's call counter for it (`expected`) and, for a real payment, that it can run.
+   * The signatures will expire `USE_SIGNATURE_LEDGERS` after the ledger read here, before the grant does.
+   */
+  async function useReads(held, expected, { payment }) {
+    const { record, grant } = held;
+    await network.assertTestnet();
+    const readLedger = await clockedLedger(network);
+    const expiry = readLedger + USE_SIGNATURE_LEDGERS;
+    if (expiry >= grant.validUntilLedger) refuse();
+    // Every read from a node at or past `readLedger`; the fee payer's sequence too, so a lagging node
+    // cannot hand the envelope a stale sequence that the network would refuse after it was sent.
+    const [rule, counter, readiness, source] = await settled([
+      readAfter(() => network.ruleReadback(record.account, record.ruleId), readLedger),
+      readAfter(() => network.callCount({ account: record.account, policy: record.policy, ruleId: record.ruleId }), readLedger),
+      payment ? readAfter(() => network.transferReadiness({ account: record.account, recipient: grant.recipient, amount: grant.amount }),
+        readLedger) : null,
+      readAfter(() => network.sourceCapture(), readLedger)]);
+    if (rule.status !== 'present' || rule.xdr !== record.ruleXdr) refuse();
+    if (counter.count !== expected) {
+      // The policy counted a use this wallet did not make: someone holding the delegate's signatures did.
+      if (payment && Number.isSafeInteger(counter.count) && counter.count > 0) {
+        throw Object.assign(new Error('wallet action refused; refresh and review again'), { reason: 'grant_already_used' });
+      }
+      refuse();
+    }
+    if (payment && (!readiness.recipientExists || !readiness.covered)) refuse();
+    // Signed only with enough of the window left to send well before the signatures expire.
+    if ((await clockedLedger(network)) + USE_SUBMIT_MIN_LEDGERS > expiry) throw new SlowReads();
+    return { readLedger, expiry, source: new Account(network.payerAddress, source.sourceSequence) };
+  }
+  /** The delegate's two entries for exactly the granted transfer, from a capability that signs once. */
+  function signUse(held, capabilityId, { readLedger, expiry }) {
+    const { record, grant } = held;
+    const capability = delegates.use(capabilityId, grant.delegate, { network_id: NETWORK_ID, account: record.account,
+      recipient: grant.recipient, expected_rule_id: record.ruleId, amount: grant.amount, signature_expiration_ledger: expiry,
+      read_ledger: readLedger });
+    return capability.authorizeTransfer({ network_id: NETWORK_ID, account: record.account, asset: SAC, recipient: grant.recipient,
+      amount: grant.amount, expected_rule_id: record.ruleId, nonce: nonce(), signature_expiration_ledger: expiry });
+  }
   return {
     'pair-agent': async (input) => {
       exact(input, ['wallet', 'delegate']);
@@ -227,7 +343,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
         capabilities: { agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
           liveCheck: live !== null, monitoring: [...installations.values()].some((held) => held.record.status === 'installed' && !held.removal), replacement: replaceable(), install: [...reviews.values()].some(installable),
-          lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)) },
+          lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)),
+          grantUse: [...installations.values()].some(usable), grantRepeat: [...installations.values()].some(repeatable) },
         installations: summaries(), replacement: lastReplacement,
         // No installation entry is released while an earlier signature the wallet released is still valid.
         installOpensAfterLedger: openRecords().length ? Math.max(...openRecords().map((r) => r.signatureExpirationLedger)) : null,
@@ -257,7 +374,11 @@ export function createWalletActions({ session, toolchain, network, native = null
         const signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
           xdr.ScVal.scvBytes(credential(selected))]);
         const account = await network.create(ACCOUNT_WASM, [xdr.ScVal.scvVec([signer]), xdr.ScVal.scvMap([])], 'deploy-account');
-        const observed = await network.view(account.contractId, 'get_context_rule', [xdr.ScVal.scvU32(0)]);
+        // From a node at or past the deployment: one behind it does not know the account yet, so its
+        // failed call is asked again too, a few times.
+        const observed = await readAfter(async () => {
+          try { return await network.view(account.contractId, 'get_context_rule', [xdr.ScVal.scvU32(0)]); } catch { return { ledger: -1 }; }
+        }, account.receipt.ledger);
         if (observed.ledger < account.receipt.ledger || observed.ledger - account.receipt.ledger > 12) refuse();
         freshOwner(observed.value, signer);
         const funded = await network.submitOperation(Operation.invokeContractFunction({
@@ -300,9 +421,12 @@ export function createWalletActions({ session, toolchain, network, native = null
       exact(input, ['id', 'signedAuthEntriesXdr']);
       return session.consume(input.id, 'sample', async (prepared) => {
         if (!sampleAccount || sampleSubmitted) refuse();
-        const observed = await sampleOwner();
+        // The fee payer is read with the owner check, after its network check; it must not predate the
+        // owner read, so a lagging answer is asked again.
+        const observed = await sampleOwner(() => network.sourceCapture());
         if (observed.approval.commitment !== prepared.approval.commitment) refuse();
-        const source = await network.sourceCapture();
+        const source = observed.also.ledger >= observed.ownerReadLedger ? observed.also
+          : await readAfter(() => network.sourceCapture(), observed.ownerReadLedger);
         const currentLedger = await network.latestLedger();
         if (source.ledger < observed.ownerReadLedger || currentLedger < source.ledger
           || currentLedger - observed.ownerReadLedger > 12 || currentLedger - source.ledger > 12) refuse();
@@ -544,7 +668,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       session.invalidate('live');
       session.invalidate('live_sign');
       // Earlier signatures still valid: a new check would add more before the replay check can run.
-      if (liveRecords.length && (await clockedLedger(network)) <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) refuse();
+      if (liveRecords.length && (await clockedLedger(network)) <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) {
+        throw Object.assign(new Error('wallet action refused; refresh and review again'), { reason: 'signatures_still_valid' });
+      }
       const result = await prepareLive({ network, helper: live.helper, approval: review.approval, spec: artifact.spec,
         policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash, nextRuleId: review.nextRuleId });
       if (result.layer) {
@@ -624,8 +750,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       await installPreconditions(review, deployment, artifact);
       const assembly = await toolchain.authority('assemble-install-transaction', { intent_request: deployment.request,
         fee_payer: network.payerAddress, max_fee_stroops: MAX_FEE_STROOPS, validity_ledgers: INSTALL_VALIDITY_LEDGERS });
-      const owner = await ownerRead(review.approval.wallet, review.approval.ownerRuleId, review.approval.ownerRuleXdr);
-      const source = await network.sourceCapture();
+      // Both after the CLI's observation, and independent: asked at once, then the latest ledger.
+      const [owner, source] = await Promise.all([
+        ownerRead(review.approval.wallet, review.approval.ownerRuleId, review.approval.ownerRuleXdr), network.sourceCapture()]);
       const currentLedger = await network.latestLedger();
       const observed = assembly?.intent?.authority?.verdict?.observed_ledger;
       if (!Number.isSafeInteger(observed) || owner.ledger < observed || owner.ledger - observed > 12 || source.ledger < observed
@@ -673,8 +800,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         // The CLI recheck first: it builds and scans, so ledgers close while it runs. The reads it is
         // compared with come after it, within 12 ledgers of its observation.
         const fresh = await authorityRecheck(review, deployment, approval.ownerRuleXdr);
-        const owner = await ownerRead(approval.wallet, approval.ownerRuleId, approval.ownerRuleXdr);
-        const source = await network.sourceCapture();
+        const [owner, source] = await Promise.all([ownerRead(approval.wallet, approval.ownerRuleId, approval.ownerRuleXdr),
+          network.sourceCapture()]);
         const currentLedger = await network.latestLedger();
         if (source.sourceSequence !== String(sourceOf(held.checked.envelopeXdr))
           || currentLedger < fresh.observedLedger || currentLedger - fresh.observedLedger > 12
@@ -720,11 +847,87 @@ export function createWalletActions({ session, toolchain, network, native = null
           // Confirmed but not verified: no installation record; the confirmed identity stays listed in `status`.
           refuse();
         }
-        installations.set(installationId, { record, owner: owners, removalAttempted: false, removal: null, monitorCandidate: deployment.request });
+        // A one-use exact native transfer is what the automation delegate can use from the page (`use-grant`).
+        const shape = liveShape({ spec: artifact.spec, intent: approval.intent, wallet: approval.wallet });
+        const grant = shape.supported && shape.maxCalls === 1 && Number.isSafeInteger(approval.intent.valid_until_ledger)
+          ? freezeCopy({ delegate: shape.delegate, recipient: shape.recipient, amount: shape.amount, maxCalls: 1,
+            validUntilLedger: approval.intent.valid_until_ledger }) : null;
+        installations.set(installationId, { record, owner: owners, removalAttempted: false, removal: null, monitorCandidate: deployment.request,
+          grant, useAttempted: false, use: null, repeat: null, useSignatures: 0, repeatSignatures: 0 });
         // This installation used its own entry; every earlier signature had expired unused (checked above).
         for (const obligation of openRecords()) closedRecords.set(obligation, record.transactionHash);
         return freezeCopy({ receipt: receipt(submitted), installation: record });
       });
+    },
+    // The automation delegate uses the installed grant once, for real and alone: no owner signature is
+    // asked. Its key signs exactly the granted transfer under the installed rule, once, for a short
+    // window; the fee payer submits it once. Counted only with the asset's transfer event and the
+    // policy's counter read at 1 at or after the payment's ledger.
+    'use-grant': async (input) => {
+      exact(input, ['installationId', 'capabilityId']);
+      const held = get(installations, input.installationId);
+      if (!usable(held) || liveRunning || accountCheckRunning || network.canSubmit !== true) refuse();
+      const { record, grant } = held;
+      delegates.check(input.capabilityId, grant.delegate);
+      const window = await useReads(held, 0, { payment: true });
+      if (!usable(held)) refuse();
+      held.useSignatures++;
+      const envelopeXdr = useEnvelope(window.source, { account: record.account, recipient: grant.recipient, amount: grant.amount },
+        signUse(held, input.capabilityId, window), window);
+      // Sent only with enough of the signatures' window left to land well before they expire.
+      if (held.use || held.useAttempted || !unremoved(held) || network.canSubmit !== true) refuse();
+      if ((await clockedLedger(network)) + USE_SUBMIT_MIN_LEDGERS > window.expiry) throw new SlowReads();
+      // Spent from here: a use that may have reached the network is never attempted again. A refusal
+      // that leaves the fee payer able to submit sent nothing.
+      held.useAttempted = true;
+      let submitted;
+      try { submitted = await network.submitEnvelope(envelopeXdr, 'use-grant'); } catch {
+        if (network.canSubmit === true) held.useAttempted = false;
+        refuse();
+      }
+      // Confirmed: listed before any verification can refuse.
+      held.use = freezeCopy({ status: 'confirmed_unverified', transactionHash: submitted.hash });
+      let after;
+      try {
+        if (submitted.returnValue?.type !== 'scvVoid'
+          || !transferredExactly(submitted.events, { account: record.account, recipient: grant.recipient, amount: grant.amount })) refuse();
+        after = await readAfter(() => network.callCount({ account: record.account, policy: record.policy, ruleId: record.ruleId }), submitted.ledger);
+        if (after.count !== 1) refuse();
+      } catch { refuse(); }
+      held.use = freezeCopy({ status: 'used', installationId: record.installationId, ruleId: record.ruleId, transactionHash: submitted.hash,
+        ledger: submitted.ledger, trust: submitted.trust, amountStroops: grant.amount, recipient: grant.recipient, delegate: grant.delegate,
+        callCount: { before: 0, after: 1, max: 1, readLedger: after.ledger }, signedBy: 'automation_delegate_only', ownerAsked: false,
+        feeChargedStroops: submitted.feeChargedStroops ?? null });
+      return freezeCopy({ receipt: receipt(submitted), use: held.use });
+    },
+    // The same transfer again after a verified use, under fresh signatures, simulated in enforce mode and
+    // never submitted. Recorded as a refusal only when it is the policy's own call cap
+    // (`validateRepeatedUse`); a permit is recorded as the cap not holding.
+    'try-grant-again': async (input) => {
+      exact(input, ['installationId', 'capabilityId']);
+      const held = get(installations, input.installationId);
+      if (!repeatable(held) || liveRunning || accountCheckRunning) refuse();
+      const { record, grant } = held;
+      delegates.check(input.capabilityId, grant.delegate);
+      const window = await useReads(held, 1, { payment: false });
+      if (!repeatable(held)) refuse();
+      held.repeatSignatures++;
+      const envelopeXdr = useEnvelope(window.source, { account: record.account, recipient: grant.recipient, amount: grant.amount },
+        signUse(held, input.capabilityId, window), window);
+      const simulation = await network.simulateRaw(envelopeXdr);
+      // Judged only on an answer from a node at or past the payment, where the counter already reads 1.
+      const verdict = validateRepeatedUse({ intent: { network_id: NETWORK_ID, account: record.account, policy: record.policy,
+        delegate: grant.delegate, recipient: grant.recipient, amount: grant.amount, rule_id: record.ruleId,
+        signature_expiration_ledger: window.expiry, min_ledger: held.use.ledger }, envelopeXdr, simulation });
+      const judged = freezeCopy({ ...verdict, usedBy: held.use.transactionHash, account: record.account, policy: record.policy,
+        ruleId: record.ruleId, signatureExpirationLedger: window.expiry });
+      // A refusal by the cap, or a permit of exactly this envelope, is the verdict; any other answer
+      // says nothing about the cap, and the try may be made again.
+      if (verdict.outcome === 'deny' || verdict.reason === 'permitted') held.repeat = judged;
+      network.recordRepeatedUse({ outcome: verdict.outcome, reason: verdict.reason, code: verdict.code ?? null,
+        simulationLedger: verdict.simulation_ledger ?? null, signatureExpirationLedger: window.expiry, usedBy: held.use.transactionHash,
+        account: record.account, policy: record.policy, ruleId: record.ruleId, submitted: false });
+      return freezeCopy({ repeat: judged });
     },
     'monitor-grant': async (input) => {
       exact(input, ['installationId']);
@@ -776,10 +979,8 @@ export function createWalletActions({ session, toolchain, network, native = null
       const { record, owner } = held;
       if (held.removalAttempted || !Number.isSafeInteger(record.ruleId)) refuse();
       session.invalidate('revoke');
-      await network.assertTestnet();
-      const pins = await removalPins(record, owner);
-      const fresh = await ownerRead(owner.wallet, owner.ownerRuleId, owner.ownerRuleXdr);
-      const rule = await network.ruleReadback(record.account, record.ruleId);
+      // The anchor's ledger clock checks the network first.
+      const { pins, fresh, rule } = await removalReads(record, owner, owner.ownerRuleXdr);
       if (rule.status !== 'present') refuse();
       let configurationChange = null;
       if (record.ruleXdr === null) {
@@ -812,11 +1013,10 @@ export function createWalletActions({ session, toolchain, network, native = null
         const held = get(installations, installationId);
         if (held.removalAttempted || network.canSubmit !== true) refuse();
         const { record, owner } = held;
-        await network.assertTestnet();
-        const pins = await removalPins(record, owner);
-        const fresh = await ownerRead(owner.wallet, owner.ownerRuleId, approval.ownerRuleXdr);
-        const rule = await network.ruleReadback(record.account, record.ruleId);
-        const source = await network.sourceCapture();
+        // The fee payer's sequence is only compared with the signed envelope: read with the others,
+        // after the anchor's network check.
+        const { pins, fresh, rule, also: source } = await removalReads(record, owner, approval.ownerRuleXdr,
+          () => network.sourceCapture());
         const currentLedger = await network.latestLedger();
         removalReadWindow(pins, fresh, rule, currentLedger, record.ledger);
         if (rule.status !== 'present' || rule.xdr !== ruleXdr || source.sourceSequence !== String(sourceOf(checked.envelopeXdr))
