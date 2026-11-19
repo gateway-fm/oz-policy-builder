@@ -52,6 +52,8 @@ base64 = "0.22"
 ed25519-dalek = "2"
 # Clears copies of a signing key the CLI's dry run reads; already in the tree through ed25519-dalek.
 zeroize = "1"
+# The operating system's CSPRNG for `ozpb registry keygen`; already in the tree through ring.
+getrandom = "0.2"
 proptest = "1"
 syn = { version = "2", features = ["full", "parsing"] }
 schemars = "1"

@@ -34,8 +34,8 @@ category exists and a later reading may need it.
 | 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
 | 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
 | 5 | Authorization model | ✅ / 🗓 | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
-| 6 | Errors and observability | ✅ / ℹ️ | Stable machine-readable error codes throughout; whether to emit an event on a successful `enforce` is undecided. |
-| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. We check the generator thoroughly; running them over what it generates is a decision, not a shortfall. |
+| 6 | Errors and observability | ✅ | Stable machine-readable error codes throughout; a successful `enforce`, `install` and `uninstall` each publish an event, and a denial cannot. |
+| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. Scout was run and cannot analyse the generated contracts, so no static analyzer checks them; the external audit is the control for that class. |
 | 8 | Upgradeability and immutability | ✅ | No setters, no upgrade entry point. For an artifact whose value is "the reader sees exactly what executes", immutability is the requirement. |
 | 9 | Evidence provenance and RPC binding | ✅ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
 | 10 | Capability registry governance | ✅ / 🗓 | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
@@ -665,17 +665,42 @@ requirements** and not "conformance" in the sense discussed in the other section
 third-party tools that the ecosystem customarily applies. Our gap is not that we breach a norm,
 but that we check the generator thoroughly and do not check what it generates.
 
+**Scout, measured.** The plan here was to run Scout over the reference generated policies and
+make a gate of it only once three things held: a pinned version, evidence that the analyzer
+applies to our input at all, and a false-positive policy. It was run during Tranche 1, with
+`cargo-scout-audit` 0.3.16, and the first two do not hold:
+
+- **It does not build our SDK.** Scout's detectors are compiled against one fixed nightly
+  (`cargo scout-audit --toolchain` prints `nightly-2025-08-07`). Every `soroban-sdk-macros`
+  release this repository has pinned, 26.1.0 through 30.0.0-rc.1, calls `str::floor_char_boundary`,
+  which that nightly still keeps behind its feature gate; the SDK declares `rust-version` 1.91.0.
+  So the contract never compiles under the analyzer, and nothing is analysed.
+- **Its default target is one the SDK refuses.** It builds for `wasm32-unknown-unknown`, which
+  `soroban-sdk`'s build script rejects on Rust 1.82 and later in favour of `wasm32v1-none`.
+- **It succeeds having analysed nothing.** A run that analysed nothing exited 0. That is the
+  decisive one: a gate on its exit status would be green for ever while checking nothing, and
+  would be read as a check.
+- **A version pin would not pin the verdict.** The detectors are fetched at run time from a
+  branch of CoinFabrik's `scout-audit` git repository rather than from a released version, so
+  the same `cargo-scout-audit` version can apply different detectors on different days.
+
+The detector toolchain, the default target, the git-branch source and the SDK's use of
+`floor_char_boundary` were rechecked on 19 November 2026 against the same installed version; the
+exit status on an empty analysis was not re-run. **Consequence:** no static analyzer currently
+checks the generated contracts. They are checked by the differential suite against the
+independent evaluator (§11), by execution through the pinned account Wasm, and by review of the
+templates that produce them. The class of defect a Soroban-specific analyzer would find is left to
+the external audit, scoped in [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md). A Scout release that builds
+current SDKs and fails when it analyses nothing would be worth measuring again.
+
 **Action.**
-1. Run Scout over the reference generated policies and look at the result. **Before** making a
-   gate of it, three things are needed: pin the version (from `cargo-mutants` we already know
-   that a tool's version changes the verdict, and that this is part of the point of a gate);
-   establish that the analyzer applies to our kind of input at all — generated source or wasm;
-   and define the false-positive policy. A gate without those three will be either noise that
-   people start routing around, or theatre.
+1. ~~Run Scout over the reference generated policies and decide on a gate.~~ **Done, and it does
+   not apply** — see the measurement above.
 2. Work through the Veridise checklist against the generated template and record the result line
    by line.
 3. **Apply to the Soroban Security Audit Bank.** An external audit is the control this section
    cannot substitute for, and the programme is a funded route to obtaining one.
+   [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) is the scope prepared for it.
 
 ---
 
@@ -745,9 +770,12 @@ survive registry restarts. Tests cover rollback, same-version equivocation with 
 transparency-chain forks, invalid key encodings, and revocation removal/mutation.
 
 **Verdict.** Conforms as a mechanism; 🗓 as governance. The committed registry key is a
-deterministic development root — suitable for reproducible examples, not production governance,
-which needs independently controlled roots, durable checkpoints, rotation and revocation
-operations, monitoring, and an incident process.
+deterministic development root — suitable for reproducible examples, not production governance —
+and every consumer refuses it for any network but testnet. `ozpb registry` and
+[Registry governance](REGISTRY-GOVERNANCE.md) supply the custodian tooling and procedure: key
+ceremony, successors checked as a consumer would load them, local or hardware signatures, replay
+of the published log before distribution, monitoring, revocation, rotation and an incident path.
+Production governance still needs independently held roots, which exist only after a key ceremony.
 
 ---
 

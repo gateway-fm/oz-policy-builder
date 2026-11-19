@@ -14,9 +14,9 @@ use super::{
     AccountScanError, AccountStateProjection, AccountStateScan, HttpTransport, RpcTransport,
 };
 use ozpb_call_surface_core::BoundPolicy;
-use ozpb_domain::{Hash32, NetworkId, TESTNET_PASSPHRASE};
+use ozpb_domain::{Hash32, NetworkId};
 use ozpb_registry::{
-    account_methods::AccountMethodInventory, dev, Registry, RegistryCheckpoint, RegistryError,
+    account_methods::AccountMethodInventory, Registry, RegistryCheckpoint, RegistryError,
     RootPolicy, SignedSnapshot,
 };
 use std::collections::BTreeSet;
@@ -82,22 +82,9 @@ impl OperatorAccountSource {
                 "operator source name and network passphrase must be nonempty",
             ));
         }
-        // Anyone can recompute the development root's private key from its published seed, so
-        // a snapshot it signs carries no review authority. Only the testnet example may use it.
-        let development_root = dev::dev_root_verifying_bytes();
-        if config.network_passphrase != TESTNET_PASSPHRASE
-            && config
-                .registry_roots
-                .keys
-                .values()
-                .any(|key| *key == development_root)
-        {
-            return Err(RegistryError::RootPolicy(
-                "the public development registry root is accepted only on testnet".into(),
-            )
-            .into());
-        }
-        // Validate the signed snapshot and durable checkpoint before constructing a source.
+        // Validate the signed snapshot and durable checkpoint before constructing a source. The
+        // network-pinned registry refuses the public development root for any network but
+        // testnet, so that rule needs no second copy here.
         let _ = verified_registry(&config, unix_now()?)?;
         let transport = HttpTransport::new(config.rpc_url.clone());
         Ok(Self { config, transport })
@@ -278,8 +265,8 @@ mod tests {
     use ozpb_call_surface_core::ClassicAccount;
     use ozpb_domain::{canonical_hash, domains, pinned_upstream, LedgerSeq, MAINNET_PASSPHRASE};
     use ozpb_registry::{
-        account_methods, sign_snapshot, snapshot_root, AccountArchivePolicy, AccountSnapshotPolicy,
-        BoundedNextIdCapability, RegistrySnapshot,
+        account_methods, dev, sign_snapshot, snapshot_root, AccountArchivePolicy,
+        AccountSnapshotPolicy, BoundedNextIdCapability, RegistrySnapshot,
     };
     use std::collections::BTreeMap;
     use stellar_xdr::{
@@ -702,8 +689,14 @@ mod tests {
             config.network_passphrase = MAINNET_PASSPHRASE.into();
             config
         };
-        // The signature, network, and checkpoint are all consistent; only the root is wrong.
-        assert!(verified_registry(&mainnet(), NOW).is_ok());
+        // The signature, network, and checkpoint are all consistent; only the root is wrong,
+        // and the registry itself refuses it, before any snapshot is read.
+        assert!(matches!(
+            verified_registry(&mainnet(), NOW),
+            Err(CheckedAccountObservationError::Registry(
+                RegistryError::RootPolicy(_)
+            ))
+        ));
         assert!(matches!(
             OperatorAccountSource::new(mainnet()),
             Err(CheckedAccountObservationError::Registry(

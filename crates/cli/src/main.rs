@@ -19,8 +19,10 @@
 mod authority;
 mod capture;
 mod dry_run;
+mod key_file;
 mod policy_check;
 mod preflight;
+mod registry;
 mod verification;
 
 use anyhow::{Context, Result};
@@ -280,6 +282,10 @@ enum Command {
     /// Reference evaluation and artifact reproduction commands.
     #[command(flatten)]
     Verification(verification::Command),
+    /// Registry governance: custodian keys, successors, signing, verification before
+    /// distribution, and monitoring of a published registry (docs/REGISTRY-GOVERNANCE.md).
+    #[command(subcommand)]
+    Registry(registry::Command),
     /// Write the development registry trust files (signed snapshot + root policy).
     ///
     /// The pipeline cannot run without them, and they are derived from the code — emitting
@@ -552,6 +558,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Verification(command) => command.run()?,
+        Command::Registry(command) => registry::run(command)?,
         Command::DevRegistry { out } => {
             std::fs::create_dir_all(&out)?;
             let (snapshot_json, roots_json) = ozpb_registry::dev::dev_trust_files(

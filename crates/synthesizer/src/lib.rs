@@ -2667,7 +2667,15 @@ pub mod fixtures {
     }
 
     pub fn golden_bundle() -> RecordingBundle {
-        match record(&rec::executed_snapshot(), RecordOptions::default()) {
+        golden_bundle_on(ozpb_domain::TESTNET_PASSPHRASE)
+    }
+
+    /// [`golden_bundle`] recorded on another network.
+    pub fn golden_bundle_on(network_passphrase: &str) -> RecordingBundle {
+        match record(
+            &rec::executed_snapshot_on(network_passphrase),
+            RecordOptions::default(),
+        ) {
             Ok(mut bundle) => {
                 bundle.contract_executables.insert(
                     golden_account_strkey(),

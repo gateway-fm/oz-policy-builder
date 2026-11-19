@@ -83,6 +83,10 @@ jobs:
       # This drives it through crate names that match nothing and asserts it stops.
       - name: dependency rules — the gate still checks what it names
         run: bash scripts/test-check-dep-rules.sh
+      # The mutation gate itself runs in its own workflow; this checks, in a second, that it still
+      # refuses an unpinned cargo-mutants, a timed-out mutant and a narrowed package list.
+      - name: mutation gate — pinned version, timeouts fail, every core mutated
+        run: bash scripts/test-mutation-test.sh
       - name: test
         run: cargo test --workspace
       - name: Phase 2 gates refuse missing tests, failed producers, and omitted build evidence

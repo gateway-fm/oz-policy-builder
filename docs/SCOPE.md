@@ -195,8 +195,9 @@ The source-reviewed account method inventory and its limits are described in
    ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
    Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
-   authority evidence. The operator reader below refuses that root unless its pinned network
-   is testnet.
+   authority evidence. Registry trust for any network but testnet refuses that root
+   (`E_REGISTRY_ROOT_POLICY`), so neither synthesis nor the operator reader below accepts it
+   elsewhere.
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
@@ -389,3 +390,13 @@ The source-reviewed account method inventory and its limits are described in
    entries in the envelope stay live authorizations until their expiration ledger, so a hosted
    server refuses an envelope carrying signatures, while the CLI and a stdio server send it to
    the caller's chosen endpoint.
+
+7. **Registry governance boundaries.** The `ozpb registry` tooling and
+   [Registry governance](REGISTRY-GOVERNANCE.md) cover custodian keys, successors, signing,
+   replay, monitoring and revocation; two limits are decisions, not gaps waiting for code.
+   `generate` and `verify` take no registry trust: they carry the root the spec names into the
+   BuildManifest unchecked, and trust is enforced at synthesis, the install intent and the live
+   checks, which load the snapshot under the pinned roots. Root rotation is an out-of-band re-pin
+   — snapshots do not carry the root policy — with the cutover order in
+   [Rotation](REGISTRY-GOVERNANCE.md#rotation-lost-and-compromised-keys). The mainnet registry
+   is an unsigned draft until its key ceremony ([`registry/mainnet/`](../registry/mainnet/README.md)).

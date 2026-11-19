@@ -30,9 +30,16 @@ stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
+# Seeds a new registry custodian key (`ozpb registry keygen`) from the operating system's CSPRNG.
+getrandom = { workspace = true }
 hex = { workspace = true }
 tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's process-group kill, the key file's owner check and its no-follow, non-blocking open.
 nix = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+# The registry rehearsal synthesizes a recording that carries the observed account code, which the
+# import format cannot express; the shared fixture is that recording.
+ozpb-synthesizer = { workspace = true }

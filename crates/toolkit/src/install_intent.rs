@@ -177,6 +177,22 @@ mod tests {
     use crate::test_support::{build_config, registry_trust};
     use ozpb_domain::LedgerSeq;
 
+    /// The install intent inherits the registry's one refusal point rather than carrying its own.
+    #[test]
+    fn the_install_intent_refuses_the_development_root_outside_testnet() {
+        let (mut input, _) = fixture();
+        crate::test_support::moved_to_mainnet(&mut input);
+        let Err(error) = plan_install_intent_read(&input, &registry_trust(), &build_config())
+        else {
+            panic!("the development root must be refused on mainnet")
+        };
+        assert_eq!(
+            error.code,
+            ozpb_api_types::ErrorCode::ERegistryRootPolicy,
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_clear_answer_yields_the_exact_arguments_it_committed_to() {
         let (input, scan) = fixture();

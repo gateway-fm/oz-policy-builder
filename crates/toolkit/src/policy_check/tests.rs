@@ -266,6 +266,25 @@ fn run(input: &CheckAgainstPolicyInput, capture: &PolicyStateCapture) -> CheckAg
     finish_policy_check(&plan, capture).unwrap()
 }
 
+/// The installed-rule check inherits the registry's one refusal point rather than carrying its own.
+#[test]
+fn the_installed_rule_check_refuses_the_development_root_outside_testnet() {
+    let (input, _) = fixture();
+    let (mut authority, _) = crate::call_surface_live::tests::fixture();
+    crate::test_support::moved_to_mainnet(&mut authority);
+    let input = CheckAgainstPolicyInput {
+        spec: authority.spec,
+        binding_set: authority.binding_set,
+        signed_registry_snapshot: authority.signed_registry_snapshot,
+        network_id: authority.network_id,
+        ..input
+    };
+    let Err(error) = plan_policy_check_read(&input, &registry_trust(), &build_config()) else {
+        panic!("the development root must be refused on mainnet")
+    };
+    assert_eq!(error.code, ErrorCode::ERegistryRootPolicy, "{error}");
+}
+
 #[test]
 fn stranger_in_otherwise_sufficient_candidates_must_deny() {
     let live = vec![SignerIdentity::Delegated(g(1))];

@@ -169,6 +169,16 @@ ozpb capture-target --request capture-request.json --rpc-sources rpc-sources.jso
 
 ```
 
+Registry custodians and the operators who pin their roots use `ozpb registry`: `keygen` (a new
+0600 custodian key; prints only the public key), `successor` (the next unsigned version from the
+published parent and a `registry-change/v1` document, refused if a consumer's load would refuse
+it), `sign` (`--print-root`, or a detached signature from a 0600 key file or from an Ed25519
+signature made elsewhere over the printed root), `combine` (refusing what a consumer's load
+would refuse before it writes), `verify` (`--signed` one snapshot, or
+`--replay` a published `registry/<network>/` log from genesis; prints the checkpoint to persist)
+and `monitor` (newer version, a head not yet valid, expiry, revoked watched hashes; exit 0, 3,
+7, 4, 5 or 6 for cron, 1 when the log cannot be verified). The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).
+
 The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant
 the authority check commits to, and never says "safe": the wallet that holds the owner key
 recomputes the check and decides (Decision D7). `ozpb check-policy-call-surface` produces the
@@ -235,7 +245,12 @@ fault never reads to an agent as "your spec does not compile".
 `{"threshold":2,"keys":{"ops-a":"<32-byte-hex>","ops-b":"<32-byte-hex>"}}`.
 It may also contain a durable `checkpoint` (`version`, `log_index`, `root`) to reject
 same-version equivocation after restart. The MCP server receives the same JSON through
-`OZPB_REGISTRY_ROOTS_JSON`, paired with `OZPB_REGISTRY_MIN_VERSION`.
+`OZPB_REGISTRY_ROOTS_JSON`, paired with `OZPB_REGISTRY_MIN_VERSION`. An unusable root policy —
+malformed JSON or keys, a weak key, a threshold the keys cannot meet — is refused with
+`E_REGISTRY_ROOT_POLICY`, and so is the committed development root (`docs/examples/registry-roots.json`)
+for any network but testnet: anyone can sign with it, so every command and tool that pins registry
+trust refuses it for mainnet. How production roots are held, rotated and monitored is
+[Registry governance](REGISTRY-GOVERNANCE.md).
 
 `OZPB_REGISTRY_SNAPSHOT_JSON` carries the signed snapshot to use when a request omits one. It
 sits beside the roots rather than among them because it is data, not trust: a snapshot is
@@ -533,3 +548,13 @@ what it enforces — an address or claimed kind is never sufficient.
   passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
 - `scripts/check-publication-allowlist.sh`: no confidential material in the public tree.
+- `scripts/mutation-test.sh` (`.github/workflows/mutation.yml`): a pull request that touches one
+  of the eight pure cores (recorder-core, evaluator, synthesizer, policy-spec,
+  call-surface-core, registry, domain, codegen) fails if a mutant on a line it changed survives
+  that crate's own tests, or times out. Resolve it with a test in that crate that the mutant
+  fails, or — only for a mutant no input can observe — an `exclude_re` entry in
+  `.cargo/mutants.toml` with a comment giving the reason. Run it locally with
+  `cargo install cargo-mutants --locked --version 27.1.0`, then
+  `bash scripts/mutation-test.sh --in-diff origin/main` for your branch's lines or
+  `bash scripts/mutation-test.sh -p ozpb-<core>` for a whole core; survivors are listed in
+  `target/mutants/mutants.out/missed.txt`.

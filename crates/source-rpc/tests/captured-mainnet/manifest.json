@@ -1,0 +1,103 @@
+{
+  "network_passphrase": "Public Global Stellar Network ; September 2015",
+  "protocol_version": 29,
+  "scanned": {
+    "rpc": "https://rpc.mainnet.stellar.gateway.fm",
+    "getTransactions": [
+      [
+        65480000,
+        65480027
+      ],
+      [
+        65520000,
+        65520012
+      ],
+      [
+        65550000,
+        65550018
+      ]
+    ],
+    "getEvents": [
+      65431974,
+      65552833
+    ],
+    "events": [
+      "spending_limit_enforced",
+      "simple_enforced",
+      "weighted_enforced",
+      "signer_added"
+    ]
+  },
+  "cases": [
+    {
+      "case": "sac-transfer-source-account",
+      "tx_hash": "5f942cf31cd97d658661d1d05f727be0ce4c61ced72ee0b59d4d29ad078e326b",
+      "ledger": 65480010,
+      "status": "SUCCESS",
+      "covers": "Stellar Asset Contract transfer in a fee-bump envelope, authorized by the inner transaction source's source-account credential"
+    },
+    {
+      "case": "classic-address-credential",
+      "tx_hash": "f1373f8a3278f4a18b4d6c9c47cbbee48268ed815467e2ba1e02ffd5d6a772db",
+      "ledger": 65480010,
+      "status": "SUCCESS",
+      "covers": "invocation authorized by an address credential of an ed25519 (G) account that is not the transaction source"
+    },
+    {
+      "case": "smart-account-credential",
+      "tx_hash": "64ef795162aa4a358515b19dcd6b8f091364cfb1f7f57d4d44f4a6a165be3b9d",
+      "ledger": 65539152,
+      "status": "SUCCESS",
+      "covers": "invocation authorized by the address credential of a smart account built on OpenZeppelin stellar-accounts, so its __check_auth ran"
+    },
+    {
+      "case": "nested-auth-tree",
+      "tx_hash": "d513d18492cb6d41116df13b7af0830c7005754d3e4cc9778841a56a4e029674",
+      "ledger": 65520009,
+      "status": "SUCCESS",
+      "covers": "authorization entry whose root invocation has sub-invocations, such as a swap reaching a token transfer"
+    },
+    {
+      "case": "fee-bump-invocation",
+      "tx_hash": "2ac5978dc3046f3e5d5a4fb6d029236e4314905c0c51930503a541778cb203d1",
+      "ledger": 65550013,
+      "status": "SUCCESS",
+      "covers": "fee-bump envelope wrapping a Soroban invocation"
+    },
+    {
+      "case": "failed-invocation",
+      "tx_hash": "7ed1181407692659557a263a37d7bb7effc948151a44ae954c164f7e06127b26",
+      "ledger": 65550016,
+      "status": "FAILED",
+      "covers": "Soroban invocation that failed on-chain"
+    },
+    {
+      "case": "classic-multi-operation",
+      "tx_hash": "1119faac04f6fc0f3b55b9fde2b41db675085c2d20501a454a216d112c86df35",
+      "ledger": 65550017,
+      "status": "SUCCESS",
+      "covers": "classic transaction with several operations and no InvokeHostFunction"
+    },
+    {
+      "case": "multi-authorizer",
+      "tx_hash": "2f5e41c0fad4d26e5ab9df6fad6b1e16ac795612900760b147f4a992b27d835f",
+      "ledger": 65447415,
+      "status": "SUCCESS",
+      "covers": "invocation carrying authorization entries from several distinct addresses"
+    },
+    {
+      "case": "auth-args-divergence",
+      "tx_hash": "5088d8095a47e9de54b05e725ba75b559df7dcb5731c8a25744be2c0026902af",
+      "ledger": 65520009,
+      "status": "SUCCESS",
+      "covers": "authorized root arguments differ from the invoked arguments of the same contract function"
+    },
+    {
+      "case": "credential-address-v2",
+      "tx_hash": "4ad01fa10049118215e40acc8467eb3396147a13c5e62c59171ae00c51413fda",
+      "ledger": 65455787,
+      "status": "SUCCESS",
+      "covers": "invocation authorized by the protocol-27 (CAP-71) AddressV2 credential arm"
+    }
+  ]
+}

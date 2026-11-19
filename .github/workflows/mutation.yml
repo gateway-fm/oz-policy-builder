@@ -1,0 +1,62 @@
+name: mutation testing
+# Mutation testing over the trust-bearing cores (architecture §8; `scripts/mutation-test.sh`).
+#
+# A pull request tests only the mutants on the lines it changes, which keeps the job to minutes and
+# puts a surviving mutant in front of the author of the code it lives in. The whole set runs weekly
+# and on demand, where a test that stops killing an old mutant is found.
+on:
+  pull_request:
+    paths:
+      - 'crates/recorder-core/**'
+      - 'crates/evaluator/**'
+      - 'crates/synthesizer/**'
+      - 'crates/policy-spec/**'
+      - 'crates/call-surface-core/**'
+      - 'crates/registry/**'
+      - 'crates/domain/**'
+      - 'crates/codegen/**'
+      - '.cargo/mutants.toml'
+      - 'scripts/mutation-test.sh'
+      - '.github/workflows/mutation.yml'
+  schedule:
+    # Sundays 04:41 UTC, clear of the nightly live run at 03:17.
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request cancels the run in progress for the older one; a
+# scheduled or manual full run in progress is never cancelled.
+concurrency:
+  group: mutation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  mutants:
+    name: mutation testing (${{ github.event_name == 'pull_request' && 'changed lines' || 'all cores' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The pull-request mode diffs against the base branch, which a shallow clone lacks.
+          fetch-depth: 0
+      - name: toolchain
+        run: rustup show # rust-toolchain.toml pins the channel + components
+      - name: cargo-mutants (pinned; the version is part of the verdict)
+        run: cargo install cargo-mutants --locked --version 27.1.0
+      - name: mutants on the changed lines
+        if: github.event_name == 'pull_request'
+        run: bash scripts/mutation-test.sh --in-diff "origin/${{ github.base_ref }}"
+      - name: mutants in every core
+        if: github.event_name != 'pull_request'
+        run: bash scripts/mutation-test.sh
+      - name: list surviving mutants
+        if: failure()
+        run: |
+          for f in missed timeout; do
+            if [ -s "target/mutants/mutants.out/$f.txt" ]; then
+              echo "== $f =="; cat "target/mutants/mutants.out/$f.txt"
+            fi
+          done

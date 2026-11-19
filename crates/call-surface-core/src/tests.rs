@@ -1562,3 +1562,144 @@ fn the_state_digest_is_domain_separated_and_version_prefixed() {
         expected
     );
 }
+
+/// Reports and the wire both name a finding by its code; the two spellings must be one, and
+/// both must be the published code.
+#[test]
+fn every_finding_code_reads_the_same_as_its_wire_name() {
+    for code in [
+        FindingCode::DelegateHasAuthority,
+        FindingCode::DelegateGrantOverlap,
+        FindingCode::UnsafeCallSurface,
+        FindingCode::UnsafeManagementSurface,
+        FindingCode::UnsupportedAuthority,
+        FindingCode::IncompleteAccountState,
+    ] {
+        // Exhaustive, with no wildcard: a new variant does not compile here until it is given
+        // its published code — and it belongs in the list above too.
+        let published = match code {
+            FindingCode::DelegateHasAuthority => "E_DELEGATE_HAS_AUTHORITY",
+            FindingCode::DelegateGrantOverlap => "E_DELEGATE_GRANT_OVERLAP",
+            FindingCode::UnsafeCallSurface => "E_UNSAFE_CALL_SURFACE",
+            FindingCode::UnsafeManagementSurface => "E_UNSAFE_MANAGEMENT_SURFACE",
+            FindingCode::UnsupportedAuthority => "E_UNSUPPORTED_AUTHORITY",
+            FindingCode::IncompleteAccountState => "E_INCOMPLETE_ACCOUNT_STATE",
+        };
+        assert_eq!(code.as_str(), published);
+        assert_eq!(
+            serde_json::to_value(code).unwrap(),
+            serde_json::Value::String(published.to_string())
+        );
+    }
+}
+
+#[test]
+fn an_overlap_says_whether_policies_or_nothing_lets_the_agent_through() {
+    let overlap_reason = |policies: Vec<String>| {
+        let st = StateBuilder::new()
+            .owner_rule(vec![delegated(OWNER)])
+            .rule(call(target()), None, vec![delegated(AGENT)], policies)
+            .build();
+        let verdict = check(&input(&st)).unwrap();
+        let finding = only_refusal(&verdict);
+        assert_eq!(finding.code, FindingCode::DelegateGrantOverlap);
+        finding.reason.clone()
+    };
+
+    let bare = overlap_reason(vec![]);
+    assert!(bare.contains("without anyone else"), "{bare}");
+    assert!(!bare.contains("under policies"), "{bare}");
+
+    let guarded = overlap_reason(vec![unknown_policy()]);
+    assert!(guarded.contains("under policies"), "{guarded}");
+    assert!(!guarded.contains("without anyone else"), "{guarded}");
+}
+
+#[test]
+fn missing_evidence_is_reported_as_unanswerable_not_as_unsupported() {
+    // The two kinds of problem ask for different things: re-read the state, or change the
+    // account. The reason must say which.
+    let unread = with_classic(&owned(), OWNER, None);
+    let finding = only_unresolved(&unread);
+    assert!(
+        finding.reason.contains("cannot answer without it"),
+        "{}",
+        finding.reason
+    );
+    assert!(
+        !finding.reason.contains("does not support"),
+        "{}",
+        finding.reason
+    );
+}
+
+#[test]
+fn a_classic_owner_is_not_described_as_a_contract_that_signs() {
+    // Only a contract signer has methods that accept the account's authorization; a classic
+    // owner key is not one, whatever string the new rule's target is.
+    let st = owned();
+    let mut request = input(&st);
+    request.grant.target = classic(OWNER);
+    let verdict = check(&request).unwrap();
+    assert!(
+        !verdict
+            .refusals
+            .iter()
+            .any(|finding| finding.reason.contains("a contract that signs")),
+        "{:?}",
+        verdict.refusals
+    );
+
+    // The same position held by a contract signer is refused as one.
+    let st = StateBuilder::new()
+        .owner_rule(vec![
+            delegated(OWNER),
+            StoredSignerKey::Delegated {
+                address: other_contract(),
+            },
+        ])
+        .build();
+    let mut request = input(&st);
+    request.grant.target = other_contract();
+    let verdict = check(&request).unwrap();
+    assert!(
+        verdict
+            .refusals
+            .iter()
+            .any(|finding| finding.code == FindingCode::UnsafeCallSurface
+                && finding.reason.contains("a contract that signs")),
+        "{:?}",
+        verdict.refusals
+    );
+}
+
+#[test]
+fn a_signer_or_policy_filed_under_another_id_is_a_snapshot_mismatch() {
+    let mut signer_moved = owned();
+    signer_moved.signers.get_mut(&0).unwrap().id = 7;
+    assert!(matches!(
+        check(&input(&signer_moved)).unwrap_err(),
+        CheckError::IncompleteState {
+            cause: IncompleteCause::SnapshotMismatch,
+            ..
+        }
+    ));
+
+    let mut policy_moved = StateBuilder::new()
+        .owner_rule(vec![delegated(OWNER)])
+        .rule(
+            call(other_contract()),
+            None,
+            vec![delegated(OWNER)],
+            vec![readable_policy()],
+        )
+        .build();
+    policy_moved.policies.get_mut(&0).unwrap().id = 7;
+    assert!(matches!(
+        check(&input(&policy_moved)).unwrap_err(),
+        CheckError::IncompleteState {
+            cause: IncompleteCause::SnapshotMismatch,
+            ..
+        }
+    ));
+}

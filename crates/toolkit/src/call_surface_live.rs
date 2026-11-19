@@ -806,22 +806,11 @@ pub(crate) mod tests {
     #[test]
     fn the_public_development_root_is_refused_outside_testnet() {
         let (mut input, _) = fixture();
-        let mainnet = NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE);
-        let signed = ozpb_registry::sign_snapshot(
-            &ozpb_registry::dev::dev_signing_key(),
-            ozpb_registry::dev::dev_snapshot(mainnet, 3),
-        )
-        .unwrap();
-        let mut spec: ozpb_policy_spec::PolicySpec =
-            serde_json::from_value(input.spec.clone()).unwrap();
-        spec.network_id = mainnet;
-        spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
-        input.spec = serde_json::to_value(&spec).unwrap();
-        input.network_id = mainnet.0.to_hex();
-        input.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+        crate::test_support::moved_to_mainnet(&mut input);
         let Err(error) = plan_call_surface_read(&input, &registry_trust(), &build_config()) else {
             panic!("the development root must be refused on mainnet")
         };
+        assert_eq!(error.code, EC::ERegistryRootPolicy, "{error}");
         assert!(error.message.contains("only on testnet"), "{error}");
         // Also when the dev key is one of several roots.
         let mut mixed = registry_trust();
@@ -829,6 +818,7 @@ pub(crate) mod tests {
         let Err(error) = plan_call_surface_read(&input, &mixed, &build_config()) else {
             panic!("a root policy that includes the development key must be refused")
         };
+        assert_eq!(error.code, EC::ERegistryRootPolicy, "{error}");
         assert!(error.message.contains("only on testnet"), "{error}");
         // Another root is not refused for being on mainnet (its signature fails instead).
         let mut other = registry_trust();

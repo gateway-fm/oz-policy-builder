@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod account_methods;
+pub mod governance;
 
 pub const REGISTRY_SCHEMA: &str = "registry/v1";
 
@@ -424,6 +425,8 @@ impl Registry {
     /// - No network: a correctly signed snapshot for *any* Stellar network is accepted, so a
     ///   testnet snapshot loads in a mainnet process. Pin the network unless the caller
     ///   independently verifies `network_id` against the recording it will synthesize from.
+    ///   The development root is still refused at load for a snapshot of any other network
+    ///   than testnet, so leaving the network out is not a way to use it elsewhere.
     /// - No rollback floor: with neither a persisted minimum version nor a checkpoint, a fresh
     ///   process accepts an older but correctly signed snapshot — a rollback/freeze replay
     ///   across restarts. In-process monotonicity still holds once a snapshot is loaded.
@@ -509,12 +512,43 @@ impl Registry {
         expected_network: NetworkId,
     ) -> Result<Self, RegistryError> {
         let mut registry = Self::with_pinned_root(root_key_bytes)?;
-        registry.expected_network = Some(expected_network);
+        registry.pin_network(expected_network)?;
         Ok(registry)
+    }
+
+    /// Bind this verifier to one network, refusing the development root for any network but
+    /// testnet. Every network-pinned constructor goes through here, so no consumer can pin a
+    /// network without the rule.
+    fn pin_network(&mut self, network: NetworkId) -> Result<(), RegistryError> {
+        self.refuse_development_root_for(network)?;
+        self.expected_network = Some(network);
+        Ok(())
+    }
+
+    /// Anyone can recompute the development root's private key from its published seed, so a
+    /// snapshot it signs carries no review authority: an agent could sign one recognizing its own
+    /// verifier as an owner verifier. Only the testnet example may use it — alone or beside other
+    /// keys, since one key that anyone holds is enough to count toward a threshold.
+    fn refuse_development_root_for(&self, network: NetworkId) -> Result<(), RegistryError> {
+        let development = dev::dev_root_verifying_bytes();
+        if network != NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
+            && self
+                .root_keys
+                .values()
+                .any(|key| key.to_bytes() == development)
+        {
+            return Err(RegistryError::RootPolicy(
+                "the public development registry root is accepted only on testnet".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Construct with a version floor persisted by the caller across processes. Without a
     /// persisted floor, an old but correctly signed snapshot could be replayed after restart.
+    ///
+    /// Every network-pinned constructor refuses a root policy holding the public development
+    /// key for any network but testnet ([`RegistryError::RootPolicy`]).
     pub fn with_pinned_root_for_network_at_version(
         root_key_bytes: &[u8; 32],
         expected_network: NetworkId,
@@ -536,7 +570,7 @@ impl Registry {
         minimum_version: u64,
     ) -> Result<Self, RegistryError> {
         let mut registry = Self::with_pinned_roots(policy)?;
-        registry.expected_network = Some(expected_network);
+        registry.pin_network(expected_network)?;
         registry.minimum_version = minimum_version;
         Ok(registry)
     }
@@ -547,7 +581,7 @@ impl Registry {
         checkpoint: RegistryCheckpoint,
     ) -> Result<Self, RegistryError> {
         let mut registry = Self::with_pinned_roots(policy)?;
-        registry.expected_network = Some(expected_network);
+        registry.pin_network(expected_network)?;
         registry.minimum_version = checkpoint.version;
         registry.pinned_checkpoint = Some(checkpoint);
         Ok(registry)
@@ -586,11 +620,42 @@ impl Registry {
             return Err(RegistryError::Schema(signed.snapshot.schema.clone()));
         }
         let root = snapshot_root(&signed.snapshot)?;
-        if signed.signatures.len() < self.root_threshold as usize {
+        self.verify_signatures(&signed.signatures, &root)?;
+        self.admit(&signed.snapshot, root, now_unix)?;
+        self.current = Some(Loaded {
+            snapshot: signed.snapshot.clone(),
+            root,
+        });
+        Ok(root)
+    }
+
+    /// Every check [`Self::load_at`] applies to a snapshot except its signatures, against this
+    /// registry's current state, changing nothing: what release tooling asks of a successor it
+    /// has built but nobody has signed yet. Passing here means that, once the pinned threshold
+    /// signs exactly this snapshot, `load_at` at `now_unix` accepts it as the next version.
+    pub(crate) fn check_unsigned(
+        &self,
+        snapshot: &RegistrySnapshot,
+        now_unix: i64,
+    ) -> Result<Hash32, RegistryError> {
+        if snapshot.schema != REGISTRY_SCHEMA {
+            return Err(RegistryError::Schema(snapshot.schema.clone()));
+        }
+        let root = snapshot_root(snapshot)?;
+        self.admit(snapshot, root, now_unix)?;
+        Ok(root)
+    }
+
+    fn verify_signatures(
+        &self,
+        signatures: &BTreeMap<String, String>,
+        root: &Hash32,
+    ) -> Result<(), RegistryError> {
+        if signatures.len() < self.root_threshold as usize {
             return Err(RegistryError::Signature);
         }
         let mut valid_signatures = 0u32;
-        for (id, encoded) in &signed.signatures {
+        for (id, encoded) in signatures {
             let key = self.root_keys.get(id).ok_or(RegistryError::Signature)?;
             let sig_bytes: [u8; 64] = hex::decode(encoded)
                 .map_err(|_| RegistryError::Signature)?
@@ -606,43 +671,55 @@ impl Registry {
         if valid_signatures < self.root_threshold {
             return Err(RegistryError::Signature);
         }
+        Ok(())
+    }
 
+    /// The content, validity and succession checks of [`Self::load_at`], after its signatures.
+    fn admit(
+        &self,
+        snapshot: &RegistrySnapshot,
+        root: Hash32,
+        now_unix: i64,
+    ) -> Result<(), RegistryError> {
         if let Some(expected) = self.expected_network {
-            if signed.snapshot.network_id != expected {
+            if snapshot.network_id != expected {
                 return Err(RegistryError::Network {
                     expected: expected.0.to_hex(),
-                    found: signed.snapshot.network_id.0.to_hex(),
+                    found: snapshot.network_id.0.to_hex(),
                 });
             }
         }
-        check_snapshot_validity(&signed.snapshot, now_unix)?;
-        validate_capability_keys(&signed.snapshot)?;
-        for (capability, revocation) in &signed.snapshot.revocations {
+        // A registry built without a network could not decide at construction; the snapshot's
+        // own network decides here, so the unpinned constructor is not a way around the rule.
+        self.refuse_development_root_for(snapshot.network_id)?;
+        check_snapshot_validity(snapshot, now_unix)?;
+        validate_capability_keys(snapshot)?;
+        for (capability, revocation) in &snapshot.revocations {
             if revocation.reason.trim().is_empty() {
                 return Err(RegistryError::Parse(
                     "revocations require a capability key and non-empty reason".to_string(),
                 ));
             }
-            if revocation.effective_version > signed.snapshot.version {
+            if revocation.effective_version > snapshot.version {
                 return Err(RegistryError::Parse(format!(
                     "revocation {capability} becomes effective after snapshot version {}",
-                    signed.snapshot.version
+                    snapshot.version
                 )));
             }
         }
 
-        if signed.snapshot.version < self.minimum_version {
+        if snapshot.version < self.minimum_version {
             return Err(RegistryError::Rollback {
-                offered: signed.snapshot.version,
+                offered: snapshot.version,
                 current: self.minimum_version,
             });
         }
         if self.current.is_none() {
             if let Some(checkpoint) = &self.pinned_checkpoint {
-                if signed.snapshot.version == checkpoint.version {
+                if snapshot.version == checkpoint.version {
                     if root != checkpoint.root
-                        || signed.snapshot.log_index != checkpoint.log_index
-                        || signed.snapshot.revocations != checkpoint.revocations
+                        || snapshot.log_index != checkpoint.log_index
+                        || snapshot.revocations != checkpoint.revocations
                     {
                         return Err(RegistryError::Transparency(format!(
                             "snapshot version {} conflicts with the persisted checkpoint",
@@ -653,25 +730,22 @@ impl Registry {
                     let expected_index = checkpoint.log_index.checked_add(1).ok_or_else(|| {
                         RegistryError::Transparency("log index overflow".to_string())
                     })?;
-                    if signed.snapshot.log_index != expected_index
-                        || signed.snapshot.previous_root != Some(checkpoint.root)
+                    if snapshot.log_index != expected_index
+                        || snapshot.previous_root != Some(checkpoint.root)
                     {
                         return Err(RegistryError::Transparency(format!(
                             "snapshot does not directly extend persisted checkpoint {}",
                             checkpoint.root
                         )));
                     }
-                    ensure_revocations_extend(
-                        &checkpoint.revocations,
-                        &signed.snapshot.revocations,
-                    )?;
+                    ensure_revocations_extend(&checkpoint.revocations, &snapshot.revocations)?;
                 }
             }
         }
         if let Some(current) = &self.current {
-            if signed.snapshot.version <= current.snapshot.version {
+            if snapshot.version <= current.snapshot.version {
                 return Err(RegistryError::Rollback {
-                    offered: signed.snapshot.version,
+                    offered: snapshot.version,
                     current: current.snapshot.version,
                 });
             }
@@ -680,25 +754,21 @@ impl Registry {
                 .log_index
                 .checked_add(1)
                 .ok_or_else(|| RegistryError::Transparency("log index overflow".to_string()))?;
-            if signed.snapshot.log_index != expected_index {
+            if snapshot.log_index != expected_index {
                 return Err(RegistryError::Transparency(format!(
                     "expected log index {expected_index}, got {}",
-                    signed.snapshot.log_index
+                    snapshot.log_index
                 )));
             }
-            if signed.snapshot.previous_root != Some(current.root) {
+            if snapshot.previous_root != Some(current.root) {
                 return Err(RegistryError::Transparency(format!(
                     "snapshot does not extend the previously accepted root {}",
                     current.root
                 )));
             }
-            ensure_revocations_extend(&current.snapshot.revocations, &signed.snapshot.revocations)?;
+            ensure_revocations_extend(&current.snapshot.revocations, &snapshot.revocations)?;
         }
-        self.current = Some(Loaded {
-            snapshot: signed.snapshot.clone(),
-            root,
-        });
-        Ok(root)
+        Ok(())
     }
 
     /// Parse and load a signed snapshot from JSON.
@@ -1106,7 +1176,8 @@ pub mod dev {
     }
 
     /// Public half of [`dev_signing_key`]: development-only, because anyone can sign with
-    /// it. The operator account reader in `ozpb-source-rpc` refuses it outside testnet.
+    /// it. Every network-pinned [`Registry`] constructor refuses a root policy holding it for any
+    /// network but testnet, and a load refuses a snapshot for another network under it.
     pub fn dev_root_verifying_bytes() -> [u8; 32] {
         dev_signing_key().verifying_key().to_bytes()
     }
@@ -1367,6 +1438,10 @@ pub mod dev {
                     .iter()
                     .map(|kind| (*kind).to_string())
                     .collect(),
+                // Historical development text, and not true of any review: it is inside every
+                // published development root (versions 1 to 6, pinned by
+                // `historical_development_root_is_immutable` and docs/examples), so it cannot
+                // change without forking them. The mainnet draft carries pending text instead.
                 review_reference: "audited with the template pack".to_string(),
             },
         );
@@ -2311,15 +2386,109 @@ mod tests {
         ));
     }
 
+    /// The development root's seed is public, so a snapshot it signs carries no review authority.
+    /// The rule lives where trust meets a network, so every consumer inherits it: each
+    /// network-pinned construction refuses a root policy holding the development key for any
+    /// network but testnet, alone or beside other keys, and a load refuses a snapshot for another
+    /// network under it even when the registry was built without one.
+    #[test]
+    fn the_development_root_is_refused_for_every_network_but_testnet() {
+        let development = dev::dev_root_verifying_bytes();
+        let governance = SigningKey::from_bytes(&sha256(b"registry test governance root").0)
+            .verifying_key()
+            .to_bytes();
+        let only = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), development)]),
+        };
+        let mixed = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([
+                ("legacy".to_string(), development),
+                ("governance".to_string(), governance),
+            ]),
+        };
+        let checkpoint = RegistryCheckpoint {
+            version: 1,
+            log_index: 1,
+            root: sha256(b"any root"),
+            revocations: BTreeMap::new(),
+        };
+        for passphrase in [
+            ozpb_domain::MAINNET_PASSPHRASE,
+            "Test SDF Future Network ; October 2022",
+        ] {
+            let other = NetworkId::from_passphrase(passphrase);
+            for policy in [&only, &mixed] {
+                assert!(
+                    matches!(
+                        Registry::with_pinned_roots_for_network_at_version(
+                            policy.clone(),
+                            other,
+                            1
+                        ),
+                        Err(RegistryError::RootPolicy(ref reason)) if reason.contains("only on testnet")
+                    ),
+                    "{passphrase}"
+                );
+                assert!(matches!(
+                    Registry::with_pinned_roots_for_network_at_checkpoint(
+                        policy.clone(),
+                        other,
+                        checkpoint.clone()
+                    ),
+                    Err(RegistryError::RootPolicy(_))
+                ));
+            }
+            // A production-shaped root is not refused for its network.
+            Registry::with_pinned_roots_for_network_at_version(
+                RootPolicy {
+                    threshold: 1,
+                    keys: BTreeMap::from([("governance".to_string(), governance)]),
+                },
+                other,
+                1,
+            )
+            .unwrap();
+        }
+        // Testnet keeps the reproducible example.
+        Registry::with_pinned_roots_for_network_at_version(only.clone(), network(), 1).unwrap();
+        Registry::with_pinned_roots_for_network_at_checkpoint(mixed, network(), checkpoint)
+            .unwrap();
+
+        // The unpinned constructor cannot decide at construction, so the load decides by the
+        // snapshot's own network.
+        let mainnet = NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE);
+        let signed = sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(mainnet, 1)).unwrap();
+        let mut unpinned = Registry::with_pinned_roots(only.clone()).unwrap();
+        assert!(matches!(
+            unpinned.load_at(&signed, 0),
+            Err(RegistryError::RootPolicy(_))
+        ));
+        let signed =
+            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
+        Registry::with_pinned_roots(only)
+            .unwrap()
+            .load_at(&signed, 0)
+            .unwrap();
+    }
+
     #[test]
     fn network_and_snapshot_validity_are_pinned() {
         let root = dev::dev_root_verifying_bytes();
+        // A production-shaped root: the development key is refused outright for mainnet, which
+        // would stop this before the network check it is here to exercise.
+        let governance = SigningKey::from_bytes(&sha256(b"registry test governance root").0);
         let mainnet = NetworkId::from_passphrase("Public Global Stellar Network ; September 2015");
-        let signed =
-            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
-        let mut wrong_network = Registry::with_pinned_root_for_network(&root, mainnet).unwrap();
+        let signed = sign_snapshot(&governance, dev::dev_snapshot(network(), 1)).unwrap();
+        let mut wrong_network =
+            Registry::with_pinned_root_for_network(&governance.verifying_key().to_bytes(), mainnet)
+                .unwrap();
         assert!(
-            wrong_network.load_at(&signed, 100).is_err(),
+            matches!(
+                wrong_network.load_at(&signed, 100),
+                Err(RegistryError::Network { .. })
+            ),
             "a correctly signed snapshot for another network must fail closed"
         );
 
@@ -2678,6 +2847,207 @@ mod tests {
         let json = serde_json::to_string(&signed).unwrap();
         let mut r = registry();
         r.load_json(&json).unwrap();
+    }
+
+    fn signed_valid_between(valid_from: i64, expires_at: i64) -> SignedSnapshot {
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        snapshot.valid_from_unix = valid_from;
+        snapshot.expires_at_unix = expires_at;
+        sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
+    }
+
+    #[test]
+    fn a_one_instant_validity_interval_loads_and_an_inverted_one_is_named() {
+        // Both ends are inclusive, so an interval of one second is a real interval.
+        registry()
+            .load_at(&signed_valid_between(100, 100), 100)
+            .unwrap();
+
+        // An interval that ends before it starts is malformed whatever the time: it is
+        // reported as such, not as "not yet valid" or "expired" depending on when it is read.
+        for now in [50, 150, 250] {
+            assert_eq!(
+                registry()
+                    .load_at(&signed_valid_between(200, 100), now)
+                    .unwrap_err(),
+                RegistryError::Validity {
+                    valid_from: 200,
+                    expires_at: 100
+                },
+                "read at {now}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_threshold_outside_one_to_the_key_count_is_refused() {
+        for threshold in [0, 2] {
+            let policy = RootPolicy {
+                threshold,
+                keys: BTreeMap::from([("only".to_string(), dev::dev_root_verifying_bytes())]),
+            };
+            assert!(
+                matches!(
+                    Registry::with_pinned_roots(policy),
+                    Err(RegistryError::RootPolicy(_))
+                ),
+                "threshold {threshold} of one root"
+            );
+        }
+    }
+
+    #[test]
+    fn signatures_beyond_the_threshold_are_verified_not_refused() {
+        // A 1-of-2 root policy with both roots signing: every signature verifies, and more
+        // valid signatures than the threshold is a quorum, not an error.
+        let first = SigningKey::from_bytes(&sha256(b"registry-root-1").0);
+        let second = SigningKey::from_bytes(&sha256(b"registry-root-2").0);
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([
+                ("first".to_string(), first.verifying_key().to_bytes()),
+                ("second".to_string(), second.verifying_key().to_bytes()),
+            ]),
+        };
+        let signed = sign_snapshot_with_roots(
+            &BTreeMap::from([("first".to_string(), first), ("second".to_string(), second)]),
+            dev::dev_snapshot(network(), 1),
+        )
+        .unwrap();
+        Registry::with_pinned_roots(roots)
+            .unwrap()
+            .load(&signed)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_restart_successor_must_both_follow_the_log_index_and_name_the_checkpoint_root() {
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+        };
+        let v1_snapshot = dev::dev_snapshot(network(), 1);
+        let v1 = sign_snapshot(&dev::dev_signing_key(), v1_snapshot.clone()).unwrap();
+        let mut first = Registry::with_pinned_roots(roots.clone()).unwrap();
+        first.load(&v1).unwrap();
+        let checkpoint = first.checkpoint().unwrap();
+        let restarted = || {
+            Registry::with_pinned_roots_for_network_at_checkpoint(
+                roots.clone(),
+                network(),
+                checkpoint.clone(),
+            )
+            .unwrap()
+        };
+
+        let mut good = dev::dev_snapshot(network(), 2);
+        good.previous_root = Some(checkpoint.root);
+        good.log_index = checkpoint.log_index + 1;
+
+        let mut wrong_parent = good.clone();
+        wrong_parent.previous_root = Some(sha256(b"some other root"));
+        let mut skipped_index = good.clone();
+        skipped_index.log_index = checkpoint.log_index + 2;
+        for (name, snapshot) in [
+            ("wrong parent", wrong_parent),
+            ("skipped index", skipped_index),
+        ] {
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            assert!(
+                matches!(
+                    restarted().load(&signed),
+                    Err(RegistryError::Transparency(_))
+                ),
+                "{name}"
+            );
+        }
+        let signed = sign_snapshot(&dev::dev_signing_key(), good).unwrap();
+        restarted().load(&signed).unwrap();
+    }
+
+    #[test]
+    fn a_persisted_checkpoint_must_agree_with_the_same_version_snapshot_in_every_field() {
+        // The checkpoint is the consumer's persisted state, read back from storage. Its root
+        // commits to the log index and revocations, so for an intact checkpoint a matching
+        // root implies the rest; the other two comparisons are what catch a checkpoint whose
+        // fields no longer agree with each other. The snapshot offered here is exactly the
+        // one the checkpoint was taken from, so only the persisted field differs.
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+        };
+        let v1 = sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
+        let mut first = Registry::with_pinned_roots(roots.clone()).unwrap();
+        first.load(&v1).unwrap();
+        let checkpoint = first.checkpoint().unwrap();
+
+        let mut other_index = checkpoint.clone();
+        other_index.log_index += 1;
+        let mut other_revocations = checkpoint;
+        other_revocations.revocations.insert(
+            format!("policy/{}", "0".repeat(64)),
+            Revocation {
+                reason: "test".to_string(),
+                effective_version: 1,
+            },
+        );
+        for (name, persisted) in [
+            ("log index", other_index),
+            ("revocations", other_revocations),
+        ] {
+            let mut restarted = Registry::with_pinned_roots_for_network_at_checkpoint(
+                roots.clone(),
+                network(),
+                persisted,
+            )
+            .unwrap();
+            assert!(
+                matches!(restarted.load(&v1), Err(RegistryError::Transparency(_))),
+                "a persisted {name} that disagrees with the snapshot must not be satisfied by \
+                 its root alone"
+            );
+        }
+    }
+
+    fn load_with_revocation(key: &str) -> Result<Hash32, RegistryError> {
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        snapshot.revocations.insert(
+            key.to_string(),
+            Revocation {
+                reason: "test".to_string(),
+                effective_version: 1,
+            },
+        );
+        registry().load(&sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap())
+    }
+
+    fn parse_error(result: Result<Hash32, RegistryError>) -> String {
+        match result {
+            Err(RegistryError::Parse(message)) => message,
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn template_revocations_load_and_bad_keys_say_what_is_wrong() {
+        load_with_revocation("template/policy-templates/scope@1").unwrap();
+
+        let message = parse_error(load_with_revocation("policy/not-a-hash"));
+        assert!(
+            message.contains("must contain a canonical wasm hash"),
+            "{message}"
+        );
+        let message = parse_error(load_with_revocation(&format!("unknown/{}", "0".repeat(64))));
+        assert!(message.contains("unknown capability kind"), "{message}");
+    }
+
+    #[test]
+    fn a_template_family_is_one_to_128_bytes() {
+        load_with_revocation(&format!("template/{}", "a".repeat(128))).unwrap();
+        for family in [String::new(), "a".repeat(129)] {
+            let message = parse_error(load_with_revocation(&format!("template/{family}")));
+            assert!(message.contains("template family"), "{message}");
+        }
     }
 }
 

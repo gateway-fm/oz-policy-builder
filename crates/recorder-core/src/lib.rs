@@ -1957,8 +1957,14 @@ pub mod fixtures {
     }
 
     pub fn executed_snapshot() -> EvidenceSnapshot {
+        executed_snapshot_on(ozpb_domain::TESTNET_PASSPHRASE)
+    }
+
+    /// [`executed_snapshot`] acquired on another network: the same evidence under another
+    /// passphrase, so a test can attribute a difference in outcome to the network alone.
+    pub fn executed_snapshot_on(network_passphrase: &str) -> EvidenceSnapshot {
         EvidenceSnapshot::from_rpc_transaction(
-            ozpb_domain::TESTNET_PASSPHRASE,
+            network_passphrase,
             envelope_with(vec![auth_entry(address_credentials(12345))])
                 .to_xdr_base64(Limits::none())
                 .unwrap(),
@@ -4049,5 +4055,510 @@ mod tests {
         );
         let b = record(&snap, RecordOptions::default()).unwrap();
         assert_eq!(b.authorizations[0].root.sub_invocations.len(), 1);
+    }
+
+    // --- resource bounds at their exact maxima --------------------------------------------
+
+    fn bare_change(key_xdr_base64: Option<String>) -> StateChange {
+        StateChange {
+            kind: StateChangeKind::Created,
+            entry: "contract_data".to_string(),
+            contract: None,
+            source: StateChangeSource::Simulation,
+            key_xdr_base64,
+            before_xdr_base64: None,
+            after_xdr_base64: None,
+        }
+    }
+
+    fn limits_for(
+        envelope: &str,
+        meta: Option<&str>,
+        auth: &[String],
+        changes: &[StateChange],
+        executables: usize,
+    ) -> Result<(), RecordError> {
+        validate_raw_evidence_limits(envelope, meta, None, auth, changes, executables)
+    }
+
+    fn resource_limit(result: Result<(), RecordError>, naming: &str) {
+        match result {
+            Err(RecordError::ResourceLimit(message)) => {
+                assert!(message.contains(naming), "{message}")
+            }
+            other => panic!("expected a resource limit naming {naming:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_evidence_count_and_size_bound_admits_exactly_its_maximum() {
+        let at_value_cap = "A".repeat(MAX_XDR_BASE64_BYTES);
+        let small = "AAAA".to_string();
+
+        // One value at the per-value cap.
+        limits_for(&at_value_cap, None, &[], &[], 0).unwrap();
+
+        // Authorization entries: count, then total size.
+        limits_for(
+            &small,
+            None,
+            &vec![small.clone(); MAX_SIMULATED_AUTH_ENTRIES],
+            &[],
+            0,
+        )
+        .unwrap();
+        resource_limit(
+            limits_for(
+                &small,
+                None,
+                &vec![small.clone(); MAX_SIMULATED_AUTH_ENTRIES + 1],
+                &[],
+                0,
+            ),
+            "authorization entries",
+        );
+        limits_for(&small, None, std::slice::from_ref(&at_value_cap), &[], 0).unwrap();
+        resource_limit(
+            limits_for(
+                &small,
+                None,
+                &[at_value_cap.clone(), "A".to_string()],
+                &[],
+                0,
+            ),
+            "authorization evidence is",
+        );
+
+        // State changes: count, then total size.
+        limits_for(
+            &small,
+            None,
+            &[],
+            &vec![bare_change(None); MAX_SIMULATED_STATE_CHANGES],
+            0,
+        )
+        .unwrap();
+        resource_limit(
+            limits_for(
+                &small,
+                None,
+                &[],
+                &vec![bare_change(None); MAX_SIMULATED_STATE_CHANGES + 1],
+                0,
+            ),
+            "state changes",
+        );
+        limits_for(
+            &small,
+            None,
+            &[],
+            &[bare_change(Some(at_value_cap.clone()))],
+            0,
+        )
+        .unwrap();
+        resource_limit(
+            limits_for(
+                &small,
+                None,
+                &[],
+                &[
+                    bare_change(Some(at_value_cap.clone())),
+                    bare_change(Some("A".to_string())),
+                ],
+                0,
+            ),
+            "state-change evidence is",
+        );
+
+        // Contract executable observations.
+        limits_for(&small, None, &[], &[], MAX_CONTRACT_EXECUTABLE_OBSERVATIONS).unwrap();
+        resource_limit(
+            limits_for(
+                &small,
+                None,
+                &[],
+                &[],
+                MAX_CONTRACT_EXECUTABLE_OBSERVATIONS + 1,
+            ),
+            "contract executable observations",
+        );
+    }
+
+    /// The 1 MiB total that `docs/ECOSYSTEM-CONFORMANCE.md` publishes, and acquisition
+    /// adapters bound their input by, is the total `record` enforces.
+    #[test]
+    fn total_encoded_evidence_admits_exactly_the_published_mebibyte() {
+        const PUBLISHED_TOTAL: usize = 1024 * 1024;
+        let envelope = "A".repeat(MAX_XDR_BASE64_BYTES);
+        let meta = "A".repeat(PUBLISHED_TOTAL - MAX_XDR_BASE64_BYTES);
+        limits_for(&envelope, Some(&meta), &[], &[], 0).unwrap();
+        let meta = "A".repeat(PUBLISHED_TOTAL - MAX_XDR_BASE64_BYTES + 1);
+        resource_limit(
+            limits_for(&envelope, Some(&meta), &[], &[], 0),
+            "encoded evidence",
+        );
+    }
+
+    #[test]
+    fn a_simulation_change_field_is_bounded_at_the_xdr_size_limit() {
+        // A contract-data key padded with a byte string to `bytes` of XDR.
+        let key_of = |bytes: usize| {
+            let key = |payload: usize| {
+                stellar_xdr::LedgerKey::ContractData(stellar_xdr::LedgerKeyContractData {
+                    contract: token_sc(),
+                    key: ScVal::Bytes(vec![0u8; payload].try_into().unwrap()),
+                    durability: stellar_xdr::ContractDataDurability::Persistent,
+                })
+            };
+            let overhead = key(0).to_xdr(Limits::none()).unwrap().len();
+            key(bytes - overhead).to_xdr_base64(Limits::none()).unwrap()
+        };
+
+        // At the bound the key decodes, so what fails is the change's shape (Created with
+        // no after-entry), not its size.
+        let at_bound = key_of(MAX_XDR_BYTES);
+        assert_eq!(at_bound.len(), MAX_XDR_BASE64_BYTES);
+        match simulation_state_change(StateChangeKind::Created, at_bound, None, None) {
+            Err(RecordError::EvidenceIncoherent(message)) => {
+                assert!(message.contains("contradicts"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let over = key_of(MAX_XDR_BYTES + 4);
+        match simulation_state_change(StateChangeKind::Created, over, None, None) {
+            Err(RecordError::EvidenceIncoherent(message)) => {
+                assert!(message.contains("exceeds the XDR size limit"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn removed_and_restored_changes_need_the_evidence_their_kind_implies() {
+        let entry = simulation_change().after_xdr_base64.unwrap();
+        let key = simulation_change().key_xdr_base64.unwrap();
+        let change = |kind, before: bool, after: bool| {
+            simulation_state_change(
+                kind,
+                key.clone(),
+                before.then(|| entry.clone()),
+                after.then(|| entry.clone()),
+            )
+        };
+        // Removed: the entry existed before and not after.
+        change(StateChangeKind::Removed, true, false).unwrap();
+        assert!(change(StateChangeKind::Removed, false, true).is_err());
+        // Restored: some evidence of the restored entry, on either side.
+        change(StateChangeKind::Restored, false, true).unwrap();
+        change(StateChangeKind::Restored, true, false).unwrap();
+        assert!(change(StateChangeKind::Restored, false, false).is_err());
+    }
+
+    #[test]
+    fn an_instance_modified_at_its_observed_ledger_is_coherent() {
+        let mut observations = observed_executables();
+        for observation in observations.values_mut() {
+            observation.last_modified_ledger = Some(observation.observed_ledger);
+        }
+        record(
+            &executed_snapshot().with_contract_executables(observations),
+            RecordOptions::default(),
+        )
+        .unwrap()
+        .verify()
+        .unwrap();
+    }
+
+    #[test]
+    fn only_executed_evidence_without_meta_notes_unknown_movements() {
+        const NOTE: &str = "no result meta available; token movements unknown";
+        let executed = EvidenceSnapshot::from_import(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope_with(vec![auth_entry(address_credentials(1))])
+                .to_xdr_base64(Limits::none())
+                .unwrap(),
+            None,
+            Some(transaction_result_base64(true)),
+            Some(1),
+            Some(1),
+            true,
+        );
+        let bundle = record(&executed, RecordOptions::default()).unwrap();
+        assert!(bundle.evidence_notes.iter().any(|note| note == NOTE));
+
+        // A simulation never has result meta; that is its shape, not a gap to report.
+        let bundle = record(
+            &snapshot_with_change(simulation_change()),
+            RecordOptions::default(),
+        )
+        .unwrap();
+        assert!(!bundle.evidence_notes.iter().any(|note| note == NOTE));
+    }
+
+    #[test]
+    fn a_failed_result_cannot_report_more_operations_than_the_envelope_has() {
+        use stellar_xdr::TransactionResultResult;
+        let envelope = envelope_with(vec![auth_entry(address_credentials(1))]);
+        let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let TransactionResultResult::TxFailed(failed) = transaction_result(false).result else {
+            unreachable!()
+        };
+        let mut result = transaction_result(false);
+        result.result =
+            TransactionResultResult::TxFailed(vec![failed[0].clone(); 2].try_into().unwrap());
+        assert!(matches!(
+            verify_transaction_result(&envelope, &result, Execution::ExecutedFailed, network),
+            Err(RecordError::ResultMismatch(message)) if message.contains("operation results")
+        ));
+    }
+
+    #[test]
+    fn a_fee_bump_inner_result_is_checked_operation_by_operation() {
+        use stellar_xdr::{
+            Hash, InnerTransactionResult, InnerTransactionResultExt, InnerTransactionResultPair,
+            InnerTransactionResultResult, TransactionResultResult,
+        };
+        let inner = TransactionV1Envelope {
+            tx: transaction_with(vec![auth_entry(address_credentials(1))]),
+            signatures: Default::default(),
+        };
+        let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let inner_hash = TransactionEnvelope::Tx(inner.clone())
+            .hash(network.0 .0)
+            .unwrap();
+        let envelope = TransactionEnvelope::TxFeeBump(FeeBumpTransactionEnvelope {
+            tx: FeeBumpTransaction {
+                fee_source: MuxedAccount::Ed25519(Uint256([8; 32])),
+                fee: 1000,
+                inner_tx: FeeBumpTransactionInnerTx::Tx(inner),
+                ext: FeeBumpTransactionExt::V0,
+            },
+            signatures: Default::default(),
+        });
+        let TransactionResultResult::TxSuccess(success) = transaction_result(true).result else {
+            unreachable!()
+        };
+        let TransactionResultResult::TxFailed(failure) = transaction_result(false).result else {
+            unreachable!()
+        };
+        let wrapped = |outer_success: bool, inner: InnerTransactionResultResult| {
+            let pair = InnerTransactionResultPair {
+                transaction_hash: Hash(inner_hash),
+                result: InnerTransactionResult {
+                    fee_charged: 100,
+                    result: inner,
+                    ext: InnerTransactionResultExt::V0,
+                },
+            };
+            let mut result = transaction_result(true);
+            result.result = if outer_success {
+                TransactionResultResult::TxFeeBumpInnerSuccess(pair)
+            } else {
+                TransactionResultResult::TxFeeBumpInnerFailed(pair)
+            };
+            result
+        };
+        // Success claimed with two operation results for one operation.
+        let two = vec![success[0].clone(); 2].try_into().unwrap();
+        assert!(matches!(
+            verify_transaction_result(
+                &envelope,
+                &wrapped(true, InnerTransactionResultResult::TxSuccess(two)),
+                Execution::ExecutedSuccess,
+                network
+            ),
+            Err(RecordError::ResultMismatch(_))
+        ));
+        // Failure claimed while every operation succeeded.
+        assert!(matches!(
+            verify_transaction_result(
+                &envelope,
+                &wrapped(false, InnerTransactionResultResult::TxFailed(success)),
+                Execution::ExecutedFailed,
+                network
+            ),
+            Err(RecordError::ResultMismatch(_))
+        ));
+        // The honest failure is accepted.
+        verify_transaction_result(
+            &envelope,
+            &wrapped(false, InnerTransactionResultResult::TxFailed(failure)),
+            Execution::ExecutedFailed,
+            network,
+        )
+        .unwrap();
+    }
+
+    // --- referenced contracts ---------------------------------------------------------------
+
+    fn contract_strkey(cid: [u8; 32]) -> String {
+        format!("{}", stellar_strkey::Contract(cid))
+    }
+
+    /// An auth entry from a contract authorizer `other` calling `other` itself.
+    fn auth_entry_from(other: [u8; 32]) -> SorobanAuthorizationEntry {
+        let address = ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(other)));
+        let mut entry = auth_entry(SorobanCredentials::Address(SorobanAddressCredentials {
+            address: address.clone(),
+            nonce: 1,
+            signature_expiration_ledger: 4_210_000,
+            signature: ScVal::Void,
+        }));
+        let SorobanAuthorizedFunction::ContractFn(call) = &mut entry.root_invocation.function
+        else {
+            unreachable!()
+        };
+        call.contract_address = address;
+        entry
+    }
+
+    #[test]
+    fn referenced_contracts_are_the_invoked_contract_and_every_contract_in_the_auth_trees() {
+        // The fixture invokes the token, authorized by the smart account (a contract).
+        assert_eq!(
+            referenced_contract_addresses(&executed_snapshot()).unwrap(),
+            vec![contract_strkey(ACCOUNT_CID), contract_strkey(TOKEN_CID)]
+        );
+
+        // Executed evidence reads the envelope's auth; a simulation reads only the auth the
+        // simulation returned, as `record` does.
+        let other = [7u8; 32];
+        let envelope = envelope_with(vec![auth_entry_from(other)])
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+        let executed = EvidenceSnapshot::from_rpc_transaction(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope.clone(),
+            None,
+            1,
+            1,
+            true,
+        );
+        assert_eq!(
+            referenced_contract_addresses(&executed).unwrap(),
+            vec![contract_strkey(TOKEN_CID), contract_strkey(other)]
+        );
+        let simulated = EvidenceSnapshot::from_rpc_simulation(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope,
+            vec![auth_entry(address_credentials(1))
+                .to_xdr_base64(Limits::none())
+                .unwrap()],
+            Some(1),
+        );
+        assert_eq!(
+            referenced_contract_addresses(&simulated).unwrap(),
+            vec![contract_strkey(ACCOUNT_CID), contract_strkey(TOKEN_CID)]
+        );
+    }
+
+    #[test]
+    fn referenced_contracts_admit_exactly_the_observation_maximum() {
+        // The account and the token, plus `extra` distinct contracts called beneath them.
+        let referencing = |extra: usize| {
+            let mut entry = auth_entry(address_credentials(1));
+            entry.root_invocation.sub_invocations = (0..extra)
+                .map(|i| {
+                    let mut cid = [0x40u8; 32];
+                    cid[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                    let mut call = transfer_invocation();
+                    let SorobanAuthorizedFunction::ContractFn(args) = &mut call.function else {
+                        unreachable!()
+                    };
+                    args.contract_address =
+                        ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(cid)));
+                    call
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+            EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                envelope_with(vec![entry])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+                None,
+                1,
+                1,
+                true,
+            )
+        };
+        let at_cap = referencing(MAX_CONTRACT_EXECUTABLE_OBSERVATIONS - 2);
+        assert_eq!(
+            referenced_contract_addresses(&at_cap).unwrap().len(),
+            MAX_CONTRACT_EXECUTABLE_OBSERVATIONS
+        );
+        let over = referencing(MAX_CONTRACT_EXECUTABLE_OBSERVATIONS - 1);
+        assert!(matches!(
+            referenced_contract_addresses(&over),
+            Err(RecordError::ResourceLimit(_))
+        ));
+    }
+
+    // --- token event decoding -------------------------------------------------------------
+
+    #[test]
+    fn amounts_beyond_64_bits_decode_exactly() {
+        for amount in [(1i128 << 64) + 5, i128::MAX, -(1i128 << 64) - 5] {
+            // The fixture's encoding, held to the documented split.
+            assert_eq!(
+                i128_val(amount),
+                ScVal::I128(stellar_xdr::Int128Parts {
+                    hi: (amount >> 64) as i64,
+                    lo: amount as u64,
+                })
+            );
+            let mut event = transfer_event();
+            let ContractEventBody::V0(v0) = &mut event.body;
+            v0.data = i128_val(amount);
+            let bundle = record(&snapshot_with_event(event), RecordOptions::default()).unwrap();
+            assert_eq!(bundle.token_movements[0].amount, Some(amount));
+        }
+        assert_eq!(
+            i128_val((1i128 << 64) + 5),
+            ScVal::I128(stellar_xdr::Int128Parts { hi: 1, lo: 5 })
+        );
+    }
+
+    fn approve_with_data(entries: Vec<(&str, ScVal)>) -> ContractEvent {
+        let mut event = approve_event();
+        let ContractEventBody::V0(v0) = &mut event.body;
+        v0.data = ScVal::Map(Some(
+            entries
+                .into_iter()
+                .map(|(key, val)| stellar_xdr::ScMapEntry {
+                    key: ScVal::Symbol(stellar_xdr::ScSymbol(key.as_bytes().try_into().unwrap())),
+                    val,
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        ));
+        event
+    }
+
+    #[test]
+    fn event_map_fields_are_read_by_name_not_by_type() {
+        // Other fields of the same types sit before the named ones; only the names decide.
+        let event = approve_with_data(vec![
+            ("a_fee", i128_val(9)),
+            ("amount", i128_val(5)),
+            ("decimals", ScVal::U32(7)),
+            ("expiration_ledger", ScVal::U32(100)),
+        ]);
+        let bundle = record(&snapshot_with_event(event), RecordOptions::default()).unwrap();
+        assert_eq!(bundle.token_movements[0].amount, Some(5));
+        assert_eq!(bundle.token_movements[0].expiration_ledger, Some(100));
+
+        // No field named `amount`: not a movement, whatever other i128 the map carries.
+        let event = approve_with_data(vec![("a_fee", i128_val(9))]);
+        let bundle = record(&snapshot_with_event(event), RecordOptions::default()).unwrap();
+        assert!(bundle.token_movements.is_empty());
+
+        // No field named `expiration_ledger`: none, whatever other u32 the map carries.
+        let event = approve_with_data(vec![("amount", i128_val(5)), ("decimals", ScVal::U32(7))]);
+        let bundle = record(&snapshot_with_event(event), RecordOptions::default()).unwrap();
+        assert_eq!(bundle.token_movements[0].expiration_ledger, None);
     }
 }
