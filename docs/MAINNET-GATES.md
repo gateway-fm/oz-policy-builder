@@ -210,9 +210,15 @@ ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::absent_or_
 An allowed call is one whole `(contract, function, arguments)` tuple. Validation refuses an
 incomplete tuple and one without evidence and justification, and evidence references must name
 a recording in range. Identical tuples merge and distinct ones stay distinct, never combined into
-a product. The derived deny suite mixes tuples' arguments to test that no cross product is
-accepted, and changing any one position of the recorded call is denied by both the reference
-evaluator and the compiled policy.
+a product, and each recording of a distinct call becomes its own tuple. Changing any one position
+of the recorded call is denied by both the reference evaluator and the compiled policy.
+
+Cross products are checked through a compiled policy. The two-payment fixture's rule accepts
+`transfer(SELF, first payee, 1,000)` and `transfer(SELF, second payee, 2,000)`, each from its own
+recording; its generated crate is committed exactly as codegen emits it. The derived suite must
+contain both mixes of the two, and each is refused with `NoTupleMatched` by the compiled policy
+through a smart account and by the reference evaluator, while both recorded payments permit. The
+evaluator's handling of a mix that another tuple does accept is covered separately.
 
 ```gate-evidence G4
 ci  crates/synthesizer/src/lib.rs  tests::tuple_dedup_merges_identical_and_keeps_distinct
@@ -220,6 +226,11 @@ ci  crates/policy-spec/src/lib.rs  tests::incomplete_tuples_fail
 ci  crates/policy-spec/src/lib.rs  tests::missing_evidence_and_justification_fail
 ci  crates/policy-spec/src/lib.rs  tests::evidence_references_are_structural_and_in_range
 ci  crates/harness/src/lib.rs  tests::cross_products_never_mix_different_functions
+ci  crates/harness/src/lib.rs  tests::a_mutation_accepted_by_another_tuple_is_labeled_permit
+ci  crates/harness/src/lib.rs  tests::a_mixed_tuple_accepted_by_a_range_is_labeled_permit
+ci  crates/synthesizer/src/walkthroughs.rs  walkthroughs::tests::two_payments_are_one_rule_with_two_exact_tuples_differing_in_two_positions
+ci  crates/codegen/src/lib.rs  tests::two_payment_crate_matches_committed_output
+ci  contracts/differential/tests/two_payment_generated_suite.rs  cross_products_of_two_accepted_tuples_are_refused_by_the_compiled_policy_and_the_evaluator
 ci  contracts/differential/tests/differential.rs  amount_mutations_deny_in_both
 ci  contracts/differential/tests/differential.rs  recipient_and_sender_mutations_deny_in_both
 ci  contracts/differential/tests/differential.rs  function_and_target_mutations_deny_in_both

@@ -187,6 +187,12 @@ jobs:
       # `--all-targets` rather than a bare invocation: it compiles the test target too, which is
       # what makes this also the standing check that a generated crate's committed lockfile is a
       # resolution `soroban-sdk`'s `testutils` can build. It was not, until this branch.
+      #
+      # contracts/two-payment-policy is not linted here, and that is a known emitter defect, not a
+      # waiver: for two accepted tuples of one function the emitter writes
+      # `(fn_0_ok && check_call_0(..)) || (fn_0_ok && check_call_1(..))`, which
+      # `clippy::nonminimal_bool` refuses. The crate is the differential suite's two-tuple
+      # fixture; add it here when the emitter groups tuples by function.
       - name: clippy (each generated crate, which linting a dependency does not cover)
         run: |
           ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
@@ -200,13 +206,14 @@ jobs:
       #
       # Three invocations, because `--all` means "the members of this workspace" and the
       # generated crates are excluded to retain their standalone release profiles. The
-      # differential suite reaches the transfer crate as a dependency, but that edge is for
-      # testing rather than formatting coverage. Name both artifacts explicitly.
+      # differential suite reaches them as dependencies, but that edge is for testing rather
+      # than formatting coverage. Name each generated crate explicitly.
       - name: fmt (this workspace and the generated crates it excludes)
         run: |
           ( cd contracts && cargo fmt --all --check )
           ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
           ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
+          ( cd contracts/two-payment-policy && cargo fmt --all --check )
 
       # The generated crates now ship OpenZeppelin's own `rustfmt.toml`, and most of its options
       # are unstable: a stable rustfmt prints a warning for each and applies only `max_width`,
@@ -235,6 +242,7 @@ jobs:
           rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt
           ( cd contracts/golden-transfer-policy && cargo "+$NIGHTLY" fmt --all --check )
           ( cd contracts/soroswap-swap-policy && cargo "+$NIGHTLY" fmt --all --check )
+          ( cd contracts/two-payment-policy && cargo "+$NIGHTLY" fmt --all --check )
 
   native-execution:
     name: native execution (protocol 30 · framing · ABI)
