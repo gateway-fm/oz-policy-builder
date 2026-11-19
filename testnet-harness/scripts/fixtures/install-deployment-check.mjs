@@ -2,7 +2,7 @@
 // Verify the persisted checkpoint before approval/signing and the final success/refusal state.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -12,12 +12,14 @@ import { signedRuleArgs } from '../approve-install.mjs';
 import { cliSpecHash } from '../check-runner.mjs';
 import { decide, walletTrust } from '../wallet-decision.mjs';
 import { SPENDING_LIMIT_WASM } from '../subscription.mjs';
-import { POLICY_WASM_UPLOAD_FEE } from '../rpc.mjs';
+import { POLICY_WASM_UPLOAD_FEE, runSpecPath } from '../rpc.mjs';
 
 const mode = process.argv[2];
 const readbackFailure = process.argv[3];
 const succeeds = mode === 'approved' || mode === 'default' || mode.startsWith('subscription-approved');
 const subscription = mode.startsWith('subscription-');
+// The journal names a spec outside `<run-dir>/spec.json`: refused before anything is read from it.
+const foreignSpec = mode === 'foreign-spec';
 const sourceUrl = new URL('../install.mjs', import.meta.url);
 const dir = mkdtempSync(join(tmpdir(), 'ozpb-deployment-test-'));
 try {
@@ -49,6 +51,11 @@ try {
       period_ledgers: 12, policy_address: reviewed, policy_code_hash: SPENDING_LIMIT_WASM } } : {}),
     policy: 'old-policy', rule_id: 99, authority_check: { old: true },
     tx: { setup: 'setup-tx', add_context_rule: 'old-install' } });
+  if (foreignSpec) {
+    mkdirSync(join(dir, 'other'));
+    writeJson(join(dir, 'other', 'spec.json'), spec);
+    writeJson(runPath, { ...readRun(), spec: join(dir, 'other', 'spec.json') });
+  }
   const deploymentSaved = () => {
     const run = readRun();
     assert.equal(run.policy, policy);
@@ -88,7 +95,7 @@ try {
     } };
   };
   const rpc = {
-    NETWORK_PASSPHRASE: sdk.Networks.TESTNET, POLICY_WASM_UPLOAD_FEE, log: () => {}, writeJson,
+    NETWORK_PASSPHRASE: sdk.Networks.TESTNET, POLICY_WASM_UPLOAD_FEE, log: () => {}, writeJson, runSpecPath,
     args: () => ({ 'run-dir': dir, wasm: join(dir, 'policy.wasm'),
       ...(mode === 'default' ? {} : { 'authority-check': 'cli', confirm: 'operator' }) }),
     readJson: (path) => JSON.parse(readFileSync(path, 'utf8')),
@@ -134,24 +141,30 @@ try {
       for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
     }, { context });
   });
-  if (succeeds && readbackFailure) {
-    await assert.rejects(module.evaluate(), readbackFailure === 'not_installed'
-      ? /policy does not report itself installed/ : /fixture readback failure/);
-  } else if (succeeds) await module.evaluate();
-  else await assert.rejects(module.evaluate(), /nothing was signed/);
-  const saved = readRun();
-  assert.equal(approvals, mode === 'default' ? 0 : 1);
-  assert.equal(signatures, succeeds ? 1 : 0);
-  assert.equal(stages.length, succeeds ? 3 : 2);
-  assert.equal(saved.policy, policy);
-  assert.equal(saved.rule_id, succeeds ? 7 : undefined);
-  assert.equal(saved.tx.add_context_rule, succeeds ? 'install-tx' : undefined);
-  assert.deepEqual(readbacks, !succeeds ? [] : readbackFailure === 'is_installed'
-    ? ['is_installed'] : ['is_installed', 'remaining_calls', ...(subscription ? ['get_spending_limit_data'] : [])]);
-  if (!succeeds) {
-    deploymentSaved();
-    if (mode === 'subscription-incomplete-approval') assert.match(saved.authority_check.refused[0], /arguments|policies|spec/);
-    else assert.deepEqual(saved.authority_check.refused, [mode === 'declined' ? 'the operator declined' : 'untrusted owner']);
+  if (foreignSpec) {
+    await assert.rejects(module.evaluate(), /run does not name its own spec/);
+    assert.deepEqual([approvals, signatures, stages.length], [0, 0, 0]);
+    assert.equal(readRun().policy, 'old-policy');
+  } else {
+    if (succeeds && readbackFailure) {
+      await assert.rejects(module.evaluate(), readbackFailure === 'not_installed'
+        ? /policy does not report itself installed/ : /fixture readback failure/);
+    } else if (succeeds) await module.evaluate();
+    else await assert.rejects(module.evaluate(), /nothing was signed/);
+    const saved = readRun();
+    assert.equal(approvals, mode === 'default' ? 0 : 1);
+    assert.equal(signatures, succeeds ? 1 : 0);
+    assert.equal(stages.length, succeeds ? 3 : 2);
+    assert.equal(saved.policy, policy);
+    assert.equal(saved.rule_id, succeeds ? 7 : undefined);
+    assert.equal(saved.tx.add_context_rule, succeeds ? 'install-tx' : undefined);
+    assert.deepEqual(readbacks, !succeeds ? [] : readbackFailure === 'is_installed'
+      ? ['is_installed'] : ['is_installed', 'remaining_calls', ...(subscription ? ['get_spending_limit_data'] : [])]);
+    if (!succeeds) {
+      deploymentSaved();
+      if (mode === 'subscription-incomplete-approval') assert.match(saved.authority_check.refused[0], /arguments|policies|spec/);
+      else assert.deepEqual(saved.authority_check.refused, [mode === 'declined' ? 'the operator declined' : 'untrusted owner']);
+    }
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

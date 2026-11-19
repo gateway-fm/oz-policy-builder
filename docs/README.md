@@ -49,6 +49,7 @@ the reader it is mainly written for.
 - [CANONICAL-HASHING.md](CANONICAL-HASHING.md) — the hash specification an independent implementation follows.
 - [RECORDING-EVIDENCE.md](RECORDING-EVIDENCE.md) — the recording format and what a recording hash does and does not prove.
 - [SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md) — advisories accepted temporarily, with their expiry.
+- [SAST-TRIAGE.md](SAST-TRIAGE.md) — each static-analysis finding: fixed, not exploitable (and why), or a false positive.
 - [TESTNET-EVIDENCE.md](TESTNET-EVIDENCE.md) — first-milestone testnet evidence.
 - [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) — second-milestone runs, and how to capture a new one.
 

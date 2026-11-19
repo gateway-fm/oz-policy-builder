@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: every commit carries a Signed-off-by matching its author
         env:
@@ -63,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # rustc and stellar-cli are recorded as the build inputs every shipped wasm hash was
       # produced with, and both land inside the hashed bytes. This is the only workflow that runs
       # on a pull request, so it is the only place the assertion can block a merge: the wasm
@@ -118,6 +121,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.15.0'
@@ -152,6 +157,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: differential suite (reference evaluator vs real compiled policy)
         working-directory: contracts
         run: cargo test -p ozpb-differential
@@ -250,6 +257,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: format, lint and offline protocol tests
         run: |
           cargo fmt --manifest-path execution-runtime/Cargo.toml --all --check
@@ -261,6 +270,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # Architecture §6.5: the public repo is produced from an allowlist. Two steps, because
       # this one only ever sees a tree with nothing planted in it — it says the current tree is
       # clean, which is necessary but is not the negative test §6.5 promises.
@@ -278,6 +289,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: toolchain
         run: rustup show # rust-toolchain.toml pins the channel + components
       # check-dep-rules.sh asserts only the ABSENCE of forbidden edges, so a declared-and-
@@ -296,6 +309,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # A hash quoted in prose that nothing here produces any more is worse than an
       # out-of-date sentence: the reader follows it, cannot reproduce it, and concludes the
       # attestation chain is broken. Whole classes of derived hash move together whenever the
@@ -313,6 +328,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: advisory exception guard regressions
         run: python3 -B scripts/test-check-advisory-exception.py
       # Pinned, not latest — same reasoning as cargo-machete above. cargo-deny decides this
