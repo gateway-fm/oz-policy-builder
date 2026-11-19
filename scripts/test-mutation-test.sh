@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Regression test for `mutation-test.sh`.
 #
-# The gate's value is that a green run means every mutant in the cores was killed. Three ways it
-# could stop meaning that without anyone noticing: it runs a different cargo-mutants than the one
-# its verdicts were taken with, it treats a timed-out mutant as killed, or it quietly narrows the
-# packages it mutates. Each case below drives the real script with a stand-in `cargo` that
-# records how it was called and answers as cargo-mutants would.
+# The gate's value is that a green run means every mutant in the cores was killed. Ways it could
+# stop meaning that without anyone noticing: it runs a different cargo-mutants than the one its
+# verdicts were taken with, it treats a timed-out mutant as killed, it quietly narrows the
+# packages it mutates, it drops the per-mutant timeout, or — in pull-request mode — it stops
+# passing the diff, or reads a narrower diff than every core, so a change to a core passes
+# unmutated. Each case below drives the real script with a stand-in `cargo` that records how it
+# was called and answers as cargo-mutants would.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 GATE="${GATE:-scripts/mutation-test.sh}"
 fail=0
 shim_dir="$(mktemp -d)"
-trap 'rm -rf "$shim_dir"' EXIT
+repo_dir="$(mktemp -d)"
+trap 'rm -rf "$shim_dir" "$repo_dir"' EXIT
 
 # `cargo mutants --version` prints $FAKE_VERSION; any other `cargo mutants …` call appends its
 # arguments to $shim_dir/calls and exits $FAKE_STATUS.
@@ -55,6 +58,10 @@ calls() { cat "$shim_dir/calls" 2>/dev/null; }
 
 out="$(run 27.1.0 0)"; code=$?
 expect "a clean run passes" 0 "every mutant" "$code" "$out"
+if ! calls | grep -q -- "--timeout 120"; then
+    echo "FAIL: the default run does not bound each mutant with --timeout 120"
+    fail=1
+fi
 for core in ozpb-recorder-core ozpb-evaluator ozpb-synthesizer ozpb-policy-spec ozpb-call-surface-core ozpb-registry ozpb-domain ozpb-codegen; do
     if ! calls | grep -q -- "--package $core"; then
         echo "FAIL: the default run does not mutate $core"
@@ -87,5 +94,34 @@ if [ -n "$(calls)" ]; then
     echo "FAIL: an empty diff still invoked cargo-mutants"
     fail=1
 fi
+
+# Pull-request mode, end to end: a throwaway repository whose one commit after the base changes a
+# file under a core-shaped path, and a copy of the gate inside it (the gate runs from its own
+# repository root). The change has to reach cargo-mutants as `--in-diff`, under the same
+# per-mutant timeout as a full run. A gate that dropped either, or that diffed a narrower path
+# than `crates/`, would let a pull request touching a core pass without mutating anything.
+git_in_repo() {
+    git -C "$repo_dir" -c user.name=self-test -c user.email=self-test@example.invalid \
+        -c commit.gpgsign=false "$@"
+}
+mkdir -p "$repo_dir/scripts" "$repo_dir/crates/x/src"
+cp "$GATE" "$repo_dir/scripts/mutation-test.sh"
+git_in_repo init -q
+git_in_repo add scripts
+git_in_repo commit -q -m base
+git_in_repo tag base
+printf 'pub fn f() -> u32 {\n    1\n}\n' >"$repo_dir/crates/x/src/lib.rs"
+git_in_repo add crates
+git_in_repo commit -q -m "change a core"
+rm -f "$shim_dir/calls"
+out="$(PATH="$shim_dir:$PATH" FAKE_VERSION=27.1.0 FAKE_STATUS=0 \
+    bash "$repo_dir/scripts/mutation-test.sh" --in-diff base 2>&1)"; code=$?
+expect "a pull request changing a core is mutated" 0 "every mutant" "$code" "$out"
+for flag in "--in-diff " "--timeout 120"; do
+    if ! calls | grep -q -- "$flag"; then
+        echo "FAIL: the pull-request run did not pass '$flag' to cargo-mutants: $(calls)"
+        fail=1
+    fi
+done
 
 [ "$fail" -eq 0 ] && echo "mutation-test.sh self-test OK" || exit 1
