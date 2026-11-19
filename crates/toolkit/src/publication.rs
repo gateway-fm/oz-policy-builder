@@ -48,6 +48,9 @@ pub struct PublishedArtifact {
     pub manifest_hash: String,
     /// Each file by its `/`-separated path inside the inner directory, the index included.
     pub files: BTreeMap<String, Vec<u8>>,
+    /// How many rules the published spec holds. The manifest binds the whole spec, so every
+    /// rule in it is published with this one rule's build.
+    pub spec_rules: usize,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -198,6 +201,7 @@ pub fn publish_artifact(input: &PublishInput<'_>) -> Result<PublishedArtifact, T
         wasm_hash: wasm_hash.to_hex(),
         manifest_hash: manifest.hash().map_err(internal)?.to_hex(),
         files,
+        spec_rules: spec.spec().rules.len(),
     })
 }
 
@@ -577,6 +581,55 @@ mod tests {
              (toolkit revision, template pack, build image), which describes the build that \
              made the claim and is not reproducible"
         );
+    }
+
+    /// The checks before `verify` bind the files to each other, not to the truth: whoever edits
+    /// the crate can also rewrite `source_hash`, rename the directory to the new manifest hash
+    /// and rewrite the index. Such a forgery must pass every publication check and then fail the
+    /// rebuild, which regenerates the source from the spec rather than trusting the published one.
+    #[test]
+    fn a_self_consistent_forgery_passes_the_checks_and_fails_verify() {
+        let generated = generated();
+        let mut forged = generated.output.files.clone();
+        forged
+            .get_mut("src/contract.rs")
+            .unwrap()
+            .push_str("\n// a backdoor would go here\n");
+        let mut manifest = generated.output.build_manifest.clone();
+        manifest["source_hash"] =
+            serde_json::json!(ozpb_build_runner::source_hash(&forged).unwrap().to_hex());
+        let manifest = serde_json::to_vec_pretty(&manifest).unwrap();
+        let published = publish_artifact(&PublishInput {
+            spec: &generated.spec,
+            generated_files: &forged,
+            wasm: &generated.wasm,
+            manifest: &manifest,
+        })
+        .unwrap();
+        assert_eq!(published.wasm_hash, generated.output.wasm_hash);
+        assert_ne!(
+            published.manifest_hash,
+            generated.output.build_manifest_hash
+        );
+
+        let input = check(&published, &published.files).unwrap();
+        let output = verify_with_build_config(&input, &build_config()).unwrap();
+        assert!(!output.matches, "{output:?}");
+        assert_eq!(
+            output.source_reproduction,
+            "MISMATCH: generated non-lock files differ from regeneration"
+        );
+        assert_eq!(
+            output.wasm_reproduction,
+            "MISMATCH: claimed BuildManifest differs from reproduction"
+        );
+    }
+
+    /// The manifest binds the whole spec, so the whole spec is published, every rule in it. The
+    /// count is reported so the shell can say so.
+    #[test]
+    fn the_published_spec_reports_how_many_rules_it_carries() {
+        assert_eq!(generated().published().spec_rules, 1);
     }
 
     #[test]

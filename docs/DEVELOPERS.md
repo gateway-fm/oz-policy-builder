@@ -144,7 +144,7 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
 
 # 6. optional: lay the same files out under the Wasm hash for others to check
 # (docs/PUBLISHING.md). Writes ./published/<wasm sha256>/<build manifest hash>/ and uploads
-# nothing; the spec is published with it. A reviewer reproduces that build with
+# nothing; the whole spec, every rule in it, is published with it. A reviewer reproduces it with
 # verify-published, which exits 0 when the report matches, 3 when it does not, 1 refused.
 ozpb publish-artifact --spec spec.json --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \

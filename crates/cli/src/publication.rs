@@ -22,8 +22,8 @@ pub const EXIT_NOT_REPRODUCED: i32 = 3;
 
 #[derive(Args, Debug)]
 pub struct PublishArgs {
-    /// The PolicySpec the artifact was generated from. It is published: it names the smart
-    /// account and cites its recordings.
+    /// The PolicySpec the artifact was generated from. It is published whole: the smart account,
+    /// the recordings it cites and every rule in it, not only the one this build is for.
     #[arg(long)]
     spec: PathBuf,
     /// The directory `ozpb generate --out` wrote: the crate, its Wasm and its BuildManifest.
@@ -74,11 +74,19 @@ pub fn publish(args: PublishArgs) -> Result<()> {
         manifest: &read(&args.manifest)?,
     })?;
     let written = write_published(&args.out, &artifact)?;
+    if artifact.spec_rules > 1 {
+        eprintln!(
+            "note: the published spec holds {} rules, and all of them are published with this \
+             build: their signers, targets, limits and expiry",
+            artifact.spec_rules
+        );
+    }
     print_json(&serde_json::json!({
         "wasm_hash": artifact.wasm_hash,
         "build_manifest_hash": artifact.manifest_hash,
         "directory": args.out.join(&artifact.wasm_hash).join(&artifact.manifest_hash),
         "files": artifact.files.len(),
+        "spec_rules": artifact.spec_rules,
         "already_published": written == Written::AlreadyPresent,
     }))
 }
@@ -185,10 +193,20 @@ pub struct VerifyPublishedReport {
 pub fn verify_published(args: VerifyPublishedArgs) -> Result<()> {
     let report = check_and_verify(&args.directory, &args.build.resolve()?)?;
     print_json(&report)?;
-    if !report.verify.matches {
-        std::process::exit(EXIT_NOT_REPRODUCED);
+    match exit_status(&report) {
+        0 => Ok(()),
+        status => std::process::exit(status),
     }
-    Ok(())
+}
+
+/// 0 when the report matches, [`EXIT_NOT_REPRODUCED`] when it does not. A refusal never reaches
+/// a report: it is an error, which exits 1.
+fn exit_status(report: &VerifyPublishedReport) -> i32 {
+    if report.verify.matches {
+        0
+    } else {
+        EXIT_NOT_REPRODUCED
+    }
 }
 
 fn check_and_verify(
@@ -327,6 +345,10 @@ fn read_published_tree(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
                 directories.push(path);
                 continue;
             }
+            // Refused by what was listed, and again by what was opened.
+            if !kind.is_file() {
+                return Err(path_error(format!("{name} is not a regular file")));
+            }
             let mut bytes = Vec::new();
             open_regular(&path, &name)?
                 .take(budget + 1)
@@ -368,6 +390,7 @@ mod tests {
             wasm_hash: sha256_hex(&wasm),
             manifest_hash: "ab".repeat(32),
             files,
+            spec_rules: 1,
         }
     }
 
@@ -634,6 +657,84 @@ mod tests {
             code(read_published_tree(&root).unwrap_err()),
             EC::EResourceLimit
         );
+    }
+
+    /// The hermetic builder, which only a test can name: the CLI's flags cannot select it.
+    fn stub() -> ozpb_toolkit::BuildConfig {
+        ozpb_build_runner::BuildConfig {
+            builder: ozpb_build_runner::Builder::Stub,
+            ..ozpb_build_runner::BuildConfig::default()
+        }
+    }
+
+    /// `verify-published` end to end, the builder aside: the committed example spec generated as
+    /// `generate --out` writes it, published, read back and reproduced (exit 0); then forged
+    /// consistently — an edited contract, its `source_hash`, the directory renamed to the new
+    /// manifest hash and the index rewritten — which every check before the rebuild accepts and
+    /// the rebuild does not reproduce (exit 3).
+    #[test]
+    fn verify_published_exits_zero_when_it_reproduces_and_three_for_a_consistent_forgery() {
+        let temp = tempfile::tempdir().unwrap();
+        let spec = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/examples/subscription-spec.json");
+        let generated = ozpb_toolkit::generate_code_with_build_config(
+            &ozpb_api_types::GenerateCodeInput {
+                spec: crate::read_json(&spec).unwrap(),
+                rule_index: 0,
+            },
+            &stub(),
+        )
+        .unwrap();
+        let generated_dir = temp.path().join("generated");
+        let wasm = crate::write_generation(&generated_dir, &generated).unwrap();
+        let out = temp.path().join("published");
+        publish(PublishArgs {
+            spec,
+            manifest: generated_dir.join("build-manifest.json"),
+            generated_dir,
+            wasm,
+            out: out.clone(),
+        })
+        .unwrap();
+        let build = out
+            .join(&generated.wasm_hash)
+            .join(&generated.build_manifest_hash);
+
+        let report = check_and_verify(&build, &stub()).unwrap();
+        assert!(report.verify.matches, "{:?}", report.verify);
+        assert_eq!(exit_status(&report), 0);
+
+        let contract = build.join("source/src/contract.rs");
+        let mut text = std::fs::read_to_string(&contract).unwrap();
+        text.push_str("\n// a backdoor would go here\n");
+        std::fs::write(&contract, &text).unwrap();
+        let mut files = generated.files.clone();
+        files.insert("src/contract.rs".to_string(), text);
+        let mut manifest = generated.build_manifest.clone();
+        manifest["source_hash"] =
+            serde_json::json!(ozpb_build_runner::source_hash(&files).unwrap().to_hex());
+        let mut bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(build.join("build-manifest.json"), &bytes).unwrap();
+        let forged_hash = serde_json::from_value::<ozpb_build_runner::BuildManifest>(manifest)
+            .unwrap()
+            .hash()
+            .unwrap()
+            .to_hex();
+        let forged = out.join(&generated.wasm_hash).join(&forged_hash);
+        std::fs::rename(&build, &forged).unwrap();
+        let mut tree = read_published_tree(&forged).unwrap();
+        tree.remove("SHA256SUMS");
+        let index: String = tree
+            .iter()
+            .map(|(name, bytes)| format!("{}  {name}\n", sha256_hex(bytes)))
+            .collect();
+        std::fs::write(forged.join("SHA256SUMS"), index).unwrap();
+
+        let report = check_and_verify(&forged, &stub()).unwrap();
+        assert!(!report.verify.matches, "{:?}", report.verify);
+        assert!(report.verify.source_reproduction.starts_with("MISMATCH"));
+        assert_eq!(exit_status(&report), EXIT_NOT_REPRODUCED);
     }
 
     #[test]

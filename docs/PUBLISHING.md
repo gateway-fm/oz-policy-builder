@@ -37,10 +37,16 @@ so `sha256sum -c SHA256SUMS` (`shasum -a 256 -c` on macOS), run inside the build
 a copy without this toolkit. It is unsigned: it catches a damaged or incomplete copy, not an
 edited one, since whoever edits a file can rewrite it.
 
-**The spec is published.** It names the smart account, its code hash, the network, the registry
-snapshot root and the hashes of the recordings the grant was synthesized from. The Wasm already
-carries the target, the signers and the permitted calls; publishing the spec also links that
-account to this policy. Publish only if that is acceptable.
+**The whole spec is published, every rule in it.** The manifest binds the hash of the whole
+spec, not of the one rule this build is for, so the spec cannot be cut down to that rule without
+becoming another spec. Publishing one rule's build therefore publishes the smart account and its
+code hash, the network, the registry snapshot root, the hashes of the recordings, the spec's
+`name`, and for **every** rule its signers, target, permitted calls with their limits, state,
+expiry ledger and `approx_time`. The Wasm already shows its own rule's target, signers and calls;
+what the spec adds is the account, and the other rules. `publish-artifact` reports the count as
+`spec_rules` and prints a note when there is more than one. Publish only if all of that may be
+public. To be able to publish a grant alone, synthesize, generate and install it from a spec
+that holds only it.
 
 ## Publishing yours
 
@@ -53,10 +59,10 @@ ozpb publish-artifact --spec spec.json --generated-dir ./generated \
   --manifest ./generated/build-manifest.json --out ./published
 ```
 
-It prints the Wasm hash, the manifest hash, the directory it wrote and whether that build was
-already there. It writes the build into a staging directory and renames it into place, so a
-build is there whole or not at all. Publishing the same build again changes nothing. It refuses,
-writing nothing:
+It prints the Wasm hash, the manifest hash, the directory it wrote, `spec_rules` and whether
+that build was already there. It writes the build into a staging directory beside the
+destination and renames it into place, so a build is there whole or not at all. Publishing the
+same build again changes nothing. It refuses, writing nothing:
 
 | Code | When |
 | --- | --- |
@@ -69,7 +75,18 @@ writing nothing:
 
 A hand-edited crate is a custom artifact with no BuildManifest of its own
 ([architecture §4.4](architecture.md#44-code-generation-cratescodegen)), so it is refused rather
-than published under the generated one's.
+than published under the generated one's. So is a generated directory holding anything
+`generate` did not write, a Finder `.DS_Store` included.
+
+Three limits of the writer, each failing closed:
+
+- **Publish into a directory only you write.** It refuses a symlinked `<out>/<wasm hash>`, but a
+  process that swaps one in between that check and the rename can redirect the build.
+- **Nothing is synced to disk.** After a power loss a build can be incomplete. A later publish
+  then refuses it as `E_PUBLISH_CONFLICT`, and `verify-published` with an `E_PUBLISH_*` code;
+  delete it and publish again.
+- **An interrupted publish leaves its staging directory**, `.ozpb-publish-*` beside the builds
+  under `<out>/<wasm hash>/`. It is not a build; delete it, and leave it out of what you upload.
 
 ## Checking an installed policy against its source
 
@@ -84,8 +101,10 @@ ozpb verify-published ./published/<wasm sha256>/<build manifest hash>
 `verify-published` takes the two hashes from the last two names of the path it is given, never
 from where that path resolves, and refuses it if either directory is a symlink. It reads the build
 as untrusted content: it refuses a symlink or special file inside it, a name that is not UTF-8,
-and more than 64 entries or 16 MiB. It is not defended against someone writing to the directory
-while it reads; check a copy nobody else is writing to. It then checks, in order, that
+and more than 64 entries or 16 MiB. Any file it does not expect is refused, so a Finder
+`.DS_Store` left in a copy makes it refuse the build. It is not defended against someone writing
+to the directory while it reads; check a copy nobody else is writing to. It then checks, in order,
+that
 `policy.wasm` hashes to the outer directory's name, that `SHA256SUMS` lists exactly the other
 files with their hashes, that the files are what `publish-artifact` writes from them — which holds
 the manifest to the spec, the crate, the lockfile and the Wasm — and that the inner directory is
@@ -93,6 +112,16 @@ named for that manifest. The lockfile check is the one `verify` does not make. O
 regenerate and rebuild from the published spec, with the rule index the manifest names, and
 compare the source, the Wasm and the manifest, exactly as `ozpb verify` does. It prints the two
 hashes and the `verify` report.
+
+The checks before the rebuild bind the files to each other, not to anything true: whoever edits
+the crate can also rewrite `source_hash`, rename the directory to the new manifest hash and
+rewrite the index, and such a build passes them. The rebuild is what catches it, because it
+regenerates the source from the spec instead of reading the published one, and it reports the
+source and manifest as not reproduced (exit 3).
+
+The rebuild compiles a crate generated from a spec someone else wrote. For a build you did not
+make, run it in a disposable worker with `--build-worker-launcher`
+([isolated builds](ISOLATED-BUILDS.md)) rather than in your own environment.
 
 | Exit | Meaning |
 | --- | --- |
