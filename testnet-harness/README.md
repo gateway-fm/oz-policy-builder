@@ -647,8 +647,9 @@ worker for both `scripts/fixtures/synthetic-protocol-swap-observation.json` and
 claim authorization with an exact reserve-index vector; it is not an RPC recording
 or evidence that the Blend target executed. The two-rule Soroswap fixture started as a
 preserved unsigned simulation of a 0.7.2 account; its account executable and spec were moved
-to the 0.7.3 pin (GHSA-jpg9-m7w4-c7wc) and the spec re-hashed under development registry
-version 6, but its `record.recording_hash` and the spec's evidence recording hash are the
+to the 0.7.3 pin (GHSA-jpg9-m7w4-c7wc), and its spec now names development registry version 7
+(the committed example) and is re-hashed under it, as is the Blend fixture's, but its
+`record.recording_hash` and the spec's evidence recording hash are the
 preserved values and no longer derive from the edited bundle, whose schema predates the
 current recorder. Its operator decisions were moved to schema v3, which adds the transfer cap's
 acknowledged open floor, and its rationale gained the line synthesis now writes for it; their
