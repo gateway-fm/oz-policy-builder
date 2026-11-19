@@ -220,7 +220,9 @@ The source-reviewed account method inventory and its limits are described in
    refusal and nothing unresolved, returns the exact `add_context_rule` arguments derived from
    the grant the answer's commitment covers, with the answer attached. A new rule aimed at the
    account or one of its own policies, or one already expired at the read ledger, is refused
-   before any read or after it respectively. Freshness is the wallet's: it re-reads and
+   before any read or after it respectively; so is a rule that requires its target's code
+   (adapter-derived, or refuse on drift) when the same capture finds other code there
+   (`E_TARGET_CODE_CHANGED`). Freshness is the wallet's: it re-reads and
    compares the commitment immediately before signing.
 
 2. **A containerized default builder, and provenance someone else can check** (§4.4, §6.3).

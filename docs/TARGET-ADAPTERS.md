@@ -37,9 +37,12 @@ supply an absolute minimum-output floor, carrying `user_widened` provenance and 
 adapter does not certify that decision or turn it into a trusted quote.
 
 Adapter-derived constraints retain the adapter identity and target code hash. The resulting
-rule requires that hash and marks drift as a refusal. A wallet or live checker must compare
-current code before relying on those semantics; the generated policy does not inspect target
-code hashes on-chain.
+rule requires that hash and marks drift as a refusal. The adapter was selected by the
+recording's observed hash, which the caller supplies; the install intent and unsigned assembly
+read the target's code in the same capture as the authority check and refuse other code
+(`E_TARGET_CODE_CHANGED`), and the live policy check does the same. After installation a wallet
+or live checker must compare current code before relying on those semantics; the generated
+policy does not inspect target code hashes on-chain.
 
 The registry signature authenticates a governance assertion. Its review reference is not a
 proof that deployed code implements the declared semantics, and caller-carried recording

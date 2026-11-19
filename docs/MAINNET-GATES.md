@@ -219,7 +219,9 @@ decision on an amount argument, with canonical numerals and a declared blast rad
 a reviewed adapter bound to the observed code hash and whole argument shape. The adapter takes
 direction from the argument's meaning: a maximum input admits an upper bound, and a minimum
 output gets no invented floor. A widening that matches nothing, or that contradicts
-observed-exact provenance, is refused, and an unverified registry never widens.
+observed-exact provenance, is refused, and an unverified registry never widens. The adapter is
+selected by the recording's observed hash, which the caller supplies; the install intent reads
+the target's code in the same capture as the authority check and refuses other code.
 
 A bound must admit the recorded value, and an argument takes one widening. A cap on a signed
 amount sets no floor, so synthesis asks for one: the answer is a range, `min <= x <= max`, which
@@ -239,6 +241,7 @@ ci  crates/synthesizer/src/adapters.rs  adapters::tests::max_input_permits_upper
 ci  crates/policy-spec/src/lib.rs  tests::widening_with_observed_exact_provenance_fails
 ci  crates/policy-spec/src/lib.rs  tests::any_value_demands_high_blast_radius_or_a_bound_adapter
 ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::absent_or_different_binding_stays_exact_and_unverified_registry_never_widens
+ci  crates/toolkit/src/install_intent.rs  install_intent::tests::install_intent_refuses_adapter_required_target_with_other_code
 ci  crates/synthesizer/src/lib.rs  tests::a_second_widening_of_the_same_argument_is_refused
 ci  crates/synthesizer/src/lib.rs  tests::a_numeric_bound_must_admit_the_recorded_value
 ci  crates/synthesizer/src/lib.rs  tests::a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged

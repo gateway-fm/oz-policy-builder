@@ -137,7 +137,9 @@ impl PolicyBuilderServer {
                        RPC source) and, only when it returns no refusal and nothing unresolved, \
                        returns the exact add_context_rule arguments derived from the grant its \
                        authority_commitment covers, with that answer attached. A refusal or an \
-                       unresolved item is an error carrying every finding. Never says an account \
+                       unresolved item is an error carrying every finding. A rule that requires \
+                       its target's code has it read too, and other code there is refused \
+                       (E_TARGET_CODE_CHANGED). Never says an account \
                        is safe, never \
                        assembles, signs or submits: the user's wallet recomputes the check, \
                        matches every listed owner to the user's own keys or trusted identities, \

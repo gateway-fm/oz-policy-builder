@@ -131,6 +131,9 @@ error_codes! {
     /// stateful limit would not hold.
     EDelegateGrantOverlap => "E_DELEGATE_GRANT_OVERLAP",
     EScanBudgetExceeded => "E_SCAN_BUDGET_EXCEEDED",
+    /// The rule requires the code its spec recorded at its target (an adapter-derived rule, or
+    /// a refuse-on-drift target identity), and the account read found other code there.
+    ETargetCodeChanged => "E_TARGET_CODE_CHANGED",
     // target capture
     /// The record-mode simulation of a supported capture failed: the target refused the call
     /// (for example an insufficient balance or a missing recipient), or the endpoint's

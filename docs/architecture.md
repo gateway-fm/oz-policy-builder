@@ -386,9 +386,12 @@ Key properties:
 - **Every constraint carries provenance:** `observed_exact`, `user_widened` (with the user's
   stated intent and a blast-radius label), or `adapter_derived` (with the adapter identity
   and code-hash binding). For adapter-derived claims the expected target hash is a canonical
-  spec input, checked at generation, installation, and live preflight; where it cannot be
-  enforced on-chain, reports call it monitored state-dependent evidence, not a permanent
-  invariant.
+  spec input. Synthesis selects the adapter by the recording's observed hash, which the caller
+  supplies, so that is a match, not a check of the chain; the install intent (and unsigned
+  assembly) reads the target's code in the same capture as the authority check and refuses
+  other code (`E_TARGET_CODE_CHANGED`), and the live policy check refuses it too. The generated
+  policy does not enforce it on-chain, so after installation reports call it monitored
+  state-dependent evidence, not a permanent invariant.
 - **Enforceable vs observational is explicit.** Constraints derive only from the
   authorization context; event/state evidence appears in rationale fields.
 - **State semantics are executable invariants** (§4.4).
