@@ -2075,6 +2075,42 @@ mod tests {
         );
     }
 
+    /// The files whose bytes are emitted into every generated crate or hashed into the template
+    /// pack must check out with LF endings everywhere. `emit_lockfile` copies the golden lockfile
+    /// verbatim, so under `core.autocrlf` a Windows checkout would emit a different crate, and a
+    /// different `source_hash`, from the same spec. Asked of git itself; skipped outside a
+    /// checkout (a source archive or a mutation-testing copy has no attributes to ask about).
+    #[test]
+    fn the_emitted_and_hashed_files_check_out_with_lf_endings() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let files = [
+            "contracts/golden-transfer-policy/Cargo.lock",
+            "contracts/soroswap-swap-policy/Cargo.lock",
+            "contracts/golden-transfer-policy/src/lib.rs",
+            "crates/codegen/src/lib.rs",
+            "crates/codegen/src/render.rs",
+        ];
+        let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["check-attr", "eol", "--"])
+            .args(files)
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let report = String::from_utf8(output.stdout).unwrap();
+        for file in files {
+            assert!(
+                report.contains(&format!("{file}: eol: lf\n")),
+                "{file} is not checked out with LF endings:\n{report}"
+            );
+        }
+    }
+
     /// The target the manifest records is the one the emitted crate declares.
     #[test]
     fn the_build_target_is_the_one_the_crate_declares() {

@@ -1,0 +1,8 @@
+# Every text file checks out with LF endings, on every platform.
+#
+# Some files' bytes are part of what this toolkit hashes or emits: the generated-crate lockfile is
+# copied verbatim into every generated crate (and so into its `source_hash` and Wasm build), the
+# codegen sources are hashed as the template pack, and the committed generated crates are compared
+# byte for byte with codegen output. A CRLF checkout (`core.autocrlf=true`) would change all of
+# those for the same spec. The index already holds LF everywhere; this keeps checkouts the same.
+* text=auto eol=lf
