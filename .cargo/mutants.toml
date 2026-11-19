@@ -47,4 +47,8 @@ exclude_re = [
     # `int128_parts_to_i128` joins `hi << 64` (low 64 bits zero) with `lo` widened from u64
     # (high 64 bits zero). The operands share no set bit, so `|` and `^` give the same value.
     "replace \\| with \\^ in int128_parts_to_i128",
+    # `ByteArray::render_const` computes elements per line as `(MAX_WIDTH + 2 - indent.len()) / 6`
+    # with `indent` the fixed four-space literal beside it: `(100 + 2 - 4) / 6` and the mutant's
+    # `(100 + 2 / 4) / 6` are both 16.
+    "replace - with / in ByteArray::render_const",
 ]
