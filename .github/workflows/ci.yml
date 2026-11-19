@@ -97,6 +97,13 @@ jobs:
         run: python3 scripts/test-check-agent-transcript.py
       - name: Phase 2 reference coverage and MCP verification evidence
         run: bash scripts/check-phase2-evidence.sh --host-only
+      # docs/MAINNET-GATES.md is the list: the checker reads it, refuses it when a named test is
+      # not in its file, and runs each named host test once by full name. The contracts and
+      # harness jobs run their parts; the Wasm-gated ones are named, not run, here.
+      - name: mainnet gates refuse renamed, removed and filtered tests
+        run: python3 scripts/test-check-mainnet-gates.py
+      - name: mainnet gates — each named host test passes exactly once
+        run: bash scripts/check-mainnet-gates.sh --part host
       # Source determinism, asserted without a toolchain. This previously shelled out to
       # `ozpb generate`, which compiles the policy and therefore needs the stellar CLI that
       # this runner does not have — so the step failed on every push while proving nothing.
@@ -133,6 +140,12 @@ jobs:
           npm test --prefix testnet-harness/browser
           npm test --prefix wallet
           python3 scripts/test-apply-pollywallet.py
+      - name: mainnet gates — each named wallet test passes exactly once
+        env:
+          OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
+          OZPB_MCP_BIN: ${{ github.workspace }}/target/debug/ozpb-mcp-server
+          CARGO_NET_OFFLINE: 'true'
+        run: bash scripts/check-mainnet-gates.sh --part wallet
 
   contracts:
     name: contracts (differential suite · generated code compiles)
@@ -149,6 +162,8 @@ jobs:
         run: cargo test -p ozpb-atomic-live-helper
       - name: Phase 2 partial layer-2 evidence (each named test must run)
         run: bash scripts/check-phase2-evidence.sh --contracts-only
+      - name: mainnet gates — each named contracts test passes exactly once
+        run: bash scripts/check-mainnet-gates.sh --part contracts
 
       # The hash-determinism bans in `clippy.toml` apply to this workspace too — clippy
       # walks up to the repository root to find it — but the host job's `--workspace` never
