@@ -478,6 +478,73 @@ pub fn emit_cases(spec: &ValidatedSpec) -> Result<SuiteCases, serde_json::Error>
     })
 }
 
+/// The largest suite a caller-supplied spec may have, checked with [`suite_size_bound`] before
+/// anything is built. Far above every committed spec (the largest derives 65 cases).
+///
+/// Validation bounds each part of a spec, not the suite they compose into: cross products grow
+/// with the square of a function's tuples times their arity, so a 991 KB spec within every
+/// per-item limit (14 rules of 32 tuples of 32 exact amounts) derived 310,674 cases, held about
+/// 1 GB while they were evaluated and answered with 74 MB. A case is a few kilobytes held, so
+/// this keeps one suite to tens of megabytes.
+pub const MAX_SUITE_CASES: usize = 20_000;
+
+/// How many cases [`build_suite`] derives for `spec`, at most, counted without building them:
+/// exact for each call's own mutations, an upper bound for each rule's signer, time and state
+/// boundaries, and the cross products before those reproducing an accepted tuple are skipped.
+pub fn suite_size_bound(spec: &ValidatedSpec) -> usize {
+    spec.spec()
+        .rules
+        .iter()
+        .map(|rule| {
+            let per_call: usize = rule
+                .allowed_calls
+                .iter()
+                .map(|call| {
+                    let args = concrete_args(spec, rule, call);
+                    let mutations: usize = args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, arg)| {
+                            let constraint = call
+                                .args
+                                .iter()
+                                .find(|a| a.index as usize == i)
+                                .map(|a| &a.constraint);
+                            arg_mutations(arg, constraint).len()
+                        })
+                        .sum();
+                    // Original, other contract, other function, extra and missing argument.
+                    3 + mutations + 1 + usize::from(!args.is_empty())
+                })
+                .sum();
+            // Zero, wrong, partial, duplicate and extra signer; two strict-set; three time.
+            let boundaries = 10 + 6 * rule.state.len();
+            let mut arities: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+            for call in &rule.allowed_calls {
+                arities
+                    .entry(&call.fn_name)
+                    .or_default()
+                    .push(call.args.len());
+            }
+            let cross_products: usize = arities
+                .values()
+                .map(|tuples| {
+                    let mut pairs = 0;
+                    for (left, arity) in tuples.iter().enumerate() {
+                        pairs += tuples[left + 1..]
+                            .iter()
+                            .filter(|other| *other == arity)
+                            .count()
+                            * arity;
+                    }
+                    pairs
+                })
+                .sum();
+            per_call + boundaries + cross_products
+        })
+        .sum()
+}
+
 /// Expose the suite so layer 2 (the contracts workspace) drives the same mutations.
 pub fn build_suite(spec: &ValidatedSpec) -> Vec<Case> {
     let mut cases = Vec::new();
@@ -1319,6 +1386,68 @@ mod tests {
     // *tested*, so a regression that stopped emitting an entire boundary class (every signer
     // case, say) would still report `all_agree: true` and pass every gate. These assert the
     // suite actually covers the classes the spec's own shape implies.
+
+    /// One rule of `calls` tuples of one function, each of `arity` distinct exact amounts: every
+    /// pair of tuples differs everywhere, so every swap is a novel cross product.
+    fn wide_rule(calls: usize, arity: u32) -> ValidatedSpec {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let template = spec.rules[0].allowed_calls[0].clone();
+        spec.rules[0].allowed_calls = (0..calls)
+            .map(|call| {
+                let mut tuple = template.clone();
+                tuple.fn_name = "f".into();
+                tuple.args = (0..arity)
+                    .map(|index| ozpb_policy_spec::ArgConstraint {
+                        index,
+                        constraint: Constraint::EqI128 {
+                            value: (1000 * call + index as usize + 1).to_string(),
+                        },
+                        provenance: ozpb_domain::Provenance::ObservedExact,
+                    })
+                    .collect();
+                tuple
+            })
+            .collect();
+        spec.validate()
+            .expect("a wide rule within the per-item limits")
+    }
+
+    /// The bound an entry point checks before building is never below what the build produces,
+    /// so a spec under the limit cannot build a suite over it.
+    #[test]
+    fn the_suite_size_bound_covers_every_case_the_suite_builds() {
+        for (label, spec) in [
+            ("W2 subscription", golden_spec()),
+            ("W1 blend", blend_claim_spec()),
+            ("W3 soroswap", soroswap_swap_spec()),
+            ("cross products", wide_rule(6, 4)),
+        ] {
+            let built = build_suite(&spec).len();
+            let bound = suite_size_bound(&spec);
+            assert!(
+                bound >= built,
+                "{label}: bound {bound} < {built} built cases"
+            );
+            assert!(
+                bound <= built + 16,
+                "{label}: bound {bound} is loose for {built} cases"
+            );
+        }
+    }
+
+    /// A 991 KB spec of 14 such rules (32 tuples of 32 arguments) built 310,674 cases and held
+    /// about 1 GB. One rule of that shape is already over the limit; the bound says so without
+    /// building anything.
+    #[test]
+    fn a_spec_whose_suite_would_exceed_the_limit_is_measured_not_built() {
+        let wide = wide_rule(32, 32);
+        assert!(suite_size_bound(&wide) > MAX_SUITE_CASES);
+        // Far above anything committed: the largest committed spec's suite has 65 cases.
+        assert!(suite_size_bound(&golden_spec()) * 100 < MAX_SUITE_CASES);
+    }
 
     #[test]
     fn a_spec_shape_always_covers_its_structurally_required_classes() {

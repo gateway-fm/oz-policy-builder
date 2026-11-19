@@ -19,7 +19,9 @@ const HEAVY: [&str; 13] = [
     "connect_wallet",
     "send_wallet_proposal",
 ];
-/// Pure tools: bounded by their own size limits and the ordinary per-tool default.
+/// Pure tools: bounded by the request body, spec validation and the ordinary per-tool default;
+/// `reference_suite` also by its case limit (`ozpb_harness::MAX_SUITE_CASES`), which validation
+/// alone does not imply: cross products grow with the square of a function's tuples.
 #[cfg(test)]
 const PURE: [&str; 4] = [
     "synthesize_policy",

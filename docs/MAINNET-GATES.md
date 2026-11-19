@@ -554,7 +554,8 @@ refuses SSRF vectors, and refuses to start with a configured source the allowlis
 cover; redacts endpoint-controlled error text before it reaches a response; refuses an envelope
 carrying signatures before any request; keeps one session's artifacts from another;
 authenticates before spending quota, bounds request bodies and refuses requests over the quota;
-and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
+refuses a spec whose reference suite would exceed its case limit before deriving it; and frees a
+build slot when a request is cancelled. The self-hosted workflow checks the hosted
 transport's bounds and the build-worker launcher, and runs the Compose package and rootless
 worker containment.
 
@@ -589,6 +590,7 @@ ci  crates/mcp-server/src/main.rs  tests::hosted_sessions_do_not_share_generated
 ci  crates/mcp-server/src/authority.rs  authority::tests::endpoint_controlled_errors_are_redacted_before_mcp_serialization
 ci  crates/mcp-server/src/preflight.rs  preflight::tests::hosted_preflight_refuses_signed_material_before_any_request
 ci  crates/mcp-server/src/http.rs  http::tests::unauthenticated_requests_are_refused_without_spending_the_quota
+ci  crates/toolkit/src/verification.rs  verification::tests::a_spec_whose_reference_suite_is_too_large_is_refused_before_any_work
 ci  crates/mcp-server/src/cancel.rs  cancel::tests::cancelled_generate_code_kills_worker_group_and_frees_build_slot
 ci  crates/mcp-server/tests/mcp_http.rs  the_served_endpoint_authenticates_bounds_bodies_and_refuses_requests_over_the_quota
 ci  crates/mcp-server/tests/mcp_stdio_capture.rs  an_endpoint_echoing_the_envelope_never_reaches_the_response

@@ -130,6 +130,9 @@ ozpb reference-suite --spec spec.json
 # over exactly that list (format `ozpb-reference-suite-cases/v1`; the hash is
 # sha256("ozpb-reference-suite-cases/v1\n" + spec_hash + "\n" + compact JSON of `cases`)). The
 # testnet harness replays its live-realizable denials against an installed rule from this output.
+# A spec whose suite would derive more than 20,000 cases (cross products grow with the square of
+# a function's tuples times their arity) is refused with E_SPEC_LIMITS and the count, here and by
+# `verify` and `prepare-dry-run`, before anything is derived or built.
 ozpb reference-suite --spec spec.json --emit-cases > cases.json
 
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
