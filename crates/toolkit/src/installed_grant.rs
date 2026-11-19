@@ -141,5 +141,54 @@ pub fn check_installed_grant_from_scan(
     })
 }
 
+/// What a scheduled run makes of one observation against the installation's recorded
+/// `authority_commitment`: the one its install intent was checked against. The comparison the
+/// wallet's monitor makes, for an operator who runs the check from cron.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstalledGrantComparison {
+    /// The exact recorded rule is in place with nothing allocated after it, and the modeled
+    /// authority without it commits to the recorded commitment, with no refusal or unresolved item.
+    Unchanged,
+    /// As `Unchanged`, except that the rule's `valid_until` has passed: it authorizes nothing.
+    Inactive,
+    /// The recorded rule, its signers or policies changed or are gone, a later rule was allocated,
+    /// or the modeled authority differs from the recorded commitment or carries a finding.
+    Changed,
+    /// The observation is of a ledger older than the caller's floor: no answer, whatever it shows.
+    /// An endpoint that stopped ingesting serves an old, consistent ledger that would otherwise
+    /// read as unchanged on every run.
+    Stale,
+}
+
+/// Compare one observation with the recorded commitment, refusing one older than `min_ledger`
+/// (the installation's ledger, or one past the last observation). Never adopts the observation
+/// as a new baseline: only the recorded commitment reads as unchanged.
+pub fn compare_installed_grant(
+    output: &CheckInstalledGrantOutput,
+    recorded_authority_commitment: &str,
+    min_ledger: u32,
+) -> InstalledGrantComparison {
+    if output.observed_ledger < min_ledger {
+        return InstalledGrantComparison::Stale;
+    }
+    let projected = match &output.projected_authority {
+        Some(projected) if output.status == "observed" => projected,
+        _ => return InstalledGrantComparison::Changed,
+    };
+    let verdict = &projected.verdict;
+    if verdict.authority_commitment != recorded_authority_commitment
+        || !verdict.refusals.is_empty()
+        || !verdict.unresolved.is_empty()
+    {
+        return InstalledGrantComparison::Changed;
+    }
+    match output.reason.as_deref() {
+        None => InstalledGrantComparison::Unchanged,
+        Some("installed_rule_expired") => InstalledGrantComparison::Inactive,
+        // A reason this comparison does not know is not read as unchanged.
+        Some(_) => InstalledGrantComparison::Changed,
+    }
+}
+
 #[cfg(test)]
 mod tests;

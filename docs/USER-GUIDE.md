@@ -105,7 +105,10 @@ the cap refusing it ([using the grant](POLLYWALLET-INTEGRATION.md#using-the-gran
 - **The grant:** the wallet's `Check installed grant now` (CLI: `ozpb check-installed-grant`)
   compares the rule, the code and the modelled authority with what was installed. It reports
   `unchanged`, `inactive`, `drift` or `unavailable`, and only when you run it
-  ([monitoring](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)).
+  ([monitoring](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)). Run the CLI
+  command from cron with the installation's recorded commitment and a ledger floor, and its exit
+  status alerts
+  ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)).
 - **The registry:** `ozpb registry monitor` tells you when something your grant relies on is
   revoked. Watch the account's, the owner verifier's and any reviewed policy's code hashes with
   `--wasm-hash`, and the generated policy's template family with `--template` (its spec's

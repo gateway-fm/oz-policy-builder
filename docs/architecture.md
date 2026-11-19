@@ -605,10 +605,13 @@ impl GeneratedPolicy {
     (`policy_address_rule_can_uninstall_and_call_surface_refuses_it` in
     `contracts/differential/tests/account_wasm_invariants.rs`).
     `check_policy_call_surface` lists every such rule before installation and refuses one the
-    agent's key can use alone. A rule added later is detected only when someone runs the
-    wallet's [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring),
-    and only for a grant installed by the running backend; it counts any later rule allocation
-    as drift. Nothing monitors in the background. The guarantee stated to a user must be
+    agent's key can use alone. A rule added later is detected when someone runs the wallet's
+    [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring), for a
+    grant installed by the running backend, or by `ozpb check-installed-grant` on the operator's
+    schedule, whose exit status is the alert
+    ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)); both count
+    any later rule allocation as drift. Nothing in this tree schedules it, and each run sees one
+    ledger. The guarantee stated to a user must be
     "per installation", never "lifetime".
 - **Rendering safety:** all symbols, strings, bytes, and `ScVal` values from recordings are
   untrusted data. They are never interpolated into Rust identifiers, and they reach a string

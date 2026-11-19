@@ -585,6 +585,9 @@ async fn main() -> anyhow::Result<()> {
     // Parsed before the transport branch so stdio and HTTP are configured identically, and
     // fail-closed: a rejected setting stops startup rather than silently using a default.
     let build_config = ozpb_toolkit::BuildConfig::from_env()?;
+    // A launcher from another revision would be found only by its first frame, with that build's
+    // slot retained until a restart; it stops startup instead.
+    build_config.check_worker_launcher()?;
     let rpc_sources = Arc::new(configured_rpc_sources()?);
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {

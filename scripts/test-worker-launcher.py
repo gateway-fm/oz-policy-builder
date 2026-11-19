@@ -178,6 +178,33 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(frame["containment"], "removed")
         self.assertIsNone(frame["result"])
 
+    def test_protocol_query_answers_without_configuration_input_or_runtime(self):
+        # The API asks once at startup; the answer must be cheap and must not depend on the host.
+        output = io.BytesIO()
+        refuse = mock.Mock(side_effect=AssertionError("the protocol query ran launcher work"))
+        with mock.patch.object(worker, "load_config", refuse), \
+                mock.patch.object(worker, "preflight", refuse), \
+                mock.patch.object(worker, "bounded", refuse), \
+                mock.patch.object(worker, "install_stop_handler", refuse), \
+                mock.patch.object(worker.sys, "argv", ["worker-launcher", "--protocol"]), \
+                mock.patch.object(worker.sys, "stdin", SimpleNamespace(buffer=None)), \
+                mock.patch.object(worker.sys, "stdout", SimpleNamespace(buffer=output)), \
+                mock.patch.object(worker.sys, "stderr", io.StringIO()):
+            self.assertEqual(worker.main(), 0)
+        self.assertEqual(output.getvalue(), b"build-worker-job/v1 contained-build-result/v2\n")
+        refuse.assert_not_called()
+
+    def test_any_other_argument_is_refused_before_ready(self):
+        for argv in (["l", "--protocol", "x"], ["l", "--version"], ["l", "protocol"], ["l", ""]):
+            output = io.BytesIO()
+            with self.subTest(argv=argv), \
+                    mock.patch.object(worker, "load_config", side_effect=AssertionError("ran")), \
+                    mock.patch.object(worker.sys, "argv", argv), \
+                    mock.patch.object(worker.sys, "stdout", SimpleNamespace(buffer=output)), \
+                    mock.patch.object(worker.sys, "stderr", io.StringIO()):
+                self.assertEqual(worker.main(), 1)
+                self.assertEqual(output.getvalue(), b"")
+
     def test_ready_is_reported_once_the_stop_handler_is_installed_and_before_the_job_is_read(self):
         self._stop_state()
         seen = {}

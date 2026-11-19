@@ -40,6 +40,10 @@ STOP = {"requested": False}
 # Written first, once the handler is installed. The API signals no earlier, because a SIGTERM
 # before the handler exists kills the launcher with nothing confirmed.
 READY = b"ready\n"
+# The answer to `--protocol`, the one argument this launcher takes: the job schema it reads and the
+# frame schema it writes. The API asks once at startup and refuses to start on any other answer,
+# so a launcher from another revision costs a failed start rather than a retained build slot.
+PROTOCOL = b"build-worker-job/v1 contained-build-result/v2\n"
 
 
 def stop_requested(signum, frame):
@@ -262,6 +266,9 @@ def launch(raw, config):
 
 def main():
     try:
+        if sys.argv[1:] == ["--protocol"]:
+            sys.stdout.buffer.write(PROTOCOL)
+            return 0
         if len(sys.argv) != 1:
             raise Refused()
         install_stop_handler()

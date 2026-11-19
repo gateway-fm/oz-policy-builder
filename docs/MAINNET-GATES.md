@@ -47,7 +47,7 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | Gate | Requirement (abridged from architecture §10) | Status | Evidence | Deviation, or what would close it |
 | --- | --- | --- | --- | --- |
 | G1 | No policy-bearing grant authorizes without its declared signer predicate; strict signer sets for named identities; a dynamic predicate only explicitly labeled | **closed** | [G1](#g1-signer-predicate) | Rests on G2's install-time check, an `rpc_reported` observation, refusing a weak management rule that could strip the policy |
-| G2 | The authority-surface check passes at install and preflight over both surfaces, archive-safe, transitive, snapshot-coherent and bounded, over the exact binding set; identities matched by the wallet; one-ledger observation; post-install changes and restorations alert; adversarial suites pass | **open** | [G2](#g2-authority-surface) | Open: post-install changes are found by an on-demand check, not alerted, and restorations are not observed. Also: the observation is `rpc_reported`, not an authenticated ledger snapshot; the through-account suites cover the pinned account and the pure check, not the live check end to end |
+| G2 | The authority-surface check passes at install and preflight over both surfaces, archive-safe, transitive, snapshot-coherent and bounded, over the exact binding set; identities matched by the wallet; one-ledger observation; post-install changes and restorations alert; adversarial suites pass | **open** | [G2](#g2-authority-surface) | Open: restorations are not observed. Post-install changes alert through `ozpb check-installed-grant`'s exit status when the operator schedules it, but each run sees one ledger, not what happened between runs, and the watch ends when the installation's registry snapshot expires. Also: the observation is `rpc_reported`, not an authenticated ledger snapshot; the through-account suites cover the pinned account and the pure check, not the live check end to end |
 | G3 | Synthesis is exact by default and never infers numeric direction from XDR type alone | **closed** | [G3](#g3-exact-synthesis) | — |
 | G4 | Accepted calls keep complete tuple correlations, each mapped to its recorded invocation | **closed** | [G4](#g4-tuple-correlation) | — |
 | G5 | Workflow claims are state-enforced or described as independent permissions | **closed** | [G5](#g5-workflow-claims) | — |
@@ -132,7 +132,9 @@ policies must run exactly the recognized code. An incomplete scan yields no list
 owner is unresolved, the install intent carries arguments only for an answer with no refusal,
 and the result never says "safe". The wallet matches the listed owner against its own passkey
 and refuses a foreign key, a refusal or anything unresolved before asking for a signature. Its
-on-demand monitor compares the installed rule and modeled authority with the installation's.
+on-demand monitor compares the installed rule and modeled authority with the installation's;
+`ozpb check-installed-grant`, given the installation's recorded commitment, makes the same
+comparison and says what it found by its exit status, for cron.
 The adversarial suites run direct calls and management bypasses through the pinned account.
 
 Open, and the other deviations:
@@ -142,12 +144,20 @@ Open, and the other deviations:
   lies consistently is not detectable ([SCOPE item 1](SCOPE.md#implementation-boundaries),
   [audit limit 1](AUDIT-SCOPE.md#known-limits--not-findings)). Closing it needs an authenticated
   ledger-state source.
-- **Detection, not alerting (open).** Post-install drift is found by the wallet's
-  [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring) while its
-  page is open; nothing runs in the background or raises an alert, and TTL continuity, so a
-  restoration, is not observed. The same check also runs the registry monitor, which reports
-  revoked or expiring code, not a changed rule ([G10](#g10-registry-governance)). Closing it
-  needs a scheduled monitor of the account that alerts.
+- **Changes alert per run; restorations are not observed (open).** Post-install drift is found
+  by the wallet's [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)
+  while its page is open, and by `ozpb check-installed-grant --recorded-authority-commitment
+  --min-ledger`, whose exit status (3 changed, 4 no answer or an observation older than the
+  floor, 5 expired) is the alert when the operator runs it on a schedule
+  ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)); nothing in
+  this tree schedules it. Each run observes one ledger: TTL continuity, so an archival and
+  restoration between runs, is not observed, nor a change made and undone between runs. The
+  check pins the installation's registry snapshot, so it runs under a monitoring roots file
+  held at that version and ends when the snapshot expires (every run then exits 1; a new review
+  and installation follow). It does not read the policy's installation marker, which the
+  wallet's check does. The wallet's check also runs the registry monitor, which reports revoked
+  or expiring code, not a changed rule ([G10](#g10-registry-governance)). Closing it needs the
+  account's entries observed continuously between runs, restorations included.
 - **One account, pure check.** The direct-call and management-bypass suites run through the
   pinned 0.7.3 account Wasm only, and feed the scan, projection and pure check from a local
   ledger with recognition supplied by the test and the reader's default bounds: no registry,
@@ -183,6 +193,12 @@ ci  wallet/tests/approval.test.mjs  wallet refuses unresolved before requesting 
 ci  wallet/tests/approval.test.mjs  matching public key does not substitute for the exact stored credential or policy-free rule
 ci  wallet/tests/monitor.test.mjs  monitor compares the exact retained rule and projected authority without signing or adopting a baseline
 ci  wallet/tests/monitor.test.mjs  later allocations remain drift
+ci  crates/toolkit/src/installed_grant/tests.rs  installed_grant::tests::a_scheduled_comparison_is_unchanged_only_at_the_recorded_commitment
+ci  crates/toolkit/src/installed_grant/tests.rs  installed_grant::tests::a_scheduled_comparison_reports_expiry_as_inactive_unless_the_authority_drifted
+ci  crates/toolkit/src/installed_grant/tests.rs  installed_grant::tests::a_scheduled_comparison_refuses_an_observation_older_than_the_floor
+ci  crates/toolkit/src/installed_grant/tests.rs  installed_grant::tests::a_scheduled_comparison_reads_an_unknown_shape_as_changed
+ci  crates/cli/src/authority.rs  authority::tests::a_scheduled_run_without_an_answer_or_with_a_changed_rule_alerts
+ci  crates/cli/tests/authority_cli.rs  scheduled_installed_monitoring_exits_with_a_status_cron_can_alert_on
 ci  contracts/differential/tests/generated_suite.rs  direct_mutating_calls_require_the_smart_account_authorization
 release  contracts/differential/tests/account_wasm_invariants.rs  grant_rule_cannot_reach_its_policy_and_rule_zero_is_listed_authority
 release  contracts/differential/tests/account_wasm_invariants.rs  policy_address_rule_can_uninstall_and_call_surface_refuses_it

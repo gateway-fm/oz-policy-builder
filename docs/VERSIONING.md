@@ -21,10 +21,13 @@ files shows what changed. The streamable HTTP transport is served at `/v1/mcp`.
 **The CLI and operator configuration.** `ozpb` commands, flags and their environment-variable
 fallbacks, the JSON a command prints on standard output (the same `api-types` structures), and
 the exit statuses a command documents, such as `ozpb registry monitor`'s
-([registry governance](REGISTRY-GOVERNANCE.md#monitoring)). A command that documents only zero
-and non-zero promises only that distinction. For the server: the `OZPB_*` variables
-([developer guide](DEVELOPERS.md#build-configuration-operator-side)), `--http`, and the files the
-self-hosted deployment mounts ([self-hosting](SELF-HOSTING.md#configure-the-operator-boundary)).
+([registry governance](REGISTRY-GOVERNANCE.md#monitoring)) and `ozpb check-installed-grant`'s
+with `--recorded-authority-commitment`
+([incident response](INCIDENT-RESPONSE.md#watching-an-installed-grant)). A command that
+documents only zero and non-zero promises only that distinction. For the server: the `OZPB_*`
+variables ([developer guide](DEVELOPERS.md#build-configuration-operator-side)), `--http`, and
+the files the self-hosted deployment mounts
+([self-hosting](SELF-HOSTING.md#configure-the-operator-boundary)).
 
 **Persisted and exchanged formats.** Each carries its version where it has one:
 
@@ -39,7 +42,7 @@ self-hosted deployment mounts ([self-hosting](SELF-HOSTING.md#configure-the-oper
 | Registry roots file and checkpoint | no version field: `{threshold, keys[, checkpoint]}` and `{version, log_index, root, revocations}`, both closed objects | `crates/toolkit/src/lib.rs` (`registry_trust_from_roots_json`), `crates/registry/src/lib.rs` (`RegistryCheckpoint`) |
 | Grant proposal | `schema: "ozpb-grant-proposal/v1"` | `wallet/shared/proposal.mjs` |
 | Reference suite cases | `ozpb-reference-suite-cases/v1` | `crates/harness/src/lib.rs` (`CASES_FORMAT`) |
-| Build worker launcher frames | `build-worker-job/v1` in, `build-worker-result/v1` and `contained-build-result/v2` out ([launcher contract](ISOLATED-BUILDS.md#launcher-contract-for-another-provider)) | `crates/build-runner/src/worker.rs`, `deployment/worker-launcher.py` |
+| Build worker launcher frames | `build-worker-job/v1` in, `build-worker-result/v1` and `contained-build-result/v2` out; the `--protocol` answer naming both ([launcher contract](ISOLATED-BUILDS.md#launcher-contract-for-another-provider)) | `crates/build-runner/src/worker.rs`, `deployment/worker-launcher.py` |
 | Native worker frames | `schema: 1` in the job and result frames ([machine protocol](NATIVE-EXECUTION.md#machine-protocol)) | `execution-runtime/src/execution.rs`, `execution-runtime/src/captured.rs` |
 | Release wire contract | `schema: "ozpb-wire-contract/v1"` | `scripts/release-artifacts.py` |
 

@@ -121,9 +121,10 @@ security fix or a network-forced change, which the notes list as breaking with w
 document that uses a field a newer release added is not readable by an older one, so upgrade
 every component that exchanges documents (CLI, server, native worker, wallet) together, and take
 each from one release. With [disposable build workers](ISOLATED-BUILDS.md), the API binary and
-`deployment/worker-launcher.py` must come from the same release: take the launcher from the
-release's tag, not from `main`. Deploy new images by digest and recreate the containers; this
-discards in-memory session references, as described under
+`deployment/worker-launcher.py` must come from the same release (the API refuses to start with
+a launcher that speaks another protocol): take the launcher from the release's tag, not from
+`main`. Deploy new images by digest and recreate the containers; this discards in-memory session
+references, as described under
 [data handling](#data-handling-and-handover). An upgrade does not move your registry checkpoint
 or floor: they advance only when you accept a newer registry version.
 
