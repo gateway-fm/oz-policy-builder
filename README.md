@@ -11,8 +11,10 @@ deterministic, auditable pipeline. **Code-first, deploy-second:** the toolkit it
 deploys anything. Three components do: `scripts/demo-tranche1.sh`, the Tranche 2
 [testnet harness](testnet-harness/README.md), and the local wallet backend of the
 [Pollywallet integration](docs/POLLYWALLET-INTEGRATION.md), which creates an account, submits
-an owner-signed sample transfer and deploys a generated policy. All three act only on testnet,
-with throwaway fee-payer keys, and only when you run them.
+an owner-signed sample transfer and deploys a generated policy. The demo script and the harness
+act only on testnet, with throwaway keys. The wallet backend acts on testnet with throwaway keys
+too, or, in a [mainnet session](docs/POLLYWALLET-INTEGRATION.md#mainnet-sessions) run from a
+production build, with the operator's own fee-payer key. Each acts only when you run it.
 
 The full technical architecture (v0.8) lives in `docs/architecture.md`. The Tranche 1
 release surface is the core pipeline — recorder → PolicySpec → synthesizer → codegen —
@@ -69,9 +71,18 @@ list every transaction and refusal. The
 [acceptance crosswalk](docs/TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
 maps each item to that evidence and to the limits it keeps.
 
-The production versioned release (self-hostable; Gateway operates no service), audit
-remediation, OpenZeppelin sign-off and mainnet wallet integration are
-[Tranche 3](https://github.com/gateway-fm/oz-policy-builder/issues/4).
+## Tranche 3 status
+
+The [third milestone](https://github.com/gateway-fm/oz-policy-builder/issues/4) is the mainnet
+release: a production versioned endpoint that operators run themselves (Gateway operates no
+service), documentation, a full test suite, security-audit remediation, OpenZeppelin's sign-off
+on the generated code and one mainnet wallet integration, with a mainnet installation and a
+published audit report as its outcome. The
+[Tranche 3 crosswalk](docs/TRANCHE-3-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
+maps each item to what this tree implements and to what remains, and records the owner's
+acceptance of deviations. This tree records no mainnet installation, audit report or
+OpenZeppelin sign-off. The [mainnet gate map](docs/MAINNET-GATES.md) gives each acceptance gate
+before mainnet use its status.
 
 ## The pipeline
 

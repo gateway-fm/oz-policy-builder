@@ -16,7 +16,7 @@ reproduction, artifact deployment, live authority review and, when the operator 
 the [native worker](NATIVE-EXECUTION.md), local account-Wasm and captured-target execution of
 the reviewed grant. When the operator names the deployed [atomic live helper](ATOMIC-LIVE-HELPER.md),
 the owner can also consent to a [live-enforcement check](#live-enforcement-check): two
-enforce-mode simulations on testnet, never submitted. When all four layers passed on recent
+enforce-mode simulations on the session's network, never submitted. When all four layers passed on recent
 evidence and the live check's signatures expired unused, the owner can [install](#installation)
 the reviewed grant with one passkey-signed transaction, watch the automation delegate
 [use it](#using-the-grant) once with no passkey and the same payment then refused by the policy's

@@ -64,13 +64,21 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   and is not offered as one.
 - The library and the MCP server never sign, submit, or deploy, and hold no account, owner or
   fee-payer keys. The demo script, the testnet harness and the local wallet backend do on
-  testnet, with disposable keys they generate. In a mainnet session the local wallet backend
-  holds one more: the operator's fee payer key, read from a 0600 file the operator owns, kept in
-  process memory and used only as the source and fee payer of its transactions, within per-
-  transaction and session fee caps; it is never printed, returned or journaled, and never a
-  signer on an account. On testnet the automation delegate's key is generated in memory; on
-  mainnet the wallet holds a delegate key only when the operator supplies one in a second 0600
-  file, and otherwise none (the grant names the agent's own key).
+  testnet, with disposable keys they generate, the wallet's automation delegate included. In a
+  mainnet session the local wallet backend generates no signing key and holds two the operator
+  supplies, each read at startup from a 0600 file the operator owns and kept in process memory:
+  - The operator's fee payer key (`feePayerKeyPath`), used only as the source and fee payer of
+    the backend's transactions, within per-transaction and session fee caps; it is never
+    printed, returned or journaled, and never a signer on an account.
+  - The agent's own key (`delegateKeyPath`), the delegate the grant names. Installing a grant
+    requires it: the account-Wasm, captured-target and live checks, three of the four layers
+    installation requires, sign as the delegate. The live check's delegate signature is a real
+    mainnet authorization until its expiry, 12 ledgers after the check is prepared; with the
+    owner's signature it is a submittable transfer, so installation waits until that ledger has
+    passed. Without the file the wallet holds no delegate key and installation stays closed
+    (`delegate_key_unavailable`). Whoever can read that file, or the backend's memory, holds the
+    agent's key.
+
   The wallet's owner signs with the user's own passkey.
 - `ozpb dry-run` holds the spec delegate's key, read only from a
   0600 file owned by the caller, never from an argument or the environment, and cleared on a

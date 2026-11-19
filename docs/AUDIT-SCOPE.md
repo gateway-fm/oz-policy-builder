@@ -2,7 +2,8 @@
 
 > **Draft for scoping.** The audited revision is fixed by a freeze commit named here when the
 > audit starts. Until then this document describes the tree it is committed in, and its line
-> counts move with that tree.
+> counts move with that tree. The audit's findings and their remediation are logged in
+> [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md).
 
 The entry point for an external security audit of the OZ Accounts Policy Builder: what is in
 scope and why, where the claims and their limits are already written down, and how to run every
@@ -134,16 +135,18 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | RPC acquisition | `crates/source-rpc`: `src/account_*.rs`, `checked_account_observation.rs`, `classic_account.rs`, `contract_code.rs`, `contract_data.rs`, `ledger_witness.rs`, `assembly.rs`, `policy_state_capture.rs`, `lib.rs`; `tests/{account_storage_conformance,rpc_conformance,mainnet_corpus}.rs` | The account scan behind the authority check, transaction recording (replayed over ten verbatim mainnet transactions), the reads behind install assembly and the live policy check | 4,777 | 6,948 |
 | Toolkit operations | `crates/toolkit`: `src/lib.rs`, `verification.rs`, `install_intent.rs`, `install_assembly.rs`, `call_surface.rs`, `call_surface_live.rs`, `authority_text.rs`, `installed_grant.rs`, `policy_check.rs`; tests in `src/test_support.rs`, `src/target_adapter_tests.rs`, `tests/` | Trust lowering at the synthesis boundary, recognition of generated artifacts by rebuilding them, install intent and unsigned assembly | 3,286 | 4,311 |
 | Wallet validators | `wallet/shared` | Independent re-validation of assembly, consent, revocation and replacement, against the network the session is bound to | 1,839 | 11,273 |
-| Wallet backend install path | `wallet/server/`: `actions.mjs`, `install.mjs`, `network.mjs`, `live-signing.mjs`, `http.mjs`, `session.mjs`, `tool.mjs`, `fee-payer.mjs` | Consent, signature collection, submission, event-verified records; on mainnet, the operator's fee-payer key | 2,496 | in the row above (all of `wallet/tests`) |
+| Wallet backend install path | `wallet/server/`: `actions.mjs`, `install.mjs`, `network.mjs`, `live-signing.mjs`, `http.mjs`, `session.mjs`, `tool.mjs`, `fee-payer.mjs` | Consent, signature collection, submission, event-verified records; on mainnet, the operator's fee-payer key and the reading of the delegate's key file | 2,496 | in the wallet validators row (all of `wallet/tests`) |
+| Wallet mainnet configuration, delegate key and live check | `wallet/server/`: `config.mjs`, `pinned-code.mjs`, `live-check.mjs`, `native-execution.mjs`, `native-protocol.mjs` | The operator configuration: the development root refused on mainnet, the persisted checkpoint and the registry floor, the fee caps and their ceilings. The checks of the pinned account and verifier code on the network. The live check, whose owner and delegate signatures are real authorizations on the session's network until they expire, and on mainnet are signed with the agent's own key. The delegate key's three signing capabilities and the guard that keeps offline signatures off every live network | 750 | in the wallet validators row |
+| Production endpoint's HTTP boundary | `crates/mcp-server`: `src/http.rs`, `src/tool_limits.rs`, `src/preflight.rs`; `tests/{mcp_http,mcp_stdio_preflight}.rs` | The released self-hosted endpoint ([self-hosting](SELF-HOSTING.md#production-release)): bearer authentication before any quota is spent or body read, the request and per-tool quotas, the body bound, allowed hosts, the RPC allowlist every configured source must pass at startup, and the hosted refusal of signed envelopes ([G12](MAINNET-GATES.md#g12-hosted-processing)) | 445 | 1,031 |
 | Build runner and worker isolation | `crates/build-runner`, `deployment/worker-launcher.py` (tested by `scripts/test-worker-launcher.py` and `scripts/test-worker-containment.py`) | Bounded builds; the BuildManifest (`build-manifest/v2`) and its `producer` record (`build.rs`, `src/toolkit_source.rs`); reconciliation against the Wasm's own metadata; [disposable workers](ISOLATED-BUILDS.md) | 2,320 | 2,242 |
 | Registry governance CLI | `crates/cli/src/registry.rs`, `src/key_file.rs`; `tests/registry_governance_cli.rs` | `ozpb registry`: custodian keys in 0600 files, successor, signing, combining and verification, and the monitor whose exit status is the alert | 499 | 821 |
-| **Tier 2** | | | **16,917** | **27,884** |
+| **Tier 2** | | | **18,112** | **28,915** |
 
 ### Informational — not in scope
 
 | Component | Non-test | Test | Note |
 | --- | ---: | ---: | --- |
-| `crates/mcp-server` | 1,929 | 3,588 | Thin shell. The hosted HTTP boundary (`src/http.rs`, `src/preflight.rs`) matters if a hosted deployment is in scope |
+| Rest of `crates/mcp-server` | 1,484 | 2,557 | Thin shell; its HTTP boundary is in Tier 2 |
 | Rest of `crates/cli` | 2,520 | 1,421 | Thin shell, except that `ozpb dry-run` holds a delegate key (`src/dry_run/`; see SECURITY.md) |
 | `crates/api-types` | 1,116 | 1,104 | Wire types and stable error codes |
 | `crates/harness` | 1,079 | 839 | Derives the permit/deny suite: evidence, not enforcement |
@@ -151,7 +154,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | Rest of `crates/source-rpc` (target and footprint capture, target Wasm, preflight; `tests/{target_capture_conformance,protocol30_headers}.rs`) | 1,694 | 2,672 | Dry-run and preflight evidence |
 | Rest of `crates/toolkit` (dry run, its report, preflight, capture) | 1,680 | 1,182 | Same |
 | `execution-runtime` | 2,577 | 2,133 | Offline native worker for the account-Wasm layer |
-| Rest of `wallet/server` | 1,754 | — | Live check, monitoring, pinned-code checks, native worker glue |
+| Rest of `wallet/server` | 1,004 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
 | `scripts/release-artifacts.py` (tested by `scripts/test-release-artifacts.py`), run by `.github/workflows/release-binaries.yml` | 250 | 246 | Packages the release binaries, exports the MCP wire contract and writes `SHA256SUMS`; the workflow, not counted, attests and attaches them ([VERSIONING.md](VERSIONING.md#the-release-gate)) |
 | `testnet-harness`, `scripts/demo-tranche1.sh`, `skills/`, `wallet/overlay`, docs | — | — | Testnet demonstration, agent instructions, wallet UI |
 
@@ -255,7 +258,8 @@ shipped grant shape, each with its deviations, are in the
 10. **Local key handling.** Three local tools hold a key read from a 0600 file: `ozpb dry-run` the
     spec delegate's, and its native worker runs unsandboxed as the caller; `ozpb registry sign` a
     custodian's, unless a hardware key signs; the wallet backend in a mainnet session the
-    operator's fee payer and, when supplied, a delegate
+    operator's fee payer and, because installation requires it, the agent's delegate key, whose
+    live-check signature is a real mainnet authorization until it expires
     ([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)).
 11. **Hosted operation** is a shared-token, trusted-client boundary
     ([deviations](TRANCHE-2-VERIFICATION.md#deviations-and-open-gaps-against-the-phase-2-design),
@@ -342,6 +346,16 @@ bash scripts/check-mainnet-gates.sh
 # Needs `cargo install cargo-mutants --locked --version 27.1.0`.
 bash scripts/mutation-test.sh
 ```
+
+**What the gates do not scan.** Vulnerability scanning of dependencies rests on two things:
+`cargo-deny`'s RustSec advisory check over the lockfiles of the three Rust workspaces (the
+toolkit, `contracts/` and `execution-runtime/`; `scripts/check-licenses.sh`, run in CI and by the
+release gate), and Aikido's scanning of this repository, whose static-analysis and leaked-secret
+items are triaged in [SAST-TRIAGE.md](SAST-TRIAGE.md) and whose dependency advisories the
+[v1.0.0 notes](release-notes/v1.0.0.md#security) record. CI installs the npm packages with
+`--no-audit`, and no workflow runs `npm audit` or fails on an npm advisory; no workflow scans the
+published container images. A known vulnerability in an npm dependency or in an image's base
+layers is seen only if Aikido reports it.
 
 Disposable build workers have their own acceptance run on the chosen Linux host
 ([ISOLATED-BUILDS.md](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)). The scheduled and

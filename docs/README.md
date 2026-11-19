@@ -43,6 +43,7 @@ the reader it is mainly written for.
 ## Security auditors
 
 - [AUDIT-SCOPE.md](AUDIT-SCOPE.md) — the entry point: components, threat model, known limits, gates.
+- [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md) — each audit finding's fix, regression test and status.
 - [MAINNET-GATES.md](MAINNET-GATES.md) — each acceptance gate before mainnet use, its status and the tests CI runs for it.
 - [../SECURITY.md](../SECURITY.md) — disclosure policy, and what is deliberately not claimed.
 - [architecture.md](architecture.md) — the full technical architecture and delivery plan.
@@ -64,7 +65,7 @@ the reader it is mainly written for.
 
 - [TRANCHE-1-VERIFICATION.md](TRANCHE-1-VERIFICATION.md) — reproduce the first milestone.
 - [TRANCHE-2-VERIFICATION.md](TRANCHE-2-VERIFICATION.md) — the second milestone's checks and evidence crosswalk.
-- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's verification record (accepted deviations are recorded there).
+- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's crosswalk: each contracted item, what this tree implements, what remains, and the owner's acceptance of deviations.
 
 ## Contributors
 

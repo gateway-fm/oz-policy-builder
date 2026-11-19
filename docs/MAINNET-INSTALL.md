@@ -7,6 +7,13 @@ submits a mainnet transaction for you, and nothing here commits anyone to runnin
 
 ## Prerequisites
 
+**Install from the 1.0.0 release.** It comes last in a fixed order: the audit and OpenZeppelin's
+review of a frozen revision, the remediation of their findings, then the mainnet registry's key
+ceremony, which can sign only once the audit's reference exists, and then the release, which
+carries the signed mainnet head ([the order for 1.0.0](VERSIONING.md#the-order-for-100)). Until
+then prerequisite 3 cannot be met. Take from that release the toolkit checkout the wallet is
+applied from, the binaries, and the signed head, `roots.json` and checkpoint attached to it.
+
 All of these must hold before the first mainnet write. The wallet checks each one and refuses,
 with a reason the page explains, when it does not.
 
@@ -39,10 +46,19 @@ with a reason the page explains, when it does not.
    reserve (1 XLM).
 6. **The atomic live helper, deployed by you.** The live check, and so installation, needs it on
    mainnet; the wallet never deploys it. Build `contracts/atomic-live-helper` with
-   `stellar contract build --locked`, check that the Wasm's SHA-256 is the reviewed helper hash
-   ([atomic live helper](ATOMIC-LIVE-HELPER.md)), then
+   `stellar contract build --locked` from the release's tag, with the pinned build inputs (Rust
+   1.91.1 and stellar-cli 27.0.0 at revision `5a7c5fe`, as `bash scripts/recorded-build-inputs.sh`
+   prints them for `rust`, `stellar-cli` and `stellar-cli-revision`), on an aarch64-apple-darwin
+   (Apple Silicon) host: the reviewed hash was recorded on that host, and reproducing it needs
+   that host and those inputs ([testnet deployment](ATOMIC-LIVE-HELPER.md#testnet-deployment)). Check that the Wasm's SHA-256
+   is the reviewed helper hash (`LIVE_HELPER_WASM` in `wallet/shared/live-consent.mjs`), then
    `stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>`
-   and name the contract ID in `liveHelper`.
+   and name the contract ID in `liveHelper`. The deployment uploads and instantiates the checked
+   file, and the wallet refuses a helper whose code hash on the network is not the reviewed one.
+   stellar-cli 27.0.0 is the build input only: no deployment with it to mainnet or to a
+   protocol-30 network is recorded here, since the helper's testnet deployments went through the
+   JavaScript SDK (`testnet-harness/scripts/deploy-live-helper.mjs`). Deploy with a stellar-cli
+   release that supports the network's protocol; it need not be the one that built the file.
 7. **The pinned account and verifier code.** Both the 0.7.3 account Wasm and the WebAuthn
    verifier Wasm were already stored on mainnet when read on 19 November 2026; the readiness
    panel checks them again and gives the upload command for either if it is missing
