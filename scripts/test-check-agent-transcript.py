@@ -301,6 +301,29 @@ class ReviewRegressions(unittest.TestCase):
         for card in [CARD, correct.replace("<=", ">="), correct.replace("<= 1000000", "<= 2000000")]:
             self.assertIn("handoff_without_confirmation", checks(session(spec=spec, card=card)))
 
+    def test_a_range_is_shown_and_restated_with_both_ends(self):
+        # "Spend up to X" as a range: the card and the restatement each carry both bounds bound
+        # to their argument, floor first, so a reader sees the floor that refuses negatives.
+        spec = copy.deepcopy(SPEC)
+        spec["rules"][0]["allowed_calls"][0]["args"][2]["c"] = {"range_i128": {"min": "0", "max": "1000000"}}
+        correct = CARD.replace("1000000) on", ">= 0 and <= 1000000) on")
+        self.assertNotIn("handoff_without_confirmation", checks(session(spec=spec, card=correct)))
+        for card in [CARD, correct.replace(">= 0 and ", ""), correct.replace(">= 0", ">= 1"),
+                     correct.replace("<= 1000000", "<= 2000000")]:
+            self.assertIn("handoff_without_confirmation", checks(session(spec=spec, card=card)))
+
+        widening = {"contract": TARGET, "fn_name": "transfer", "arg_index": 2,
+                    "bound": {"range_i128": {"min": "0", "max": "2000000"}},
+                    "intent": "headroom", "blast_radius": "medium"}
+        decisions = dict(DECISIONS, widenings=[widening])
+        line = f" Widen {TARGET}.transfer arg[2] to >= 0 and <= 2000000; blast radius: medium; reason: headroom."
+        self.assertNotIn("synthesize_before_decisions",
+                         checks(session(decisions=decisions, restatement=RESTATEMENT + line)))
+        for wrong in (line.replace(">= 0 and ", ""), line.replace(">= 0", ">= 1"),
+                      line.replace("<= 2000000", "<= 1000000"), line.replace("and <= 2000000", "and <= 2000000, no floor")):
+            self.assertIn("synthesize_before_decisions",
+                          checks(session(decisions=decisions, restatement=RESTATEMENT + wrong)), wrong)
+
     def test_readable_shell_proposals_pass_and_unverifiable_writes_refuse(self):
         events = session()[:-1] + [call("write", "Bash", {"command": "cat > proposal.json <<'EOF'\n" + json.dumps(proposal()) + "\nEOF"})]
         self.assertEqual(check(events), [])

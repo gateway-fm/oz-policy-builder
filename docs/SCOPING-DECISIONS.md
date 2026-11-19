@@ -49,6 +49,7 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 
 | Bound | Accepts | Applies to |
 | --- | --- | --- |
+| `{"range_i128": {"min": "M", "max": "N"}}` — a range, the recommended form of "up to N" with M = 0 | every value from M to N, both included; the generated policy refuses everything else, negatives included | `i128` arguments |
 | `{"le_i128": {"max": "N"}}` — a cap | every value ≤ N, negatives included; only with `"no_floor_acknowledged": true` beside it ([below](#open-question-negative-values-under-a-cap)) | `i128` arguments |
 | `{"ge_i128": {"min": "N"}}` — a floor | every value ≥ N, such as a swap's minimum output | `i128` arguments |
 | `"any_value"` | anything at that argument | any argument; requires `blast_radius: "high"` |
@@ -58,10 +59,13 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 - A widening that matches no recorded argument it can apply to is refused, not ignored, and so
   is a numeric bound that excludes the recorded value: a widening loosens the recorded call and
   cannot refuse it.
-- One argument carries one constraint: there is no range, so a cap and a floor cannot both apply
-  to the same argument. A decisions document that widens the same argument (contract, function
-  and index) more than once is refused with an `E_INVALID_DECISION` finding naming it, rather than
-  applying one bound and dropping the others.
+- One argument carries one constraint: to bound both ends, use a range, not a cap and a floor. A
+  decisions document that widens the same argument (contract, function and index) more than once
+  is refused with an `E_INVALID_DECISION` finding naming it, rather than applying one bound and
+  dropping the others.
+- A range needs development registry version 7 or later, whose template entry declares
+  `range_i128`; under an older snapshot synthesis refuses it (`E_UNSUPPORTED_PATTERN`, naming the
+  kind).
 
 ## Composing the reviewed spending limit
 
@@ -91,12 +95,14 @@ audit finding L-06 is about the same assumption in their spending-limit policy, 
 fixed in the policy.
 
 So a cap you add is a question, not a default. Synthesis does not add a floor of zero, which would
-infer a direction from the type, and one argument carries one bound, so a capped argument cannot
-also carry a floor. A cap is refused with an `E_NEEDS_DECISION` finding until its widening carries
+infer a direction from the type. The way to close it is to state the floor: a range
+(`range_i128`, say `0..=N`) is checked at both ends by the generated policy, needs no
+acknowledgement, and is what the skill offers first. A cap without a floor stays available as an
+explicit choice: it is refused with an `E_NEEDS_DECISION` finding until its widening carries
 `"no_floor_acknowledged": true`, your statement that negative amounts pass the generated policy;
 absent reads as `false`. The rationale repeats the acknowledgement for each cap and names what does
 refuse a negative amount: the composed spending limit for a transfer amount it reads, otherwise
-only the target. On a floor or `any_value` the acknowledgement is refused as an
+only the target. On a range, a floor or `any_value` the acknowledgement is refused as an
 `E_INVALID_DECISION`. A cap an adapter derives for a maximum-input role carries no acknowledgement:
 it is the adapter's reviewed claim about that target's code. It too sets no floor, and the
 rationale says so in the same words.
@@ -104,10 +110,9 @@ rationale says so in the same words.
 What is established here: the evaluator's spending model never permits a negative amount, and a
 spending-limit composition must admit a non-negative amount. What is not: that every target
 refuses a negative amount, or that accepting one would be harmful for a given target. Exact grants
-are unaffected. Whether the generated policy should refuse negatives under a cap itself, which
-needs a bound on both sides of one argument (a constraint kind neither the spec nor the template
-registry has), is an open question for the security audit
-([AUDIT-SCOPE.md](AUDIT-SCOPE.md#prior-relevant-findings)).
+are unaffected, and so are ranged ones. What stays open for the security audit is the cap an
+acknowledgement or an adapter leaves without a floor: whether relying on the target there is
+acceptable ([AUDIT-SCOPE.md](AUDIT-SCOPE.md#prior-relevant-findings)).
 
 ## How the agent skill asks
 
@@ -116,12 +121,13 @@ The [`policy-builder` skill](../skills/policy-builder/SKILL.md) asks before it c
 
 1. It asks for the grant name, the delegates and predicate, an expiry or an explicit "no expiry", a
    cap or an explicit "unlimited", whether to compose the spending limit, and every widening —
-   recipient, amount and other arguments separately, never together by guess. For every cap on an
-   amount it also asks about the floor, and keeps the cap only if you accept that it has none.
+   recipient, amount and other arguments separately, never together by guess. When you cap an
+   amount it offers "between 0 and X" (a range) first, and a cap with no floor only as the
+   alternative you explicitly accept.
 2. It restates the complete decisions — every delegate address in full, each widening as
-   `Widen <contract>.<function> arg[<index>] to <bound>; blast radius: <…>; reason: <…>.`, a cap
-   accepted without a floor as `<= value, no floor` — and synthesizes only after a reply that just
-   accepts them. A reply that accepts and adds anything is answered and restated.
+   `Widen <contract>.<function> arg[<index>] to <bound>; blast radius: <…>; reason: <…>.`, a range
+   as `>= min and <= max`, a cap accepted without a floor as `<= value, no floor` — and synthesizes
+   only after a reply that just accepts them. A reply that accepts and adds anything is answered and restated.
 3. On a refusal it asks about exactly the findings named in `details`.
 4. The **Confirm before deploy** card lists under **High blast radius** every `any_value`
    argument, every widening you rated `high`, no expiry and no cap.

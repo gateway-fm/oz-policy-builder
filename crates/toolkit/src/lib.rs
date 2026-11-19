@@ -1293,6 +1293,56 @@ mod tests {
         );
     }
 
+    /// "Spend up to X" as a range: the decisions name it, the spec carries it, and the template
+    /// family must declare it. Development registry version 7 does; version 6 predates the kind,
+    /// so the same decisions are refused there, naming the kind, rather than synthesized into a
+    /// grant the registry never vouched for.
+    #[test]
+    fn a_range_synthesizes_under_a_registry_that_declares_it_and_is_refused_under_one_that_does_not(
+    ) {
+        let token = fx::golden_token_strkey();
+        let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+        decisions["widenings"] = serde_json::json!([
+            { "contract": token, "fn_name": "transfer", "arg_index": 2,
+              "bound": { "range_i128": { "min": "0", "max": "1000000000" } },
+              "intent": "spend up to ten times the recorded amount", "blast_radius": "medium" }
+        ]);
+        let testnet = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let input_under = |snapshot: ozpb_registry::RegistrySnapshot| SynthesizeInput {
+            bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(
+                serde_json::to_value(
+                    ozpb_registry::sign_snapshot(&registry_dev::dev_signing_key(), snapshot)
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            decisions: decisions.clone(),
+            spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+
+        let v7 = registry_dev::range_constraint_successor(testnet).unwrap();
+        let output = synthesize_policy(&input_under(v7), &registry_trust()).unwrap();
+        assert_eq!(
+            output.spec["rules"][0]["allowed_calls"][0]["args"][2]["c"],
+            serde_json::json!({ "range_i128": { "min": "0", "max": "1000000000" } })
+        );
+
+        let v6 = registry_dev::account_advisory_successor(testnet).unwrap();
+        let err = synthesize_policy(&input_under(v6), &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::EUnsupportedPattern, "{err}");
+        assert!(
+            err.details
+                .iter()
+                .any(|detail| detail.ends_with("transfer/arg 2 constraint kind 'range_i128'")),
+            "{:?}",
+            err.details
+        );
+    }
+
     /// Synthesis stamps the snapshot root into the spec, and generation copies it into the
     /// BuildManifest, so this is where a mainnet artifact would come to carry a root anyone can
     /// sign. Refused here by the registry's own construction, with the root-policy code.

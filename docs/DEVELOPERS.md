@@ -489,7 +489,8 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   The XDR type alone never implies a direction (lowering a `min_output` makes a swap
   *less* safe). An argument takes at most one widening: a second one naming the same contract,
   function and index is an `E_INVALID_DECISION` finding, never silently dropped, as is a numeric
-  bound that excludes the recorded value. A cap
+  bound that excludes the recorded value. A range (`range_i128`) bounds both ends and needs no
+  further decision; it is the safe form of "up to X". A cap
   (`le_i128`) bounds a signed `i128` from above only, so its widening also needs
   `no_floor_acknowledged: true` (absent reads as `false`): without it, an `E_NEEDS_DECISION`
   finding; on a floor or `any_value`, an `E_INVALID_DECISION`. Synthesis never adds a floor.

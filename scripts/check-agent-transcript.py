@@ -11,9 +11,9 @@ are not the user.
 - synthesize_before_decisions: a `synthesize_policy` call whose decisions the agent did not
   restate to the user, followed by a reply that only accepts them ("yes", "go ahead", "looks
   good"; anything more may change them), since the previous synthesis. The restatement must name every delegate in full, the grant
-  name, the expiry ledger or "no expiry", the cap or "unlimited", each widening (a cap the user
-  accepted without a floor reads `<= value, no floor`) and the spending limit. Also a delegate
-  address the user never wrote.
+  name, the expiry ledger or "no expiry", the cap or "unlimited", each widening (a range reads
+  `>= min and <= max`; a cap the user accepted without a floor reads `<= value, no floor`) and
+  the spending limit. Also a delegate address the user never wrote.
 - handoff_without_confirmation: a handoff without a complete Confirm-before-deploy card for the
   current grant followed by a turn that is only the user's `confirm`, with nothing else said
   since (starting the install skill excepted). A handoff is the
@@ -312,6 +312,10 @@ def constraint_pattern(constraint, account=None):
         return r"(?:<=|≤)\s*" + re.escape(fields["max"])
     if kind == "ge_i128":
         return r"(?:>=|≥)\s*" + re.escape(fields["min"])
+    if kind == "range_i128":
+        # Both ends, floor first: the floor is what a cap alone would have left out.
+        return (r"(?:>=|≥)\s*" + re.escape(fields["min"]) + r"\s+and\s+(?:<=|≤)\s*"
+                + re.escape(fields["max"]))
     raise ValueError("unsupported constraint display")
 
 

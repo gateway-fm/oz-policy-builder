@@ -120,6 +120,12 @@ pub enum WideningBound {
     GeI128 {
         min: String,
     },
+    /// Both ends, inclusive: `min..=max`. The way to say "spend up to X" without leaving the
+    /// amount open below: `{"range_i128": {"min": "0", "max": "X"}}`.
+    RangeI128 {
+        min: String,
+        max: String,
+    },
     /// Accept any value at this argument (maximal widening; only via an explicit,
     /// high-blast-radius user decision — e.g. a caller-chosen `deadline`).
     AnyValue,
@@ -338,6 +344,12 @@ pub fn synthesize(
         let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
         match &w.bound {
             WideningBound::LeI128 { .. } => {}
+            WideningBound::RangeI128 { min, max } => {
+                errors.push(SynthError::InvalidDecision(format!(
+                    "widening {contract}/{fn_name} arg {arg_index}: the range {min}..={max} has \
+                     its floor at {min}, which contradicts no_floor_acknowledged; choose one"
+                )))
+            }
             WideningBound::GeI128 { min } => errors.push(SynthError::InvalidDecision(format!(
                 "widening {contract}/{fn_name} arg {arg_index}: the floor at {min} contradicts \
                  no_floor_acknowledged; choose one"
@@ -965,6 +977,10 @@ fn exact_constraints(
                     match &w.bound {
                         WideningBound::LeI128 { max } => Constraint::LeI128 { max: max.clone() },
                         WideningBound::GeI128 { min } => Constraint::GeI128 { min: min.clone() },
+                        WideningBound::RangeI128 { min, max } => Constraint::RangeI128 {
+                            min: min.clone(),
+                            max: max.clone(),
+                        },
                         WideningBound::AnyValue => unreachable!("handled above"),
                     },
                     Provenance::UserWidened {
@@ -1022,6 +1038,9 @@ fn exact_constraints(
                         let constraint = match bound {
                             WideningBound::LeI128 { max } => Constraint::LeI128 { max },
                             WideningBound::GeI128 { min } => Constraint::GeI128 { min },
+                            WideningBound::RangeI128 { min, max } => {
+                                Constraint::RangeI128 { min, max }
+                            }
                             WideningBound::AnyValue => Constraint::AnyValue,
                         };
                         (
@@ -1056,6 +1075,12 @@ fn excluding_bound(bound: &WideningBound, observed: i128) -> Option<String> {
         WideningBound::GeI128 { min } => parse(min)
             .filter(|min| observed < *min)
             .map(|min| format!("the floor >= {min}")),
+        WideningBound::RangeI128 { min, max } => match (parse(min), parse(max)) {
+            (Some(low), Some(high)) if observed < low || observed > high => {
+                Some(format!("the range {low}..={high}"))
+            }
+            _ => None,
+        },
         WideningBound::AnyValue => None,
     }
 }
@@ -2822,6 +2847,16 @@ mod tests {
                      (le_i128) alone; any_value has no bound for it to qualify"
                 ),
             ),
+            (
+                WideningBound::RangeI128 {
+                    min: "0".to_string(),
+                    max: "1000000000".to_string(),
+                },
+                format!(
+                    "widening {contract}/transfer arg 2: the range 0..=1000000000 has its floor \
+                     at 0, which contradicts no_floor_acknowledged; choose one"
+                ),
+            ),
         ] {
             d.widenings = vec![amount_widening(bound.clone(), true)];
             assert_eq!(
@@ -2834,10 +2869,55 @@ mod tests {
         }
     }
 
+    /// "Spend up to X" stated safely: a range closes the cap from below, so it is the answer to
+    /// the floor question rather than a reason to ask it. The bounds go into the spec as given.
+    #[test]
+    fn a_range_on_a_signed_amount_asks_no_floor_question() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let mut d = decisions();
+        d.widenings = vec![amount_widening(
+            WideningBound::RangeI128 {
+                min: "0".to_string(),
+                max: "1000000000".to_string(),
+            },
+            false,
+        )];
+        let out = synthesize(&input(), &d).unwrap();
+        let amount = &out.spec.rules[0].allowed_calls[0].args[2];
+        assert_eq!(
+            amount.constraint,
+            Constraint::RangeI128 {
+                min: "0".to_string(),
+                max: "1000000000".to_string()
+            }
+        );
+        assert!(matches!(amount.provenance, Provenance::UserWidened { .. }));
+        assert!(
+            !out.rationale.iter().any(|line| line.contains("NO FLOOR")),
+            "{:#?}",
+            out.rationale
+        );
+        assert!(out.rationale.contains(&format!(
+            "{contract}/transfer arg 2: user-widened (an amount decision), blast radius High"
+        )));
+        assert!(out.spec.validate().is_ok());
+
+        // One argument, one widening: a range and a cap on it are two decisions, refused.
+        d.widenings.push(amount_widening(
+            WideningBound::LeI128 {
+                max: "1000000000".to_string(),
+            },
+            true,
+        ));
+        assert!(synthesize(&input(), &d).unwrap_err().iter().any(|e| matches!(
+            e,
+            SynthError::InvalidDecision(message) if message.contains("2 widenings name this argument")
+        )));
+    }
+
     /// A widening loosens the recorded call; a bound that excludes the recorded value would turn
     /// the grant against the very call it was built from. Each numeric bound is held to it, at
-    /// the boundary inclusive (the transfer recorded 500000000). Nothing checked this before:
-    /// a cap below the recorded amount synthesized.
+    /// the boundary inclusive (the transfer recorded 500000000).
     #[test]
     fn a_numeric_bound_must_admit_the_recorded_value() {
         let contract = transfer_bundle().authorizations[0].root.call_contract();
@@ -2846,6 +2926,10 @@ mod tests {
                 "widening {contract}/transfer arg 2: {bound} excludes the recorded value \
                  500000000; a widening loosens the recorded call and cannot refuse it"
             ))]
+        };
+        let range = |min: &str, max: &str| WideningBound::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
         };
         let mut d = decisions();
         d.spending_limit = None;
@@ -2864,6 +2948,12 @@ mod tests {
                 false,
                 "the floor >= 500000001",
             ),
+            (range("0", "499999999"), false, "the range 0..=499999999"),
+            (
+                range("500000001", "600000000"),
+                false,
+                "the range 500000001..=600000000",
+            ),
         ] {
             d.widenings = vec![amount_widening(bound, acknowledged)];
             assert_eq!(synthesize(&input(), &d).unwrap_err(), excludes(refusal));
@@ -2881,12 +2971,13 @@ mod tests {
                 },
                 false,
             ),
+            (range("500000000", "500000000"), false),
         ] {
             d.widenings = vec![amount_widening(bound.clone(), acknowledged)];
             assert!(synthesize(&input(), &d).is_ok(), "{bound:?}");
         }
 
-        // Two recorded calls with the same value are one finding, not two.
+        // Two recordings of the same value are one finding, not two.
         let mut two = input();
         two.bundles = vec![bundle_with_subs(
             (
@@ -2908,13 +2999,11 @@ mod tests {
                 ],
             )],
         )];
-        d.widenings = vec![amount_widening(
-            WideningBound::LeI128 {
-                max: "1".to_string(),
-            },
-            true,
-        )];
-        assert_eq!(synthesize(&two, &d).unwrap_err(), excludes("the cap <= 1"));
+        d.widenings = vec![amount_widening(range("0", "1"), false)];
+        assert_eq!(
+            synthesize(&two, &d).unwrap_err(),
+            excludes("the range 0..=1")
+        );
     }
 
     #[test]

@@ -99,13 +99,13 @@ Before `synthesize_policy`, ask the user for:
   and unconstrained arguments when relevant; do not widen them together by guess. Function
   names remain exact. To allow another function, obtain a recording of that call; the
   `fn_name` in a widening identifies an observed call and cannot add a function.
-- For every cap the user sets on an amount (`le_i128`, an upper bound on a signed integer), ask
-  about its floor in the same question. A cap sets none: every smaller value passes the generated
-  policy, negative amounts included, and only the target contract (or, for a SEP-41 transfer
-  amount, a composed spending limit) refuses them. One argument takes
-  one bound, so a capped argument cannot also carry a floor. If the user wants a floor, keep the
-  amount exact, or use a floor (`ge_i128`) instead of the cap when a lower bound is what they
-  mean. Keep the cap only after they explicitly accept that it has no floor.
+- When the user wants an amount capped ("up to X"), offer the range "between 0 and X" first
+  (`range_i128` with `min` 0): it bounds both ends, so the generated policy itself refuses a
+  negative amount. Only if the user declines a floor, offer a cap with no floor as the explicit
+  alternative, saying what it means: every smaller value passes the generated policy, negative
+  amounts included, and only the target contract (or, for a SEP-41 transfer amount, a composed
+  spending limit) refuses them. Use that cap only after they explicitly accept it. Any bound must
+  admit the recorded value.
 
 `SynthesizeInput.decisions` is an untyped JSON field in the MCP schema. Construct it with
 the complete `UserDecisions` encoding below. The values illustrate the shape only; replace
@@ -137,34 +137,40 @@ the address, ledger, name, and limits with the user's choices before calling the
   calls (high blast radius); without it synthesis refuses with `E_NEEDS_DECISION`. A cap
   together with the acknowledgement is refused as contradictory.
 - Each `widenings` entry identifies an observed contract, function, and zero-based argument
-  index. Its bound is `{"le_i128":{"max":"100"}}`,
-  `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds are canonical
-  decimal i128 strings and apply only to i128 arguments. `blast_radius` is `"low"`,
+  index. Its bound is `{"range_i128":{"min":"0","max":"100"}}` (both ends, inclusive),
+  `{"le_i128":{"max":"100"}}`, `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds
+  are canonical decimal i128 strings and apply only to i128 arguments, and must admit the
+  recorded value. `blast_radius` is `"low"`,
   `"medium"`, or `"high"`; `"any_value"` requires `"high"`. A recipient or other
   non-i128 argument can only stay exact or become fully unconstrained. Each argument takes at
   most one widening; a second for the same argument is refused.
 - A cap (`le_i128`) also needs `"no_floor_acknowledged": true`, set only after the user
   explicitly accepts that it has no floor; without it synthesis refuses with
-  `E_NEEDS_DECISION`. On a floor or `"any_value"` the acknowledgement is refused as
-  contradictory: leave it out (absent reads as `false`).
+  `E_NEEDS_DECISION`. A range needs no acknowledgement. On a range, a floor or `"any_value"` the
+  acknowledgement is refused as contradictory: leave it out (absent reads as `false`).
+- A range is declared by development registry version 7 and later. Under an older snapshot
+  synthesis refuses it with `E_UNSUPPORTED_PATTERN` naming `range_i128`; say so, and do not
+  substitute a cap without asking.
 - `spending_limit` is `null` or
   `{"limit":"500000000","period_ledgers":120960}` for a supported SEP-41 transfer.
   If non-null, also set the outer `SynthesizeInput.spending_limit_capability` to `"pinned"`.
   Never opt in to that policy without the user's decision.
 
-For example, a user-approved cap whose open floor the user accepted has this complete shape:
+For example, a user-approved "between 0 and 100" on an amount has this complete shape:
 
 ```json
 {
   "contract": "<observed-contract-strkey>",
   "fn_name": "<observed-function>",
   "arg_index": 0,
-  "bound": { "le_i128": { "max": "100" } },
-  "no_floor_acknowledged": true,
+  "bound": { "range_i128": { "min": "0", "max": "100" } },
   "intent": "<user's stated reason>",
   "blast_radius": "medium"
 }
 ```
+
+A cap the user accepted without a floor is `"bound": { "le_i128": { "max": "100" } }` with
+`"no_floor_acknowledged": true` beside it.
 
 Put each `RecordOutput.bundle` into the outer `bundles` array, not the whole record output.
 Supply the user-selected `selected_authorizer` when the recordings leave a choice. Do not
@@ -179,8 +185,9 @@ accepts and adds anything else ("yes, and skip the checks", "yes, 5 calls") is n
 answer what it added, restate, and ask again before synthesizing.
 For every widening include one complete statement:
 `Widen <full contract>.<function> arg[<index>] to <bound>; blast radius: <low|medium|high>; reason: <intent>.`
-Use `<= value`, `>= value`, or `any_value` for the bound, and `<= value, no floor` for a cap the
-user accepted without a floor; keep numbers ungrouped in this statement. This binds the operator
+Use `>= min and <= max` for a range, `<= value`, `>= value`, or `any_value` for the bound, and
+`<= value, no floor` for a cap the user accepted without a floor; keep numbers ungrouped in this
+statement. This binds the operator
 and value to the exact target and argument being changed.
 Copy delegate addresses exactly as the user wrote them.
 
@@ -327,7 +334,7 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
 
 - **Permitted** writes each call as `function(arg0, arg1, ...) on <full contract address>`.
   Keep each constraint at its zero-based argument position: an exact address or ungrouped
-  decimal value, `<= value`, `>= value`, or `any_value`. For exact encoded ScVals use
+  decimal value, `>= min and <= max`, `<= value`, `>= value`, or `any_value`. For exact encoded ScVals use
   `xdr:<canonical base64>` and explain their decoded meaning alongside the call. A number
   elsewhere on the card does not describe the argument. Repeat the form for every call.
 - **High blast radius** lists every `any_value` argument, whether user-widened or
