@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Keypair, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
@@ -28,6 +28,44 @@ const refuse = (cause) => {
   throw Object.assign(new Error('wallet network operation refused; inspect the local journal before retrying'),
     NETWORK_REASONS.includes(cause?.reason) ? { reason: cause.reason, ...(cause.protocolVersion !== undefined ? { protocolVersion: cause.protocolVersion } : {}) } : {});
 };
+/**
+ * The fees every earlier session in this work root may have been charged: the full fee of each
+ * transaction it journaled as intended before sending, whatever happened next. A mainnet session
+ * starts its spend cap from this, so restarting the backend gives back no budget. The work root is
+ * bound to one network; an entry for another, or one that does not decode, refuses startup.
+ */
+export function journaledSpend(workRoot, network) {
+  const refused = () => { throw Object.assign(new Error('wallet journal refused'), { startup: 'An earlier session journal in this '
+    + 'work root could not be read for its fees; inspect it, or give this session a work root of its own.' }); };
+  let total = 0n;
+  for (const session of readdirSync(workRoot).filter((name) => name.startsWith('wallet-session-')).sort()) {
+    const journal = join(workRoot, session, 'journal');
+    let names;
+    try {
+      if (!lstatSync(join(workRoot, session)).isDirectory()) refused();
+      const stat = lstatSync(journal);
+      if (!stat.isDirectory()) refused();
+      names = readdirSync(journal);
+    } catch (error) { if (error?.code === 'ENOENT') continue; refused(); }
+    for (const name of names.filter((entry) => /^[0-9]{4}\.intended\.json$/.test(entry)).sort()) {
+      let fd;
+      try {
+        fd = openSync(join(journal, name), constants.O_RDONLY | constants.O_NOFOLLOW);
+        const stat = fstatSync(fd);
+        if (!stat.isFile() || stat.size > 1024 * 1024) refused();
+        const buffer = Buffer.alloc(stat.size);
+        if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) refused();
+        const entry = JSON.parse(buffer.toString('utf8'));
+        if (entry?.networkId !== network.networkId || typeof entry.envelopeXdr !== 'string') refused();
+        const envelope = xdr.TransactionEnvelope.fromXDR(entry.envelopeXdr, 'base64');
+        if (envelope.type !== 'envelopeTypeTx' || !Number.isSafeInteger(envelope.v1.tx.fee)) refused();
+        total += BigInt(envelope.v1.tx.fee);
+      } catch { refused(); } finally { if (fd !== undefined) closeSync(fd); }
+    }
+  }
+  return total.toString();
+}
+
 /** Testnet's fee ceilings, unchanged: no session cap, since Friendbot pays for everything there. */
 export const TESTNET_FEES = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, sessionSpendCapStroops: null });
 /** The inclusion fee the wallet bids on every transaction it builds; the resource fee comes on top. */
@@ -194,13 +232,16 @@ export class WalletNetwork {
    * ceilings; on mainnet the operator's own key and its configured caps, a session cap included.
    */
   constructor({ rpcUrl, journalRoot, network, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep,
-    feePayer = network?.friendbot ? FeePayer.disposable() : null, fees = network?.friendbot ? TESTNET_FEES : null }) {
+    feePayer = network?.friendbot ? FeePayer.disposable() : null, fees = network?.friendbot ? TESTNET_FEES : null, spentStroops = '0' }) {
     if (!network || typeof network.passphrase !== 'string' || typeof network.networkId !== 'string' || !Object.isFrozen(network)) refuse();
     // Without Friendbot, only the operator's own funded key pays, and only within a session cap.
     if (!(feePayer instanceof FeePayer) || (!network.friendbot && (!feePayer.operator || !Number.isSafeInteger(fees?.sessionSpendCapStroops)))
       || ![fees?.maxFeeStroops, fees?.maxUploadFeeStroops].every((n) => Number.isSafeInteger(n) && n >= 100)) refuse();
     this.#payer = feePayer;
     this.#fees = Object.freeze({ ...fees });
+    // What earlier sessions in this work root sent (`journaledSpend`): the cap continues from it.
+    if (typeof spentStroops !== 'string' || !/^(0|[1-9][0-9]{0,30})$/.test(spentStroops)) refuse();
+    this.#spent = BigInt(spentStroops);
     this.#network = network;
     this.#server = server ?? boundedRpcServer(rpcUrl, fetchImpl);
     this.#rpcUrl = rpcUrl;

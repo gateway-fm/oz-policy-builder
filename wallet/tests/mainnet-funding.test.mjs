@@ -67,7 +67,7 @@ test('mainnet configuration: the operator key is required, caps default conserva
   writeFileSync(executable, '#!/bin/sh\nexit 99\n', { mode: 0o700 });
   writeFileSync(join(root, 'registry.json'), '{}', { mode: 0o600 });
   // A production-shaped root policy with its persisted checkpoint: mainnet refuses the development root.
-  writeFileSync(join(root, 'roots.json'), JSON.stringify({ threshold: 1, keys: { operator: 'ab'.repeat(32) }, checkpoint: { version: 6 } }),
+  writeFileSync(join(root, 'roots.json'), JSON.stringify({ threshold: 1, keys: { operator: 'ab'.repeat(32) }, checkpoint: { version: '6', log_index: '6', root: 'ef'.repeat(32), revocations: {} } }),
     { mode: 0o600 });
   const path = join(root, 'operator.json');
   const keyPath = keyFile(root, Keypair.random().secret());
@@ -105,7 +105,7 @@ test('mainnet configuration: the operator key is required, caps default conserva
 // --- the network layer -------------------------------------------------------------------------------------
 
 /** A mainnet WalletNetwork over a fake endpoint; `fee` is what enforce-mode assembly charges. */
-function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULTS, change = () => {} } = {}) {
+function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULTS, change = () => {}, spent = '0' } = {}) {
   const root = scratch(t);
   const key = Keypair.random();
   const feePayer = new FeePayer(key, true);
@@ -147,7 +147,7 @@ function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULT
     envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(fee - 1000 > 0 ? fee - 1000 : 0).build());
     return TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.PUBLIC);
   } });
-  const network = new WalletNetwork({ network: MAINNET, rpcUrl: 'https://rpc.example/', journalRoot: root, server, feePayer, fees,
+  const network = new WalletNetwork({ network: MAINNET, rpcUrl: 'https://rpc.example/', journalRoot: root, server, feePayer, fees, spentStroops: spent,
     fetchImpl: async (url) => { calls.push({ fetched: url }); return new Response('{}'); }, assemble, pause: async () => {} });
   return { network, calls, root, key, feePayer };
 }
@@ -413,4 +413,31 @@ test('the fee payer is found by its raw key too, as an External signer would car
   assert.equal(payerMentioned({ signers: [{ kind: 'external', key_hex: `${hex.toUpperCase()}01` }] }, payer.publicKey()), true);
   assert.equal(payerMentioned({ signers: [{ kind: 'external', public_key: Buffer.from(Keypair.random().rawPublicKey()).toString('hex') }] },
     payer.publicKey()), false);
+});
+
+test('mainnet: the spend cap counts every fee sent from this work root, not only this session\'s', async (t) => {
+  const { journaledSpend } = await import('../server/network.mjs');
+  const { mkdirSync } = await import('node:fs');
+  const workRoot = scratch(t, 'wallet-work-spend-');
+  const intended = (dir, serial, fee, networkId = MAINNET.networkId) => {
+    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), '7'), { fee: String(fee), networkPassphrase: Networks.PUBLIC })
+      .addOperation(Operation.bumpSequence({ bumpTo: '9' })).setTimeout(60).build();
+    mkdirSync(join(workRoot, dir, 'journal'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(workRoot, dir, 'journal', `${serial}.intended.json`), JSON.stringify({ stage: 'revoke-policy', hash: 'a'.repeat(64),
+      networkId, envelopeXdr: tx.toEnvelope().toXDR('base64'), status: 'submission_unknown' }), { mode: 0o600 });
+  };
+  intended('wallet-session-earlier', '0001', 1_200_000);
+  intended('wallet-session-earlier', '0002', 3_400_000);
+  intended('wallet-session-other', '0001', 500_000);
+  writeFileSync(join(workRoot, 'wallet-session-earlier', 'journal', '0003.confirmed.json'), '{}', { mode: 0o600 });
+  assert.equal(journaledSpend(workRoot, MAINNET), '5100000');
+  // A session started with it carries it against the cap.
+  const f = mainnet(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 5_102_000 },
+    spent: journaledSpend(workRoot, MAINNET) });
+  assert.equal(f.network.spentStroops, '5100000');
+  await f.network.fundPayer();
+  await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy'), (error) => error.reason === 'spend_cap');
+  // An entry from another network, or one that does not decode, refuses: the work root cannot be accounted.
+  intended('wallet-session-wrong', '0001', 100, WALLET_NETWORKS.testnet.networkId);
+  assert.throws(() => journaledSpend(workRoot, MAINNET), (error) => /journal/.test(error.startup));
 });

@@ -50,7 +50,17 @@ function mainnetRegistryTrust(rootsText, minimumVersion) {
   if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) {
     refusedTrust('On mainnet the registry root policy must carry the persisted checkpoint (`checkpoint`).');
   }
-  if (!Number.isSafeInteger(checkpoint.version) || checkpoint.version < minimumVersion) {
+  // The CLI writes u64 fields as canonical decimal strings (older files as JSON integers): read both, as BigInt.
+  const u64 = (value) => {
+    const text = typeof value === 'string' ? value : Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
+    if (text === null || !/^(0|[1-9][0-9]{0,19})$/.test(text) || BigInt(text) > 0xffffffffffffffffn) return null;
+    return BigInt(text);
+  };
+  const version = u64(checkpoint.version);
+  if (version === null || u64(checkpoint.log_index) === null || typeof checkpoint.root !== 'string' || !/^[0-9a-f]{64}$/.test(checkpoint.root)) {
+    refusedTrust('The persisted registry checkpoint must carry its version, log_index and root.');
+  }
+  if (version < BigInt(minimumVersion)) {
     refusedTrust('The persisted registry checkpoint is older than the configured minimum version.');
   }
 }

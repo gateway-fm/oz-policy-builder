@@ -14,6 +14,8 @@ import { REFUSAL_REASONS } from '../server/http.mjs';
 import { REFUSAL_REASONS as CLIENT_REASONS } from '../overlay/files/src/policy-builder/client/client.mjs';
 import { StrKey } from '@stellar/stellar-sdk';
 
+/** A persisted checkpoint as the CLI writes it: u64 fields as decimal strings, the root as hex. */
+const CHECKPOINT = (version) => ({ version: String(version), log_index: String(version), root: 'ef'.repeat(32), revocations: {} });
 const EXAMPLE_ROOTS = readFileSync(new URL('../../docs/examples/registry-roots.json', import.meta.url), 'utf8');
 
 function operator(t) {
@@ -42,10 +44,10 @@ test('the development registry root is the one the committed example roots name'
 
 test('a mainnet session refuses the development registry root, at startup and with the reason', (t) => {
   const save = operator(t);
-  const withCheckpoint = { ...JSON.parse(EXAMPLE_ROOTS), checkpoint: { version: 6 } };
+  const withCheckpoint = { ...JSON.parse(EXAMPLE_ROOTS), checkpoint: CHECKPOINT(6) };
   assert.throws(save(withCheckpoint), (error) => /development registry root is refused/.test(error.startup));
   // Named among production keys, or in another case, it is refused all the same.
-  const mixed = { threshold: 2, keys: { operator: 'ab'.repeat(32), dev: DEVELOPMENT_REGISTRY_ROOT.toUpperCase() }, checkpoint: { version: 6 } };
+  const mixed = { threshold: 2, keys: { operator: 'ab'.repeat(32), dev: DEVELOPMENT_REGISTRY_ROOT.toUpperCase() }, checkpoint: CHECKPOINT(6) };
   assert.throws(save(mixed), (error) => /development registry root is refused/.test(error.startup));
   // Testnet keeps the development registry and needs no checkpoint.
   assert.doesNotThrow(save(EXAMPLE_ROOTS, { network: 'testnet', feePayerKeyPath: undefined }));
@@ -55,13 +57,26 @@ test('a mainnet session needs the persisted checkpoint, at or above the configur
   const save = operator(t);
   const production = { threshold: 1, keys: { operator: 'cd'.repeat(32) } };
   assert.throws(save(production), (error) => /persisted checkpoint/.test(error.startup));
-  assert.throws(save({ ...production, checkpoint: { version: 5 } }), (error) => /older than the configured minimum/.test(error.startup));
+  assert.throws(save({ ...production, checkpoint: CHECKPOINT(5) }), (error) => /older than the configured minimum/.test(error.startup));
   assert.throws(save({ ...production, checkpoint: [] }), (error) => /persisted checkpoint/.test(error.startup));
-  assert.throws(save({ keys: production.keys, checkpoint: { version: 6 } }), (error) => /threshold/.test(error.startup));
-  assert.throws(save({ threshold: 1, keys: {}, checkpoint: { version: 6 } }), (error) => /at least one key/.test(error.startup));
-  const config = save({ ...production, checkpoint: { version: 7 } })();
+  assert.throws(save({ keys: production.keys, checkpoint: CHECKPOINT(6) }), (error) => /threshold/.test(error.startup));
+  assert.throws(save({ threshold: 1, keys: {}, checkpoint: CHECKPOINT(6) }), (error) => /at least one key/.test(error.startup));
+  const config = save({ ...production, checkpoint: CHECKPOINT(7) })();
   assert.equal(config.network.name, 'mainnet');
-  assert.equal(config.registryRoots, JSON.stringify({ ...production, checkpoint: { version: 7 } }), 'the exact bytes reach the CLI');
+  assert.equal(config.registryRoots, JSON.stringify({ ...production, checkpoint: CHECKPOINT(7) }), 'the exact bytes reach the CLI');
+  // The u64 fields are decimal strings (or, in older files, JSON integers); log_index and root are required.
+  assert.doesNotThrow(save({ ...production, checkpoint: { ...CHECKPOINT(7), version: 7, log_index: 7 } }));
+  assert.doesNotThrow(save({ ...production, checkpoint: { ...CHECKPOINT(7), version: '18446744073709551615' } }));
+  for (const [name, checkpoint] of [
+    ['a version below the floor, as a string', { ...CHECKPOINT(7), version: '5' }],
+    ['a non-canonical version', { ...CHECKPOINT(7), version: '07' }],
+    ['a version past u64', { ...CHECKPOINT(7), version: '18446744073709551616' }],
+    ['a negative version', { ...CHECKPOINT(7), version: '-7' }],
+    ['no log index', { version: '7', root: 'ef'.repeat(32), revocations: {} }],
+    ['a fractional log index', { ...CHECKPOINT(7), log_index: 1.5 }],
+    ['no root', { version: '7', log_index: '7', revocations: {} }],
+    ['a short root', { ...CHECKPOINT(7), root: 'ef' }],
+  ]) assert.throws(save({ ...production, checkpoint }), (error) => typeof error.startup === 'string', name);
 });
 
 test('the CLI\'s E_REGISTRY_ROOT_POLICY reaches the page as registry_root_refused, from every registry-reading call', async (t) => {

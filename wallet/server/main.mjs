@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadWalletConfig } from './config.mjs';
 import { createWalletServer } from './http.mjs';
-import { WalletNetwork } from './network.mjs';
+import { WalletNetwork, journaledSpend } from './network.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
 import { WalletSession } from './session.mjs';
 import { WalletToolchain } from './toolchain.mjs';
@@ -48,7 +48,10 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const toolchain = new WalletToolchain(config);
   const journalRoot = join(toolchain.sessionRoot, 'journal');
   mkdirSync(journalRoot, { mode: 0o700 });
-  const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees });
+  // On mainnet the spend cap counts what earlier sessions in this (network-bound) work root sent.
+  const spentStroops = config.network.friendbot ? '0' : journaledSpend(config.workRoot, config.network);
+  const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees,
+    spentStroops });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;
   const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
   const live = config.liveHelper ? Object.freeze({ helper: config.liveHelper }) : null;

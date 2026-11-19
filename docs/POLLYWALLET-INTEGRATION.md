@@ -231,8 +231,9 @@ floor of at least 6, the development registry's current version.
 `registrySnapshotPath` names the signed production snapshot, and `registryRootsPath` its root
 policy, whose `threshold` and `keys` must not name the development registry root (the key every
 committed example is signed with, which anyone can derive) and which must carry the persisted
-`checkpoint` the CLI checks rollback and equivocation against, at or above
-`registryMinimumVersion`. Anything else is refused at startup with the reason. The CLI refuses the
+`checkpoint` the CLI checks rollback and equivocation against: its `version` and `log_index` (u64,
+as decimal strings the way the CLI writes them, or JSON integers) and its `root`, with the version
+at or above `registryMinimumVersion`. Anything else is refused at startup with the reason. The CLI refuses the
 development root off testnet too, before it reads anything: its standard error begins
 `Error: E_REGISTRY_ROOT_POLICY: `. The wallet reads only that leading code from any CLI call, never
 the message, and the page then shows `registry_root_refused`; nothing is generated, reviewed or
@@ -253,9 +254,12 @@ account and does not fund the account.
 
 **Caps.** Every transaction is held, before it is signed, to `maxFeeStroops` (default 1 XLM) or,
 for a policy Wasm upload, `maxUploadFeeStroops` (default 12 XLM), and to `sessionSpendCapStroops`
-(default 15 XLM) together with what the session has already spent, counted as the whole fee each
-sent transaction may be charged, whatever a receipt later reports, so that an RPC cannot give back
-budget. Fees actually charged are usually lower. Either cap refuses before signing
+(default 15 XLM) together with what has already been spent from this work root, counted as the
+whole fee each sent transaction may be charged, whatever a receipt later reports, so that an RPC
+cannot give back budget. Fees actually charged are usually lower. A new session starts from the fees
+its work root's earlier session journals recorded as intended, so restarting the backend gives no
+budget back; a journal that cannot be read for its fees refuses startup. To start again from zero,
+use a new work root. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). Each cap can be lowered, not raised past its ceiling (1 XLM, 15 XLM and
 50 XLM). The page shows both caps and the amount spent before every consent, and the policy
 deployment preview shows the upload's simulated cost (its resource fee plus the wallet's 0.1 XLM
