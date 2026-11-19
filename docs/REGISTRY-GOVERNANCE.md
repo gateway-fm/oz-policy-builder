@@ -200,6 +200,16 @@ move to a new version: monitor (below) or `verify --signed <new> --checkpoint <c
 write the printed checkpoint into the roots file and raise the floor. Without a persisted
 checkpoint or floor, a restarted consumer would accept an older, correctly signed snapshot.
 
+### Where trust is checked
+
+Registry trust is enforced where a registry decides something: synthesis, the live authority
+check, the install intent and unsigned assembly, installed-rule prediction and dry-run
+preparation all load the snapshot under the pinned roots. `generate` and `verify` take no registry
+trust, by design: they carry the root the spec names into the BuildManifest without checking it.
+A manifest's `registry_snapshot` therefore says which snapshot the spec claims, not that anyone
+verified it under your roots; a spec synthesized under your pinned roots is the path to a root
+the toolkit has checked, and the install-time checks load it again.
+
 ## Monitoring
 
 ```bash

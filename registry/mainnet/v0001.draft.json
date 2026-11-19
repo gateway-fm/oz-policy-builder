@@ -72,7 +72,7 @@
         "ge_i128",
         "le_i128"
       ],
-      "review_reference": "audited with the template pack"
+      "review_reference": "PENDING, replace before signing: the reference of the completed security review that covers this template family's code generation. No review is referenced yet."
     }
   },
   "revocations": {

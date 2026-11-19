@@ -1438,6 +1438,10 @@ pub mod dev {
                     .iter()
                     .map(|kind| (*kind).to_string())
                     .collect(),
+                // Historical development text, and not true of any review: it is inside every
+                // published development root (versions 1 to 6, pinned by
+                // `historical_development_root_is_immutable` and docs/examples), so it cannot
+                // change without forking them. The mainnet draft carries pending text instead.
                 review_reference: "audited with the template pack".to_string(),
             },
         );

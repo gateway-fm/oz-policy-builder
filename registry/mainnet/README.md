@@ -14,10 +14,12 @@ per version. The procedure that produces and checks it is
   WebAuthn (passkey) verifiers, the spending-limit policy, and the `policy-templates/scope@1`
   template pack. It keeps the revocation of the v0.7.2 account (GHSA-jpg9-m7w4-c7wc) and carries
   no target-adapter binding: the development registry's Soroswap binding is a testnet-only
-  assertion about the testnet router's code. Every entry's review reference is carried over from
-  the development registry; custodians confirm each one before signing, in particular the template
-  pack's, which the security audit settles.
-- Its validity interval — `valid_from_unix` 2027-01-01T00:00:00Z, `expires_at_unix`
+  assertion about the testnet router's code. The review references are carried over from the
+  development registry except the template pack's, which is pending text beginning
+  `PENDING, replace before signing:` — no review of the template pack is referenced yet. The
+  custodians replace it with the completed security review's reference, and confirm every other
+  reference, before anyone signs.
+- The validity interval — `valid_from_unix` 2027-01-01T00:00:00Z, `expires_at_unix`
   2027-07-01T00:00:00Z — is a **placeholder**. How long the custodians vouch for version 1 is
   their decision at signing; they set both values in the draft before anyone signs, since the
   interval is part of the root. No one commits to keeping this registry valid beyond the interval

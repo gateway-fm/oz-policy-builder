@@ -5,8 +5,8 @@
 //! the ed25519 and WebAuthn verifiers, OpenZeppelin's spending limit and the template pack — as
 //! version 1 of a new chain keyed by the mainnet network ID, keeping the revocation of the 0.7.2
 //! account and dropping both its entry and the testnet-only Soroswap router binding. Its
-//! validity interval is a placeholder: the custodians set it when they sign
-//! (`registry/mainnet/README.md`).
+//! validity interval is a placeholder, and the template pack's review reference is pending text:
+//! the custodians set both before they sign (`registry/mainnet/README.md`).
 //!
 //! When the derivation changes, regenerate and read the diff before committing:
 //!
@@ -24,6 +24,9 @@ use std::path::PathBuf;
 const PLACEHOLDER_VALID_FROM: i64 = 1_798_761_600;
 /// 2027-07-01T00:00:00Z: a placeholder, decided by the custodians at signing.
 const PLACEHOLDER_EXPIRES_AT: i64 = 1_814_400_000;
+
+/// How a review reference the custodians must still supply begins.
+const PENDING: &str = "PENDING, replace before signing:";
 
 fn mainnet() -> NetworkId {
     NetworkId::from_passphrase(MAINNET_PASSPHRASE)
@@ -48,6 +51,13 @@ fn derived() -> RegistrySnapshot {
         .remove(&pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex());
     for revocation in snapshot.revocations.values_mut() {
         revocation.effective_version = 1;
+    }
+    // The development text claims an audit that has not happened; custodians sign every word.
+    for template in snapshot.templates.values_mut() {
+        template.review_reference = format!(
+            "{PENDING} the reference of the completed security review that covers this template \
+             family's code generation. No review is referenced yet."
+        );
     }
     snapshot
 }
@@ -106,6 +116,45 @@ fn the_draft_is_a_mainnet_genesis_with_only_cross_network_code() {
         (draft.valid_from_unix, draft.expires_at_unix),
         (PLACEHOLDER_VALID_FROM, PLACEHOLDER_EXPIRES_AT)
     );
+}
+
+/// Custodians sign every word of the draft, so it claims no review that has not happened. The
+/// development entries' "audited with the template pack" is such a claim; the template pack's
+/// reference is pending text the custodians replace with the real review's before signing.
+#[test]
+fn the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in() {
+    let draft = committed();
+    let references: Vec<&str> = draft
+        .policies
+        .values()
+        .map(|entry| entry.review_reference.as_str())
+        .chain(
+            draft
+                .accounts
+                .values()
+                .map(|entry| entry.review_reference.as_str()),
+        )
+        .chain(
+            draft
+                .verifiers
+                .values()
+                .map(|entry| entry.review_reference.as_str()),
+        )
+        .chain(
+            draft
+                .templates
+                .values()
+                .map(|entry| entry.review_reference.as_str()),
+        )
+        .collect();
+    for reference in &references {
+        assert!(
+            !reference.to_ascii_lowercase().contains("audited"),
+            "a mainnet entry claims an audit: {reference}"
+        );
+    }
+    let template = &draft.templates["policy-templates/scope@1"].review_reference;
+    assert!(template.starts_with(PENDING), "{template}");
 }
 
 /// Signed by any production-shaped root policy, the draft loads for mainnet inside its interval
