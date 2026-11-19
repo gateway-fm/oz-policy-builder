@@ -149,8 +149,11 @@ exists for each.
 
 ## What will still change before the audited revision
 
-No change to generated code is planned beyond the upstream items above. The audited revision is
-the freeze commit [AUDIT-SCOPE.md](AUDIT-SCOPE.md) names when the audit starts.
+No change to generated code is planned for this milestone beyond the upstream items above.
+Encoded-literal rendering, which would embed addresses as encoded bytes and change every
+generated source and Wasm hash, stays deferred to template-pack v2
+([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). The audited revision is the freeze commit
+[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names when the audit starts.
 
 Already in this tree: the `contractmeta!` provenance above, which changed every generated source
 and Wasm hash ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1); BuildManifest

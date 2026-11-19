@@ -2673,7 +2673,7 @@ mod tests {
                 }
                 // The corpus draws 1 to 32 calls from 36 names, so most cases put several tuples
                 // under one name, in every interleaving: the shape whose repeated guard clippy
-                // refused. A token scan over one statement, so it costs nothing measurable.
+                // refused. One small expression parsed per case, so it costs nothing measurable.
                 let names: Vec<&str> = spec.spec().rules[0]
                     .allowed_calls
                     .iter()
@@ -2690,21 +2690,49 @@ mod tests {
         }
 
         /// What is wrong with the `tuple_ok` statement, given the function name of each allowed
-        /// call in emission order: an operand read more than once, a function guard or tuple
-        /// check never read, or a tuple check read under a guard that binds another function.
-        /// Empty in a correct emission.
+        /// call in emission order. Empty in a correct emission.
         ///
-        /// Read-once is the property the lint gate needs. `clippy::nonminimal_bool` refuses a
-        /// condition it can rewrite with fewer operands, and a condition that reads each operand
-        /// once has none to spare: `(fn_0_ok && check_call_0(..)) || (fn_0_ok &&
-        /// check_call_1(..))` reads `fn_0_ok` twice and was refused. The guard check is what
-        /// grouping must not lose: a tuple checked under another function's guard permits that
-        /// tuple's arguments for the wrong function, and an operand count cannot see it.
+        /// The statement is parsed, not scanned, because what makes it correct is its structure.
+        /// It must be an `||` of terms, each `fn_<k>_ok && check_call_<i>(..)` or
+        /// `fn_<k>_ok && (check_call_<i>(..) || …)`, parenthesized or not, and nothing else: no
+        /// other operator, no term without a guard, no guard outside an `&&`. Every check must sit
+        /// under the guard that binds its own call's function, and every guard and check must be
+        /// read exactly once. A token scan cannot tell `fn_2_ok && (check_call_0(..) ||
+        /// check_call_2(..))` from `fn_2_ok && check_call_0(..) || check_call_2(..)` or
+        /// `fn_2_ok || (check_call_0(..) || check_call_2(..))`, and both of those permit a tuple
+        /// for whatever function is invoked.
         ///
-        /// A check belongs to the nearest guard before it, which holds for every layout the
-        /// emitter writes: each guard precedes the checks it governs.
+        /// Read-once is what the lint gate needs: `clippy::nonminimal_bool` refuses a condition it
+        /// can rewrite with fewer operands, and `(fn_0_ok && check_call_0(..)) || (fn_0_ok &&
+        /// check_call_1(..))` reads `fn_0_ok` twice.
         pub(super) fn tuple_check_defects(source: &str, call_names: &[&str]) -> Vec<String> {
             use std::collections::BTreeMap;
+            use syn::{BinOp, Expr};
+
+            /// An `||` chain in source order; a parenthesized operand stays one operand.
+            fn disjuncts(expr: &Expr) -> Vec<&Expr> {
+                match expr {
+                    Expr::Binary(or) if matches!(or.op, BinOp::Or(_)) => {
+                        let mut terms = disjuncts(&or.left);
+                        terms.extend(disjuncts(&or.right));
+                        terms
+                    }
+                    _ => vec![expr],
+                }
+            }
+            fn ident(expr: &Expr) -> Option<String> {
+                match expr {
+                    Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
+                    _ => None,
+                }
+            }
+            fn check_index(expr: &Expr) -> Option<usize> {
+                let Expr::Call(call) = expr else {
+                    return None;
+                };
+                ident(&call.func)?.strip_prefix("check_call_")?.parse().ok()
+            }
+
             // `let fn_<k>_ok = c.fn_name == Symbol::new(e, "<name>");`, one line each.
             let guards: BTreeMap<&str, &str> = source
                 .lines()
@@ -2717,29 +2745,54 @@ mod tests {
             let Some(start) = source.find("let tuple_ok = ") else {
                 return vec!["no `let tuple_ok` statement".to_string()];
             };
-            let statement = &source[start..];
-            let statement = &statement[..statement.find(';').unwrap_or(statement.len())];
-            let mut reads: BTreeMap<&str, usize> = BTreeMap::new();
+            let rest = &source[start + "let tuple_ok = ".len()..];
+            let text = &rest[..rest.find(';').unwrap_or(rest.len())];
+            let expr: Expr = match syn::parse_str(text) {
+                Ok(expr) => expr,
+                Err(error) => return vec![format!("`tuple_ok` does not parse: {error}")],
+            };
+
             let mut defects = Vec::new();
-            let mut guard: Option<&str> = None;
-            for token in statement.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
-                if guards.contains_key(token) {
-                    guard = Some(token);
-                } else if let Some(Ok(ci)) =
-                    token.strip_prefix("check_call_").map(str::parse::<usize>)
-                {
-                    let expected = call_names.get(ci).copied();
-                    let governing = guard.and_then(|g| guards.get(g).copied());
-                    if expected.is_none() || governing != expected {
+            let mut reads: BTreeMap<String, usize> = BTreeMap::new();
+            for (ti, term) in disjuncts(&expr).into_iter().enumerate() {
+                let term = match term {
+                    Expr::Paren(paren) => &*paren.expr,
+                    _ => term,
+                };
+                let guarded = match term {
+                    Expr::Binary(and) if matches!(and.op, BinOp::And(_)) => ident(&and.left)
+                        .filter(|guard| guards.contains_key(guard.as_str()))
+                        .map(|guard| (guard, &*and.right)),
+                    _ => None,
+                };
+                let Some((guard, checks)) = guarded else {
+                    defects.push(format!(
+                        "disjunct {ti} is not `fn_<k>_ok && <tuple checks>`"
+                    ));
+                    continue;
+                };
+                let bound = guards.get(guard.as_str()).copied();
+                *reads.entry(guard.clone()).or_default() += 1;
+                let checks = match checks {
+                    Expr::Paren(paren) => disjuncts(&paren.expr),
+                    single => vec![single],
+                };
+                for check in checks {
+                    let Some(ci) = check_index(check) else {
                         defects.push(format!(
-                            "{token} (a call to {expected:?}) read under {guard:?}, which binds \
-                             {governing:?}"
+                            "disjunct {ti} has an operand that is not a tuple check"
+                        ));
+                        continue;
+                    };
+                    let expected = call_names.get(ci).copied();
+                    if expected.is_none() || expected != bound {
+                        defects.push(format!(
+                            "check_call_{ci} (a call to {expected:?}) is under {guard}, which \
+                             binds {bound:?}"
                         ));
                     }
-                } else {
-                    continue;
+                    *reads.entry(format!("check_call_{ci}")).or_default() += 1;
                 }
-                *reads.entry(token).or_default() += 1;
             }
             defects.extend(
                 reads
@@ -2747,10 +2800,14 @@ mod tests {
                     .filter(|(_, count)| **count != 1)
                     .map(|(operand, count)| format!("{operand} read {count} times")),
             );
-            let checks = (0..call_names.len()).map(|ci| format!("check_call_{ci}"));
-            for operand in guards.keys().map(|g| g.to_string()).chain(checks) {
-                if !reads.contains_key(operand.as_str()) {
-                    defects.push(format!("{operand} never read"));
+            for guard in guards.keys() {
+                if !reads.contains_key(*guard) {
+                    defects.push(format!("{guard} is never read as a guard"));
+                }
+            }
+            for ci in 0..call_names.len() {
+                if !reads.contains_key(&format!("check_call_{ci}")) {
+                    defects.push(format!("check_call_{ci} is not under any guard"));
                 }
             }
             defects
@@ -2760,75 +2817,103 @@ mod tests {
         fn tuple_check_defects_names_each_way_the_statement_can_be_wrong() {
             let guards = "let fn_0_ok = c.fn_name == Symbol::new(e, \"approve\");\n\
                           let fn_1_ok = c.fn_name == Symbol::new(e, \"transfer\");\n";
-            let check = |ci: usize| format!("check_call_{ci}(e, &c.args, &smart_account)");
+            let c = |ci: usize| format!("check_call_{ci}(e, &c.args, &smart_account)");
             let source = |tuple_ok: String| format!("{guards}let tuple_ok = {tuple_ok};\n");
-            let correct = source(format!(
-                "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
-                check(0),
-                check(2),
-                check(1)
-            ));
             let calls = ["transfer", "approve", "transfer"];
-            assert_eq!(tuple_check_defects(&correct, &calls), Vec::<String>::new());
+            let defects = |tuple_ok: String| tuple_check_defects(&source(tuple_ok), &calls);
+            let none = Vec::<String>::new();
+
+            // What the emitter writes, with and without parentheses around single checks.
+            let correct = format!(
+                "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
+                c(0),
+                c(2),
+                c(1)
+            );
+            assert_eq!(defects(correct), none);
+            let unparenthesized =
+                format!("fn_1_ok && ({} || {}) || fn_0_ok && {}", c(0), c(2), c(1));
+            assert_eq!(defects(unparenthesized), none);
 
             // The shape clippy refused: one guard per tuple.
-            let repeated = source(format!(
+            let repeated = format!(
                 "(fn_1_ok && {}) || (fn_0_ok && {}) || (fn_1_ok && {})",
-                check(0),
-                check(1),
-                check(2)
-            ));
-            assert_eq!(
-                tuple_check_defects(&repeated, &calls),
-                vec!["fn_1_ok read 2 times"]
+                c(0),
+                c(1),
+                c(2)
             );
-            // A tuple under the other function's guard, every operand still read once.
-            let misplaced = source(format!(
+            assert_eq!(defects(repeated), vec!["fn_1_ok read 2 times"]);
+
+            // Widening by precedence: `&&` binds tighter, so the second transfer tuple stands
+            // alone and permits for whatever function is invoked. A token scan saw nothing.
+            let ungrouped = format!("fn_1_ok && {} || {} || fn_0_ok && {}", c(0), c(2), c(1));
+            assert_eq!(
+                defects(ungrouped),
+                vec![
+                    "disjunct 1 is not `fn_<k>_ok && <tuple checks>`",
+                    "check_call_2 is not under any guard",
+                ]
+            );
+            // Widening by operator: the guard as one more disjunct guards nothing.
+            let or_guard = format!("fn_1_ok || ({} || {}) || (fn_0_ok && {})", c(0), c(2), c(1));
+            assert_eq!(
+                defects(or_guard),
+                vec![
+                    "disjunct 0 is not `fn_<k>_ok && <tuple checks>`",
+                    "disjunct 1 is not `fn_<k>_ok && <tuple checks>`",
+                    "fn_1_ok is never read as a guard",
+                    "check_call_0 is not under any guard",
+                    "check_call_2 is not under any guard",
+                ]
+            );
+            // Another operator among the checks.
+            let and_checks = format!(
+                "(fn_1_ok && ({} && {})) || (fn_0_ok && {})",
+                c(0),
+                c(2),
+                c(1)
+            );
+            assert_eq!(
+                defects(and_checks),
+                vec![
+                    "disjunct 0 has an operand that is not a tuple check",
+                    "check_call_0 is not under any guard",
+                    "check_call_2 is not under any guard",
+                ]
+            );
+            // Each tuple under the other function's guard, every operand still read once.
+            let misplaced = format!(
                 "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
-                check(0),
-                check(1),
-                check(2)
-            ));
-            assert_eq!(
-                tuple_check_defects(&misplaced, &calls),
-                vec![
-                    "check_call_1 (a call to Some(\"approve\")) read under Some(\"fn_1_ok\"), \
-                     which binds Some(\"transfer\")",
-                    "check_call_2 (a call to Some(\"transfer\")) read under Some(\"fn_0_ok\"), \
-                     which binds Some(\"approve\")",
-                ]
+                c(0),
+                c(1),
+                c(2)
             );
-            // A guard and a tuple never read; and a check before any guard.
-            let unread = source(format!("fn_1_ok && ({} || {})", check(0), check(2)));
             assert_eq!(
-                tuple_check_defects(&unread, &calls),
-                vec!["fn_0_ok never read", "check_call_1 never read"]
-            );
-            let unguarded = source(check(0));
-            assert_eq!(
-                tuple_check_defects(&unguarded, &["transfer"]),
+                defects(misplaced),
                 vec![
-                    "check_call_0 (a call to Some(\"transfer\")) read under None, which binds None",
-                    "fn_0_ok never read",
-                    "fn_1_ok never read",
-                ]
-            );
-            // Tokens, not substrings: `check_call_10` is neither a read of `check_call_1` nor a
-            // call this rule has.
-            let foreign = source(format!("fn_1_ok && ({} || {})", check(1), check(10)));
-            assert_eq!(
-                tuple_check_defects(&foreign, &["approve", "transfer"]),
-                vec![
-                    "check_call_10 (a call to None) read under Some(\"fn_1_ok\"), which binds \
+                    "check_call_1 (a call to Some(\"approve\")) is under fn_1_ok, which binds \
                      Some(\"transfer\")",
-                    "fn_0_ok never read",
-                    "check_call_0 never read",
+                    "check_call_2 (a call to Some(\"transfer\")) is under fn_0_ok, which binds \
+                     Some(\"approve\")",
+                ]
+            );
+            // A guard never read, and a check this rule does not have: `check_call_10` is not
+            // a read of `check_call_1`.
+            let foreign = format!("fn_1_ok && ({} || {})", c(1), c(10));
+            assert_eq!(
+                tuple_check_defects(&source(foreign), &["approve", "transfer"]),
+                vec![
+                    "check_call_10 (a call to None) is under fn_1_ok, which binds \
+                     Some(\"transfer\")",
+                    "fn_0_ok is never read as a guard",
+                    "check_call_0 is not under any guard",
                 ]
             );
             assert_eq!(
                 tuple_check_defects(guards, &calls),
                 vec!["no `let tuple_ok` statement"]
             );
+            assert!(defects("fn_1_ok && (".to_string())[0].starts_with("`tuple_ok` does not parse"));
         }
 
         /// Constants the emitted source declares but never reads, and constants it reads but
