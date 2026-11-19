@@ -249,7 +249,9 @@ function requireRecordedOriginal(c, rule) {
     const ok = kind === 'any_value' ? true
       : kind === 'le_i128' ? live.type === 'scvI128' && scValToNative(live) <= BigInt(constraint.le_i128.max)
         : kind === 'ge_i128' ? live.type === 'scvI128' && scValToNative(live) >= BigInt(constraint.ge_i128.min)
-          : hex(encodeArg(arg)) === hex(live);
+          : kind === 'range_i128' ? live.type === 'scvI128' && scValToNative(live) >= BigInt(constraint.range_i128.min)
+            && scValToNative(live) <= BigInt(constraint.range_i128.max)
+            : hex(encodeArg(arg)) === hex(live);
     requireThat(ok, `recorded call differs from the suite original at arg[${i}]`);
   });
 }
