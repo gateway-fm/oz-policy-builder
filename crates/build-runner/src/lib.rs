@@ -16,7 +16,9 @@ use wait_timeout::ChildExt;
 
 pub mod worker;
 
-pub const BUILD_MANIFEST_SCHEMA: &str = "build-manifest/v1";
+/// Schema 2 adds `canonicalization_version`, `build_target` and the `producer` record to schema 1.
+/// A schema-1 manifest does not parse as this one, so it can neither verify nor be recognized.
+pub const BUILD_MANIFEST_SCHEMA: &str = "build-manifest/v2";
 
 #[derive(Clone, Debug)]
 pub struct BuildRequest<'a> {
@@ -99,12 +101,216 @@ pub struct BuildManifest {
     pub stellar_accounts_version: String,
     pub toolchain: ToolchainIdentity,
     pub build_args: Vec<String>,
+    /// The version of the canonical encoding every structure hash in this manifest was taken
+    /// under (`docs/CANONICAL-HASHING.md`): `spec_hash`, `registry_snapshot`,
+    /// `normalized_input_hash`, `source_hash`, and this manifest's own hash. Without it a reader
+    /// holding the manifest cannot tell which rules reproduce those values.
+    pub canonicalization_version: u32,
+    /// The target triple the Wasm was compiled for: the one the generated crate declares, which
+    /// the local builder confirms its compiler output was written under.
+    pub build_target: String,
+    /// Who produced this manifest. Reported by `verify` and binding recognition, never compared:
+    /// see [`BuildProducer`].
+    pub producer: BuildProducer,
+}
+
+/// Facts about the build that produced a manifest rather than about the artifact it describes.
+///
+/// Everything else in a [`BuildManifest`] is a function of the spec and the pinned build inputs,
+/// so a reproduction recomputes it and a difference is a failure. These are not: a manifest made
+/// by another toolkit revision, from an emitter whose comments differ, or inside the disposable
+/// worker's container is still the same artifact if every other field agrees. All three are the
+/// producer's own statements — none is an attestation anyone else can check.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildProducer {
+    /// The commit the toolkit binary was compiled from, as its own build recorded it (`build.rs`).
+    /// `None` when that build had no checkout of this workspace to ask, which is the case for the
+    /// container image: the binary then claims nothing rather than a commit it cannot know.
+    pub toolkit_source: Option<ToolkitSource>,
+    /// [`ozpb_codegen::template_pack_hash`]: the emitter source compiled into the toolkit.
+    pub template_pack: Hash32,
+    /// The image the disposable build worker ran, as its operator-installed launcher reports it
+    /// (an image ID or registry reference pinned by `sha256` digest, never a tag). `None` when the
+    /// API compiles in its own environment — on a host, or inside the Compose package's single
+    /// container, whose image the API does not know and so does not record.
+    pub build_image: Option<ImageReference>,
+}
+
+/// Longest image reference accepted from a launcher frame. It is recorded in the manifest.
+const MAX_IMAGE_BYTES: usize = 256;
+
+/// An immutable image identity, in the two forms `deployment/worker-launcher.py` accepts in its
+/// configuration: a local image ID `sha256:<64 hex>`, or `host[:port]/path@sha256:<64 hex>`. A tag
+/// names whatever the registry says today, so it identifies no build and is refused.
+fn is_immutable_image(image: &str) -> bool {
+    let Some((reference, digest)) = image.rsplit_once("sha256:") else {
+        return false;
+    };
+    let hex = |text: &str| {
+        text.len() == 64
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    if image.len() > MAX_IMAGE_BYTES || !hex(digest) {
+        return false;
+    }
+    if reference.is_empty() {
+        return true;
+    }
+    let Some((host, path)) = reference
+        .strip_suffix('@')
+        .and_then(|name| name.split_once('/'))
+    else {
+        return false;
+    };
+    let (host, port) = match host.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (host, None),
+    };
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
+        && port.is_none_or(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        && !path.is_empty()
+        && path
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b'-'))
+}
+
+/// A container image identity that names one image: a local image ID or a registry reference
+/// pinned by digest, at most [`MAX_IMAGE_BYTES`]. Parsed on the way in, from a launcher frame or a
+/// claimed manifest alike, so a tag or an arbitrary string never becomes a recorded value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ImageReference(String);
+
+impl ImageReference {
+    pub fn parse(raw: &str) -> Option<Self> {
+        is_immutable_image(raw).then(|| ImageReference(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ImageReference {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        ImageReference::parse(&raw)
+            .ok_or_else(|| serde::de::Error::custom("not an immutable image identity"))
+    }
+}
+
+/// A full git commit name: 40 (SHA-1) or 64 (SHA-256) lowercase hex characters.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct CommitId(String);
+
+impl CommitId {
+    pub fn parse(raw: &str) -> Option<Self> {
+        let well_formed = matches!(raw.len(), 40 | 64)
+            && raw
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+        well_formed.then(|| CommitId(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for CommitId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        CommitId::parse(&raw).ok_or_else(|| serde::de::Error::custom("not a full commit name"))
+    }
+}
+
+/// A toolkit revision as recorded when the binary was compiled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolkitSource {
+    /// The checked-out commit.
+    pub commit: CommitId,
+    /// Whether any toolkit input (`src/toolkit_source.rs`, `INPUTS`) differed from that commit:
+    /// a modified, staged, deleted or untracked file under them.
+    pub dirty: bool,
+}
+
+/// What `build.rs` recorded: `<commit>`, `<commit>+dirty`, or empty. Optional at compile time
+/// because a build without the script — the hosted image's build context carries crate sources
+/// and manifests only (`scripts/hosted-context.py`) — must still compile, and then claims nothing.
+const RECORDED_TOOLKIT_SOURCE: &str = match option_env!("OZPB_TOOLKIT_SOURCE") {
+    Some(recorded) => recorded,
+    None => "",
+};
+
+/// Read the build script's recording. Anything but a full lowercase commit (SHA-1 or SHA-256),
+/// optionally followed by `+dirty`, is no claim at all.
+fn parse_toolkit_source(recorded: &str) -> Option<ToolkitSource> {
+    let (commit, dirty) = match recorded.strip_suffix("+dirty") {
+        Some(commit) => (commit, true),
+        None => (recorded, false),
+    };
+    Some(ToolkitSource {
+        commit: CommitId::parse(commit)?,
+        dirty,
+    })
 }
 
 impl BuildManifest {
     pub fn hash(&self) -> Result<Hash32, BuildError> {
         ozpb_domain::canonical_hash(domains::BUILD_MANIFEST, self)
             .map_err(|error| BuildError::Internal(error.to_string()))
+    }
+}
+
+/// How a claimed manifest compares with the one a reproduction of the same spec produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManifestMatch {
+    /// The same record, producer included.
+    Identical,
+    /// Every reproducible field agrees; the [`BuildProducer`] record differs. The artifact is
+    /// reproduced — the claim came from another toolkit build or another builder.
+    ExceptProducer,
+    /// A reproducible field differs, or the claim is not a manifest of this schema.
+    Differs,
+}
+
+/// Compare a claimed manifest with a reproduced one, as `verify` and generated-binding
+/// recognition do. Both arrive as JSON from the wire; either failing to parse as this schema is
+/// [`ManifestMatch::Differs`].
+pub fn compare_manifests(
+    claimed: &serde_json::Value,
+    reproduced: &serde_json::Value,
+) -> ManifestMatch {
+    // Parsed only to hold both to the schema. The comparison is of the JSON as written: parsing
+    // normalizes (a hash decodes from uppercase hex too), and the claim is what a binding set
+    // keeps, so it has to be the reproduced record exactly, not merely decode to it.
+    let parses =
+        |value: &serde_json::Value| serde_json::from_value::<BuildManifest>(value.clone()).is_ok();
+    if !parses(claimed) || !parses(reproduced) {
+        return ManifestMatch::Differs;
+    }
+    if claimed == reproduced {
+        return ManifestMatch::Identical;
+    }
+    let without_producer = |value: &serde_json::Value| {
+        let mut value = value.clone();
+        if let Some(object) = value.as_object_mut() {
+            object.remove("producer");
+        }
+        value
+    };
+    if without_producer(claimed) == without_producer(reproduced) {
+        ManifestMatch::ExceptProducer
+    } else {
+        ManifestMatch::Differs
     }
 }
 
@@ -561,6 +767,15 @@ pub fn manifest_for(
         stellar_accounts_version: request.pins.stellar_accounts.clone(),
         toolchain,
         build_args: BUILD_ARGS.iter().map(ToString::to_string).collect(),
+        canonicalization_version: ozpb_domain::CANONICALIZATION_VERSION,
+        build_target: ozpb_codegen::BUILD_TARGET.to_string(),
+        producer: BuildProducer {
+            toolkit_source: parse_toolkit_source(RECORDED_TOOLKIT_SOURCE),
+            template_pack: ozpb_codegen::template_pack_hash()
+                .map_err(|error| BuildError::Internal(error.to_string()))?,
+            // Set by the worker path alone, from its launcher's frame, after this returns.
+            build_image: None,
+        },
     })
 }
 
@@ -594,7 +809,8 @@ const WASM_META_SECTION: &str = "contractmetav0";
 const WASM_PREAMBLE: [u8; 8] = *b"\0asm\x01\0\0\0";
 
 /// Ceiling on the metadata entries read out of one Wasm. A bound on a length field that arrives
-/// from a subprocess's output, not a schema limit — real artifacts carry four.
+/// from a subprocess's output, not a schema limit — a generated policy carries seven: the
+/// toolchain's four and the generator's three.
 const MAX_WASM_META_ENTRIES: usize = 256;
 
 /// A LEB128-encoded `u32`, as the Wasm binary format writes section and name lengths, with the
@@ -863,16 +1079,26 @@ pub fn build(
     if config.worker_launcher.is_some() {
         return match worker::build(request, config) {
             Ok(result) => result,
-            Err(()) => {
-                // A timed-out or crashed launcher cannot prove that its container is gone.
+            Err(reason) => {
+                // A timed-out or crashed launcher cannot prove that its container is gone, and
+                // one from another revision proves it in a schema this API does not read.
                 // Retain capacity until the operator verifies cleanup and restarts the API.
                 // The runtime deadline still applies independently of this process.
                 if let Some(slot) = slot {
                     std::mem::forget(slot);
                 }
-                Err(BuildError::Unavailable(
-                    "worker cleanup is unconfirmed; operator cleanup and restart required".into(),
-                ))
+                Err(BuildError::Unavailable(match reason {
+                    worker::Unconfirmed::Cleanup => {
+                        "worker cleanup is unconfirmed; operator cleanup and restart required"
+                            .into()
+                    }
+                    worker::Unconfirmed::OtherRevision => {
+                        "the worker launcher is from another revision than this API; install both \
+                         from the same revision. Its cleanup is unconfirmed; operator cleanup and \
+                         restart required"
+                            .into()
+                    }
+                }))
             }
         };
     }
@@ -927,6 +1153,18 @@ fn build_local(
     let target_dir = resolve_target_dir(config, workspace.path());
     prepare_cache_dir(&target_dir)?;
     let manifest_path = workspace.path().join("Cargo.toml");
+    // The manifest records `build_target` from the crate's own declaration. The CLI picks the
+    // triple, not us, so after the build we confirm it wrote under that one, which makes the
+    // field a checked claim about this build. The cache is shared and crate names repeat, so an
+    // earlier build's file is usually there already: it counts only if written during this
+    // build. Not removed beforehand instead, because a concurrent build of a same-named crate
+    // shares the path, and removing its fresh output would fail that build.
+    let expected_name = format!("{}.wasm", request.generated.crate_name.replace('-', "_"));
+    let compiled = target_dir
+        .join(ozpb_codegen::BUILD_TARGET)
+        .join("release")
+        .join(&expected_name);
+    let started = std::time::SystemTime::now();
 
     let command = build_command(
         config,
@@ -944,7 +1182,13 @@ fn build_local(
         )));
     }
 
-    let expected_name = format!("{}.wasm", request.generated.crate_name.replace('-', "_"));
+    if !written_since(&compiled, started) {
+        return Err(BuildError::Unavailable(
+            "the builder did not compile for the target the crate declares: no output under it \
+             was written during this build, only an earlier build's output or none"
+                .to_string(),
+        ));
+    }
     let wasm_path = output_dir.join(expected_name);
     let metadata = std::fs::symlink_metadata(&wasm_path)
         .map_err(|_| BuildError::Failed("builder did not produce the expected Wasm".to_string()))?;
@@ -989,6 +1233,24 @@ fn build_local(
     })
 }
 
+/// Allowance for filesystems that store modification times coarsely (whole or even two seconds):
+/// a file written during the build must not read as older than its start.
+const MTIME_GRANULARITY: Duration = Duration::from_secs(2);
+
+/// Whether `path` is a regular file modified at or after `started`, within [`MTIME_GRANULARITY`].
+/// `stellar contract build` rewrites its target-directory Wasm on every build, cache hit or not
+/// (measured with 27.0.0), so a file this old was left by some earlier build.
+fn written_since(path: &Path, started: std::time::SystemTime) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let earliest = started.checked_sub(MTIME_GRANULARITY).unwrap_or(started);
+    metadata.file_type().is_file() && modified >= earliest
+}
+
 fn validate_generated(generated: &GeneratedCrate) -> Result<(), BuildError> {
     if generated.files.len() > MAX_FILES {
         return Err(BuildError::ResourceLimit(format!(
@@ -1000,10 +1262,10 @@ fn validate_generated(generated: &GeneratedCrate) -> Result<(), BuildError> {
     // boundary where a caller-supplied crate is checked, and the point of a boundary is to name
     // what it requires.
     //
-    // `src/contract.rs` is required alongside the crate root, not optional. The root is a header
-    // and a `pub mod contract;` declaration, so a crate that carries only the root passes every
-    // other check here and then fails in the compiler with an unresolved module — validation
-    // reporting clean on an input it cannot build.
+    // `src/contract.rs` is required alongside the crate root, not optional. The root is a header,
+    // a `pub mod contract;` declaration and provenance meta, so a crate that carries only the
+    // root passes every other check here and then fails in the compiler with an unresolved
+    // module — validation reporting clean on an input it cannot build.
     //
     // `rust-toolchain.toml` is required for a different and sharper reason: it is what decides
     // the compiler. `clear_inherited_toolchain_selection` removes every inherited compiler
@@ -1468,6 +1730,10 @@ fn command_version(binary: &Path, from: &Path, timeout: Duration) -> Result<Stri
 }
 
 #[cfg(test)]
+#[path = "toolkit_source.rs"]
+mod toolkit_source_probe;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ozpb_domain::sha256;
@@ -1626,6 +1892,447 @@ mod tests {
 
         assert_ne!(first.hash().unwrap(), source_changed.hash().unwrap());
         assert_ne!(first.hash().unwrap(), wasm_changed.hash().unwrap());
+    }
+
+    // --- provenance fields (schema 2) ---------------------------------------------------------
+
+    /// The fields §6.3 lists and schema 1 did not carry. Every one of them is filled from a
+    /// source this test names independently, so a field filled from the wrong place fails here.
+    #[test]
+    fn a_manifest_records_canonicalization_target_and_its_producer() {
+        let manifest = manifest_from(&honest_wasm(), honest_toolchain()).unwrap();
+        assert_eq!(manifest.schema, "build-manifest/v2");
+        assert_eq!(manifest.canonicalization_version, 2);
+        assert_eq!(
+            manifest.canonicalization_version,
+            ozpb_domain::CANONICALIZATION_VERSION
+        );
+        assert_eq!(manifest.build_target, "wasm32v1-none");
+        assert_eq!(
+            manifest.producer.template_pack,
+            ozpb_codegen::template_pack_hash().unwrap()
+        );
+        assert_eq!(
+            manifest.producer.toolkit_source,
+            parse_toolkit_source(RECORDED_TOOLKIT_SOURCE)
+        );
+        assert_eq!(
+            manifest.producer.build_image, None,
+            "a build on this host ran in no container, and must not say it did"
+        );
+    }
+
+    /// The producer record is part of what the manifest hash binds, like every other field.
+    #[test]
+    fn the_manifest_hash_binds_the_producer_record() {
+        let manifest = manifest_from(&honest_wasm(), honest_toolchain()).unwrap();
+        let mut moved = manifest.clone();
+        moved.producer.build_image = ImageReference::parse(&format!("sha256:{}", "a".repeat(64)));
+        assert!(moved.producer.build_image.is_some());
+        assert_ne!(manifest.hash().unwrap(), moved.hash().unwrap());
+        let mut moved = manifest.clone();
+        moved.producer.toolkit_source = Some(ToolkitSource {
+            commit: CommitId::parse(&"b".repeat(40)).unwrap(),
+            dirty: true,
+        });
+        assert_ne!(manifest.hash().unwrap(), moved.hash().unwrap());
+    }
+
+    #[test]
+    fn the_recorded_toolkit_source_is_parsed_strictly() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(parse_toolkit_source(""), None, "no checkout, no claim");
+        assert_eq!(
+            parse_toolkit_source(commit),
+            Some(ToolkitSource {
+                commit: CommitId::parse(commit).unwrap(),
+                dirty: false
+            })
+        );
+        assert_eq!(
+            parse_toolkit_source(&format!("{commit}+dirty")),
+            Some(ToolkitSource {
+                commit: CommitId::parse(commit).unwrap(),
+                dirty: true
+            })
+        );
+        let sha256_commit = "c".repeat(64);
+        assert!(parse_toolkit_source(&sha256_commit).is_some());
+        for malformed in [
+            &commit[..39],
+            &format!("{commit}0"),
+            &commit.to_uppercase(),
+            &format!("{commit}+DIRTY"),
+            &format!("{commit}+dirty+dirty"),
+            "+dirty",
+            "not a commit",
+        ] {
+            assert_eq!(parse_toolkit_source(malformed), None, "{malformed:?}");
+        }
+    }
+
+    /// What the build script recorded is what the same probe says about this checkout now —
+    /// and the probe's commit is the one git itself reports, asked independently.
+    #[test]
+    fn the_recorded_toolkit_source_is_this_checkouts() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let probed = toolkit_source_probe::probe(&root);
+        assert_eq!(RECORDED_TOOLKIT_SOURCE, probed.clone().unwrap_or_default());
+        let head = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["rev-parse", "HEAD"])
+            .output();
+        match (probed, head) {
+            (Some(recorded), Ok(head)) => assert_eq!(
+                recorded.trim_end_matches("+dirty"),
+                String::from_utf8(head.stdout).unwrap().trim(),
+            ),
+            // No checkout (a source archive, a container build): nothing is claimed.
+            (None, _) => {}
+            (Some(recorded), Err(error)) => {
+                panic!("recorded {recorded} but git cannot be asked: {error}")
+            }
+        }
+    }
+
+    /// A commit moves without any input file changing, so the build script also watches the git
+    /// state that decides it — here, that those paths are the checkout's real `HEAD` and index.
+    #[test]
+    fn the_build_script_watches_the_checkouts_own_git_state() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let paths = toolkit_source_probe::git_state_paths(&root);
+        if toolkit_source_probe::probe(&root).is_none() {
+            return; // no checkout: nothing recorded, nothing to watch
+        }
+        for name in ["HEAD", "index", "logs/HEAD"] {
+            assert!(
+                paths
+                    .iter()
+                    .any(|path| path.ends_with(name) && path.is_file()),
+                "{name} is not among the watched paths {paths:?}"
+            );
+        }
+    }
+
+    /// A checkout the workspace merely sits inside is not the workspace's source: a toolkit
+    /// unpacked into some other repository must not claim that repository's commit.
+    #[test]
+    fn an_enclosing_repository_is_not_claimed_as_the_toolkit_source() {
+        let outer = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .arg("-C")
+                .arg(outer.path())
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q"]) {
+            return; // no git on this host: the probe cannot claim anything either
+        }
+        let inner = outer.path().join("unpacked-toolkit");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("Cargo.toml"), "").unwrap();
+        assert!(
+            git(&[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-q",
+                "--no-verify",
+                "--allow-empty",
+                "-m",
+                "outer"
+            ]),
+            "the fixture repository needs a commit for the probe to find"
+        );
+        assert_eq!(toolkit_source_probe::probe(&inner), None);
+        assert!(toolkit_source_probe::probe(outer.path()).is_some());
+    }
+
+    /// `verify` and binding recognition rebuild an artifact and compare manifests. The producer
+    /// record describes the build that made the claim — another toolkit revision, another
+    /// container — and no reproduction can recreate it, so it is reported, never compared.
+    #[test]
+    fn a_reproduction_compares_every_field_but_the_producer_record() {
+        let manifest = manifest_from(&honest_wasm(), honest_toolchain()).unwrap();
+        let reproduced = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(
+            compare_manifests(&reproduced, &reproduced),
+            ManifestMatch::Identical
+        );
+
+        let mut other_producer = manifest.clone();
+        other_producer.producer = BuildProducer {
+            toolkit_source: None,
+            template_pack: sha256(b"another emitter"),
+            build_image: ImageReference::parse(&format!("sha256:{}", "a".repeat(64))),
+        };
+        assert_eq!(
+            compare_manifests(&serde_json::to_value(&other_producer).unwrap(), &reproduced),
+            ManifestMatch::ExceptProducer
+        );
+
+        let mut other_wasm = other_producer.clone();
+        other_wasm.wasm_hash = sha256(b"other wasm");
+        let mut other_target = manifest.clone();
+        other_target.build_target = "wasm32-unknown-unknown".to_string();
+        let mut other_encoding = manifest.clone();
+        other_encoding.canonicalization_version = 1;
+        for differs in [other_wasm, other_target, other_encoding] {
+            assert_eq!(
+                compare_manifests(&serde_json::to_value(&differs).unwrap(), &reproduced),
+                ManifestMatch::Differs
+            );
+        }
+
+        // The claim is compared as written, not as parsed: a hash spelled in uppercase decodes
+        // to the same bytes but is not the record a reproduction emits.
+        let mut uppercase = reproduced.clone();
+        uppercase["wasm_hash"] = manifest.wasm_hash.to_hex().to_uppercase().into();
+        assert_eq!(
+            compare_manifests(&uppercase, &reproduced),
+            ManifestMatch::Differs
+        );
+
+        // Schema 1 cannot match: it lacks fields schema 2 requires.
+        let mut v1 = reproduced.clone();
+        let object = v1.as_object_mut().unwrap();
+        for field in ["canonicalization_version", "build_target", "producer"] {
+            object.remove(field);
+        }
+        object.insert("schema".into(), "build-manifest/v1".into());
+        assert_eq!(compare_manifests(&v1, &reproduced), ManifestMatch::Differs);
+        assert_eq!(
+            compare_manifests(&serde_json::json!({"not": "a manifest"}), &reproduced),
+            ManifestMatch::Differs
+        );
+    }
+
+    /// The producer record is not compared, so it has to be well formed to be kept at all: a
+    /// claim naming a tag, a short or uppercase commit, or an unbounded string is not a manifest
+    /// of this schema, however well the rest of it reproduces.
+    #[test]
+    fn a_producer_record_that_is_not_well_formed_is_not_a_manifest() {
+        let manifest = manifest_from(&honest_wasm(), honest_toolchain()).unwrap();
+        let reproduced = serde_json::to_value(&manifest).unwrap();
+        let with = |field: &str, value: serde_json::Value| {
+            let mut claim = reproduced.clone();
+            claim["producer"][field] = value;
+            claim
+        };
+        let long_reference = format!("r.example/{}@sha256:{}", "a".repeat(250), "a".repeat(64));
+        for (field, value) in [
+            (
+                "build_image",
+                serde_json::json!("docker.io/ozpb/worker:latest"),
+            ),
+            (
+                "build_image",
+                serde_json::json!(format!("sha256:{}", "A".repeat(64))),
+            ),
+            ("build_image", serde_json::json!(long_reference)),
+            ("build_image", serde_json::json!("")),
+            (
+                "toolkit_source",
+                serde_json::json!({"commit": "B".repeat(40), "dirty": false}),
+            ),
+            (
+                "toolkit_source",
+                serde_json::json!({"commit": "b".repeat(39), "dirty": false}),
+            ),
+            (
+                "toolkit_source",
+                serde_json::json!({"commit": "not a commit", "dirty": true}),
+            ),
+            (
+                "toolkit_source",
+                serde_json::json!({"commit": "b".repeat(40)}),
+            ),
+        ] {
+            assert_eq!(
+                compare_manifests(&with(field, value.clone()), &reproduced),
+                ManifestMatch::Differs,
+                "{field} = {value}"
+            );
+        }
+        for (field, value) in [
+            ("build_image", serde_json::Value::Null),
+            (
+                "build_image",
+                serde_json::json!(format!("sha256:{}", "c".repeat(64))),
+            ),
+            ("toolkit_source", serde_json::Value::Null),
+            (
+                "toolkit_source",
+                serde_json::json!({"commit": "d".repeat(64), "dirty": true}),
+            ),
+        ] {
+            let claim = with(field, value.clone());
+            let expected = if claim == reproduced {
+                ManifestMatch::Identical
+            } else {
+                ManifestMatch::ExceptProducer
+            };
+            assert_eq!(
+                compare_manifests(&claim, &reproduced),
+                expected,
+                "{field} = {value}"
+            );
+        }
+    }
+
+    /// Both forms the launcher's configuration admits, at the length bound, and everything just
+    /// outside them. The worker tests exercise the same check through real frames.
+    #[test]
+    fn an_image_reference_is_an_immutable_identity_and_nothing_else() {
+        let digest = "0123456789abcdef".repeat(4);
+        let of_length = |length: usize| {
+            format!(
+                "r.example/{}@sha256:{digest}",
+                "a".repeat(length - "r.example/@sha256:".len() - 64)
+            )
+        };
+        for accepted in [
+            format!("sha256:{digest}"),
+            format!("registry.example/ozpb/worker@sha256:{digest}"),
+            format!("registry.example:5000/ozpb/worker_1.x-y@sha256:{digest}"),
+            format!("localhost/w@sha256:{digest}"),
+            of_length(256),
+        ] {
+            assert!(ImageReference::parse(&accepted).is_some(), "{accepted}");
+        }
+        for refused in [
+            of_length(257),
+            format!("sha256:{}", &digest[..63]),
+            format!("sha256:{digest}0"),
+            format!("sha256:{}", digest.to_uppercase()),
+            format!("sha512:{digest}"),
+            format!("@sha256:{digest}"),
+            format!("registry.example@sha256:{digest}"),
+            format!("/ozpb@sha256:{digest}"),
+            format!("registry.example/@sha256:{digest}"),
+            format!("registry.example:/ozpb@sha256:{digest}"),
+            format!("registry.example:50a0/ozpb@sha256:{digest}"),
+            format!("Registry.example/ozpb@sha256:{digest}"),
+            format!("registry.example/OZPB@sha256:{digest}"),
+            format!("registry.example/ozpb:tag@sha256:{digest}"),
+            format!("registry.example/ozpb sha256:{digest}"),
+            format!("registry.example/ozpb@sha256:{digest}\n"),
+            "registry.example/ozpb:latest".to_string(),
+            String::new(),
+        ] {
+            assert!(ImageReference::parse(&refused).is_none(), "{refused:?}");
+        }
+    }
+
+    /// The probe's git inherits nothing that points it at another repository. Git exports these
+    /// to hooks, so a build run from inside one would otherwise describe whatever checkout the
+    /// hook belongs to.
+    #[test]
+    fn the_probe_ignores_git_environment_that_redirects_it() {
+        let command = toolkit_source_probe::git_command(Path::new("/"), &["status"]);
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for variable in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_NAMESPACE",
+        ] {
+            assert!(
+                removed.iter().any(|name| name == variable),
+                "{variable} is inherited"
+            );
+        }
+    }
+
+    /// The dirty flag, end to end in a repository of our own: a change under a toolkit input
+    /// marks the source dirty, one outside them does not.
+    #[test]
+    fn the_dirty_flag_follows_the_toolkit_inputs_and_nothing_else() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q"]) {
+            return; // no git on this host: the probe cannot claim anything either
+        }
+        for input in ["Cargo.toml", "crates/a/src/lib.rs", "docs/notes.md"] {
+            let path = root.join(input);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x\n").unwrap();
+        }
+        assert!(git(&["add", "-A"]));
+        assert!(git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "fixture"
+        ]));
+        let clean = toolkit_source_probe::probe(root).expect("a committed checkout");
+        assert!(
+            parse_toolkit_source(&clean).is_some_and(|source| !source.dirty),
+            "{clean}"
+        );
+
+        std::fs::write(root.join("docs/notes.md"), "edited\n").unwrap();
+        assert_eq!(toolkit_source_probe::probe(root), Some(clean.clone()));
+
+        std::fs::write(root.join("crates/a/src/new.rs"), "x\n").unwrap();
+        assert_eq!(
+            toolkit_source_probe::probe(root),
+            Some(format!("{clean}+dirty"))
+        );
+        std::fs::remove_file(root.join("crates/a/src/new.rs")).unwrap();
+
+        std::fs::write(root.join("Cargo.toml"), "edited\n").unwrap();
+        assert_eq!(
+            toolkit_source_probe::probe(root),
+            Some(format!("{clean}+dirty"))
+        );
     }
 
     #[test]
@@ -2508,6 +3215,60 @@ mod tests {
             run_bounded_until(piped(&script), Duration::from_secs(10), Some(&cancel)).unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"done\n");
+    }
+
+    /// `build_target` is recorded only for a build whose compiler output sits under that triple.
+    /// A builder that delivers the Wasm without having compiled for it — here a stand-in that
+    /// writes only to `--out-dir` — is an operator fault, refused before anything is recorded.
+    #[test]
+    #[cfg(unix)]
+    fn a_build_not_compiled_for_the_declared_target_is_refused() {
+        let _guard = serialized();
+        let dir = tempfile::tempdir().unwrap();
+        let script = fixture_script(
+            dir.path(),
+            "while [ $# -gt 0 ]; do [ \"$1\" = --out-dir ] && out=\"$2\"; shift; done\n\
+             printf '\\000asm\\001\\000\\000\\000' > \"$out/generated_test_r0.wasm\"",
+        );
+        let pins = Pins::default();
+        let crate_files = generated("source");
+        let request = BuildRequest {
+            generated: &crate_files,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        let config = BuildConfig {
+            stellar_binary: script,
+            target_dir: Some(dir.path().join("target")),
+            ..BuildConfig::default()
+        };
+        // The cache is shared across builds and crate names repeat, so an earlier build's output
+        // is usually already there. It must not stand in for this build's.
+        let leftover = dir
+            .path()
+            .join("target")
+            .join(ozpb_codegen::BUILD_TARGET)
+            .join("release");
+        std::fs::create_dir_all(&leftover).unwrap();
+        let leftover = leftover.join("generated_test_r0.wasm");
+        std::fs::write(&leftover, b"\0asm").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&leftover)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        match build_local(&request, &config) {
+            Err(BuildError::Unavailable(message)) => assert!(
+                message.contains("target the crate declares")
+                    && message.contains("only an earlier build's output"),
+                "{message}"
+            ),
+            other => panic!("a build with no output under the declared target: {other:?}"),
+        }
     }
 
     #[test]

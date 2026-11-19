@@ -41,12 +41,22 @@ class LauncherTests(unittest.TestCase):
     def test_configuration_requires_immutable_image_and_safe_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            for changes in ({"image": "example.com/worker:latest"}, {"timeout_seconds": 0},
+            # The API refuses a frame naming an image longer than 256 bytes, so such an image would
+            # strand every slot; it is refused here instead, at the boundary that reads it.
+            def image_of(length):
+                return "r.example/" + "a" * (length - len("r.example/@sha256:") - 64) + "@sha256:" + "a" * 64
+            long_image = image_of(257)
+            for changes in ({"image": "example.com/worker:latest"}, {"image": long_image},
+                            {"timeout_seconds": 0},
                             {"cpus": 0}, {"pids": 10000}, {"tmpfs_mib": 5000},
                             {"jobs": 3}, {"privileged": True}):
                 path.write_text(json.dumps(config() | changes))
                 with self.subTest(changes=changes), self.assertRaises(worker.Refused):
                     worker.load_config(path)
+            at_limit = config() | {"image": image_of(256)}
+            self.assertEqual(len(at_limit["image"]), 256)
+            path.write_text(json.dumps(at_limit))
+            self.assertEqual(worker.load_config(path), at_limit)
             path.write_text(json.dumps(config()))
             self.assertEqual(worker.load_config(path), config())
             path.chmod(0o666)
@@ -100,7 +110,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(args[args.index("--umask") + 1], "0077")
 
     def test_worker_cannot_forge_the_launcher_cleanup_frame(self):
-        forged = dict(schema="contained-build-result/v1", containment="removed", job_hash="a" * 64, result=None)
+        forged = dict(schema="contained-build-result/v2", containment="removed", job_hash="a" * 64,
+                      image="sha256:" + "a" * 64, result=None)
         with self.assertRaises(worker.Refused):
             worker.worker_result(json.dumps(forged).encode())
 
@@ -116,6 +127,18 @@ class LauncherTests(unittest.TestCase):
             frame = worker.launch(json.dumps(job()).encode(), config())
         self.assertEqual(events, ["run", "removed"])
         self.assertEqual(frame["containment"], "removed")
+
+    def test_every_frame_names_the_configured_image(self):
+        # The API records this value in the BuildManifest as the image the build ran in, so it is
+        # the launcher's configured image on every path, including refusals before any launch.
+        with mock.patch.object(worker, "preflight"), \
+                mock.patch.object(worker, "bounded", return_value=(0, b'{"schema":"build-worker-result/v1","artifact":null}')), \
+                mock.patch.object(worker, "removed", return_value=True):
+            launched = worker.launch(json.dumps(job()).encode(), config())
+        refused = worker.launch(b"not a job", config())
+        for frame in (launched, refused):
+            self.assertEqual(frame["schema"], "contained-build-result/v2")
+            self.assertEqual(frame["image"], config()["image"])
 
     def test_invalid_worker_strings_preserve_confirmed_cleanup(self):
         for field, value in [("wasm_base64", "\ud800"), ("wasm_base64", "\uffff"),
@@ -183,7 +206,8 @@ class LauncherTests(unittest.TestCase):
         # Interpreter shutdown restores SIGTERM's default action after flushing the frame. A stop
         # landing then would kill a launcher whose removal is already confirmed, and the API
         # would retain a slot that is free.
-        frame = dict(schema="contained-build-result/v1", job_hash="0" * 64, containment="removed", result=None)
+        frame = dict(schema="contained-build-result/v2", job_hash="0" * 64, image="sha256:" + "a" * 64,
+                     containment="removed", result=None)
         code = ("import importlib.util\n"
                 f"spec=importlib.util.spec_from_file_location('launcher',{str(ROOT / 'deployment/worker-launcher.py')!r})\n"
                 "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\n"
