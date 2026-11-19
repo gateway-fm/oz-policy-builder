@@ -134,7 +134,9 @@ amount is a signed `i128` and a cap bounds it from above only, so synthesis refu
 open floor nobody accepted ([scoping decisions](SCOPING-DECISIONS.md#widenings-you-may-choose));
 the transfer rule's policy then refuses no negative amount, which is left to the native asset
 contract. Runs journaled under v2, which predates that decision, still export as evidence. The
-committed `testnet-harness/soroswap-decisions.json` holds the values of the earlier runs.
+committed `testnet-harness/soroswap-decisions.json` holds the values of the earlier runs; moving
+it to v3 changed its bytes, so its SHA-256 no longer equals the `71707f18…` those runs journaled,
+though every value is unchanged.
 
 It then re-reads the pinned router's code, its factory and the native-XLM →
 `CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F` pair, the pair's tokens and

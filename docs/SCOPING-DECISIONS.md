@@ -91,11 +91,13 @@ fixed in the policy.
 So a cap you add is a question, not a default. Synthesis does not add a floor of zero, which would
 infer a direction from the type, and one argument carries one bound, so a capped argument cannot
 also carry a floor. A cap is refused with an `E_NEEDS_DECISION` finding until its widening carries
-`"no_floor_acknowledged": true`, your statement that negative amounts pass this policy and only the
-target can refuse them; absent reads as `false`, and the rationale repeats the acknowledgement for
-each cap. On a floor or `any_value` the acknowledgement is refused as an `E_INVALID_DECISION`. A cap
-an adapter derives for a maximum-input role carries no acknowledgement: it is the adapter's reviewed
-claim about that target's code, and it too leaves a negative amount to the target.
+`"no_floor_acknowledged": true`, your statement that negative amounts pass the generated policy;
+absent reads as `false`. The rationale repeats the acknowledgement for each cap and names what does
+refuse a negative amount: the composed spending limit for a transfer amount it reads, otherwise
+only the target. On a floor or `any_value` the acknowledgement is refused as an
+`E_INVALID_DECISION`. A cap an adapter derives for a maximum-input role carries no acknowledgement:
+it is the adapter's reviewed claim about that target's code. It too sets no floor, and the
+rationale says so in the same words.
 
 What is established here: the evaluator's spending model never permits a negative amount, and a
 spending-limit composition must admit a non-negative amount. What is not: that every target
@@ -112,11 +114,12 @@ The [`policy-builder` skill](../skills/policy-builder/SKILL.md) asks before it c
 
 1. It asks for the grant name, the delegates and predicate, an expiry or an explicit "no expiry", a
    cap or an explicit "unlimited", whether to compose the spending limit, and every widening —
-   recipient, amount and other arguments separately, never together by guess.
+   recipient, amount and other arguments separately, never together by guess. For every cap on an
+   amount it also asks about the floor, and keeps the cap only if you accept that it has none.
 2. It restates the complete decisions — every delegate address in full, each widening as
-   `Widen <contract>.<function> arg[<index>] to <bound>; blast radius: <…>; reason: <…>.` — and
-   synthesizes only after a reply that just accepts them. A reply that accepts and adds anything is
-   answered and restated.
+   `Widen <contract>.<function> arg[<index>] to <bound>; blast radius: <…>; reason: <…>.`, a cap
+   accepted without a floor as `<= value, no floor` — and synthesizes only after a reply that just
+   accepts them. A reply that accepts and adds anything is answered and restated.
 3. On a refusal it asks about exactly the findings named in `details`.
 4. The **Confirm before deploy** card lists under **High blast radius** every `any_value`
    argument, every widening you rated `high`, no expiry and no cap.

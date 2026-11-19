@@ -189,3 +189,9 @@ d1a31f68095a1710e8b4604958950b93ac7f7cf9f5df92c15c5f5a8684d197eb|testnet-tx|auto
 # public testnet outcomes, read back SUCCESS from testnet RPC, not derivable by the offline gate.
 14bdcc3afa12419e65b6d22b809dce8895057546632b19fd3c7155f912d4b7a3|testnet-tx|helper instance TTL extension to ledger 6055154, at ledger 5536754
 64ab7170d827e1f0af12b374ec8a0b1df255e022fe5de9bdeaa45b6486724aed|testnet-tx|helper code TTL extension to ledger 6055156, at ledger 5536756
+
+# File hashes of committed inputs as they were, quoted to say a later edit changed them. The
+# current file hashes differently by design; the old value survives in the run journals that
+# recorded it, which this gate does not read as authoritative.
+# Quoted by docs/WALKTHROUGH-PROTOCOLS.md.
+71707f18a7e2500c4935acaf0e32296e6c44d05d44efc076463b0677e5cebd7e|file-sha256|testnet-harness/soroswap-decisions.json under schema v2, journaled as source_sha256 by the committed docs/evidence Soroswap runs; the v3 file carries the same values in different bytes

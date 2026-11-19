@@ -100,8 +100,9 @@ Before `synthesize_policy`, ask the user for:
   names remain exact. To allow another function, obtain a recording of that call; the
   `fn_name` in a widening identifies an observed call and cannot add a function.
 - For every cap the user sets on an amount (`le_i128`, an upper bound on a signed integer), ask
-  about its floor in the same question. A cap sets none: every smaller value passes the policy,
-  negative amounts included, and only the target contract can refuse them. One argument takes
+  about its floor in the same question. A cap sets none: every smaller value passes the generated
+  policy, negative amounts included, and only the target contract (or, for a SEP-41 transfer
+  amount, a composed spending limit) refuses them. One argument takes
   one bound, so a capped argument cannot also carry a floor. If the user wants a floor, keep the
   amount exact, or use a floor (`ge_i128`) instead of the cap when a lower bound is what they
   mean. Keep the cap only after they explicitly accept that it has no floor.

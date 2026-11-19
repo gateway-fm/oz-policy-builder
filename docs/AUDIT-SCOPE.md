@@ -249,7 +249,8 @@ said to fail closed opens — is a finding.
   in `crates/policy-spec`, `spending_limit_constraint_intersections_include_only_their_boundaries`
   in `crates/synthesizer`). The generated scope policy does not refuse negative values on its
   own: an upper bound (`LeI128`) admits every smaller value, negatives included, and leaves a
-  negative amount to the target to refuse. A user widening that adds one is refused with
+  negative amount to the target to refuse, or to the spending limit where one is composed over that
+  transfer amount. A user widening that adds one is refused with
   `E_NEEDS_DECISION` unless it acknowledges that open floor (`no_floor_acknowledged`;
   `a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged` in `crates/synthesizer`); the
   Soroswap adapter derives one for a maximum-input argument as its reviewed claim about the target,

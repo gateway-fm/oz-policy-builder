@@ -611,7 +611,7 @@ pub fn synthesize(
     // only whether the argument ended up widened is sound because no two widenings name the
     // same argument (refused above), so a widened argument is this decision's.
     for w in &decisions.widenings {
-        let applied = rules.iter().any(|r| {
+        let Some(rule) = rules.iter().find(|r| {
             r.context.contract == w.contract
                 && r.allowed_calls.iter().any(|c| {
                     c.fn_name == w.fn_name
@@ -619,37 +619,58 @@ pub fn synthesize(
                             .iter()
                             .any(|a| a.index == w.arg_index && a.constraint.is_widening())
                 })
-        });
-        if !applied {
+        }) else {
             errors.push(SynthError::AmbiguousArgSemantics {
                 contract: w.contract.clone(),
                 fn_name: w.fn_name.clone(),
                 arg_index: w.arg_index,
                 reason: "widening matched no observed numeric argument".to_string(),
             });
-        } else if let WideningBound::LeI128 { max } = &w.bound {
+            continue;
+        };
+        if let WideningBound::LeI128 { max } = &w.bound {
             // An applied numeric bound sits on an i128 (any other argument is refused above), and
-            // an i128 is signed: the cap renders only `x > max → deny`, so every negative amount
-            // passes and only the target can refuse it (cf. OpenZeppelin's v0.7.0 audit, L-06).
-            // A floor of zero would infer a direction from the XDR type alone, and one argument
-            // carries one bound, so the open floor is a decision the user states or synthesis
-            // asks for.
+            // an i128 is signed: the cap renders only `x > max → deny`, so the generated policy
+            // passes every negative amount (cf. OpenZeppelin's v0.7.0 audit, L-06). A floor of
+            // zero would infer a direction from the XDR type alone, and one argument carries one
+            // bound, so the open floor is a decision the user states or synthesis asks for.
             let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+            let refusal = negative_amount_refusal(rule, arg_index);
             if w.no_floor_acknowledged {
                 rationale.push(format!(
                     "{contract}/{fn_name} arg {arg_index}: NO FLOOR — the user acknowledged that \
                      the cap at {max} admits every smaller value, negative amounts included; \
-                     only the target contract can refuse one"
+                     {refusal}"
                 ));
             } else {
                 errors.push(SynthError::NeedsDecision(format!(
                     "widening {contract}/{fn_name} arg {arg_index}: floor: the cap at {max} on \
-                     this signed amount sets no floor, so every smaller value passes the policy, \
-                     negative amounts included, and only the target contract can refuse one. A \
-                     capped argument cannot also carry a floor: acknowledge the open floor \
-                     (no_floor_acknowledged, only on the user's explicit acceptance) or keep the \
-                     argument exact"
+                     this signed amount sets no floor, so every smaller value passes it, negative \
+                     amounts included; {refusal}. A capped argument cannot also carry a floor: \
+                     acknowledge the open floor (no_floor_acknowledged, only on the user's \
+                     explicit acceptance) or keep the argument exact"
                 )));
+            }
+        }
+    }
+    // An adapter's cap sets no floor either. It is the adapter's reviewed claim, not a question
+    // for the user, but the report states the open floor as plainly as for a user's cap.
+    for rule in &rules {
+        for call in &rule.allowed_calls {
+            for arg in &call.args {
+                if let (Constraint::LeI128 { max }, Provenance::AdapterDerived { adapter, .. }) =
+                    (&arg.constraint, &arg.provenance)
+                {
+                    rationale.push(format!(
+                        "{}/{} arg {}: NO FLOOR — adapter '{adapter}' caps this argument at {max} \
+                         from its reviewed maximum-input role and sets no floor, so every smaller \
+                         value passes, negative amounts included; {}",
+                        rule.context.contract,
+                        call.fn_name,
+                        arg.index,
+                        negative_amount_refusal(rule, arg.index)
+                    ));
+                }
             }
         }
     }
@@ -790,6 +811,22 @@ fn validate_spending_limit_shape(
         ));
     }
     Ok(())
+}
+
+/// What refuses a negative value at a capped argument of `rule`. Never the generated scope policy:
+/// a cap renders only `x > max → deny`. The reviewed spending limit refuses a negative transfer
+/// amount, and it reads argument 2 of the transfer-only rule it is composed into (composition
+/// refuses any other rule shape); anywhere else only the target contract is left.
+fn negative_amount_refusal(rule: &RuleSpec, arg_index: u32) -> &'static str {
+    let spending_limit = rule.policies.iter().any(
+        |policy| matches!(policy, PolicyRef::Reviewed { kind, .. } if kind == "oz:spending_limit"),
+    );
+    if spending_limit && arg_index == 2 {
+        "the generated scope policy refuses no negative amount; the composed spending limit does"
+    } else {
+        "the generated scope policy refuses no negative amount, so only the target contract can \
+         refuse one"
+    }
 }
 
 fn resolve_target_code_hash(
@@ -1656,7 +1693,7 @@ mod tests {
         let mut input = input();
         // The recorder observed the target's on-chain code hash — the adapter binds to it.
         input.bundles[0].contract_executables.insert(
-            target,
+            target.clone(),
             ExecutableObservation {
                 executable: ObservedExecutable::Wasm { code_hash },
                 observed_ledger: LedgerSeq(4_200_100),
@@ -1715,6 +1752,35 @@ mod tests {
         let target_hash = rule.context.target_code_hash.as_ref().unwrap();
         assert_eq!(target_hash.role, TargetHashRole::AdapterRequired);
         assert_eq!(target_hash.on_drift, DriftResponse::Refuse);
+
+        // The adapter's cap sets no floor either. No user acknowledges it, so the rationale says
+        // it, with what refuses a negative amount: here the composed spending limit, which reads
+        // this transfer amount; without it, only the target.
+        let open_floor = |refusal: &str| {
+            format!(
+                "{target}/transfer arg 2: NO FLOOR — adapter 'reviewed-token@1' caps this \
+                 argument at 500000000 from its reviewed maximum-input role and sets no floor, so \
+                 every smaller value passes, negative amounts included; {refusal}"
+            )
+        };
+        assert!(
+            out.rationale.contains(&open_floor(
+                "the generated scope policy refuses no negative amount; the composed spending \
+                 limit does"
+            )),
+            "{:#?}",
+            out.rationale
+        );
+        d.spending_limit = None;
+        let uncomposed = synthesize(&input, &d).unwrap();
+        assert!(
+            uncomposed.rationale.contains(&open_floor(
+                "the generated scope policy refuses no negative amount, so only the target \
+                 contract can refuse one"
+            )),
+            "{:#?}",
+            uncomposed.rationale
+        );
 
         // The adapter-derived spec still validates.
         assert!(out.spec.validate().is_ok());
@@ -2509,7 +2575,10 @@ mod tests {
             let mut d = decisions();
             d.widenings = vec![widen(&contract, "transfer", 2, floor()), other.clone()];
             match synthesize(&input(), &d) {
-                Ok(_) => assert_eq!(other.arg_index, 1, "only the recipient widening applies"),
+                Ok(_) => assert_eq!(
+                    other.arg_index, 1,
+                    "only the any_value widening of the recipient, arg 1, synthesizes"
+                ),
                 Err(errors) => {
                     assert!(
                         duplicate_findings(&errors).is_empty(),
@@ -2550,20 +2619,36 @@ mod tests {
         let cap = WideningBound::LeI128 {
             max: "1000000000".to_string(),
         };
+        // What refuses a negative amount here. Never the generated scope policy; the reviewed
+        // spending limit does, for the transfer amount (argument 2) of a rule it is composed into.
+        const COMPOSED: &str =
+            "the generated scope policy refuses no negative amount; the composed spending limit does";
+        const TARGET_ONLY: &str = "the generated scope policy refuses no negative amount, so only \
+                                   the target contract can refuse one";
+        let question = |contract: &str, arg: u32, refusal: &str| {
+            SynthError::NeedsDecision(format!(
+                "widening {contract}/transfer arg {arg}: floor: the cap at 1000000000 on this \
+                 signed amount sets no floor, so every smaller value passes it, negative amounts \
+                 included; {refusal}. A capped argument cannot also carry a floor: acknowledge \
+                 the open floor (no_floor_acknowledged, only on the user's explicit acceptance) \
+                 or keep the argument exact"
+            ))
+        };
+        let acknowledged = |contract: &str, arg: u32, refusal: &str| {
+            format!(
+                "{contract}/transfer arg {arg}: NO FLOOR — the user acknowledged that the cap at \
+                 1000000000 admits every smaller value, negative amounts included; {refusal}"
+            )
+        };
+
         let mut d = decisions();
         d.widenings = vec![amount_widening(cap.clone(), false)];
         assert_eq!(
             synthesize(&input(), &d).unwrap_err(),
-            vec![SynthError::NeedsDecision(format!(
-                "widening {contract}/transfer arg 2: floor: the cap at 1000000000 on this signed \
-                 amount sets no floor, so every smaller value passes the policy, negative amounts \
-                 included, and only the target contract can refuse one. A capped argument cannot \
-                 also carry a floor: acknowledge the open floor (no_floor_acknowledged, only on \
-                 the user's explicit acceptance) or keep the argument exact"
-            ))]
+            vec![question(&contract, 2, COMPOSED)]
         );
 
-        d.widenings = vec![amount_widening(cap, true)];
+        d.widenings = vec![amount_widening(cap.clone(), true)];
         let out = synthesize(&input(), &d).unwrap();
         let amount = &out.spec.rules[0].allowed_calls[0].args[2];
         assert_eq!(
@@ -2574,11 +2659,61 @@ mod tests {
         );
         assert!(matches!(amount.provenance, Provenance::UserWidened { .. }));
         assert!(
-            out.rationale.contains(&format!(
-                "{contract}/transfer arg 2: NO FLOOR — the user acknowledged that the cap at \
-                 1000000000 admits every smaller value, negative amounts included; only the \
-                 target contract can refuse one"
-            )),
+            out.rationale
+                .contains(&acknowledged(&contract, 2, COMPOSED)),
+            "{:#?}",
+            out.rationale
+        );
+
+        // Without the spending limit only the target is left to refuse a negative amount.
+        d.spending_limit = None;
+        let out = synthesize(&input(), &d).unwrap();
+        assert!(
+            out.rationale
+                .contains(&acknowledged(&contract, 2, TARGET_ONLY)),
+            "{:#?}",
+            out.rationale
+        );
+        d.widenings = vec![amount_widening(cap.clone(), false)];
+        assert_eq!(
+            synthesize(&input(), &d).unwrap_err(),
+            vec![question(&contract, 2, TARGET_ONLY)]
+        );
+
+        // The composed spending limit reads argument 2 alone: a cap on another signed argument
+        // of the same composed rule is still the target's to refuse.
+        let two_amounts = bundle_with_subs(
+            (
+                &contract,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::I128(7),
+                    ArgSummary::I128(500_000_000),
+                ],
+            ),
+            vec![],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![two_amounts];
+        let mut d = decisions();
+        let mut second = amount_widening(cap, false);
+        second.arg_index = 1;
+        d.widenings = vec![second.clone()];
+        assert_eq!(
+            synthesize(&synthesis_input, &d).unwrap_err(),
+            vec![question(&contract, 1, TARGET_ONLY)]
+        );
+        second.no_floor_acknowledged = true;
+        d.widenings = vec![second];
+        let out = synthesize(&synthesis_input, &d).unwrap();
+        assert!(
+            matches!(out.spec.rules[0].policies[0], PolicyRef::Reviewed { .. }),
+            "the rule composes the spending limit"
+        );
+        assert!(
+            out.rationale
+                .contains(&acknowledged(&contract, 1, TARGET_ONLY)),
             "{:#?}",
             out.rationale
         );

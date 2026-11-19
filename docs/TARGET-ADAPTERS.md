@@ -98,7 +98,7 @@ Read from the public router source: `soroswap/core`, `contracts/router/src/lib.r
 
 | Argument | What the router does with it | Role |
 | --- | --- | --- |
-| `amount_in` | Quotes the route for exactly this input and transfers that first amount from `to` to the first pair. A smaller value can only spend less. | Upper bound at the observed amount |
+| `amount_in` | Quotes the route for exactly this input and transfers that first amount from `to` to the first pair. A smaller non-negative value can only spend less. The bound sets no floor, so the policy also admits a negative value; what the router does with one is not established here (no control tries one, and its Wasm was not reproduced from source). | Upper bound at the observed amount |
 | `amount_out_min` | Refuses the swap (`InsufficientOutputAmount`) when the route's final output is below it. Lowering it weakens the only slippage check. | No automatic widening; a floor is a user decision |
 | `path` | The route: input token first, output token last. Each hop's pair is derived from the factory recorded at `initialize`. | Exact |
 | `to` | The only address asked to authorize: the router calls `to.require_auth()`, and the input token's transfer is from `to`. The output is paid to `to`. A swap naming another `to` asks that address, never the account. | Exact (`SELF`) |

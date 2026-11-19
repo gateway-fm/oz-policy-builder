@@ -391,13 +391,16 @@ function walkthroughRecord(value, run) {
   }
   const position = kind === 'blend_claim' ? { position: blendPositionRecord(w) } : {};
   // The operator's W3 decisions, by value and source-file hash; their free-text intents stay local.
+  // The schema says which questions the operator was asked: v3 added the transfer cap's open floor,
+  // so an earlier journal records no acknowledgement of it.
   let decisions = {};
   if (w.operator_decisions !== undefined) {
     if (kind !== 'soroswap_swap') fail();
     let d;
     try { d = soroswapDecisions(w.operator_decisions, { journal: true, allowLegacy: true }); } catch { fail(); }
     if (d.adapter_deadline === 'keep_recorded_deadline' && (!Number.isSafeInteger(w.deadline) || w.deadline <= 0)) fail();
-    decisions = { operator_decisions: { output_floor: amount(d.output_floor.min), transfer_cap: amount(d.transfer_cap.max),
+    decisions = { operator_decisions: { schema: d.schema, output_floor: amount(d.output_floor.min),
+      transfer_cap: amount(d.transfer_cap.max), transfer_cap_no_floor_acknowledged: d.transfer_cap.no_floor_acknowledged === true,
       adapter_deadline: d.adapter_deadline, source_sha256: hash(d.source_sha256),
       ...(d.adapter_deadline === 'keep_recorded_deadline' ? { deadline_unix: String(w.deadline) } : {}) } };
   }
