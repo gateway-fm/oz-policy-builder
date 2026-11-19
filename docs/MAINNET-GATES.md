@@ -57,7 +57,7 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | Open: the default builder, which the shipped path uses, compiles without a container, so its manifests name no image, and every field is the producer's unattested statement. By design, `generate` and `verify` do not check the registry root they record |
 | G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: a revoked account build or owner verifier has documented owner procedures but no tooled or exercised path. Also: the mainnet log is an unsigned draft until its key ceremony; the operator schedules the monitor |
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
-| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | Narrowed: not applicable to the shipped shape, which involves no hosted processing. Open for the hosted package: log redaction is configuration with no automated check |
+| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **open** | [G12](#g12-hosted-processing) | Open for the release's endpoint, the self-hosted HTTP server: log redaction is configuration that no automated test reads. Also: builds are isolated from the API only in worker mode, accepted on the operator's host |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
 | G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree |
 
@@ -503,22 +503,34 @@ release  contracts/differential/tests/account_wasm_invariants.rs  overlapping_re
 
 ## G12. Hosted processing
 
-A hosted server reads only allowlisted HTTPS RPC sources and refuses SSRF vectors, redacts
-endpoint-controlled error text, refuses an envelope carrying signatures before any request,
-keeps one session's artifacts from another, authenticates before spending quota, and frees a
-build slot when a request is cancelled. The self-hosted workflow checks the hosted transport's
-bounds and the build-worker launcher, and runs the Compose package and rootless worker
-containment.
+The gate applies to the release's endpoint: `ozpb-mcp-server --http`, the streamable HTTP server
+each release ships as a binary and an image for operators to run themselves
+([production release](SELF-HOSTING.md#production-release)), against mainnet too
+([mainnet configuration](SELF-HOSTING.md#mainnet-configuration)). Gateway operates no production
+service. The shipped grant shape does not depend on it: the wallet backend runs the local CLI,
+and an agent can use a local stdio server.
 
-Narrowed because the gate does not apply to the shipped shape: no hosted processing is on its
-path. The wallet backend runs the local CLI, Gateway operates no production service, and the
-hosted reference instance is a testnet instance for review ([SCOPE](SCOPE.md#tranche-2-status)).
+For that server, the tests below establish that it reads only allowlisted HTTPS RPC sources and
+refuses SSRF vectors, and refuses to start with a configured source the allowlist does not
+cover; redacts endpoint-controlled error text before it reaches a response; refuses an envelope
+carrying signatures before any request; keeps one session's artifacts from another;
+authenticates before spending quota, bounds request bodies and refuses requests over the quota;
+and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
+transport's bounds and the build-worker launcher, and runs the Compose package and rootless
+worker containment.
 
-Open for the hosted package itself: log redaction is configuration, with access and container
-logs disabled ([self-hosting](SELF-HOSTING.md#data-handling-and-handover)), and no automated
-test reads a log. Worker containment is accepted on the operator's chosen host
-([isolated builds](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)); the self-hosted workflow
-runs on changes to its paths, not on every pull request.
+Open: log redaction. The package keeps confidential input out of logs by configuration, with
+access logs, container log retention and the proxy's error logs disabled
+([data handling](SELF-HOSTING.md#data-handling-and-handover)), and no automated test reads a log
+the server or the proxy writes. Closing it needs a test that drives the packaged endpoint with
+confidential input and finds none of it in any log or retained output.
+
+Also: builds are isolated from the API and from each other only in disposable-worker mode,
+whose containment is accepted on the operator's chosen host
+([isolated builds](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)); the Compose package
+compiles in the API's own trust domain, bounded but not isolated
+([self-hosting](SELF-HOSTING.md)). The self-hosted workflow runs on changes to its paths, not on
+every pull request.
 
 ```gate-evidence G12
 ci  crates/mcp-server/src/main.rs  tests::rpc_allowlist_blocks_ssrf_vectors
