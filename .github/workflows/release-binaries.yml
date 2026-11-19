@@ -14,14 +14,22 @@ name: release binaries
 #
 # Three stages, so the token that can write the release never sits in a job that runs a build:
 #   build     one job per platform, contents: read. Third-party build scripts run here.
-#   assemble  contents: read. Checks every package, keeps one wire contract, writes SHA256SUMS.
-#             Dry runs stop after it.
+#   assemble  contents: read. Checks every package, keeps one wire contract, writes SHA256SUMS,
+#             and states the SHA-256 of SHA256SUMS as a job output. Dry runs stop after it.
 #   publish   release only: contents: write, id-token: write, attestations: write. It runs no
-#             repository code: it restores the assembled assets, checks them against SHA256SUMS,
-#             attests them and uploads them with the preinstalled gh.
-# Packages move between jobs through the Actions cache (the pinned actions/cache, not another
-# action), under keys naming this run, restored by exact key or the job fails. The dry run
-# exercises every hand-off except the last.
+#             repository code: it downloads the assembled assets into a fresh directory, refuses
+#             them unless SHA256SUMS has the digest assembly stated and lists exactly the files
+#             present with their digests, then attests them and uploads them with the
+#             preinstalled gh.
+# Files move between jobs as artifacts of this run (upload-artifact and download-artifact, pinned
+# by SHA), not through the Actions cache: cache entries are shared by every job on the ref, so a
+# build script, or another workflow building on the same tag, could have planted one under a
+# predictable key, and restoring one unpacks a tar with absolute paths. Download-artifact v8 is
+# past the archive path-traversal fix (CVE-2024-42471, fixed in 4.1.3). The digest stated by
+# assembly, a job output nothing else in the run can set, is what ties the published files to
+# the ones assembly checked. Artifact names carry the run attempt, so a re-run publishes what
+# that attempt built: re-run all jobs, since a re-run of only the failed ones finds nothing under
+# its attempt and stops. The dry run exercises every hand-off except the last.
 #
 # Platforms: native builds on GitHub-hosted runners, no cross-compilation — linux x86_64
 # (ubuntu-24.04), linux aarch64 (ubuntu-24.04-arm, the runner publish-image.yml already uses) and
@@ -78,6 +86,13 @@ jobs:
             echo "release tag $RELEASE_TAG does not name workspace version v$version" >&2
             exit 1
           fi
+          # The worker is its own workspace with its own version; its archive carries the
+          # release's name, so its manifest must agree.
+          worker=$(python3 -c 'import tomllib; print(tomllib.load(open("execution-runtime/Cargo.toml", "rb"))["package"]["version"])')
+          if [ "$worker" != "$version" ]; then
+            echo "execution-runtime version $worker is not workspace version $version" >&2
+            exit 1
+          fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "LABEL=v$version" >> "$GITHUB_ENV"
       # With no argument, `rustup toolchain install` installs the channel and components
@@ -119,7 +134,7 @@ jobs:
       # copies to be byte-identical.
       - name: export the MCP wire contract from the built server
         run: |
-          python3 scripts/release-artifacts.py wire-contract \
+          python3 -I scripts/release-artifacts.py wire-contract \
             --server target/release/ozpb-mcp-server --label "$LABEL" --commit "$GITHUB_SHA" \
             --out "dist/$TARGET/ozpb-wire-contract-$LABEL.json"
       - name: package each binary with the licence files
@@ -128,7 +143,7 @@ jobs:
           epoch=$(git log -1 --format=%ct)
           for binary in target/release/ozpb target/release/ozpb-mcp-server \
               execution-runtime/target/release/ozpb-execution-runtime; do
-            python3 scripts/release-artifacts.py archive --binary "$binary" --label "$LABEL" \
+            python3 -I scripts/release-artifacts.py archive --binary "$binary" --label "$LABEL" \
               --target "$TARGET" --epoch "$epoch" --out "dist/$TARGET"
           done
           {
@@ -139,10 +154,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: hand the packages to assembly
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: packages-${{ matrix.target }}-attempt-${{ github.run_attempt }}
           path: dist/${{ matrix.target }}
-          key: ozpb-release-${{ github.run_id }}-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
 
   assemble:
     name: assemble and check the release assets
@@ -151,6 +168,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      sums_sha256: ${{ steps.assemble.outputs.sums_sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -161,39 +180,46 @@ jobs:
           set -euo pipefail
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           echo "LABEL=v$version" >> "$GITHUB_ENV"
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      # Into a directory the checkout does not have; assembly refuses any file it did not expect.
+      - name: nothing is in the way of the downloads
+        run: test ! -e dist && test ! -e release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: packages-x86_64-unknown-linux-gnu-attempt-${{ github.run_attempt }}
           path: dist/x86_64-unknown-linux-gnu
-          key: ozpb-release-${{ github.run_id }}-x86_64-unknown-linux-gnu
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: packages-aarch64-unknown-linux-gnu-attempt-${{ github.run_attempt }}
           path: dist/aarch64-unknown-linux-gnu
-          key: ozpb-release-${{ github.run_id }}-aarch64-unknown-linux-gnu
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: packages-aarch64-apple-darwin-attempt-${{ github.run_attempt }}
           path: dist/aarch64-apple-darwin
-          key: ozpb-release-${{ github.run_id }}-aarch64-apple-darwin
-          fail-on-cache-miss: true
       - name: every platform's packages, one wire contract, SHA256SUMS
+        id: assemble
         run: |
           set -euo pipefail
-          python3 scripts/release-artifacts.py assemble --label "$LABEL" --dist dist --out release \
+          python3 -I scripts/release-artifacts.py assemble --label "$LABEL" --dist dist --out release \
             x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin
+          sums=$(sha256sum release/SHA256SUMS | cut -d ' ' -f 1)
+          echo "sums_sha256=$sums" >> "$GITHUB_OUTPUT"
           {
             echo "### Release assets for $LABEL"
             echo
             echo '```'
             cat release/SHA256SUMS
             echo '```'
+            echo
+            echo "SHA-256 of SHA256SUMS: \`$sums\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: hand the assets to publishing
         if: github.event_name == 'release'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: release-assets-attempt-${{ github.run_attempt }}
           path: release
-          key: ozpb-release-${{ github.run_id }}-assembled
+          if-no-files-found: error
+          retention-days: 1
 
   publish:
     name: attest and attach to the release
@@ -208,23 +234,37 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: nothing is in the way of the download
+        run: test ! -e release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: release-assets-attempt-${{ github.run_attempt }}
           path: release
-          key: ozpb-release-${{ github.run_id }}-assembled
-          fail-on-cache-miss: true
-      # What is attested and uploaded is exactly what assembly listed, nothing more.
-      - name: the restored assets are the ones SHA256SUMS lists
+      # What is attested and uploaded is exactly what assembly checked and listed: SHA256SUMS
+      # must have the digest assembly stated, every file present must be a regular file it
+      # lists, and every file it lists must match.
+      - name: the downloaded assets are the ones assembly listed
         working-directory: release
+        env:
+          EXPECTED_SUMS: ${{ needs.assemble.outputs.sums_sha256 }}
         run: |
           set -euo pipefail
-          sha256sum --strict --check SHA256SUMS
-          listed=$(awk '{print $2}' SHA256SUMS | sort)
-          present=$(ls -1 | grep -vx SHA256SUMS | sort)
-          if [ "$listed" != "$present" ]; then
-            echo "::error::the restored assets and SHA256SUMS disagree" >&2
+          sums=$(sha256sum SHA256SUMS | cut -d ' ' -f 1)
+          if [ -z "$EXPECTED_SUMS" ] || [ "$sums" != "$EXPECTED_SUMS" ]; then
+            echo "::error::SHA256SUMS is not the file assembly wrote" >&2
             exit 1
           fi
+          if [ -n "$(find . -mindepth 1 ! -type f -print -quit)" ]; then
+            echo "::error::the download holds something other than regular files" >&2
+            exit 1
+          fi
+          listed=$(awk '{print $2}' SHA256SUMS | sort)
+          present=$(find . -mindepth 1 -type f ! -name SHA256SUMS -exec basename {} \; | sort)
+          if [ "$listed" != "$present" ]; then
+            echo "::error::the downloaded assets and SHA256SUMS disagree" >&2
+            exit 1
+          fi
+          sha256sum --strict --check SHA256SUMS
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release/*
@@ -242,5 +282,5 @@ jobs:
             echo
             echo "Every asset, SHA256SUMS included, carries a build-provenance attestation:"
             echo
-            echo "- \`gh attestation verify <asset> --repo $GITHUB_REPOSITORY\`"
+            echo "- \`gh attestation verify <asset> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release-binaries.yml --source-ref refs/tags/$RELEASE_TAG --deny-self-hosted-runners\`"
           } >> "$GITHUB_STEP_SUMMARY"

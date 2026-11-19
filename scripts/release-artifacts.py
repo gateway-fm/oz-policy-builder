@@ -36,8 +36,8 @@ LICENSE_FILES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
 WIRE_CONTRACT_SCHEMA = "ozpb-wire-contract/v1"
 ERROR_CODE_SOURCE = "crates/api-types/src/lib.rs"
 # `v` plus a semver version, pre-release allowed: the same shape the tag check accepts.
-LABEL = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$")
-TARGET = re.compile(r"^[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_-]+$")
+LABEL = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?")
+TARGET = re.compile(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_-]+")
 ARM = re.compile(r'^\s*[A-Z][A-Za-z0-9]*\s*=>\s*"(E_[A-Z0-9_]+)",\s*$')
 
 
@@ -46,12 +46,12 @@ class ReleaseError(Exception):
 
 
 def check_label(label):
-    if not LABEL.match(label):
+    if not LABEL.fullmatch(label):
         raise ReleaseError(f"label {label!r} is not 'v' followed by a semver version")
 
 
 def check_target(target):
-    if not TARGET.match(target):
+    if not TARGET.fullmatch(target):
         raise ReleaseError(f"target {target!r} is not a target triple")
 
 
@@ -232,6 +232,11 @@ def assemble(label, dist, targets, out_dir):
         if present != expected:
             raise ReleaseError(f"{directory}: missing {sorted(expected - present)}, "
                                f"unexpected {sorted(present - expected)}")
+        # The packages arrive from other jobs: a link or a directory under an expected name is
+        # not a package, and copying through a link would publish whatever it points at.
+        for name in sorted(expected):
+            if (directory / name).is_symlink() or not (directory / name).is_file():
+                raise ReleaseError(f"{directory / name} is not a regular file")
         contracts[target] = (directory / contract).read_bytes()
     reference = targets[0]
     differing = [target for target in targets if contracts[target] != contracts[reference]]

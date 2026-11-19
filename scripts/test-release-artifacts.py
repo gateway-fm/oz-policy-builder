@@ -117,7 +117,9 @@ class Archive(unittest.TestCase):
             (not_executable, LABEL, TARGETS[0]),
             (self.binary, "1.2.3", TARGETS[0]),
             (self.binary, "v1.2", TARGETS[0]),
+            (self.binary, LABEL + "\n", TARGETS[0]),
             (self.binary, LABEL, "x86_64"),
+            (self.binary, LABEL, TARGETS[0] + "\n"),
         ]
         for binary, label, target in cases:
             with self.subTest(binary=binary.name, label=label, target=target):
@@ -260,6 +262,18 @@ class Assemble(unittest.TestCase):
     def test_refuses_a_target_that_built_nothing(self):
         for path in (self.dist / TARGETS[1]).iterdir():
             path.unlink()
+        self.assert_refused()
+
+    def test_refuses_a_link_in_place_of_a_package(self):
+        package = self.dist / TARGETS[0] / f"ozpb-{LABEL}-{TARGETS[0]}.tar.gz"
+        package.unlink()
+        package.symlink_to(ROOT / "LICENSE-MIT")
+        self.assert_refused()
+
+    def test_refuses_a_directory_in_place_of_a_package(self):
+        package = self.dist / TARGETS[0] / f"ozpb-{LABEL}-{TARGETS[0]}.tar.gz"
+        package.unlink()
+        package.mkdir()
         self.assert_refused()
 
     def test_refuses_to_write_over_earlier_output(self):
