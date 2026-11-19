@@ -33,6 +33,25 @@ components with line counts, entry points, threat model, known limits and every 
 The [OpenZeppelin review package](docs/OZ-REVIEW-PACKAGE.md) is the entry point for
 OpenZeppelin's technical review of the generated code.
 
+## Documentation
+
+The [documentation index](docs/README.md) lists every document by reader. To use the toolkit:
+
+- [User guide](docs/USER-GUIDE.md) — record, decide, generate, dry-run, review, install, use,
+  monitor and revoke, with the skill, CLI and wallet entry point for each step.
+- [Tester quickstart](docs/TESTER-QUICKSTART.md) — the whole flow locally on testnet, and what to
+  report.
+- [Scoping decisions](docs/SCOPING-DECISIONS.md) — exact by default, and what each widening or
+  acknowledgement means for safety.
+- [Trust boundaries](docs/TRUST-BOUNDARIES.md) — what is guaranteed, who holds which key, and where
+  trust is checked.
+- [Incident response](docs/INCIDENT-RESPONSE.md) — revoking a grant, and what to do when something
+  it relies on is revoked or compromised.
+- [Extending the toolkit](docs/EXTENDING.md) — new constraint kinds, target adapters and wallet
+  integrations.
+
+Security reports and the disclosure process are in [SECURITY.md](SECURITY.md).
+
 ## Tranche 2 status
 
 This tree delivers the [contracted testnet milestone](https://github.com/gateway-fm/oz-policy-builder/issues/3):
@@ -128,6 +147,7 @@ scripts/            dependency-rule check, determinism check
 testnet-harness/    Tranche 2: install a generated policy into an OZ account on testnet (node)
 wallet/             Tranche 2: local wallet backend for the Pollywallet integration (node)
 deployment/         Tranche 2: self-hosted MCP image, TLS proxy and disposable build workers
+registry/           published capability-registry logs, one directory per network
 skills/             policy-builder Claude skills; .claude-plugin/ packages them with the server
 ```
 
