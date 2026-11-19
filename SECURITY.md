@@ -65,7 +65,10 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   run is in `docs/TESTNET-EVIDENCE.md` and, for the second milestone's controlled testnet
   harness runs, `docs/TESTNET-EVIDENCE-TRANCHE-2.md`; those runs are local RPC observations,
   not ledger proofs or wallet approval. `docs/SCOPE.md` says what deliberately has not been
-  run; test counts are not treated as assurance.
+  run; test counts are not treated as assurance. The scope prepared for an external audit —
+  in-scope components, threat model, and the known limits not to re-report — is
+  `docs/AUDIT-SCOPE.md`; OpenZeppelin's review of the generated code starts from
+  `docs/OZ-REVIEW-PACKAGE.md`.
 
 A report that one of the above is true is a report we already agree with. A report that one of
 them is *false* — that a claimed fail-closed path can be made to open — is the one we want.
