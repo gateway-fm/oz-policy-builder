@@ -111,6 +111,41 @@ struct NormCall<'a> {
 }
 
 const CODEGEN_VERSION: u32 = 1;
+
+/// The target triple every generated crate declares in its `rust-toolchain.toml`, and the one the
+/// pinned `stellar contract build` compiles it for. The BuildManifest records it as
+/// `build_target`.
+pub const BUILD_TARGET: &str = "wasm32v1-none";
+
+/// Where this file's test module begins. Everything before it is the emitter; everything after it
+/// is tests, which [`template_pack_hash`] leaves out so that a test edit is not a template change.
+/// Written with escapes so that this literal is not itself a match.
+const TEST_MODULE_MARKER: &str = "\n#[cfg(test)]\nmod tests {";
+
+/// Hash of the template pack this generator emits from.
+///
+/// For a generator whose templates are code, the template pack is that code: this file up to its
+/// test module, `render.rs`, and the committed lockfile [`emit_lockfile`] copies into every
+/// generated crate — embedded at compile time, so the value describes the binary that runs rather
+/// than whatever checkout sits beside it. It moves with any edit to those, a comment included,
+/// which makes it an identifier of the emitter's source and not a claim about behaviour: the
+/// template family is the behavioural version, and the generated source hash says exactly what
+/// was emitted.
+pub fn template_pack_hash() -> Result<Hash32, CodegenError> {
+    const LIB: &str = include_str!("lib.rs");
+    const RENDER: &str = include_str!("render.rs");
+    const LOCKFILE: &str = include_str!("../../../contracts/golden-transfer-policy/Cargo.lock");
+    let (emitter, _tests) = LIB
+        .split_once(TEST_MODULE_MARKER)
+        .ok_or_else(|| CodegenError::Internal("codegen test module not found".to_string()))?;
+    let files = BTreeMap::from([
+        ("contracts/golden-transfer-policy/Cargo.lock", LOCKFILE),
+        ("crates/codegen/src/lib.rs", emitter),
+        ("crates/codegen/src/render.rs", RENDER),
+    ]);
+    ozpb_domain::canonical_hash(domains::TEMPLATE_PACK, &files)
+        .map_err(|e| CodegenError::Internal(e.to_string()))
+}
 /// Must remain equal to build-runner's input ceiling. Enforcing it at generation keeps a caller
 /// from receiving an artifact that the very next Phase 1 stage necessarily refuses.
 const MAX_GENERATED_CRATE_BYTES: usize = 2 * 1024 * 1024;
@@ -292,7 +327,7 @@ fn emit_rust_toolchain(pins: &Pins) -> String {
 # rebuilding invalidates that hash.
 [toolchain]
 channel = "{channel}"
-targets = ["wasm32v1-none"]
+targets = ["{BUILD_TARGET}"]
 "#,
         channel = pins.rust_channel
     )
@@ -1983,6 +2018,47 @@ mod tests {
                 "{label}: provenance is stated once, in the crate root"
             );
         }
+    }
+
+    /// The template pack of a generator whose templates are code is the emitter's source: the
+    /// non-test half of this file, `render.rs`, and the lockfile emission copies. Rebuilt here
+    /// from the files on disk, so a hash over the wrong bytes — tests included, a file left out,
+    /// a different domain — fails rather than agrees with itself.
+    #[test]
+    fn the_template_pack_hash_is_the_emitter_source_without_its_tests() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |path: &str| std::fs::read_to_string(root.join(path)).unwrap();
+        let lib = read("src/lib.rs");
+        let marker = "\n#[cfg(test)]\nmod tests {";
+        assert_eq!(
+            lib.matches(marker).count(),
+            1,
+            "the test module must be found exactly once, or the emitter's end is ambiguous"
+        );
+        let emitter = lib.split_once(marker).unwrap().0;
+        assert!(emitter.contains("fn emit_lib(") && !emitter.contains("fn golden_crate_matches"));
+        let expected = ozpb_domain::canonical_hash(
+            ozpb_domain::domains::TEMPLATE_PACK,
+            &BTreeMap::from([
+                (
+                    "contracts/golden-transfer-policy/Cargo.lock",
+                    read("../../contracts/golden-transfer-policy/Cargo.lock"),
+                ),
+                ("crates/codegen/src/lib.rs", emitter.to_string()),
+                ("crates/codegen/src/render.rs", read("src/render.rs")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(template_pack_hash().unwrap(), expected);
+    }
+
+    /// The target the manifest records is the one the emitted crate declares.
+    #[test]
+    fn the_build_target_is_the_one_the_crate_declares() {
+        let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
+        assert_eq!(BUILD_TARGET, "wasm32v1-none");
+        assert!(generated.files["rust-toolchain.toml"]
+            .contains(&format!("targets = [\"{BUILD_TARGET}\"]\n")));
     }
 
     #[test]

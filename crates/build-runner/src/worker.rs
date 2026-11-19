@@ -8,7 +8,8 @@ use std::sync::{mpsc, Arc};
 
 const JOB_SCHEMA: &str = "build-worker-job/v1";
 const RESULT_SCHEMA: &str = "build-worker-result/v1";
-const CONTAINED_SCHEMA: &str = "contained-build-result/v1";
+/// Version 2 adds `image`, which the API records as `BuildManifest.producer.build_image`.
+const CONTAINED_SCHEMA: &str = "contained-build-result/v2";
 const MAX_JOB_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(not(test))]
@@ -106,8 +107,54 @@ struct WorkerResult {
 struct ContainedResult {
     schema: String,
     job_hash: Hash32,
+    /// The image the launcher ran the job in: its configured `image`, the same value it passed to
+    /// the runtime. Only the trusted launcher writes this frame, so the worker cannot choose it.
+    image: String,
     containment: String,
     result: Option<WorkerResult>,
+}
+
+/// Longest image reference accepted from a launcher frame. It is recorded in the manifest.
+const MAX_IMAGE_BYTES: usize = 256;
+
+/// An immutable image identity, in the two forms `deployment/worker-launcher.py` accepts in its
+/// configuration: a local image ID `sha256:<64 hex>`, or `host[:port]/path@sha256:<64 hex>`. A tag
+/// names whatever the registry says today, so it identifies no build and is refused.
+fn is_immutable_image(image: &str) -> bool {
+    let Some((reference, digest)) = image.rsplit_once("sha256:") else {
+        return false;
+    };
+    let hex = |text: &str| {
+        text.len() == 64
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    if image.len() > MAX_IMAGE_BYTES || !hex(digest) {
+        return false;
+    }
+    if reference.is_empty() {
+        return true;
+    }
+    let Some((host, path)) = reference
+        .strip_suffix('@')
+        .and_then(|name| name.split_once('/'))
+    else {
+        return false;
+    };
+    let (host, port) = match host.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (host, None),
+    };
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
+        && port.is_none_or(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        && !path.is_empty()
+        && path
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b'-'))
 }
 
 fn unavailable() -> BuildError {
@@ -337,9 +384,11 @@ pub(crate) fn build(
     if frame.schema != CONTAINED_SCHEMA
         || frame.job_hash != sha256(&data)
         || frame.containment != "removed"
+        || !is_immutable_image(&frame.image)
     {
         return Err(());
     }
+    let image = frame.image;
     // After trusted confirmation, malformed compiler output is an ordinary failed job.
     Ok((|| {
         let result = frame.result.ok_or_else(|| {
@@ -369,8 +418,9 @@ pub(crate) fn build(
         if wasm.len() > MAX_WASM_BYTES || sha256(&wasm) != artifact.wasm_hash {
             return Err(unavailable());
         }
-        let manifest =
+        let mut manifest =
             manifest_for(request, &wasm, artifact.toolchain).map_err(|_| unavailable())?;
+        manifest.producer.build_image = Some(image);
         let manifest_hash = manifest.hash().map_err(|_| unavailable())?;
         Ok(BuildArtifact {
             manifest,
@@ -486,7 +536,7 @@ sys.stdout.flush()
 
     const CONFIRMED_FAILURE: &str = r#"import hashlib,json,sys
 data=sys.stdin.buffer.read()
-print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256(data).hexdigest(),'containment':'removed','result':None}))"#;
+print(json.dumps({'schema':'contained-build-result/v2','job_hash':hashlib.sha256(data).hexdigest(),'image':'sha256:'+'ab'*32,'containment':'removed','result':None}))"#;
 
     #[test]
     fn confirmed_compilation_failure_releases_capacity() {
@@ -536,7 +586,7 @@ print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256
     const CANCELLABLE: &str = r#"import hashlib,json,signal,sys,time
 data=sys.stdin.buffer.read()
 def stop(*_):
-    print(json.dumps({'schema':'contained-build-result/v1','job_hash':hashlib.sha256(data).hexdigest(),'containment':'removed','result':None}))
+    print(json.dumps({'schema':'contained-build-result/v2','job_hash':hashlib.sha256(data).hexdigest(),'image':'sha256:'+'ab'*32,'containment':'removed','result':None}))
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
 sys.stdout.write('ready\n')
@@ -677,6 +727,11 @@ time.sleep(30)"#;
         assert_eq!(manifest.wasm_size, wasm.len() as u64);
         assert_eq!(manifest.toolchain, tools);
         assert_eq!(manifest.soroban_sdk_version, Pins::default().soroban_sdk);
+        assert_eq!(
+            manifest.producer.build_image.as_deref(),
+            Some(LAUNCHER_IMAGE),
+            "the manifest names the image the trusted launcher ran"
+        );
         assert_eq!(artifact.manifest_hash, manifest.hash().unwrap());
         assert_eq!(slots.available(), 1);
         assert_eq!(run(&generated, &config).unwrap(), artifact);
@@ -705,6 +760,47 @@ time.sleep(30)"#;
                 Err(BuildError::Unavailable(_))
             ));
         }
+    }
+
+    /// The image every fixture launcher above reports, as `deployment/worker-launcher.py` reports
+    /// its configured `image`.
+    const LAUNCHER_IMAGE: &str =
+        "sha256:abababababababababababababababababababababababababababababababab";
+
+    /// The image is recorded in the manifest, so a frame naming anything but an immutable image
+    /// identity — a tag, a short or uppercase digest, a malformed port, a trailing newline — is an
+    /// invalid frame from the trusted launcher, handled like any other: containment unconfirmed.
+    #[test]
+    fn a_frame_without_an_immutable_image_cannot_release_capacity() {
+        for image in [
+            "'docker.io/ozpb/worker:latest'",
+            "'sha256:'+'ab'*31",
+            "'sha256:'+'AB'*32",
+            "'registry.example:x/ozpb@sha256:'+'ab'*32",
+            "'registry.example/ozpb@sha256:'+'ab'*32+'\\n'",
+            "None",
+        ] {
+            let body = CONFIRMED_FAILURE.replace("'sha256:'+'ab'*32", image);
+            let (_directory, config, slots) = launcher(&body);
+            assert!(run(&generated(), &config).is_err(), "{image}");
+            assert_eq!(slots.available(), 0, "{image}");
+        }
+        for image in [
+            "'sha256:'+'ab'*32",
+            "'registry.example:5000/ozpb/worker@sha256:'+'ab'*32",
+        ] {
+            let body = CONFIRMED_FAILURE.replace("'sha256:'+'ab'*32", image);
+            let (_directory, config, slots) = launcher(&body);
+            assert!(matches!(
+                run(&generated(), &config),
+                Err(BuildError::Failed(_))
+            ));
+            assert_eq!(slots.available(), 1, "{image}");
+        }
+        let missing = CONFIRMED_FAILURE.replace("'image':'sha256:'+'ab'*32,", "");
+        let (_directory, config, slots) = launcher(&missing);
+        assert!(run(&generated(), &config).is_err());
+        assert_eq!(slots.available(), 0, "a frame without an image is invalid");
     }
 
     #[test]

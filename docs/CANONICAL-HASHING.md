@@ -26,7 +26,9 @@ hash     = SHA-256(preimage encoded as XDR)
 ```
 
 The canonicalization version is **2**. Version 1 was the JSON scheme and is not reproducible from
-a specification; nothing in the current tree produces it.
+a specification; nothing in the current tree produces it. A build manifest records the version its
+hashes were taken under as `canonicalization_version`, so a reader holding one knows which rules
+reproduce them.
 
 The domain travels inside the preimage rather than as a prefix outside it, following the protocol:
 `HashIdPreimage` is a union whose discriminant names the structure being hashed, and the hash
@@ -53,7 +55,8 @@ two as separate and so does this.
 | `ozpb:v1:signer-set` | the signers of one rule, as the account stores them |
 | `ozpb:v1:registry-snapshot` | a capability registry snapshot |
 | `ozpb:v1:codegen-input` | the normalized inputs a generated crate is emitted from |
-| `ozpb:v1:build-manifest` | a build manifest |
+| `ozpb:v2:build-manifest` | a build manifest, schema `build-manifest/v2` |
+| `ozpb:v1:template-pack` | the generator's template source: `crates/codegen/src/lib.rs` up to its test module, `crates/codegen/src/render.rs`, and `contracts/golden-transfer-policy/Cargo.lock`, as a map from those repository paths to their text |
 | `ozpb:v1:policy-binding-set` | a policy binding set |
 | `ozpb:v1:policy-check-request` | the complete typed `CheckAgainstPolicyInput` |
 | `ozpb:v1:dry-run-request` | the complete typed `DryRunInput`, including artifact claims and nonce |

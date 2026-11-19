@@ -225,9 +225,11 @@ def worker_result(raw):
 
 
 def launch(raw, config):
+    # `image` is the configured, digest-pinned image `command` runs the job in. The API records it
+    # in the BuildManifest as the build's image, so it is named on every frame, refusals included.
     def frame(result):
-        return {"schema": "contained-build-result/v1", "job_hash": hashlib.sha256(raw).hexdigest(),
-                "containment": "removed", "result": result}
+        return {"schema": "contained-build-result/v2", "job_hash": hashlib.sha256(raw).hexdigest(),
+                "image": config["image"], "containment": "removed", "result": result}
 
     # Nothing has launched yet: a configuration/input refusal cannot leave a container.
     try:

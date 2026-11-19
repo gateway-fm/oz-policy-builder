@@ -128,9 +128,13 @@ The worker's bounded JSON result has schema `build-worker-result/v1` and `artifa
 null for a failed build or an object containing `wasm_base64`, `wasm_hash`, and `toolchain`.
 Toolchain contains `rustc_version`, `stellar_cli_version`, and `builder`. The worker cannot
 claim cleanup. After independently proving the disposable job has ended and its writable
-state is gone, the launcher writes a separate object with schema `contained-build-result/v1`,
-`job_hash` (SHA-256 of the exact stdin bytes), `containment` equal to `removed`, and `result`
-containing the validated worker result or null, after its `ready` line. Both stdout layers are
+state is gone, the launcher writes a separate object with schema `contained-build-result/v2`,
+`job_hash` (SHA-256 of the exact stdin bytes), `image` (its configured image, exactly as passed
+to the runtime: `sha256:<64 hex>` or `host[:port]/path@sha256:<64 hex>`), `containment` equal to
+`removed`, and `result` containing the validated worker result or null, after its `ready` line.
+The API refuses a frame whose `image` is not such an immutable identity, and records it in the
+BuildManifest as `producer.build_image`. It is the operator's statement of which image ran, not
+an attestation: the launcher is trusted for it in the same way it is trusted for teardown. Both stdout layers are
 capped at 4 MiB; Wasm is capped at 2 MiB. No diagnostic strings are part of either protocol.
 
 A different provider adapter must retain the same independent runtime deadline, disposable
