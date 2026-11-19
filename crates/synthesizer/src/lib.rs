@@ -101,9 +101,10 @@ pub struct Widening {
     pub bound: WideningBound,
     /// Explicit acknowledgement that a cap (`le_i128`) sets no floor: the argument is a signed
     /// integer, so every smaller value passes, negative amounts included, and only the target can
-    /// refuse one. One argument takes one bound, so a cap cannot also carry a floor; without this
-    /// a cap is an open question. It answers nothing on a floor or `any_value`, where it is
-    /// refused. Absent reads as `false`, like `unlimited_calls_acknowledged`.
+    /// refuse one. The way to bound both ends is a range (`WideningBound::RangeI128`), which needs
+    /// no acknowledgement; without either, a cap is an open question. It answers nothing on a
+    /// range, a floor or `any_value`, where it is refused. Absent reads as `false`, like
+    /// `unlimited_calls_acknowledged`.
     #[serde(default)]
     pub no_floor_acknowledged: bool,
     /// The user's stated semantic intent ("amount is a cap, allow headroom to 100").
@@ -658,10 +659,29 @@ pub fn synthesize(
                 errors.push(SynthError::NeedsDecision(format!(
                     "widening {contract}/{fn_name} arg {arg_index}: floor: the cap at {max} on \
                      this signed amount sets no floor, so every smaller value passes it, negative \
-                     amounts included; {refusal}. A capped argument cannot also carry a floor: \
-                     acknowledge the open floor (no_floor_acknowledged, only on the user's \
-                     explicit acceptance) or keep the argument exact"
+                     amounts included; {refusal}. Bound both ends instead with a range \
+                     (range_i128, such as 0..={max}; needs development registry version 7 or \
+                     later), or acknowledge the open floor (no_floor_acknowledged, only on the \
+                     user's explicit acceptance), or keep the argument exact"
                 )));
+            }
+        } else if let WideningBound::RangeI128 { min, max } = &w.bound {
+            // A range's floor is the user's explicit decision, so nothing is asked; but a floor
+            // below zero still admits negative amounts, and the report says how far.
+            let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+            match min.parse::<i128>() {
+                Ok(i128::MIN) => rationale.push(format!(
+                    "{contract}/{fn_name} arg {arg_index}: NO FLOOR — the user's range starts at \
+                     i128::MIN, so it admits every value up to {max}, negative amounts included; \
+                     {}",
+                    negative_amount_refusal(rule, arg_index)
+                )),
+                Ok(low) if low < 0 => rationale.push(format!(
+                    "{contract}/{fn_name} arg {arg_index}: NEGATIVE FLOOR — the user's range \
+                     {low}..={max} admits negative amounts down to {low}; the generated scope \
+                     policy refuses only below that"
+                )),
+                _ => {}
             }
         }
     }
@@ -2708,8 +2728,9 @@ mod tests {
             SynthError::NeedsDecision(format!(
                 "widening {contract}/transfer arg {arg}: floor: the cap at 1000000000 on this \
                  signed amount sets no floor, so every smaller value passes it, negative amounts \
-                 included; {refusal}. A capped argument cannot also carry a floor: acknowledge \
-                 the open floor (no_floor_acknowledged, only on the user's explicit acceptance) \
+                 included; {refusal}. Bound both ends instead with a range (range_i128, such as \
+                 0..=1000000000; needs development registry version 7 or later), or acknowledge \
+                 the open floor (no_floor_acknowledged, only on the user's explicit acceptance), \
                  or keep the argument exact"
             ))
         };
@@ -2893,7 +2914,7 @@ mod tests {
         );
         assert!(matches!(amount.provenance, Provenance::UserWidened { .. }));
         assert!(
-            !out.rationale.iter().any(|line| line.contains("NO FLOOR")),
+            !out.rationale.iter().any(|line| line.contains("FLOOR")),
             "{:#?}",
             out.rationale
         );
@@ -2901,6 +2922,42 @@ mod tests {
             "{contract}/transfer arg 2: user-widened (an amount decision), blast radius High"
         )));
         assert!(out.spec.validate().is_ok());
+
+        // A floor below zero is a decision too, and the report says what it admits; a range from
+        // i128::MIN has no effective floor at all.
+        let ranged = |min: String| {
+            let mut d = decisions();
+            d.widenings = vec![amount_widening(
+                WideningBound::RangeI128 {
+                    min,
+                    max: "1000000000".to_string(),
+                },
+                false,
+            )];
+            synthesize(&input(), &d).unwrap().rationale
+        };
+        let below_zero = ranged("-5".to_string());
+        assert!(
+            below_zero.contains(&format!(
+                "{contract}/transfer arg 2: NEGATIVE FLOOR — the user's range -5..=1000000000 \
+                 admits negative amounts down to -5; the generated scope policy refuses only \
+                 below that"
+            )),
+            "{below_zero:#?}"
+        );
+        let unbounded = ranged(i128::MIN.to_string());
+        assert!(
+            unbounded.contains(&format!(
+                "{contract}/transfer arg 2: NO FLOOR — the user's range starts at i128::MIN, so \
+                 it admits every value up to 1000000000, negative amounts included; the \
+                 generated scope policy refuses no negative amount; the composed spending limit \
+                 does"
+            )),
+            "{unbounded:#?}"
+        );
+        assert!(!ranged("1".to_string())
+            .iter()
+            .any(|line| line.contains("FLOOR")));
 
         // One argument, one widening: a range and a cap on it are two decisions, refused.
         d.widenings.push(amount_widening(

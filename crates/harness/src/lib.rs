@@ -1013,10 +1013,17 @@ fn arg_mutations(
                     MutationClass::NumericBoundary,
                     true,
                 ));
+                // Above the cap: one past it, and the far end of the signed range.
                 if let Some(above) = high.checked_add(1) {
                     out.push((
                         "above range maximum".into(),
                         ArgValue::I128(above),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                    out.push((
+                        "i128 maximum".into(),
+                        ArgValue::I128(i128::MAX),
                         MutationClass::NumericBoundary,
                         false,
                     ));
@@ -2000,6 +2007,7 @@ mod tests {
             ("at range maximum", 1_000, true),
             ("above range maximum", 1_001, false),
             ("i128 minimum", i128::MIN, false),
+            ("i128 maximum", i128::MAX, false),
         ] {
             assert!(
                 found
@@ -2021,7 +2029,8 @@ mod tests {
                 .iter()
                 .all(|(name, _)| !name.contains("below range minimum")
                     && !name.contains("above range maximum")
-                    && !name.contains("i128 minimum")),
+                    && !name.contains("i128 minimum")
+                    && !name.contains("i128 maximum")),
             "{found:#?}"
         );
         assert!(found

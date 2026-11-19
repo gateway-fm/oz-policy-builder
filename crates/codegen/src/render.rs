@@ -291,6 +291,16 @@ impl I128Literal {
             _ => Err(CodegenError::I128(raw.to_string())),
         }
     }
+
+    /// `i128::MIN`: no `i128` lies below it, so a floor here refuses nothing.
+    pub fn is_type_min(&self) -> bool {
+        self.0 == i128::MIN
+    }
+
+    /// `i128::MAX`: no `i128` lies above it, so a cap here refuses nothing.
+    pub fn is_type_max(&self) -> bool {
+        self.0 == i128::MAX
+    }
 }
 
 impl fmt::Display for I128Literal {

@@ -20,7 +20,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod render;
-use render::{RenderConstraint, RenderRule, RenderSigner};
+use render::{I128Literal, RenderConstraint, RenderRule, RenderSigner};
 
 /// Version pins embedded in the generated crate. These must match the audited
 /// `stellar-accounts` release (recorded in the BuildManifest by the caller).
@@ -346,6 +346,35 @@ fn emit_doc(indent: &str, paragraphs: &[String], sections: &[(&str, Vec<String>)
 /// cannot follow that: it opens with a delimiter and never has an undelimited region, because
 /// emitting one would mean a reader could not tell a section boundary from the top of the file.
 /// So the enum gets a heading, and the heading is a name of our own.
+/// The check on an `i128` argument with an optional floor and cap: the value must be an `i128`,
+/// then `x < min` and `x > max` each refuse the tuple. Two checks rather than one `||`
+/// condition, because two 40-digit literals on one line outgrow rustfmt's width and the generated
+/// crate must be rustfmt's own output. A bound at the type's own limit refuses nothing, and a
+/// comparison against it is what rustc's `unused_comparisons` and clippy's deny-level
+/// `absurd_extreme_comparisons` reject, so it is left out; the type check always stays.
+fn i128_bounds(i: u32, min: Option<&I128Literal>, max: Option<&I128Literal>) -> String {
+    let checks: Vec<String> = [
+        min.filter(|min| !min.is_type_min()).map(|min| {
+            format!("            if x < {min} {{\n                return false;\n            }}\n")
+        }),
+        max.filter(|max| !max.is_type_max()).map(|max| {
+            format!("            if x > {max} {{\n                return false;\n            }}\n")
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if checks.is_empty() {
+        return format!(
+            "    if i128::try_from_val(e, &v{i}).is_err() {{\n        return false;\n    }}\n"
+        );
+    }
+    format!(
+        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n{}        }}\n        Err(_) => return false,\n    }}\n",
+        checks.concat()
+    )
+}
+
 fn section(name: &str) -> String {
     let rule = "#".repeat(18);
     format!("// {rule} {name} {rule}\n\n")
@@ -1659,23 +1688,10 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                         "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x != {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
                     ));
                 }
-                RenderConstraint::LeI128(lit) => {
-                    helpers.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x > {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::GeI128(lit) => {
-                    helpers.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                // `x < min || x > max` as two checks: one condition holding two 40-digit
-                // literals outgrows rustfmt's width, and the generated crate must be rustfmt's
-                // own output.
+                RenderConstraint::LeI128(max) => helpers.push_str(&i128_bounds(i, None, Some(max))),
+                RenderConstraint::GeI128(min) => helpers.push_str(&i128_bounds(i, Some(min), None)),
                 RenderConstraint::RangeI128 { min, max } => {
-                    helpers.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {min} {{\n                return false;\n            }}\n            if x > {max} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
+                    helpers.push_str(&i128_bounds(i, Some(min), Some(max)))
                 }
                 // The bytes are a module constant (emitted above), so this line is short
                 // whatever the recorded `ScVal` encodes to.
@@ -2807,6 +2823,65 @@ mod tests {
         assert_ne!(
             a.crate_name, b.crate_name,
             "crate name follows the grant name"
+        );
+    }
+
+    /// A bound at the type's own limit refuses nothing, and a comparison against it is what
+    /// rustc's `unused_comparisons` and clippy's deny-level `absurd_extreme_comparisons` reject:
+    /// a generated crate must stay lint-clean whatever bound a user chose. Such a check is not
+    /// emitted; the i128 type check stays, so a wrong-typed argument is still refused.
+    #[test]
+    fn a_bound_at_the_i128_limit_emits_no_vacuous_comparison() {
+        use ozpb_policy_spec::Constraint;
+        let max = i128::MAX.to_string();
+        let min = i128::MIN.to_string();
+        let source_for = |constraint: Constraint| {
+            let mut spec = golden_spec().spec().clone();
+            let amount = &mut spec.rules[0].allowed_calls[0].args[2];
+            amount.constraint = constraint;
+            amount.provenance = ozpb_domain::Provenance::UserWidened {
+                intent: "a bound at the limit".to_string(),
+                blast_radius: ozpb_domain::BlastRadius::Medium,
+            };
+            let generated = generate(&spec.validate().unwrap(), 0, &Pins::default()).unwrap();
+            for (path, source) in rust_files(&generated) {
+                syn::parse_file(&source).unwrap_or_else(|e| panic!("{path}: {e}"));
+                assert!(compilability::overlong_lines(&source).is_empty(), "{path}");
+            }
+            emitted_rust(&generated)
+        };
+        let vacuous = |source: &str| {
+            source.contains("x < i128::MIN") || source.contains(&format!("x > {max}i128"))
+        };
+        let type_checked = |source: &str| source.contains("i128::try_from_val(e, &v2)");
+        for constraint in [
+            Constraint::LeI128 { max: max.clone() },
+            Constraint::GeI128 { min: min.clone() },
+            Constraint::RangeI128 {
+                min: min.clone(),
+                max: max.clone(),
+            },
+        ] {
+            let source = source_for(constraint.clone());
+            assert!(!vacuous(&source), "{constraint:?}");
+            assert!(type_checked(&source), "{constraint:?}");
+            assert!(
+                !source.contains("if x < ") && !source.contains("if x > "),
+                "{constraint:?}"
+            );
+        }
+        // One end at the limit: only the other end is checked.
+        let upper = source_for(Constraint::RangeI128 {
+            min: min.clone(),
+            max: "5".to_string(),
+        });
+        assert!(!vacuous(&upper) && upper.contains("if x > 5i128 {") && !upper.contains("if x < "));
+        let lower = source_for(Constraint::RangeI128 {
+            min: "-5".to_string(),
+            max: max.clone(),
+        });
+        assert!(
+            !vacuous(&lower) && lower.contains("if x < -5i128 {") && !lower.contains("if x > ")
         );
     }
 
