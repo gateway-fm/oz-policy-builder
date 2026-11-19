@@ -44,4 +44,7 @@ exclude_re = [
     # scanning either side yields the same answer, the smallest key in the intersection; the
     # comparison only picks the cheaper side.
     "replace <= with > in first_shared_key",
+    # `int128_parts_to_i128` joins `hi << 64` (low 64 bits zero) with `lo` widened from u64
+    # (high 64 bits zero). The operands share no set bit, so `|` and `^` give the same value.
+    "replace \\| with \\^ in int128_parts_to_i128",
 ]
