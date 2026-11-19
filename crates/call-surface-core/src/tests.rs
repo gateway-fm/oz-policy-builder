@@ -1563,7 +1563,8 @@ fn the_state_digest_is_domain_separated_and_version_prefixed() {
     );
 }
 
-/// Reports and the wire both name a finding by its code; the two spellings must be one.
+/// Reports and the wire both name a finding by its code; the two spellings must be one, and
+/// both must be the published code.
 #[test]
 fn every_finding_code_reads_the_same_as_its_wire_name() {
     for code in [
@@ -1574,10 +1575,20 @@ fn every_finding_code_reads_the_same_as_its_wire_name() {
         FindingCode::UnsupportedAuthority,
         FindingCode::IncompleteAccountState,
     ] {
-        assert!(code.as_str().starts_with("E_"), "{code:?}");
+        // Exhaustive, with no wildcard: a new variant does not compile here until it is given
+        // its published code — and it belongs in the list above too.
+        let published = match code {
+            FindingCode::DelegateHasAuthority => "E_DELEGATE_HAS_AUTHORITY",
+            FindingCode::DelegateGrantOverlap => "E_DELEGATE_GRANT_OVERLAP",
+            FindingCode::UnsafeCallSurface => "E_UNSAFE_CALL_SURFACE",
+            FindingCode::UnsafeManagementSurface => "E_UNSAFE_MANAGEMENT_SURFACE",
+            FindingCode::UnsupportedAuthority => "E_UNSUPPORTED_AUTHORITY",
+            FindingCode::IncompleteAccountState => "E_INCOMPLETE_ACCOUNT_STATE",
+        };
+        assert_eq!(code.as_str(), published);
         assert_eq!(
             serde_json::to_value(code).unwrap(),
-            serde_json::Value::String(code.as_str().to_string())
+            serde_json::Value::String(published.to_string())
         );
     }
 }

@@ -722,16 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn both_float_widths_are_refused() {
-        for err in [
-            to_scval(&1.5f32).expect_err("an f32 must not encode"),
-            to_scval(&1.5f64).expect_err("an f64 must not encode"),
-        ] {
-            assert!(format!("{err}").contains("float"), "{err}");
-        }
-    }
-
-    #[test]
     fn a_byte_string_encodes_as_bytes() {
         struct Raw;
         impl Serialize for Raw {
@@ -813,11 +803,16 @@ mod tests {
 
     #[test]
     fn a_float_is_refused_rather_than_encoded() {
-        let err = to_scval(&1.5f64).expect_err("a float must not encode");
-        assert!(
-            format!("{err}").contains("float"),
-            "the refusal must say why: {err}"
-        );
+        // Both widths: each has its own serializer method, and each must refuse.
+        for err in [
+            to_scval(&1.5f32).expect_err("an f32 must not encode"),
+            to_scval(&1.5f64).expect_err("an f64 must not encode"),
+        ] {
+            assert!(
+                format!("{err}").contains("float"),
+                "the refusal must say why: {err}"
+            );
+        }
     }
 
     #[test]
