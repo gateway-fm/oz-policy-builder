@@ -1415,6 +1415,7 @@ dependencies = [
  "ozpb-domain",
  "ozpb-recorder-core",
  "ozpb-registry",
+ "ozpb-source-bundle",
  "serde",
  "serde_json",
  "sha2 0.10.9",
