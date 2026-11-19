@@ -65,7 +65,7 @@ the reader it is mainly written for.
 
 - [TRANCHE-1-VERIFICATION.md](TRANCHE-1-VERIFICATION.md) — reproduce the first milestone.
 - [TRANCHE-2-VERIFICATION.md](TRANCHE-2-VERIFICATION.md) — the second milestone's checks and evidence crosswalk.
-- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's verification record (accepted deviations are recorded there).
+- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's crosswalk: each contracted item, what this tree implements, what remains, and the owner's acceptance of deviations.
 
 ## Contributors
 
