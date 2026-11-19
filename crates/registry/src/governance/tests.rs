@@ -41,7 +41,14 @@ fn signed_by(snapshot: &RegistrySnapshot, ids: &[&str]) -> SignedSnapshot {
         .iter()
         .map(|id| sign_detached(id, &custodian(id), snapshot).unwrap())
         .collect();
-    combine(&roots(), snapshot.clone(), &detached).unwrap()
+    combine(
+        &roots(),
+        network(),
+        snapshot.clone(),
+        &detached,
+        snapshot.valid_from_unix,
+    )
+    .unwrap()
 }
 
 fn changes(valid_from: i64, expires_at: i64) -> ChangeSet {
@@ -221,7 +228,14 @@ fn combine_takes_only_pinned_signers_over_this_root_up_to_the_threshold() {
     let snapshot = genesis();
     let a = sign_detached("a", &custodian("a"), &snapshot).unwrap();
     let b = sign_detached("b", &custodian("b"), &snapshot).unwrap();
-    let combined = combine(&roots(), snapshot.clone(), &[a.clone(), b.clone()]).unwrap();
+    let combined = combine(
+        &roots(),
+        network(),
+        snapshot.clone(),
+        &[a.clone(), b.clone()],
+        1_000,
+    )
+    .unwrap();
     // Exactly what the existing signer produces for the same keys.
     let direct = sign_snapshot_with_roots(
         &BTreeMap::from([
@@ -234,37 +248,111 @@ fn combine_takes_only_pinned_signers_over_this_root_up_to_the_threshold() {
     assert_eq!(combined, direct);
 
     assert_eq!(
-        combine(&roots(), snapshot.clone(), std::slice::from_ref(&a)).unwrap_err(),
+        combine(
+            &roots(),
+            network(),
+            snapshot.clone(),
+            std::slice::from_ref(&a),
+            1_000
+        )
+        .unwrap_err(),
         GovernanceError::BelowThreshold { have: 1, need: 2 }
     );
     assert_eq!(
-        combine(&roots(), snapshot.clone(), &[a.clone(), a.clone()]).unwrap_err(),
+        combine(
+            &roots(),
+            network(),
+            snapshot.clone(),
+            &[a.clone(), a.clone()],
+            1_000
+        )
+        .unwrap_err(),
         GovernanceError::DuplicateSigner("a".to_string())
     );
     let mut other = snapshot.clone();
     other.expires_at_unix += 1;
     let stale = sign_detached("b", &custodian("b"), &other).unwrap();
     assert!(matches!(
-        combine(&roots(), snapshot.clone(), &[a.clone(), stale]).unwrap_err(),
+        combine(
+            &roots(),
+            network(),
+            snapshot.clone(),
+            &[a.clone(), stale],
+            1_000
+        )
+        .unwrap_err(),
         GovernanceError::WrongRoot { .. }
     ));
     let outsider = sign_detached("d", &custodian("d"), &snapshot).unwrap();
     assert_eq!(
-        combine(&roots(), snapshot.clone(), &[a.clone(), outsider]).unwrap_err(),
+        combine(
+            &roots(),
+            network(),
+            snapshot.clone(),
+            &[a.clone(), outsider],
+            1_000
+        )
+        .unwrap_err(),
         GovernanceError::UnknownSigner("d".to_string())
     );
     // `b`'s id with `c`'s key: a valid signature, by the wrong custodian.
     let impostor = sign_detached("b", &custodian("c"), &snapshot).unwrap();
     assert_eq!(
-        combine(&roots(), snapshot.clone(), &[a.clone(), impostor]).unwrap_err(),
+        combine(
+            &roots(),
+            network(),
+            snapshot.clone(),
+            &[a.clone(), impostor],
+            1_000
+        )
+        .unwrap_err(),
         GovernanceError::SignerKeyMismatch("b".to_string())
     );
     let mut tampered = b;
     tampered.signature.replace_range(0..2, "00");
     assert_eq!(
-        combine(&roots(), snapshot, &[a, tampered]).unwrap_err(),
+        combine(&roots(), network(), snapshot, &[a, tampered], 1_000).unwrap_err(),
         GovernanceError::BadSignature("b".to_string())
     );
+}
+
+/// combine writes only what a consumer would load: signed for the network it names, with an
+/// interval that is not already over (a scheduled one is checked at its own start).
+#[test]
+fn combine_refuses_a_signed_snapshot_a_consumer_would_refuse() {
+    let snapshot = genesis();
+    let signatures = [
+        sign_detached("a", &custodian("a"), &snapshot).unwrap(),
+        sign_detached("b", &custodian("b"), &snapshot).unwrap(),
+    ];
+    let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
+    assert!(matches!(
+        combine(&roots(), mainnet, snapshot.clone(), &signatures, 1_000),
+        Err(GovernanceError::Registry(RegistryError::Network { .. }))
+    ));
+    assert!(matches!(
+        combine(&roots(), network(), snapshot.clone(), &signatures, 2_001),
+        Err(GovernanceError::Registry(RegistryError::Expired { .. }))
+    ));
+    combine(&roots(), network(), snapshot, &signatures, 0).unwrap();
+}
+
+/// A signature from an id or key the policy does not pin is a signature fault, like any other
+/// signature that does not count; the root policy itself is fine.
+#[test]
+fn signer_faults_carry_the_signature_code() {
+    for error in [
+        GovernanceError::UnknownSigner("d".to_string()),
+        GovernanceError::SignerKeyMismatch("b".to_string()),
+        GovernanceError::BadSignature("b".to_string()),
+        GovernanceError::DuplicateSigner("a".to_string()),
+        GovernanceError::BelowThreshold { have: 1, need: 2 },
+    ] {
+        assert!(
+            error.to_string().starts_with("E_REGISTRY_SIGNATURE: "),
+            "{error}"
+        );
+    }
 }
 
 /// A custodian whose key never leaves a device signs the printed root there; the result is the
@@ -322,6 +410,18 @@ fn replay_accepts_exactly_an_unbroken_chain_from_genesis() {
             roots(),
             network(),
             &[signed_by(&orphan, &["a", "b"])],
+            1_500
+        ),
+        Err(GovernanceError::Chain(_))
+    ));
+    // Nor one that claims a place further along a log than its start.
+    let mut mid_log = genesis();
+    mid_log.log_index = 2;
+    assert!(matches!(
+        replay(
+            roots(),
+            network(),
+            &[signed_by(&mid_log, &["a", "b"])],
             1_500
         ),
         Err(GovernanceError::Chain(_))
@@ -592,7 +692,7 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
         .iter()
         .map(|id| sign_detached(id, &custodian(id), &v4).unwrap())
         .collect();
-    let v4 = combine(&rotated, v4, &detached).unwrap();
+    let v4 = combine(&rotated, network(), v4, &detached, 4_100).unwrap();
     let mut published = chain.clone();
     published.push(v4.clone());
     let none: [Hash32; 0] = [];

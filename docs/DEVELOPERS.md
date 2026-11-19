@@ -173,7 +173,8 @@ Registry custodians and the operators who pin their roots use `ozpb registry`: `
 0600 custodian key; prints only the public key), `successor` (the next unsigned version from the
 published parent and a `registry-change/v1` document, refused if a consumer's load would refuse
 it), `sign` (`--print-root`, or a detached signature from a 0600 key file or from an Ed25519
-signature made elsewhere over the printed root), `combine`, `verify` (`--signed` one snapshot, or
+signature made elsewhere over the printed root), `combine` (refusing what a consumer's load
+would refuse before it writes), `verify` (`--signed` one snapshot, or
 `--replay` a published `registry/<network>/` log from genesis; prints the checkpoint to persist)
 and `monitor` (newer version, a head not yet valid, expiry, revoked watched hashes; exit 0, 3,
 7, 4, 5 or 6 for cron, 1 when the log cannot be verified). The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).

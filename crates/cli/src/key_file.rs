@@ -81,13 +81,14 @@ pub fn read_signing_key(path: &Path) -> Result<SigningKey, KeyFileError> {
 /// The file is created exclusively — an existing file or link at the path is refused, never
 /// overwritten — with mode exactly 0600 (set after creation, since a umask can only narrow it),
 /// and holds the Stellar secret seed and a newline, the form [`read_signing_key`] reads. The seed
-/// comes from the operating system's CSPRNG (`/dev/urandom`) and is written from zeroizing buffers.
+/// comes from the operating system's CSPRNG (`getrandom`) and is written from zeroizing buffers.
 #[cfg(unix)]
 pub fn generate_key_file(path: &Path) -> std::io::Result<ed25519_dalek::VerifyingKey> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut seed = Zeroizing::new([0u8; 32]);
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut seed[..])?;
+    getrandom::getrandom(&mut seed[..])
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let private = stellar_strkey::ed25519::PrivateKey(*seed);
     let mut encoded = Zeroizing::new(Default::default());
     stellar_strkey::Unredacted(&private).write_string(&mut encoded);

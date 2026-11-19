@@ -15,10 +15,13 @@ What the code enforces, independent of this procedure:
   Malformed or weak keys and unmeetable thresholds are refused as `E_REGISTRY_ROOT_POLICY`.
 - The public **development root** (`docs/examples/registry-roots.json`) is refused for every
   network but testnet, by every consumer, with `E_REGISTRY_ROOT_POLICY`: anyone can sign with it.
-- **Versions chain**: each successor increments `version` and `log_index` by one and names its
-  parent's root in `previous_root`. A consumer's persisted floor or checkpoint refuses an older
-  snapshot (`E_REGISTRY_ROLLBACK`), and a checkpoint refuses a different snapshot for the same
-  version or one that does not directly extend it (`E_REGISTRY_TRANSPARENCY`).
+- **Versions chain**: a consumer accepts a successor only with a higher `version`, the next
+  `log_index` (exactly one more) and its parent's root in `previous_root`. A consumer's persisted
+  floor or checkpoint refuses an older snapshot (`E_REGISTRY_ROLLBACK`), and a checkpoint refuses
+  a different snapshot for the same version or one that does not directly extend it
+  (`E_REGISTRY_TRANSPARENCY`). The tooling is stricter than a consumer: `successor` always
+  produces exactly the next version, and `verify --replay` requires a published log to start at
+  version 1, log index 1 with no parent and to count up by one.
 - **Revocations are append-only**: a successor cannot remove or rewrite one.
 - Every snapshot has a signed **validity interval**; outside it, it is refused
   (`E_REGISTRY_EXPIRED`).
@@ -127,11 +130,16 @@ A signature that does not verify over that root under that public key is refused
 ```bash
 ozpb registry combine --snapshot v0002.unsigned.json \
   --signature v0002.custodian-a.sig.json --signature v0002.custodian-c.sig.json \
-  --registry-roots registry/mainnet/roots.json --out registry/mainnet/v0002.signed.json
+  --registry-roots registry/mainnet/roots.json \
+  --network "Public Global Stellar Network ; September 2015" \
+  --out registry/mainnet/v0002.signed.json
 ```
 
 Every signature must be over this snapshot's root, verify, and come from the key pinned under its
-id; together they must meet the threshold.
+id; together they must meet the threshold. The result is then loaded as a consumer would load it —
+pinned roots, network, an interval not already over — and only then written, so the log
+directory never receives a file `verify` would refuse. Its place in the chain is the replay's to
+check.
 
 **Verify before distributing.** The gate is a replay of the whole published log:
 

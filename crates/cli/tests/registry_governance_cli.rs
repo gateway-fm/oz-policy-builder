@@ -143,6 +143,16 @@ impl Custodians {
 }
 
 fn combine(unsigned: &Path, signatures: &[&Path], roots: &Path, out: &Path) -> Output {
+    combine_for(TESTNET, unsigned, signatures, roots, out)
+}
+
+fn combine_for(
+    network: &str,
+    unsigned: &Path,
+    signatures: &[&Path],
+    roots: &Path,
+    out: &Path,
+) -> Output {
     let mut args = vec![
         "registry".into(),
         "combine".into(),
@@ -150,6 +160,8 @@ fn combine(unsigned: &Path, signatures: &[&Path], roots: &Path, out: &Path) -> O
         unsigned.as_os_str().to_owned(),
         "--registry-roots".into(),
         roots.as_os_str().to_owned(),
+        "--network".into(),
+        network.into(),
         "--out".into(),
         out.as_os_str().to_owned(),
     ];
@@ -251,6 +263,15 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         "combine below threshold",
         "E_REGISTRY_SIGNATURE",
     );
+    // Nothing a consumer would refuse reaches the log: signed for testnet, it is not combined as
+    // a mainnet snapshot, and no file is written.
+    let wrong = published.join("v0001.mainnet.json");
+    refused(
+        &combine_for(MAINNET, &draft, &[&sig_a, &sig_c], &roots, &wrong),
+        "combine for another network",
+        "E_REGISTRY_NETWORK",
+    );
+    assert!(!wrong.exists());
     let v1 = published.join("v0001.signed.json");
     ok(
         combine(&draft, &[&sig_a, &sig_c], &roots, &v1),
@@ -512,7 +533,7 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
             &work.path().join("old-roots.json"),
         ),
         "combine under the retired roots",
-        "is not a key id of the pinned root policy",
+        "E_REGISTRY_SIGNATURE",
     );
     let v3 = published.join("v0003.signed.json");
     ok(

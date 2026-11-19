@@ -30,6 +30,10 @@ pub const MONITOR_SCHEMA: &str = "registry-monitor/v1";
 /// The capability kinds a revocation of an exact code hash can name.
 const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
 
+/// Why a governance step refused. These reach only the `ozpb registry` CLI, never the MCP wire:
+/// the leading labels name the registry code each fault belongs to, and `E_REGISTRY_PARSE` (a
+/// malformed change set or signature file here, a malformed snapshot in [`RegistryError::Parse`])
+/// is a message label only — on the wire a registry parse fault is `E_REGISTRY_SIGNATURE`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum GovernanceError {
@@ -54,11 +58,9 @@ pub enum GovernanceError {
         "E_REGISTRY_SIGNATURE: {have} valid signature(s); the pinned root policy needs {need}"
     )]
     BelowThreshold { have: usize, need: u32 },
-    #[error("E_REGISTRY_ROOT_POLICY: {0:?} is not a key id of the pinned root policy")]
+    #[error("E_REGISTRY_SIGNATURE: {0:?} is not a key id of the pinned root policy")]
     UnknownSigner(String),
-    #[error(
-        "E_REGISTRY_ROOT_POLICY: the public key for {0:?} is not the key pinned under that id"
-    )]
+    #[error("E_REGISTRY_SIGNATURE: the public key for {0:?} is not the key pinned under that id")]
     SignerKeyMismatch(String),
     #[error("E_REGISTRY_TRANSPARENCY: {0}")]
     Chain(String),
@@ -214,13 +216,17 @@ pub fn external_signature(
 }
 
 /// Assemble detached signatures into a signed snapshot. Each must be over this snapshot's root,
-/// verify, and come from a key pinned under its id; together they must meet the threshold.
-/// The result still goes through [`replay`] (or a consumer's load) before distribution: this
-/// checks the signatures, not the snapshot.
+/// verify, and come from a key pinned under its id; together they must meet the threshold. The
+/// result is then loaded as a consumer would load it — under the pinned roots and network, at
+/// `now_unix` or at its own start if that is later — so nothing a consumer refuses is returned.
+/// Its place in the chain is not checked here: [`replay`] of the published log does that before
+/// distribution.
 pub fn combine(
     roots: &RootPolicy,
+    network: NetworkId,
     snapshot: RegistrySnapshot,
     signatures: &[DetachedSignature],
+    now_unix: i64,
 ) -> Result<SignedSnapshot, GovernanceError> {
     Registry::with_pinned_roots(roots.clone())?;
     let root = snapshot_root(&snapshot)?;
@@ -254,15 +260,23 @@ pub fn combine(
             need: roots.threshold,
         });
     }
-    Ok(SignedSnapshot {
+    let signed = SignedSnapshot {
         snapshot,
         signatures: collected,
-    })
+    };
+    let at = now_unix.max(signed.snapshot.valid_from_unix);
+    Registry::with_pinned_roots_for_network_at_version(roots.clone(), network, 0)?
+        .load_at(&signed, at)?;
+    Ok(signed)
 }
 
 /// Load-verify a published chain from genesis under the pinned roots and network: every version
 /// must load as the direct successor of the one before it, and the head must be valid at
 /// `now_unix`. Returns the head's checkpoint — what a consumer persists.
+///
+/// This is stricter than a consumer's load, which needs only a higher version and the next log
+/// index: a published log starts at version 1 and log index 1 with no parent, and its versions
+/// are consecutive, as [`successor`] produces them.
 pub fn replay(
     roots: RootPolicy,
     network: NetworkId,
@@ -272,11 +286,12 @@ pub fn replay(
     let (head, history) = chain
         .split_last()
         .ok_or_else(|| GovernanceError::Chain("the published chain is empty".to_string()))?;
-    let genesis = chain.first().unwrap_or(head);
-    if genesis.snapshot.version != 1 || genesis.snapshot.previous_root.is_some() {
+    let genesis = &chain.first().unwrap_or(head).snapshot;
+    if genesis.version != 1 || genesis.log_index != 1 || genesis.previous_root.is_some() {
         return Err(GovernanceError::Chain(format!(
-            "a chain starts at a genesis snapshot (version 1, no previous root), not version {}",
-            genesis.snapshot.version
+            "a chain starts at a genesis snapshot (version 1, log index 1, no previous root), \
+             not version {} at log index {}",
+            genesis.version, genesis.log_index
         )));
     }
     let mut registry = Registry::with_pinned_roots_for_network_at_version(roots, network, 0)?;

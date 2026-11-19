@@ -30,6 +30,8 @@ stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
+# Seeds a new registry custodian key (`ozpb registry keygen`) from the operating system's CSPRNG.
+getrandom = { workspace = true }
 hex = { workspace = true }
 tempfile = { workspace = true }
 

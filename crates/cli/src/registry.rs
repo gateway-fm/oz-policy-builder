@@ -47,7 +47,7 @@ pub enum Command {
     /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root.
     Sign(SignArgs),
     /// Assemble detached signatures into a signed snapshot, checking each against the pinned
-    /// root policy and the threshold.
+    /// root policy and the threshold, and load the result as a consumer would before writing it.
     Combine {
         /// The unsigned snapshot every signature covers.
         #[arg(long)]
@@ -55,9 +55,11 @@ pub enum Command {
         /// A detached signature file; repeat for each custodian.
         #[arg(long = "signature", required = true)]
         signatures: Vec<PathBuf>,
-        /// The pinned root policy JSON.
+        #[command(flatten)]
+        trust: TrustArgs,
+        /// Trusted current time (Unix seconds); defaults to the system clock.
         #[arg(long)]
-        registry_roots: PathBuf,
+        at: Option<i64>,
         /// The signed snapshot to write (must not exist).
         #[arg(long)]
         out: PathBuf,
@@ -172,16 +174,17 @@ pub fn run(command: Command) -> Result<()> {
         Command::Combine {
             snapshot,
             signatures,
-            registry_roots,
+            trust,
+            at,
             out,
         } => {
-            let roots = load_roots(&registry_roots)?.root_policy;
+            let (roots, network) = trust.load()?;
             let snapshot: RegistrySnapshot = read_json(&snapshot)?;
             let detached = signatures
                 .iter()
                 .map(|path| read_json::<DetachedSignature>(path))
                 .collect::<Result<Vec<_>>>()?;
-            let signed = governance::combine(&roots, snapshot, &detached)?;
+            let signed = governance::combine(&roots, network, snapshot, &detached, now(at)?)?;
             write_new(&out, &signed)?;
             print_json(&serde_json::json!({
                 "version": signed.snapshot.version.to_string(),
