@@ -19,7 +19,10 @@ recognized by its exact code hash
 is a passkey through OpenZeppelin's WebAuthn verifier. This is the shape the
 [Pollywallet integration](POLLYWALLET-INTEGRATION.md) generates, checks in all four layers
 (its live layer is two named cases, the exact transfer and one stroop more), installs and
-revokes. In this tree that integration is bound to testnet.
+revokes, in a testnet or a [mainnet session](POLLYWALLET-INTEGRATION.md#mainnet-sessions). On
+mainnet the delegate is the agent's own key, and a session needs protocol 30 on the network and a
+signed production registry ([mainnet installation](MAINNET-INSTALL.md)); this tree records no
+mainnet installation.
 
 ## Statuses
 
@@ -51,8 +54,8 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G6 | Reports separate offline conformance, committed-state integration and live preflight, with acquisition-derived labels; serialized input is downgraded | **narrowed** | [G6](#g6-reports-and-evidence-labels) | All four layers exist only for the native-SAC transfer; other shapes report their missing layers |
 | G7 | Stateful limits satisfy the executable invariants (missing state, install-only initialization, archival and restoration, max TTL, reinstall, inactivity, expiration changes, failed transactions) | **narrowed** | [G7](#g7-stateful-limits) | One generated fixture through one account code hash, with SDK test TTLs; a reviewed policy is not executed in composition |
 | G8 | Installed code is recognized by a reviewed registry entry or a verified generated-artifact attestation; external verifiers recognized; unknown is unverified; custom source labeled | **closed** | [G8](#g8-recognition) | Custom source is refused rather than labeled: no path accepts it. The code at each address is recognized from G2's `rpc_reported` observation |
-| G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | The manifest lacks source commit, template-pack hash, container digest, canonicalization version and build target; `generate` and `verify` do not check the registry root they record |
-| G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: the monitor does not report a revoked template family, the only revocation that reaches a generated policy, and nothing schedules it. Also: the mainnet log is an unsigned draft until its key ceremony; a revoked account build has no removal path, only moving the funds |
+| G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | Open: the default builder, which the shipped path uses, compiles without a container, so its manifests name no image, and every field is the producer's unattested statement. By design, `generate` and `verify` do not check the registry root they record |
+| G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: a revoked account build or owner verifier has documented owner procedures but no tooled or exercised path. Also: the mainnet log is an unsigned draft until its key ceremony; the operator schedules the monitor |
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
 | G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | Narrowed: not applicable to the shipped shape, which involves no hosted processing. Open for the hosted package: log redaction is configuration with no automated check |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
@@ -142,7 +145,9 @@ Open, and the other deviations:
 - **Detection, not alerting (open).** Post-install drift is found by the wallet's
   [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring) while its
   page is open; nothing runs in the background or raises an alert, and TTL continuity, so a
-  restoration, is not observed. Closing it needs a scheduled monitor that alerts.
+  restoration, is not observed. The same check also runs the registry monitor, which reports
+  revoked or expiring code, not a changed rule ([G10](#g10-registry-governance)). Closing it
+  needs a scheduled monitor of the account that alerts.
 - **One account, pure check.** The direct-call and management-bypass suites run through the
   pinned 0.7.3 account Wasm only, and feed the scan, projection and pure check from a local
   ledger with recognition supplied by the test and the reader's default bounds: no registry,
@@ -377,27 +382,39 @@ ci  wallet/tests/approval.test.mjs  the wallet pins the account and verifier has
 
 The PolicySpec schema is closed, so it cannot carry a build output, and the BuildManifest
 references the spec by hash
-([architecture §4.2](architecture.md#42-policyspec-and-the-artifact-chain)). The manifest hash
-binds the source, Wasm, lockfile and pipeline inputs; a manifest that misstates the compiler
-the Wasm records is refused; a generated artifact carries its Wasm and binding manifest.
+([architecture §4.2](architecture.md#42-policyspec-and-the-artifact-chain)). The manifest
+(`build-manifest/v2`) records the canonicalization version, the build target the crate declares
+(a build compiled for another target is refused), and a producer record: the toolkit's source
+commit and dirty flag, the template-pack hash, and the image when a disposable worker built it.
+Its hash binds every field, the producer record included; a manifest that misstates the compiler
+the Wasm records is refused; `verify` reproduces every field but the producer record, which it
+reports, and says when another producer made the artifact.
 
-Open:
+Open, and the other deviation:
 
-- **Incomplete manifest.** It does not record the source commit and dirty-tree status, the
-  template-pack hash, a build-container image digest, the canonicalization version or the build
-  target, and the builder is labelled `local-unattested`
-  ([SCOPE item 2](SCOPE.md#implementation-boundaries)). Closing it needs those fields, which
-  rehash every manifest, and a builder whose output is attested.
-- **Unchecked registry root.** `generate` and `verify` record the root the spec names without
-  checking it; trust is enforced at synthesis, the install intent and the live checks, which
-  load the snapshot under the pinned roots ([SCOPE item 7](SCOPE.md#implementation-boundaries)).
-  This is a design decision; the gate's "pinned registry snapshot" holds for a spec synthesized
-  under pinned roots, not for any manifest.
+- **No container, no attestation (open).** The default builder, which the CLI and so the wallet
+  use, compiles in its own environment: its manifests name no image and builds are not isolated
+  from one another. Every field is the producer's own statement, labelled `local-unattested`;
+  nothing lets a third party check a manifest without rerunning `ozpb verify`
+  ([SCOPE item 2](SCOPE.md#implementation-boundaries)). Closing it needs a containerized default
+  builder that records its image, and output someone else can check.
+- **Registry root, by design.** `generate` and `verify` record the root the spec names without
+  checking it; trust is enforced at synthesis, the install intent and the live checks, which load
+  the snapshot under the pinned roots ([SCOPE item 7](SCOPE.md#implementation-boundaries)). The
+  wallet synthesizes under its pinned roots before it generates, so on the shipped path the
+  recorded root is one that was checked; a manifest from `generate` alone carries no such
+  assurance.
 
 ```gate-evidence G9
 ci  crates/policy-spec/src/lib.rs  tests::spec_round_trips_through_json_with_closed_schema
 ci  crates/build-runner/src/lib.rs  tests::manifest_hash_binds_source_wasm_lockfile_and_pipeline_inputs
 ci  crates/build-runner/src/lib.rs  tests::a_manifest_that_misstates_the_compiler_is_refused
+ci  crates/build-runner/src/lib.rs  tests::a_manifest_records_canonicalization_target_and_its_producer
+ci  crates/build-runner/src/lib.rs  tests::the_manifest_hash_binds_the_producer_record
+ci  crates/build-runner/src/lib.rs  tests::a_reproduction_compares_every_field_but_the_producer_record
+ci  crates/build-runner/src/lib.rs  tests::a_build_not_compiled_for_the_declared_target_is_refused
+ci  crates/codegen/src/lib.rs  tests::the_template_pack_hash_is_the_emitter_source_without_its_tests
+ci  crates/toolkit/src/verification.rs  verification::tests::verification_reproduces_a_manifest_from_another_producer_and_says_so
 ci  crates/toolkit/src/lib.rs  tests::generated_artifact_includes_wasm_and_a_binding_manifest
 ```
 
@@ -406,27 +423,29 @@ ci  crates/toolkit/src/lib.rs  tests::generated_artifact_includes_wasm_and_a_bin
 A consumer refuses an older snapshot than its floor or checkpoint, a different snapshot for the
 same version after a restart, and a fork from an old root; revocations are append-only; every
 snapshot has a validity interval outside which it is refused, which bounds a freeze; the
-development root is refused off testnet. `ozpb registry monitor` reports a watched revocation,
-expiry and a newer head, and fails loudly on a log that contradicts the checkpoint; its exit
-codes are the alert ([monitoring](REGISTRY-GOVERNANCE.md#monitoring)). For a revoked policy or
-owner verifier, the emergency-removal path is the wallet's revocation of the grant, which
-succeeds only with the removal event and an absent read-back.
+development root is refused off testnet. `ozpb registry monitor` reports a revoked watched code
+hash or template family, expiry and a newer head, refuses a watch item the head does not know,
+and fails loudly on a log that contradicts the checkpoint; its exit status is the alert, on a
+schedule the operator sets up as [the governance
+guide](REGISTRY-GOVERNANCE.md#scheduling-the-monitor) describes. The wallet's installed-grant
+check runs the same monitor and reports the registry beside the grant. For a revoked policy or
+template family, the emergency-removal path is the wallet's revocation of the grant, which
+succeeds only with the removal event and an absent read-back, and also reaches a grant an
+earlier session installed.
 
 Open, and the other deviations:
 
-- **The shipped policy's revocation raises no alert (open).** The monitor reports revocations
-  of watched code hashes: account, policy, verifier and target adapter. A generated policy has
-  no hash entry; what revokes it is its template family (`template/policy-templates/scope@1`),
-  which synthesis and the checks then refuse but the monitor does not report. Closing it needs
-  the monitor to report a watched template family. Nothing in this tree runs the monitor on a
-  schedule; that is the consumer's.
-- **A revoked account build has no removal path.** Removing rules does not change the
-  account's code; the response is moving the funds to an account on a recognized build
-  ([revocation](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal)).
+- **A revoked account build or owner verifier (open).** Removing the grant does not help, and
+  the responses are owner procedures this tree documents but neither tools nor has run:
+  upgrading the account in place to a recognized build, or creating a new account and moving
+  the funds; for a verifier, replacing the owner signer
+  ([revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal)).
+  Closing it needs one of those paths exercised end to end.
 - **Precondition.** The mainnet log is an unsigned draft until its key ceremony
   ([`registry/mainnet/`](../registry/mainnet/README.md)); the tests below keep it so and keep
   the draft from claiming an audit.
-- **Freeze.** Monitoring cannot see newer versions a source withholds; each version's validity
+- **Scheduling and freeze.** Nothing in this tree runs the monitor on a schedule; that is the
+  operator's. Monitoring cannot see newer versions a source withholds; each version's validity
   interval is the backstop.
 
 ```gate-evidence G10
@@ -439,11 +458,17 @@ ci  crates/registry/src/lib.rs  tests::the_development_root_is_refused_for_every
 ci  crates/registry/src/governance/tests.rs  governance::tests::monitoring_reports_newer_versions_expiry_and_watched_revocations
 ci  crates/registry/src/governance/tests.rs  governance::tests::monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint
 ci  crates/registry/src/governance/tests.rs  governance::tests::replay_accepts_exactly_an_unbroken_chain_from_genesis
+ci  crates/registry/src/governance/tests.rs  governance::tests::monitoring_reports_a_revoked_watched_template_family
+ci  crates/registry/src/governance/tests.rs  governance::tests::a_watch_item_the_head_does_not_know_is_an_error
+ci  crates/registry/src/governance/tests.rs  governance::tests::a_watched_template_family_must_be_a_valid_family_name
 ci  crates/cli/tests/registry_governance_cli.rs  a_production_shaped_testnet_registry_runs_end_to_end
 ci  crates/cli/tests/registry_governance_cli.rs  the_committed_mainnet_log_awaits_its_key_ceremony
 ci  crates/cli/tests/development_root_cli.rs  synthesize_refuses_the_development_root_for_mainnet
 ci  crates/registry/tests/mainnet_draft.rs  the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in
 ci  wallet/tests/install-actions.test.mjs  revoke removes the installed rule only with the event, an absent readback and a separate cleanup report
+ci  wallet/tests/earlier-revoke-actions.test.mjs  a rule an earlier session installed is listed, removed with the passkey and verified
+ci  wallet/tests/registry-monitor.test.mjs  each exit status is read with its meaning, as the governance guide tabulates it
+ci  wallet/tests/registry-monitor.test.mjs  the installed-grant monitor reports the registry alongside the grant
 ```
 
 ## G11. Reconfiguration

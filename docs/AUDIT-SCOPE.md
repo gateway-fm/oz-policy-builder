@@ -101,7 +101,7 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Component | Path | Why it is here | Non-test | Test |
 | --- | --- | --- | ---: | ---: |
 | Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,697 | 2,474 |
-| Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the third is a rule with two tuples of one function | 890 | tested below |
+| Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the third is a test fixture, a rule with two tuples of one function | 890 | tested below |
 | Atomic live helper | `contracts/atomic-live-helper` | On-chain contract the owner signs into for the [live-enforcement check](ATOMIC-LIVE-HELPER.md) | 163 | 50 |
 | Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,785 | 2,987 |
 | Call-surface core | `crates/call-surface-core` | The install-time authority verdict | 1,101 | 1,509 |
