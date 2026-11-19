@@ -70,6 +70,7 @@ CI = """\
 jobs:
   host:
     steps:
+      - run: python3 scripts/test-check-mainnet-gates.py
       - run: bash scripts/check-mainnet-gates.sh --part host
       - run: bash scripts/test-something.sh
   contracts:
@@ -124,6 +125,8 @@ if os.environ.get("FAIL_MATCH") and os.environ["FAIL_MATCH"] in arguments:
 count = 1 if sys.argv[-2:] == ["--", "--exact"] else 0
 if os.environ.get("EMPTY_MATCH") and os.environ["EMPTY_MATCH"] in arguments:
     count = 0
+if os.environ.get("TWO_MATCH") and os.environ["TWO_MATCH"] in arguments:
+    count = 2
 print(f"test result: ok. {count} passed; 0 failed; 0 ignored; 0 measured; 9 filtered out;")
 '''
 
@@ -142,6 +145,12 @@ if os.environ.get("EMPTY_MATCH") and os.environ["EMPTY_MATCH"] in title:
 elif os.environ.get("FAIL_MATCH") and os.environ["FAIL_MATCH"] in title:
     print("not ok 1 - " + title)
     sys.exit(1)
+elif os.environ.get("SKIP_MATCH") and os.environ["SKIP_MATCH"] in title:
+    print("ok 1 - " + title + " # SKIP")
+    print("# pass 0")
+elif os.environ.get("NOT_OK_SUB") and os.environ["NOT_OK_SUB"] in title:
+    print("    not ok 1 - a subtest inside it")
+    print("ok 1 - " + title)
 else:
     print("ok 1 - " + title)
     print("# pass 1")
@@ -176,7 +185,7 @@ class FixtureCheckerTests(unittest.TestCase):
     def run_checker(self, *arguments, **environment):
         (self.root / "calls.log").unlink(missing_ok=True)
         env = os.environ.copy()
-        for key in ["EMPTY_MATCH", "FAIL_MATCH"]:
+        for key in ["EMPTY_MATCH", "FAIL_MATCH", "TWO_MATCH", "SKIP_MATCH", "NOT_OK_SUB"]:
             env.pop(key, None)
         env.update(PATH=f"{self.bin}{os.pathsep}{env['PATH']}", **environment)
         return subprocess.run([BASH, str(self.root / "scripts/check-mainnet-gates.sh"), *arguments],
@@ -248,6 +257,20 @@ class FixtureCheckerTests(unittest.TestCase):
     def test_a_failing_rust_test_fails(self):
         self.assert_red(self.run_checker(FAIL_MATCH="gamma_holds"), "CHECK FAILED")
 
+    def test_a_name_that_runs_two_tests_fails(self):
+        self.assert_red(self.run_checker(TWO_MATCH="beta_holds"), "ASSERTED NOTHING")
+
+    def test_a_skipped_wallet_test_fails(self):
+        self.assert_red(self.run_checker(SKIP_MATCH="exactly one"), "ASSERTED NOTHING")
+
+    def test_a_failing_subtest_under_a_passing_title_fails_even_when_node_exits_zero(self):
+        self.assert_red(self.run_checker(NOT_OK_SUB="exactly one"), "ASSERTED NOTHING")
+
+    def test_a_wallet_title_outside_a_test_call_is_not_a_test(self):
+        self.edit("wallet/tests/demo.test.mjs", "test('the wallet\\'s grant (exactly one) holds'",
+                  "assert.ok(true, 'the wallet\\'s grant (exactly one) holds'")
+        self.assert_red(self.run_checker(), "exactly one")
+
     def test_a_wallet_title_that_is_absent_matches_nothing_or_fails_is_red(self):
         self.assert_red(self.run_checker(EMPTY_MATCH="exactly one"), "ASSERTED NOTHING")
         self.assert_red(self.run_checker(FAIL_MATCH="exactly one"), "CHECK FAILED")
@@ -269,6 +292,11 @@ class FixtureCheckerTests(unittest.TestCase):
                   "for test in other_holds delta_holds")
         self.assert_red(self.run_checker(), "delta_holds")
 
+    def test_a_release_name_outside_a_required_check_requires_nothing(self):
+        self.edit("scripts/test-pinned-account-authorization.sh", "for test in delta_holds",
+                  "echo delta_holds\nfor test in other")
+        self.assert_red(self.run_checker(), "delta_holds")
+
     def test_release_tests_need_the_scheduled_job_that_runs_the_release_gate(self):
         self.edit(".github/workflows/nightly-live.yml",
                   "- run: bash scripts/test-pinned-account-authorization.sh",
@@ -278,6 +306,35 @@ class FixtureCheckerTests(unittest.TestCase):
     def test_a_ci_step_the_workflow_does_not_run_fails(self):
         self.edit(".github/workflows/ci.yml", "      - run: bash scripts/test-something.sh\n", "")
         self.assert_red(self.run_checker(), "test-something.sh")
+
+    def test_ci_must_run_this_self_test(self):
+        self.edit(".github/workflows/ci.yml", "      - run: python3 scripts/test-check-mainnet-gates.py\n", "")
+        self.assert_red(self.run_checker(), "test-check-mainnet-gates.py")
+
+    def test_a_malformed_or_repeated_evidence_fence_is_refused(self):
+        for new, message in [("``` gate-evidence G2", "an evidence fence must read exactly"),
+                             ("```gate-evidence G2 (open)", "an evidence fence must read exactly"),
+                             ("  ```gate-evidence G2", "an evidence fence must read exactly"),
+                             ("~~~gate-evidence G2", "an evidence fence must read exactly"),
+                             ("```gate-evidence G1", "G1 has a second evidence block")]:
+            with self.subTest(fence=new):
+                self.setUp()
+                self.edit("docs/MAINNET-GATES.md", "```gate-evidence G2", new)
+                self.assert_red(self.run_checker(), message)
+                self.assertEqual(self.calls(), [])
+
+    def test_a_gate_that_is_not_a_review_gate_needs_an_evidence_block(self):
+        self.edit("docs/MAINNET-GATES.md",
+                  "```gate-evidence G3\nci  crates/demo/tests/suite.rs  epsilon_holds\n```\n", "")
+        self.assert_red(self.run_checker(), "G3 is open but has no evidence block")
+
+    def test_a_closed_gate_needs_something_that_runs_in_ci(self):
+        start = DOC.index("```gate-evidence G1")
+        block = DOC[start:DOC.index("```\n", start + 3) + 4]
+        self.edit("docs/MAINNET-GATES.md", block,
+                  "```gate-evidence G1\nrelease  contracts/differential/tests/"
+                  "account_wasm_invariants.rs  delta_holds\n```\n")
+        self.assert_red(self.run_checker(), "G1 is closed but nothing it names runs in CI")
 
     def test_a_part_ci_does_not_run_fails(self):
         self.edit(".github/workflows/ci.yml", "--part wallet", "--part elsewhere")
@@ -293,7 +350,8 @@ class FixtureCheckerTests(unittest.TestCase):
     def test_status_and_evidence_rules(self):
         cases = [
             ("**closed** | below | none |", "**done** | below | none |", "G1"),
-            ("```gate-evidence G3", "```gate-evidence G9", "G9"),
+            ("```gate-evidence G3", "```gate-evidence G9\nci  crates/demo/tests/suite.rs  "
+             "epsilon_holds\n```\n\n```gate-evidence G3", "no table row for G9"),
             ("| G4 | Fourth | **review**", "| G4 | Fourth | **closed**", "G4"),
             ("ci  crates/demo/tests/suite.rs  epsilon_holds", "ci  crates/demo/tests/suite.py  x", "suite.py"),
         ]

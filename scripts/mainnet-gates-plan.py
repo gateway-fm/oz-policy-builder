@@ -26,10 +26,12 @@ RELEASE_SCRIPT = "scripts/test-pinned-account-authorization.sh"
 RELEASE_WORKFLOW = ".github/workflows/nightly-live.yml"
 CI_WORKFLOW = ".github/workflows/ci.yml"
 CHECKER = "bash scripts/check-mainnet-gates.sh --part"
+SELF_TEST = "python3 scripts/test-check-mainnet-gates.py"
 GATE_HEADING = "**Acceptance gates before any mainnet use**"
 RUST_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*")
 ROW = re.compile(r"^\|\s*G(\d+)\s*\|")
 BLOCK = re.compile(r"^```gate-evidence\s+(\S+)\s*$")
+FENCE = re.compile(r"^\s*(```|~~~)")
 ENTRY = re.compile(r"^(\S+)\s+(\S+)\s+(.+?)\s*$")
 
 
@@ -56,8 +58,12 @@ def architecture_gate_count(root):
 
 def read_document(doc):
     """Return ({gate: status}, [(gate, line number, run, path, name)])."""
-    statuses, entries, gate = {}, [], None
+    statuses, entries, gate, blocks = {}, [], None, {}
     for number, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+        # A fence this reader does not recognize would drop a gate's checks without a word.
+        if FENCE.match(line) and "gate-evidence" in line and not BLOCK.match(line):
+            raise PlanError(f"{doc.name}:{number}: an evidence fence must read exactly "
+                            f"'```gate-evidence G<n>': {line}")
         if gate is not None:
             if line.startswith("```"):
                 gate = None
@@ -70,6 +76,10 @@ def read_document(doc):
         block = BLOCK.match(line)
         if block:
             gate = block.group(1)
+            if gate in blocks:
+                raise PlanError(f"{doc.name}:{number}: {gate} has a second evidence block "
+                                f"(the first is at line {blocks[gate]})")
+            blocks[gate] = number
             continue
         row = ROW.match(line)
         if row:
@@ -86,6 +96,9 @@ def read_document(doc):
             statuses[name] = status
     if gate is not None:
         raise PlanError(f"{doc.name}: the evidence block for {gate} is not closed")
+    for name, status in statuses.items():
+        if status != "review" and name not in blocks:
+            raise PlanError(f"{doc.name}: {name} is {status} but has no evidence block")
     return statuses, entries
 
 
@@ -108,16 +121,31 @@ def rust_check(root, path, name, where):
 
 
 def release_requirements(script):
-    """{(binary, name)} for every name the release script mentions on a non-comment line, paired
-    with the `--test` binary it last ran above that line (its loops check names from that run)."""
-    required, binary = set(), None
+    """{(binary, name)} for each test the release script requires by name to have passed: the
+    names of a `for test in ...; do` loop and of a `grep -qx 'test NAME ... ok'` check, each
+    paired with the `--test` binary the script ran last above it. A name anywhere else, a comment
+    included, requires nothing."""
+    logical, pending = [], ""
     for line in script.splitlines():
-        code = line.split("#", 1)[0] if line.lstrip().startswith("#") else line
-        found = re.search(r"--test\s+(\w+)", code)
+        if line.lstrip().startswith("#"):
+            continue
+        if line.rstrip().endswith("\\"):
+            pending += line.rstrip()[:-1] + " "
+            continue
+        logical.append(pending + line)
+        pending = ""
+    required, binary = set(), None
+    for line in logical:
+        found = re.search(r"--test\s+(\w+)", line)
         if found:
             binary = found.group(1)
-        if binary:
-            required.update((binary, word) for word in re.findall(r"[A-Za-z_]\w*", code))
+        if binary is None:
+            continue
+        loop = re.search(r"\bfor\s+test\s+in\s+([^;]*);\s*do\b", line)
+        if loop:
+            required.update((binary, name) for name in loop.group(1).split())
+        for name in re.findall(r"grep\s+-qx\s+['\"]test\s+(\w+)\s+\.\.\.\s+ok['\"]", line):
+            required.add((binary, name))
     return required
 
 
@@ -127,15 +155,22 @@ def runs_line(text, command):
     return re.search(pattern, text, flags=re.M) is not None
 
 
+def wallet_titles(source):
+    """The first argument of each `test(` call: literal titles, and template-literal ones as
+    patterns in which each `${...}` stands for any text."""
+    literals, patterns = set(), []
+    for quote, body in re.findall(r"\btest\(\s*(['\"`])((?:\\.|(?!\1)[^\\])*)\1", source):
+        if quote == "`" and "${" in body:
+            parts = re.split(r"\$\{[^}]*\}", body)
+            patterns.append(re.compile(".+".join(map(re.escape, parts))))
+        else:
+            literals.add(re.sub(r"\\(.)", r"\1", body))
+    return literals, patterns
+
+
 def wallet_title_exists(source, title):
-    """A literal title, or one a template-literal title such as `refuses ${case}` produces."""
-    if title in source or title.replace("'", "\\'") in source:
-        return True
-    for template in re.findall(r"\btest\(\s*`([^`]*)`", source):
-        parts = re.split(r"\$\{[^}]*\}", template)
-        if len(parts) > 1 and re.fullmatch(".+".join(map(re.escape, parts)), title):
-            return True
-    return False
+    literals, patterns = wallet_titles(source)
+    return title in literals or any(pattern.fullmatch(title) for pattern in patterns)
 
 
 def plan(root, doc):
@@ -149,6 +184,7 @@ def plan(root, doc):
     ci = (root / CI_WORKFLOW).read_text(encoding="utf-8")
 
     checks, evidence_per_gate, parts = {}, {g: 0 for g in statuses}, set()
+    run_in_ci = {g: 0 for g in statuses}
     for gate, number, run, path, name in entries:
         where = f"{doc.name}:{number} ({gate})"
         if gate not in statuses:
@@ -156,6 +192,8 @@ def plan(root, doc):
         if not (root / path).is_file():
             raise PlanError(f"{where}: {path} does not exist")
         evidence_per_gate[gate] += 1
+        if run in {"ci", "ci-step"}:
+            run_in_ci[gate] += 1
         if run == "ci-step":
             if not path.startswith(".github/workflows/") or \
                     not runs_line((root / path).read_text(encoding="utf-8"), name):
@@ -196,6 +234,10 @@ def plan(root, doc):
     for gate, status in statuses.items():
         if status in {"closed", "narrowed"} and evidence_per_gate[gate] == 0:
             raise PlanError(f"{doc.name}: {gate} is {status} but names no evidence")
+        if status == "closed" and run_in_ci[gate] == 0:
+            raise PlanError(f"{doc.name}: {gate} is closed but nothing it names runs in CI")
+    if not runs_line(ci, SELF_TEST):
+        raise PlanError(f"{CI_WORKFLOW} does not run '{SELF_TEST}'")
     for part in sorted(parts):
         if not runs_line(ci, f"{CHECKER} {part}"):
             raise PlanError(f"{CI_WORKFLOW} does not run '{CHECKER} {part}'")
