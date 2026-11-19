@@ -343,7 +343,9 @@ pub enum RegistryError {
     VerifierCapabilityIncomplete(String),
     #[error("E_TARGET_ADAPTER_UNSUPPORTED: target adapter for wasm {0} has unknown or inconsistent semantics")]
     TargetAdapterUnsupported(String),
-    #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
+    #[error(
+        "E_UNREGISTERED_TEMPLATE: no template family named {0} is registered in this snapshot"
+    )]
     UnknownTemplate(String),
     #[error("E_REGISTRY_REVOKED: capability {capability} is revoked: {reason}")]
     Revoked { capability: String, reason: String },
@@ -1128,6 +1130,11 @@ pub mod dev {
     /// holds for this version once published, so tests pin every root.
     pub const SIGNED_EXAMPLE_VERSION: u64 = 7;
 
+    /// What the scope template entry says about review from version 7 on. Versions 1 to 6 say
+    /// "audited with the template pack", which no review supports; they are published, so the
+    /// claim stays in them, and the first unpublished version states what is true.
+    pub const SCOPE_TEMPLATE_REVIEW_V7: &str = "Development-registry entry, not a review: no completed security review covers this template family's code generation (crates/codegen), and anyone can sign with this snapshot's development root. Version 7 adds range_i128 to its declared constraint kinds.";
+
     /// The scope template's constraint vocabulary as versions 1 to 6 signed it. Frozen, not
     /// derived: those roots are published, and deriving this from [`Constraint::KINDS`] would
     /// rewrite all six the moment a kind is added. A new kind is declared by a successor
@@ -1349,7 +1356,8 @@ pub mod dev {
     /// Version 7: version 6 plus the inclusive range constraint (`range_i128`) in the scope
     /// template's declared vocabulary, which is now [`Constraint::KINDS`] in full. Synthesis
     /// refuses a spec whose kinds its template family does not declare, so a grant that bounds
-    /// an amount on both sides (`0..=X`) needs this version. Nothing else changes.
+    /// an amount on both sides (`0..=X`) needs this version. The template entry's review text also
+    /// stops claiming an audit ([`SCOPE_TEMPLATE_REVIEW_V7`]); nothing else changes.
     pub fn range_constraint_successor(
         network_id: NetworkId,
     ) -> Result<RegistrySnapshot, RegistryError> {
@@ -1366,6 +1374,7 @@ pub mod dev {
             .iter()
             .map(|kind| (*kind).to_string())
             .collect();
+        template.review_reference = SCOPE_TEMPLATE_REVIEW_V7.to_string();
         Ok(snapshot)
     }
 
@@ -1593,7 +1602,7 @@ mod tests {
         assert_eq!(v7, committed.snapshot);
         assert_eq!(
             snapshot_root(&v7).unwrap().to_hex(),
-            "86c6b570daef2e92e3b6aa9b179d3a6cabdc4bf826f531a23d771c7ebf7abdc6"
+            "8874c4e03f7dd47d2cdc197e56f4317a5c8edb69e8571a3df383bd15f17b48eb"
         );
     }
 
@@ -1630,16 +1639,45 @@ mod tests {
         }
         let v7 = dev::range_constraint_successor(network()).unwrap();
         assert_eq!(scope(v7.clone()), Constraint::KINDS);
-        // The range is the only change from version 6.
+        // The range and the template's review text are the only changes from version 6.
         let mut v6 = dev::account_advisory_successor(network()).unwrap();
-        v6.templates
-            .get_mut("policy-templates/scope@1")
-            .unwrap()
-            .constraint_kinds = scope(v7.clone());
+        let template = v6.templates.get_mut("policy-templates/scope@1").unwrap();
+        template.constraint_kinds = scope(v7.clone());
+        template.review_reference = dev::SCOPE_TEMPLATE_REVIEW_V7.to_string();
         v6.version = 7;
         v6.log_index = 7;
         v6.previous_root = v7.previous_root;
         assert_eq!(v6, v7);
+    }
+
+    /// Versions 1 to 6 say the template pack was "audited with the template pack", which no
+    /// review supports; they are published and keep it. Version 7, the first unpublished one,
+    /// says what is true, and a refusal of an unknown family claims no audit either.
+    #[test]
+    fn the_current_template_entry_and_its_refusal_claim_no_audit() {
+        let review = |snapshot: RegistrySnapshot| {
+            snapshot.templates["policy-templates/scope@1"]
+                .review_reference
+                .clone()
+        };
+        assert_eq!(
+            review(dev::account_advisory_successor(network()).unwrap()),
+            "audited with the template pack"
+        );
+        let current = review(dev::range_constraint_successor(network()).unwrap());
+        assert_eq!(current, dev::SCOPE_TEMPLATE_REVIEW_V7);
+        for claim in ["audited", "reviewed with"] {
+            assert!(!current.contains(claim), "{current}");
+        }
+        for disclosure in ["not a review", "development root"] {
+            assert!(current.contains(disclosure), "{current}");
+        }
+        let refusal = RegistryError::UnknownTemplate("policy-templates/other@1".into()).to_string();
+        assert_eq!(
+            refusal,
+            "E_UNREGISTERED_TEMPLATE: no template family named policy-templates/other@1 is \
+             registered in this snapshot"
+        );
     }
 
     /// GHSA-jpg9-m7w4-c7wc: `stellar-accounts` before 0.7.3 approves a `Delegated` signer

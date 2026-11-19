@@ -97,7 +97,7 @@
           "le_i128",
           "range_i128"
         ],
-        "review_reference": "audited with the template pack"
+        "review_reference": "Development-registry entry, not a review: no completed security review covers this template family's code generation (crates/codegen), and anyone can sign with this snapshot's development root. Version 7 adds range_i128 to its declared constraint kinds."
       }
     },
     "revocations": {
@@ -108,6 +108,6 @@
     }
   },
   "signatures": {
-    "legacy": "2da36b4ae1945e69c7f74d5a95e5f71ec332c5d48b3fed9a94805898d40a46cc281e05e9de54fc72e7ba334669d58bb17e2a7a91b716e472c10e4ed99e061c0d"
+    "legacy": "7497f4e6452c59697caea3e20da4182794f535af2b86d87dc739567cea040785e5be061a0e0ef093f2f20378b27a3b6c2032882e5d2988ff2021a1e0b66dd40e"
   }
 }

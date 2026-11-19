@@ -654,7 +654,7 @@ fn within_declared_capabilities<'a>(
     }
     undeclared.sort();
     undeclared.dedup();
-    // Deliberately NOT `EUnregisteredTemplate`: that code means "no audited family by this
+    // Deliberately NOT `EUnregisteredTemplate`: that code means "no registered family by this
     // name", and an agent reading it would tell the user their family is unregistered or their
     // snapshot is stale. Here the family resolved fine and declares less than the spec uses,
     // and the remedy is the opposite — narrow the spec, or update the template entry. The
