@@ -125,7 +125,7 @@ try {
   };
   const context = vm.createContext({ Buffer, process: { env: {
     ...process.env, OZPB_BIN: 'unused-authority-runner', OZPB_REGISTRY_ROOTS_FILE: 'unused-roots',
-    OZPB_REGISTRY_MIN_VERSION: '1', OZPB_RPC_SOURCES_FILE: 'unused-sources',
+    OZPB_REGISTRY_MIN_VERSION: '6', OZPB_RPC_SOURCES_FILE: 'unused-sources',
     OZPB_SIGNED_REGISTRY_SNAPSHOT: join(dir, 'registry.json'),
   } } });
   const module = new vm.SourceTextModule(readFileSync(sourceUrl, 'utf8'), { context });
