@@ -158,8 +158,12 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    [self-hosting](SELF-HOSTING.md#obtain-and-verify) gives. Every asset is attached before
    publication, so the flow works whether or not the repository turns on GitHub's immutable
    releases, which lock a published release's assets and tag but not its title or notes.
+   Before publishing, check that the tag still points at the commit the binaries run built
+   (its head commit, shown in the run): the images are built at publication from wherever the
+   tag points then, so a moved tag would split binaries and images across two commits.
    Publication runs `publish-image.yml` (images, [self-hosting](SELF-HOSTING.md#build-the-reviewed-revision)),
-   which refuses a tag that does not name the workspace version.
+   which refuses a tag that does not name the workspace version and a release that does not yet
+   carry its `SHA256SUMS`.
 9. **Check the images**: `publish-image.yml` green, and the image references from its summary
    added to the release body.
 
