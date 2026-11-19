@@ -2171,6 +2171,17 @@ mod tests {
         }
 
         proptest::proptest! {
+            // Bounded shrinking. Proptest's default shrinks without limit in iterations or time,
+            // and every step here re-validates, re-generates and re-parses a crate of up to 32
+            // calls of up to 32 arguments. A regression (or a mutant in the mutation gate) that
+            // fails on a large case could shrink past the gate's 120-second timeout on a loaded
+            // machine, which reports a timeout instead of the failure. The bound keeps a failure
+            // fast and the reported case still small enough to read.
+            #![proptest_config(proptest::prelude::ProptestConfig {
+                max_shrink_iters: 256,
+                max_shrink_time: 10_000,
+                ..proptest::prelude::ProptestConfig::default()
+            })]
             /// Every ValidatedSpec must emit Rust that parses. Parsing (rather than
             /// compiling) keeps this fast enough for CI; `sampled_specs_compile_to_wasm`
             /// covers the real toolchain.
