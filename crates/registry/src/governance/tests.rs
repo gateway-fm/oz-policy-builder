@@ -1,6 +1,6 @@
 use super::*;
 use crate::dev;
-use ozpb_domain::{sha256, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE};
+use ozpb_domain::{pinned_upstream, sha256, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE};
 
 fn network() -> NetworkId {
     NetworkId::from_passphrase(TESTNET_PASSPHRASE)
@@ -504,7 +504,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     // A hash the consumer relies on was revoked in a version it has not seen.
     let watched = [
         Watched::Code(revoked_hash()),
-        Watched::Code(sha256(b"an unrelated hash")),
+        Watched::Code(pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM),
     ];
     let report = monitor(
         roots(),
@@ -906,12 +906,91 @@ fn monitoring_reports_a_revoked_watched_template_family() {
             effective_version: 4,
         }]
     );
-    // Another family, or the family's name read as code, is not reported.
-    let unrelated = [
-        Watched::TemplateFamily("policy-templates/other@1".to_string()),
-        Watched::Code(sha256(family.as_bytes())),
-    ];
+    // Registered code the head does not revoke is not reported.
+    let unrelated = [Watched::Code(pinned_upstream::OZ_SMART_ACCOUNT_WASM)];
     let report = monitor(roots(), network(), at_v3, &published, 2_600, 0, &unrelated).unwrap();
     assert_eq!(report.status, MonitorStatus::NewerVersion);
     assert!(report.revoked.is_empty());
+}
+
+/// A watch item the head neither registers nor revokes can never report anything, so a typo would
+/// leave a cron job reading "current" forever. It is an error naming the item, not a silence.
+#[test]
+fn a_watch_item_the_head_does_not_know_is_an_error() {
+    let chain = chain();
+    let at_v3 = checkpoint_of(&chain);
+    for item in [
+        Watched::TemplateFamily("policy-templates/scope@l".to_string()),
+        Watched::Code(sha256(b"a mistyped hash")),
+    ] {
+        let error = monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            2_600,
+            0,
+            std::slice::from_ref(&item),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, GovernanceError::NotWatchable { item: named, .. } if *named == item),
+            "{error}"
+        );
+        // The message names the item, so the operator can find the typo.
+        let named = match &item {
+            Watched::TemplateFamily(family) => format!("template family {family:?}"),
+            Watched::Code(hash) => format!("wasm hash {}", hash.to_hex()),
+        };
+        assert!(error.to_string().starts_with(&named), "{error}");
+    }
+    // Code registered under each role, alone, is something the head can report on.
+    for registered in [
+        pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM,
+        pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+        pinned_upstream::OZ_ED25519_VERIFIER_WASM,
+        ozpb_domain::target_adapters::SOROSWAP_ROUTER_TESTNET_WASM,
+    ] {
+        monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            2_600,
+            0,
+            &[Watched::Code(registered)],
+        )
+        .unwrap();
+    }
+    // Registered, or revoked without an entry: both are things a head can report on.
+    monitor(
+        roots(),
+        network(),
+        at_v3,
+        &chain,
+        2_600,
+        0,
+        &[
+            Watched::TemplateFamily("policy-templates/scope@1".to_string()),
+            Watched::Code(revoked_hash()),
+        ],
+    )
+    .unwrap();
+}
+
+/// A family name is checked with the registry's own rule before it is watched.
+#[test]
+fn a_watched_template_family_must_be_a_valid_family_name() {
+    assert_eq!(
+        Watched::template_family("policy-templates/scope@1").unwrap(),
+        Watched::TemplateFamily("policy-templates/scope@1".to_string())
+    );
+    for bad in [
+        "",
+        " policy-templates/scope@1",
+        "policy templates",
+        "family\n",
+    ] {
+        assert!(Watched::template_family(bad).is_err(), "{bad:?}");
+    }
 }

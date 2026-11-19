@@ -476,6 +476,30 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     assert_eq!(report["revoked"][0]["reason"], "rehearsal revocation");
     let output = monitor(&checkpoint_v1_path, &[]);
     assert_eq!(output.status.code(), Some(3), "{output:?}");
+    // A watch item that can never match fails instead of reading "current" forever: a mistyped
+    // family or hash the head neither registers nor revokes, and a name that is not a family.
+    for (item, expected) in [
+        (
+            ["--template", "policy-templates/scope@l"],
+            "template family \"policy-templates/scope@l\" is neither registered nor revoked",
+        ),
+        (
+            ["--wasm-hash", &"cd".repeat(32)],
+            "is neither registered nor revoked",
+        ),
+        (
+            ["--template", "policy templates"],
+            "is not a template family name",
+        ),
+    ] {
+        let output = monitor(&checkpoint_v1_path, &item);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        refused(
+            &output,
+            "monitor a watch item that can never match",
+            expected,
+        );
+    }
     let head_path = work.path().join("checkpoint-v2.json");
     write_json(&head_path, &head);
     let output = monitor(&head_path, &[]);

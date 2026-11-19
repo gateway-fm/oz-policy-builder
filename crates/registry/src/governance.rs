@@ -71,6 +71,11 @@ pub enum GovernanceError {
         "E_REGISTRY_PARSE: {0} still carries a pending review reference; replace it before signing"
     )]
     PendingReview(String),
+    #[error(
+        "{item} is neither registered nor revoked in the published head (version {version}), so \
+         watching it can never report anything; check the item"
+    )]
+    NotWatchable { item: Watched, version: u64 },
 }
 
 /// What custodians declare for the next version. Version, log index and parent root are not
@@ -361,6 +366,24 @@ pub enum Watched {
     TemplateFamily(String),
 }
 
+impl Watched {
+    /// A template family to watch, refused unless it is a valid family name by the registry's
+    /// own rule.
+    pub fn template_family(name: &str) -> Result<Self, GovernanceError> {
+        crate::validate_template_family(name)?;
+        Ok(Watched::TemplateFamily(name.to_string()))
+    }
+}
+
+impl std::fmt::Display for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Watched::Code(hash) => write!(f, "wasm hash {hash}"),
+            Watched::TemplateFamily(family) => write!(f, "template family {family:?}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevokedCapability {
@@ -451,6 +474,19 @@ pub fn monitor(
     };
     let mut revoked = Vec::new();
     for item in watched {
+        // Something the head can report on: registered under some role, or revoked (a revoked
+        // entry may also have been removed). Anything else is a watch that can never fire.
+        let registered = match item {
+            Watched::Code(hash) => {
+                let key = hash.to_hex();
+                snapshot.policies.contains_key(&key)
+                    || snapshot.accounts.contains_key(&key)
+                    || snapshot.verifiers.contains_key(&key)
+                    || snapshot.target_adapters.contains_key(&key)
+            }
+            Watched::TemplateFamily(family) => snapshot.templates.contains_key(family),
+        };
+        let revoked_before = revoked.len();
         let capabilities: Vec<String> = match item {
             Watched::Code(hash) => HASH_KINDS
                 .iter()
@@ -467,6 +503,12 @@ pub fn monitor(
                     effective_version: revocation.effective_version,
                 });
             }
+        }
+        if !registered && revoked.len() == revoked_before {
+            return Err(GovernanceError::NotWatchable {
+                item: item.clone(),
+                version: snapshot.version,
+            });
         }
     }
     let newer_version_available = snapshot.version > checkpoint_version;

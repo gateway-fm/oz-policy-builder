@@ -71,7 +71,7 @@ pub enum Command {
     /// revocations of watched Wasm hashes and template families. Prints JSON; the exit status is for cron: 0 current,
     /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash or template family revoked, 7 the
     /// head's interval has not started, and 1 when the published log cannot be verified against
-    /// the checkpoint.
+    /// the checkpoint or a watch item is one the head neither registers nor revokes.
     Monitor(MonitorArgs),
 }
 
@@ -310,10 +310,10 @@ fn monitor(args: MonitorArgs) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
     for family in &args.templates {
-        if family.trim().is_empty() || family.trim() != family {
-            bail!("--template {family:?} is not a template family name");
-        }
-        watched.push(Watched::TemplateFamily(family.clone()));
+        watched.push(
+            Watched::template_family(family)
+                .with_context(|| format!("--template {family:?} is not a template family name"))?,
+        );
     }
     let report = governance::monitor(
         config.root_policy,

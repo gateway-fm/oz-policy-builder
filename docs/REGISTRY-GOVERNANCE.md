@@ -240,7 +240,7 @@ expiring, not yet valid, newer:
 | 4 | the head expires within the window | ask the custodians for a successor |
 | 5 | the head has expired | synthesis and checks now refuse it; same |
 | 6 | a watched hash or template family is revoked | the emergency-removal path below |
-| 1 | the published log cannot be verified against the checkpoint | treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned |
+| 1 | the published log cannot be verified against the checkpoint — or the command is misconfigured, including a watched hash or template family the head neither registers nor revokes | read the message: a log that cannot be verified is an incident (a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned); a watch item it names is mistyped or no longer in the registry, and must be fixed, since it could never report |
 
 Monitoring compares your checkpoint with one published source. It detects a log that contradicts
 what you accepted, but it cannot detect newer versions that source withholds: a frozen or
@@ -253,7 +253,10 @@ Watch what your installed grants rely on: the account's Wasm hash, each owner ve
 each reviewed policy's with `--wasm-hash`, and with `--template` the template family of each
 generated policy (its spec names it, `template_family`). A generated policy has no registry entry
 of its own: it is recognized through its family, so revoking the family is the one revocation that
-reaches it, and watching its build's hash would never report one.
+reaches it, and watching its build's hash would never report one. Every watch item must be
+something the head registers or revokes, and a family must be a valid family name: anything else —
+a typo above all — is refused with exit 1 and the item named, because a watch that can never match
+would otherwise read "current" forever.
 
 ## Scheduling the monitor
 
@@ -294,9 +297,10 @@ What each status should set off:
   every request until a successor is loaded.
 - **6** — page, and start the [emergency-removal path](#revocation-and-emergency-removal) for every
   grant using the revoked capability; the report names each revoked capability and its reason.
-- **1** — page and treat as a security incident: the published log contradicts what you accepted,
-  or a new version is signed under roots you have not pinned. Do not advance anything until it is
-  explained.
+- **1** — page. If the message names a watch item, fix the watch list (or, if a registered item was
+  dropped without a revocation, ask the custodians why). Otherwise treat it as a security incident:
+  the published log contradicts what you accepted, or a new version is signed under roots you have
+  not pinned. Do not advance anything until it is explained.
 
 ## Revocation and emergency removal
 
