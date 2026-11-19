@@ -478,71 +478,96 @@ pub fn emit_cases(spec: &ValidatedSpec) -> Result<SuiteCases, serde_json::Error>
     })
 }
 
-/// The largest suite a caller-supplied spec may have, checked with [`suite_size_bound`] before
+/// The most cases a caller-supplied spec's suite may have, checked with [`suite_bound`] before
 /// anything is built. Far above every committed spec (the largest derives 65 cases).
 ///
 /// Validation bounds each part of a spec, not the suite they compose into: cross products grow
 /// with the square of a function's tuples times their arity, so a 991 KB spec within every
 /// per-item limit (14 rules of 32 tuples of 32 exact amounts) derived 310,674 cases, held about
-/// 1 GB while they were evaluated and answered with 74 MB. A case is a few kilobytes held, so
-/// this keeps one suite to tens of megabytes.
+/// 1 GB while they were evaluated and answered with 74 MB.
 pub const MAX_SUITE_CASES: usize = 20_000;
 
-/// How many cases [`build_suite`] derives for `spec`, at most, counted without building them:
-/// exact for each call's own mutations, an upper bound for each rule's signer, time and state
-/// boundaries, and the cross products before those reproducing an accepted tuple are skipped.
-pub fn suite_size_bound(spec: &ValidatedSpec) -> usize {
-    spec.spec()
-        .rules
-        .iter()
-        .map(|rule| {
-            let per_call: usize = rule
-                .allowed_calls
-                .iter()
-                .map(|call| {
-                    let args = concrete_args(spec, rule, call);
-                    let mutations: usize = args
-                        .iter()
-                        .enumerate()
-                        .map(|(i, arg)| {
-                            let constraint = call
-                                .args
-                                .iter()
-                                .find(|a| a.index as usize == i)
-                                .map(|a| &a.constraint);
-                            arg_mutations(arg, constraint).len()
-                        })
-                        .sum();
-                    // Original, other contract, other function, extra and missing argument.
-                    3 + mutations + 1 + usize::from(!args.is_empty())
-                })
-                .sum();
-            // Zero, wrong, partial, duplicate and extra signer; two strict-set; three time.
-            let boundaries = 10 + 6 * rule.state.len();
-            let mut arities: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-            for call in &rule.allowed_calls {
-                arities
-                    .entry(&call.fn_name)
-                    .or_default()
-                    .push(call.args.len());
-            }
-            let cross_products: usize = arities
-                .values()
-                .map(|tuples| {
-                    let mut pairs = 0;
-                    for (left, arity) in tuples.iter().enumerate() {
-                        pairs += tuples[left + 1..]
-                            .iter()
-                            .filter(|other| *other == arity)
-                            .count()
-                            * arity;
+/// The most bytes a suite's cases may hold, as [`suite_bound`] estimates them. A case copies the
+/// whole tuple it varies, so a few tuples carrying large exact values can make a suite of few
+/// cases large: one tuple of four 60 KiB values crossed with nine others is a few hundred cases
+/// of about 330 KB each.
+pub const MAX_SUITE_BYTES: usize = 64 * 1024 * 1024;
+
+/// What one case holds besides its arguments: its label, contract, function name, evaluation
+/// context and outcome. Calibrated on the spec above: 310,674 cases of 32 small arguments
+/// (about 1 KiB each) at 931 MB resident is about 3 KiB a case.
+const CASE_BYTES: usize = 2048;
+
+/// [`suite_bound`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SuiteBound {
+    /// At most this many cases: exact for each call's own mutations, an upper bound for each
+    /// rule's signer, time and state boundaries, and the cross products before those
+    /// reproducing an accepted tuple are skipped.
+    pub cases: usize,
+    /// An estimate of the bytes those cases hold: each case at [`CASE_BYTES`] plus
+    /// the tuple it copies (a cross product, both tuples it mixes).
+    pub bytes: usize,
+}
+
+/// How large [`build_suite`] would make `spec`'s suite, counted without building it.
+pub fn suite_bound(spec: &ValidatedSpec) -> SuiteBound {
+    fn tuple_bytes(args: &[ArgValue]) -> usize {
+        args.iter()
+            .map(|arg| {
+                std::mem::size_of::<ArgValue>()
+                    + match arg {
+                        ArgValue::Address(text) | ArgValue::ScvalXdr(text) => text.len(),
+                        ArgValue::I128(_) => 0,
                     }
-                    pairs
+            })
+            .sum()
+    }
+    let mut bound = SuiteBound { cases: 0, bytes: 0 };
+    let mut add = |cases: usize, each: usize| {
+        bound.cases = bound.cases.saturating_add(cases);
+        bound.bytes = bound
+            .bytes
+            .saturating_add(cases.saturating_mul(CASE_BYTES.saturating_add(each)));
+    };
+    for rule in &spec.spec().rules {
+        let tuples: Vec<(&str, Vec<ArgValue>)> = rule
+            .allowed_calls
+            .iter()
+            .map(|call| (call.fn_name.as_str(), concrete_args(spec, rule, call)))
+            .collect();
+        for (call, (_, args)) in rule.allowed_calls.iter().zip(&tuples) {
+            let mutations: usize = args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    let constraint = call
+                        .args
+                        .iter()
+                        .find(|a| a.index as usize == i)
+                        .map(|a| &a.constraint);
+                    arg_mutations(arg, constraint).len()
                 })
                 .sum();
-            per_call + boundaries + cross_products
-        })
-        .sum()
+            // Original, other contract, other function, extra and missing argument.
+            add(
+                3 + mutations + 1 + usize::from(!args.is_empty()),
+                tuple_bytes(args),
+            );
+        }
+        // Zero, wrong, partial, duplicate and extra signer; two strict-set; three time. Each
+        // copies the rule's first tuple; the largest stands in for it.
+        let largest = tuples.iter().map(|(_, args)| tuple_bytes(args)).max();
+        add(10 + 6 * rule.state.len(), largest.unwrap_or(0));
+        for (left, (function, a)) in tuples.iter().enumerate() {
+            for (other, b) in &tuples[left + 1..] {
+                if other == function && a.len() == b.len() {
+                    add(a.len(), tuple_bytes(a) + tuple_bytes(b));
+                }
+            }
+        }
+    }
+    bound
 }
 
 /// Expose the suite so layer 2 (the contracts workspace) drives the same mutations.
@@ -1415,25 +1440,72 @@ mod tests {
             .expect("a wide rule within the per-item limits")
     }
 
+    /// [`wide_rule`] of ten tuples of 32, whose first four arguments are exact byte strings: 60 KiB
+    /// each in the first tuple (the per-rule budget is 256 KiB), one distinct byte in the others.
+    fn large_values_rule() -> ValidatedSpec {
+        let mut spec = wide_rule(10, 32).spec().clone();
+        for (call, tuple) in spec.rules[0].allowed_calls.iter_mut().enumerate() {
+            for arg in &mut tuple.args[..4] {
+                let bytes = if call == 0 {
+                    vec![arg.index as u8; 60 * 1024]
+                } else {
+                    vec![(call * 4) as u8 + arg.index as u8]
+                };
+                let value = stellar_xdr::ScVal::Bytes(stellar_xdr::ScBytes(
+                    bytes.try_into().expect("within the XDR bound"),
+                ));
+                arg.constraint = Constraint::EqScval {
+                    xdr_base64: value
+                        .to_xdr_base64(stellar_xdr::Limits::none())
+                        .expect("encodes"),
+                };
+            }
+        }
+        spec.validate().expect("within every per-item limit")
+    }
+
     /// The bound an entry point checks before building is never below what the build produces,
     /// so a spec under the limit cannot build a suite over it.
     #[test]
-    fn the_suite_size_bound_covers_every_case_the_suite_builds() {
+    fn the_suite_bound_covers_every_case_the_suite_builds() {
         for (label, spec) in [
             ("W2 subscription", golden_spec()),
             ("W1 blend", blend_claim_spec()),
             ("W3 soroswap", soroswap_swap_spec()),
             ("cross products", wide_rule(6, 4)),
         ] {
-            let built = build_suite(&spec).len();
-            let bound = suite_size_bound(&spec);
+            let built = build_suite(&spec);
+            let bound = suite_bound(&spec);
             assert!(
-                bound >= built,
-                "{label}: bound {bound} < {built} built cases"
+                bound.cases >= built.len(),
+                "{label}: {bound:?} < {}",
+                built.len()
             );
             assert!(
-                bound <= built + 16,
-                "{label}: bound {bound} is loose for {built} cases"
+                bound.cases <= built.len() + 16,
+                "{label}: {bound:?} is loose"
+            );
+            let held: usize = built
+                .iter()
+                .map(|case| {
+                    CASE_BYTES
+                        + case
+                            .invocation
+                            .args
+                            .iter()
+                            .map(|arg| {
+                                std::mem::size_of::<ArgValue>()
+                                    + match arg {
+                                        ArgValue::Address(t) | ArgValue::ScvalXdr(t) => t.len(),
+                                        ArgValue::I128(_) => 0,
+                                    }
+                            })
+                            .sum::<usize>()
+                })
+                .sum();
+            assert!(
+                bound.bytes >= held,
+                "{label}: {bound:?} < {held} bytes held"
             );
         }
     }
@@ -1443,10 +1515,20 @@ mod tests {
     /// building anything.
     #[test]
     fn a_spec_whose_suite_would_exceed_the_limit_is_measured_not_built() {
-        let wide = wide_rule(32, 32);
-        assert!(suite_size_bound(&wide) > MAX_SUITE_CASES);
+        assert!(suite_bound(&wide_rule(32, 32)).cases > MAX_SUITE_CASES);
         // Far above anything committed: the largest committed spec's suite has 65 cases.
-        assert!(suite_size_bound(&golden_spec()) * 100 < MAX_SUITE_CASES);
+        let golden = suite_bound(&golden_spec());
+        assert!(golden.cases * 100 < MAX_SUITE_CASES && golden.bytes * 100 < MAX_SUITE_BYTES);
+    }
+
+    /// Few cases can still be large: every case copies the tuple it varies. One tuple of four
+    /// 60 KiB exact values among ten derives a few thousand cases, hundreds of them copying it.
+    #[test]
+    fn a_suite_of_few_cases_that_would_hold_too_much_is_measured_not_built() {
+        let large = large_values_rule();
+        let bound = suite_bound(&large);
+        assert!(bound.cases < MAX_SUITE_CASES, "{bound:?}");
+        assert!(bound.bytes > MAX_SUITE_BYTES, "{bound:?}");
     }
 
     #[test]

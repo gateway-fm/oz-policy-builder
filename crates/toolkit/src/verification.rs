@@ -11,22 +11,26 @@ use ozpb_harness::EvidenceReport;
 use ozpb_policy_spec::{PolicySpec, ValidatedSpec};
 use std::collections::BTreeMap;
 
-/// A caller's spec, validated, whose reference suite is within
-/// [`ozpb_harness::MAX_SUITE_CASES`]. Every entry point that derives the suite from a request
-/// starts here, before deriving or building anything: validation bounds the parts of a spec,
-/// not the suite they compose into.
+/// A caller's spec, validated, whose reference suite is within [`ozpb_harness::MAX_SUITE_CASES`]
+/// cases and [`ozpb_harness::MAX_SUITE_BYTES`] held. Every entry point that derives the suite
+/// from a request starts here, before deriving or building anything: validation bounds the parts
+/// of a spec, not the suite they compose into.
 pub(crate) fn suite_spec(spec: &serde_json::Value) -> Result<ValidatedSpec, ToolError> {
     let spec: PolicySpec = from_value(spec)?;
     let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
-    let cases = ozpb_harness::suite_size_bound(&validated);
-    if cases > ozpb_harness::MAX_SUITE_CASES {
+    let bound = ozpb_harness::suite_bound(&validated);
+    if bound.cases > ozpb_harness::MAX_SUITE_CASES || bound.bytes > ozpb_harness::MAX_SUITE_BYTES {
         return Err(ToolError::new(
             EC::ESpecInvalid,
             "PolicySpec is too large for its reference suite",
         )
         .with_details(vec![format!(
-            "E_SPEC_LIMITS: the reference suite would derive up to {cases} cases; the limit is {}",
-            ozpb_harness::MAX_SUITE_CASES
+            "E_SPEC_LIMITS: the reference suite would derive up to {} cases holding about {} \
+             bytes; the limits are {} cases and {} bytes",
+            bound.cases,
+            bound.bytes,
+            ozpb_harness::MAX_SUITE_CASES,
+            ozpb_harness::MAX_SUITE_BYTES
         )]));
     }
     Ok(validated)

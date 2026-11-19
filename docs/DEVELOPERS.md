@@ -131,7 +131,8 @@ ozpb reference-suite --spec spec.json
 # sha256("ozpb-reference-suite-cases/v1\n" + spec_hash + "\n" + compact JSON of `cases`)). The
 # testnet harness replays its live-realizable denials against an installed rule from this output.
 # A spec whose suite would derive more than 20,000 cases (cross products grow with the square of
-# a function's tuples times their arity) is refused with E_SPEC_LIMITS and the count, here and by
+# a function's tuples times their arity), or whose cases would hold more than about 64 MiB (each
+# copies the tuple it varies), is refused with E_SPEC_LIMITS and both figures, here and by
 # `verify` and `prepare-dry-run`, before anything is derived or built.
 ozpb reference-suite --spec spec.json --emit-cases > cases.json
 
@@ -232,7 +233,7 @@ validates local report consistency, not imported evidence authenticity.
 | Flag | Env | Default |
 |---|---|---|
 | `--build-timeout-secs` | `OZPB_BUILD_TIMEOUT_SECS` | 600 |
-| `--build-cache-dir` | `OZPB_BUILD_CACHE_DIR` | a shared dir under the system temp dir |
+| `--build-cache-dir` | `OZPB_BUILD_CACHE_DIR` | a shared per-user dir beside the build directories (see below) |
 | `--build-jobs` | `OZPB_BUILD_JOBS` | available parallelism − 1 |
 | `--stellar-binary` | `OZPB_STELLAR_BINARY` | `stellar` on `PATH` |
 
@@ -241,7 +242,8 @@ validates local report consistency, not imported evidence authenticity.
 spent on. Two properties of a shared cache to plan for: it is **not pruned** (cargo does not
 GC target directories, so distinct specs accumulate — give the volume a quota and clear it on
 a schedule; an `--http` server instead removes each crate it builds, keeping the dependencies,
-so its clients' spec names cannot fill it), and it **serializes concurrent builds** on cargo's
+so its clients' spec names cannot fill it; give each server its own cache, since that removal is
+serialized only within one process), and it **serializes concurrent builds** on cargo's
 build-directory lock, so a
 hosted worker should size its concurrency to one build at a time per cache. The default path
 is per-uid and is refused if it is a symlink, not a directory, owned by another user, or
@@ -255,10 +257,13 @@ would reproduce identically.
 choose the compiler, which then runs as you: on Linux, any user can create `/tmp/.cargo`. So the
 build directory is created only under a directory that, like each of its parents, only root and
 you can add entries to (a read-only mount qualifies). That is the system temporary directory
-(`TMPDIR`) when it qualifies, as it does on macOS; otherwise `ozpb/build-workspaces` in your
-cache directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only. When neither qualifies,
-the build is refused with `E_BUILD_UNAVAILABLE` before anything runs; set `TMPDIR` to a private
-directory. Your own parents' cargo configuration still applies, as `~/.cargo/config.toml` does.
+(`TMPDIR`) when it qualifies, as it does on macOS; otherwise `ozpb/build` in your cache
+directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only. The default build cache sits
+in the same directory. When neither qualifies (a `~/.cache` that a umask of 002 left
+group-writable does not), the build is refused with `E_BUILD_UNAVAILABLE` before anything runs;
+set `TMPDIR` to a private directory. Your own parents' cargo configuration still applies, as
+`~/.cargo/config.toml` does. A read-only mount is trusted as nobody can write through it; a
+read-only view of a directory others write to elsewhere is not detected.
 
 These are deliberately *not* request fields: a caller-chosen timeout is resource exhaustion
 and a caller-chosen builder path is arbitrary execution, so they stay operator configuration

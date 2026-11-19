@@ -105,7 +105,8 @@ API image includes both.
   `--preflight-enable-debug` ([mainnet prerequisites](MAINNET-INSTALL.md#prerequisites),
   [live use](ATOMIC-LIVE-HELPER.md#how-live-use-is-meant-to-work)).
 - **Authentication.** `--http` refuses to start without a bearer token of at least 32 bytes and
-  an RPC allowlist. Serve it through the TLS proxy or your own ingress only
+  an RPC allowlist, and without either a [build worker launcher](ISOLATED-BUILDS.md) or
+  `OZPB_HTTP_UNISOLATED_BUILDS=accept`, which the Compose file sets. Serve it through the TLS proxy or your own ingress only
   ([operator boundary](#configure-the-operator-boundary),
   [ingress](#behind-your-own-ingress-instead-of-the-proxy)). Over stdio the server is a local
   process of the client and takes no token.
@@ -245,7 +246,10 @@ proxy mode above. The server refuses a routable listen address unless the list n
 that is not loopback, and then answers authenticated requests for those hosts only (`403` for
 any other `Host`, loopback names included). It refuses any request carrying an `Origin` header
 (`403`) in either mode, as the proxy does. The bearer token, request quota, body bound and build
-limits apply unchanged.
+limits apply unchanged. Run without the Compose file, the image also needs
+`OZPB_HTTP_UNISOLATED_BUILDS=accept` (it compiles in its own container, as under Compose) and the
+read-only root filesystem and private `/tmp/ozpb` tmpfs the Compose file gives it: a build refuses
+a temporary directory other users can write to.
 
 The `Host` check is not access control: whoever reaches the listen address can name the public
 host. Between the ingress and the API the token travels in plain HTTP and is the only control,

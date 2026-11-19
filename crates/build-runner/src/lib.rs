@@ -604,14 +604,17 @@ fn parse_u64(key: &str, raw: &str) -> Result<u64, BuildError> {
 /// plant dependency artifacts that cargo links into the policy wasm — and since `verify`
 /// reproduces through the same cache, the reproduction would agree with the poisoned build.
 ///
-/// The `workspace` argument is deliberately unused — it must not influence the cache.
-pub fn resolve_target_dir(config: &BuildConfig, _workspace: &Path) -> PathBuf {
+/// It sits in `parent`, the directory the build workspaces are created in, which
+/// [`workspace_parent`] has established only root and this user can add entries to. The check
+/// on the cache itself does not reach its parent: under a parent others can write and that is
+/// not sticky, another user could rename the checked cache away and put their own in its place.
+pub fn resolve_target_dir(config: &BuildConfig, parent: &Path) -> PathBuf {
     config.target_dir.clone().unwrap_or_else(|| {
         #[cfg(unix)]
         let name = format!("ozpb-build-cache-{}", nix::unistd::getuid());
         #[cfg(not(unix))]
         let name = "ozpb-build-cache".to_string();
-        std::env::temp_dir().join(name)
+        parent.join(name)
     })
 }
 
@@ -696,10 +699,13 @@ pub fn prepare_cache_dir(path: &Path) -> Result<(), BuildError> {
 ///
 /// So a workspace is created only under a directory that, like each of its parents up to `/`,
 /// only root and this user can add entries to; a directory on a read-only mount qualifies, since
-/// nobody can. The system temporary directory is used when it qualifies, as macOS's per-user one
-/// does; otherwise `ozpb/build-workspaces` in the user's cache directory (`$XDG_CACHE_HOME`, else
-/// `~/.cache`), created owner-only; and when neither qualifies the build is refused before
-/// anything runs. A disposable worker builds in its job's private mount instead (`worker.rs`).
+/// nobody can through this mount (a read-only view of a directory others write to elsewhere, such
+/// as a host's `/tmp` mounted read-only into a container, is not detected). The system temporary
+/// directory is used when it qualifies, as macOS's per-user one does; otherwise `ozpb/build` in
+/// the user's cache directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only; and when
+/// neither qualifies the build is refused before anything runs. The default build cache sits in
+/// the same directory ([`resolve_target_dir`]). A disposable worker builds in its job's private
+/// mount instead (`worker.rs`).
 #[cfg(unix)]
 fn workspace_parent() -> Result<PathBuf, BuildError> {
     let absolute = |name: &str| {
@@ -709,7 +715,7 @@ fn workspace_parent() -> Result<PathBuf, BuildError> {
     };
     let user_cache = absolute("XDG_CACHE_HOME")
         .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
-        .map(|cache| cache.join("ozpb").join("build-workspaces"));
+        .map(|cache| cache.join("ozpb").join("build"));
     workspace_parent_from(&std::env::temp_dir(), user_cache.as_deref())
 }
 
@@ -739,7 +745,8 @@ fn workspace_parent_from(temp: &Path, fallback: Option<&Path>) -> Result<PathBuf
         "no private directory to build in: the temporary directory {refused}, and no private \
          user cache directory stands in. Cargo reads its configuration from every parent of the \
          directory it builds in, so set TMPDIR to a directory that only you and root can write \
-         to, inside directories only you and root can write to"
+         to, inside directories only you and root can write to (for example one made with \
+         `mkdir -m 700` in your home directory)"
     )))
 }
 
@@ -768,7 +775,7 @@ fn private_ancestry(dir: &Path) -> Result<PathBuf, &'static str> {
     Ok(canonical)
 }
 
-/// Nobody can add an entry to a directory on a read-only mount, whatever its mode says: the
+/// Nobody can add an entry to a directory through a read-only mount, whatever its mode says: the
 /// container images' `/tmp` under a read-only root filesystem.
 #[cfg(unix)]
 fn on_read_only_mount(path: &Path) -> bool {
@@ -1278,7 +1285,7 @@ fn build_local_in(
     write_generated(workspace.path(), request.generated)?;
     let output_dir = workspace.path().join("out");
     std::fs::create_dir(&output_dir).map_err(|error| BuildError::Internal(error.to_string()))?;
-    let target_dir = resolve_target_dir(config, workspace.path());
+    let target_dir = resolve_target_dir(config, parent);
     prepare_cache_dir(&target_dir)?;
     let manifest_path = workspace.path().join("Cargo.toml");
     // The manifest records `build_target` from the crate's own declaration. The CLI picks the
@@ -1295,7 +1302,7 @@ fn build_local_in(
     // A shared server's builds take the cache one at a time, and the build's own outputs leave
     // it on every path out of this function. The wait counts against the build's time limit.
     let deadline = std::time::Instant::now() + config.timeout;
-    let _evicting = match config.shared_server {
+    let evicting = match config.shared_server {
         true => Some(EvictCrateOutputs {
             _exclusive: exclusive_cache(deadline, config.cancel.as_ref())?,
             release: target_dir.join(ozpb_codegen::BUILD_TARGET).join("release"),
@@ -1347,6 +1354,8 @@ fn build_local_in(
     }
     let wasm =
         std::fs::read(&wasm_path).map_err(|error| BuildError::Internal(error.to_string()))?;
+    // Nothing below reads the cache: evict and give the next build its turn before the probes.
+    drop(evicting);
     let toolchain = ToolchainIdentity {
         // Both probes run from the build workspace, so they report the tools that actually
         // produced this Wasm rather than whatever the caller's directory resolves to.
@@ -1383,7 +1392,8 @@ fn build_local_in(
 
 /// Local builds of a shared server, one at a time. Builds sharing a cache already queue on
 /// cargo's lock while they compile; this extends the turn to the eviction after it, so a build
-/// never removes a same-named crate another is compiling.
+/// never removes a same-named crate another is compiling. It is this process's: two servers
+/// sharing one cache directory are not serialized against each other's evictions.
 static SHARED_CACHE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Wait for [`SHARED_CACHE`] until `deadline`, or until the caller cancels.
@@ -3839,17 +3849,16 @@ mod tests {
 
     #[test]
     fn the_default_target_dir_is_shared_across_builds_not_per_build() {
-        let config = BuildConfig::default();
-        let first = resolve_target_dir(&config, Path::new("/nonexistent/workspace-a"));
-        let second = resolve_target_dir(&config, Path::new("/nonexistent/workspace-b"));
+        // Every build's workspace is created in the same checked parent; the cache sits beside
+        // them, never inside one.
+        let parent = Path::new("/nonexistent/private-parent");
+        let cache = resolve_target_dir(&BuildConfig::default(), parent);
         assert_eq!(
-            first, second,
+            cache.parent(),
+            Some(parent),
             "the default cache must be shared, or every build recompiles the whole \
-             dependency tree from scratch inside the timeout"
-        );
-        assert!(
-            !first.starts_with("/nonexistent/workspace-a"),
-            "the default must not live inside the per-build workspace: {first:?}"
+             dependency tree from scratch inside the timeout; and it belongs in the parent \
+             checked for other users' writes: {cache:?}"
         );
     }
 
@@ -3999,11 +4008,7 @@ mod tests {
         let base = private_base();
         let shared = base.path().join("shared");
         directory(&shared, 0o1777);
-        let cache = base
-            .path()
-            .join("cache")
-            .join("ozpb")
-            .join("build-workspaces");
+        let cache = base.path().join("cache").join("ozpb").join("build");
         let chosen = workspace_parent_from(&shared, Some(&cache)).unwrap();
         assert_eq!(chosen, cache.canonicalize().unwrap());
         let mode = std::fs::metadata(&cache).unwrap().permissions().mode();

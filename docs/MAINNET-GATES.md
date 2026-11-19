@@ -555,7 +555,7 @@ cover; reports a failed RPC read from any tool by its category only, withholding
 text, the URL a transport error quotes included; refuses an envelope carrying signatures before
 any request, in `preflight_transaction` and `record_simulation`; keeps one session's artifacts from another;
 authenticates before spending quota, bounds request bodies and refuses requests over the quota;
-refuses a spec whose reference suite would exceed its case limit before deriving it; returns a
+refuses a spec whose reference suite would exceed its case or case-data limit before deriving it; returns a
 failed build's exit status without the compiler's output and removes each built crate from the
 shared cache; and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
 transport's bounds and the build-worker launcher, and runs the Compose package and rootless

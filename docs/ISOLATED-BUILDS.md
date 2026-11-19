@@ -95,7 +95,8 @@ ownership and mode while compiling, as well as fresh-cache isolation. Outside a 
 refuses a temporary directory any other user can add entries to, because cargo reads
 configuration from every parent of the directory it builds in
 ([build configuration](DEVELOPERS.md#build-configuration-operator-side)); the worker builds in
-this `1777` mount anyway, since its only principal is the job itself.
+this `1777` mount anyway, since its only principal is the job itself. `ozpb-build-worker` skips
+that check unconditionally, so it belongs only inside the launcher's container, never on a host.
 
 Podman's [runtime timeout](https://docs.podman.io/en/v5.7.0/markdown/podman-run.1.html#timeout-seconds)
 is enforced by conmon, independently of the API and launcher processes. Namespace teardown
