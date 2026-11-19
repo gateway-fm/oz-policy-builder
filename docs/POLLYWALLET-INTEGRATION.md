@@ -232,10 +232,11 @@ floor of at least 6, the development registry's current version.
 policy, whose `threshold` and `keys` must not name the development registry root (the key every
 committed example is signed with, which anyone can derive) and which must carry the persisted
 `checkpoint` the CLI checks rollback and equivocation against, at or above
-`registryMinimumVersion`. Anything else is refused at startup with the reason. When the CLI itself
-refuses a root policy (`E_REGISTRY_ROOT_POLICY`), from any call that reads the registry, the page
-shows `registry_root_refused` and nothing is generated, reviewed or signed. Testnet sessions keep
-the development registry.
+`registryMinimumVersion`. Anything else is refused at startup with the reason. The CLI refuses the
+development root off testnet too, before it reads anything: its standard error begins
+`Error: E_REGISTRY_ROOT_POLICY: `. The wallet reads only that leading code from any CLI call, never
+the message, and the page then shows `registry_root_refused`; nothing is generated, reviewed or
+signed. Testnet sessions keep the development registry.
 
 **The fee payer.** `feePayerKeyPath` names a file holding one Stellar secret seed (`S…`), owned by
 the user running the backend, with mode `0600`; a symlink, another owner or any access for group
@@ -920,7 +921,7 @@ cannot be repeated in the session, whatever the cause.
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
 | `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |
-| `registry_root_refused` | The CLI refused the registry's root policy (`E_REGISTRY_ROOT_POLICY`); configure the production trust files. |
+| `registry_root_refused` | The CLI's error began `E_REGISTRY_ROOT_POLICY`: it refused the registry's root policy (the development root off testnet, for one). Configure the production trust files. |
 
 The installation section shows the last ledger at which this review's evidence is still accepted
 (`installDeadline`), from the captured and live evidence the browser already holds. Submission

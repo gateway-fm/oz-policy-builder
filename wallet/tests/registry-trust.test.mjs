@@ -91,3 +91,25 @@ test('the CLI\'s E_REGISTRY_ROOT_POLICY reaches the page as registry_root_refuse
   assert.ok(seen.every((call) => call.codes.includes(REGISTRY_ROOT_POLICY)), 'every CLI call may surface it');
   assert.ok(REFUSAL_REASONS.has('registry_root_refused') && CLIENT_REASONS.has('registry_root_refused'));
 });
+
+test('the integrated CLI\'s own stderr line, through the real tool runner, becomes registry_root_refused', async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-registry-stderr-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // Exactly what `ozpb` prints for the development root off testnet (crates/cli/tests/development_root_cli.rs):
+  // its error, led by the code, on standard error, and a failing status.
+  const executable = join(root, 'ozpb');
+  writeFileSync(executable, '#!/bin/sh\nprintf \'Error: E_REGISTRY_ROOT_POLICY: the public development registry root is accepted only on testnet\\n\' >&2\nexit 1\n',
+    { mode: 0o700 });
+  const workRoot = join(root, 'work');
+  mkdirSync(workRoot, { mode: 0o700 });
+  const toolchain = new WalletToolchain({ executable, workRoot, rpcUrl: 'https://rpc.example/', registrySnapshot: '{}',
+    registryRoots: '{}', registryMinimumVersion: 6, network: (await import('../shared/networks.mjs')).WALLET_NETWORKS.mainnet });
+  const refused = (error) => error.code === REGISTRY_ROOT_POLICY && error.reason === 'registry_root_refused'
+    && !String(error.message).includes('development registry root');
+  for (const command of ['prepare-install-intent', 'check-policy-call-surface', 'assemble-install-transaction', 'check-installed-grant']) {
+    await assert.rejects(() => toolchain.authority(command, { spec: {} }), refused, command);
+  }
+  // Any other code, or the same text not at the start of the line, says nothing.
+  writeFileSync(executable, '#!/bin/sh\nprintf \'warning\\nError: E_REGISTRY_ROOT_POLICY: x\\n\' >&2\nexit 1\n', { mode: 0o700 });
+  await assert.rejects(() => toolchain.authority('prepare-install-intent', { spec: {} }), (error) => error.reason === undefined);
+});

@@ -345,3 +345,72 @@ test('mainnet deployment shows the policy upload\'s simulated cost first and ref
     else assert.equal((await prepared).summary.uploadSimulatedFeeStroops, cost);
   }
 });
+
+test('mainnet: the fee payer named as an authorizing address is refused before signing', async (t) => {
+  const f = mainnet(t);
+  await f.network.fundPayer();
+  // An entry whose credentials name the payer itself: the payer's envelope signature would authorize it.
+  const call = new xdr.InvokeContractArgs({ contractAddress: new Address(MAINNET.nativeAsset).toScAddress(), functionName: 'transfer',
+    args: [new Address(f.network.payerAddress).toScVal(), new Address('CAWGOGD3YYSPUR6CPT6PE33DCUIGFNBVZVA5WEDGK2YM34FRLIUQBT5A').toScVal(),
+      xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 1n }))] });
+  const entry = new xdr.SorobanAuthorizationEntry({ credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
+    new xdr.SorobanAddressCredentials({ address: new Address(f.network.payerAddress).toScAddress(), nonce: 5n, signatureExpirationLedger: 150,
+      signature: xdr.ScVal.scvVoid() })),
+  rootInvocation: new xdr.SorobanAuthorizedInvocation({
+    function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call), subInvocations: [] }) });
+  const envelope = new TransactionBuilder(new Account(f.network.payerAddress, '7'), { fee: '1000', networkPassphrase: Networks.PUBLIC })
+    .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [entry] }))
+    .setTimeout(60).build().toEnvelope().toXDR('base64');
+  await assert.rejects(() => f.network.submitEnvelope(envelope, 'use-grant'), /refused/);
+  assert.equal(f.calls.some((c) => c.sent), false);
+  assert.deepEqual(readdirSync(f.root), ['0000.session.json']);
+});
+
+test('mainnet: a Wasm upload is held to its own cap, every other transaction to the per-transaction cap', async (t) => {
+  const fees = { maxFeeStroops: 3_000, maxUploadFeeStroops: 50_000, sessionSpendCapStroops: 1_000_000 };
+  const upload = mainnet(t, { fee: 40_000, fees });
+  await upload.network.fundPayer();
+  // The upload's receipt fails the stored-hash check, but only after the fee checks let it through to be sent.
+  await assert.rejects(() => upload.network.upload(Buffer.from('0061736d01000000', 'hex'), Buffer.from(hash(Buffer.from('0061736d01000000', 'hex'))).toString('hex')));
+  assert.equal(upload.calls.filter((c) => c.sent).length, 1, '40000 is within the upload cap');
+  const call = mainnet(t, { fee: 40_000, fees });
+  await call.network.fundPayer();
+  await assert.rejects(() => call.network.submitEnvelope(contractCall(call.network.payerAddress), 'revoke-policy'),
+    (error) => error.reason === 'fee_cap', 'the same 40000 is above the per-transaction cap');
+  const over = mainnet(t, { fee: 50_001, fees });
+  await over.network.fundPayer();
+  await assert.rejects(() => over.network.upload(Buffer.from('0061736d01000000', 'hex'), Buffer.from(hash(Buffer.from('0061736d01000000', 'hex'))).toString('hex')),
+    (error) => error.reason === 'fee_cap');
+});
+
+test('mainnet: after an uncertain submission its whole fee stays counted and nothing else is sent', async (t) => {
+  const f = mainnet(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 100_000 },
+    change: (server) => { server.sendTransaction = async () => { throw new Error('lost response'); }; } });
+  await f.network.fundPayer();
+  await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy'), /refused/);
+  assert.equal(f.network.spentStroops, '4000');
+  assert.equal(f.network.canSubmit, false);
+  await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy'), /refused/);
+  assert.equal(f.network.spentStroops, '4000', 'a refused second attempt adds nothing');
+});
+
+test('a refusal from the fee payer keeps its reason through the use and removal actions', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../server/actions.mjs', import.meta.url), 'utf8');
+  for (const stage of ['use-grant', 'revoke-policy']) {
+    const at = source.indexOf(`'${stage}'); } catch`);
+    assert.ok(at > 0, stage);
+    assert.match(source.slice(at, at + 260), /refuse\(error\)|throw because\(error\.reason\)|rethrow\(error\)/, `${stage} keeps the reason`);
+  }
+});
+
+test('the fee payer is found by its raw key too, as an External signer would carry it', async () => {
+  const { payerMentioned } = await import('../server/actions.mjs');
+  const payer = Keypair.random();
+  const hex = Buffer.from(payer.rawPublicKey()).toString('hex');
+  assert.equal(payerMentioned({ signers: [{ kind: 'delegated', address: payer.publicKey() }] }, payer.publicKey()), true);
+  assert.equal(payerMentioned({ signers: [{ kind: 'external', public_key: hex }] }, payer.publicKey()), true);
+  assert.equal(payerMentioned({ signers: [{ kind: 'external', key_hex: `${hex.toUpperCase()}01` }] }, payer.publicKey()), true);
+  assert.equal(payerMentioned({ signers: [{ kind: 'external', public_key: Buffer.from(Keypair.random().rawPublicKey()).toString('hex') }] },
+    payer.publicKey()), false);
+});

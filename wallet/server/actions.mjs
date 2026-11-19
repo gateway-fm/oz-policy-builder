@@ -20,10 +20,22 @@ import { HELPER_DEPLOY, LIVE_ORIGIN, clockedLedger, consentWindow, ownerEntry, p
 import { USE_SIGNATURE_LEDGERS, USE_SUBMIT_MIN_LEDGERS } from './live-signing.mjs';
 import { LIVE_HELPER_WASM, liveShape } from '../shared/live-consent.mjs';
 import { readPinnedWasm, uploadInstruction } from './pinned-code.mjs';
+import { NETWORK_REASONS } from './network.mjs';
 import { validateRepeatedUse } from '../shared/live-enforcement.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
 const because = (reason) => Object.assign(new Error('wallet action refused; refresh and review again'), { reason });
+/** A fee payer refusal, refused again with its reason kept (a cap, an unfunded account), and nothing else of it. */
+const rethrow = (error) => { throw NETWORK_REASONS.includes(error?.reason) ? because(error.reason) : because(undefined); };
+/**
+ * Whether `value` (an authority verdict, a delegate list) names the fee payer: by its G address, as a
+ * classic or `Delegated` signer, or by its raw Ed25519 key in hex, as an `External` signer carries it.
+ */
+export function payerMentioned(value, payerAddress) {
+  const text = JSON.stringify(value ?? null);
+  const key = Buffer.from(StrKey.decodeEd25519PublicKey(payerAddress)).toString('hex');
+  return text.includes(payerAddress) || text.toLowerCase().includes(key);
+}
 /** Reads that did not fit their ledger window: the RPC answered too slowly, or from a lagging node. */
 class SlowReads extends Error {
   constructor() { super('wallet action refused; refresh and review again'); this.reason = 'rpc_too_slow'; }
@@ -561,8 +573,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (artifact.spec.smart_account.address !== wallet.contractId) refuse();
       const intent = await toolchain.authority('prepare-install-intent', deployment.request);
       // The fee payer must be no signer on this account, on any rule, nor the grant's delegate.
-      if (JSON.stringify(intent.authority?.verdict ?? null).includes(network.payerAddress)
-        || JSON.stringify(intent.delegate_signers ?? null).includes(network.payerAddress)) refuse();
+      if (payerMentioned(intent.authority?.verdict, network.payerAddress) || payerMentioned(intent.delegate_signers, network.payerAddress)) refuse();
       const expected = { account: wallet.contractId, target: artifact.spec.rules[0].context.contract,
         networkId: net.networkId, specHash: artifact.specHash, bindingSetHash: deployment.response.bindingSetHash,
         registrySnapshotRoot: artifact.spec.registry_snapshot, boundPolicies: [deployment.response.policyAddress], ruleIndex: 0 };
@@ -965,9 +976,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       // that leaves the fee payer able to submit sent nothing.
       held.useAttempted = true;
       let submitted;
-      try { submitted = await network.submitEnvelope(envelopeXdr, 'use-grant'); } catch {
+      try { submitted = await network.submitEnvelope(envelopeXdr, 'use-grant'); } catch (error) {
         if (network.canSubmit === true) held.useAttempted = false;
-        refuse();
+        rethrow(error);
       }
       // Confirmed: listed before any verification can refuse.
       held.use = freezeCopy({ status: 'confirmed_unverified', transactionHash: submitted.hash });
@@ -1112,9 +1123,9 @@ export function createWalletActions({ session, toolchain, network, native = null
         // refusal that leaves the fee payer able to submit sent nothing, so removal stays available.
         held.removalAttempted = true;
         let submitted;
-        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch {
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
           if (network.canSubmit === true) held.removalAttempted = false;
-          refuse();
+          rethrow(error);
         }
         // Confirmed: keep its identity before any verification can refuse.
         held.removal = { status: 'confirmed_unverified', ruleId: record.ruleId, transactionHash: submitted.hash, ledger: submitted.ledger };
