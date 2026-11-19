@@ -424,6 +424,8 @@ impl Registry {
     /// - No network: a correctly signed snapshot for *any* Stellar network is accepted, so a
     ///   testnet snapshot loads in a mainnet process. Pin the network unless the caller
     ///   independently verifies `network_id` against the recording it will synthesize from.
+    ///   The development root is still refused at load for a snapshot of any other network
+    ///   than testnet, so leaving the network out is not a way to use it elsewhere.
     /// - No rollback floor: with neither a persisted minimum version nor a checkpoint, a fresh
     ///   process accepts an older but correctly signed snapshot — a rollback/freeze replay
     ///   across restarts. In-process monotonicity still holds once a snapshot is loaded.
@@ -509,12 +511,43 @@ impl Registry {
         expected_network: NetworkId,
     ) -> Result<Self, RegistryError> {
         let mut registry = Self::with_pinned_root(root_key_bytes)?;
-        registry.expected_network = Some(expected_network);
+        registry.pin_network(expected_network)?;
         Ok(registry)
+    }
+
+    /// Bind this verifier to one network, refusing the development root for any network but
+    /// testnet. Every network-pinned constructor goes through here, so no consumer can pin a
+    /// network without the rule.
+    fn pin_network(&mut self, network: NetworkId) -> Result<(), RegistryError> {
+        self.refuse_development_root_for(network)?;
+        self.expected_network = Some(network);
+        Ok(())
+    }
+
+    /// Anyone can recompute the development root's private key from its published seed, so a
+    /// snapshot it signs carries no review authority: an agent could sign one recognizing its own
+    /// verifier as an owner verifier. Only the testnet example may use it — alone or beside other
+    /// keys, since one key that anyone holds is enough to count toward a threshold.
+    fn refuse_development_root_for(&self, network: NetworkId) -> Result<(), RegistryError> {
+        let development = dev::dev_root_verifying_bytes();
+        if network != NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
+            && self
+                .root_keys
+                .values()
+                .any(|key| key.to_bytes() == development)
+        {
+            return Err(RegistryError::RootPolicy(
+                "the public development registry root is accepted only on testnet".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Construct with a version floor persisted by the caller across processes. Without a
     /// persisted floor, an old but correctly signed snapshot could be replayed after restart.
+    ///
+    /// Every network-pinned constructor refuses a root policy holding the public development
+    /// key for any network but testnet ([`RegistryError::RootPolicy`]).
     pub fn with_pinned_root_for_network_at_version(
         root_key_bytes: &[u8; 32],
         expected_network: NetworkId,
@@ -536,7 +569,7 @@ impl Registry {
         minimum_version: u64,
     ) -> Result<Self, RegistryError> {
         let mut registry = Self::with_pinned_roots(policy)?;
-        registry.expected_network = Some(expected_network);
+        registry.pin_network(expected_network)?;
         registry.minimum_version = minimum_version;
         Ok(registry)
     }
@@ -547,7 +580,7 @@ impl Registry {
         checkpoint: RegistryCheckpoint,
     ) -> Result<Self, RegistryError> {
         let mut registry = Self::with_pinned_roots(policy)?;
-        registry.expected_network = Some(expected_network);
+        registry.pin_network(expected_network)?;
         registry.minimum_version = checkpoint.version;
         registry.pinned_checkpoint = Some(checkpoint);
         Ok(registry)
@@ -615,6 +648,9 @@ impl Registry {
                 });
             }
         }
+        // A registry built without a network could not decide at construction; the snapshot's
+        // own network decides here, so the unpinned constructor is not a way around the rule.
+        self.refuse_development_root_for(signed.snapshot.network_id)?;
         check_snapshot_validity(&signed.snapshot, now_unix)?;
         validate_capability_keys(&signed.snapshot)?;
         for (capability, revocation) in &signed.snapshot.revocations {
@@ -1106,7 +1142,8 @@ pub mod dev {
     }
 
     /// Public half of [`dev_signing_key`]: development-only, because anyone can sign with
-    /// it. The operator account reader in `ozpb-source-rpc` refuses it outside testnet.
+    /// it. Every network-pinned [`Registry`] constructor refuses a root policy holding it for any
+    /// network but testnet, and a load refuses a snapshot for another network under it.
     pub fn dev_root_verifying_bytes() -> [u8; 32] {
         dev_signing_key().verifying_key().to_bytes()
     }
@@ -2311,15 +2348,109 @@ mod tests {
         ));
     }
 
+    /// The development root's seed is public, so a snapshot it signs carries no review authority.
+    /// The rule lives where trust meets a network, so every consumer inherits it: each
+    /// network-pinned construction refuses a root policy holding the development key for any
+    /// network but testnet, alone or beside other keys, and a load refuses a snapshot for another
+    /// network under it even when the registry was built without one.
+    #[test]
+    fn the_development_root_is_refused_for_every_network_but_testnet() {
+        let development = dev::dev_root_verifying_bytes();
+        let governance = SigningKey::from_bytes(&sha256(b"registry test governance root").0)
+            .verifying_key()
+            .to_bytes();
+        let only = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), development)]),
+        };
+        let mixed = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([
+                ("legacy".to_string(), development),
+                ("governance".to_string(), governance),
+            ]),
+        };
+        let checkpoint = RegistryCheckpoint {
+            version: 1,
+            log_index: 1,
+            root: sha256(b"any root"),
+            revocations: BTreeMap::new(),
+        };
+        for passphrase in [
+            ozpb_domain::MAINNET_PASSPHRASE,
+            "Test SDF Future Network ; October 2022",
+        ] {
+            let other = NetworkId::from_passphrase(passphrase);
+            for policy in [&only, &mixed] {
+                assert!(
+                    matches!(
+                        Registry::with_pinned_roots_for_network_at_version(
+                            policy.clone(),
+                            other,
+                            1
+                        ),
+                        Err(RegistryError::RootPolicy(ref reason)) if reason.contains("only on testnet")
+                    ),
+                    "{passphrase}"
+                );
+                assert!(matches!(
+                    Registry::with_pinned_roots_for_network_at_checkpoint(
+                        policy.clone(),
+                        other,
+                        checkpoint.clone()
+                    ),
+                    Err(RegistryError::RootPolicy(_))
+                ));
+            }
+            // A production-shaped root is not refused for its network.
+            Registry::with_pinned_roots_for_network_at_version(
+                RootPolicy {
+                    threshold: 1,
+                    keys: BTreeMap::from([("governance".to_string(), governance)]),
+                },
+                other,
+                1,
+            )
+            .unwrap();
+        }
+        // Testnet keeps the reproducible example.
+        Registry::with_pinned_roots_for_network_at_version(only.clone(), network(), 1).unwrap();
+        Registry::with_pinned_roots_for_network_at_checkpoint(mixed, network(), checkpoint)
+            .unwrap();
+
+        // The unpinned constructor cannot decide at construction, so the load decides by the
+        // snapshot's own network.
+        let mainnet = NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE);
+        let signed = sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(mainnet, 1)).unwrap();
+        let mut unpinned = Registry::with_pinned_roots(only.clone()).unwrap();
+        assert!(matches!(
+            unpinned.load_at(&signed, 0),
+            Err(RegistryError::RootPolicy(_))
+        ));
+        let signed =
+            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
+        Registry::with_pinned_roots(only)
+            .unwrap()
+            .load_at(&signed, 0)
+            .unwrap();
+    }
+
     #[test]
     fn network_and_snapshot_validity_are_pinned() {
         let root = dev::dev_root_verifying_bytes();
+        // A production-shaped root: the development key is refused outright for mainnet, which
+        // would stop this before the network check it is here to exercise.
+        let governance = SigningKey::from_bytes(&sha256(b"registry test governance root").0);
         let mainnet = NetworkId::from_passphrase("Public Global Stellar Network ; September 2015");
-        let signed =
-            sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
-        let mut wrong_network = Registry::with_pinned_root_for_network(&root, mainnet).unwrap();
+        let signed = sign_snapshot(&governance, dev::dev_snapshot(network(), 1)).unwrap();
+        let mut wrong_network =
+            Registry::with_pinned_root_for_network(&governance.verifying_key().to_bytes(), mainnet)
+                .unwrap();
         assert!(
-            wrong_network.load_at(&signed, 100).is_err(),
+            matches!(
+                wrong_network.load_at(&signed, 100),
+                Err(RegistryError::Network { .. })
+            ),
             "a correctly signed snapshot for another network must fail closed"
         );
 

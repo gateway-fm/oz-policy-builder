@@ -1957,8 +1957,14 @@ pub mod fixtures {
     }
 
     pub fn executed_snapshot() -> EvidenceSnapshot {
+        executed_snapshot_on(ozpb_domain::TESTNET_PASSPHRASE)
+    }
+
+    /// [`executed_snapshot`] acquired on another network: the same evidence under another
+    /// passphrase, so a test can attribute a difference in outcome to the network alone.
+    pub fn executed_snapshot_on(network_passphrase: &str) -> EvidenceSnapshot {
         EvidenceSnapshot::from_rpc_transaction(
-            ozpb_domain::TESTNET_PASSPHRASE,
+            network_passphrase,
             envelope_with(vec![auth_entry(address_credentials(12345))])
                 .to_xdr_base64(Limits::none())
                 .unwrap(),

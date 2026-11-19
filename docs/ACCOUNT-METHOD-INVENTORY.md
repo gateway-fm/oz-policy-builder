@@ -32,8 +32,9 @@ both builds. It is bound to the 0.7.3 hash alone: `validate_source_reviewed_cand
 The signed development example (version 2 onward) commits to the exact reviewed method-table digest
 and bounded scan protocol for the recognized account Wasm hash: the 0.7.2 build in versions 2 to 5,
 the 0.7.3 build in version 6, which revokes the 0.7.2 entry. It extends the original example root;
-its signing key is public development material, not production governance, and the
-operator account reader accepts that root only for testnet. The live authority check uses the
+its signing key is public development material, not production governance, and registry
+trust built for any network but testnet refuses that root (`E_REGISTRY_ROOT_POLICY`), for every
+consumer — synthesis, the live checks and the operator account reader alike. The live authority check uses the
 signed scan protocol to bound its read; it does not use the method table to decide anything,
 because it treats every method of the account as reachable by any rule that matches the
 account's address. The table records which methods exist so that assumption can be reviewed.

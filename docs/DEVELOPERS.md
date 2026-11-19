@@ -235,7 +235,11 @@ fault never reads to an agent as "your spec does not compile".
 `{"threshold":2,"keys":{"ops-a":"<32-byte-hex>","ops-b":"<32-byte-hex>"}}`.
 It may also contain a durable `checkpoint` (`version`, `log_index`, `root`) to reject
 same-version equivocation after restart. The MCP server receives the same JSON through
-`OZPB_REGISTRY_ROOTS_JSON`, paired with `OZPB_REGISTRY_MIN_VERSION`.
+`OZPB_REGISTRY_ROOTS_JSON`, paired with `OZPB_REGISTRY_MIN_VERSION`. An unusable root policy —
+malformed JSON or keys, a weak key, a threshold the keys cannot meet — is refused with
+`E_REGISTRY_ROOT_POLICY`, and so is the committed development root (`docs/examples/registry-roots.json`)
+for any network but testnet: anyone can sign with it, so every command and tool that pins registry
+trust refuses it for mainnet.
 
 `OZPB_REGISTRY_SNAPSHOT_JSON` carries the signed snapshot to use when a request omits one. It
 sits beside the roots rather than among them because it is data, not trust: a snapshot is

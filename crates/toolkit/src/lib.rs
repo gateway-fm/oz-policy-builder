@@ -284,20 +284,7 @@ pub fn synthesize_policy(
             )
         })?;
     let signed_registry: SignedSnapshot = from_value(snapshot_value)?;
-    let network = bundles[0].network_id;
-    let mut registry = match registry_trust.checkpoint.clone() {
-        Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
-            registry_trust.root_policy.clone(),
-            network,
-            checkpoint,
-        ),
-        None => Registry::with_pinned_roots_for_network_at_version(
-            registry_trust.root_policy.clone(),
-            network,
-            registry_trust.minimum_version,
-        ),
-    }
-    .map_err(map_registry_err)?;
+    let mut registry = call_surface::registry_for(registry_trust, bundles[0].network_id)?;
     let registry_snapshot = registry.load(&signed_registry).map_err(map_registry_err)?;
 
     let account_capability = registry
@@ -408,11 +395,11 @@ pub fn synthesize_policy(
 /// its own registry snapshot.
 pub fn parse_registry_root_hex(value: &str) -> Result<[u8; 32], ToolError> {
     hex::decode(value)
-        .map_err(|_| ToolError::new(EC::ERegistrySignature, "registry root is not valid hex"))?
+        .map_err(|_| ToolError::new(EC::ERegistryRootPolicy, "registry root is not valid hex"))?
         .try_into()
         .map_err(|_| {
             ToolError::new(
-                EC::ERegistrySignature,
+                EC::ERegistryRootPolicy,
                 "registry root must be exactly 32 bytes",
             )
         })
@@ -452,7 +439,7 @@ pub fn registry_trust_from_roots_json(
     }
     let config: RootConfig = serde_json::from_str(roots_json).map_err(|error| {
         ToolError::new(
-            EC::ERegistrySignature,
+            EC::ERegistryRootPolicy,
             format!("invalid registry roots JSON: {error}"),
         )
     })?;
@@ -746,10 +733,10 @@ fn map_synth_errs(errs: Vec<ozpb_synthesizer::SynthError>) -> ToolError {
 
 fn map_registry_err(error: RegistryError) -> ToolError {
     let code = match &error {
-        RegistryError::Signature
-        | RegistryError::RootPolicy(_)
-        | RegistryError::Schema(_)
-        | RegistryError::Parse(_) => EC::ERegistrySignature,
+        RegistryError::Signature | RegistryError::Schema(_) | RegistryError::Parse(_) => {
+            EC::ERegistrySignature
+        }
+        RegistryError::RootPolicy(_) => EC::ERegistryRootPolicy,
         RegistryError::Rollback { .. } => EC::ERegistryRollback,
         RegistryError::Transparency(_) => EC::ERegistryTransparency,
         RegistryError::Revoked { .. } => EC::ERegistryRevoked,
@@ -803,10 +790,9 @@ mod tests {
     /// validates the policy through `Registry::with_pinned_roots` before returning trust, so a
     /// weak governance key is refused at startup rather than at first load.
     ///
-    /// This also pins where the refusal lands on the wire: there is no `E_REGISTRY_ROOT_POLICY`
-    /// error code, so it arrives as `E_REGISTRY_SIGNATURE` carrying the root-policy message. A
-    /// root-policy *configuration* fault reported under a *signature* code is worth knowing
-    /// about; the test records today's behavior rather than asserting a code that exists.
+    /// This also pins where the refusal lands on the wire: `E_REGISTRY_ROOT_POLICY`, a
+    /// configuration fault, not `E_REGISTRY_SIGNATURE`, which it used to share with snapshots
+    /// whose signatures fail.
     #[test]
     fn a_small_order_governance_root_is_refused_at_the_operator_boundary() {
         // The compressed Edwards identity: the audit's forgery root.
@@ -821,14 +807,11 @@ mod tests {
             "the refusal must name the key and the reason, got: {}",
             error.message
         );
-        // Deliberate tripwires for the code/message mismatch described above, not incidental
-        // string coupling: the wire code says "signature" while the message says
-        // "E_REGISTRY_ROOT_POLICY". Both assertions are expected to be revisited together when
-        // the error vocabulary gains a root-policy code — that is the point of pinning them.
-        assert_eq!(error.code, EC::ERegistrySignature);
+        // The wire code and the message's label now agree.
+        assert_eq!(error.code, EC::ERegistryRootPolicy);
         assert!(
             error.message.contains("E_REGISTRY_ROOT_POLICY"),
-            "the message still carries the root-policy label, got: {}",
+            "the message carries the root-policy label, got: {}",
             error.message
         );
 
@@ -1232,6 +1215,40 @@ mod tests {
         );
     }
 
+    /// Synthesis stamps the snapshot root into the spec, and generation copies it into the
+    /// BuildManifest, so this is where a mainnet artifact would come to carry a root anyone can
+    /// sign. Refused here by the registry's own construction, with the root-policy code.
+    #[test]
+    fn synthesis_refuses_the_development_root_outside_testnet() {
+        let mainnet = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE);
+        let snapshot = registry_dev::account_advisory_successor(mainnet).unwrap();
+        let signed =
+            ozpb_registry::sign_snapshot(&registry_dev::dev_signing_key(), snapshot).unwrap();
+        let input = SynthesizeInput {
+            bundles: vec![serde_json::to_value(fx::golden_bundle_on(
+                ozpb_domain::MAINNET_PASSPHRASE,
+            ))
+            .unwrap()],
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(serde_json::to_value(&signed).unwrap()),
+            decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+            spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+        let error = synthesize_policy(&input, &registry_trust()).unwrap_err();
+        assert_eq!(error.code, EC::ERegistryRootPolicy, "{error}");
+        assert!(error.message.contains("only on testnet"), "{error}");
+
+        // Control: the same recording on testnet under the same root synthesizes.
+        let testnet = SynthesizeInput {
+            bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+            signed_registry_snapshot: Some(signed_registry_json()),
+            ..input
+        };
+        synthesize_policy(&testnet, &registry_trust()).unwrap();
+    }
+
     #[test]
     fn synthesis_rejects_untrusted_registry_evidence() {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
@@ -1256,12 +1273,17 @@ mod tests {
         assert_eq!(err.code, EC::ERegistrySignature);
 
         input.signed_registry_snapshot = Some(signed_registry_json());
+        // A well-formed key that did not sign: a malformed one is a root-policy fault instead.
         let attacker_trust = RegistryTrust {
             root_policy: RootPolicy {
                 threshold: 1,
                 keys: std::collections::BTreeMap::from([(
                     "legacy".to_string(),
-                    ozpb_domain::sha256(b"attacker registry root").0,
+                    ed25519_dalek::SigningKey::from_bytes(
+                        &ozpb_domain::sha256(b"attacker registry root").0,
+                    )
+                    .verifying_key()
+                    .to_bytes(),
                 )]),
             },
             minimum_version: 1,

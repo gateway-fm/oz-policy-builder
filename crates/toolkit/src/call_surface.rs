@@ -430,25 +430,13 @@ fn record_observed_code<'a>(
     Ok(())
 }
 
+/// The one way this crate turns pinned trust into a registry verifier for a network. The
+/// network-pinned constructors refuse the public development root for any network but testnet,
+/// so every operation built on this inherits that rule rather than restating it.
 pub(crate) fn registry_for(
     trust: &RegistryTrust,
     network: ozpb_domain::NetworkId,
 ) -> Result<Registry, ToolError> {
-    // Anyone can recompute the development root's private key from its published seed, so a
-    // snapshot it signs carries no review authority: an agent could sign one recognizing its
-    // own verifier as an owner verifier. Only the testnet example may use it.
-    let development_root = ozpb_registry::dev::dev_root_verifying_bytes();
-    if network != ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
-        && trust
-            .root_policy
-            .keys
-            .values()
-            .any(|key| *key == development_root)
-    {
-        return Err(map_registry_err(ozpb_registry::RegistryError::RootPolicy(
-            "the public development registry root is accepted only on testnet".into(),
-        )));
-    }
     match trust.checkpoint.clone() {
         Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
             trust.root_policy.clone(),

@@ -112,6 +112,10 @@ error_codes! {
     ETargetAdapterUnsupported => "E_TARGET_ADAPTER_UNSUPPORTED",
     EUnregisteredTemplate => "E_UNREGISTERED_TEMPLATE",
     ERegistryEmpty => "E_REGISTRY_EMPTY",
+    /// The pinned root policy itself is unusable: malformed or weak keys, a threshold the keys
+    /// cannot meet, or the public development root configured for a network other than testnet.
+    /// An operator configuration fault, distinct from a snapshot whose signatures do not verify.
+    ERegistryRootPolicy => "E_REGISTRY_ROOT_POLICY",
     // policy recognition / authority surface
     EPolicyBindingInvalid => "E_POLICY_BINDING_INVALID",
     EAccountRuleEnumerationUnsupported => "E_ACCOUNT_RULE_ENUMERATION_UNSUPPORTED",

@@ -56,3 +56,21 @@ pub(crate) fn build_config() -> ozpb_build_runner::BuildConfig {
         ..ozpb_build_runner::BuildConfig::default()
     }
 }
+
+/// Move a live-check request to mainnet under a development-signed mainnet snapshot whose root the
+/// spec names. Everything about the request is then consistent except its trust root, which is
+/// the public development key: the one thing every entry point must refuse outside testnet.
+pub(crate) fn moved_to_mainnet(input: &mut ozpb_api_types::CheckPolicyCallSurfaceInput) {
+    let mainnet = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE);
+    let mut snapshot = registry_dev::account_advisory_successor(mainnet).unwrap();
+    snapshot.network_id = mainnet;
+    let signed = sign_snapshot(&registry_dev::dev_signing_key(), snapshot).unwrap();
+    let mut spec: ozpb_policy_spec::PolicySpec =
+        serde_json::from_value(input.spec.clone()).unwrap();
+    spec.network_id = mainnet;
+    spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
+    input.spec = serde_json::to_value(&spec).unwrap();
+    input.network_id = mainnet.0.to_hex();
+    input.binding_set.network_id = mainnet.0.to_hex();
+    input.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+}
