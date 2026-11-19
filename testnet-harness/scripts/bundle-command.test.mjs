@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { loadBundleFiles, protocolChecker } from './bundle-command.mjs';
-const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-bundle-input-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

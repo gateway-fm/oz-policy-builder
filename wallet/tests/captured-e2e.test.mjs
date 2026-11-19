@@ -53,7 +53,7 @@ async function replayEndpoint(t) {
 function toolchainFor(url) {
   const toolchain = new WalletToolchain({ executable: cli, workRoot: mkdtempSync(join(work, 'wallet-')),
     rpcUrl: 'https://rpc.invalid/', registrySnapshot: readFileSync(new URL('registry.signed.json', examples), 'utf8'),
-    registryRoots: readFileSync(new URL('registry-roots.json', examples), 'utf8'), registryMinimumVersion: 3 });
+    registryRoots: readFileSync(new URL('registry-roots.json', examples), 'utf8'), registryMinimumVersion: 6 });
   // Test only: the replay endpoint is plain HTTP on loopback, which operator configuration refuses.
   writeFileSync(join(toolchain.sessionRoot, 'rpc-sources.json'),
     JSON.stringify({ testnet: { rpc_url: url, network_passphrase: NETWORK } }));
@@ -90,7 +90,7 @@ async function captured(t) {
   const sources = join(work, 'prepare-sources.json');
   writeFileSync(sources, JSON.stringify({ 'synthetic-fixture': { rpc_url: 'https://rpc.invalid/', network_passphrase: NETWORK } }));
   const output = parseJsonExact(await runTool(cli, ['prepare-dry-run', '--request', path,
-    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '3', '--rpc-sources', sources]));
+    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '6', '--rpc-sources', sources]));
   const checked = checkDryRunPreparation(output, { specHash: manifest.spec_hash, bindingSetHash: output.binding.binding_set_hash,
     accountAddress: spec.smart_account.address, delegateAddress: delegate.publicKey(), policyAddress: POLICY,
     policyCodeHash: manifest.wasm_hash, candidateContextRuleId: 3, sourceLedger: checkedCapture.observedLedger });

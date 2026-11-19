@@ -157,7 +157,7 @@ ozpb preflight-transaction --envelope-file envelope.xdr.base64 \
 # the run's derived offline network; the live layer is reported unavailable. Exits 0 only when
 # the report's `acceptance` meets the permit/deny bar.
 ozpb dry-run --request dry-run-request.json --registry-roots registry-roots.json \
-  --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --registry-min-version 6 --rpc-sources rpc-sources.json \
   --native-worker /abs/path/ozpb-execution-runtime --delegate-key-file delegate.key \
   --account-wasm pinned-account.wasm --source-ledger ledger.json > dry-run.json
 

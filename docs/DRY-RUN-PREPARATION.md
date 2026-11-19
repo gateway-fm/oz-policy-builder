@@ -9,7 +9,7 @@ not the complete `dry_run` operation; `complete` is always `false`.
 ozpb prepare-dry-run \
   --request dry-run-request.json \
   --registry-roots registry-roots.json \
-  --registry-min-version 4 \
+  --registry-min-version 6 \
   --rpc-sources rpc-sources.json
 ```
 

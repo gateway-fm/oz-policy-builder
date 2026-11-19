@@ -7,7 +7,7 @@ import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import { PINNED_ACCOUNT_WASM } from './rpc.mjs';
 import { runProtocolDryRuns } from './protocol-dry-run.mjs';
-const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
 const blendSpec = JSON.parse(readFileSync(new URL('./fixtures/synthetic-blend-claim-spec.json', import.meta.url)));
 const H = (n) => String(n).repeat(64);
 function reportFor(request, ledger = 100) {

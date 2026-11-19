@@ -7,7 +7,7 @@ import { installPermissionBundle } from './bundle-install.mjs';
 import { decide, walletTrust } from './wallet-decision.mjs';
 import { contractCall } from './lib.mjs';
 import { RawJson } from './raw-json.mjs';
-const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
 const C = (n) => StrKey.encodeContract(Buffer.alloc(32, n));
 const hash = (n) => n.toString(16).padStart(64, '0');
 function fixture() {

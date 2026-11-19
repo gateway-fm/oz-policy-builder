@@ -188,7 +188,7 @@ prints one four-layer report ([report fields](DRY-RUN-PREPARATION.md#executed-la
 
 ```sh
 ozpb dry-run --request dry-run-request.json \
-  --registry-roots registry-roots.json --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --registry-roots registry-roots.json --registry-min-version 6 --rpc-sources rpc-sources.json \
   --native-worker /abs/path/ozpb-execution-runtime \
   --delegate-key-file delegate.key --account-wasm pinned-account.wasm \
   --source-ledger ledger.json [--capture-request capture-request.json]

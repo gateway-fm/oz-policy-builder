@@ -11,7 +11,7 @@ and authorization tree.
 ozpb check-against-policy \
   --request policy-check.json \
   --registry-roots registry-roots.json \
-  --registry-min-version 4 \
+  --registry-min-version 6 \
   --rpc-sources rpc-sources.json
 ```
 
