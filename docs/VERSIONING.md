@@ -112,8 +112,9 @@ and fails on any difference, naming the tools and codes that differ and printing
 host job and `scripts/verify-phase1.sh` run it. Nothing in it decides whether a difference is
 breaking. When a change to the server or to `crates/api-types` alters the contract on purpose,
 the same commit regenerates the file with `--update` and adds a release-notes entry that says,
-under the rules above, whether the change is breaking or additive. A difference nobody intended
-is a defect in the change that caused it.
+under the rules above, whether the change is breaking or additive; a change to a description
+alone is human-readable text, which this policy does not version, and needs no entry. A
+difference nobody intended is a defect in the change that caused it.
 
 The `E_*` codes are also pinned without a server build: an `api-types` test
 (`published_error_codes_are_pinned_by_the_committed_wire_contract`) compares the `error_codes!`

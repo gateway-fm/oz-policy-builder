@@ -1442,7 +1442,7 @@
                 "type": "string"
               },
               "rule_id": {
-                "description": "Absent when the finding is about the new rule itself.",
+                "description": "`null` when the finding is about the new rule itself; never omitted.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": [
@@ -3670,7 +3670,7 @@
                 "type": "string"
               },
               "rule_id": {
-                "description": "Absent when the finding is about the new rule itself.",
+                "description": "`null` when the finding is about the new rule itself; never omitted.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": [
@@ -6288,7 +6288,7 @@
                 "type": "string"
               },
               "rule_id": {
-                "description": "Absent when the finding is about the new rule itself.",
+                "description": "`null` when the finding is about the new rule itself; never omitted.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": [

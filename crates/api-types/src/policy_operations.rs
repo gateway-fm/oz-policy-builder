@@ -778,7 +778,7 @@ pub enum PolicyRuleEnumerationEvidence {
 #[serde(deny_unknown_fields)]
 pub struct PolicySurfaceFinding {
     pub code: crate::ErrorCode,
-    /// Absent when the finding is about the new rule itself.
+    /// `null` when the finding is about the new rule itself; never omitted.
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(schema_with = "required_nullable_schema::<u32>")]
     pub rule_id: Option<u32>,

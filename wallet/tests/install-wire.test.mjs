@@ -114,29 +114,53 @@ function union(members) {
   return seen.size === 1 ? [...seen.values()][0] : { k: 'union', of: [...seen.values()] };
 }
 
+// Keywords that annotate or bound a value without changing its shape. Every other keyword must be
+// one a shape below reads, so a schema that says more than the reader understands (an `allOf`, a
+// `const` beside an `enum`, extra properties beside fixed ones) is refused, never half-read.
+const ANNOTATIONS = new Set(['description', 'title', 'format', 'minimum', 'maximum', '$schema']);
+
 function fromSchema(schema, where) {
   if (schema === true) return { k: 'unknown' };
-  if (!schema || typeof schema !== 'object') throw new Error(`${where}: not a schema`);
-  if (schema.$ref) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) throw new Error(`${where}: not a schema`);
+  const unread = (...read) => {
+    const extra = Object.keys(schema).filter((k) => !ANNOTATIONS.has(k) && !read.includes(k));
+    if (extra.length) throw new Error(`${where}: the drift reader does not read ${extra.join(', ')}: ${JSON.stringify(schema)}`);
+  };
+  const literal = (v) => (v === null ? { k: 'null' } : { k: 'lit', v });
+  if (schema.$ref !== undefined) {
+    unread('$ref');
     const match = /^#\/\$defs\/(\w+)$/.exec(schema.$ref);
     if (!match) throw new Error(`${where}: unsupported $ref ${schema.$ref}`);
     return { k: 'ref', name: match[1] };
   }
-  const branches = schema.oneOf ?? schema.anyOf;
-  if (branches) return union(branches.map((branch, i) => fromSchema(branch, `${where}|${i}`)));
-  if (schema.const !== undefined) return { k: 'lit', v: schema.const };
-  if (schema.enum) return union(schema.enum.map((v) => ({ k: 'lit', v })));
+  for (const branching of ['oneOf', 'anyOf']) {
+    if (schema[branching] !== undefined) {
+      unread(branching);
+      return union(schema[branching].map((branch, i) => fromSchema(branch, `${where}|${i}`)));
+    }
+  }
+  if (schema.const !== undefined) { unread('const', 'type'); return literal(schema.const); }
+  if (schema.enum !== undefined) { unread('enum', 'type'); return union(schema.enum.map(literal)); }
   if (Array.isArray(schema.type)) return union(schema.type.map((t) => fromSchema({ ...schema, type: t }, where)));
   switch (schema.type) {
-    case 'string': case 'boolean': case 'null': return { k: schema.type };
-    case 'integer': case 'number': return { k: 'number' };
-    case 'array': return { k: 'array', items: fromSchema(schema.items, `${where}[]`) };
+    case 'string': case 'boolean': case 'null': unread('type'); return { k: schema.type };
+    case 'integer': case 'number': unread('type'); return { k: 'number' };
+    case 'array': unread('type', 'items'); return { k: 'array', items: fromSchema(schema.items, `${where}[]`) };
     case 'object': {
-      if (schema.properties) {
+      if (schema.properties !== undefined) {
+        // Fixed properties, closed or not; a schema for further properties would be a map beside them.
+        unread('type', 'properties', 'required', 'additionalProperties');
+        if (![undefined, false, true].includes(schema.additionalProperties)) {
+          throw new Error(`${where}: properties beside a schema for further ones: ${JSON.stringify(schema)}`);
+        }
         const required = new Set(schema.required ?? []);
+        for (const field of required) {
+          if (!(field in schema.properties)) throw new Error(`${where}: requires ${field}, which it does not define`);
+        }
         return { k: 'object', fields: new Map(Object.entries(schema.properties).map(([field, value]) =>
           [field, { optional: !required.has(field), type: fromSchema(value, `${where}.${field}`) }])) };
       }
+      unread('type', 'additionalProperties');
       if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
         return { k: 'map', values: fromSchema(schema.additionalProperties, `${where}{}`) };
       }
@@ -326,6 +350,48 @@ for (const [name, [mutate, expected]] of Object.entries(mutations)) {
     assert.match(errors.join('\n'), expected);
   });
 }
+
+// Each of these adds something the reader does not model; read as before, each would pass.
+const unreadable = {
+  'properties beside a oneOf (a flattened enum)': ['InstallPolicyParams', (def) => {
+    Object.assign(def, { type: 'object', properties: { extra: { type: 'string' } }, required: ['extra'] });
+  }],
+  'an allOf': ['PolicyClassicSigner', (def) => { def.allOf = [{ properties: { extra: { type: 'string' } }, required: ['extra'] }]; }],
+  'a schema for further properties (a flattened map)': ['PolicyClassicSigner', (def) => {
+    def.additionalProperties = { type: 'integer' };
+  }],
+  'a const beside an enum': ['PolicyKeyScheme', (def) => { def.const = 'ed25519'; }],
+  'a oneOf beside an anyOf': ['PolicyRecognition', (def) => { def.anyOf = [{ type: 'string' }]; }],
+  'a required name with no property': ['PolicyClassicSigner', (def) => { def.required = [...def.required, 'label']; }],
+};
+for (const [name, [definition, mutate]] of Object.entries(unreadable)) {
+  test(`the drift check refuses ${name}`, () => {
+    const contract = snapshot();
+    let changed = 0;
+    for (const [tool, field] of Object.values(ROOTS)) {
+      const def = toolSchema(contract, tool, field).$defs?.[definition];
+      if (def) { mutate(def); changed += 1; }
+    }
+    assert.ok(changed > 0, `no schema defines ${definition}`);
+    assert.match(drift(declarations(), contract).join('\n'), /does not read|beside a schema for further|requires label/);
+  });
+}
+test('the drift check refuses prefixItems on an array', () => {
+  const contract = snapshot();
+  toolSchema(contract, 'assemble_install_transaction', 'outputSchema').properties.wallet_requirements.prefixItems = [{ type: 'integer' }];
+  assert.match(drift(declarations(), contract).join('\n'), /does not read prefixItems/);
+});
+
+test('a null in an enum is the null type, which `| null` declares', () => {
+  const contract = snapshot();
+  for (const [tool, field] of Object.values(ROOTS)) {
+    const def = toolSchema(contract, tool, field).$defs?.PolicyVerifierObservation;
+    if (def) def.properties.scheme = { type: ['string', 'null'], enum: ['ed25519', 'webauthn_p256', null] };
+  }
+  const errors = drift(declarations().replace('readonly scheme: PolicyKeyScheme | null;',
+    "readonly scheme: 'ed25519' | 'webauthn_p256' | null;"), contract);
+  assert.deepEqual(errors.filter((e) => e.startsWith('PolicyVerifierObservation.scheme')), []);
+});
 
 test('the drift check fails on a declaration no schema uses, and on syntax it cannot read', () => {
   assert.match(drift(`${declarations()}\nexport type Stray = string;\n`, snapshot()).join('\n'),

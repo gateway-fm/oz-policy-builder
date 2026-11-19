@@ -90,9 +90,12 @@ cargo test --locked --workspace
 echo "== 3b. the built MCP server serves exactly the committed wire contract =="
 # The release export, run against this build: any difference from docs/wire-contract.json fails,
 # and the message says how to update the snapshot when the change is intended (VERSIONING.md).
+# The target directory as cargo resolves it (environment, config or default), so the binary
+# checked is the one just built.
 cargo build --locked -p ozpb-mcp-server
-python3 scripts/release-artifacts.py check-wire-contract \
-    --server "${CARGO_TARGET_DIR:-target}/debug/ozpb-mcp-server"
+TARGET_DIR="$(cargo metadata --locked --format-version 1 --no-deps \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+python3 scripts/release-artifacts.py check-wire-contract --server "$TARGET_DIR/debug/ozpb-mcp-server"
 
 echo "== 4. contracts: differential suite (evaluator vs real compiled policy) =="
 ( cd contracts && cargo test --locked -p ozpb-differential )
