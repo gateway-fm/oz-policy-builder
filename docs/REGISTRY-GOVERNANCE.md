@@ -155,10 +155,26 @@ be checked against a consumer's checkpoint with `verify --signed <file> --checkp
 - **Release assets.** Each release that changes the registry attaches the new head
   `vNNNN.signed.json`, `roots.json` and the head checkpoint `verify --replay` printed.
 
+In this repository, [`registry/mainnet/`](../registry/mainnet/README.md) holds the draft,
+unsigned mainnet genesis and a placeholder root policy with no keys, which every command refuses
+until the key ceremony fills it. Nothing for mainnet is signed yet.
+
 The repository history is the transparency log: append-only, and anyone can replay it. There is
 no separate equivocation detector. A consumer's checkpoint already refuses a different snapshot
 for a version it has accepted, so a published log that disagrees with what a consumer accepted
 fails that consumer's monitor loudly.
+
+## Rehearsing on testnet
+
+The whole procedure runs on testnet with throwaway keys before any mainnet ceremony: generate
+three keys with `keygen`, write a 2-of-3 `roots.json`, take `registry/mainnet/v0001.draft.json`,
+change its `network_id` to testnet's and set a current interval, then sign, combine, replay,
+build and sign a successor, and monitor exactly as above with
+`--network "Test SDF Network ; September 2015"`. Synthesis then accepts the replayed head under
+those roots and stamps its root into the spec, as every command that pins registry trust would,
+and as they would the mainnet log under the custodians' roots. The CLI test
+`crates/cli/tests/registry_governance_cli.rs` runs this rehearsal end to end, one signature made
+outside the CLI as a hardware key would.
 
 ## Consumers: pinning roots and persisting checkpoints
 

@@ -3,7 +3,8 @@
 //! genesis and a successor each signed by a different pair (one signature produced outside the
 //! CLI, as a hardware key would), combination, verification and replay of the published log,
 //! monitoring from an older checkpoint — and then a toolkit operation, `ozpb synthesize`, that
-//! accepts the replayed head as pinned trust and stamps its root into the spec.
+//! accepts the replayed head as pinned trust and stamps its root into the spec. The genesis is the
+//! committed mainnet draft keyed to testnet, so the rehearsal signs the entries mainnet would.
 
 use ozpb_registry::{RegistryCheckpoint, RegistrySnapshot, SignedSnapshot};
 use std::path::{Path, PathBuf};
@@ -56,18 +57,18 @@ fn read<T: serde::de::DeserializeOwned>(path: &Path) -> T {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
-/// The genesis the custodians sign: the reviewed capabilities, version 1 of a new chain, valid
-/// from an hour ago for thirty days.
+fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+const MAINNET: &str = "Public Global Stellar Network ; September 2015";
+
+/// The rehearsal genesis: the committed mainnet draft, unchanged but for the two things a
+/// rehearsal must change — it is keyed to testnet, and valid from an hour ago for thirty days
+/// rather than the draft's placeholder interval.
 fn genesis() -> RegistrySnapshot {
-    let network = ozpb_domain::NetworkId::from_passphrase(TESTNET);
-    let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
-    snapshot.version = 1;
-    snapshot.log_index = 1;
-    snapshot.previous_root = None;
-    snapshot.target_adapters.clear();
-    for revocation in snapshot.revocations.values_mut() {
-        revocation.effective_version = 1;
-    }
+    let mut snapshot: RegistrySnapshot = read(&repo().join("registry/mainnet/v0001.draft.json"));
+    snapshot.network_id = ozpb_domain::NetworkId::from_passphrase(TESTNET);
     snapshot.valid_from_unix = now() - 3_600;
     snapshot.expires_at_unix = now() + 30 * 86_400;
     snapshot
@@ -282,7 +283,7 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
             "--registry-roots".as_ref(),
             roots.as_os_str(),
             "--network".as_ref(),
-            "Public Global Stellar Network ; September 2015".as_ref(),
+            MAINNET.as_ref(),
         ]),
         "verify for another network",
         "E_REGISTRY_NETWORK",
@@ -437,5 +438,73 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         &synthesize(&v1),
         "synthesize under a rolled-back snapshot",
         "E_REGISTRY_ROLLBACK",
+    );
+}
+
+/// The committed mainnet log is an unsigned draft whose root policy is set at the key ceremony:
+/// a custodian can print what they would sign, and nothing verifies until then.
+#[test]
+fn the_committed_mainnet_log_awaits_its_key_ceremony() {
+    let directory = repo().join("registry/mainnet");
+    let printed = ok(
+        ozpb([
+            "registry".as_ref(),
+            "sign".as_ref(),
+            "--snapshot".as_ref(),
+            directory.join("v0001.draft.json").as_os_str(),
+            "--print-root".as_ref(),
+        ]),
+        "print the draft's root",
+    );
+    assert_eq!(printed["version"], "1");
+    assert_eq!(
+        printed["network_id"],
+        ozpb_domain::NetworkId::from_passphrase(MAINNET).0.to_hex()
+    );
+    // The placeholder root policy holds no key, so it can verify nothing.
+    refused(
+        &ozpb([
+            "registry".as_ref(),
+            "verify".as_ref(),
+            "--replay".as_ref(),
+            directory.as_os_str(),
+            "--registry-roots".as_ref(),
+            directory.join("roots.json").as_os_str(),
+            "--network".as_ref(),
+            MAINNET.as_ref(),
+        ]),
+        "replay under the placeholder roots",
+        "E_REGISTRY_ROOT_POLICY",
+    );
+    // And under any real roots there is no signed version to replay yet.
+    let work = tempfile::tempdir().unwrap();
+    let key = work.path().join("throwaway.key");
+    let printed = ok(
+        ozpb([
+            "registry".as_ref(),
+            "keygen".as_ref(),
+            "--out".as_ref(),
+            key.as_os_str(),
+        ]),
+        "keygen",
+    );
+    let roots = work.path().join("roots.json");
+    write_json(
+        &roots,
+        &serde_json::json!({"threshold": 1, "keys": {"throwaway": printed["public_key"]}}),
+    );
+    refused(
+        &ozpb([
+            "registry".as_ref(),
+            "verify".as_ref(),
+            "--replay".as_ref(),
+            directory.as_os_str(),
+            "--registry-roots".as_ref(),
+            roots.as_os_str(),
+            "--network".as_ref(),
+            MAINNET.as_ref(),
+        ]),
+        "replay of an unsigned log",
+        "no signed snapshot",
     );
 }
