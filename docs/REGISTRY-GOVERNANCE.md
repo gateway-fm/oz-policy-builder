@@ -276,8 +276,11 @@ start — against every copy of the log you can reach. With cron:
 where `registry-monitor.sh` updates the published log (a `git pull` of the repository, or the
 latest release assets), runs the `monitor` command above, and acts on its status. The registry
 monitor reports revoked code, not a changed rule on an account: `grant-monitor.sh` runs
-`ozpb check-installed-grant --recorded-authority-commitment` for each installed grant and acts on
-its exit status ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)).
+`ozpb check-installed-grant --recorded-authority-commitment --min-ledger` for each installed grant,
+keeps each run's `observed_ledger` for the next floor and acts on the exit status
+([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)). The two
+commands' exit codes differ (3, 4 and 5 mean different things), so each script has its own
+handler.
 With systemd, a oneshot service running each script and a timer:
 
 ```ini

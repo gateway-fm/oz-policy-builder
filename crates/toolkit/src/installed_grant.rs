@@ -154,14 +154,23 @@ pub enum InstalledGrantComparison {
     /// The recorded rule, its signers or policies changed or are gone, a later rule was allocated,
     /// or the modeled authority differs from the recorded commitment or carries a finding.
     Changed,
+    /// The observation is of a ledger older than the caller's floor: no answer, whatever it shows.
+    /// An endpoint that stopped ingesting serves an old, consistent ledger that would otherwise
+    /// read as unchanged on every run.
+    Stale,
 }
 
-/// Compare one observation with the recorded commitment. Never adopts the observation as a new
-/// baseline: only the recorded commitment reads as unchanged.
+/// Compare one observation with the recorded commitment, refusing one older than `min_ledger`
+/// (the installation's ledger, or one past the last observation). Never adopts the observation
+/// as a new baseline: only the recorded commitment reads as unchanged.
 pub fn compare_installed_grant(
     output: &CheckInstalledGrantOutput,
     recorded_authority_commitment: &str,
+    min_ledger: u32,
 ) -> InstalledGrantComparison {
+    if output.observed_ledger < min_ledger {
+        return InstalledGrantComparison::Stale;
+    }
     let projected = match &output.projected_authority {
         Some(projected) if output.status == "observed" => projected,
         _ => return InstalledGrantComparison::Changed,

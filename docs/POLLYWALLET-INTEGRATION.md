@@ -1143,8 +1143,9 @@ closure entries and candidate-required classic/verifier observations. Its projec
 must equal the preinstallation commitment; no new baseline is learned. Actual scan digests
 and ledger evidence remain separate from the counterfactual projection. This command returns
 a distinct monitoring observation and cannot prepare an installation. Given the installation's
-commitment (`--recorded-authority-commitment`), it makes that comparison itself and exits with
-a status for cron ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant));
+commitment (`--recorded-authority-commitment`) and a ledger floor (`--min-ledger`), it makes that
+comparison itself and exits with a status for cron
+([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant));
 the wallet passes no commitment and compares the observation itself.
 
 With `registryPublishedPath` naming the operator's published registry log (its directory, or its

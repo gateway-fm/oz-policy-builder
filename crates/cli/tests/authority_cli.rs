@@ -127,6 +127,8 @@ fn scheduled_installed_monitoring_exits_with_a_status_cron_can_alert_on() {
         "5 inactive",
         "4 no answer",
         "1 an error",
+        "2 a usage error",
+        "--min-ledger",
     ] {
         assert!(
             help.contains(status),
@@ -141,7 +143,12 @@ fn scheduled_installed_monitoring_exits_with_a_status_cron_can_alert_on() {
         "check-installed-grant",
         "anywhere",
         sources.clone(),
-        &["--recorded-authority-commitment", &commitment],
+        &[
+            "--recorded-authority-commitment",
+            &commitment,
+            "--min-ledger",
+            "100",
+        ],
     );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -156,12 +163,26 @@ fn scheduled_installed_monitoring_exits_with_a_status_cron_can_alert_on() {
             "check-installed-grant",
             "testnet",
             sources.clone(),
-            &["--recorded-authority-commitment", malformed],
+            &[
+                "--recorded-authority-commitment",
+                malformed,
+                "--min-ledger",
+                "100",
+            ],
         );
         assert_eq!(output.status.code(), Some(2), "{malformed}: {output:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("lowercase hex"),
             "{output:?}"
         );
+    }
+    // A scheduled run without a ledger floor could read a stuck endpoint's old ledger as unchanged
+    // forever, and a floor alone schedules nothing: each needs the other.
+    for alone in [
+        vec!["--recorded-authority-commitment", commitment.as_str()],
+        vec!["--min-ledger", "100"],
+    ] {
+        let output = run_with("check-installed-grant", "testnet", sources.clone(), &alone);
+        assert_eq!(output.status.code(), Some(2), "{alone:?}: {output:?}");
     }
 }
