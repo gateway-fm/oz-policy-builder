@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { Address, Operation, authorizeEntry, authorizeInvocation, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { isMainModule } from './cli-entry.mjs';
 import { MIN_DERIVED_DENIALS, SELECTION, liveRules, liveStandIns, planDerivedDenials, predictEnforcer, verifySuite } from './derived-plan.mjs';
-import { authDigest, checkAuthInvocation, delegatedSignersPayload, policyDenial } from './lib.mjs';
+import { authDigest, checkAuthInvocation, delegatedSignersPayload, denialCode } from './lib.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import * as rpc from './rpc.mjs';
 
@@ -56,9 +56,9 @@ const requireThat = (condition, message) => { if (!condition) throw new Error(me
 const A = (address) => new Address(address).toScVal();
 const positiveLedger = (n) => Number.isSafeInteger(n) && n > 0 && n <= 0xffff_ffff;
 /** Which of the candidate contracts raised the account's authentication failure, if any. */
-function observedDenial(error, account, candidates) {
+function observedDenial(error, events, account, candidates) {
   for (const contract of candidates) {
-    const code = policyDenial(error, account, contract);
+    const code = denialCode(error, events, account, contract);
     if (code !== null) return { enforcer: contract, code };
   }
   return { enforcer: null, code: null };
@@ -211,7 +211,7 @@ export async function runDerivedDenials(runDirectory, overrides = {}) {
         realization: item.realization, stand_in: item.stand_in, expected, status: 'started' };
       journal.cases.push(record); save();
       const observed = await simulate(item);
-      const seen = observed.result === 'deny' ? observedDenial(observed.error, run.account, candidates) : { enforcer: null, code: null };
+      const seen = observed.result === 'deny' ? observedDenial(observed.error, observed.events, run.account, candidates) : { enforcer: null, code: null };
       const attributed = observed.result === 'deny' && seen.enforcer === expected.enforcer && seen.code === expected.code;
       Object.assign(record, { ledger: observed.ledger, observed: { result: observed.result, ...seen },
         status: attributed ? 'verified_denial' : observed.result === 'permit' ? 'unexpected_permit' : 'unattributed_denial' });

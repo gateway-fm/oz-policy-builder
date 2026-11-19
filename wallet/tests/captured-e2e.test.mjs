@@ -54,7 +54,7 @@ async function replayEndpoint(t) {
 function toolchainFor(url) {
   const toolchain = new WalletToolchain({ executable: cli, workRoot: mkdtempSync(join(work, 'wallet-')),
     rpcUrl: 'https://rpc.invalid/', registrySnapshot: readFileSync(new URL('registry.signed.json', examples), 'utf8'),
-    registryRoots: readFileSync(new URL('registry-roots.json', examples), 'utf8'), registryMinimumVersion: 6 });
+    registryRoots: readFileSync(new URL('registry-roots.json', examples), 'utf8'), registryMinimumVersion: 6, network: WALLET_NETWORKS.testnet });
   // Test only: the replay endpoint is plain HTTP on loopback, which operator configuration refuses.
   writeFileSync(join(toolchain.sessionRoot, 'rpc-sources.json'),
     JSON.stringify({ testnet: { rpc_url: url, network_passphrase: NETWORK } }));

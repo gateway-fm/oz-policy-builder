@@ -36,7 +36,7 @@ function setup(t, change = () => {}, pipeline) {
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root,
     rpcUrl: 'https://example.invalid/rpc', registrySnapshot: '{"valid_until":9223372036854775807}',
-    registryRoots: '{}', registryMinimumVersion: 3, runner });
+    registryRoots: '{}', registryMinimumVersion: 3, runner, network: WALLET_NETWORKS.testnet });
   return { toolchain, root, account, calls, raw };
 }
 

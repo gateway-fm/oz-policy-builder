@@ -178,7 +178,8 @@ delegate account; see [Mainnet sessions](#mainnet-sessions).
 A mainnet session spends real XLM, and every signature in it is valid on the public network.
 Keep every amount minimal. The account's owner is a passkey whose relying party is `localhost`:
 the account can be used only from a browser at `http://localhost:3000` on the machine that holds
-the passkey, so do not keep more in it than the session needs.
+the passkey, and any other page served on a `localhost` port can ask for the same passkey (see the
+table below), so do not keep more in it than the session needs.
 
 Mainnet runs protocol 29 until its validators upgrade it to 30; until then the backend refuses
 to start against a mainnet endpoint (`protocol_unsupported`).
@@ -207,7 +208,7 @@ does with each:
 | Keys in `localStorage`: `pollywallet:wallet` (credential ID, account, public key) and `pollywallet:ephemeral-signers` (delegate secret keys in plain text) | Not used: only upstream routes write them, and those are refused. The Policy Builder keeps its bearer credential in memory and stores nothing in the browser |
 | Testnet constants: passphrase, RPC, Horizon, Friendbot, Channels URL, verifier, token and explorer addresses | Replaced: the Policy Builder derives every network value from its launch network, and signs with the account's own verifier and the session's passphrase, never upstream's testnet defaults |
 | Friendbot funding and testnet transfers on `/`, and passkey-signed transactions on `/`, `/rules` and `/policies` | Refused: those routes are not served |
-| Passkeys at relying party `localhost`, offered to every page on that origin; upstream's sign-in asks without naming a credential | Contained: no upstream page is served in a mainnet build, so the owner passkey is asked only by the Policy Builder, for the statement it shows. Its signatures name the network |
+| Passkeys created without an `rp.id`, so their relying party is `localhost` on every port; upstream's sign-in asks without naming a credential | Not contained by the build. A mainnet build serves no upstream page, but any page on any `localhost` port (another local app, the testnet development server) can ask the browser for the owner passkey and get a signature over a challenge it chose. The wallet checks the origin of every assertion it receives; nothing here relies on the on-chain verifier to. During a mainnet session run nothing else on `localhost`, approve a passkey prompt only for a statement the Policy Builder shows, and keep the account's funds minimal |
 | No content security policy or security headers | Unchanged: the preview server is loopback-only and serves this build to the operator's own browser |
 
 **Configuration.** A mainnet operator file adds, to the fields above:
@@ -315,9 +316,9 @@ disconnect semantics. Paste/file import remains the fallback.
 After attaching the account, open **Import a grant proposal** under **2. The grant**.
 Paste an `ozpb-grant-proposal/v1` document or choose a JSON file up to 16 KiB, then select
 **Import and verify proposal**. The accepted grant is one exact native XLM transfer from this
-account to a G-address recipient on testnet: one strict `any_of` delegated signer, an expiry
+account to a G-address recipient on the session's network: one strict `any_of` delegated signer, an expiry
 within 17,280 ledgers of the current ledger, and a cap of 1–10,000 calls. Widenings, spending
-limits, unlimited grants, other networks and other call shapes are refused.
+limits, unlimited grants, proposals for another network and other call shapes are refused.
 
 The backend records the confirmed transaction again through its configured RPC and synthesizes
 from a fresh wallet-owned decisions document. Before compiling or retaining an artifact, it

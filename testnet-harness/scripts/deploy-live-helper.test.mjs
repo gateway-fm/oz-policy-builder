@@ -582,3 +582,23 @@ test('cancellation during a failed spawn still waits for close and cleans up', a
   assert.equal(existsSync(keys), false);
   assert.deepEqual(proc.exits, [143]);
 });
+
+// The other harness flows (derived denials, invocations, protocol invocations, subscription
+// controls) attribute a denial through `denialCode`, which reads the structured events where
+// stellar-rpc 30.0.1 left no printed log, and the printed log where there is one, requiring both
+// to agree when both are there.
+test('denialCode reads a denial from either shape, and both must agree', async () => {
+  const { denialCode } = await import('./lib.mjs');
+  assert.equal(denialCode(NESTED_DENIAL, [], ACCOUNT, POLICY), 6, '30.0.0: the printed log alone');
+  assert.equal(denialCode(HOST_ONLY, denialEvents(), ACCOUNT, POLICY), 6, '30.0.1: the events alone');
+  assert.equal(denialCode(NESTED_DENIAL, denialEvents(), ACCOUNT, POLICY), 6, 'both, agreeing');
+  assert.equal(denialCode(NESTED_DENIAL, denialEvents({ code: 7 }), ACCOUNT, POLICY), null, 'both, disagreeing');
+  assert.equal(denialCode(HOST_ONLY, [], ACCOUNT, POLICY), null, 'neither');
+  assert.equal(denialCode(HOST_ONLY, denialEvents({ raisedBy: SAC }), ACCOUNT, POLICY), null, 'another contract');
+  const { readFileSync } = await import('node:fs');
+  for (const file of ['derived-denials.mjs', 'invoke.mjs', 'protocol-invoke.mjs', 'subscription-controls.mjs']) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    assert.match(source, /denialCode\(/, file);
+    assert.doesNotMatch(source, /[^.\w]policyDenial\(/, `${file} reads the printed log only through denialCode`);
+  }
+});

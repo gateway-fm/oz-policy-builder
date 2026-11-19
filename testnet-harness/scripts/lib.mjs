@@ -372,6 +372,20 @@ function diagnostics(events) {
       topics: event.body.v0.topics, data: event.body.v0.data }));
 }
 
+/**
+ * The code `policy` refused `account`'s authorization with, from wherever the RPC put the event log:
+ * the printed log in `error` (stellar-rpc 30.0.0 and earlier) and the structured diagnostic `events`
+ * (30.0.1 returns only these). Where both are there they must agree; with neither, null.
+ */
+export function denialCode(error, events, account, policy) {
+  const text = String(error ?? '');
+  const structured = structuredPolicyDenial(events, account, policy);
+  if (!text.includes('\n')) return structured;
+  const printed = policyDenial(text, account, policy);
+  const hasEvents = Array.isArray(events) && events.length > 0;
+  return printed !== null && (!hasEvents || structured === printed) ? printed : null;
+}
+
 /** Contract error codes `contract` raised, from the structured diagnostic events (`[error, Error(Contract, N)]`). */
 export function structuredRaised(events, contract) {
   const id = contractIdHex(contract);

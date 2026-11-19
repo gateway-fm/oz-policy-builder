@@ -140,11 +140,12 @@ function sourceAuthorization(operation, payer) {
  * Exact transaction comparison, on the session's `passphrase`, after allowing only fee/resource fields
  * to be populated, at most up to the session's per-transaction cap (`fees`, testnet's by default).
  */
-export function checkPreparedEnvelope(assembled, expectedBytes, passphrase, fees = TESTNET_FEES) {
+export function checkPreparedEnvelope(assembled, expectedBytes, passphrase, fees) {
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedBytes);
     const actual = assembled.toEnvelope();
-    const maximum = isUpload(expected.v1.tx.operations) ? fees.maxUploadFeeStroops : fees.maxFeeStroops;
+    const maximum = isUpload(expected.v1.tx.operations) ? fees?.maxUploadFeeStroops : fees?.maxFeeStroops;
+    if (!Number.isSafeInteger(maximum)) refuse();
     if (typeof passphrase !== 'string' || assembled.networkPassphrase !== passphrase || actual.type !== 'envelopeTypeTx' || actual.v1.signatures.length) refuse();
     const tx = actual.v1.tx;
     if (!Number.isSafeInteger(tx.fee) || tx.fee < 100 || tx.fee > maximum || tx.ext.type !== 'sorobanData') refuse();
@@ -220,9 +221,10 @@ function confirmed(receipt, sent) {
 
 /**
  * Trusted backend only. No HTTP route exposes operations, envelopes or this fee payer. `network` is
- * the session's network profile (shared/networks.mjs), chosen once at startup: every read checks
- * that the endpoint serves it, every transaction is built and checked on its passphrase, and the
- * journal records it first.
+ * the session's network profile (shared/networks.mjs), chosen once at startup: each step checks
+ * first that the endpoint serves it (`assertNetwork`, directly or through `latestLedger` and
+ * `ledgerClock`) before the reads it depends on, every transaction is built and checked on its
+ * passphrase, and the journal records it first.
  */
 export class WalletNetwork {
   #server; #payer; #fees; #spent = 0n; #fetch; #journal; #assemble; #pause; #rpcUrl; #network;

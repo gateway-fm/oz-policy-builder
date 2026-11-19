@@ -39,7 +39,7 @@ async function mcp(t, origin) {
 
 test('actual stdio MCP delivers through real HTTP/client/controller; only wallet Review imports',
   { skip: !process.env.OZPB_MCP_BIN }, async t => {
-    const f = proposalFixture(); const handoff = new AgentHandoff(); const observedCapabilities = [];
+    const f = proposalFixture(); const handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet }); const observedCapabilities = [];
     const connect = handoff.connect.bind(handoff);
     handoff.connect = code => { const result = connect(code); observedCapabilities.push(result.capability); return result; };
     const sessionToken = 'd'.repeat(64), delegate = { address: f.proposal.decisions.delegate, capabilityId: 'e'.repeat(64) };
@@ -115,7 +115,7 @@ test('MCP wallet transport refuses redirects without leaking response bodies', {
 
 test('actual MCP tells a refused proposal, a waiting draft and an absent wallet apart',
   { skip: !process.env.OZPB_MCP_BIN }, async t => {
-    const f = proposalFixture(); const handoff = new AgentHandoff();
+    const f = proposalFixture(); const handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet });
     const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'e'.repeat(64) };
     const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: 'd'.repeat(64) });
     const server = createWalletServer({ session, actions: {}, handoff });

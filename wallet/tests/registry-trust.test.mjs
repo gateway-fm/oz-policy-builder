@@ -96,7 +96,8 @@ test('the CLI\'s E_REGISTRY_ROOT_POLICY reaches the page as registry_root_refuse
     throw Object.assign(new Error('wallet tool failed; no confidential diagnostics returned'), { code: REGISTRY_ROOT_POLICY });
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root, rpcUrl: 'https://rpc.example/',
-    registrySnapshot: '{}', registryRoots: '{}', registryMinimumVersion: 6, runner });
+    registrySnapshot: '{}', registryRoots: '{}', registryMinimumVersion: 6, runner,
+    network: (await import('../shared/networks.mjs')).WALLET_NETWORKS.testnet });
   const account = StrKey.encodeContract(Buffer.alloc(32, 3));
   const record = await toolchain.record({ transactionHash: '2'.repeat(64), accountAddress: account });
   const refused = (error) => error.code === REGISTRY_ROOT_POLICY && error.reason === 'registry_root_refused';

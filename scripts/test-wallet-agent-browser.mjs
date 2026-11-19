@@ -12,7 +12,7 @@ const origin = process.argv[2] ?? 'http://localhost:3000';
 if (!/^http:\/\/localhost:[0-9]{1,5}$/.test(origin)) throw new Error('Expected a localhost UI origin');
 const channel = process.env.OZPB_BROWSER_CHANNEL;
 if (channel && !['chrome', 'chromium'].includes(channel)) throw new Error('Unsupported browser channel');
-const f = proposalFixture(), handoff = new AgentHandoff(), calls = [];
+const f = proposalFixture(), handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet }), calls = [];
 const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'b'.repeat(64) };
 let imports = 0, reads = 0;
 const actions = createWalletActions({ handoff, session: {}, native: {},

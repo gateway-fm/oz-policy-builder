@@ -63,7 +63,7 @@ export class WalletToolchain {
   #config; #root; #runner; #records = new Map(); #artifacts = new Map(); #trustArgs; #network;
 
   constructor({ executable, workRoot, rpcUrl, registrySnapshot, registryRoots, registryMinimumVersion, runner = runTool, buildEnvironment = {},
-    network = WALLET_NETWORKS.testnet }) {
+    network }) {
     const url = new URL(rpcUrl);
     if (!Object.values(WALLET_NETWORKS).includes(network)) refuse();
     this.#network = network;

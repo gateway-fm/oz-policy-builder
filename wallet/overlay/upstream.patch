@@ -241,7 +241,7 @@ index 9235735..d1074e8 100644
        </body>
      </html>
 diff --git a/vite.config.ts b/vite.config.ts
-index 6719599..51b4314 100644
+index 6719599..49b5f41 100644
 --- a/vite.config.ts
 +++ b/vite.config.ts
 @@ -4,21 +4,49 @@ import viteReact from '@vitejs/plugin-react'
@@ -295,11 +295,12 @@ index 6719599..51b4314 100644
        'buffer',
        '@stellar/stellar-sdk',
        '@stellar/stellar-sdk/rpc',
-@@ -44,9 +72,17 @@ export default defineConfig({
+@@ -44,9 +72,18 @@ export default defineConfig({
      },
    },
    plugins: [
-+    mainnetBackendProxy,
++    // Only a build made for mainnet reaches the mainnet backend, and only through `vite preview`.
++    ...(process.env.VITE_OZPB_NETWORK === 'mainnet' ? [mainnetBackendProxy] : []),
      cloudflare({
 +      // The dedicated local wallet checkout never connects remote provider bindings.
 +      remoteBindings: false,

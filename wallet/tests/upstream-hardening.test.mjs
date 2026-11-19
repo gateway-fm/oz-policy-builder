@@ -58,7 +58,9 @@ test('the mainnet backend is reachable only through the production preview serve
   assert.match(plugin, /host: '127\.0\.0\.1', port: 4318, method: req\.method, path: `\/api\/policy-builder\$\{req\.url\}`/);
   assert.doesNotMatch(plugin, /configureServer/, 'the development server never gets it');
   assert.match(vite, /preview: \{ host: '127\.0\.0\.1', port: 3000, strictPort: true \}/);
-  assert.ok(PATCH.includes('+    mainnetBackendProxy,\n     cloudflare({'), 'before the Cloudflare plugin');
+  // Registered only for a build made for mainnet, and before the Cloudflare plugin.
+  assert.ok(PATCH.includes("+    ...(process.env.VITE_OZPB_NETWORK === 'mainnet' ? [mainnetBackendProxy] : []),\n     cloudflare({"),
+    'only in a mainnet build, before the Cloudflare plugin');
 });
 
 test('a mainnet build serves the Policy Builder alone: upstream routes and navigation are refused', () => {

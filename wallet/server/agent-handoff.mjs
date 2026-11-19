@@ -24,7 +24,10 @@ const walletEqual = (a, b) => ['contractId', 'credentialId', 'publicKey', 'verif
  */
 export class AgentHandoff {
   #now; #network; #pairing = null; #connection = null; #pending = null; #seen = new Map();
-  constructor({ now = () => performance.now(), network = WALLET_NETWORKS.testnet } = {}) { this.#now = now; this.#network = network; }
+  constructor({ now = () => performance.now(), network } = {}) {
+    if (!Object.values(WALLET_NETWORKS).includes(network)) refuse();
+    this.#now = now; this.#network = network;
+  }
   disconnect() { this.#pairing = null; this.#connection = null; this.#pending = null; this.#seen.clear(); }
   #expire() {
     const now = this.#now();

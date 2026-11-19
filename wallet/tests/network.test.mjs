@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, rpc, xdr } from '@stellar/stellar-sdk';
-import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS, assembleTransaction, boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
+import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS, assembleTransaction, boundedRpcServer, checkPreparedEnvelope, WalletNetwork, TESTNET_FEES } from '../server/network.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
@@ -31,7 +31,7 @@ function prepared(original) {
 test('enforcing assembly can change only bounded resources and fee', () => {
   const original = transaction();
   const assembled = prepared(original);
-  assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR(), Networks.TESTNET));
+  assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR(), Networks.TESTNET, TESTNET_FEES));
 });
 for (const mutation of ['network', 'source', 'sequence', 'call', 'auth', 'signature', 'timeout', 'fee', 'resource fee']) {
   test(`enforcing assembly refuses substituted ${mutation}`, () => {
@@ -53,7 +53,7 @@ for (const mutation of ['network', 'source', 'sequence', 'call', 'auth', 'signat
     if (mutation === 'fee') tx.fee = 10_000_001;
     if (mutation === 'resource fee') tx.ext.sorobanData.resourceFee = 2001n;
     const changed = TransactionBuilder.fromXDR(envelope.toXDR('base64'), mutation === 'network' ? Networks.PUBLIC : Networks.TESTNET);
-    assert.throws(() => checkPreparedEnvelope(changed, original.toEnvelope().toXDR(), Networks.TESTNET), /refused/);
+    assert.throws(() => checkPreparedEnvelope(changed, original.toEnvelope().toXDR(), Networks.TESTNET, TESTNET_FEES), /refused/);
   });
 }
 
@@ -416,7 +416,7 @@ test('enforcing assembly of an envelope without time bounds changes only its res
   const original = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
   assert.throws(() => rpc.assembleTransaction(original, enforced(4000)).build(), /TimeBounds/, 'the SDK builder alone cannot');
   const assembled = assembleTransaction(original, enforced(4000)).build();
-  checkPreparedEnvelope(assembled, envelope.toXDR(), Networks.TESTNET);
+  checkPreparedEnvelope(assembled, envelope.toXDR(), Networks.TESTNET, TESTNET_FEES);
   const tx = assembled.toEnvelope().v1.tx;
   assert.equal(tx.fee, 100 + 4000, 'the inclusion bid plus the enforced resource fee');
   assert.equal(tx.ext.sorobanData.resourceFee, 4000n);
@@ -455,15 +455,15 @@ test('a policy Wasm upload may cost up to 15 testnet XLM; nothing else above 1',
   assert.equal(MAX_FEE_STROOPS, 10_000_000);
   for (const fee of [101_422_794 + 1000, 150_000_000]) {
     const { original, assembled } = upload(fee);
-    assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR(), Networks.TESTNET), String(fee));
+    assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR(), Networks.TESTNET, TESTNET_FEES), String(fee));
   }
   const over = upload(150_000_001);
-  assert.throws(() => checkPreparedEnvelope(over.assembled, over.original.toEnvelope().toXDR(), Networks.TESTNET), /refused/);
+  assert.throws(() => checkPreparedEnvelope(over.assembled, over.original.toEnvelope().toXDR(), Networks.TESTNET, TESTNET_FEES), /refused/);
   const original = transaction();
   const envelope = xdr.TransactionEnvelope.fromXDR(original.toEnvelope().toXDR());
   envelope.v1.tx.fee = 101_422_794;
   envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(101_421_794).build());
-  assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET),
+  assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET, TESTNET_FEES),
     original.toEnvelope().toXDR(), Networks.TESTNET), /refused/, 'a contract call above 1 XLM stays refused');
 });
 

@@ -252,3 +252,13 @@ test('the page holds the network its launch URL names, and refuses a backend on 
   await assert.doesNotReject(() => controller({ ...pins, capabilities: {} }).connect());
   assert.throws(() => new WalletController({ pins: { ...pins, network: 'pubnet' }, validators: {}, request: async () => ({}) }), /refused/);
 });
+
+test('no network, no default: the toolchain, the agent handoff and the envelope check take the session\'s explicitly', async () => {
+  const { WalletToolchain } = await import('../server/toolchain.mjs');
+  const { checkPreparedEnvelope } = await import('../server/network.mjs');
+  assert.throws(() => new AgentHandoff(), /refused/);
+  assert.throws(() => new AgentHandoff({ network: { ...MAINNET } }), /refused/);
+  assert.throws(() => new WalletToolchain({ executable: '/fixed/ozpb', workRoot: tmpdir(), rpcUrl: 'https://rpc.example/',
+    registrySnapshot: '{}', registryRoots: '{}', registryMinimumVersion: 6 }), /refused/);
+  assert.throws(() => checkPreparedEnvelope({}, Buffer.alloc(0), Networks.TESTNET), /refused/);
+});

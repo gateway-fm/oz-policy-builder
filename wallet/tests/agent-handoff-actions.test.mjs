@@ -8,7 +8,7 @@ import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { TESTNET_FEES } from '../server/network.mjs';
 
 test('pairing checks the backend delegate and staging does not invoke import, builds or RPC', async () => {
-  const f = proposalFixture(); const handoff = new AgentHandoff(); const calls = [];
+  const f = proposalFixture(); const handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet }); const calls = [];
   const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'a'.repeat(64) };
   const actions = createWalletActions({ handoff, session: {}, native: {},
     delegates: { check: (cap, address) => { assert.equal(cap, delegate.capabilityId); assert.equal(address, delegate.address); calls.push('delegate'); } },

@@ -10,7 +10,7 @@ import { WalletController } from '../overlay/files/src/policy-builder/client/con
 const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 function fixture(sharedHandoff = null) {
-  const f = proposalFixture(); const handoff = sharedHandoff ?? new AgentHandoff(); const calls = []; let pollDelay = null; let delegateFails = false;
+  const f = proposalFixture(); const handoff = sharedHandoff ?? new AgentHandoff({ network: WALLET_NETWORKS.testnet }); const calls = []; let pollDelay = null; let delegateFails = false;
   const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'a'.repeat(64) };
   const pins = { network: 'testnet', networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM };
   const imported = { record: f.record, artifact: f.artifact,
