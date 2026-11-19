@@ -106,15 +106,23 @@ the cap refusing it ([using the grant](POLLYWALLET-INTEGRATION.md#using-the-gran
   compares the rule, the code and the modelled authority with what was installed. It reports
   `unchanged`, `inactive`, `drift` or `unavailable`, and only when you run it
   ([monitoring](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)).
-- **The registry:** `ozpb registry monitor` with the hashes your grant relies on tells you when one
-  is revoked ([incident response](INCIDENT-RESPONSE.md#a-a-hash-you-rely-on-is-revoked-in-the-registry)).
+- **The registry:** `ozpb registry monitor` tells you when something your grant relies on is
+  revoked. Watch the account's, the owner verifier's and any reviewed policy's code hashes with
+  `--wasm-hash`, and the generated policy's template family with `--template` (its spec's
+  `template_family`): a generated policy has no registry entry of its own, so the revocation of
+  its family is the one that reaches it
+  ([incident response](INCIDENT-RESPONSE.md#a-a-hash-you-rely-on-is-revoked-in-the-registry)).
 
 ## 9. Revoke
 
 Expiry and the call cap stop a grant on their own; revocation removes its rule now. In the wallet,
-`Prepare revocation` and approve with the passkey. The wallet revokes only grants its running
-session installed ([revocation](POLLYWALLET-INTEGRATION.md#revocation)). What to do in an incident:
-[incident response](INCIDENT-RESPONSE.md).
+`Prepare revocation` for a grant this session installed, or, after a restart, attach the account
+and use **Remove a grant an earlier session installed**, which lists the account's rules as stored
+and removes the one you choose; approve either with the passkey. The wallet removes only
+grant-shaped rules, never your owner rule or a recovery or admin rule
+([revocation](POLLYWALLET-INTEGRATION.md#revocation),
+[an earlier session's grant](POLLYWALLET-INTEGRATION.md#removing-an-earlier-sessions-grant)). What
+to do in an incident: [incident response](INCIDENT-RESPONSE.md).
 
 ## On mainnet
 

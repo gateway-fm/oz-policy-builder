@@ -23,15 +23,20 @@ says what changes.
 
 ## How to revoke a grant
 
-- **Wallet integration.** `Prepare revocation`, then approve with the owner passkey
-  ([Revocation](POLLYWALLET-INTEGRATION.md#revocation)). The wallet reports the rule `removed`
-  only after the account's `context_rule_removed` event and a readback that the rule is gone;
-  policy cleanup is reported separately. It is offered for installations made by the running
-  backend session: a restarted backend cannot revoke a rule an earlier one installed
-  ([After a restart](POLLYWALLET-INTEGRATION.md#after-a-restart)), and nothing else in this tree
-  can have the wallet account's passkey sign a removal. Any tool that can have the owner sign
-  `remove_context_rule` for the rule ID works; for a grant you may need to revoke in a hurry, keep
-  the installing session running.
+- **Wallet integration.** For a grant the running backend session installed, `Prepare
+  revocation`, then approve with the owner passkey
+  ([Revocation](POLLYWALLET-INTEGRATION.md#revocation)). After a restart, attach the account and
+  use **Remove a grant an earlier session installed**: the wallet lists the account's rules as
+  stored now and removes the one you choose, bound to its exact current bytes and approved with
+  the same passkey ([Removing an earlier session's grant](POLLYWALLET-INTEGRATION.md#removing-an-earlier-sessions-grant)).
+  Either way the wallet reports the rule `removed` only after the account's
+  `context_rule_removed` event and a readback that the rule is gone; policy cleanup is reported
+  separately. It removes only grant-shaped rules (one contract's calls, limited by at least one
+  policy): the owner rule, a rule naming the owner's passkey and a `Default`-context or
+  policy-less rule are refused. On mainnet the session spend cap never stops a removal; the
+  per-transaction cap still applies. A send whose result is uncertain blocks every later write in
+  that session, a removal included: look the transaction up, then start a new session. Any other
+  tool that can have the owner sign `remove_context_rule` for the rule ID works too.
 - **Testnet harness runs.** `node lifecycle.mjs --run-dir <run>` in `testnet-harness/scripts`: the
   owner signs the removal, so it needs the run's keys
   ([Running the parts](../testnet-harness/README.md#running-the-parts)).
@@ -41,12 +46,15 @@ call counter ([Revoke-first replacement](POLLYWALLET-INTEGRATION.md#revoke-first
 
 ## (a) A hash you rely on is revoked in the registry
 
-**Detect it.** Watch every hash a grant relies on: the account's Wasm, each owner verifier's, each
-reviewed policy's, and the target's code hash where a target adapter is bound to it.
-`ozpb registry monitor` matches a watched hash against revoked `policy/`, `account/`, `verifier/`
-and `target_adapter/` entries. A generated policy has no entry to match (it is recognized by its
-reproduced build), and a template-family revocation (`template/<family>`) is not matched by hash:
-it shows in the report's `head.revocations` and in the project's advisory.
+**Detect it.** Watch everything a grant relies on: with `--wasm-hash`, the account's Wasm, each
+owner verifier's, each reviewed policy's, and the target's code hash where a target adapter is
+bound to it; with `--template`, the template family of each generated policy (its spec's
+`template_family`). `ozpb registry monitor` matches a watched hash against revoked `policy/`,
+`account/`, `verifier/` and `target_adapter/` entries, and a watched family against revoked
+`template/<family>` entries. A generated policy has no entry of its own: it is recognized through
+its family, so the family's revocation is the one that reaches it, and watching its build's hash
+would never report one. A watch item the head neither registers nor revokes, a typo above all, is
+refused with exit `1` and named.
 
 The monitor compares the published registry with your checkpoint: the one in your roots file, or
 the one `ozpb registry verify` printed when you accepted the snapshot. The development roots file
@@ -63,12 +71,13 @@ ozpb registry verify --signed docs/examples/registry.signed.json \
 ozpb registry monitor --published docs/examples/registry.signed.json --checkpoint checkpoint.json \
   --registry-roots docs/examples/registry-roots.json --network "$N" \
   --wasm-hash <account wasm hash> --wasm-hash <owner verifier wasm hash> \
-  --wasm-hash <reviewed policy wasm hash> --wasm-hash <adapter-bound target wasm hash>
+  --wasm-hash <reviewed policy wasm hash> --wasm-hash <adapter-bound target wasm hash> \
+  --template policy-templates/scope@1
 ```
 
 A governed registry is monitored the same way with `--published registry/<network>` (its log) and
-your pinned roots. Exit `6` means a watched hash is revoked; the report names each with the
-custodians' reason. Exit `1` means the published log cannot be verified against your checkpoint —
+your pinned roots. Exit `6` means a watched hash or template family is revoked; the report names
+each with the custodians' reason. Exit `1` means the published log cannot be verified against your checkpoint —
 a fork, an equivocation, a rollback, or roots you have not pinned, each an incident in itself — and
 also any other error, such as a missing checkpoint or an unreadable file, so read its message. The
 other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
