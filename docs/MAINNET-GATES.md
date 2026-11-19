@@ -430,8 +430,11 @@ Open, and the other deviation:
   use, compiles in its own environment: its manifests name no image and builds are not isolated
   from one another. Every field is the producer's own statement, labelled `local-unattested`;
   nothing lets a third party check a manifest without rerunning `ozpb verify`
-  ([SCOPE item 2](SCOPE.md#implementation-boundaries)). Closing it needs a containerized default
-  builder that records its image, and output someone else can check.
+  ([SCOPE item 2](SCOPE.md#implementation-boundaries)). A [published build](PUBLISHING.md) gives
+  that rerun its inputs under the Wasm hash, and `ozpb verify-published` refuses one whose files
+  the manifest does not describe, its lockfile included, before reproducing it; that is still a
+  rerun, not an attestation. Closing it needs a containerized default builder that records its
+  image, and output someone else can check.
 - **Registry root, by design.** `generate` and `verify` record the root the spec names without
   checking it; trust is enforced at synthesis, the install intent and the live checks, which load
   the snapshot under the pinned roots ([SCOPE item 7](SCOPE.md#implementation-boundaries)). The
@@ -450,6 +453,8 @@ ci  crates/build-runner/src/lib.rs  tests::a_build_not_compiled_for_the_declared
 ci  crates/codegen/src/lib.rs  tests::the_template_pack_hash_is_the_emitter_source_without_its_tests
 ci  crates/toolkit/src/verification.rs  verification::tests::verification_reproduces_a_manifest_from_another_producer_and_says_so
 ci  crates/toolkit/src/lib.rs  tests::generated_artifact_includes_wasm_and_a_binding_manifest
+ci  crates/toolkit/src/publication.rs  publication::tests::a_published_build_reproduces_through_verify
+ci  crates/toolkit/src/publication.rs  publication::tests::a_changed_source_byte_is_refused_by_the_index_and_then_by_the_manifest
 ```
 
 ## G10. Registry governance

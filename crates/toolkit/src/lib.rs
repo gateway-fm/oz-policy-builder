@@ -26,6 +26,12 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, reference_suite_cases, verify_with_build_config};
+mod publication;
+pub use publication::{
+    check_published, check_republish, publish_artifact, PublishInput, PublishedArtifact,
+    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_ENTRIES, PUBLISHED_INDEX, PUBLISHED_MANIFEST,
+    PUBLISHED_SOURCE_DIR, PUBLISHED_SPEC, PUBLISHED_WASM,
+};
 mod dry_run;
 pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;

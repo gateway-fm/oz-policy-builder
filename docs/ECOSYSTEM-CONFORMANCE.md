@@ -231,9 +231,11 @@ cannot leave its literal (`a_hostile_meta_value_cannot_leave_its_literal`).
 We publish the SEP-58 fields nowhere, in that section or in any other venue the SEP allows: no
 `bldimg`, `bldarg`, `bldopt`, `source_sha256` or `source_uri`. `source_sha256` in particular
 cannot be compiled in from the source — it is the hash of an archive of that source — and is
-added after compilation by `stellar contract build --meta` when it is recorded at all; no
-archive of a generated crate is published, so there is nothing for it to name yet. What stands
-in its place is
+added after compilation by `stellar contract build --meta` when it is recorded at all, and no
+archive of a generated crate exists for it to name. `ozpb publish-artifact` publishes a generated
+crate with its spec, manifest and Wasm under the Wasm hash ([publishing](PUBLISHING.md)), but as
+a directory with a `SHA256SUMS` index, not the archive `stellar contract build archive` writes,
+so it records no `source_sha256` either. What stands in its place is
 `BuildManifest`, an out-of-band record whose `ToolchainIdentity.rustc_version` restates
 `rsver`, `stellar_cli_version` restates `cliver`, and `soroban_sdk_version` restates
 `rssdkver` — and the platform's variants are more precise than ours, since they include commits.
@@ -350,7 +352,10 @@ which is what makes the dependency visible, but reproducibility still requires t
    verifier reproduces the source by re-running generation — is worth specifying alongside it.
    **Unresolved.** It is settled by choosing a publication point for the archive and writing it
    down, or by establishing with the SEP's authors that a generator-plus-spec pointer satisfies
-   a verifier; neither has been done.
+   a verifier; neither has been done. A published build ([publishing](PUBLISHING.md)) would be
+   an input to the second — the spec and the generated crate under the Wasm hash, checked with
+   `ozpb verify-published` — but it is not SEP-58's archive, and nobody has agreed that it
+   satisfies a verifier.
 
 ---
 
