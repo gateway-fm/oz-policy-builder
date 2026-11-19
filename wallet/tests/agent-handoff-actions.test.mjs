@@ -5,13 +5,14 @@ import { createWalletActions } from '../server/actions.mjs';
 import { AgentHandoff } from '../server/agent-handoff.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
 
 test('pairing checks the backend delegate and staging does not invoke import, builds or RPC', async () => {
   const f = proposalFixture(); const handoff = new AgentHandoff(); const calls = [];
   const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'a'.repeat(64) };
   const actions = createWalletActions({ handoff, session: {}, native: {},
     delegates: { check: (cap, address) => { assert.equal(cap, delegate.capabilityId); assert.equal(address, delegate.address); calls.push('delegate'); } },
-    network: new Proxy({}, { get: (_, key) => key === 'profile' ? WALLET_NETWORKS.testnet : () => { throw new Error('unexpected network call'); } }),
+    network: new Proxy({}, { get: (_, key) => key === 'profile' ? WALLET_NETWORKS.testnet : key === 'fees' ? TESTNET_FEES : () => { throw new Error('unexpected network call'); } }),
     toolchain: new Proxy({}, { get: () => () => { throw new Error('unexpected build'); } }) });
   const paired = await actions['pair-agent']({ wallet: f.wallet, delegate });
   assert.deepEqual(calls, ['delegate']);

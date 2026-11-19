@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Keypair, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { PROTOCOL_VERSION } from '../shared/networks.mjs';
+import { FeePayer } from './fee-payer.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
 import { removalCall } from '../shared/revoke.mjs';
 import { ruleReadbackResult } from './install.mjs';
@@ -16,12 +17,21 @@ export const MAX_FEE_STROOPS = 10_000_000;
  * October 2026. Every other transaction keeps MAX_FEE_STROOPS.
  */
 export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
-/** Refusals the page can explain: the endpoint serves another network, or another protocol than 30. */
-export const NETWORK_REASONS = Object.freeze(['network_mismatch', 'protocol_unsupported']);
+/**
+ * Refusals the page can explain: the endpoint serves another network, or another protocol than 30;
+ * a transaction above the per-transaction fee cap or the session spend cap; a mainnet fee payer or
+ * delegate account the owner has not funded yet; pinned code missing on the network.
+ */
+export const NETWORK_REASONS = Object.freeze(['network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
+  'delegate_unfunded', 'pinned_code_missing']);
 const refuse = (cause) => {
   throw Object.assign(new Error('wallet network operation refused; inspect the local journal before retrying'),
     NETWORK_REASONS.includes(cause?.reason) ? { reason: cause.reason, ...(cause.protocolVersion !== undefined ? { protocolVersion: cause.protocolVersion } : {}) } : {});
 };
+/** Testnet's fee ceilings, unchanged: no session cap, since Friendbot pays for everything there. */
+export const TESTNET_FEES = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, sessionSpendCapStroops: null });
+const isUpload = (operations) => operations.length === 1
+  && operations[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm';
 const bytes = (value) => Buffer.from(value.toXDR());
 const same = (a, b) => a?.toXDR && b?.toXDR && bytes(a).equals(bytes(b));
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -86,14 +96,15 @@ function sourceAuthorization(operation, payer) {
   })] });
 }
 
-/** Exact transaction comparison, on the session's `passphrase`, after allowing only fee/resource fields to be populated. */
-export function checkPreparedEnvelope(assembled, expectedBytes, passphrase) {
+/**
+ * Exact transaction comparison, on the session's `passphrase`, after allowing only fee/resource fields
+ * to be populated, at most up to the session's per-transaction cap (`fees`, testnet's by default).
+ */
+export function checkPreparedEnvelope(assembled, expectedBytes, passphrase, fees = TESTNET_FEES) {
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedBytes);
     const actual = assembled.toEnvelope();
-    const intended = expected.v1.tx.operations;
-    const maximum = intended.length === 1 && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
-      ? MAX_UPLOAD_FEE_STROOPS : MAX_FEE_STROOPS;
+    const maximum = isUpload(expected.v1.tx.operations) ? fees.maxUploadFeeStroops : fees.maxFeeStroops;
     if (typeof passphrase !== 'string' || assembled.networkPassphrase !== passphrase || actual.type !== 'envelopeTypeTx' || actual.v1.signatures.length) refuse();
     const tx = actual.v1.tx;
     if (!Number.isSafeInteger(tx.fee) || tx.fee < 100 || tx.fee > maximum || tx.ext.type !== 'sorobanData') refuse();
@@ -174,10 +185,20 @@ function confirmed(receipt, sent) {
  * journal records it first.
  */
 export class WalletNetwork {
-  #server; #payer = Keypair.random(); #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
+  #server; #payer; #fees; #spent = 0n; #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
   #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #delegatesFunded = new Set();
-  constructor({ rpcUrl, journalRoot, network, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep }) {
+  /**
+   * `feePayer` and `fees` are the session's funding model: on testnet a disposable key and testnet's
+   * ceilings; on mainnet the operator's own key and its configured caps, a session cap included.
+   */
+  constructor({ rpcUrl, journalRoot, network, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep,
+    feePayer = network?.friendbot ? FeePayer.disposable() : null, fees = network?.friendbot ? TESTNET_FEES : null }) {
     if (!network || typeof network.passphrase !== 'string' || typeof network.networkId !== 'string' || !Object.isFrozen(network)) refuse();
+    // Without Friendbot, only the operator's own funded key pays, and only within a session cap.
+    if (!(feePayer instanceof FeePayer) || (!network.friendbot && (!feePayer.operator || !Number.isSafeInteger(fees?.sessionSpendCapStroops)))
+      || ![fees?.maxFeeStroops, fees?.maxUploadFeeStroops].every((n) => Number.isSafeInteger(n) && n >= 100)) refuse();
+    this.#payer = feePayer;
+    this.#fees = Object.freeze({ ...fees });
     this.#network = network;
     this.#server = server ?? boundedRpcServer(rpcUrl, fetchImpl);
     this.#rpcUrl = rpcUrl;
@@ -186,7 +207,11 @@ export class WalletNetwork {
   }
   /** The session's network profile. */
   get profile() { return this.#network; }
-  get payerAddress() { return this.#payer.publicKey(); }
+  get payerAddress() { return this.#payer.address; }
+  /** The session's fee caps, shown to the owner before anything is signed. */
+  get fees() { return this.#fees; }
+  /** Fees this session's confirmed transactions were charged, plus the full fee of any whose result is uncertain. */
+  get spentStroops() { return this.#spent.toString(); }
   /** Whether a submission could start now: the payer is funded and no earlier result is uncertain. */
   get canSubmit() { return this.#funded && !this.#ambiguous; }
   /**
@@ -257,7 +282,7 @@ export class WalletNetwork {
       envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
       const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), this.#network.passphrase);
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
-      checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase);
+      checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
       const restored = final.v1.tx.ext.sorobanData.ext;
       const assembly = {
@@ -270,7 +295,7 @@ export class WalletNetwork {
         simulation_auth_mode: 'record', evidence_trust: 'rpc_reported', state_dependent: true, writes_committed: false,
       };
       const limits = { feePayer: this.payerAddress, sourceSequence: captured.sourceSequence,
-        currentLedger: await this.latestLedger(), ownerReadLedger, maxFeeStroops: MAX_FEE_STROOPS, validityLedgers: 120 };
+        currentLedger: await this.latestLedger(), ownerReadLedger, maxFeeStroops: this.#fees.maxFeeStroops, validityLedgers: 120 };
       validateSampleAssembly({ approval, assembly, ownerRuleXdr, limits });
       return { assembly, limits };
     } catch (error) { refuse(error); }
@@ -284,6 +309,14 @@ export class WalletNetwork {
   async fundPayer() {
     await this.assertNetwork();
     if (this.#funded) return;
+    if (this.#payer.operator) {
+      // The operator's key is never funded by the wallet: its account must exist, funded by its owner,
+      // with at least one transaction's fee to spend above its reserve.
+      const account = await this.payerAccount();
+      if (!account.exists || BigInt(account.spendableStroops) < BigInt(this.#fees.maxFeeStroops)) refuse({ reason: 'payer_unfunded' });
+      this.#funded = true;
+      return;
+    }
     // Friendbot exists on testnet alone; no disposable key is ever funded on another network.
     if (this.#fundingAttempted || !this.#network.friendbot) refuse();
     this.#fundingAttempted = true;
@@ -297,6 +330,34 @@ export class WalletNetwork {
   #save(serial, phase, value) {
     writeFileSync(join(this.#journal, `${String(serial).padStart(4, '0')}.${phase}.json`),
       JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+  }
+  /**
+   * The fee payer is the transaction's source and pays its fee; it is never a signer on an account.
+   * Checked on the exact envelope before the payer signs it: no authorization entry names the payer as
+   * its address or carries the payer's key in its signature payload, as a smart account's
+   * `Delegated(payer)` signer would. An entry resting on the source account's own signature is the
+   * payer's own deployment of a contract (it is the deployer address) or, with a disposable testnet
+   * key only, its own transfer funding the sample; the operator's mainnet key authorizes nothing else.
+   */
+  #assertPayerNotSigner(assembled) {
+    const op = assembled.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp;
+    const func = op.hostFunction;
+    const key = Buffer.from(this.#payer.xdrPublicKey().ed25519.value);
+    for (const entry of op.auth) {
+      const credentials = entry.credentials;
+      if (credentials.type === 'sorobanCredentialsSourceAccount') {
+        const creation = func.createContract ?? func.createContractV2;
+        const root = entry.rootInvocation.function;
+        const deployment = creation && creation.contractIdPreimage.type === 'contractIdPreimageFromAddress'
+          && ['sorobanAuthorizedFunctionTypeCreateContractHostFn', 'sorobanAuthorizedFunctionTypeCreateContractV2HostFn'].includes(root.type)
+          && Address.fromScAddress(creation.contractIdPreimage.fromAddress.address).toString() === this.payerAddress;
+        if (entry.rootInvocation.subInvocations.length || !(deployment || !this.#payer.operator)) refuse();
+        continue;
+      }
+      const address = (credentials.address ?? credentials.addressV2);
+      if (!address || Address.fromScAddress(address.address).toString() === this.payerAddress
+        || bytes(address.signature).includes(key)) refuse();
+    }
   }
   async submitOperation(operation, stage) {
     const source = await this.source();
@@ -317,15 +378,26 @@ export class WalletNetwork {
       if (rpc.Api.isSimulationError(simulation) || !simulation.result) refuse();
       ledger(simulation.latestLedger);
       const assembled = this.#assemble(original, simulation).build();
-      checkPreparedEnvelope(assembled, expected, this.#network.passphrase);
-      assembled.sign(this.#payer);
+      // Both caps before signing: the most this transaction can charge, alone and with what this
+      // session has already spent.
+      const fee = BigInt(assembled.fee);
+      const cap = isUpload(assembled.toEnvelope().v1.tx.operations) ? this.#fees.maxUploadFeeStroops : this.#fees.maxFeeStroops;
+      if (fee > BigInt(cap)) refuse({ reason: 'fee_cap' });
+      if (this.#fees.sessionSpendCapStroops !== null && this.#spent + fee > BigInt(this.#fees.sessionSpendCapStroops)) {
+        refuse({ reason: 'spend_cap' });
+      }
+      checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
+      this.#assertPayerNotSigner(assembled);
+      this.#payer.signTransaction(assembled);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
       const serial = ++this.#serial;
       this.#save(serial, 'intended', { stage, hash: txHash, networkId: this.#network.networkId,
         envelopeXdr: assembled.toEnvelope().toXDR('base64'), status: 'submission_unknown' });
       // From this point an exception may mean a live write. Only a verified receipt
-      // releases this guard; a later action cannot silently submit a replacement.
+      // releases this guard; a later action cannot silently submit a replacement. Until then the
+      // whole fee counts as spent.
       this.#ambiguous = true;
+      this.#spent += fee;
       const sent = await this.#server.sendTransaction(assembled);
       if (!['PENDING', 'DUPLICATE'].includes(sent.status) || sent.hash !== txHash) refuse();
       this.#save(serial, 'submitted', { stage, hash: txHash, status: sent.status });
@@ -338,6 +410,7 @@ export class WalletNetwork {
         this.#save(serial, 'confirmed', { ...result, stage, envelopeXdr: receipt.envelopeXdr.toXDR('base64'),
           resultXdr: receipt.resultXdr.toXDR('base64'), resultMetaXdr: receipt.resultMetaXdr.toXDR('base64') });
         this.#ambiguous = false;
+        this.#spent += BigInt(checked.feeCharged) - fee;
         return { ...result, feeChargedStroops: checked.feeCharged, returnValue: checked.returned, events: checked.events };
       }
       refuse();
@@ -546,9 +619,72 @@ export class WalletNetwork {
     } catch (error) { refuse(error); }
   }
   /**
-   * The wallet's automation delegate as a classic testnet account, which the host needs to check its
-   * signature: created through Friendbot if it does not exist yet (a testnet write that costs the fee
-   * payer nothing), then read back with its master key alone able to sign. At most once per address.
+   * A classic account as the owner must fund it, read only: `{ exists: false, minimumStroops, ledger }`
+   * or `{ exists: true, balanceStroops, minimumStroops, spendableStroops, ledger }`. The minimum is the
+   * network's base reserve, from the latest ledger header, times two plus the account's subentries.
+   */
+  async classicAccount(address) {
+    try {
+      if (!StrKey.isValidEd25519PublicKey(address)) refuse();
+      await this.assertNetwork();
+      const latest = await this.#server.getLatestLedger();
+      const header = latest.headerXdr;
+      if (header?.ledgerSeq !== ledger(latest.sequence) || digest(bytes(header)) !== latest.id
+        || !Number.isSafeInteger(header.baseReserve) || header.baseReserve < 1) refuse();
+      const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: Keypair.fromPublicKey(address).xdrAccountId() }));
+      const response = await this.#server.getLedgerEntries(key);
+      const observed = ledger(response.latestLedger);
+      const reserve = BigInt(header.baseReserve);
+      if (!response.entries?.length) return { exists: false, minimumStroops: (2n * reserve).toString(), ledger: observed };
+      const [entry] = response.entries;
+      const account = entry.val?.type === 'account' ? entry.val.account : refuse();
+      if (response.entries.length !== 1 || !same(entry.key, key) || !Number.isSafeInteger(account.numSubEntries)) refuse();
+      const minimum = (2n + BigInt(account.numSubEntries)) * reserve;
+      const balance = BigInt(account.balance);
+      return { exists: true, balanceStroops: balance.toString(), minimumStroops: minimum.toString(),
+        spendableStroops: (balance > minimum ? balance - minimum : 0n).toString(), ledger: observed };
+    } catch (error) { refuse(error); }
+  }
+  /** The fee payer's own account (`classicAccount`). */
+  payerAccount() { return this.classicAccount(this.payerAddress); }
+  /** Whether code with this hash is stored on the network now, read without refusing its absence. */
+  async codePresent(wasmHash) {
+    try {
+      if (!/^[0-9a-f]{64}$/.test(wasmHash)) refuse();
+      await this.assertNetwork();
+      const key = xdr.LedgerKey.contractCode(new xdr.LedgerKeyContractCode({ hash: Buffer.from(wasmHash, 'hex') }));
+      const response = await this.#server.getLedgerEntries(key);
+      const observed = ledger(response.latestLedger);
+      if (!response.entries?.length) return { present: false, ledger: observed };
+      const [entry] = response.entries;
+      if (response.entries.length !== 1 || !same(entry.key, key) || entry.val.type !== 'contractCode'
+        || digest(entry.val.contractCode.code) !== wasmHash) refuse();
+      return { present: ledger(entry.liveUntilLedgerSeq) >= observed, ledger: observed };
+    } catch (error) { refuse(error); }
+  }
+  /**
+   * What uploading `wasm` from the fee payer would cost, from one simulation: nothing is signed or
+   * sent. `{ resourceFeeStroops, feeStroops, ledger }`, the fee being the resource fee plus the
+   * inclusion fee the wallet offers.
+   */
+  async uploadCost(wasm) {
+    try {
+      if (!Buffer.isBuffer(wasm) || wasm.length < 8 || wasm.length > 2 * 1024 * 1024) refuse();
+      await this.assertNetwork();
+      const tx = new TransactionBuilder(new Account(this.payerAddress, '0'), { fee: '100', networkPassphrase: this.#network.passphrase })
+        .addOperation(Operation.uploadContractWasm({ wasm })).setTimeout(0).build();
+      const simulation = await this.#server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(simulation) || !/^(0|[1-9][0-9]{0,18})$/.test(String(simulation.minResourceFee))) refuse();
+      const resource = BigInt(simulation.minResourceFee);
+      return { resourceFeeStroops: resource.toString(), feeStroops: (resource + 100n).toString(), ledger: ledger(simulation.latestLedger) };
+    } catch (error) { refuse(error); }
+  }
+  /**
+   * The wallet's automation delegate as a classic account, which the host needs to check its
+   * signature. On testnet it is created through Friendbot if it does not exist yet (a testnet write
+   * that costs the fee payer nothing); on mainnet it is never created: a missing account refuses as
+   * `delegate_unfunded`, and its owner funds it. Either way it is read back with its master key alone
+   * able to sign. Friendbot is asked at most once per address.
    */
   async ensureDelegateAccount(address) {
     try {
@@ -567,7 +703,8 @@ export class WalletNetwork {
       };
       const existing = await read();
       if (existing) return { ...existing, createdNow: false };
-      if (this.#delegatesFunded.has(address) || !this.#network.friendbot) refuse();
+      if (!this.#network.friendbot) refuse({ reason: 'delegate_unfunded' });
+      if (this.#delegatesFunded.has(address)) refuse();
       this.#delegatesFunded.add(address);
       const response = await this.#fetch(`${this.#network.friendbot}/?addr=${address}`, {
         method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
@@ -650,7 +787,7 @@ export class WalletNetwork {
       envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
       const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), this.#network.passphrase);
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
-      checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase);
+      checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
       const restored = final.v1.tx.ext.sorobanData.ext;
       return { assembly: {
@@ -661,7 +798,7 @@ export class WalletNetwork {
           ? 'automatic_within_invocation' : 'none',
         simulation_auth_mode: 'record', evidence_trust: 'rpc_reported', state_dependent: true, writes_committed: false,
       }, limits: { feePayer: this.payerAddress, sourceSequence: captured.sourceSequence, currentLedger: await this.latestLedger(),
-        ownerReadLedger, maxFeeStroops: MAX_FEE_STROOPS, validityLedgers: 120 } };
+        ownerReadLedger, maxFeeStroops: this.#fees.maxFeeStroops, validityLedgers: 120 } };
     } catch (error) { refuse(error); }
   }
   /**

@@ -4,17 +4,18 @@ import { WalletSession } from '../server/session.mjs';
 import { createWalletActions } from '../server/actions.mjs';
 import { fixture } from './approval-fixture.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
-export function setup({ native = null, live = null, delegates } = {}) {
+import { TESTNET_FEES } from '../server/network.mjs';
+export function setup({ native = null, live = null, delegates, network: overrides = {}, pinnedWasmDir = null } = {}) {
   const calls = [];
   const f = fixture();
   const session = new WalletSession({ origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000', secret: 'ab'.repeat(32) });
   let creates = 0;
   const network = {
-    profile: WALLET_NETWORKS.testnet,
+    profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0',
     payerAddress: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)),
     canSubmit: true,
     assertNetwork: async () => { calls.push('network'); },
-    requireCode: async (hash) => { calls.push(['code', hash]); },
+    codePresent: async (hash) => { calls.push(['code', hash]); return { present: true, ledger: 124 }; },
     fundPayer: async () => { calls.push('fund'); },
     ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
     latestLedger: async () => 123,
@@ -34,11 +35,12 @@ export function setup({ native = null, live = null, delegates } = {}) {
       return { hash: '3'.repeat(64), ledger: 125, trust: 'rpc_reported' };
     },
   };
+  Object.assign(network, overrides);
   const toolchain = {
     record: async (request) => { calls.push(['record', request]); return { recordId: '4'.repeat(64) }; },
     generate: async (request) => { calls.push(['generate', request]); return { artifactId: '5'.repeat(64) }; },
   };
-  return { actions: createWalletActions({ session, toolchain, network, native, live, pause: async () => {},
+  return { actions: createWalletActions({ session, toolchain, network, native, live, pause: async () => {}, pinnedWasmDir,
     ...(delegates ? { delegates } : {}) }),
     calls, f, network, toolchain, session };
 }

@@ -43,12 +43,12 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const toolchain = new WalletToolchain(config);
   const journalRoot = join(toolchain.sessionRoot, 'journal');
   mkdirSync(journalRoot, { mode: 0o700 });
-  const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network });
+  const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;
   const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
   const live = config.liveHelper ? Object.freeze({ helper: config.liveHelper }) : null;
   const handoff = new AgentHandoff({ network: config.network });
-  const actions = createActions({ session, toolchain, network, native, live, handoff });
+  const actions = createActions({ session, toolchain, network, native, live, handoff, pinnedWasmDir: config.pinnedWasmDir });
   const server = createWalletServer({ session, actions, handoff });
   return { server, network: config.network, preflight: () => networkPreflight(network),
     launchUrl: `${ORIGIN}/policy-builder#session=${secret}&network=${config.network.name}` };

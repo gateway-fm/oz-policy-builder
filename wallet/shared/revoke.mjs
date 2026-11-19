@@ -8,7 +8,7 @@ import { decodeEnvelope, resources } from './assembly.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 import { decodeBase64Url } from './base64url.mjs';
 
-/** The fee payer's ceiling for the removal, as for every other wallet transaction. */
+/** The fee payer's ceiling for the removal, as for every other wallet transaction; a mainnet session's lower cap applies below it. */
 export const REMOVAL_MAX_FEE_STROOPS = 10_000_000;
 const refuse = () => { throw new Error('wallet revocation refused; refresh and review again'); };
 const integer = (n, min = 1, max = 0xffffffff) => Number.isSafeInteger(n) && n >= min && n <= max;
@@ -83,7 +83,7 @@ export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limi
   try {
     const fresh = reviewRemoval({ wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr,
       installation: approval.installation, configurationChange: approval.configurationChange ?? null, networkId: approval.networkId });
-    if (fresh.commitment !== approval.commitment || limits.maxFeeStroops !== REMOVAL_MAX_FEE_STROOPS || !sequence(limits.sourceSequence)
+    if (fresh.commitment !== approval.commitment || !integer(limits.maxFeeStroops, 100, REMOVAL_MAX_FEE_STROOPS) || !sequence(limits.sourceSequence)
       || !integer(limits.validityLedgers, 2, 120) || !integer(limits.currentLedger) || !integer(limits.ownerReadLedger)
       || limits.currentLedger < limits.ownerReadLedger || limits.currentLedger - limits.ownerReadLedger > 12
       || !StrKey.isValidEd25519PublicKey(limits.feePayer)
@@ -103,7 +103,7 @@ export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limi
     if (Buffer.from(hash(envelope.toXDR())).toString('hex') !== assembly.envelope_xdr_sha256 || envelope.v1.signatures.length) refuse();
     const tx = envelope.v1.tx;
     if (tx.sourceAccount.type !== 'keyTypeEd25519' || StrKey.encodeEd25519PublicKey(tx.sourceAccount.ed25519.value) !== limits.feePayer
-      || tx.seqNum !== BigInt(limits.sourceSequence) + 1n || !integer(tx.fee, 100, REMOVAL_MAX_FEE_STROOPS)
+      || tx.seqNum !== BigInt(limits.sourceSequence) + 1n || !integer(tx.fee, 100, limits.maxFeeStroops)
       || tx.fee !== assembly.fee_stroops || tx.memo.type !== 'memoNone' || tx.cond.type !== 'precondV2') refuse();
     const cond = tx.cond.v2;
     if ((cond.timeBounds && (cond.timeBounds.minTime !== 0n || cond.timeBounds.maxTime !== 0n))
@@ -134,7 +134,7 @@ export function revokeConsent({ approval, checked, maxFeeStroops }) {
     const { account, ruleId, transactionHash } = approval.installation;
     const network = networkById(approval.networkId);
     if (checked.authorityCommitment !== approval.commitment || checked.ownerRuleId !== approval.ownerRuleId
-      || maxFeeStroops !== REMOVAL_MAX_FEE_STROOPS || !integer(checked.feeStroops, 100, maxFeeStroops)) refuse();
+      || !integer(maxFeeStroops, 100, REMOVAL_MAX_FEE_STROOPS) || !integer(checked.feeStroops, 100, maxFeeStroops)) refuse();
     return freezeCopy({
       schema: 'ozpb-revoke-consent/v1', network: network.name, network_id: network.networkId,
       owner_signs: { contract: account, function: 'remove_context_rule', args: [ruleId], context_rule_ids: [approval.ownerRuleId] },

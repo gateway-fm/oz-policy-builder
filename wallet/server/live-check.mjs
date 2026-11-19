@@ -13,6 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import { Account, Address, Operation, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
 import { freezeCopy } from '../shared/approval.mjs';
+import { stroopsText } from '../shared/networks.mjs';
 import { installCall } from '../shared/assembly.mjs';
 import { LIVE_CASES, LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_LABELS, LIVE_RUN_MIN_LEDGERS, LIVE_SIGNATURE_LEDGERS,
   checkLiveOwnerEntry, consentDisplay, liveCases, liveShape, statementHash } from '../shared/live-consent.mjs';
@@ -26,13 +27,13 @@ const TTL_DOC = 'docs/ATOMIC-LIVE-HELPER.md#keeping-the-helper-live';
  * Where a backend without a configured helper gets one, per network. On mainnet nothing is deployed
  * for the operator: the owner deploys the reviewed helper and names its contract ID in `liveHelper`.
  */
-const HELPER_DEPLOY = Object.freeze({
+export const HELPER_DEPLOY = Object.freeze({
   testnet: 'Deploy it with testnet-harness/scripts/deploy-live-helper.mjs (docs/ATOMIC-LIVE-HELPER.md#testnet-deployment) and name it in '
     + '`liveHelper`.',
   mainnet: 'Mainnet has none until the owner deploys the reviewed helper: build contracts/atomic-live-helper with `stellar contract '
     + `build --locked\`, check its SHA-256 is ${LIVE_HELPER_WASM}, then run \`stellar contract deploy --wasm `
     + 'ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>` and name the contract ID in `liveHelper` '
-    + '(docs/POLLYWALLET-INTEGRATION.md#network-selection). Installation needs this layer, so it stays unavailable until then.',
+    + '(docs/POLLYWALLET-INTEGRATION.md#mainnet-sessions). Installation needs this layer, so it stays unavailable until then.',
 });
 const refuse = () => { throw new Error('live check refused; prepare it again'); };
 const int64 = () => randomBytes(8).readBigInt64BE().toString();
@@ -130,7 +131,15 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
       + 'install it; nothing was signed.') };
   }
   // The host checks a classic signer against its account entry, so the delegate must exist on the network.
-  try { await network.ensureDelegateAccount(grant.delegate); } catch {
+  try { await network.ensureDelegateAccount(grant.delegate); } catch (error) {
+    if (error?.reason === 'delegate_unfunded') {
+      let minimum = null;
+      try { minimum = (await network.classicAccount(grant.delegate)).minimumStroops; } catch { /* stated without the amount */ }
+      return { layer: layer('unavailable', `The automation delegate ${grant.delegate} has no ${net.name} account, and the wallet creates `
+        + `none there. Send it at least ${minimum ? stroopsText(minimum, net) : 'the minimum reserve (two base reserves)'} from your own `
+        + 'wallet, then prepare the check again. Its key exists only in this backend\'s memory: what you send cannot be recovered after '
+        + 'the backend stops, so send only that. Nothing was signed.') };
+    }
     return { layer: layer('unavailable', `The automation delegate's ${net.name} account does not exist or could not be read back `
       + 'with its master key alone; nothing was signed.') };
   }

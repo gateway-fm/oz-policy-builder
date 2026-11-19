@@ -71,8 +71,45 @@ const REFUSED: Record<string, string> = {
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",
   network_mismatch: "the operator's RPC endpoint serves another network than this session's. Nothing was signed or sent; the operator must fix the backend configuration.",
   protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
+  fee_cap: "this transaction could cost more than the per-transaction fee cap the operator set. Nothing was signed or sent.",
+  spend_cap: "this transaction could take the session past the spend cap the operator set. Nothing was signed or sent; a new session starts from zero.",
+  payer_unfunded: "the fee payer's account does not exist or cannot pay a transaction's fee. Fund it from your own wallet (see Mainnet readiness), then try again.",
+  delegate_unfunded: "the automation key has no account on this network, and the wallet creates none. Fund it with the minimum shown under section 2, then try again.",
+  pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command under Mainnet readiness, then try again.",
+  account_unfunded: "your account's XLM balance does not cover the 0.1 XLM sample payment. Send it at least that from your own wallet, then prepare the sample again.",
 };
 const explorer = (hash: string) => `${NETWORK.explorer}/tx/${hash}`;
+/**
+ * Mainnet only: what the owner funds or uploads before anything can run, as the backend read it, and
+ * the caps that bound what the fee payer spends. Read only; the backend decides every step again.
+ */
+function MainnetReadiness({ readiness, status, busy, check }: { readiness: Record<string, unknown> | null;
+  status: Record<string, unknown> | null; busy: boolean; check: () => void }) {
+  const fees = object(status?.fees);
+  const payer = object(readiness?.feePayer);
+  const helper = object(readiness?.helper);
+  return <section className={panel} aria-labelledby="readiness-heading">
+    <h2 id="readiness-heading" className="text-xl font-semibold">Mainnet readiness</h2>
+    <p className="text-sm">The wallet funds and uploads nothing on mainnet. Fee payer {label(object(status?.feePayer).address)}: your own
+      account, which pays every fee, at most {xlm(fees.maxFeeStroops)} a transaction ({xlm(fees.maxUploadFeeStroops)} for the policy
+      code upload) and {xlm(fees.sessionSpendCapStroops)} for this session; spent so far {xlm(fees.spentStroops)}.</p>
+    <button className={button} disabled={busy} onClick={check}>Check mainnet readiness</button>
+    {readiness && <ul className="list-disc space-y-1 pl-5 text-sm">
+      <li>Fee payer account: {payer.exists === true ? <>balance {xlm(payer.balanceStroops)}, of which {xlm(payer.spendableStroops)} spendable</>
+        : <>missing. Send it at least {xlm(payer.minimumStroops)} plus the session cap from your own wallet.</>}</li>
+      {items(readiness.pinned).map((value) => {
+        const pin = object(value), upload = object(pin.upload);
+        return <li key={label(pin.hash)}>Pinned {label(pin.name)} code {label(pin.hash)}: {pin.present === true ? "on mainnet."
+          : <>missing. Upload it yourself: <code className="break-all">{label(upload.command)}</code>{" "}
+            {upload.simulatedFeeStroops ? <>(simulated cost {xlm(upload.simulatedFeeStroops)})</> : <>(the cost is simulated once the
+              reproduced Wasm is at {label(upload.wasmPath)})</>}</>}</li>;
+      })}
+      <li>Live helper: {helper.configured === true && helper.reviewed === true ? <>{label(helper.contract)}, the reviewed helper.</>
+        : <>{label(helper.instruction)}</>}</li>
+    </ul>}
+  </section>;
+}
+
 /** Technical detail kept for reviewers, folded so the step itself stays readable. */
 function Details({ children, title = "Details" }: { children: ReactNode; title?: string }) {
   return <details className="rounded-lg border border-slate-700 p-3 text-sm text-slate-400">
@@ -428,6 +465,8 @@ function PolicyBuilder() {
         {launched === "mainnet" && <p role="alert" className="rounded-lg border border-red-500 bg-red-950/60 p-3 text-sm font-semibold text-red-100">
           Mainnet. Every transaction here moves or spends real XLM, and every signature is valid on the public network. Keep the
           amounts minimal: the account&apos;s passkey works only from this browser at localhost.</p>}
+        {launched === "mainnet" && <MainnetReadiness readiness={state?.readiness ?? null} status={state?.status ?? null} busy={Boolean(busy)}
+          check={() => void run((value) => value.readiness(), "Reading the fee payer, the caps and the pinned code on mainnet…", "Mainnet readiness read.")} />}
         <h1 className="mt-2 text-3xl font-semibold">Policy Builder</h1>
         <p className="mt-3 text-slate-300">Give an automation key one narrow permission on your account, check that the permission
           does exactly that, and take it back. Your passkey approves each step; it never leaves your device.</p>
@@ -442,13 +481,17 @@ function PolicyBuilder() {
         <button className={button} disabled={busy || agentActive || !!state?.accountPreview || accountCreated}
           onClick={() => void create()}>Create owner passkey and preview account</button>
         {state?.accountPreview && <div className="space-y-3 rounded-lg border border-cyan-700 p-3 text-sm">
-          <p>The account gets {xlm(object(state.accountPreview.summary).sampleFundingStroops)} for the sample payment. Fees, at most
-            {" "}{xlm(object(state.accountPreview.summary).maxTotalFeeStroops)}, are paid by the backend's fee payer, not you.</p>
+          {object(state.accountPreview.summary).ownerFunds === true
+            ? <p>The wallet deploys your account and funds nothing: send it at least 0.1 {NETWORK.unit} yourself before the sample payment.
+              Fees, at most {xlm(object(state.accountPreview.summary).maxTotalFeeStroops)}, are paid by the operator&apos;s fee payer, within
+              the session cap of {xlm(object(state.accountPreview.summary).sessionSpendCapStroops)}.</p>
+            : <p>The account gets {xlm(object(state.accountPreview.summary).sampleFundingStroops)} for the sample payment. Fees, at most
+              {" "}{xlm(object(state.accountPreview.summary).maxTotalFeeStroops)}, are paid by the backend&apos;s fee payer, not you.</p>}
           <ReviewWindow until={windows.account} now={now} expired="Preview the account again; it reuses the passkey you created." />
           <div className="flex flex-wrap gap-3">
             <button className={button} disabled={busy || agentActive || !open("account", state.accountPreview)}
-              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier, the account and its funding (about 20–40 s)…`,
-                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", `Fund the account with 1 ${NETWORK.unit}`])}>Confirm {NETWORK.name} account deployment</button>
+              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier and the account${NETWORK.friendbot ? " and its funding" : ""} (about 20–40 s)…`,
+                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", ...(NETWORK.friendbot ? [`Fund the account with 1 ${NETWORK.unit}`] : [])])}>Confirm {NETWORK.name} account deployment</button>
             {!open("account", state.accountPreview) && credential && <button className={button} disabled={busy || agentActive}
               onClick={() => void run((value) => value.prepareAccount(credential), "Preparing the account preview again…", `Next: Confirm ${NETWORK.name} account deployment.`)}>Preview the account again</button>}
           </div>
@@ -563,6 +606,10 @@ function PolicyBuilder() {
           <button className={button} disabled={busy || !!state.delegate}
             onClick={() => void run((value) => value.createDelegate(), `Creating the automation key and its ${NETWORK.name} account (about 10 s)…`, "Automation key created.")}>Create local automation delegate</button>
           <p className="text-slate-400">The automation key the grant names. Connect Claude creates it for you; without Claude, create it here.</p>
+          {state?.delegate?.account && !state.delegate.account.exists && <p role="alert" className="text-amber-200">
+            {state.delegate.address} has no {NETWORK.name} account, and the wallet creates none. Send it at least
+            {" "}{xlm(state.delegate.account.minimumStroops)} from your own wallet before the review. Its key exists only in this backend&apos;s
+            memory: what you send cannot be recovered after the backend stops, so send only that.</p>}
         </div>}
         <details className="space-y-3 rounded-lg border border-slate-600 p-4">
           <summary className="cursor-pointer font-semibold">Import a grant proposal</summary>
@@ -615,6 +662,10 @@ function PolicyBuilder() {
           onClick={() => void run((value) => value.prepareDeploy(), "Preparing the deployment…", "Next: Confirm exact policy deployment.")}>Preview deployment</button>
         {state?.deployPreview && <>
           <ReviewWindow until={windows.deploy} now={now} />
+          {object(state.deployPreview.summary).uploadSimulatedFeeStroops !== null && object(state.deployPreview.summary).uploadSimulatedFeeStroops !== undefined
+            && <p className="text-sm">Uploading the policy code costs about {xlm(object(state.deployPreview.summary).uploadSimulatedFeeStroops)} (simulated),
+              at most {xlm(object(state.deployPreview.summary).maxUploadFeeStroops)}; this session has spent {xlm(object(state.deployPreview.summary).spentStroops)} of
+              {" "}{xlm(object(state.deployPreview.summary).sessionSpendCapStroops)}.</p>}
           <button className={button} disabled={busy || !open("deploy", state.deployPreview)}
             onClick={() => void run((value) => value.confirmDeploy(), "Deploying the policy: uploading its code and creating it (about 15 s)…",
               "Policy deployed. Next: section 4, Refresh authority and review exact grant.", ["Upload the policy code", "Deploy the policy contract"])}>Confirm exact policy deployment</button>

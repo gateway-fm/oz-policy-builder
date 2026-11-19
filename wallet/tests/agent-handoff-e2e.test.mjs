@@ -13,6 +13,7 @@ import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mj
 import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
 const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const code = (response) => response.result?.structuredContent?.code;
@@ -46,7 +47,7 @@ test('actual stdio MCP delivers through real HTTP/client/controller; only wallet
     const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: sessionToken });
     const actions = createWalletActions({ handoff, session, native: {},
       delegates: { create: () => delegate, check: (cap, addr) => { assert.equal(cap, delegate.capabilityId); assert.equal(addr, delegate.address); } },
-      network: { profile: WALLET_NETWORKS.testnet, ensureDelegateAccount: async () => {}, assertNetwork: async () => { reads++; }, requireInstance: async () => { reads++; }, latestLedger: async () => 123 },
+      network: { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0', ensureDelegateAccount: async () => {}, assertNetwork: async () => { reads++; }, requireInstance: async () => { reads++; }, latestLedger: async () => 123 },
       toolchain: { record: async () => { imports++; return f.record; }, generate: async () => f.artifact } });
     const server = createWalletServer({ session, actions, handoff });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

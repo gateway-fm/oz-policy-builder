@@ -3,10 +3,26 @@ import { isAbsolute, normalize } from 'node:path';
 import { StrKey } from '@stellar/stellar-sdk';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { walletNetwork } from '../shared/networks.mjs';
+import { FeePayer, loadFeePayerKey } from './fee-payer.mjs';
+import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
-const OPTIONAL = ['network', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
+const OPTIONAL = ['network', 'feePayerKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
+/** Fields only a mainnet configuration takes: its funding model, its caps and its pinned-code directory. */
+const MAINNET_ONLY = ['feePayerKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
+/**
+ * Mainnet's fee caps: per transaction (a policy Wasm upload has its own, since its resource fee alone
+ * was about 10 XLM on testnet in October 2026) and for the whole session. Defaults are the most an
+ * operator would need for one account, one policy and one installation; each can only be lowered
+ * below its ceiling, never raised past it.
+ */
+export const MAINNET_FEE_DEFAULTS = Object.freeze({ maxFeeStroops: 10_000_000, maxUploadFeeStroops: 120_000_000,
+  sessionSpendCapStroops: 150_000_000 });
+const MAINNET_FEE_CEILINGS = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS,
+  sessionSpendCapStroops: 500_000_000 });
+/** The development registry's version: a mainnet session never accepts an older floor than testnet's. */
+const MAINNET_MIN_REGISTRY_VERSION = 6;
 const integer = (value, max) => Number.isSafeInteger(value) && value >= 1 && value <= max;
 
 function pathInfo(path) {
@@ -59,6 +75,18 @@ export function loadWalletConfig(path) {
       || !integer(value.registryMinimumVersion, Number.MAX_SAFE_INTEGER)) refused();
     // The session's network, chosen once here: `testnet` (the default) or `mainnet`, nothing else.
     const network = walletNetwork(Object.hasOwn(value, 'network') ? value.network : 'testnet');
+    const mainnet = network.name === 'mainnet';
+    if (!mainnet && MAINNET_ONLY.some((name) => Object.hasOwn(value, name))) refused();
+    if (mainnet && (!Object.hasOwn(value, 'feePayerKeyPath') || value.registryMinimumVersion < MAINNET_MIN_REGISTRY_VERSION)) refused();
+    const fees = mainnet ? Object.fromEntries(Object.entries(MAINNET_FEE_DEFAULTS).map(([name, fallback]) => {
+      const chosen = Object.hasOwn(value, name) ? value[name] : fallback;
+      if (!Number.isSafeInteger(chosen) || chosen < 100 || chosen > MAINNET_FEE_CEILINGS[name]) refused();
+      return [name, chosen];
+    })) : { maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, sessionSpendCapStroops: null };
+    if (mainnet && (fees.maxFeeStroops > fees.sessionSpendCapStroops || fees.maxUploadFeeStroops > fees.sessionSpendCapStroops)) refused();
+    // Mainnet: the operator's own key, which it funds; testnet: a disposable key Friendbot funds.
+    const feePayer = mainnet ? loadFeePayerKey(value.feePayerKeyPath) : FeePayer.disposable();
+    const pinnedWasmDir = Object.hasOwn(value, 'pinnedWasmDir') ? directory(value.pinnedWasmDir) : null;
     const url = new URL(value.rpcUrl);
     if (typeof value.rpcUrl !== 'string' || value.rpcUrl.length > 2048 || url.protocol !== 'https:'
       || url.username || url.password || url.search || url.hash) refused();
@@ -82,8 +110,12 @@ export function loadWalletConfig(path) {
     // Its code is read back and matched to the reviewed hash before every use, never trusted from here.
     if (Object.hasOwn(value, 'liveHelper') && (typeof value.liveHelper !== 'string' || !StrKey.isValidContract(value.liveHelper))) refused();
     const liveHelper = Object.hasOwn(value, 'liveHelper') ? value.liveHelper : null;
-    return Object.freeze({ network, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
+    return Object.freeze({ network, feePayer, fees: Object.freeze(fees), pinnedWasmDir, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
       rpcUrl: url.href, registrySnapshot, registryRoots, registryMinimumVersion: value.registryMinimumVersion,
       buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable, liveHelper });
-  } catch { refused(); }
+  } catch (error) {
+    // A fee payer key refusal says why, never with the file's content.
+    if (typeof error?.startup === 'string') throw error;
+    refused();
+  }
 }

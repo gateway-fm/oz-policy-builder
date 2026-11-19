@@ -40,7 +40,7 @@ export class WalletController {
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
     removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, agent: null, agentStale: null,
-    grantUse: null, grantRepeat: null, windows: {}, busy: false });
+    grantUse: null, grantRepeat: null, readiness: null, windows: {}, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }), now = () => performance.now(), wall = () => Date.now() }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
@@ -422,6 +422,17 @@ export class WalletController {
     });
   }
   /** A backend-held automation delegate for the local and live checks; it never replaces the owner passkey. */
+  /**
+   * What the owner must fund or upload before a session on a network the wallet funds nothing on can
+   * run, read by the backend without signing or sending anything. Shown as it is; it decides nothing.
+   */
+  async readiness() {
+    return this.#act(async () => {
+      const result = await this.#request('readiness', {});
+      if (result?.network !== this.#pins.network || !Array.isArray(result.pinned)) throw refused();
+      this.#set({ readiness: result });
+    });
+  }
   async createDelegate() {
     return this.#act(async () => {
       if (this.#state.agent) throw refused();
@@ -429,7 +440,10 @@ export class WalletController {
       if (capabilities?.accountCheck !== true && capabilities?.liveCheck !== true) throw refused();
       const result = await this.#request('create-delegate', {});
       if (!HASH.test(result?.capabilityId) || !/^G[A-Z2-7]{55}$/.test(result.address ?? '')) throw refused();
-      this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address } });
+      // On mainnet the backend reports whether the delegate's account exists; the owner funds it.
+      const account = result.account && typeof result.account.exists === 'boolean'
+        ? { exists: result.account.exists, minimumStroops: String(result.account.minimumStroops) } : null;
+      this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address, ...(account ? { account } : {}) } });
     });
   }
   async checkAccount() {

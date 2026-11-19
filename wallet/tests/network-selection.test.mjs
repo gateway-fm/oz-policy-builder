@@ -10,7 +10,8 @@ import { Keypair, Networks } from '@stellar/stellar-sdk';
 import { WALLET_NETWORKS, networkById, walletNetwork } from '../shared/networks.mjs';
 import { WalletNetwork } from '../server/network.mjs';
 import { networkPreflight } from '../server/main.mjs';
-import { loadWalletConfig } from '../server/config.mjs';
+import { MAINNET_FEE_DEFAULTS, loadWalletConfig } from '../server/config.mjs';
+import { FeePayer } from '../server/fee-payer.mjs';
 import { bindWorkRoot } from '../server/toolchain.mjs';
 import { REFUSAL_REASONS } from '../server/http.mjs';
 import { AgentHandoff } from '../server/agent-handoff.mjs';
@@ -42,7 +43,9 @@ function session(t, network, reported = { passphrase: network.passphrase, protoc
   const server = new Proxy({ getNetwork: async () => { requests.push('getNetwork'); return reported; }, ...methods }, {
     get: (target, key) => target[key] ?? (async () => { requests.push(String(key)); throw new Error('unexpected read'); }),
   });
-  const wallet = new WalletNetwork({ network, rpcUrl: 'https://rpc.example/', journalRoot: root, server,
+  // Mainnet has no disposable key: the operator's own key (a throwaway here) and its caps.
+  const funding = network.friendbot ? {} : { feePayer: new FeePayer(Keypair.random(), true), fees: MAINNET_FEE_DEFAULTS };
+  const wallet = new WalletNetwork({ network, rpcUrl: 'https://rpc.example/', journalRoot: root, server, ...funding,
     fetchImpl: async (url) => { requests.push(`fetch ${url}`); return new Response('{}'); }, pause: async () => {} });
   return { wallet, root, requests };
 }
@@ -76,7 +79,10 @@ test('the operator chooses the network once, in the configuration: testnet by de
   { mode: 0o600 });
   save({});
   assert.equal(loadWalletConfig(path).network, TESTNET);
-  save({ network: 'mainnet' });
+  // A throwaway key generated here, never committed: mainnet takes only the operator's own key file.
+  const keyPath = join(root, 'fee-payer.key');
+  writeFileSync(keyPath, `${Keypair.random().secret()}\n`, { mode: 0o600 });
+  save({ network: 'mainnet', feePayerKeyPath: keyPath });
   assert.equal(loadWalletConfig(path).network, MAINNET);
   for (const network of ['pubnet', 'Mainnet', null, 1, { name: 'mainnet' }]) {
     save({ network });

@@ -7,6 +7,7 @@ import { decodeEnvelope, resources } from './assembly.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 
 export const SAMPLE_AMOUNT_STROOPS = '1000000';
+/** The sample's fee ceiling; a mainnet session's lower per-transaction cap applies below it. */
 export const SAMPLE_MAX_FEE_STROOPS = 10_000_000;
 const refuse = () => { throw new Error('sample transfer refused; refresh and review again'); };
 const bytes = (value) => Buffer.from(value.toXDR());
@@ -58,7 +59,7 @@ export function validateSampleAssembly({ approval, assembly, ownerRuleXdr, limit
   try {
     const fresh = reviewSample({ wallet: approval.wallet, descriptor: approval.descriptor, ownerRuleXdr, networkId: approval.networkId });
     if (fresh.commitment !== approval.commitment || limits.feePayer !== approval.descriptor.recipient
-      || limits.maxFeeStroops !== SAMPLE_MAX_FEE_STROOPS || !seq(limits.sourceSequence)
+      || !integer(limits.maxFeeStroops, 100, SAMPLE_MAX_FEE_STROOPS) || !seq(limits.sourceSequence)
       || !integer(limits.validityLedgers, 2, 120) || !integer(limits.currentLedger) || !integer(limits.ownerReadLedger)
       || limits.currentLedger < limits.ownerReadLedger || limits.currentLedger - limits.ownerReadLedger > 12
       || assembly.network_id !== approval.networkId || assembly.fee_payer !== limits.feePayer
@@ -77,7 +78,7 @@ export function validateSampleAssembly({ approval, assembly, ownerRuleXdr, limit
     if (Buffer.from(hash(bytes(envelope))).toString('hex') !== assembly.envelope_xdr_sha256 || envelope.v1.signatures.length) refuse();
     const tx = envelope.v1.tx;
     if (tx.sourceAccount.type !== 'keyTypeEd25519' || StrKey.encodeEd25519PublicKey(tx.sourceAccount.ed25519.value) !== limits.feePayer
-      || tx.seqNum !== BigInt(limits.sourceSequence) + 1n || !integer(tx.fee, 100, SAMPLE_MAX_FEE_STROOPS)
+      || tx.seqNum !== BigInt(limits.sourceSequence) + 1n || !integer(tx.fee, 100, limits.maxFeeStroops)
       || tx.fee !== assembly.fee_stroops || tx.memo.type !== 'memoNone' || tx.cond.type !== 'precondV2') refuse();
     const cond = tx.cond.v2;
     if ((cond.timeBounds && (cond.timeBounds.minTime !== 0n || cond.timeBounds.maxTime !== 0n))

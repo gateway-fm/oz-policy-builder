@@ -31,7 +31,10 @@ export interface WalletState {
   readonly samplePreview: Details | null;
   readonly sampleTransactionHash: string | null;
   readonly sampleAttempted: boolean;
-  readonly delegate: { readonly capabilityId: string; readonly address: string } | null;
+  readonly delegate: { readonly capabilityId: string; readonly address: string;
+    readonly account?: { readonly exists: boolean; readonly minimumStroops: string } } | null;
+  /** Mainnet: what the owner funds or uploads first (`readiness`), as the backend read it. */
+  readonly readiness: Details | null;
   readonly livePreview: (Details & { display: ConsentDisplay; statementSha256: string; cases: readonly LiveCase[] }) | null;
   readonly replay: Details | null;
   readonly installPreview: (Details & { display: Details }) | null;
@@ -104,6 +107,7 @@ export class WalletController {
   prepareDeploy(): Promise<void>;
   confirmDeploy(): Promise<void>;
   review(): Promise<void>;
+  readiness(): Promise<void>;
   createDelegate(): Promise<void>;
   checkAccount(): Promise<void>;
   prepareLive(): Promise<void>;

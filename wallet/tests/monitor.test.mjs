@@ -5,6 +5,7 @@ import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { installedRuleIdentity, monitorInstallation } from '../server/monitor.mjs';
 import { installable, installedRule } from './install-fixture.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
 const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 const H = (n) => n.repeat(64);
 async function fixture() {
@@ -32,7 +33,7 @@ async function fixture() {
     marker: { account: record.account, policy: record.policy, ruleId: 1, accountWasmHash: ACCOUNT_WASM, installed: true, ledger: f.state.ledger },
   };
   const owner = { wallet: f.f.wallet, ownerRuleId: 7, ownerRuleXdr: f.f.ownerRuleXdr };
-  const network = { profile: WALLET_NETWORKS.testnet, assertNetwork: async () => {}, ledgerClock: async () => ({ sequence: f.state.ledger, closeTime: Math.floor(Date.now() / 1000) }),
+  const network = { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0', assertNetwork: async () => {}, ledgerClock: async () => ({ sequence: f.state.ledger, closeTime: Math.floor(Date.now() / 1000) }),
     contractLiveness: async (a) => a === record.account ? values.account : a === owner.wallet.verifier ? values.verifier : values.policy,
     targetIdentity: async () => values.target, view: async () => values.owner,
     ruleReadback: async () => values.rule, liveState: async () => values.marker };

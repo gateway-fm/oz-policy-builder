@@ -39,9 +39,13 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   (`--http`) server the number of builds running at once. It is not a multi-tenant sandbox
   and is not offered as one.
 - The library and the MCP server never sign, submit, or deploy, and hold no account, owner or
-  fee-payer keys. The demo script, the testnet harness and the local wallet backend do, on
-  testnet only, with disposable keys they generate; the wallet's owner signs with the user's
-  own passkey.
+  fee-payer keys. The demo script, the testnet harness and the local wallet backend do on
+  testnet, with disposable keys they generate. In a mainnet session the local wallet backend
+  holds one more: the operator's fee payer key, read from a 0600 file the operator owns, kept in
+  process memory and used only as the source and fee payer of its transactions, within per-
+  transaction and session fee caps; it is never printed, returned or journaled, and never a
+  signer on an account. The automation delegate's key is generated in memory on either network.
+  The wallet's owner signs with the user's own passkey.
 - `ozpb dry-run` is the one CLI command that holds a key: the spec delegate's, read only from a
   0600 file owned by the caller, never from an argument or the environment, and cleared on a
   best-effort basis when the run ends (a moved value can leave a stack copy). It signs only the

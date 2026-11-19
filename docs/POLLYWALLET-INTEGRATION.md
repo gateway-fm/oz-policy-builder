@@ -169,8 +169,81 @@ as follows:
   screen.
 
 Friendbot exists on testnet alone. On mainnet the backend never funds its fee payer or a
-delegate account: a mainnet session can submit nothing until it has a fee payer funded by its
-owner (below).
+delegate account; see [Mainnet sessions](#mainnet-sessions).
+
+## Mainnet sessions
+
+A mainnet session spends real XLM, and every signature in it is valid on the public network.
+Keep every amount minimal. The account's owner is a passkey whose relying party is `localhost`:
+the account can be used only from a browser at `http://localhost:3000` on the machine that holds
+the passkey, so do not keep more in it than the session needs.
+
+Mainnet runs protocol 29 until its validators upgrade it to 30; until then the backend refuses
+to start against a mainnet endpoint (`protocol_unsupported`).
+
+**Configuration.** A mainnet operator file adds, to the fields above:
+
+```json
+{
+  "network": "mainnet",
+  "feePayerKeyPath": "/absolute/path/fee-payer.key",
+  "maxFeeStroops": 10000000,
+  "maxUploadFeeStroops": 120000000,
+  "sessionSpendCapStroops": 150000000,
+  "pinnedWasmDir": "/absolute/path/pinned-wasm",
+  "registryMinimumVersion": 6
+}
+```
+
+These fields are refused in a testnet configuration, and a mainnet configuration needs a registry
+floor of at least 6, the development registry's current version.
+
+**The fee payer.** `feePayerKeyPath` names a file holding one Stellar secret seed (`S…`), owned by
+the user running the backend, with mode `0600`; a symlink, another owner or any access for group
+or others is refused at startup, with the reason and never the content. The account is yours: fund
+it yourself with the minimum reserve plus the session cap. The backend reads it, never funds it,
+and refuses to submit while it cannot pay a fee (`payer_unfunded`). The key is held only in the
+backend's memory; it is not printed, logged, returned to the browser or written to the journal.
+It is only the source and fee payer of the backend's transactions, never a signer on an account:
+before it signs an envelope the backend refuses one whose authorization entries name it, carry
+its key in a signature payload (a `Delegated` signer) or rest on its signature for anything but
+its own contract deployment, and a review whose authority list names it, or a grant whose delegate
+it is, is refused. On mainnet it moves no XLM: account creation deploys the verifier and the
+account and does not fund the account.
+
+**Caps.** Every transaction is held, before it is signed, to `maxFeeStroops` (default 1 XLM) or,
+for a policy Wasm upload, `maxUploadFeeStroops` (default 12 XLM), and to `sessionSpendCapStroops`
+(default 15 XLM) together with what the session has already spent: confirmed fees as charged, and
+the whole fee of a submission whose result is uncertain. Either cap refuses before signing
+(`fee_cap`, `spend_cap`). Each cap can be lowered, not raised past its ceiling (1 XLM, 15 XLM and
+50 XLM). The page shows both caps and the amount spent before every consent, and the policy
+deployment preview shows the upload's simulated cost; a preview whose simulated cost would pass a
+cap is refused before consent.
+
+**Readiness.** `Check mainnet readiness` reads, without signing or sending anything, the fee payer's
+balance, the caps, whether the pinned account and verifier code is on mainnet and whether the live
+helper is configured. The wallet never uploads pinned code itself: account creation refuses as
+`pinned_code_missing` while either is missing, and the readiness panel shows the exact command,
+`stellar contract upload --wasm <pinnedWasmDir>/<hash>.wasm --network mainnet --source <your funded mainnet key>`,
+with its simulated cost once the reproduced Wasm is at that path (reproduce the account Wasm with
+`OZPB_VERIFIED_ACCOUNT_WASM_OUT` and `scripts/verify-pinned-upstream.sh`). The generated policy is
+uploaded only by the deployment you confirm.
+
+**Your account and the automation delegate.** Send your new account at least 0.1 XLM before the
+sample transfer; until then preparing it refuses as `account_unfunded`. The automation delegate is a
+key in the backend's memory, and the wallet creates no account for it: section 2 shows its address
+and the minimum reserve (two base reserves, read from the latest ledger), which you send it from
+your own wallet before the review. Until it exists, the checks that need it refuse as
+`delegate_unfunded`. What you send it cannot be recovered after the backend stops, since nobody
+else holds its key; send only the minimum.
+
+**The live helper.** The live-enforcement check, and so installation, needs the atomic live helper
+on mainnet; `liveHelper` stays unset until you deploy it. The layer then reports the deployment
+steps: build `contracts/atomic-live-helper` with `stellar contract build --locked`, check that the
+Wasm's SHA-256 is the reviewed helper hash, run
+`stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>`
+and name the contract ID in `liveHelper`. The check stays simulation only on mainnet: nothing it
+signs is submitted.
 
 ## Receiving a proposal directly from Claude
 
@@ -800,6 +873,12 @@ cannot be repeated in the session, whatever the cause.
 | `grant_already_used` | The policy counted a use of the installed grant that this page did not make; nothing was signed or sent. Revoke the grant. |
 | `network_mismatch` | The operator's RPC endpoint serves another network than the session's; nothing was signed or sent. |
 | `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
+| `fee_cap` | The transaction could cost more than the per-transaction cap; nothing was signed or sent. |
+| `spend_cap` | The transaction could take the session past its spend cap; nothing was signed or sent. |
+| `payer_unfunded` | Mainnet: the fee payer's account does not exist or cannot pay a fee. |
+| `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
+| `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
+| `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |
 
 The installation section shows the last ledger at which this review's evidence is still accepted
 (`installDeadline`), from the captured and live evidence the browser already holds. Submission
