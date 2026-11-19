@@ -3,8 +3,8 @@
 This package runs the versioned MCP endpoint for **one operator and trusted clients**. It
 works on a Linux Docker host independently of any hosting provider. It does not provision
 cloud infrastructure or establish that an endpoint has been deployed. Releases made after the
-publishing workflow was added also publish images; see
-[Build the reviewed revision](#build-the-reviewed-revision).
+publishing workflows were added also publish images and binaries; see
+[Production release](#production-release).
 
 The hosted testnet deliverable means running the MCP tools behind an authenticated HTTPS
 address for authorized remote clients. It is not a wallet or a Stellar validator/RPC node:
@@ -34,6 +34,93 @@ the API service itself needs network access to its operator-configured RPC endpo
 For a separate Linux host API with a disposable rootless container for each build, see
 [Disposable build workers](ISOLATED-BUILDS.md). That mode has its own deployment and
 containment acceptance checks; it does not add runtime access to this Compose service.
+
+## Production release
+
+A release is software you run yourself; Gateway operates no service for it. What its version
+number keeps stable, and for how long, is [VERSIONING.md](VERSIONING.md). Each published GitHub
+Release carries:
+
+- the API and TLS proxy images ([below](#build-the-reviewed-revision));
+- for Linux x86_64, Linux aarch64 and macOS arm64, one archive per binary with the licence files:
+  `ozpb` (the CLI), `ozpb-mcp-server` (stdio, or `--http` for this endpoint) and
+  `ozpb-execution-runtime` (the [native worker](NATIVE-EXECUTION.md) behind `ozpb dry-run`);
+- `ozpb-wire-contract-<tag>.json`: every tool the server lists, with its input and output JSON
+  Schema, and the `E_*` codes;
+- `SHA256SUMS`, and a GitHub build-provenance attestation for every asset, `SHA256SUMS` included.
+
+### Obtain and verify
+
+```sh
+tag=vX.Y.Z    # the release you are installing
+gh release download "$tag" --repo gateway-fm/oz-policy-builder \
+  --pattern '*-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
+# On macOS, `shasum -a 256 --check` in place of `sha256sum --check`.
+grep -- '-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check
+for asset in *.tar.gz SHA256SUMS; do
+  gh attestation verify "$asset" --repo gateway-fm/oz-policy-builder
+done
+```
+
+The verification prints the workflow that built the asset and the ref it ran on: expect
+`release-binaries.yml` at the release's tag. Verify images the same way, by digest. The Linux
+binaries are built on Ubuntu 24.04 and may need a glibc as new as its; on an older host, build
+from the tag instead (`cargo build --locked --release -p ozpb-cli -p ozpb-mcp-server`, and the
+worker as its [guide](NATIVE-EXECUTION.md#machine-protocol) says). The macOS binaries are not
+signed or notarized: `gh` and `curl` downloads run as they are, while a browser download is
+quarantined until you remove the attribute (`xattr -d com.apple.quarantine <binary>`), which you
+should do only after the checks above. Unpacked as you, the worker is owned by you and not
+writable by others, which `ozpb dry-run` requires of it.
+
+The binaries do not include a compiler. Generating or verifying a policy (`ozpb generate`,
+`ozpb verify`, the `generate_code` and `verify` tools) runs `stellar contract build`, so a host
+install needs the Rust and Stellar CLI versions the release records
+(`bash scripts/recorded-build-inputs.sh rust` and `stellar-cli`, from the tag) with the
+`wasm32v1-none` target, and `OZPB_STELLAR_BINARY` if `stellar` is not on the path
+([build configuration](DEVELOPERS.md#build-configuration-operator-side)). Any other version builds
+different Wasm, and the [`verify` reproduction](VERSIONING.md#what-is-versioned) then fails. The
+API image includes both.
+
+### Mainnet configuration
+
+- **Registry.** The committed development root is refused for every network but testnet
+  (`E_REGISTRY_ROOT_POLICY`). Use the mainnet root policy and signed head published with
+  [the mainnet registry](../registry/mainnet/README.md); until its custodians sign the first
+  version there is none, and every mainnet trust check refuses. Persist the checkpoint in the
+  roots file and set the floor to its version
+  ([pinning roots and persisting checkpoints](REGISTRY-GOVERNANCE.md#consumers-pinning-roots-and-persisting-checkpoints)).
+  In this deployment that is `registry-roots.json` and `registry.signed.json` in the
+  configuration directory and `OZPB_REGISTRY_MIN_VERSION`; for the CLI, `--registry-roots` and
+  `--registry-min-version`.
+  Then [schedule the monitor](REGISTRY-GOVERNANCE.md#scheduling-the-monitor).
+- **RPC.** Name a mainnet source in `rpc-sources.json`, with the network passphrase
+  `Public Global Stellar Network ; September 2015`, and put its exact HTTPS URL in
+  `OZPB_RPC_ALLOWLIST`. The network must run protocol 30, and installation's live check needs an
+  endpoint that returns diagnostic events, which stellar-rpc 30.0.1 does only when run with
+  `--preflight-enable-debug` ([mainnet prerequisites](MAINNET-INSTALL.md#prerequisites),
+  [live use](ATOMIC-LIVE-HELPER.md#how-live-use-is-meant-to-work)).
+- **Authentication.** `--http` refuses to start without a bearer token of at least 32 bytes and
+  an RPC allowlist. Serve it through the TLS proxy or your own ingress only
+  ([operator boundary](#configure-the-operator-boundary),
+  [ingress](#behind-your-own-ingress-instead-of-the-proxy)). Over stdio the server is a local
+  process of the client and takes no token.
+
+The endpoint never signs or installs: the owner does, in the wallet, by the
+[mainnet runbook](MAINNET-INSTALL.md).
+
+### Upgrading between versions
+
+Read the release notes of every release from yours to the new one. Within 1.x during the grant,
+nothing there breaks the [versioned contracts](VERSIONING.md#breaking-and-additive) except a
+security fix or a network-forced change, which the notes list as breaking with what to do. A
+document that uses a field a newer release added is not readable by an older one, so upgrade
+every component that exchanges documents (CLI, server, native worker, wallet) together, and take
+each from one release. With [disposable build workers](ISOLATED-BUILDS.md), the API binary and
+`deployment/worker-launcher.py` must come from the same release: take the launcher from the
+release's tag, not from `main`. Deploy new images by digest and recreate the containers; this
+discards in-memory session references, as described under
+[data handling](#data-handling-and-handover). An upgrade does not move your registry checkpoint
+or floor: they advance only when you accept a newer registry version.
 
 ## Build the reviewed revision
 

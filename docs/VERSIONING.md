@@ -128,9 +128,9 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
 
    Leave these alone: the `version` of every crate under `contracts/` and the crate version
    codegen emits. A contract crate's version is part of the `-C metadata` cargo compiles it with,
-   which can change its Wasm, and the generated crates are byte-for-byte fixtures. The workspace version reaches no Wasm and
-   no fixture: the CLI's `--version` reports it, and the release workflows check the tag against
-   it.
+   which can change its Wasm, and the generated crates are byte-for-byte fixtures. The workspace
+   version reaches no Wasm and no fixture: the CLI's `--version` reports it, and the release
+   workflows check the tag against it.
 3. **Run the gates on that commit**: `bash scripts/verify-phase1.sh`, the CI workflow, the
    `nightly live` workflow dispatched on it, and a dry run of the binaries
    (`gh workflow run release-binaries.yml --ref <branch>`), which builds and packages every
