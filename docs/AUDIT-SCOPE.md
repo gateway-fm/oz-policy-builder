@@ -234,6 +234,10 @@ said to fail closed opens — is a finding.
     ([deviations](TRANCHE-2-VERIFICATION.md#deviations-and-open-gaps-against-the-phase-2-design)).
 12. **RUSTSEC-2026-0387** is accepted temporarily, with an expiry
     ([SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md)).
+13. **Static-analysis findings** reported by Aikido on the JavaScript, Python and CI files are
+    either fixed or not exploitable. A finding is not exploitable when the flagged path or command
+    comes from the operator's own configuration, a run directory the operator names, or a
+    constant. [SAST-TRIAGE.md](SAST-TRIAGE.md) gives the source of each value.
 
 ## Prior relevant findings
 
