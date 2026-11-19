@@ -266,10 +266,82 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
     out.spec.validate().expect("W3 validates")
 }
 
+// ---------------------------------------------------------------------------------------
+// A ranged transfer — "spend up to X" without leaving the amount open below
+// ---------------------------------------------------------------------------------------
+
+pub const RANGE_TOKEN: fn() -> String = || contract(40);
+
+/// The recorded amount of the ranged transfer, and the range the user chose around it.
+pub const RANGE_RECORDED_AMOUNT: i128 = 250_000_000;
+pub const RANGE_MIN: i128 = 0;
+pub const RANGE_MAX: i128 = 1_000_000_000;
+
+/// `transfer(from = SELF, to = merchant, amount)` where the user widened the amount to the
+/// inclusive range `0..=1000000000` instead of a cap: the policy refuses a negative amount
+/// itself rather than leaving it to the token. No spending limit, so the generated policy is
+/// the only thing deciding the amount. The fixture behind the committed
+/// `contracts/range-transfer-policy` crate and its compiled differential suite.
+pub fn range_transfer_spec() -> ValidatedSpec {
+    let token = RANGE_TOKEN();
+    let merchant = format!("{}", stellar_strkey::ed25519::PublicKey([3u8; 32]));
+    let bundle = bundle_for(
+        &token,
+        "transfer",
+        vec![
+            ArgSummary::Address(account()),
+            ArgSummary::Address(merchant),
+            ArgSummary::I128(RANGE_RECORDED_AMOUNT),
+        ],
+        b"range-transfer",
+    );
+    let mut input = base_input(bundle);
+    input.spending_limit_capability = None;
+    let decisions = UserDecisions {
+        grant_name: "range-transfer".to_string(),
+        delegate_signers: delegate_signers(),
+        predicate: PredicateChoice::AnyOf,
+        valid_until_ledger: Some(4_260_000),
+        no_expiry_acknowledged: false,
+        max_calls: Some(5),
+        unlimited_calls_acknowledged: false,
+        widenings: vec![Widening {
+            contract: token,
+            fn_name: "transfer".to_string(),
+            arg_index: 2,
+            bound: WideningBound::RangeI128 {
+                min: RANGE_MIN.to_string(),
+                max: RANGE_MAX.to_string(),
+            },
+            no_floor_acknowledged: false,
+            intent: "spend up to 1000000000, never a negative amount".to_string(),
+            blast_radius: BlastRadius::Medium,
+        }],
+        spending_limit: None,
+    };
+    let out = synthesize(&input, &decisions).expect("ranged transfer synthesis");
+    out.spec.validate().expect("ranged transfer validates")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ozpb_policy_spec::Constraint;
+
+    #[test]
+    fn the_ranged_transfer_bounds_its_amount_on_both_sides() {
+        let spec = range_transfer_spec();
+        let rule = &spec.spec().rules[0];
+        assert_eq!(rule.context.contract, RANGE_TOKEN());
+        assert_eq!(rule.policies.len(), 1, "the generated policy alone");
+        assert_eq!(
+            rule.allowed_calls[0].args[2].constraint,
+            Constraint::RangeI128 {
+                min: RANGE_MIN.to_string(),
+                max: RANGE_MAX.to_string()
+            }
+        );
+    }
 
     #[test]
     fn w1_blend_claim_is_exact_and_scoped() {

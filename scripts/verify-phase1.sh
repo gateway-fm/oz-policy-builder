@@ -74,10 +74,12 @@ cargo fmt --all --check
 ( cd contracts && cargo fmt --all --check )
 ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
 ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
+( cd contracts/range-transfer-policy && cargo fmt --all --check )
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/golden-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/soroswap-swap-policy && cargo clippy --locked --all-targets -- -D warnings )
+( cd contracts/range-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --locked --workspace

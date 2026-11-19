@@ -1208,6 +1208,7 @@ contracts/          # separate workspace, pinned soroban-sdk + stellar-accounts
   golden-transfer-policy/    # excluded from the workspace so it builds standalone with its
                              # own profile: generated policy, exactly as codegen emits it
   soroswap-swap-policy/      # excluded likewise: second generated example (W3 router rule)
+  range-transfer-policy/     # excluded likewise: third generated example (a ranged amount)
 execution-runtime/  # separate workspace: native account-Wasm and captured-target worker
 scripts/            # release gates, CI checks, fixtures and the MCP development launcher
 tests/support/      # local RPC responders shared by the CLI and MCP boundary tests

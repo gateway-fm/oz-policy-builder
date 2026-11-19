@@ -4389,6 +4389,62 @@ mod tests {
         }
     }
 
+    /// The ranged transfer's committed crate: the one fixture whose amount is bounded on both
+    /// sides, compiled by the contracts differential suite (`range_generated_suite.rs`). The
+    /// whole crate is compared, lockfile included.
+    #[test]
+    fn range_crate_matches_committed_output() {
+        let spec = ozpb_synthesizer::walkthroughs::range_transfer_spec();
+        let generated = generate(&spec, 0, &Pins::default()).unwrap();
+        let source = emitted_rust(&generated);
+        // Both ends, in order, on the amount argument and nowhere else: the floor first, then
+        // the cap, each refusing the tuple the way the single bounds do.
+        assert!(source.contains(
+            "let Some(v2) = args.get(2u32) else {\n        return false;\n    };\n    \
+             match i128::try_from_val(e, &v2) {\n        Ok(x) => {\n            \
+             if x < 0i128 {\n                return false;\n            }\n            \
+             if x > 1000000000i128 {\n                return false;\n            }\n        }\n        \
+             Err(_) => return false,\n    }\n"
+        ));
+        assert_eq!(source.matches("if x < ").count(), 1);
+        assert_eq!(source.matches("if x > ").count(), 1);
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/range-transfer-policy");
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for (rel, content) in &generated.files {
+                std::fs::write(root.join(rel), content).unwrap();
+            }
+            return;
+        }
+
+        let mut committed_files: Vec<String> = walk(&root)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            })
+            .collect();
+        committed_files.sort();
+        let mut generated_files: Vec<String> = generated.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed range policy and codegen output have different file sets"
+        );
+        for (rel, content) in &generated.files {
+            let committed = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|_| panic!("missing committed range policy file {rel}"));
+            assert_eq!(
+                &committed, content,
+                "committed range policy file {rel} differs from codegen output"
+            );
+        }
+    }
+
     #[test]
     fn generated_crate_contains_the_pinned_dependency_lockfile() {
         let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
