@@ -33,7 +33,7 @@ whatever the user replies.
 Use the wallet proposal only when every one of these holds for the confirmed spec:
 
 - it came from `record_transaction` on a confirmed transaction of the user's wallet account,
-  on testnet;
+  on the network of the user's wallet session (testnet, or mainnet in a mainnet session);
 - one rule; one delegated `G…` signer; predicate `any_of` with `strict_signer_set: true`;
 - an expiry ledger and a call cap of 1 to 512 calls (the wallet does not take unlimited
   calls or no expiry);
@@ -44,12 +44,14 @@ Use the wallet proposal only when every one of these holds for the confirmed spe
 - the grant name is lowercase letters, digits and hyphens, starting with a letter, at most 20
   characters.
 
-The local wallet integration accepts this proposal through **Import a grant proposal**. The
+The local wallet integration accepts this proposal through **Import a grant proposal**, on
+either network; on mainnet it is the only way in, since the direct handoff is testnet only. The
 account must be the wallet's own recognized account. The wallet records the transaction again
 by hash while RPC retains it, and requires expiry within 17,280 ledgers of its current ledger.
-For execution checks and installation, use the automation delegate created by that wallet
-backend session; an external delegate can be imported for inspection but cannot complete those
-checks. The wallet decides; a refusal is final, not something to work around.
+For execution checks and installation, the delegate must be the one the wallet holds: on
+testnet the automation delegate that wallet backend session created, on mainnet the key in the
+wallet's `delegateKeyPath` file. An external delegate can be imported for inspection but cannot
+complete those checks. The wallet decides; a refusal is final, not something to work around.
 
 Manual import also accepts caps up to 10,000 for inspection, but caps above 512 cannot complete
 the wallet's execution checks or installation. For a larger cap, use the user-run path in

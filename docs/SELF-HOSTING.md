@@ -135,10 +135,11 @@ dependencies. Allow at least 12 GiB of free build storage. Runtime policy builds
 dependencies and refuse downloads.
 
 ```sh
-git rev-parse HEAD
-python3 scripts/hosted-context.py HEAD > /tmp/ozpb-context.tar
+revision=$(git rev-parse --verify 'HEAD^{commit}'); echo "$revision"
+python3 scripts/hosted-context.py "$revision" > /tmp/ozpb-context.tar
 docker build --target proxy --file deployment/Dockerfile --tag ozpb-proxy:reviewed - < /tmp/ozpb-context.tar
-docker build --file deployment/Dockerfile --tag ozpb-self-host:reviewed - < /tmp/ozpb-context.tar
+docker build --file deployment/Dockerfile --build-arg OZPB_TOOLKIT_SOURCE="$revision" \
+  --tag ozpb-self-host:reviewed - < /tmp/ozpb-context.tar
 docker image inspect ozpb-self-host:reviewed --format '{{.Id}}'
 docker image inspect ozpb-proxy:reviewed --format '{{.Id}}'
 ```
@@ -148,6 +149,11 @@ working-copy edits are ignored, including edits to the Dockerfile: commit and re
 before selecting their revision. Symlinks, crate submodules and missing required files fail
 the export. Source review and the publication gate remain necessary; an allowlist cannot
 decide whether a Rust source file contains confidential information.
+
+The context carries no `.git`, so the image cannot ask which commit it is built from: the
+`OZPB_TOOLKIT_SOURCE` build argument tells it, and every BuildManifest the image writes records
+that commit as `producer.toolkit_source`. Without the argument, they record none. Like every
+manifest field it is the builder's statement, not something `verify` checks.
 
 The base image and TLS proxy are pinned by digest. Rust and Stellar CLI match the recorded
 Wasm build inputs; Stellar downloads are checked by SHA-256. OS packages resolve during
@@ -276,7 +282,9 @@ Access logging and container log retention are disabled. The proxy discards erro
 so URLs or request-derived details are not retained accidentally. Do not enable debug
 tracing, body logging, crash uploads or request analytics. This reduces diagnostics: an
 operator investigating startup failure should reproduce with synthetic input in an isolated
-environment and review any output before retaining it.
+environment and review any output before retaining it. `scripts/check-log-redaction.py` fails
+CI if a file of this package turns a log back on, prints the bearer token or the trust inputs,
+or links a log subscriber into the server; it does not cover your ingress or host.
 
 Request data is processed in memory and temporary files. Each MCP session also retains up to
 eight generated artifacts in memory for verification by reference. This is a count limit,

@@ -36,7 +36,7 @@ function setup(t, change = () => {}, pipeline) {
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root,
     rpcUrl: 'https://example.invalid/rpc', registrySnapshot: '{"valid_until":9223372036854775807}',
-    registryRoots: '{}', registryMinimumVersion: 3, runner, network: WALLET_NETWORKS.testnet });
+    registryRoots: '{}', registryMinimumVersion: 6, runner, network: WALLET_NETWORKS.testnet });
   return { toolchain, root, account, calls, raw };
 }
 
@@ -175,7 +175,7 @@ test('dry-run preparation sends retained artifact claims, a fresh nonce and the 
   const call = calls.at(-2);
   assert.deepEqual(call.args.slice(0, 2), ['prepare-dry-run', '--request']);
   assert.deepEqual(call.args.slice(3), ['--registry-roots', join(toolchain.sessionRoot, 'registry-roots.json'),
-    '--registry-min-version', '3', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
+    '--registry-min-version', '6', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
   assert.ok(call.args[2].startsWith(root));
   const sent = readFileSync(call.args[2], 'utf8');
   assert.ok(sent.includes('"signed_registry_snapshot":{"valid_until":9223372036854775807}'));

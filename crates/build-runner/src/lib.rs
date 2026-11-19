@@ -125,8 +125,9 @@ pub struct BuildManifest {
 #[serde(deny_unknown_fields)]
 pub struct BuildProducer {
     /// The commit the toolkit binary was compiled from, as its own build recorded it (`build.rs`).
-    /// `None` when that build had no checkout of this workspace to ask, which is the case for the
-    /// container image: the binary then claims nothing rather than a commit it cannot know.
+    /// `None` when that build had no checkout of this workspace to ask and was given no revision:
+    /// the binary then claims nothing rather than a commit it cannot know. The container image's
+    /// build passes the commit its context was cut from (`OZPB_TOOLKIT_SOURCE` build argument).
     pub toolkit_source: Option<ToolkitSource>,
     /// [`ozpb_codegen::template_pack_hash`]: the emitter source compiled into the toolkit.
     pub template_pack: Hash32,
@@ -244,7 +245,8 @@ pub struct ToolkitSource {
 
 /// What `build.rs` recorded: `<commit>`, `<commit>+dirty`, or empty. Optional at compile time
 /// because a build without the script — the hosted image's build context carries crate sources
-/// and manifests only (`scripts/hosted-context.py`) — must still compile, and then claims nothing.
+/// and manifests only (`scripts/hosted-context.py`) — must still compile; the image build sets it
+/// from its `OZPB_TOOLKIT_SOURCE` build argument, and without one the binary claims nothing.
 const RECORDED_TOOLKIT_SOURCE: &str = match option_env!("OZPB_TOOLKIT_SOURCE") {
     Some(recorded) => recorded,
     None => "",

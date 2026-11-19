@@ -3,6 +3,7 @@
 
 import io
 from pathlib import Path
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -10,6 +11,7 @@ import unittest
 
 
 EXPORTER = Path(__file__).with_name("hosted-context.py")
+REPO = Path(__file__).resolve().parent.parent
 
 
 class ContextTests(unittest.TestCase):
@@ -109,11 +111,53 @@ class ContextTests(unittest.TestCase):
         self.assertIn(b"submodule", result.stderr)
         self.assertEqual(result.stdout, b"")
 
+    def test_a_build_script_never_enters_the_context(self):
+        # build-runner's build.rs would set OZPB_TOOLKIT_SOURCE from git, which the context lacks,
+        # and so overwrite the commit the image build passes in with an empty claim.
+        (self.repo / "crates/example/build.rs").write_text("DO-NOT-PUBLISH")
+        self.git("add", ".")
+        self.commit()
+        result = self.export()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("crates/example/build.rs", self.files(result.stdout))
+
     def test_a_revision_cannot_be_a_git_option(self):
         result = subprocess.run(["python3", str(EXPORTER), "--repo", str(self.repo), "--", "--help"],
                                 capture_output=True, check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b"")
+
+
+class ImageRecordsTheExportedCommitTests(unittest.TestCase):
+    """The API image's BuildManifests name the commit whose tree its context is, and no other.
+
+    The context has no `.git` and no build script, so build-runner's producer record reads
+    OZPB_TOOLKIT_SOURCE from the compiler's environment: the build stage's build argument.
+    """
+
+    def test_the_build_stage_takes_the_toolkit_source_before_compiling(self):
+        dockerfile = (REPO / "deployment/Dockerfile").read_text()
+        stage = dockerfile.split(" AS build\n", 1)[1].split("\nFROM ", 1)[0]
+        declared = re.search(r"(?m)^ARG OZPB_TOOLKIT_SOURCE(=)?$", stage)
+        self.assertIsNotNone(declared, "the build stage must declare ARG OZPB_TOOLKIT_SOURCE")
+        self.assertLess(declared.start(), stage.index("cargo build"))
+        self.assertNotIn("OZPB_TOOLKIT_SOURCE", dockerfile.split(" AS build\n", 1)[0])
+
+    def test_each_image_workflow_claims_the_commit_it_exports(self):
+        for workflow in ("self-hosted.yml", "publish-image.yml"):
+            with self.subTest(workflow=workflow):
+                text = (REPO / ".github/workflows" / workflow).read_text().replace("\\\n", " ")
+                assigned = re.findall(r"(?m)^\s*(\w+)=\$\(git rev-parse --verify 'HEAD\^\{commit\}'\)$", text)
+                exported = re.findall(r'python3 scripts/hosted-context\.py "\$(\w+)"', text)
+                self.assertEqual(len(exported), 1, "one context export")
+                self.assertIn(exported[0], assigned, "the export names a commit, not a moving ref")
+                builds = [line for line in text.splitlines() if "docker build " in line]
+                api = [line for line in builds if "--target proxy" not in line]
+                self.assertEqual(len(api), 1, "one API image build")
+                self.assertIn(f'--build-arg OZPB_TOOLKIT_SOURCE="${exported[0]}"', api[0])
+                for line in builds:
+                    if "--target proxy" in line:
+                        self.assertNotIn("OZPB_TOOLKIT_SOURCE", line, "the proxy stage takes none")
 
 
 if __name__ == "__main__":

@@ -98,6 +98,13 @@ jobs:
         run: bash scripts/test-mcp-server-dev.sh
       - name: agent-transcript checker, and no skill or plugin pre-approves a per-call tool
         run: python3 scripts/test-check-agent-transcript.py
+      # The self-hosting package keeps request data out of logs by retaining none (G12 in
+      # docs/MAINNET-GATES.md). This reads its files and fails on a setting that would turn a log
+      # back on; the self-test changes each setting and requires the refusal.
+      - name: log redaction — the shipped package retains no log and prints no credential
+        run: python3 scripts/check-log-redaction.py
+      - name: log redaction — the check refuses each setting that would retain a log
+        run: python3 scripts/test-check-log-redaction.py
       - name: Phase 2 reference coverage and MCP verification evidence
         run: bash scripts/check-phase2-evidence.sh --host-only
       # docs/MAINNET-GATES.md is the list: the checker reads it, refuses it when a named test is
@@ -328,9 +335,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # The release-binaries workflow runs the real binaries only for a published release or a
-      # dispatched dry run. This runs its packaging script against stand-ins on every change, so
-      # a broken archive, export or checksum step is found in review rather than at release time.
+      # The release-binaries workflow runs the real binaries only when dispatched: on a tag whose
+      # release is still a draft, or as a dry run on a branch. This runs its packaging script
+      # against stand-ins on every change, so a broken archive, export or checksum step is found
+      # in review rather than at release time.
       # No toolchain, about a second.
       - name: release-artifacts self-tests
         run: python3 scripts/test-release-artifacts.py

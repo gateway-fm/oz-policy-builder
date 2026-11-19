@@ -236,7 +236,8 @@ The source-reviewed account method inventory and its limits are described in
    in every mode, which is what it is, and no signed attestation (SEP-55) or published rebuild
    recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`. An image
    built from the hosted build context (`scripts/hosted-context.py`) has no checkout to ask, so
-   its manifests record no toolkit commit rather than one the binary cannot know. §6.3's scope
+   its manifests record the toolkit commit its build was given (`OZPB_TOOLKIT_SOURCE`, which
+   the image workflows set to the exported commit), and none without it. §6.3's scope
    note states which fields `verify` reproduces and which it only reports.
 
 3. **Reviewed-policy composition at the account-Wasm layer** (F5d). The spending-limit

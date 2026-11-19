@@ -1405,8 +1405,9 @@ reviewed.
 > claims are reconciled against the wasm's own SEP-46 metadata, and only the hermetic test stub
 > is exempt), `build_args`, `canonicalization_version`, `build_target` (the triple the generated
 > crate declares, confirmed against where the compiler wrote its output), and a `producer` record:
-> the toolkit's own source commit and dirty flag as its build recorded them (`null` when that
-> build had no checkout to ask, as for the container image), the template-pack hash (the emitter
+> the toolkit's own source commit and dirty flag as its build recorded them (for the container
+> image, which has no checkout to ask, the commit its build was given; `null` when none was),
+> the template-pack hash (the emitter
 > source compiled into the toolkit), and the build-container image — the disposable worker's
 > image ID or digest as its launcher reports it, `null` when the API compiles in its own
 > environment (on a host, or inside the Compose package's one container, whose image is not

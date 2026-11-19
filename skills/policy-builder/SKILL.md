@@ -45,11 +45,13 @@ what evidence is missing.
 A grant that may be handed to the user's wallet must come from `record_transaction` on the
 wallet account's confirmed transaction: the wallet records it again by that hash, and RPC
 retention keeps a transaction only a few days. The wallet imports only one exact native XLM
-transfer from the account to a `G…` recipient on testnet, with one `any_of` delegate, an expiry
+transfer from the account to a `G…` recipient on its session's network (testnet, or mainnet in
+a mainnet wallet session), with one `any_of` delegate, an expiry
 within 17,280 ledgers (about a day) of its current ledger, a cap of 1–10,000 calls, no widening
 and no spending limit, and a grant name of lowercase letters, digits and hyphens (at most 20,
 starting with a letter). Its execution checks and installation also need the delegate to be the
-automation delegate that wallet session created; another delegate can be imported for inspection
+one the wallet holds: on testnet the automation delegate that wallet session created, on mainnet
+the key in the wallet's `delegateKeyPath` file; another delegate can be imported for inspection
 only. When the user means to install through the wallet, say so while asking for the decisions
 below, so a longer expiry, a widening or another delegate is not chosen only to be refused.
 
@@ -63,7 +65,8 @@ If the user wants the supported wallet installation, ask them to open its Policy
 and select **Connect Claude**. It creates or uses the local automation delegate and shows a
 one-time pairing code. Call `connect_wallet` with that code. This works only when MCP and the
 wallet backend run on the same computer; a hosted MCP server cannot reach the user's local
-wallet. Never ask for the wallet's session URL, browser bearer, credential locator, delegate
+wallet. It is testnet only: `connect_wallet` refuses a wallet session on any other network, so a
+mainnet grant reaches the wallet only by manual import (the fallback below). Never ask for the wallet's session URL, browser bearer, credential locator, delegate
 capability or a secret key. The pairing code grants draft delivery only.
 
 Use the returned public account, delegate and limits while discussing the grant. The
@@ -378,8 +381,8 @@ When a wallet tool fails, its code says what to do; its message repeats it:
 Any reply from the user after a refusal, even "done", needs the complete card again and a new
 `confirm` before the next send; a retry with no reply in between does not.
 
-If the bridge is unavailable or the grant is outside the supported wallet shape, stop and
-offer `/oz-policy-builder:policy-builder-install` as the manual fallback.
+If the bridge is unavailable, the grant is for mainnet, or it is outside the supported wallet
+shape, stop and offer `/oz-policy-builder:policy-builder-install` as the manual fallback.
 Only the user starts that skill. It prints the same proposal for wallet import, or guides
 user-run deployment and unsigned assembly. Never invoke it yourself. Neither path grants this
 conversation signing, submission or installation authority; those remain with the user's wallet.

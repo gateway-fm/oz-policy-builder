@@ -19,7 +19,7 @@ function fixture(t) {
   writeFileSync(registrySnapshotPath, '{"valid_until":9223372036854775807}', { mode: 0o600 });
   writeFileSync(registryRootsPath, '{}', { mode: 0o600 });
   const value = { executable, workRoot, rpcUrl: 'https://rpc.example/testnet',
-    registrySnapshotPath, registryRootsPath, registryMinimumVersion: 3 };
+    registrySnapshotPath, registryRootsPath, registryMinimumVersion: 6 };
   const path = join(root, 'operator.json');
   const save = (data = value) => writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
   save();
@@ -33,7 +33,7 @@ test('operator configuration retains exact registry bytes and has a closed build
   const config = loadWalletConfig(path);
   assert.equal(config.registrySnapshot, '{"valid_until":9223372036854775807}');
   assert.equal(config.registryRoots, '{}');
-  assert.equal(config.registryMinimumVersion, 3);
+  assert.equal(config.registryMinimumVersion, 6);
   assert.deepEqual(config.buildEnvironment, { CARGO_NET_OFFLINE: 'true',
     OZPB_STELLAR_BINARY: value.executable, OZPB_BUILD_CACHE_DIR: value.workRoot,
     OZPB_BUILD_JOBS: '2', OZPB_BUILD_TIMEOUT_SECS: '300' });

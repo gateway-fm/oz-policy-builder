@@ -57,7 +57,7 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | Open: the default builder, which the shipped path uses, compiles without a container, so its manifests name no image, and every field is the producer's unattested statement. By design, `generate` and `verify` do not check the registry root they record |
 | G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: a revoked account build or owner verifier has documented owner procedures but no tooled or exercised path. Also: the mainnet log is an unsigned draft until its key ceremony; the operator schedules the monitor |
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
-| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **open** | [G12](#g12-hosted-processing) | Open for the release's endpoint, the self-hosted HTTP server: log redaction is configuration that no automated test reads. Also: builds are isolated from the API only in worker mode, accepted on the operator's host |
+| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **open** | [G12](#g12-hosted-processing) | Open for the release's endpoint, the self-hosted HTTP server: a static check holds the package's log settings, but no test drives the endpoint and reads what it retains. Also: builds are isolated from the API only in worker mode, accepted on the operator's host |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
 | G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree |
 
@@ -519,10 +519,21 @@ and frees a build slot when a request is cancelled. The self-hosted workflow che
 transport's bounds and the build-worker launcher, and runs the Compose package and rootless
 worker containment.
 
-Open: log redaction. The package keeps confidential input out of logs by configuration, with
-access logs, container log retention and the proxy's error logs disabled
-([data handling](SELF-HOSTING.md#data-handling-and-handover)), and no automated test reads a log
-the server or the proxy writes. Closing it needs a test that drives the packaged endpoint with
+The package keeps confidential input out of logs by retaining none
+([data handling](SELF-HOSTING.md#data-handling-and-handover)), and `scripts/check-log-redaction.py`
+reads the files it ships and fails on a setting that would retain a log or print a credential:
+the proxy's loggers must discard, with no access log, debug mode, credential logging or admin
+endpoint; both Compose services and the build-worker containers must use the `none` log driver,
+and the systemd unit must send the API's output to `null`; the entrypoint must not trace or print
+the bearer token or the trust inputs; and the workspace must link no log subscriber or telemetry
+crate, so the log events of the server's dependencies go nowhere. Its self-test changes each
+setting in turn and requires the refusal.
+
+Open: log redaction is checked as configuration, not observed. What the server's own code writes
+is read, not tested: on stderr, one line at startup naming the listen address, the error that
+stops a failed startup, and the message of any panic. The shipped package drops all of it; a
+deployment [behind an ingress](SELF-HOSTING.md#behind-your-own-ingress-instead-of-the-proxy)
+whose orchestrator keeps container output retains it. Closing it needs a test that drives the packaged endpoint with
 confidential input and finds none of it in any log or retained output.
 
 Also: builds are isolated from the API and from each other only in disposable-worker mode,
@@ -542,6 +553,8 @@ ci  crates/mcp-server/src/http.rs  http::tests::unauthenticated_requests_are_ref
 ci  crates/mcp-server/src/cancel.rs  cancel::tests::cancelled_generate_code_kills_worker_group_and_frees_build_slot
 ci  crates/mcp-server/tests/mcp_http.rs  the_served_endpoint_authenticates_bounds_bodies_and_refuses_requests_over_the_quota
 ci  crates/mcp-server/tests/mcp_stdio_capture.rs  an_endpoint_echoing_the_envelope_never_reaches_the_response
+ci-step  .github/workflows/ci.yml  python3 scripts/check-log-redaction.py
+ci-step  .github/workflows/ci.yml  python3 scripts/test-check-log-redaction.py
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-hosted-mcp.py
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-worker-launcher.py
 ci-step  .github/workflows/self-hosted.yml  bash scripts/test-hosted-container.sh

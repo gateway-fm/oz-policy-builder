@@ -73,7 +73,7 @@ try {
     ...process.env,
     // Only the authority runner's configuration sees these values. It must never execute.
     OZPB_BIN: 'unused-authority-runner', OZPB_REGISTRY_ROOTS_FILE: 'unused-roots',
-    OZPB_REGISTRY_MIN_VERSION: '1', OZPB_RPC_SOURCES_FILE: 'unused-sources',
+    OZPB_REGISTRY_MIN_VERSION: '6', OZPB_RPC_SOURCES_FILE: 'unused-sources',
     OZPB_SIGNED_REGISTRY_SNAPSHOT: join(dir, 'registry.json'),
   } } });
   const module = new vm.SourceTextModule(source, { context });

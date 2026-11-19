@@ -141,21 +141,31 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    third).
 4. **Merge** the release commit to `main`, then create an annotated tag `vX.Y.Z` on it and push
    the tag.
-5. **Publish a GitHub Release** from the tag, titled for the milestone it delivers when it
-   delivers one, with the release notes as its body; mark a `-rc.N` as a pre-release.
-   Publication runs `publish-image.yml` (images, [self-hosting](SELF-HOSTING.md#build-the-reviewed-revision))
-   and `release-binaries.yml` (binaries, `SHA256SUMS`, the wire contract, attestations). Both
-   refuse a tag that does not name the workspace version.
-6. **Check the result**: both workflows green; the assets present and one of them passing
-   `gh attestation verify` with the workflow, tag and runner checks that
-   [self-hosting](SELF-HOSTING.md#obtain-and-verify) gives; the image references from
-   `publish-image.yml`'s summary added to the release body. `release-binaries.yml` never
-   replaces an asset, so delete a partial upload before re-running it, and re-run all its jobs:
-   a re-run of only the failed ones stops, since files pass between its jobs under names that
-   carry the attempt. It uploads after publication, so it needs GitHub's immutable releases off
-   for this repository.
+5. **Create a draft GitHub Release** from the tag, titled for the milestone it delivers when it
+   delivers one, with the release notes as its body; mark a `-rc.N` as a pre-release
+   (`gh release create vX.Y.Z --draft --verify-tag --title <title> --notes-file <notes>`, adding
+   `--prerelease` for a candidate).
+6. **Attach the binaries**: `gh workflow run release-binaries.yml --ref vX.Y.Z`. On a tag, the
+   workflow refuses a tag that does not name the workspace version or whose release is not a
+   draft, and attaches the binaries, `SHA256SUMS` and the wire contract to the draft, each with
+   an attestation. It never replaces an asset, so delete a partial upload from the draft before
+   re-running it, and re-run all its jobs: a re-run of only the failed ones stops, since files
+   pass between its jobs under names that carry the attempt.
 7. **If the release changes a registry**, attach its new head, `roots.json` and the head
-   checkpoint ([publishing](REGISTRY-GOVERNANCE.md#publishing)).
+   checkpoint to the draft ([publishing](REGISTRY-GOVERNANCE.md#publishing)).
+8. **Publish the draft** once the run is green and every asset is on it, one of them passing
+   `gh attestation verify` with the workflow, tag and runner checks that
+   [self-hosting](SELF-HOSTING.md#obtain-and-verify) gives. Every asset is attached before
+   publication, so the flow works whether or not the repository turns on GitHub's immutable
+   releases, which lock a published release's assets and tag but not its title or notes.
+   Before publishing, check that the tag still points at the commit the binaries run built
+   (its head commit, shown in the run): the images are built at publication from wherever the
+   tag points then, so a moved tag would split binaries and images across two commits.
+   Publication runs `publish-image.yml` (images, [self-hosting](SELF-HOSTING.md#build-the-reviewed-revision)),
+   which refuses a tag that does not name the workspace version and a release that does not yet
+   carry its `SHA256SUMS`.
+9. **Check the images**: `publish-image.yml` green, and the image references from its summary
+   added to the release body.
 
 ### The order for 1.0.0
 
