@@ -2657,4 +2657,412 @@ mod tests {
         let addr: AddressRef = serde_json::from_str("\"GABC\"").unwrap();
         assert_eq!(addr, AddressRef::address("GABC"));
     }
+
+    /// A distinct, checksummed account strkey per seed byte.
+    fn account_strkey(seed: u8) -> String {
+        stellar_strkey::ed25519::PublicKey([seed; 32])
+            .to_string()
+            .as_str()
+            .to_string()
+    }
+
+    /// `n` distinct recording references, in the canonical ascending order validation demands.
+    fn sorted_recordings(n: usize) -> Vec<RecordingRef> {
+        let mut hashes: Vec<Hash32> = (0..n)
+            .map(|i| ozpb_domain::sha256(format!("recording-{i}").as_bytes()))
+            .collect();
+        hashes.sort();
+        hashes
+            .into_iter()
+            .map(|hash| RecordingRef {
+                hash,
+                trust: ozpb_domain::TrustLevel::self_supplied(),
+            })
+            .collect()
+    }
+
+    /// A structurally valid evidence reference of exactly `len` bytes: `/sub[0]` segments,
+    /// the last one widened by trailing zeros to absorb the remainder.
+    fn evidence_reference_of_len(len: usize) -> String {
+        let base = "recordings[0]/auth[0]";
+        let segments = (len - base.len()) / 7;
+        let extra = (len - base.len()) % 7;
+        let mut reference = base.to_string();
+        for _ in 1..segments {
+            reference.push_str("/sub[0]");
+        }
+        reference.push_str(&format!("/sub[1{}]", "0".repeat(extra)));
+        assert_eq!(reference.len(), len);
+        reference
+    }
+
+    /// Base64 of an `ScVal::Bytes` whose XDR is exactly `xdr_len` bytes (a multiple of 4):
+    /// 4 bytes of discriminant, 4 of length, then the payload.
+    fn bytes_scval_base64(xdr_len: usize) -> String {
+        let value = ScVal::Bytes(ScBytes(vec![7_u8; xdr_len - 8].try_into().unwrap()));
+        let encoded = value.to_xdr(Limits::none()).unwrap();
+        assert_eq!(encoded.len(), xdr_len);
+        value.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn limit_errors(errors: &[SpecError]) -> usize {
+        errors
+            .iter()
+            .filter(|error| matches!(error, SpecError::Limits(..) | SpecError::GlobalLimits(_)))
+            .count()
+    }
+
+    #[test]
+    fn stored_signer_encoding_is_the_accounts_signer_enum() {
+        // `__check_auth` compares `Signer::Delegated(Address)` / `Signer::External(Address,
+        // Bytes)`; the strict-set hash is over exactly that shape, variant name first.
+        let delegated = SignerSpec::Delegated {
+            address: fixtures::DELEGATE.to_string(),
+        };
+        assert_eq!(
+            delegated.to_stored_scval().unwrap(),
+            ScVal::Vec(Some(
+                vec![
+                    ScVal::Symbol("Delegated".try_into().unwrap()),
+                    ScVal::String(ScString(fixtures::DELEGATE.try_into().unwrap())),
+                ]
+                .try_into()
+                .unwrap()
+            ))
+        );
+
+        let external = SignerSpec::External {
+            verifier: fixtures::TOKEN.to_string(),
+            verifier_code_hash: ozpb_domain::sha256(b"v"),
+            key_hex: "aabb".to_string(),
+        };
+        assert_eq!(
+            external.to_stored_scval().unwrap(),
+            ScVal::Vec(Some(
+                vec![
+                    ScVal::Symbol("External".try_into().unwrap()),
+                    ScVal::String(ScString(fixtures::TOKEN.try_into().unwrap())),
+                    ScVal::Bytes(ScBytes(vec![0xaa, 0xbb].try_into().unwrap())),
+                ]
+                .try_into()
+                .unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn signer_set_hash_distinguishes_single_signer_sets() {
+        let one = SignerSpec::Delegated {
+            address: account_strkey(1),
+        };
+        let two = SignerSpec::Delegated {
+            address: account_strkey(2),
+        };
+        assert_ne!(
+            signer_set_hash(&[one]).unwrap(),
+            signer_set_hash(&[two]).unwrap(),
+            "a strict-set check must not accept a different signer of the same set size"
+        );
+    }
+
+    #[test]
+    fn distinct_signers_are_not_duplicates() {
+        // The duplicate-identity check must not collapse distinct signers: a 2-of-2 over two
+        // different delegates is the ordinary multi-signer grant.
+        let mut spec = subscription_spec();
+        spec.rules[0].authorization.kind = PredicateKind::Threshold { n: 2 };
+        spec.rules[0].authorization.signers = vec![
+            SignerSpec::Delegated {
+                address: account_strkey(1),
+            },
+            SignerSpec::Delegated {
+                address: account_strkey(2),
+            },
+        ];
+        let validated = spec.validate();
+        assert!(validated.is_ok(), "{:?}", validated.err());
+    }
+
+    #[test]
+    fn threshold_may_equal_the_signer_count() {
+        let mut spec = subscription_spec();
+        spec.rules[0].authorization.kind = PredicateKind::Threshold { n: 1 };
+        let validated = spec.validate();
+        assert!(
+            validated.is_ok(),
+            "1-of-1 is a valid threshold: {:?}",
+            validated.err()
+        );
+    }
+
+    #[test]
+    fn every_collection_limit_admits_exactly_its_maximum() {
+        // Each `> MAX` bound is inclusive of MAX: a spec at the cap is valid, so the published
+        // limits are the ones the validator enforces.
+        let mut rules = subscription_spec();
+        rules.rules = vec![rules.rules[0].clone(); MAX_RULES];
+        let validated = rules.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_RULES} rules: {:?}",
+            validated.err()
+        );
+
+        let mut recordings = subscription_spec();
+        recordings.evidence.recordings = sorted_recordings(MAX_EVIDENCE_RECORDINGS);
+        let validated = recordings.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_EVIDENCE_RECORDINGS} recordings: {:?}",
+            validated.err()
+        );
+
+        let mut calls = subscription_spec();
+        calls.rules[0].policies.remove(0); // the spending limit covers transfer tuples only
+        calls.rules[0].allowed_calls = (0..MAX_CALLS_PER_RULE)
+            .map(|call| AllowedCall {
+                fn_name: format!("fn_{call}"),
+                args: Vec::new(),
+                justified_by: vec![format!("recordings[0]/auth[{call}]")],
+            })
+            .collect();
+        let validated = calls.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_CALLS_PER_RULE} calls: {:?}",
+            validated.err()
+        );
+
+        let mut policies = subscription_spec();
+        let reviewed = policies.rules[0].policies[0].clone();
+        while policies.rules[0].policies.len() < MAX_POLICIES_PER_RULE {
+            policies.rules[0].policies.push(reviewed.clone());
+        }
+        let validated = policies.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_POLICIES_PER_RULE} policies: {:?}",
+            validated.err()
+        );
+
+        let mut signers = subscription_spec();
+        signers.rules[0].authorization.signers = (1..=MAX_SIGNERS_PER_RULE as u8)
+            .map(|seed| SignerSpec::Delegated {
+                address: account_strkey(seed),
+            })
+            .collect();
+        let validated = signers.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_SIGNERS_PER_RULE} signers: {:?}",
+            validated.err()
+        );
+
+        let mut args = subscription_spec();
+        args.rules[0].policies.remove(0);
+        args.rules[0].allowed_calls[0].args = (0..MAX_ARGS_PER_CALL as u32)
+            .map(|index| ArgConstraint {
+                index,
+                constraint: Constraint::EqI128 {
+                    value: index.to_string(),
+                },
+                provenance: Provenance::ObservedExact,
+            })
+            .collect();
+        let validated = args.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_ARGS_PER_CALL} args: {:?}",
+            validated.err()
+        );
+
+        let mut justifications = subscription_spec();
+        justifications.rules[0].allowed_calls[0].justified_by = (0..MAX_JUSTIFICATIONS_PER_CALL)
+            .map(|auth| format!("recordings[0]/auth[{auth}]"))
+            .collect();
+        let validated = justifications.validate();
+        assert!(
+            validated.is_ok(),
+            "{MAX_JUSTIFICATIONS_PER_CALL} justifications: {:?}",
+            validated.err()
+        );
+    }
+
+    #[test]
+    fn one_past_the_evidence_and_justification_caps_is_a_named_limit() {
+        let mut recordings = subscription_spec();
+        recordings.evidence.recordings = sorted_recordings(MAX_EVIDENCE_RECORDINGS + 1);
+        let errors = recordings.validate().unwrap_err();
+        assert_eq!(limit_errors(&errors), 1, "{errors:?}");
+
+        let mut justifications = subscription_spec();
+        justifications.rules[0].allowed_calls[0].justified_by = (0..=MAX_JUSTIFICATIONS_PER_CALL)
+            .map(|auth| format!("recordings[0]/auth[{auth}]"))
+            .collect();
+        let errors = justifications.validate().unwrap_err();
+        assert_eq!(limit_errors(&errors), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn evidence_reference_length_bound_is_inclusive() {
+        let mut at_cap = subscription_spec();
+        at_cap.rules[0].allowed_calls[0].justified_by =
+            vec![evidence_reference_of_len(MAX_SHORT_METADATA_BYTES)];
+        let validated = at_cap.validate();
+        assert!(validated.is_ok(), "{:?}", validated.err());
+
+        // One byte longer is still structurally valid, so only the length bound refuses it.
+        let mut over = subscription_spec();
+        over.rules[0].allowed_calls[0].justified_by =
+            vec![evidence_reference_of_len(MAX_SHORT_METADATA_BYTES + 1)];
+        assert!(over
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| matches!(error, SpecError::EvidenceReference { .. })));
+    }
+
+    #[test]
+    fn short_metadata_admits_exactly_its_maximum() {
+        let mut spec = subscription_spec();
+        spec.smart_account.registry_resolution = "x".repeat(MAX_SHORT_METADATA_BYTES);
+        let validated = spec.validate();
+        assert!(validated.is_ok(), "{:?}", validated.err());
+    }
+
+    #[test]
+    fn exact_scval_size_limits_are_inclusive() {
+        // One value at exactly MAX_SCVAL_XDR_BYTES: its base64 is at the text bound too.
+        let at_value_cap = bytes_scval_base64(MAX_SCVAL_XDR_BYTES);
+        assert_eq!(at_value_cap.len(), MAX_SCVAL_XDR_BYTES.div_ceil(3) * 4);
+        let mut one = subscription_spec();
+        one.rules[0].allowed_calls[0].args.push(ArgConstraint {
+            index: 3,
+            constraint: Constraint::EqScval {
+                xdr_base64: at_value_cap.clone(),
+            },
+            provenance: Provenance::ObservedExact,
+        });
+        let validated = one.validate();
+        assert!(validated.is_ok(), "{:?}", validated.err());
+
+        // Four of them total exactly MAX_RULE_SCVAL_XDR_BYTES for the rule.
+        assert_eq!(4 * MAX_SCVAL_XDR_BYTES, MAX_RULE_SCVAL_XDR_BYTES);
+        let mut four = subscription_spec();
+        for index in 3..7 {
+            four.rules[0].allowed_calls[0].args.push(ArgConstraint {
+                index,
+                constraint: Constraint::EqScval {
+                    xdr_base64: at_value_cap.clone(),
+                },
+                provenance: Provenance::ObservedExact,
+            });
+        }
+        let validated = four.validate();
+        assert!(validated.is_ok(), "{:?}", validated.err());
+    }
+
+    #[test]
+    fn duplicate_evidence_is_reported_as_a_duplicate_not_as_misordered() {
+        let mut spec = subscription_spec();
+        spec.evidence
+            .recordings
+            .push(spec.evidence.recordings[0].clone());
+        assert_eq!(
+            spec.validate().unwrap_err(),
+            vec![SpecError::DuplicateEvidence {
+                first: 0,
+                duplicate: 1
+            }]
+        );
+    }
+
+    fn with_spending_limit(limit: &str, period_ledgers: u32) -> PolicySpec {
+        let mut spec = subscription_spec();
+        let PolicyRef::Reviewed { params, .. } = &mut spec.rules[0].policies[0] else {
+            panic!("fixture must carry its reviewed spending limit")
+        };
+        *params = ReviewedParams::SpendingLimit {
+            limit: limit.to_string(),
+            period_ledgers,
+        };
+        spec
+    }
+
+    fn reports_spending_limit_shape(spec: PolicySpec) -> bool {
+        spec.validate().unwrap_err().iter().any(|error| {
+            matches!(error, SpecError::ReviewedPolicy { reason, .. }
+                if reason.contains("canonical positive i128"))
+        })
+    }
+
+    #[test]
+    fn spending_limit_must_be_positive_canonical_and_periodic() {
+        // Each defect on its own, the other parameter well-formed, so neither masks the other.
+        for limit in ["0", "-1", "0500000000"] {
+            assert!(
+                reports_spending_limit_shape(with_spending_limit(limit, 120_960)),
+                "limit {limit:?} is not a canonical positive i128"
+            );
+        }
+        assert!(
+            reports_spending_limit_shape(with_spending_limit("500000000", 0)),
+            "a zero-ledger period never resets"
+        );
+    }
+
+    #[test]
+    fn spending_limit_accepts_a_lower_bound_reaching_the_limit() {
+        let with_min = |min: &str| {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].args[2].constraint = Constraint::GeI128 {
+                min: min.to_string(),
+            };
+            spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+                intent: "at least the subscription fee".to_string(),
+                blast_radius: ozpb_domain::BlastRadius::Medium,
+            };
+            spec
+        };
+        // The fixture's limit is 500000000: min == limit admits exactly the limit.
+        let validated = with_min("500000000").validate();
+        assert!(validated.is_ok(), "{:?}", validated.err());
+        assert!(with_min("500000001").validate().unwrap_err().iter().any(
+            |error| matches!(error, SpecError::ReviewedPolicy { reason, .. }
+                if reason.contains("no common nonnegative amount"))
+        ));
+    }
+
+    #[test]
+    fn external_key_material_must_be_nonempty_and_bounded() {
+        let external = |key_hex: String| {
+            let mut spec = subscription_spec();
+            spec.rules[0].authorization.signers = vec![SignerSpec::External {
+                verifier: fixtures::TOKEN.to_string(),
+                verifier_code_hash: ozpb_domain::sha256(b"claimed verifier code"),
+                key_hex,
+            }];
+            spec.validate().unwrap_err()
+        };
+        // A well-formed key draws only the Phase 1 refusal, not a key error.
+        for good in [
+            hex::encode([7u8; 1]),
+            hex::encode([7u8; MAX_EXTERNAL_KEY_BYTES]),
+        ] {
+            assert_eq!(
+                external(good),
+                vec![SpecError::ExternalSignerUnsupported { rule: 0, signer: 0 }]
+            );
+        }
+        for bad in [
+            String::new(),
+            hex::encode([7u8; MAX_EXTERNAL_KEY_BYTES + 1]),
+        ] {
+            assert!(
+                external(bad.clone()).contains(&SpecError::ExternalKey { rule: 0, signer: 0 }),
+                "{} key bytes must be refused",
+                bad.len() / 2
+            );
+        }
+    }
 }

@@ -548,3 +548,13 @@ what it enforces — an address or claimed kind is never sufficient.
   passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
 - `scripts/check-publication-allowlist.sh`: no confidential material in the public tree.
+- `scripts/mutation-test.sh` (`.github/workflows/mutation.yml`): a pull request that touches one
+  of the eight pure cores (recorder-core, evaluator, synthesizer, policy-spec,
+  call-surface-core, registry, domain, codegen) fails if a mutant on a line it changed survives
+  that crate's own tests, or times out. Resolve it with a test in that crate that the mutant
+  fails, or — only for a mutant no input can observe — an `exclude_re` entry in
+  `.cargo/mutants.toml` with a comment giving the reason. Run it locally with
+  `cargo install cargo-mutants --locked --version 27.1.0`, then
+  `bash scripts/mutation-test.sh --in-diff origin/main` for your branch's lines or
+  `bash scripts/mutation-test.sh -p ozpb-<core>` for a whole core; survivors are listed in
+  `target/mutants/mutants.out/missed.txt`.

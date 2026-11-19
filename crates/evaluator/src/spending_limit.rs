@@ -110,6 +110,20 @@ mod tests {
     }
 
     #[test]
+    fn spending_recorded_at_the_current_ledger_counts_against_the_limit() {
+        // An entry from the evaluation ledger itself is valid history (only entries after it
+        // are impossible); its amount is inside the window and consumes allowance.
+        assert_eq!(
+            evaluate_spending_limit(&state(), 11, 40),
+            SpendingVerdict::Permit
+        );
+        assert_eq!(
+            evaluate_spending_limit(&state(), 11, 41),
+            SpendingVerdict::Deny
+        );
+    }
+
+    #[test]
     fn malformed_history_cannot_become_unused_allowance() {
         for mutate in [
             |s: &mut SpendingLimitState| s.cached_total_spent = 0,

@@ -118,6 +118,22 @@ mod tests {
     }
 
     #[test]
+    fn implemented_resolves_each_version_to_its_own_semantics_and_nothing_else() {
+        // A registry binding names an adapter; resolving @1 to @2's semantics (or the reverse)
+        // would reinterpret a signed binding's deadline role.
+        assert_eq!(implemented("soroswap-router@1"), Some(soroswap_router()));
+        assert_eq!(implemented("soroswap-router@2"), Some(soroswap_router_v2()));
+        for unknown in [
+            "soroswap-router@3",
+            "soroswap-router",
+            "",
+            "SOROSWAP-ROUTER@1",
+        ] {
+            assert_eq!(implemented(unknown), None, "{unknown:?} is not implemented");
+        }
+    }
+
+    #[test]
     fn digest_commits_to_identity_function_arity_types_and_role_order() {
         let original = soroswap_router();
         let hash = original.digest().unwrap();

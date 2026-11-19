@@ -774,6 +774,35 @@ mod tests {
     }
 
     #[test]
+    fn eq_scval_over_an_address_matches_the_typed_address_it_encodes() {
+        // An exact-XDR constraint at the recipient position, with the recipient supplied in
+        // typed form: the evaluator must encode the address and compare, not refuse every
+        // typed address.
+        let merchant = ScVal::Address(fixtures::MERCHANT.parse::<ScAddress>().unwrap())
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+        let mut spec = subscription_spec();
+        spec.rules[0].allowed_calls[0].args[1].constraint = Constraint::EqScval {
+            xdr_base64: merchant,
+        };
+        let v = validate_generated_only(spec);
+
+        assert_eq!(
+            evaluate(&v, &base_ctx(), &original_invocation()),
+            Verdict::Permit
+        );
+        for other in [fixtures::DELEGATE, fixtures::TOKEN, "GNOT-A-STRKEY"] {
+            let mut inv = original_invocation();
+            inv.args[1] = ArgValue::Address(other.to_string());
+            assert_eq!(
+                evaluate(&v, &base_ctx(), &inv),
+                Verdict::Deny(DenyReason::NoTupleMatched),
+                "{other} is not the encoded recipient"
+            );
+        }
+    }
+
+    #[test]
     fn any_value_permits_arbitrary_values_but_arity_still_enforced() {
         let v = spec_with_amount_constraint(Constraint::AnyValue, widened());
         // Any value at the wildcard position is accepted.
