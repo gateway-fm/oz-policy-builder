@@ -152,7 +152,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | `crates/harness` | 1,198 | 1,048 | Derives the permit/deny suite: evidence, not enforcement |
 | `crates/source-bundle` | 47 | 198 | Import adapter whose output is `self_supplied` |
 | Rest of `crates/source-rpc` (target and footprint capture, target Wasm, preflight; `tests/{target_capture_conformance,protocol30_headers}.rs`) | 1,694 | 2,672 | Dry-run and preflight evidence |
-| Rest of `crates/toolkit` (dry run, its report, preflight, capture) | 2,002 | 1,662 | Same |
+| Rest of `crates/toolkit` (dry run, its report, preflight, capture, publication) | 2,002 | 1,662 | Same |
 | `execution-runtime` | 2,577 | 2,133 | Offline native worker for the account-Wasm layer |
 | Rest of `wallet/server` | 1,004 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
 | `scripts/release-artifacts.py` (tested by `scripts/test-release-artifacts.py`), run by `.github/workflows/release-binaries.yml` | 341 | 343 | Packages the release binaries, exports the MCP wire contract and writes `SHA256SUMS`; the workflow, not counted, attests and attaches them ([VERSIONING.md](VERSIONING.md#the-release-gate)). CI also runs its export against the built server and fails when it differs from the committed `docs/wire-contract.json` ([keeping the snapshot current](VERSIONING.md#keeping-the-snapshot-current)) |
