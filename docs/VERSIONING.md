@@ -156,3 +156,23 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    for this repository.
 7. **If the release changes a registry**, attach its new head, `roots.json` and the head
    checkpoint ([publishing](REGISTRY-GOVERNANCE.md#publishing)).
+
+### The order for 1.0.0
+
+1.0.0 is the release a mainnet installation is made from, and each step below needs the one
+before it:
+
+1. A freeze commit fixes the audited revision ([audit scope](AUDIT-SCOPE.md)).
+2. The external security audit and OpenZeppelin's review of the generated code examine that
+   revision ([review package](OZ-REVIEW-PACKAGE.md)).
+3. Their findings are remediated, each fix with its regression test
+   ([remediation log](AUDIT-REMEDIATION.md)).
+4. The mainnet registry's key ceremony. The draft genesis carries `PENDING` text where the
+   template pack's review reference goes, and only the completed audit can supply it, so the
+   custodians sign version 1 only after the audit, once they have replaced that text, confirmed
+   every other reference and set the validity interval
+   ([mainnet registry](../registry/mainnet/README.md)).
+5. 1.0.0 is released from the remediated tree, carrying the signed mainnet head, `roots.json`
+   and the head checkpoint (step 7 above).
+6. The mainnet installation is made from that release
+   ([installing on mainnet](MAINNET-INSTALL.md)).
