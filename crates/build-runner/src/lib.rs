@@ -711,6 +711,19 @@ pub enum BuildError {
     Internal(String),
 }
 
+/// The `source_hash` a manifest records for a generated crate: every file but `Cargo.lock`, by
+/// path, under the `ozpb:v1:generated-source` domain. The lockfile is bound by `lockfile_hash`
+/// instead. One definition, so publishing checks a crate against its manifest by the same rule
+/// the build used to write it.
+pub fn source_hash(files: &BTreeMap<String, String>) -> Result<Hash32, BuildError> {
+    let source_files: BTreeMap<&String, &String> = files
+        .iter()
+        .filter(|(path, _)| path.as_str() != "Cargo.lock")
+        .collect();
+    ozpb_domain::canonical_hash(domains::GENERATED_SOURCE, &source_files)
+        .map_err(|error| BuildError::Internal(error.to_string()))
+}
+
 /// Bind a built artifact to the inputs that produced it.
 ///
 /// This is the only place a toolchain claim becomes a record, so it is where the claim is checked:
@@ -732,14 +745,7 @@ pub fn manifest_for(
             wasm.len()
         )));
     }
-    let source_files: BTreeMap<&String, &String> = request
-        .generated
-        .files
-        .iter()
-        .filter(|(path, _)| path.as_str() != "Cargo.lock")
-        .collect();
-    let source_hash = ozpb_domain::canonical_hash(domains::GENERATED_SOURCE, &source_files)
-        .map_err(|error| BuildError::Internal(error.to_string()))?;
+    let source_hash = source_hash(&request.generated.files)?;
     let lockfile = request
         .generated
         .files

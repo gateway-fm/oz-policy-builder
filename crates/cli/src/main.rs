@@ -14,6 +14,10 @@
 //!   ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \\
 //!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
 //!     --manifest ./generated/build-manifest.json
+//!   ozpb publish-artifact --spec spec.json --generated-dir ./generated \\
+//!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
+//!     --manifest ./generated/build-manifest.json --out ./published
+//!   ozpb verify-published ./published/<wasm hash>/<build manifest hash>
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
 mod authority;
@@ -22,6 +26,7 @@ mod dry_run;
 mod key_file;
 mod policy_check;
 mod preflight;
+mod publication;
 mod registry;
 mod verification;
 
@@ -29,7 +34,8 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use ozpb_api_types::{
-    EvaluateSpecInput, GenerateCodeInput, RecordOutput, SynthesizeInput, SynthesizeOutput,
+    EvaluateSpecInput, GenerateCodeInput, GenerateCodeOutput, RecordOutput, SynthesizeInput,
+    SynthesizeOutput,
 };
 use ozpb_recorder_core::RecordOptions;
 use ozpb_source_rpc::{get_transaction, simulate_transaction, HttpTransport};
@@ -292,6 +298,17 @@ enum Command {
     /// Reference evaluation and artifact reproduction commands.
     #[command(flatten)]
     Verification(verification::Command),
+    /// Lay out a generated artifact for publication under its Wasm hash: the crate exactly as
+    /// generated, the spec, the BuildManifest, the Wasm and a SHA256SUMS index, written to
+    /// `<out>/<wasm hash>/<build manifest hash>/`. Refuses files the manifest does not describe
+    /// and a destination holding other content; republishing the same build is a no-op. Writes
+    /// locally only (docs/PUBLISHING.md).
+    PublishArtifact(publication::PublishArgs),
+    /// Check a published build's index, then rebuild it from its spec through `verify` and
+    /// compare with its Wasm and manifest. Exits 0 when the report matches, 3 when it does not
+    /// (a dimension did not reproduce, or the offline behavioural check failed), and 1 when the
+    /// directory is refused or the build fails.
+    VerifyPublished(publication::VerifyPublishedArgs),
     /// Registry governance: custodian keys, successors, signing, verification before
     /// distribution, and monitoring of a published registry (docs/REGISTRY-GOVERNANCE.md).
     #[command(subcommand)]
@@ -539,22 +556,7 @@ fn main() -> Result<()> {
                 ozpb_toolkit::generate_code_with_build_config(&input, &build.resolve()?)
                     .map_err(anyhow::Error::from)?;
             if let Some(dir) = out {
-                for (rel, content) in &generated.files {
-                    let path = dir.join(rel);
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&path, content)?;
-                }
-                let wasm = base64::engine::general_purpose::STANDARD
-                    .decode(&generated.wasm_base64)
-                    .context("decoding generated Wasm")?;
-                let wasm_name = format!("{}.wasm", generated.crate_name.replace('-', "_"));
-                std::fs::write(dir.join(wasm_name), wasm)?;
-                std::fs::write(
-                    dir.join("build-manifest.json"),
-                    serde_json::to_vec_pretty(&generated.build_manifest)?,
-                )?;
+                write_generation(&dir, &generated)?;
                 eprintln!(
                     "wrote crate '{}' ({} files), Wasm {}, and BuildManifest {} to {}",
                     generated.crate_name,
@@ -568,6 +570,8 @@ fn main() -> Result<()> {
             }
         }
         Command::Verification(command) => command.run()?,
+        Command::PublishArtifact(args) => publication::publish(args)?,
+        Command::VerifyPublished(args) => publication::verify_published(args)?,
         Command::Registry(command) => registry::run(command)?,
         Command::DevRegistry { out } => {
             std::fs::create_dir_all(&out)?;
@@ -589,6 +593,28 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Write what `generate --out` writes: the crate, `<crate_name>.wasm` with `-` as `_`, and
+/// `build-manifest.json`. Returns the Wasm's path.
+fn write_generation(dir: &std::path::Path, generated: &GenerateCodeOutput) -> Result<PathBuf> {
+    for (rel, content) in &generated.files {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+    }
+    let wasm = base64::engine::general_purpose::STANDARD
+        .decode(&generated.wasm_base64)
+        .context("decoding generated Wasm")?;
+    let wasm_path = dir.join(format!("{}.wasm", generated.crate_name.replace('-', "_")));
+    std::fs::write(&wasm_path, wasm)?;
+    std::fs::write(
+        dir.join("build-manifest.json"),
+        serde_json::to_vec_pretty(&generated.build_manifest)?,
+    )?;
+    Ok(wasm_path)
 }
 
 fn record(

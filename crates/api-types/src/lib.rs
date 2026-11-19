@@ -153,6 +153,21 @@ error_codes! {
     EWalletDraftPending => "E_WALLET_DRAFT_PENDING",
     /// The wallet refused the proposal's content. Reconnecting does not help.
     EWalletProposalRefused => "E_WALLET_PROPOSAL_REFUSED",
+    // publishing a generated artifact keyed by its Wasm hash (`docs/PUBLISHING.md`)
+    /// A file name that is not a plain relative path inside the published directory: a `..` or
+    /// `.` component, an absolute path, a separator other than `/`, a symlink or a non-file.
+    EPublishPath => "E_PUBLISH_PATH",
+    /// The Wasm's SHA-256 is not the BuildManifest's `wasm_hash`, or not the directory's name.
+    EPublishWasmMismatch => "E_PUBLISH_WASM_MISMATCH",
+    /// The BuildManifest does not describe the supplied spec, crate source or lockfile, or is
+    /// not a BuildManifest of the current schema.
+    EPublishManifestMismatch => "E_PUBLISH_MANIFEST_MISMATCH",
+    /// The published index does not list exactly the directory's files with their SHA-256, or
+    /// the directory is not the layout `publish-artifact` writes.
+    EPublishIndexMismatch => "E_PUBLISH_INDEX_MISMATCH",
+    /// The destination already holds a published directory for this Wasm hash with other
+    /// content. Publishing identical content again succeeds.
+    EPublishConflict => "E_PUBLISH_CONFLICT",
     // rpc / transport
     ERpc => "E_RPC",
     // catch-all internal
