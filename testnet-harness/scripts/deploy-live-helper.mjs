@@ -252,7 +252,7 @@ export function evaluatePermit(sim, { sac, account, recipient, policy, amount, r
   if (sent !== -BigInt(amount)) return fail(`account balance changed by ${sent}, expected ${-BigInt(amount)}`);
   const received = delta(changes.get(recipientKey), (e) => BigInt(e.data.account.balance));
   if (received !== BigInt(amount)) return fail(`recipient balance changed by ${received}, expected ${amount}`);
-  // stellar-accounts 0.7.2 keeps each rule in persistent `ContextRuleData(id)`.
+  // stellar-accounts 0.7.3 keeps each rule in persistent `ContextRuleData(id)`.
   const stored = changes.get(keyHex(contractDataKey(account, symbolVec('ContextRuleData', xdr.ScVal.scvU32(ruleId)))));
   if (!stored || stored.before !== null || !stored.after) return fail(`the account did not store rule ${ruleId} in this simulation`);
   const policyEntry = (name) => changes.get(keyHex(contractDataKey(policy,

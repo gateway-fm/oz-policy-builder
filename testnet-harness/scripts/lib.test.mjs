@@ -258,7 +258,7 @@ test('a denial counts only when the policy itself raised the code inside the acc
 
 // --- External signers: a passkey behind the OpenZeppelin WebAuthn verifier ------------------------
 //
-// stellar-accounts 0.7.2 hands an External signer's proof to `verifier.verify(auth_digest,
+// stellar-accounts 0.7.3 hands an External signer's proof to `verifier.verify(auth_digest,
 // key_data, sig_data)`. The WebAuthn verifier reads `key_data` as a 65-byte uncompressed P-256 key
 // followed by the credential id, and `sig_data` as the XDR of `WebAuthnSigData`.
 

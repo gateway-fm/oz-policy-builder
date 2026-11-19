@@ -87,7 +87,7 @@ const CALL_COUNT_EXCEEDED: u32 = 7;
 const MISSING_STATE: u32 = 8;
 const RULE_EXPIRED: u32 = 9;
 const ALREADY_INSTALLED: u32 = 10;
-// Account refusals (`SmartAccountError`, stellar-accounts 0.7.2).
+// Account refusals (`SmartAccountError`, stellar-accounts 0.7.3).
 const CONTEXT_RULE_NOT_FOUND: u32 = 3000;
 /// A rule is expired, scoped elsewhere, or (policy-free) lacks a signer.
 const UNVALIDATED_CONTEXT: u32 = 3002;
@@ -416,7 +416,7 @@ fn policy_call_args(env: &Env, p: &Parties, method: Method, target_rule: u32) ->
 }
 
 /// The ledger key of the account's stored rule `id` (`ContextRuleData(id)`, stellar-accounts
-/// 0.7.2): the one entry the account reads to validate a context against that rule.
+/// 0.7.3): the one entry the account reads to validate a context against that rule.
 fn rule_key(env: &Env, p: &Parties, id: u32) -> sdk_xdr::LedgerKey {
     let key: SVec<Val> = svec![
         env,

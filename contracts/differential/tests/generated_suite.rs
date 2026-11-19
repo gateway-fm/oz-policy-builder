@@ -8,7 +8,7 @@
 //!
 //! This test alone in the contracts workspace uses the harness. The existing differential
 //! tests retain their independent, hand-written cases. This native account uses the
-//! current policy library (0.8); the pinned 0.7.2 Wasm account is exercised separately
+//! current policy library (0.8); the pinned 0.7.3 Wasm account is exercised separately
 //! by account_wasm_auth and account_wasm_invariants.
 
 use generated_sub_transfer_r0::contract::{

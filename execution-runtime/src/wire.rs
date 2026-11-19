@@ -1,4 +1,4 @@
-//! Canonical wire types from the public stellar-accounts 0.7.2 ABI.
+//! Canonical wire types from the public stellar-accounts 0.7.3 ABI (unchanged from 0.7.2).
 //! No account or policy authorization logic is implemented here.
 use soroban_sdk::{contracttype, Address, Bytes, BytesN, Map, String, Vec};
 

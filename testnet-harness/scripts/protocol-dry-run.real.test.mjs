@@ -24,7 +24,7 @@ for (const kind of ['blend_claim', 'soroswap_swap']) test(`real CLI and worker a
       : capture.synthesis.spec;
     // The committed RPC fixture includes the exact pinned account bytes. This fallback is
     // offline and hash-checked; it does not claim a fresh source reproduction.
-    const entries = JSON.parse(readFileSync(join(ROOT, 'crates/source-rpc/tests/captured-testnet/target-capture/getLedgerEntries.json'))).entries;
+    const entries = JSON.parse(readFileSync(join(ROOT, 'crates/source-rpc/tests/captured-testnet/target-capture-protocol30/getLedgerEntries.json'))).entries;
     const accountWasm = process.env.OZPB_ACCOUNT_WASM ? readFileSync(process.env.OZPB_ACCOUNT_WASM)
       : entries.map((e) => xdr.LedgerEntryData.fromXDR(e.xdr, 'base64'))
         .filter((e) => e.type === 'contractCode').map((e) => Buffer.from(e.contractCode.code))

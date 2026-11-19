@@ -5,7 +5,7 @@ import { decide, intentMismatches, walletTrust } from './authority.mjs';
 import { decodeBase64Url } from './base64url.mjs';
 
 export const NETWORK_ID = 'cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472';
-export const ACCOUNT_WASM = 'a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289';
+export const ACCOUNT_WASM = '203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f';
 export const WEBAUTHN_WASM = 'e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76'; // gitleaks:allow -- public WebAuthn Wasm SHA-256
 const refuse = () => { throw new Error('wallet review refused; refresh and review the exact grant'); };
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);

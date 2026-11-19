@@ -1,5 +1,5 @@
 // Owner-driven removal of the harness's recorded grant. Removal, its event and policy cleanup
-// are distinct observations: stellar-accounts 0.7.2 uninstalls policies on a best-effort basis.
+// are distinct observations: stellar-accounts 0.7.3 uninstalls policies on a best-effort basis.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';

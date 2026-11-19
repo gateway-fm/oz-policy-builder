@@ -43,7 +43,7 @@ import { directAddressCredentials } from './auth-credentials.mjs';
 export const HELPER_ERROR_CODES = Object.freeze([7001, 7002, 7003, 7004, 7005, 7006, 7007, 7008, 7009]);
 /** The generated policy's `NoTupleMatched`: the call is outside every allowed tuple. */
 export const POLICY_NO_TUPLE_MATCHED = 6;
-/** stellar-accounts 0.7.2 `MAX_NAME_SIZE`: the longest rule name `add_context_rule` accepts. */
+/** stellar-accounts 0.7.3 `MAX_NAME_SIZE`: the longest rule name `add_context_rule` accepts. */
 const MAX_RULE_NAME_BYTES = 20;
 /** The helper derives the native asset of the executing network itself; so does this module. */
 const NATIVE_ASSET = Asset.native().contractId(Networks.TESTNET);
@@ -329,7 +329,7 @@ function balanceDeltas(c, changes) {
 }
 
 /**
- * The account's registry entry for one signer or policy (stellar-accounts 0.7.2 `register_signer` /
+ * The account's registry entry for one signer or policy (stellar-accounts 0.7.3 `register_signer` /
  * `register_policy`): either new, with count 1 and its lookup entry, or an existing one counted once more.
  */
 function registration(c, changes, { data, lookup, field, id, value }) {

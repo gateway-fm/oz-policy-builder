@@ -1280,7 +1280,7 @@ mod tests {
                     registry_dev::dev_root_verifying_bytes(),
                 )]),
             },
-            minimum_version: 2,
+            minimum_version: registry_dev::SIGNED_EXAMPLE_VERSION + 1,
             checkpoint: None,
             configured_snapshot: None,
         };
@@ -1505,10 +1505,10 @@ mod tests {
     #[test]
     fn a_spec_may_not_use_capabilities_the_template_does_not_declare() {
         let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
-        let mut narrowed_snapshot = ozpb_registry::dev::dev_snapshot(
+        let mut narrowed_snapshot = ozpb_registry::dev::account_advisory_successor(
             ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
-            1,
-        );
+        )
+        .unwrap();
         let template = narrowed_snapshot
             .templates
             .get_mut("policy-templates/scope@1")

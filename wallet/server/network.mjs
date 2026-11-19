@@ -453,7 +453,7 @@ export class WalletNetwork {
   }
   /**
    * What a live check's signatures could change, read together: the account instance's `NextId`
-   * and `Count`, every `ContextRuleData(id)` below `NextId` (stellar-accounts 0.7.2 storage), and
+   * and `Count`, every `ContextRuleData(id)` below `NextId` (stellar-accounts 0.7.3 storage), and
    * the candidate policy's `Installed(account, ruleId)` marker. Read twice, the second time with
    * the instance again, which must not have moved in between. At most 64 rule IDs.
    */

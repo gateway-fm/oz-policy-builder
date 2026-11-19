@@ -38,7 +38,7 @@
         "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL": {
           "executable": {
             "wasm": {
-              "code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289"
+              "code_hash": "203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f"
             }
           },
           "observed_ledger": 5293646
@@ -116,7 +116,7 @@
       },
       "name": "soroswap-swap",
       "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
-      "registry_snapshot": "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6",
+      "registry_snapshot": "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8",
       "rules": [
         {
           "allowed_calls": [
@@ -310,11 +310,11 @@
       "schema": "policy-spec/v1",
       "smart_account": {
         "address": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
-        "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
-        "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
+        "observed_code_hash": "203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f",
+        "registry_resolution": "stellar-accounts@0.7.3 (registry entry 203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f)"
       }
     },
-    "spec_hash": "84672a0c3364e75f530c668d99289f317e33a690e72d31b58b5238b5e18ce9e4",
+    "spec_hash": "afa2b3e4ff5c232225c3b9d81ed24845787b1e857eb28cb93e651b892874cd45",
     "rationale": [
       "permission bundle: 2 independent rules (one per contract); ordering and dependency between them are NOT enforced",
       "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: adapter 'soroswap-router@2' derived a code-hash-bound widening from its reviewed argument role (valid only while the target's code hash holds)",

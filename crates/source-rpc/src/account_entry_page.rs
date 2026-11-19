@@ -22,7 +22,7 @@ use stellar_xdr::{
 
 const MAX_CONTRACT_ADDRESS_BYTES: usize = 128;
 
-/// A key in the pinned `stellar-accounts` 0.7.2 storage schema.
+/// A key in the pinned `stellar-accounts` 0.7.3 storage schema (unchanged from 0.7.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum AccountEntryKey {
     Instance,

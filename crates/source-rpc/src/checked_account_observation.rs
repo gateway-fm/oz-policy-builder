@@ -307,7 +307,7 @@ mod tests {
         edit: impl FnOnce(&mut RegistrySnapshot),
     ) -> ozpb_registry::SignedSnapshot {
         let mut snapshot: RegistrySnapshot =
-            dev::dev_snapshot(NetworkId::from_passphrase(NETWORK), 1);
+            dev::account_advisory_successor(NetworkId::from_passphrase(NETWORK)).unwrap();
         let account = snapshot
             .accounts
             .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
@@ -342,10 +342,10 @@ mod tests {
                 keys: BTreeMap::from([("legacy".into(), dev::dev_root_verifying_bytes())]),
             },
             registry_checkpoint: RegistryCheckpoint {
-                version: 1,
-                log_index: 1,
+                version: signed.snapshot.version,
+                log_index: signed.snapshot.log_index,
                 root: snapshot_root(&signed.snapshot).unwrap(),
-                revocations: BTreeMap::new(),
+                revocations: signed.snapshot.revocations.clone(),
             },
             signed_registry_snapshot: signed,
         }

@@ -19,7 +19,7 @@ import { decodeBase64Url } from './base64url.mjs';
 import { liveCase } from './live-enforcement.mjs';
 
 /** The reviewed helper Wasm (`EXPECTED_HELPER_HASH` in execution-runtime/tests/atomic_helper.rs). */
-export const LIVE_HELPER_WASM = '0d0128a499f20bb176b64232d6c1d047311b23081b882c4c487072bf9a355e94';
+export const LIVE_HELPER_WASM = 'e9cd36e7b50b16058eca683bf653ebc64dd647f957b40a9593988a989aae9cdf';
 /**
  * How far past the ledger read at preparation the case signatures stay valid: about one minute.
  * Installation waits until they expired unused, so the window is as short as a fast RPC allows:

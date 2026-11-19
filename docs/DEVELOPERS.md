@@ -292,7 +292,7 @@ no ledger, contract-call or ledger-context host functions. A *spec* still cannot
 external-verifier signer for the new rule (`E_SPEC_EXTERNAL_SIGNER_UNSUPPORTED`).
 
 ```bash
-bash scripts/verify-pinned-upstream.sh    # clones the pinned tag, rebuilds, compares
+bash scripts/verify-pinned-upstream.sh    # clones the pinned tags, rebuilds, compares
 ```
 
 Deliberately not part of `verify-phase1/2`: it clones and does a cold build of upstream's

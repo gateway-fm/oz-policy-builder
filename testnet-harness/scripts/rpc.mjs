@@ -14,7 +14,7 @@ export const server = new rpc.Server(RPC_URL);
 export const RPC_ORIGIN = new URL(RPC_URL).origin;
 
 /** The pinned OpenZeppelin account example, `ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM`. */
-export const PINNED_ACCOUNT_WASM = 'a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289';
+export const PINNED_ACCOUNT_WASM = '203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f';
 
 /**
  * OpenZeppelin's WebAuthn verifier example (`examples/multisig-smart-account/webauthn-verifier`),

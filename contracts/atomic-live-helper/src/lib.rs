@@ -26,11 +26,12 @@ use soroban_sdk::{
     BytesN, Env, Executable, IntoVal, Map, String, Symbol, Val, Vec,
 };
 
-/// SHA-256 of the pinned OpenZeppelin `stellar-accounts` 0.7.2 smart-account Wasm
-/// (`ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM`). Any other account code is refused.
+/// SHA-256 of the pinned OpenZeppelin `stellar-accounts` 0.7.3 smart-account Wasm
+/// (`ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM`). Any other account code is refused,
+/// including the 0.7.2 build that GHSA-jpg9-m7w4-c7wc affects.
 const PINNED_ACCOUNT_WASM: [u8; 32] = [
-    0xa1, 0x27, 0x47, 0xff, 0x6c, 0x13, 0x9d, 0xc1, 0x4f, 0xc2, 0xfd, 0x30, 0xd2, 0x00, 0xd6, 0xbb,
-    0xb5, 0xda, 0x7b, 0x5d, 0x59, 0x81, 0x2c, 0x04, 0x7c, 0xe1, 0xf9, 0xca, 0xd2, 0x26, 0xb2, 0x89,
+    0x20, 0x3e, 0x29, 0x70, 0xd9, 0xfe, 0xd2, 0x4f, 0xb5, 0xfc, 0xa2, 0xe0, 0xae, 0xeb, 0xb3, 0xc1,
+    0xe4, 0x64, 0x8b, 0x76, 0xdd, 0x66, 0x01, 0x56, 0x71, 0x78, 0xe6, 0x47, 0x4c, 0x9f, 0xec, 0x6f,
 ];
 
 /// The sample permit is 1,000,000 stroops and its adjacent denial case one stroop more. This
@@ -40,7 +41,7 @@ pub const MAX_AMOUNT: i128 = 1_000_001;
 /// `Asset::Native` in canonical XDR.
 const NATIVE_ASSET_XDR: [u8; 4] = [0, 0, 0, 0];
 
-/// Wire mirrors of the `stellar-accounts` 0.7.2 types the helper exchanges with the account.
+/// Wire mirrors of the `stellar-accounts` 0.7.3 types the helper exchanges with the account.
 /// Declared here, rather than imported, so the helper's own contract spec describes its return
 /// value; the encoding is checked against the shared protocol vector and the real account Wasm.
 #[contracttype]

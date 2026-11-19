@@ -30,7 +30,7 @@
 //! policy can uninstall and reinstall it to reset its counters; and any other rule on the
 //! target is a second way to call it.
 //!
-//! Accepted forms are surface-specific (OZ `stellar-accounts` 0.7.2, `storage.rs`
+//! Accepted forms are surface-specific (OZ `stellar-accounts` 0.7.3, `storage.rs`
 //! `get_validated_context_by_id` and `do_check_auth`). A rule that can change the account or
 //! reach a bound policy must be policy-free: every signer must sign. A rule with policies skips
 //! that check, lets the submitter choose it, and hands whatever signers authenticated —

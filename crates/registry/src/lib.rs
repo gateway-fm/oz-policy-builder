@@ -1053,10 +1053,14 @@ pub mod dev {
     use ozpb_domain::sha256;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
-    /// Version of the committed, signed development example. Versions 1 to 3 remain
+    /// Version of the committed, signed development example. Versions 1 to 5 remain
     /// historical parents; changing their contents would fork persisted checkpoints. The same
     /// holds for this version once published, so tests pin every root.
-    pub const SIGNED_EXAMPLE_VERSION: u64 = 5;
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 6;
+
+    /// Why version 6 revokes the account built at v0.7.2. Stated in the signed snapshot, so a
+    /// refusal names the advisory rather than an unknown hash.
+    pub const ACCOUNT_0_7_2_REVOCATION_REASON: &str = "GHSA-jpg9-m7w4-c7wc: stellar-accounts before 0.7.3 approves a Delegated signer without any signature when the delegated address is the direct invoker of the account's __check_auth (the contract requesting its authorization, or a delegation that loops back), so anyone can authorize the account without keys. Fixed in 0.7.3; accounts running this code must be recreated on the 0.7.3 build.";
 
     /// Deterministic development root key (NOT a production root; production roots are
     /// threshold-held and pinned at release time).
@@ -1080,6 +1084,7 @@ pub mod dev {
         version: u64,
     ) -> Result<(String, String), RegistryError> {
         let snapshot = match version {
+            6 => account_advisory_successor(network_id)?,
             5 => soroswap_deadline_successor(network_id)?,
             4 => soroswap_router_successor(network_id)?,
             3 => verifier_successor(network_id)?,
@@ -1117,11 +1122,18 @@ pub mod dev {
         snapshot.previous_root = Some(snapshot_root(&previous)?);
         let account = snapshot
             .accounts
-            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .get_mut(&pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex())
             .ok_or_else(|| {
                 RegistryError::Internal("pinned development account is absent".into())
             })?;
-        account.bounded_next_id = Some(BoundedNextIdCapability {
+        account.bounded_next_id = Some(account_scan_protocol());
+        account.method_inventory_digest = Some(reviewed_method_inventory_digest()?);
+        Ok(snapshot)
+    }
+
+    /// The bounded scan protocol every signed account entry commits to.
+    fn account_scan_protocol() -> BoundedNextIdCapability {
+        BoundedNextIdCapability {
             schema_version: 1,
             max_scan_ids: 1_000,
             max_rpc_batches: 16,
@@ -1129,15 +1141,15 @@ pub mod dev {
             max_attempts: 2,
             archive_policy: AccountArchivePolicy::RejectUnresolved,
             snapshot_policy: AccountSnapshotPolicy::SameLedgerAndInstance,
-        });
-        account.method_inventory_digest = Some(
-            ozpb_domain::canonical_hash(
-                domains::ACCOUNT_METHOD_INVENTORY,
-                &account_methods::source_reviewed_oz_multisig_candidate(),
-            )
-            .map_err(|error| RegistryError::Internal(error.to_string()))?,
-        );
-        Ok(snapshot)
+        }
+    }
+
+    fn reviewed_method_inventory_digest() -> Result<Hash32, RegistryError> {
+        ozpb_domain::canonical_hash(
+            domains::ACCOUNT_METHOD_INVENTORY,
+            &account_methods::source_reviewed_oz_multisig_candidate(),
+        )
+        .map_err(|error| RegistryError::Internal(error.to_string()))
     }
 
     /// Version 3: version 2 plus what lets a verifier vouch for an owner identity. The ed25519
@@ -1208,6 +1220,46 @@ pub mod dev {
         Ok(snapshot)
     }
 
+    /// Version 6: version 5 plus the account built at v0.7.3, and the v0.7.2 account revoked
+    /// for GHSA-jpg9-m7w4-c7wc. The old entry stays, unchanged, so it resolves as revoked with
+    /// the advisory as reason rather than as unknown code. The new entry commits to the same
+    /// scan protocol and method table: 0.7.3 adds two refusals (`DelegatedSignerIsContextContract`
+    /// 3017 in `__check_auth`, `SelfDelegatedSigner` 3018 when a signer is added) and changes no
+    /// method, guard or effect (`docs/ACCOUNT-METHOD-INVENTORY.md`).
+    pub fn account_advisory_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        let previous = soroswap_deadline_successor(network_id)?;
+        let mut snapshot = previous.clone();
+        snapshot.version = 6;
+        snapshot.log_index = 6;
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        snapshot.accounts.insert(
+            pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex(),
+            AccountCapability {
+                release: "stellar-accounts@0.7.3".to_string(),
+                rule_enumeration: "bounded_next_id".to_string(),
+                management_evidence:
+                    MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE.to_string(),
+                bounded_next_id: Some(account_scan_protocol()),
+                method_inventory_digest: Some(reviewed_method_inventory_digest()?),
+                review_reference: "OpenZeppelin/stellar-contracts examples/multisig-smart-account/account @ v0.7.3 (252b35f), built here with rustc 1.91.1 and stellar-cli 27.0.0 — provenance in ozpb_domain::pinned_upstream. Our build of their source, not an upstream-published artifact. Fixes GHSA-jpg9-m7w4-c7wc: __check_auth refuses a Delegated signer whose address is the contract of a context being authorized (3017), and adding a signer delegated to the account itself is refused (3018). Storage layout and the signed auth digest are unchanged from 0.7.2."
+                    .to_string(),
+            },
+        );
+        snapshot.revocations.insert(
+            format!(
+                "account/{}",
+                pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex()
+            ),
+            Revocation {
+                reason: ACCOUNT_0_7_2_REVOCATION_REASON.to_string(),
+                effective_version: 6,
+            },
+        );
+        Ok(snapshot)
+    }
+
     /// Version 5 preserves v4 and replaces its router binding with v2's exact deadline.
     pub fn soroswap_deadline_successor(
         network_id: NetworkId,
@@ -1238,6 +1290,10 @@ pub mod dev {
     /// What remains a development stand-in is the *signing root*: [`dev_signing_key`] is
     /// derived from a fixed string, so this snapshot authenticates against a key anyone can
     /// recompute. A production deployment supplies its own governance root.
+    ///
+    /// The account it recognizes is the v0.7.2 build, as published; version 6
+    /// ([`account_advisory_successor`]) revokes it. Tests that need the current account start
+    /// from that version instead.
     pub fn dev_snapshot(network_id: NetworkId, version: u64) -> RegistrySnapshot {
         let mut policies = BTreeMap::new();
         policies.insert(
@@ -1259,7 +1315,7 @@ pub mod dev {
         );
         let mut accounts = BTreeMap::new();
         accounts.insert(
-            pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex(),
+            pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex(),
             AccountCapability {
                 release: "stellar-accounts@0.7.x".to_string(),
                 rule_enumeration: "bounded_next_id".to_string(),
@@ -1372,9 +1428,11 @@ mod tests {
             "a035495a8a898ba123c0d63c3eedc2f433666110a32f5f56fd089f8c0663803f";
         const PUBLISHED_V4_ROOT: &str =
             "177de9ef770500e7f268c7e2692916c01e8dc031104d456f358d0c0a681548cf";
+        const PUBLISHED_V5_ROOT: &str =
+            "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6";
         assert_eq!(
             dev::SIGNED_EXAMPLE_VERSION,
-            5,
+            6,
             "a new signed example version must pin its own published root here"
         );
         // Version 2 is a published parent: the verifier fields it never carried must not move
@@ -1401,14 +1459,71 @@ mod tests {
         assert_eq!(v4.previous_root, Some(snapshot_root(&v3).unwrap()));
         let v5 = dev::soroswap_deadline_successor(network()).unwrap();
         assert_eq!(v5.previous_root, Some(snapshot_root(&v4).unwrap()));
+        assert_eq!(
+            snapshot_root(&v5).unwrap().to_hex(),
+            PUBLISHED_V5_ROOT,
+            "published development example v5 changed; publish new contents as a new version"
+        );
+        let v6 = dev::account_advisory_successor(network()).unwrap();
+        assert_eq!(v6.previous_root, Some(snapshot_root(&v5).unwrap()));
         let committed: SignedSnapshot =
             serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
                 .unwrap();
-        assert_eq!(v5, committed.snapshot);
+        assert_eq!(v6, committed.snapshot);
         assert_eq!(
-            snapshot_root(&v5).unwrap().to_hex(),
-            "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6"
+            snapshot_root(&v6).unwrap().to_hex(),
+            "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8"
         );
+    }
+
+    /// GHSA-jpg9-m7w4-c7wc: `stellar-accounts` before 0.7.3 approves a `Delegated` signer
+    /// without a signature when the delegate is the direct invoker of `__check_auth`. The
+    /// committed example must recognize only the 0.7.3 build and refuse the 0.7.2 build by
+    /// name, and the compiled method table must not lend the old build authority even under a
+    /// snapshot that predates the revocation. Literal hashes, so a moved pin cannot pass by
+    /// moving both sides of the comparison.
+    #[test]
+    fn the_committed_example_recognizes_the_fixed_account_and_revokes_the_vulnerable_one() {
+        const FIXED_0_7_3: &str =
+            "203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f";
+        const VULNERABLE_0_7_2: &str =
+            "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289";
+        let fixed = Hash32::from_hex(FIXED_0_7_3).unwrap();
+        let vulnerable = Hash32::from_hex(VULNERABLE_0_7_2).unwrap();
+        assert_eq!(pinned_upstream::OZ_SMART_ACCOUNT_WASM, fixed);
+
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        let mut current = registry();
+        current.load_at(&committed, 100).unwrap();
+        let authority = current.resolve_account_authority(&fixed).unwrap();
+        assert_eq!(authority.methods.methods.len(), 17);
+        assert!(matches!(
+            current.resolve_account(&vulnerable),
+            Err(RegistryError::Revoked { capability, reason })
+                if capability == format!("account/{VULNERABLE_0_7_2}")
+                    && reason.contains("GHSA-jpg9-m7w4-c7wc")
+        ));
+
+        // A consumer still pinned at an earlier snapshot recognizes the old code, but the
+        // reviewed method table is compiled for the fixed build only.
+        let mut earlier = registry();
+        earlier
+            .load_at(
+                &sign_snapshot(
+                    &dev::dev_signing_key(),
+                    dev::soroswap_deadline_successor(network()).unwrap(),
+                )
+                .unwrap(),
+                100,
+            )
+            .unwrap();
+        earlier.resolve_account(&vulnerable).unwrap();
+        assert!(matches!(
+            earlier.resolve_account_authority(&vulnerable),
+            Err(RegistryError::AccountAuthorityUnsupported(_))
+        ));
     }
 
     /// A verifier vouches for an owner identity only when its entry says how it reads keys
@@ -1494,7 +1609,8 @@ mod tests {
                 .unwrap();
         assert_eq!(committed.snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
 
-        // An operator persisted a checkpoint at v3: the committed v4 extends it directly.
+        // An operator persisted a checkpoint at v3: v4 extends it directly, and v5 and the
+        // committed v6 follow in order.
         let mut registry = pinned_test_registry();
         for signed in [&v1, &v2, &v3] {
             registry.load_at(signed, 100).unwrap();
@@ -1513,6 +1629,12 @@ mod tests {
         )
         .unwrap();
         restored.load_at(&v4, 100).unwrap();
+        let v5 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::soroswap_deadline_successor(network()).unwrap(),
+        )
+        .unwrap();
+        restored.load_at(&v5, 100).unwrap();
         assert_eq!(
             committed.snapshot.previous_root,
             Some(restored.checkpoint().unwrap().root)
@@ -1521,6 +1643,10 @@ mod tests {
         restored
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
             .unwrap();
+        assert!(matches!(
+            restored.resolve_account(&pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM),
+            Err(RegistryError::Revoked { .. })
+        ));
         restored
             .resolve_signature_verifier(&pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM)
             .unwrap();
@@ -1529,7 +1655,8 @@ mod tests {
             .unwrap()
             .is_some());
 
-        // One persisted at v2 cannot jump to v4: v4 does not directly extend it.
+        // One persisted at v2 cannot jump to the committed version: it does not directly
+        // extend v2.
         let mut at_v2 = pinned_test_registry();
         at_v2.load_at(&v1, 100).unwrap();
         at_v2.load_at(&v2, 100).unwrap();
@@ -1603,10 +1730,11 @@ mod tests {
     /// constant; this test asserts the snapshot actually uses it.
     #[test]
     fn the_shipped_snapshot_pins_real_upstream_wasm_hashes() {
-        let snapshot = dev::dev_snapshot(
-            NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
-            1,
-        );
+        let snapshot = dev::account_advisory_successor(NetworkId::from_passphrase(
+            ozpb_domain::TESTNET_PASSPHRASE,
+        ))
+        .unwrap();
+        assert_eq!(snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
         // Each hash must appear in ITS OWN table. Checking the union of the three would pass
         // even with the policy, account and verifier keys swapped between them — and a
         // verifier resolved as a policy is precisely the confusion the registry prevents.
@@ -1692,23 +1820,25 @@ mod tests {
     fn signed_authority_snapshot() -> SignedSnapshot {
         sign_snapshot(
             &dev::dev_signing_key(),
-            dev::account_authority_successor(network()).unwrap(),
+            dev::account_advisory_successor(network()).unwrap(),
         )
         .unwrap()
     }
 
     #[test]
     fn signed_account_authority_requires_exact_method_and_scan_bindings() {
+        // Version 1 recognizes the account code but commits to no scan protocol or table.
         let legacy =
             sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
         let mut registry = pinned_test_registry();
         registry.load_at(&legacy, 100).unwrap();
         assert!(matches!(
-            registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM),
+            registry.resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM),
             Err(RegistryError::AccountAuthorityUnsupported(_))
         ));
 
         let signed = signed_authority_snapshot();
+        let mut registry = pinned_test_registry();
         registry.load_at(&signed, 100).unwrap();
         let resolved = registry
             .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
@@ -2289,7 +2419,7 @@ mod tests {
 
     #[test]
     fn revoked_capabilities_fail_resolution_with_the_recorded_reason() {
-        let account_hash = pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+        let account_hash = pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM;
         let mut snapshot = dev::dev_snapshot(network(), 1);
         snapshot.revocations.insert(
             format!("account/{}", account_hash.to_hex()),
@@ -2317,7 +2447,7 @@ mod tests {
 
     #[test]
     fn accepted_revocations_are_append_only_and_immutable() {
-        let hash = pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex();
+        let hash = pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex();
         let key = format!("account/{hash}");
         let mut first_snapshot = dev::dev_snapshot(network(), 1);
         first_snapshot.revocations.insert(
@@ -2376,7 +2506,7 @@ mod tests {
         first_snapshot.revocations.insert(
             format!(
                 "account/{}",
-                pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex()
+                pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex()
             ),
             Revocation {
                 reason: "accepted finding".to_string(),

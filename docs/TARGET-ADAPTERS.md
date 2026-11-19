@@ -51,6 +51,8 @@ swap walkthrough or effect guarantee.
 
 Version 5 extends the immutable version-4 root and binds the same router code to v2.
 A persisted v3 checkpoint must advance through v4 before v5; checkpoints are not discarded.
+Version 6, the committed example, carries this binding unchanged; it changes only the recognized
+account ([GHSA-jpg9-m7w4-c7wc](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).
 It preserves the recorded deadline as `EqScval` with `observed_exact` provenance.
 The input cap remains `adapter_derived`, so the router still requires the exact observed
 code hash and refuses drift. This is an argument bound; the router checks the cutoff against

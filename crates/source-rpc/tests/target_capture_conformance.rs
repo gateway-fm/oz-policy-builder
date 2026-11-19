@@ -5,7 +5,10 @@
 //! `rpc_conformance.rs` for the bug that taught us this). The fixtures in
 //! `captured-testnet/target-capture-protocol30/` are the `result` objects a real endpoint returned for one
 //! read-only capture: `getNetwork`, record-mode `simulateTransaction`, `getLedgerEntries` and
-//! `getLedgers`. The transfer uses a recently active pinned testnet account and a funded recipient.
+//! `getLedgers`. The transfer uses a recently active pinned testnet account and a funded recipient:
+//! the 0.7.3 account and recipient of the 19 November 2026 helper deployment
+//! (`docs/evidence/atomic-live-helper-testnet-2026-11-19.json`), recaptured when the pinned account
+//! moved to 0.7.3 for GHSA-jpg9-m7w4-c7wc.
 //! The protocol-29 fixture remains in its original directory as historical data; it is
 //! explicitly refused for capture by this protocol-30 build.
 //! The only edit is dropping `getLedgers`' `metadataXdr`, the ledger's whole close meta (~140 KB),
@@ -24,8 +27,8 @@ use stellar_xdr::{
 };
 
 const NETWORK: &str = "Test SDF Network ; September 2015";
-const ACCOUNT: &str = "CCMQ4NMMKBOXXEYENL3MS2GSTEJHFYTCDF3LZXNUM3C45NUTLA72PUKN";
-const RECIPIENT: &str = "GB6IN2X73PZP5OECYTMFJFWO6AJLQE4UIHAMSJQW3MHYHGILNADFKWU6";
+const ACCOUNT: &str = "CCUJSXKHNTGF7YXBQ24VHXTQIEJ7AA64YGUQ345VDBO5RTAWDH56CGXT";
+const RECIPIENT: &str = "GB5BA5FN54D4XQLDQPVE57FR67YQANTHEEKD3CPWI24BLEXQ25CMSUXN";
 const AMOUNT: u64 = 1_000_000;
 
 fn fixtures() -> PathBuf {

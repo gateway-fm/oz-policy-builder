@@ -1,4 +1,4 @@
-// The encodings an OpenZeppelin smart account (stellar-accounts 0.7.2) signs over, and the
+// The encodings an OpenZeppelin smart account (stellar-accounts 0.7.3) signs over, and the
 // authorization entries a call from that account needs when its signer is a `Delegated` Stellar
 // account or an `External` passkey behind the OpenZeppelin WebAuthn verifier. Pure: no network, no
 // clock, no browser. Tested offline by `lib.test.mjs`.

@@ -235,7 +235,7 @@ harness holds; a real authenticator never lets its key out. Playwright's `pw:pro
 
 ## How the account is signed for
 
-Whatever the signer, `__check_auth` in `stellar-accounts` 0.7.2 first binds the rule selection
+Whatever the signer, `__check_auth` in `stellar-accounts` 0.7.3 (as in 0.7.2) first binds the rule selection
 into the payload: `auth_digest = sha256(signature_payload ‖ xdr(context_rule_ids))`. The signer
 then proves it authorized that digest. How depends on its kind.
 
@@ -274,7 +274,8 @@ as the Delegated ones. It also checks the DER conversion against node's P-256.
 ## The pinned WebAuthn verifier
 
 The passkey's verifier is OpenZeppelin's WebAuthn verifier example. It comes from the same tag,
-commit and toolchain as the pins in `ozpb_domain::pinned_upstream`:
+commit and toolchain as the policy and ed25519 verifier pins in `ozpb_domain::pinned_upstream`
+(the account is built at v0.7.3):
 
 - Source: `github.com/OpenZeppelin/stellar-contracts` `v0.7.2` (`a9c42169000638da937577f592ebf61a7a3c94ca`),
   `examples/multisig-smart-account/webauthn-verifier`.
@@ -629,7 +630,7 @@ worker for both the two-rule Soroswap observation fixture and
 `scripts/fixtures/synthetic-blend-claim-spec.json`. The Blend fixture is a synthetic
 claim authorization with an exact reserve-index vector; it is not an RPC recording
 or evidence that the Blend target executed. The test reads hash-checked pinned
-account bytes from the committed capture unless `OZPB_ACCOUNT_WASM` is supplied.
+account bytes from the committed protocol-30 capture unless `OZPB_ACCOUNT_WASM` is supplied.
 Enable it with `OZPB_PROTOCOL_DRY_RUN_E2E=1`, `OZPB_BIN` and
 `OZPB_NATIVE_WORKER`; it generates real policy Wasm and submits no transaction.
 The manual/nightly Linux toolchain job runs this integration.

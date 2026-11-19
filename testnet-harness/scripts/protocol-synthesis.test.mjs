@@ -10,7 +10,9 @@ function fixture() {
   const f = structuredClone(capture);
   // This is a validation fixture, never evidence of an executed swap. The preserved capture
   // itself is an unsigned simulation; the execution rejection below tests that boundary. Its
-  // spec is the adapter-derived shape the CLI synthesizes under the version-5 development registry.
+  // spec is the adapter-derived shape the CLI synthesizes under the version-6 development registry.
+  // The capture observed the 0.7.2 account build; its account executable and spec were moved to the
+  // 0.7.3 pin (GHSA-jpg9-m7w4-c7wc), so its recording hash is the preserved one, not re-derived.
   f.record.bundle.execution = 'executed_success';
   f.run = { network: 'Test SDF Network ; September 2015', account: f.plan.account,
     account_code_hash: f.synthesis.spec.smart_account.observed_code_hash,

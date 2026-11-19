@@ -69,12 +69,22 @@ pub enum AccountMethodEffect {
 
 /// Source-reviewed method inventory candidate for the pinned example account build.
 ///
-/// Sources: `stellar-accounts = 0.7.2` `smart_account/mod.rs` and
-/// `OpenZeppelin/stellar-contracts@a9c4216`
+/// Sources: `stellar-accounts = 0.7.3` `smart_account/{mod,storage}.rs` and
+/// `OpenZeppelin/stellar-contracts@252b35f` (v0.7.3)
 /// `examples/multisig-smart-account/account/src/contract.rs` (the actual wrapper).
 /// The binary export names are checked against the fixture by
 /// `scripts/verify-pinned-upstream.sh` for `pinned_upstream::OZ_SMART_ACCOUNT_WASM`.
 /// Guards and effects are source-reviewed claims, not conclusions from Wasm exports.
+///
+/// First reviewed at v0.7.2 (`a9c4216`) and re-reviewed for v0.7.3, which fixes
+/// GHSA-jpg9-m7w4-c7wc. v0.7.3 leaves the wrapper unchanged and adds two refusals that
+/// read only their arguments and the account's own address: `__check_auth` refuses a
+/// `Delegated` signer whose address is the contract of a context being authorized
+/// (`DelegatedSignerIsContextContract`, 3017), before authenticating it; and
+/// `add_context_rule` (so also `__constructor`), `add_signer` and `batch_add_signer` refuse a
+/// signer `Delegated` to the account itself (`SelfDelegatedSigner`, 3018). Neither adds a
+/// method, a guard or an effect, so the table and its digest are the same for both builds;
+/// [`validate_source_reviewed_candidate`] binds it to the 0.7.3 build alone.
 pub fn source_reviewed_oz_multisig_candidate() -> AccountMethodInventory {
     use AccountMethodAuthorization::{
         NoRequireAuth as NoAuth, RequireCurrentContractAuth as SelfAuth,
@@ -356,5 +366,20 @@ mod tests {
             validate_source_reviewed_candidate(&sha256(b"different account code"), &candidate),
             Err(AccountMethodReviewError::UnsupportedCode(_))
         ));
+    }
+
+    /// The table is the same for the 0.7.2 build, but that build is vulnerable to
+    /// GHSA-jpg9-m7w4-c7wc, so the table is not bound to it.
+    #[test]
+    fn the_vulnerable_build_has_no_reviewed_methods() {
+        assert_eq!(
+            validate_source_reviewed_candidate(
+                &pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM,
+                &source_reviewed_oz_multisig_candidate()
+            ),
+            Err(AccountMethodReviewError::UnsupportedCode(
+                pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM.to_hex()
+            ))
+        );
     }
 }

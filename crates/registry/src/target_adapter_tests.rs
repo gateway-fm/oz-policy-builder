@@ -47,7 +47,7 @@ fn dev_registry(version: u64) -> Registry {
 #[test]
 fn dev_registry_resolves_soroswap_router_adapter_for_pinned_hash() {
     let router = target_adapters::SOROSWAP_ROUTER_TESTNET_WASM;
-    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 5);
+    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 6);
     let current = dev_registry(dev::SIGNED_EXAMPLE_VERSION);
     assert_eq!(
         current.resolve_target_adapter(&router).unwrap(),
@@ -251,6 +251,52 @@ fn v5_extends_v4_without_reinterpreting_its_deadline() {
     registry.load(&new).unwrap();
     assert_eq!(
         registry.resolve_target_adapter(&router).unwrap(),
+        Some(target_adapters::soroswap_router_v2())
+    );
+}
+
+/// Version 5 as it was published, byte for byte, before version 6 replaced the committed
+/// example. Version 6 extends it, keeps its router binding, recognizes the account built at
+/// v0.7.3 and revokes the v0.7.2 build for GHSA-jpg9-m7w4-c7wc.
+#[test]
+fn v6_extends_v5_and_revokes_the_vulnerable_account() {
+    let text = include_str!("published-v5.signed.json");
+    let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+    let old: SignedSnapshot = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&dev::dev_trust_files(network, 5).unwrap().0)
+            .unwrap(),
+        serde_json::from_str::<serde_json::Value>(text).unwrap()
+    );
+    let new = sign_snapshot(
+        &dev::dev_signing_key(),
+        dev::account_advisory_successor(network).unwrap(),
+    )
+    .unwrap();
+    let vulnerable = pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM;
+    let fixed = pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+    let mut registry = Registry::with_pinned_roots(RootPolicy {
+        threshold: 1,
+        keys: BTreeMap::from([("legacy".into(), dev::dev_root_verifying_bytes())]),
+    })
+    .unwrap();
+    registry.load(&old).unwrap();
+    registry.resolve_account(&vulnerable).unwrap();
+    assert!(matches!(
+        registry.resolve_account(&fixed),
+        Err(RegistryError::UnknownAccount(_))
+    ));
+    registry.load(&new).unwrap();
+    assert!(matches!(
+        registry.resolve_account(&vulnerable),
+        Err(RegistryError::Revoked { reason, .. })
+            if reason == dev::ACCOUNT_0_7_2_REVOCATION_REASON
+    ));
+    registry.resolve_account_authority(&fixed).unwrap();
+    assert_eq!(
+        registry
+            .resolve_target_adapter(&target_adapters::SOROSWAP_ROUTER_TESTNET_WASM)
+            .unwrap(),
         Some(target_adapters::soroswap_router_v2())
     );
 }

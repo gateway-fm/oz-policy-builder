@@ -9,10 +9,10 @@ use crate::RegistryTrust;
 use ozpb_registry::{dev as registry_dev, sign_snapshot, RootPolicy};
 
 pub(crate) fn signed_registry_json() -> serde_json::Value {
-    let snapshot = registry_dev::dev_snapshot(
+    let snapshot = registry_dev::account_advisory_successor(
         ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE),
-        1,
-    );
+    )
+    .unwrap();
     serde_json::to_value(sign_snapshot(&registry_dev::dev_signing_key(), snapshot).unwrap())
         .unwrap()
 }

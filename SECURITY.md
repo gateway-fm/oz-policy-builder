@@ -64,6 +64,17 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
 A report that one of the above is true is a report we already agree with. A report that one of
 them is *false* — that a claimed fail-closed path can be made to open — is the one we want.
 
+## Upstream advisories
+
+[GHSA-jpg9-m7w4-c7wc](https://github.com/OpenZeppelin/stellar-contracts/security/advisories/GHSA-jpg9-m7w4-c7wc):
+in OpenZeppelin `stellar-accounts` before 0.7.3, anyone can authorize a smart account without
+keys when a `Delegated` signer is the contract requesting its authorization, or when delegation
+loops back. The recognized account is now OpenZeppelin's example built at v0.7.3, and the
+development registry revokes the earlier v0.7.2 build. Accounts created on testnet from the old
+code, including by the harness, the demo and the wallet, are refused (the registry resolves that
+code as revoked) and are not upgraded in place: recreate them from the current code. Details are in
+[`docs/SOROBAN-DEPENDENCIES.md`](docs/SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc).
+
 ## Supported versions
 
 One milestone is implemented so far, and later ones land in this same repository. Fixes go on

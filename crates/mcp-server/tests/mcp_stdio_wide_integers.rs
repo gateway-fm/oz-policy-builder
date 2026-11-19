@@ -94,7 +94,7 @@ fn inexact_numbers(value: &serde_json::Value, path: &str, found: &mut Vec<String
 
 fn configured_trust() -> Vec<(&'static str, String)> {
     let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
-    let snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+    let snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
     let signed =
         ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
     let root_hex: String = ozpb_registry::dev::dev_signing_key()

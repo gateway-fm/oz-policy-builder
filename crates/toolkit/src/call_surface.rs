@@ -1194,12 +1194,12 @@ mod tests {
             check(request, observation).unwrap().verdict
         };
 
-        // Version 3 of the signed example recognizes OZ's WebAuthn verifier.
+        // The current signed example recognizes OZ's WebAuthn verifier.
         let (mut request, mut observation) = fixture();
         replace_fixture_snapshot(
             &mut request,
             &mut observation,
-            ozpb_registry::dev::verifier_successor(network).unwrap(),
+            ozpb_registry::dev::account_advisory_successor(network).unwrap(),
         );
         let verdict = passkey_owner(
             &request,
@@ -1240,8 +1240,14 @@ mod tests {
             EC::EIncompleteAccountState
         );
 
-        // Version 1 recognizes no owner verifier, and other code is never one.
-        let (request, mut observation) = fixture();
+        // A snapshot that does not recognize the WebAuthn verifier: unrecognized code is
+        // never an owner verifier.
+        let (mut request, mut observation) = fixture();
+        let mut without_verifier = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+        without_verifier
+            .verifiers
+            .remove(&ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex());
+        replace_fixture_snapshot(&mut request, &mut observation, without_verifier);
         let verdict = passkey_owner(
             &request,
             &mut observation,
@@ -1322,7 +1328,7 @@ mod tests {
     fn signed_onchain_list_capability_cannot_claim_a_bounded_next_id_verdict() {
         let (mut request, mut observation) = fixture();
         let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
-        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         snapshot
             .accounts
             .get_mut(&observation.account_code_hash)
@@ -1339,7 +1345,7 @@ mod tests {
     fn signed_template_must_declare_the_generated_rules_capabilities() {
         let (mut request, mut observation) = fixture();
         let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
-        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         snapshot
             .templates
             .get_mut("policy-templates/scope@1")
@@ -1359,7 +1365,7 @@ mod tests {
         let (mut request, mut observation) = fixture();
         let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
         let predicate = spec.rules[0].authorization.kind.kind_name();
-        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         snapshot
             .templates
             .get_mut("policy-templates/scope@1")

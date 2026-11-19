@@ -362,7 +362,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// A request against the version-3 signed example (which binds the account's scan bounds
+    /// A request against the current signed example (which binds the account's scan bounds
     /// and recognizes the owner verifiers), and a scan of an account owned by one classic key.
     pub(crate) fn fixture() -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
         fixture_with_expiry(i64::MAX)
@@ -370,7 +370,7 @@ pub(crate) mod tests {
 
     fn fixture_with_expiry(expires_at: i64) -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
         let network = NetworkId::from_passphrase(TESTNET_PASSPHRASE);
-        let mut snapshot = ozpb_registry::dev::verifier_successor(network).unwrap();
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         if expires_at != i64::MAX {
             snapshot.valid_from_unix = 1;
         }
@@ -515,16 +515,22 @@ pub(crate) mod tests {
         assert_eq!(plan.contract_addresses, vec![address(40), address(41)]);
         assert!(!plan.classic_addresses.is_empty());
 
-        // A version-1 snapshot recognizes the account but binds no scan protocol: no read.
-        let mut v1 = input.clone();
+        // A snapshot that recognizes the account but binds no scan protocol: no read.
+        let mut unbound = input.clone();
         let mut spec: ozpb_policy_spec::PolicySpec =
-            serde_json::from_value(v1.spec.clone()).unwrap();
-        let signed: ozpb_registry::SignedSnapshot =
-            serde_json::from_value(crate::test_support::signed_registry_json()).unwrap();
+            serde_json::from_value(unbound.spec.clone()).unwrap();
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(spec.network_id).unwrap();
+        snapshot
+            .accounts
+            .get_mut(&ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap()
+            .bounded_next_id = None;
+        let signed =
+            ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
         spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
-        v1.spec = serde_json::to_value(&spec).unwrap();
-        v1.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
-        assert!(plan_call_surface_read(&v1, &registry_trust(), &build_config()).is_err());
+        unbound.spec = serde_json::to_value(&spec).unwrap();
+        unbound.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+        assert!(plan_call_surface_read(&unbound, &registry_trust(), &build_config()).is_err());
     }
 
     #[test]

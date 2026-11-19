@@ -95,7 +95,7 @@ const ZERO = '0'.repeat(64);
 fill('smart_account.address', spec.smart_account, 'address',
   'CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526', run.account);
 fill('smart_account.observed_code_hash', spec.smart_account, 'observed_code_hash',
-  'a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289', run.account_code_hash);
+  '203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f', run.account_code_hash);
 fill('context.contract', rule.context, 'contract',
   'CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ', call.contract);
 fill('valid_until.ledger', rule.valid_until, 'ledger', 4223456, bundle.ledger + VALID_FOR_LEDGERS);

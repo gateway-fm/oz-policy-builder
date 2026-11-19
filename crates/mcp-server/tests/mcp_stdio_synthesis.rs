@@ -15,7 +15,7 @@ use common::{by_id, initialize, initialized, run_session_with_env};
 /// Roots, floor, and the snapshot a request may omit — the three an operator sets together.
 fn configured_trust() -> Vec<(&'static str, String)> {
     let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
-    let snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+    let snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
     let signed =
         ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
     let root_hex = hex_of(

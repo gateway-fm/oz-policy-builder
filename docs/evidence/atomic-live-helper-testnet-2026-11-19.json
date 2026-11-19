@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "atomic_live_helper_testnet_probe",
+  "live_enforcement": "unavailable",
+  "live_enforcement_reason": "this harness probe uses automation keys and does not exercise wallet preparation, consent or signing",
+  "limitations": [
+    "Enforce-mode simulations only: this script submitted neither case; post_expiry_readback shows the account balance unchanged and the candidate not installed once every case signature had expired.",
+    "Owner and delegate are throwaway automation keys held by this script and deleted after the run; no wallet, consent screen or human approval was involved.",
+    "State-dependent: each outcome describes testnet state at its simulation ledger.",
+    "Each case was signed with real authorizations of the installation and the transfer, valid until its signature_expiration_ledger. They went to the testnet RPC endpoint inside the simulation request; this script never printed or stored them.",
+    "The authorizations were built by this script, the transfer entry with no sub-invocations and context_rule_ids [1]; the helper alone cannot tell which rule checked the executed transfer.",
+    "The account entries carry address-bound (V2) credentials; the owner's and delegate's __check_auth entries carry classic address credentials, as the rest of the harness signs them, where the host tests sign all four as V2.",
+    "A testnet reset removes these contracts; docs/ATOMIC-LIVE-HELPER.md says how to redeploy."
+  ],
+  "provenance": {
+    "checkout_commit": "bf2a70f55778a3c18ddddb5ddcd7560613a08c85",
+    "checkout_dirty": true,
+    "script_sha256": "4c23511e518d1ee7c0f7e31a748433cdffde2059f9b985b7f7798d61c21258b8",
+    "node_version": "24.22.1",
+    "stellar_cli": "stellar 27.0.0 (5a7c5fe76530bf4248477ac812fc757146b98cc4)",
+    "rustc": "rustc 1.91.1 (ed61e7d7e 2025-11-07)",
+    "started_at": "2026-11-19T01:11:27.125Z",
+    "finished_at": "2026-11-19T01:13:42.042Z"
+  },
+  "network": "Test SDF Network ; September 2015",
+  "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+  "protocol": 30,
+  "rpc": "https://rpc.testnet.stellar.gateway.fm",
+  "helper": {
+    "contract": "CAQKMRIU2D2UPW3ACRGUNAALAMYV4DX45BQUPSJ4TQAW5BK3RFOZGORK",
+    "code_hash": "e9cd36e7b50b16058eca683bf653ebc64dd647f957b40a9593988a989aae9cdf",
+    "readback_ledger": 5805423,
+    "upload_tx": "856df1500d852eeff48092e5ac7e37f3b1bec51676864eb321f7503241c42cb7",
+    "create_tx": "78d94566740e3131e249a0a513d24afc4ffc215a714397553b27453fd0704554",
+    "instance_live_until_ledger": 5926382,
+    "code_live_until_ledger": 5926329,
+    "expected_code_hash": "e9cd36e7b50b16058eca683bf653ebc64dd647f957b40a9593988a989aae9cdf",
+    "expected_from": "execution-runtime/tests/atomic_helper.rs EXPECTED_HELPER_HASH"
+  },
+  "account": {
+    "contract": "CCUJSXKHNTGF7YXBQ24VHXTQIEJ7AA64YGUQ345VDBO5RTAWDH56CGXT",
+    "code_hash": "203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f",
+    "deploy_tx": "7b7c634b826504fac1b4713131c2fa959b20496ffdc3eb17bffb620cf071e386"
+  },
+  "owner": "GAHIPUYMUMHCVV4PYIZV2T55NSJQJJWLHVAGMAUAL4R6KIH5CG3LVG2M",
+  "delegate": "GD57IWVNXNQ5472PCPRZGS4MFR2UOOTM4SS5KJDRNOOMOQKWJ4EIFG3W",
+  "recipient": "GB5BA5FN54D4XQLDQPVE57FR67YQANTHEEKD3CPWI24BLEXQ25CMSUXN",
+  "asset": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "candidate_policy": {
+    "contract": "CCB7ZL2T4T66LVCZ3OHXSJYJTOSQPK6IYFUKY34KURTO3EOZQPSOMUG3",
+    "code_hash": "58bbd5481c87c3236cdbcf472a1a39e474436c4c62a74e41af22fc39205e661f",
+    "readback_ledger": 5805421,
+    "upload_tx": "b06e5a5dbfac016b671ab51b9d935923b90ce5ac8c7c78283ae47b1a35c40f8c",
+    "create_tx": "3d581a4bbff4807781241f25ca8febbcd89f1aa12794d994792edf9fbfd7bf40",
+    "spec_hash": "e80fd913fcfedc534eb9237a265a12de9092b75a62d732e5e22fa575d7d6c9b2",
+    "name": "native-sub",
+    "max_calls": 1,
+    "valid_until_ledger": 5822695,
+    "justifying_transfer_tx": "471379e36f0ed968943993f90afa1f42fd86d5749cd8ded21258ad9367c1770f",
+    "recording_hash": "4f4bf7f2dfa02018c0b39101faca3c8724a985d0d9c089b7601ba59a06a40136",
+    "artifact_reproduction": "matched"
+  },
+  "cases": [
+    {
+      "case": "target:original:0",
+      "amount": "1000000",
+      "expected_rule_id": 1,
+      "signature_expiration_ledger": 5805435,
+      "simulation_ledger": 5805423,
+      "submitted": false,
+      "result": "permit",
+      "returned_rule_id": 1,
+      "balance_changes": {
+        "account": "-1000000",
+        "recipient": "1000000"
+      },
+      "candidate_counter": {
+        "rule_id": 1,
+        "used_before": 0,
+        "used_after": 1,
+        "remaining_after": 0,
+        "installed_in_simulation": true
+      }
+    },
+    {
+      "case": "target:argument-denial:0",
+      "amount": "1000001",
+      "expected_rule_id": 1,
+      "signature_expiration_ledger": 5805435,
+      "simulation_ledger": 5805423,
+      "submitted": false,
+      "result": "deny",
+      "enforcer": "CCB7ZL2T4T66LVCZ3OHXSJYJTOSQPK6IYFUKY34KURTO3EOZQPSOMUG3",
+      "code": 6,
+      "host": "HostError: Error(Auth, InvalidAction)",
+      "attribution": "NoTupleMatched raised by the candidate policy contract id inside the account's failed authentication, nested under the helper"
+    }
+  ],
+  "post_expiry_readback": {
+    "after_signature_expiration_ledger": 5805435,
+    "account_balance_before_cases": {
+      "amount": "4000000",
+      "ledger": 5805423
+    },
+    "account_balance_after_expiry": {
+      "amount": "4000000",
+      "ledger": 5805436
+    },
+    "candidate_is_installed_after_expiry": {
+      "value": false,
+      "ledger": 5805436
+    }
+  },
+  "throwaway_keys_deleted": true
+}

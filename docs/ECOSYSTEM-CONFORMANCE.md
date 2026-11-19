@@ -825,7 +825,7 @@ The knobs and caps the release ships with, and what each one does and does not p
 
 | Setting | Interpretation |
 |---|---|
-| Generated policies: Rust 1.91.1 / CLI 27.0.0 / SDK 28.0.0 / OZ 0.8.0 | Current policy build set. Recognized upstream account/verifier/policy artifacts retain their independent SDK 26 / OZ 0.7.2 provenance. Upgrades change artifact hashes and require review. |
+| Generated policies: Rust 1.91.1 / CLI 27.0.0 / SDK 28.0.0 / OZ 0.8.0 | Current policy build set. Recognized upstream artifacts retain their independent SDK 26 provenance: the account at OZ 0.7.3 (GHSA-jpg9-m7w4-c7wc), the verifiers and spending-limit policy at OZ 0.7.2. Upgrades change artifact hashes and require review. |
 | Build timeout 600 s | Reasonable for a cold local build; hosted infrastructure still needs an outer deadline and hard quotas (§13). |
 | Build jobs CPU−1, minimum 1 | Appropriate for one local build; HTTP defaults to one concurrent build and enforces a combined CPU budget. |
 | HTTP request body 1 MiB / RPC response 24 MiB | Transport ceilings; nested domain and per-XDR limits still apply before evidence is accepted. |
@@ -890,7 +890,8 @@ omission unless stated.
 `simple_threshold` 3200–3203 (`policies/simple_threshold.rs:110-116`), `weighted_threshold`
 3210–3214 (`policies/weighted_threshold.rs:141-149`), `spending_limit` 3220–3227
 (`policies/spending_limit.rs:126-140`), with `SmartAccountError` itself running 3000–3016
-(`smart_account/mod.rs:540-571`, overflowing its own block). The scheme is nowhere documented in
+(`smart_account/mod.rs:540-571`, overflowing its own block; 0.7.3, the recognized account, adds
+3017 and 3018 at `mod.rs:539-578`). The scheme is nowhere documented in
 the crate, so the next free block is exactly 3230 — which is where *their* next policy goes.
 "Conforming" here would have meant claiming the slot their next module needs.
 

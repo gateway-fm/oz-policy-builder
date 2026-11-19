@@ -167,7 +167,7 @@ complete spec. This document names them by role, because the account numbers rul
   exact pair.
 
 The router rule's input bound is `adapter_derived` from `soroswap-router@2`; its deadline
-remains `observed_exact` from the recorded call. The [committed development registry (version 5)](TARGET-ADAPTERS.md#current-binding-development-registry-version-5) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
+remains `observed_exact` from the recorded call. The [committed development registry](TARGET-ADAPTERS.md#current-binding-development-registry-version-5) (version 6, which carries version 5's binding unchanged) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
 router's Wasm was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)).
 The harness writes only the operator's two decisions into the synthesis inputs, as
 `user_widened` with their intents: the output floor and the transfer cap. `protocol-synthesis.mjs`

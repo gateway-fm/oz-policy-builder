@@ -60,10 +60,10 @@ fn request_for(hash: Hash32) -> SynthesizeInput {
     )
     .with_contract_executables(observations);
     let recording = record_snapshot(&snapshot, RecordOptions::default()).unwrap();
-    let mut snapshot = dev::dev_snapshot(
-        ozpb_domain::NetworkId::from_passphrase(TESTNET_PASSPHRASE),
-        1,
-    );
+    let mut snapshot = dev::account_advisory_successor(ozpb_domain::NetworkId::from_passphrase(
+        TESTNET_PASSPHRASE,
+    ))
+    .unwrap();
     snapshot.target_adapters.insert(
         hash.to_hex(),
         TargetAdapterCapability {
