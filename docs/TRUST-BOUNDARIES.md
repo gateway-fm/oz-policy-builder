@@ -42,6 +42,10 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 - **Builds are attested by reproduction only.** A real build is labelled `local-unattested`; the
   pinned account Wasm reproduces byte-for-byte only on Apple Silicon.
 - **A consistently lying RPC endpoint is not detected.**
+- **Wallet revocation is bound to its session.** The wallet can revoke only a grant its running
+  backend installed; after a restart nothing in this tree can have the wallet account's passkey
+  sign the removal ([after a restart](POLLYWALLET-INTEGRATION.md#after-a-restart),
+  [how to revoke](INCIDENT-RESPONSE.md#how-to-revoke-a-grant)).
 
 ## Who holds which key
 
