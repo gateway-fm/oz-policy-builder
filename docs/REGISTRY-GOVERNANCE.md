@@ -270,11 +270,15 @@ start — against every copy of the log you can reach. With cron:
 ```cron
 # m h dom mon dow
 17 * * * * cd /srv/ozpb && ./registry-monitor.sh >> /var/log/ozpb-registry-monitor.log 2>&1
+47 * * * * cd /srv/ozpb && ./grant-monitor.sh >> /var/log/ozpb-grant-monitor.log 2>&1
 ```
 
 where `registry-monitor.sh` updates the published log (a `git pull` of the repository, or the
-latest release assets), runs the `monitor` command above, and acts on its status. With systemd,
-a oneshot service running that script and a timer:
+latest release assets), runs the `monitor` command above, and acts on its status. The registry
+monitor reports revoked code, not a changed rule on an account: `grant-monitor.sh` runs
+`ozpb check-installed-grant --recorded-authority-commitment` for each installed grant and acts on
+its exit status ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)).
+With systemd, a oneshot service running each script and a timer:
 
 ```ini
 # ozpb-registry-monitor.timer

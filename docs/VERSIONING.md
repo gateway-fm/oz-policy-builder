@@ -21,10 +21,13 @@ files shows what changed. The streamable HTTP transport is served at `/v1/mcp`.
 **The CLI and operator configuration.** `ozpb` commands, flags and their environment-variable
 fallbacks, the JSON a command prints on standard output (the same `api-types` structures), and
 the exit statuses a command documents, such as `ozpb registry monitor`'s
-([registry governance](REGISTRY-GOVERNANCE.md#monitoring)). A command that documents only zero
-and non-zero promises only that distinction. For the server: the `OZPB_*` variables
-([developer guide](DEVELOPERS.md#build-configuration-operator-side)), `--http`, and the files the
-self-hosted deployment mounts ([self-hosting](SELF-HOSTING.md#configure-the-operator-boundary)).
+([registry governance](REGISTRY-GOVERNANCE.md#monitoring)) and `ozpb check-installed-grant`'s
+with `--recorded-authority-commitment`
+([incident response](INCIDENT-RESPONSE.md#watching-an-installed-grant)). A command that
+documents only zero and non-zero promises only that distinction. For the server: the `OZPB_*`
+variables ([developer guide](DEVELOPERS.md#build-configuration-operator-side)), `--http`, and
+the files the self-hosted deployment mounts
+([self-hosting](SELF-HOSTING.md#configure-the-operator-boundary)).
 
 **Persisted and exchanged formats.** Each carries its version where it has one:
 

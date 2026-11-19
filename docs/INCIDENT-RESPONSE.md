@@ -44,6 +44,42 @@ says what changes.
 Revoking a rule ends the grant; a replacement is a new review and a new installation with a fresh
 call counter ([Revoke-first replacement](POLLYWALLET-INTEGRATION.md#revoke-first-replacement)).
 
+## Watching an installed grant
+
+A rule added to the account after installation can reach the grant's policy or the account
+itself. `ozpb check-installed-grant` reads the account and compares it with what was installed:
+the exact recorded rule, no rule allocated after it, and the modeled authority without the rule
+against the `authority_commitment` the installation was approved against. Given that commitment,
+its exit status is the alert, so run it on a schedule like the
+[registry monitor](REGISTRY-GOVERNANCE.md#scheduling-the-monitor):
+
+```bash
+ozpb check-installed-grant --request installed-grant.json \
+  --registry-roots registry-roots.json --registry-min-version 6 --rpc-sources rpc-sources.json \
+  --recorded-authority-commitment <the installation's authority_commitment>
+```
+
+The request is `{"candidate": …, "installed_rule": …}`: the `check-policy-call-surface` request
+the installation was checked with, and the rule as the account stored it (`id`, `name`,
+`context_contract`, `valid_until`, `signer_ids`, `policy_ids`). The commitment is the
+`verdict.authority_commitment` of the install intent the installation was built from; the wallet
+keeps it with its installation record. The JSON observation is printed either way.
+
+| Exit | Meaning | Action |
+|---|---|---|
+| 0 | unchanged: the recorded rule, nothing allocated after it, and the recorded commitment | none |
+| 5 | inactive: the rule has expired and is otherwise unchanged | it authorizes nothing; remove it when convenient |
+| 3 | changed: the rule, its signers or policies, a later rule, or the modeled authority (a new refusal or unresolved item included) | page; unless the change is the owner's own, [revoke the grant](#how-to-revoke-a-grant) and treat it as [(b)](#b-an-agent-or-delegate-key-may-be-compromised) |
+| 4 | no answer: the read or the check refused, for an incomplete or archived state, code at the account, a policy or the target other than the recognized code, or an endpoint failure | read the error; an endpoint failure can be run again, anything else is treated as 3 |
+| 1 | an error before any read: configuration, request, registry trust or build | fix it; until then the grant is not watched |
+
+Each run sees one ledger from one endpoint (`rpc_reported`): an entry archived and restored
+between runs, or a change made and undone, is not observed. Unlike the wallet's
+[on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring), it does not
+read the policy's installation marker. A legitimate later rule counts as changed, as it does in
+the wallet. Without `--recorded-authority-commitment` any observation exits 0, which is what the
+wallet expects; never schedule it that way.
+
 ## (a) A hash you rely on is revoked in the registry
 
 **Detect it.** Watch everything a grant relies on: with `--wasm-hash`, the account's Wasm, each

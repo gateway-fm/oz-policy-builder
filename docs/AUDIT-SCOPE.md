@@ -229,7 +229,9 @@ shipped grant shape, each with its deviations, are in the
    [G10](MAINNET-GATES.md#g10-registry-governance)).
 4. **Caps are per installation.** A holder of a rule matching the policy's or the account's
    address can reset a cap; the check refuses such a rule the agent can use alone and lists the
-   others, and a rule added later is detected only by the wallet's on-demand check, not alerted
+   others, and a rule added later is detected by the wallet's on-demand check, or by
+   `ozpb check-installed-grant` whose exit status alerts when the operator schedules it; each run
+   sees one ledger
    ([architecture §4.4](architecture.md#44-code-generation-cratescodegen),
    [state-invariant map](SCOPE.md#state-invariants-and-direct-calls),
    [G2](MAINNET-GATES.md#g2-authority-surface)).

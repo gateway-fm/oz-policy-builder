@@ -43,7 +43,9 @@ pub use call_surface_live::{
     scan_tool_error, CallSurfaceReadPlan, RpcSource,
 };
 mod installed_grant;
-pub use installed_grant::check_installed_grant_from_scan;
+pub use installed_grant::{
+    check_installed_grant_from_scan, compare_installed_grant, InstalledGrantComparison,
+};
 mod install_intent;
 pub use install_intent::{plan_install_intent_read, prepare_install_intent_from_scan};
 mod install_assembly;

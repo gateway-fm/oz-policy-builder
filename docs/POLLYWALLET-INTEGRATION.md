@@ -1142,7 +1142,10 @@ allocated rule ID, and projects only that rule out of the authority model. It pr
 closure entries and candidate-required classic/verifier observations. Its projected commitment
 must equal the preinstallation commitment; no new baseline is learned. Actual scan digests
 and ledger evidence remain separate from the counterfactual projection. This command returns
-a distinct monitoring observation and cannot prepare an installation.
+a distinct monitoring observation and cannot prepare an installation. Given the installation's
+commitment (`--recorded-authority-commitment`), it makes that comparison itself and exits with
+a status for cron ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant));
+the wallet passes no commitment and compares the observation itself.
 
 With `registryPublishedPath` naming the operator's published registry log (its directory, or its
 head file), the same check also runs `ozpb registry monitor` against it and the checkpoint in the
