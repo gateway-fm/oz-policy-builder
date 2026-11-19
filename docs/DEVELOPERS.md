@@ -486,7 +486,8 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   a spec *only* through an explicit `Widening` decision carrying intent + blast radius, or
   an adapter (`crates/synthesizer/src/adapters.rs`) bound to a verified target code hash.
   The XDR type alone never implies a direction (lowering a `min_output` makes a swap
-  *less* safe).
+  *less* safe). An argument takes at most one widening: a second one naming the same contract,
+  function and index is an `E_INVALID_DECISION` finding, never silently dropped.
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).

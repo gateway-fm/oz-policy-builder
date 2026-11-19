@@ -57,9 +57,9 @@ the spec carries it as `user_widened` provenance with that intent and rating.
   it is refused.
 - A widening that matches no recorded argument it can apply to is refused, not ignored.
 - One argument carries one constraint: there is no range, so a cap and a floor cannot both apply
-  to the same argument. If a decisions document names the same argument twice, synthesis applies
-  the first and does not refuse the second. Read the bound back from the spec or the card, which
-  show what is enforced.
+  to the same argument. A decisions document that widens the same argument (contract, function
+  and index) more than once is refused with an `E_INVALID_DECISION` finding naming it, rather than
+  applying one bound and dropping the others.
 
 ## Composing the reviewed spending limit
 

@@ -1215,6 +1215,42 @@ mod tests {
         );
     }
 
+    /// Two widenings of one argument reach a tool caller as an invalid decision that names the
+    /// argument, the way the other contradictory decisions do, rather than as a spec that
+    /// silently carries only the first.
+    #[test]
+    fn two_widenings_of_one_argument_are_an_invalid_decision() {
+        let token = fx::golden_token_strkey();
+        let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+        decisions["widenings"] = serde_json::json!([
+            { "contract": token, "fn_name": "transfer", "arg_index": 2,
+              "bound": { "ge_i128": { "min": "1" } },
+              "intent": "at least one stroop", "blast_radius": "medium" },
+            { "contract": token, "fn_name": "transfer", "arg_index": 2,
+              "bound": { "ge_i128": { "min": "100" } },
+              "intent": "at least a hundred", "blast_radius": "medium" }
+        ]);
+        let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+        let input = SynthesizeInput {
+            bundles: vec![rec.bundle],
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
+            decisions,
+            spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+        let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::ESpecInvalid, "{err}");
+        assert_eq!(
+            err.details,
+            vec![format!(
+                "E_INVALID_DECISION: widening {token}/transfer arg 2: 2 widenings name this \
+                 argument, and an argument takes one bound; keep the one the user chose"
+            )]
+        );
+    }
+
     /// Synthesis stamps the snapshot root into the spec, and generation copies it into the
     /// BuildManifest, so this is where a mainnet artifact would come to carry a root anyone can
     /// sign. Refused here by the registry's own construction, with the root-policy code.

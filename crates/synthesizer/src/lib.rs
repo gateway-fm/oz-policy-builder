@@ -302,6 +302,24 @@ pub fn synthesize(
             )));
         }
     }
+    // One argument carries one constraint, and `exact_constraints` applies the first widening
+    // that names it. A second would be dropped without a word — a cap and a floor meant as a
+    // range would quietly become the cap alone — so the document is refused and the argument
+    // named instead.
+    let mut widenings_per_argument = BTreeMap::<(&str, &str, u32), usize>::new();
+    for w in &decisions.widenings {
+        *widenings_per_argument
+            .entry((w.contract.as_str(), w.fn_name.as_str(), w.arg_index))
+            .or_default() += 1;
+    }
+    for ((contract, fn_name, arg_index), count) in widenings_per_argument {
+        if count > 1 {
+            errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: {count} widenings name this \
+                 argument, and an argument takes one bound; keep the one the user chose"
+            )));
+        }
+    }
 
     // --- evidence: canonical ordering + dedup (multi-recording provenance, §4.2) ----
     let mut recording_hashes: Vec<(Hash32, &RecordingBundle)> = Vec::new();
@@ -561,7 +579,9 @@ pub fn synthesize(
         });
     }
 
-    // Unused widenings are decisions that matched nothing — surface them, fail closed.
+    // Unused widenings are decisions that matched nothing — surface them, fail closed. Asking
+    // only whether the argument ended up widened is sound because no two widenings name the
+    // same argument (refused above), so a widened argument is this decision's.
     for w in &decisions.widenings {
         let applied = rules.iter().any(|r| {
             r.context.contract == w.contract
@@ -2360,6 +2380,90 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| matches!(e, SynthError::AmbiguousArgSemantics { .. })));
+    }
+
+    /// One argument carries one constraint. A user who caps the amount and then floors it means
+    /// a range; synthesis used to apply the first widening that named the argument, and the
+    /// unused-widening check only asks whether the argument ended up widened at all, so the
+    /// floor was neither applied nor refused and the spec quietly said less than the user did.
+    #[test]
+    fn a_second_widening_of_the_same_argument_is_refused() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let widen =
+            |contract: &str, fn_name: &str, arg_index: u32, bound: WideningBound| Widening {
+                contract: contract.to_string(),
+                fn_name: fn_name.to_string(),
+                arg_index,
+                bound,
+                intent: "a decision about one argument".to_string(),
+                blast_radius: BlastRadius::High,
+            };
+        let cap = || WideningBound::LeI128 {
+            max: "1000000000".to_string(),
+        };
+        let floor = || WideningBound::GeI128 {
+            min: "1".to_string(),
+        };
+        let duplicate_findings = |errors: &[SynthError]| -> Vec<String> {
+            errors
+                .iter()
+                .filter_map(|error| match error {
+                    SynthError::InvalidDecision(message) if message.contains("widenings name") => {
+                        Some(message.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let mut d = decisions();
+        d.widenings = vec![
+            widen(&contract, "transfer", 2, cap()),
+            widen(&contract, "transfer", 2, floor()),
+        ];
+        let errors = synthesize(&input(), &d).unwrap_err();
+        assert_eq!(
+            duplicate_findings(&errors),
+            vec![format!(
+                "widening {contract}/transfer arg 2: 2 widenings name this argument, and an \
+                 argument takes one bound; keep the one the user chose"
+            )],
+            "{errors:?}"
+        );
+        assert!(errors[0].to_string().starts_with("E_INVALID_DECISION:"));
+
+        // Three widenings of one argument are one finding, counted.
+        d.widenings.push(widen(&contract, "transfer", 2, cap()));
+        let errors = synthesize(&input(), &d).unwrap_err();
+        let findings = duplicate_findings(&errors);
+        assert_eq!(findings.len(), 1, "{errors:?}");
+        assert!(findings[0].contains(": 3 widenings name"), "{findings:?}");
+
+        // The same function and index on another contract, and another function or index on
+        // this one, are other arguments: they fail for what they are, never as duplicates.
+        for other in [
+            widen("CNOSUCHCONTRACT", "transfer", 2, floor()),
+            widen(&contract, "transfer_from", 2, floor()),
+            widen(&contract, "transfer", 1, WideningBound::AnyValue),
+        ] {
+            let mut d = decisions();
+            d.widenings = vec![widen(&contract, "transfer", 2, floor()), other.clone()];
+            match synthesize(&input(), &d) {
+                Ok(_) => assert_eq!(other.arg_index, 1, "only the recipient widening applies"),
+                Err(errors) => {
+                    assert!(
+                        duplicate_findings(&errors).is_empty(),
+                        "{other:?}: {errors:?}"
+                    );
+                    assert!(
+                        errors
+                            .iter()
+                            .all(|e| matches!(e, SynthError::AmbiguousArgSemantics { .. })),
+                        "{other:?}: {errors:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
