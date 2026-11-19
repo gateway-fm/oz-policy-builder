@@ -16,8 +16,10 @@
 # direct test in its own crate rather than a workspace-wide test run per mutant.
 test_workspace = false
 
-# Mutants that hang instead of failing (an inverted loop bound, say) are timed out, not waited on.
-timeout_multiplier = 3.0
+# No timeout setting here: `scripts/mutation-test.sh` passes a fixed `--timeout 120`, which
+# cargo-mutants applies to every mutant's test run and which overrides any multiplier set in
+# this file. A mutant that hangs instead of failing (an inverted loop bound, say) is timed out
+# after 120 seconds, and the gate counts a timeout as a failure, not a kill.
 
 # Whole-file test support: the W1/W3 walkthrough builders. The walkthrough suites and the golden
 # tests in other crates consume them byte for byte.
@@ -49,6 +51,7 @@ exclude_re = [
     "replace \\| with \\^ in int128_parts_to_i128",
     # `ByteArray::render_const` computes elements per line as `(MAX_WIDTH + 2 - indent.len()) / 6`
     # with `indent` the fixed four-space literal beside it: `(100 + 2 - 4) / 6` and the mutant's
-    # `(100 + 2 / 4) / 6` are both 16.
+    # `(100 + 2 / 4) / 6` are both 16. That holds only while `MAX_WIDTH % 6` is 2 to 5 (it is 4);
+    # remove this entry if `MAX_WIDTH` changes.
     "replace - with / in ByteArray::render_const",
 ]
