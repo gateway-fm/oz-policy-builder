@@ -380,6 +380,16 @@ test('a refusal keeps the reason the backend named, and only a plain word', asyn
     await assert.rejects(f.controller.prepareInstall(), (error) => /wallet action refused/.test(error.message) && error.reason === kept);
   }
 });
+test('a deployment refused by a cap passes on the operator setting and the simulated cost', async () => {
+  const f = fixture();
+  await f.controller.connect();
+  f.controller.attachWallet(wallet);
+  await f.controller.record(hash('d'));
+  await f.controller.generate({ delegateAddress: 'delegate', maxCalls: 2, validUntilLedger: 123, grantName: 'grant' });
+  const limit = { setting: 'maxUploadFeeStroops', simulatedFeeStroops: '190000000', neededStroops: '190000000' };
+  f.replies['prepare-deploy'] = Object.assign(new Error('refused'), { reason: 'fee_cap', limit });
+  await assert.rejects(f.controller.prepareDeploy(), (error) => error.reason === 'fee_cap' && JSON.stringify(error.limit) === JSON.stringify(limit));
+});
 test('after a sample submission was attempted, no reason is passed on: it cannot be tried again', async () => {
   const f = sampleFixture();
   await created(f);

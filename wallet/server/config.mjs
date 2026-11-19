@@ -12,14 +12,15 @@ const refused = () => { throw new Error('invalid wallet operator configuration')
 /** Fields only a mainnet configuration takes: its funding model, its caps and its pinned-code directory. */
 const MAINNET_ONLY = ['feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
 /**
- * Mainnet's fee caps: per transaction (a policy Wasm upload has its own, since its resource fee alone
- * was about 10 XLM on testnet in October 2026) and for the whole session. Defaults are the most an
- * operator would need for one account, one policy and one installation; each can only be lowered
- * below its ceiling, never raised past it.
+ * Mainnet's fee caps: per transaction (a policy Wasm upload has its own, since mainnet's state-size
+ * rent makes a policy upload cost tens of XLM) and for the whole session. The defaults are
+ * conservative; the upload and session caps are the operator's settings, set from the simulated
+ * costs the wallet shows (docs/MAINNET-INSTALL.md), up to the ceilings below. The upload cap never
+ * exceeds the session cap.
  */
 export const MAINNET_FEE_DEFAULTS = Object.freeze({ maxFeeStroops: 10_000_000, maxUploadFeeStroops: 120_000_000,
   sessionSpendCapStroops: 150_000_000 });
-const MAINNET_FEE_CEILINGS = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS,
+const MAINNET_FEE_CEILINGS = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: 500_000_000,
   sessionSpendCapStroops: 500_000_000 });
 /** The development registry's version: a mainnet session never accepts an older floor than testnet's. */
 const MAINNET_MIN_REGISTRY_VERSION = 6;

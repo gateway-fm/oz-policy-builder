@@ -7,7 +7,15 @@ const refused = () => new Error('wallet request refused; reconnect or try a fres
 export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
   'review_expired', 'grant_already_used', 'network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
   'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events', 'delegate_key_unavailable']);
-/** A refusal's reason, from at most 4 KiB of its JSON body; nothing else in it is kept. */
+/** The operator setting a cap refusal may name, by reason (the backend's CAP_SETTINGS). */
+export const CAP_SETTINGS = Object.freeze({ fee_cap: 'maxUploadFeeStroops', spend_cap: 'sessionSpendCapStroops' });
+const stroops = (value) => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,18})$/.test(value);
+/** A cap refusal's detail, only in its closed shape: the setting, the simulated cost and the least value that lets it through. */
+const capLimit = (reason, limit) => Object.hasOwn(CAP_SETTINGS, reason) && limit && typeof limit === 'object'
+  && Object.keys(limit).length === 3 && limit.setting === CAP_SETTINGS[reason]
+  && stroops(limit.simulatedFeeStroops) && stroops(limit.neededStroops)
+  ? { limit: Object.freeze({ setting: limit.setting, simulatedFeeStroops: limit.simulatedFeeStroops, neededStroops: limit.neededStroops }) } : {};
+/** A refusal's reason, and a cap refusal's detail, from at most 4 KiB of its JSON body; nothing else in it is kept. */
 async function reasonOf(response) {
   const reader = response.body?.getReader();
   try {
@@ -24,8 +32,9 @@ async function reasonOf(response) {
     const buffer = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
-    const reason = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer))?.reason;
-    return REFUSAL_REASONS.has(reason) ? { reason } : {};
+    const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer));
+    const reason = body?.reason;
+    return REFUSAL_REASONS.has(reason) ? { reason, ...capLimit(reason, body.limit) } : {};
   } catch { return {}; } finally { reader?.cancel().catch(() => {}); }
 }
 

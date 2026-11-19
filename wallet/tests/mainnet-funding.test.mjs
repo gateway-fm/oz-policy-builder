@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inspect } from 'node:util';
+import { inspect, isDeepStrictEqual } from 'node:util';
 import test from 'node:test';
 import { Account, Address, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
@@ -59,7 +59,7 @@ test('the fee payer key is read only from a 0600 file owned by this user, and ne
   assert.throws(() => loadFeePayerKey(join(root, 'missing.key')), (error) => /does not exist/.test(error.startup));
 });
 
-test('mainnet configuration: the operator key is required, caps default conservatively and can only be lowered', (t) => {
+test('mainnet configuration: the operator key is required, caps default conservatively and stay under their ceilings', (t) => {
   const root = scratch(t);
   const workRoot = join(root, 'work');
   mkdirSync(workRoot, { mode: 0o700 });
@@ -82,10 +82,15 @@ test('mainnet configuration: the operator key is required, caps default conserva
   assert.equal(JSON.stringify(config).includes(readFileSync(keyPath, 'utf8').trim()), false, 'the configuration never shows the key');
   save({ ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxFeeStroops: 2_000_000, sessionSpendCapStroops: 130_000_000 });
   assert.deepEqual({ ...loadWalletConfig(path).fees }, { maxFeeStroops: 2_000_000, maxUploadFeeStroops: 120_000_000, sessionSpendCapStroops: 130_000_000 });
+  // The upload and session caps are the operator's settings, raised from the simulated costs when an upload needs it.
+  save({ ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxUploadFeeStroops: 200_000_000, sessionSpendCapStroops: 300_000_000 });
+  assert.deepEqual({ ...loadWalletConfig(path).fees }, { maxFeeStroops: 10_000_000, maxUploadFeeStroops: 200_000_000, sessionSpendCapStroops: 300_000_000 });
   for (const [name, value] of [
     ['no operator key', { ...base, network: 'mainnet' }],
     ['a per-transaction cap above 1 XLM', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxFeeStroops: 10_000_001 }],
-    ['an upload cap above 15 XLM', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxUploadFeeStroops: 150_000_001 }],
+    ['an upload cap above 50 XLM', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxUploadFeeStroops: 500_000_001, sessionSpendCapStroops: 500_000_000 }],
+    ['a session cap above 50 XLM', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, sessionSpendCapStroops: 500_000_001 }],
+    ['an upload cap above the session cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxUploadFeeStroops: 200_000_000 }],
     ['a session cap below the upload cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, sessionSpendCapStroops: 100_000_000 }],
     ['a fractional cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxFeeStroops: 1.5 }],
     ['a registry floor below testnet\'s', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, registryMinimumVersion: 5 }],
@@ -346,6 +351,23 @@ test('mainnet deployment shows the policy upload\'s simulated cost first and ref
     if (reason) await assert.rejects(() => prepared, (error) => error.reason === reason, `${cost} after ${spent}`);
     else assert.equal((await prepared).summary.uploadSimulatedFeeStroops, cost);
   }
+});
+
+test('mainnet: an upload above the upload cap is refused naming the setting and the simulated cost; raised, it proceeds', async () => {
+  const cost = '190000000';
+  const deploy = (fees) => {
+    const f = deploymentFixture(() => {}, { network: { profile: MAINNET, fees, spentStroops: '0',
+      uploadCost: async () => ({ resourceFeeStroops: '189000000', feeStroops: cost, ledger: 100 }) } });
+    return f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  };
+  await assert.rejects(() => deploy(MAINNET_FEE_DEFAULTS), (error) => error.reason === 'fee_cap'
+    && isDeepStrictEqual(error.limit, { setting: 'maxUploadFeeStroops', simulatedFeeStroops: cost, neededStroops: cost }));
+  // The session cap is named the same way, with the least that holds the upload, the policy's creation,
+  // an installation and a removal.
+  const raised = { ...MAINNET_FEE_DEFAULTS, maxUploadFeeStroops: 200_000_000, sessionSpendCapStroops: 219_999_999 };
+  await assert.rejects(() => deploy(raised), (error) => error.reason === 'spend_cap'
+    && isDeepStrictEqual(error.limit, { setting: 'sessionSpendCapStroops', simulatedFeeStroops: cost, neededStroops: '220000000' }));
+  assert.equal((await deploy({ ...raised, sessionSpendCapStroops: 220_000_000 })).summary.uploadSimulatedFeeStroops, cost);
 });
 
 test('mainnet: the fee payer named as an authorizing address is refused before signing', async (t) => {

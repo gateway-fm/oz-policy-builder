@@ -25,11 +25,16 @@ with a reason the page explains, when it does not.
 4. **A funded fee payer.** A classic account you own, its secret seed in a file with mode `0600`
    (`feePayerKeyPath`), funded with its minimum reserve (1 XLM at the current 0.5 XLM base
    reserve) plus the fees below. The wallet never funds it (`payer_unfunded`).
-5. **A funded delegate account.** On mainnet the grant's delegate is the agent's own key, named
-   by its proposal. Fund that account with its minimum reserve (1 XLM). For the wallet to run the
-   checks that sign as the delegate, and the one use of the grant, give it that key in a second
-   `0600` file (`delegateKeyPath`); without it those checks stay unavailable and installation stays
-   closed.
+5. **The delegate's key in a `0600` file, and its account funded.** On mainnet the grant's
+   delegate is the agent's own key, named by its proposal. **Installation on mainnet requires that
+   key** in a second file with mode `0600` (`delegateKeyPath`): three of the four check layers
+   (account Wasm, captured target and live) sign as the delegate, so without the file they cannot
+   run, the four-layer gate cannot pass and installation stays closed (`delegate_key_unavailable`).
+   The live check's delegate signature is a real mainnet authorization: until its expiry, 12
+   ledgers (about a minute) after the check is prepared, anyone holding it together with the owner's
+   signature could submit the transfer it covers, which is why the wallet installs nothing until
+   that ledger has passed (`signatures_still_valid`). Fund the delegate's account with its minimum
+   reserve (1 XLM).
 6. **The atomic live helper, deployed by you.** The live check, and so installation, needs it on
    mainnet; the wallet never deploys it. Build `contracts/atomic-live-helper` with
    `stellar contract build --locked`, check that the Wasm's SHA-256 is the reviewed helper hash
@@ -89,15 +94,18 @@ upload is 18.78 XLM. Your own helper deployment is about 9.70 XLM. Hold besides:
 | Cap | Default | Ceiling | Against the figures above |
 |---|---|---|---|
 | Per transaction (`maxFeeStroops`) | 1 XLM | 1 XLM | every step but the uploads fits, with installation and removal at about 0.25 XLM |
-| Policy upload (`maxUploadFeeStroops`) | 12 XLM | 15 XLM | **step 6, 18.78 XLM, is refused (`fee_cap`) at protocol 29 prices**, even at the ceiling |
-| Session (`sessionSpendCapStroops`) | 15 XLM | 50 XLM | the deployment preview needs the steps before it (0.38 XLM), the upload (18.78 XLM) and room for the policy's creation, an installation and a removal (3 XLM): about 22.2 XLM |
+| Policy upload (`maxUploadFeeStroops`) | 12 XLM | 50 XLM | step 6, 18.78 XLM at protocol 29 prices, is refused (`fee_cap`) at the default; set it to at least 187,754,117 |
+| Session (`sessionSpendCapStroops`) | 15 XLM | 50 XLM | the deployment preview needs the steps before it (3,791,853), the upload (187,754,117) and room for the policy's creation, an installation and a removal (30,000,000): set it to at least 221,545,970, about 22.2 XLM |
 
-So at the prices simulated on 19 November 2026 the policy cannot be deployed through the wallet:
-the upload ceiling would have to rise above 18.78 XLM, which is a change to the wallet's code, and
-the session cap to about 23 XLM, which is configuration. Simulate step 6 again after the
-protocol 30 upgrade before deciding; the deployment preview shows the figure before anything is
-signed. A removal is never stopped by the session cap, and every other step keeps room for one
-installation and one removal, so a grant you install can always be taken back.
+The defaults are deliberately low, so **set both caps yourself from the simulated figures**, in the
+backend's configuration file, and restart the backend. The upload cap may not exceed the session
+cap. The figures above were simulated on protocol 29: after the protocol 30 upgrade, read step 6
+again before setting the caps. The deployment preview shows the upload's simulated cost before
+anything is signed, and a refusal names the setting that refused it, the simulated cost and the
+least value that lets the upload through. Leave a margin for the price to move between preview and
+submission, and add whatever this work root's earlier sessions spent (the page shows it). A
+removal is never stopped by the session cap, and every other step keeps room for one installation
+and one removal, so a grant you install can always be taken back.
 
 ## Evidence to keep
 
@@ -140,8 +148,10 @@ Nothing is signed or sent when a step refuses; the page names the reason
 - `no_diagnostic_events`: use an endpoint that returns them.
 - `payer_unfunded`, `account_unfunded`, `delegate_unfunded`: fund that account from your own wallet.
 - `pinned_code_missing`, or a live layer naming the helper: upload or deploy it yourself, as above.
-- `fee_cap`, `spend_cap`: the step would pass a cap. Re-read the figure the page shows; lower
-  nothing to make it fit, and raise a cap only deliberately, within its ceiling.
+- `fee_cap`, `spend_cap`: the step would pass a cap. For the policy upload the page names the
+  setting (`maxUploadFeeStroops` or `sessionSpendCapStroops`), the simulated cost and the least
+  value that lets it through; check that figure against the table above before raising the
+  setting, within its ceiling.
 - `registry_root_refused`: the registry trust files are not the production ones.
 - `signatures_still_valid`, `account_changed`: wait for the ledger shown, or find out what changed
   before installing anything.

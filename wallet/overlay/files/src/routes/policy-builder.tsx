@@ -73,8 +73,8 @@ const REFUSED: Record<string, string> = {
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",
   network_mismatch: "the operator's RPC endpoint serves another network than this session's. Nothing was signed or sent; the operator must fix the backend configuration.",
   protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
-  fee_cap: "this transaction could cost more than the per-transaction fee cap the operator set. Nothing was signed or sent.",
-  spend_cap: "this transaction could take the session past the spend cap the operator set. Nothing was signed or sent; a new session starts from zero.",
+  fee_cap: "this transaction could cost more than the fee cap the operator set for it. Nothing was signed or sent.",
+  spend_cap: "this transaction could take the session past the spend cap the operator set, counting what earlier sessions in this work root spent. Nothing was signed or sent.",
   payer_unfunded: "the fee payer's account does not exist or cannot pay a transaction's fee. Fund it from your own wallet (see Mainnet readiness), then try again.",
   delegate_unfunded: "the automation key has no account on this network, and the wallet creates none. Fund it with the minimum shown under section 2, then try again.",
   pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command under Mainnet readiness, then try again.",
@@ -82,6 +82,14 @@ const REFUSED: Record<string, string> = {
   no_diagnostic_events: "the operator's RPC endpoint returned no diagnostic events, which this step reads (stellar-rpc 30.0.1 returns them only with --preflight-enable-debug). Nothing was sent; the operator needs an endpoint that returns them.",
   delegate_key_unavailable: "on mainnet the wallet holds no delegate key: the grant's delegate is the agent's own key from its proposal. The checks that need the delegate's signatures, and the one use of the grant, run only when the operator configures a delegate key file.",
   registry_root_refused: "the toolkit refused the registry's root policy (on mainnet, the development root is never trusted). Nothing was generated or signed; the operator must configure the production registry trust files.",
+};
+/** A cap refusal's operator setting and figures (client.mjs checked their shape): what it would take to proceed. */
+const capRefusal = (limit: unknown) => {
+  const detail = object(limit);
+  return typeof detail.setting === "string" && typeof detail.simulatedFeeStroops === "string" && typeof detail.neededStroops === "string"
+    ? ` The policy upload's simulated cost is ${xlm(detail.simulatedFeeStroops)}; it proceeds only if the operator sets ${detail.setting}`
+      + ` to at least ${detail.neededStroops} stroops (${xlm(detail.neededStroops)}) in the backend configuration and restarts the backend.`
+    : "";
 };
 const explorer = (hash: string) => `${NETWORK.explorer}/tx/${hash}`;
 /**
@@ -422,8 +430,8 @@ function PolicyBuilder() {
       if (sent.length) remember(sent);
       setMessage(typeof done === "function" ? done(controller.current) : done);
     } catch (error) {
-      const reason = (error as { reason?: unknown } | null)?.reason;
-      setMessage(typeof reason === "string" && Object.hasOwn(REFUSED, reason) ? `Action refused: ${REFUSED[reason]}`
+      const { reason, limit } = (error ?? {}) as { reason?: unknown; limit?: unknown };
+      setMessage(typeof reason === "string" && Object.hasOwn(REFUSED, reason) ? `Action refused: ${REFUSED[reason]}${capRefusal(limit)}`
         : "Action refused. Refresh the evidence and review again.");
     }
   };

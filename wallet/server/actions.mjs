@@ -545,11 +545,13 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (ownerFunded) {
         const cost = await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
         uploadSimulatedFeeStroops = cost.feeStroops;
-        if (BigInt(cost.feeStroops) > BigInt(fees.maxUploadFeeStroops)) throw because('fee_cap');
+        // A refusal names the operator setting that refused it, the simulated cost and the least value that lets it through.
+        const capped = (reason, setting, needed) => Object.assign(because(reason),
+          { limit: { setting, simulatedFeeStroops: cost.feeStroops, neededStroops: needed.toString() } });
+        if (BigInt(cost.feeStroops) > BigInt(fees.maxUploadFeeStroops)) throw capped('fee_cap', 'maxUploadFeeStroops', BigInt(cost.feeStroops));
         // The upload, the policy's creation, and room for an installation and its removal.
-        if (BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops) > BigInt(fees.sessionSpendCapStroops)) {
-          throw because('spend_cap');
-        }
+        const needed = BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops);
+        if (needed > BigInt(fees.sessionSpendCapStroops)) throw capped('spend_cap', 'sessionSpendCapStroops', needed);
       }
       return { action: session.issue('deploy', { artifactId: input.artifactId }), summary: {
         specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: fees.maxFeeStroops,

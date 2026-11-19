@@ -3,8 +3,9 @@ import { verificationGate } from './verification.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const refused = () => new Error('wallet action refused; refresh and review the exact grant');
-// A refusal may say why, in one word from the closed set the page explains (client.mjs REFUSAL_REASONS).
-const because = (reason) => Object.assign(refused(), { reason });
+// A refusal may say why, in one word from the closed set the page explains (client.mjs REFUSAL_REASONS),
+// and a cap refusal which operator setting refused it (the client checked its shape).
+const because = (reason, limit) => Object.assign(refused(), { reason }, limit ? { limit } : {});
 const expired = () => because('review_expired');
 const copy = (value) => {
   const result = JSON.parse(JSON.stringify(value));
@@ -63,7 +64,7 @@ export class WalletController {
     if (this.#busy) throw refused();
     this.#busy = true; this.#set({ busy: true });
     try { return await operation(); }
-    catch (error) { throw REFUSAL_REASONS.has(error?.reason) ? because(error.reason) : refused(); }
+    catch (error) { throw REFUSAL_REASONS.has(error?.reason) ? because(error.reason, error.limit) : refused(); }
     finally { this.#busy = false; this.#set({ busy: false }); }
   }
   /** Both clocks: the monotonic one may stop while the computer sleeps, but ledgers keep closing. */

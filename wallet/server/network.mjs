@@ -13,8 +13,8 @@ import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 
 export const MAX_FEE_STROOPS = 10_000_000;
 /**
- * The code upload's ceiling only: testnet's resource fee for a ~21 KB policy Wasm passed 10 XLM in
- * October 2026. Every other transaction keeps MAX_FEE_STROOPS.
+ * Testnet's code upload cap: testnet's resource fee for a ~21 KB policy Wasm passed 10 XLM in
+ * October 2026. Every other transaction keeps MAX_FEE_STROOPS. Mainnet's is the operator's setting.
  */
 export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
 /**

@@ -265,10 +265,15 @@ use a new work root. A removal (`revoke-policy`) is exempt from the session cap,
 per-transaction cap, and every other transaction must leave room under the session cap for one
 installation and one removal (an installation, for one removal), so the cap never stops a grant
 from being taken back. Either cap refuses before signing
-(`fee_cap`, `spend_cap`). Each cap can be lowered, not raised past its ceiling (1 XLM, 15 XLM and
-50 XLM). The page shows both caps and the amount spent before every consent, and the policy
-deployment preview shows the upload's simulated cost (its resource fee plus the wallet's 0.1 XLM
-inclusion bid); a preview whose simulated cost would pass a cap is refused before consent.
+(`fee_cap`, `spend_cap`). The defaults are conservative and each cap stays under its ceiling
+(1 XLM, 50 XLM and 50 XLM), with the upload cap at most the session cap. A policy upload on mainnet
+can cost more than the default upload cap (18.78 XLM simulated on protocol 29), so the operator sets
+`maxUploadFeeStroops` and `sessionSpendCapStroops` from the simulated figures
+([mainnet install runbook](MAINNET-INSTALL.md#the-caps-against-these-figures)). The page shows both caps and
+the amount spent before every consent, and the policy deployment preview shows the upload's
+simulated cost (its resource fee plus the wallet's 0.1 XLM inclusion bid); a preview whose
+simulated cost would pass a cap is refused before consent, and that refusal names the setting,
+the simulated cost and the least value that lets the upload through.
 
 **Readiness.** `Check mainnet readiness` reads, without signing or sending anything, the fee payer's
 balance, the caps, whether the pinned account and verifier code is on mainnet, whether the live
@@ -289,12 +294,15 @@ operator.
 
 **The delegate.** On mainnet the grant's delegate is the agent's own key, the one its proposal
 names, and the wallet generates no delegate key: there is no in-memory automation key on mainnet.
-The account-Wasm, captured-target and live checks sign as the delegate, and the one use of the
-grant is the delegate's transaction, so they need its key. The optional `delegateKeyPath` names
-an operator file (one secret seed, mode `0600`, checked like the fee payer's and never its key)
-whose key the wallet then holds as its one delegate: **Create local automation delegate** returns
-it, a proposal that names it can be checked and installed, and the use step runs. Without that file
-the delegate step refuses as `delegate_key_unavailable`, those checks stay unavailable, so the
+**Installation on mainnet requires the delegate's key in a `0600` file** (`delegateKeyPath`: one
+secret seed, checked like the fee payer's and never its key). The account-Wasm, captured-target and
+live checks, three of the four layers, sign as the delegate, and the one use of the grant is the
+delegate's transaction. The live check's delegate signature is a real mainnet authorization until
+its expiry ledger, 12 ledgers after the check is prepared: with the owner's signature it is a
+submittable transfer, so installation waits until that ledger has passed. With the file, the
+wallet holds that key as its one delegate: **Create local automation delegate** returns it, a
+proposal that names it can be checked and installed, and the use step runs. Without it the
+delegate step refuses as `delegate_key_unavailable`, those checks stay unavailable, so the
 four-layer gate cannot pass and installation stays closed, and the use step says it is skipped.
 The wallet creates no account for the delegate either: section 2 shows the minimum reserve (two
 base reserves, read from the latest ledger), which you send it from your own wallet before the
@@ -627,7 +635,7 @@ two named cases, not the derived deny suite.
    signature (origin, challenge, user verification, full credential, owner rule). Only then does
    it mint the delegate's live capability for exactly the consented check. That capability takes
    a structure, never bytes: account, asset, recipient, amount, rule, nonce and expiry. It
-   accepts only testnet, only the two consented amounts, each once, and only expiry N. It builds
+   accepts only the session's network, only the two consented amounts, each once, and only expiry N. It builds
    the account's transfer entry (no sub-invocations, checked under exactly the candidate rule)
    and the delegate's own `__check_auth` entry itself, and signs the latter. For each case, with
    at least 3 ledgers left before N, the backend builds an unsigned envelope from its fee payer
@@ -944,7 +952,10 @@ separately, from the policy's installation marker: `not_installed`, `still_insta
 ## When the wallet refuses
 
 A refused action names at most one reason from a closed set, and nothing from the request or the
-error. The page explains it and says what to do; anything else is shown as a plain refusal. After a
+error. A cap refusal at the policy deployment preview also names, in a fixed shape, the operator
+setting that refused it (`maxUploadFeeStroops` or `sessionSpendCapStroops`), the upload's
+simulated cost and the least value that lets it through, all in stroops. The page explains it
+and says what to do; anything else is shown as a plain refusal. After a
 sample or installation submission was attempted, the browser passes on no reason: that attempt
 cannot be repeated in the session, whatever the cause.
 
@@ -959,8 +970,8 @@ cannot be repeated in the session, whatever the cause.
 | `grant_already_used` | The policy counted a use of the installed grant that this page did not make; nothing was signed or sent. Revoke the grant. |
 | `network_mismatch` | The operator's RPC endpoint serves another network than the session's; nothing was signed or sent. |
 | `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
-| `fee_cap` | The transaction could cost more than the per-transaction cap; nothing was signed or sent. |
-| `spend_cap` | The transaction could take the session past its spend cap; nothing was signed or sent. |
+| `fee_cap` | The transaction could cost more than its cap (per transaction, or for a policy upload `maxUploadFeeStroops`); nothing was signed or sent. |
+| `spend_cap` | The transaction could take the work root's spending past `sessionSpendCapStroops`; nothing was signed or sent. |
 | `payer_unfunded` | Mainnet: the fee payer's account does not exist or cannot pay a fee. |
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
