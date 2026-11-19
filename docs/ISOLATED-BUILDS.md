@@ -30,8 +30,10 @@ networking are not needed during a job. Build the host binary for the host opera
 require a newer host libc; compiling the host binary avoids that assumption.
 
 Install these reviewed files using your normal host configuration system. Install the API binary
-and the launcher from the same revision: each rejects the other's output from a different one,
-and every build would then retain its slot.
+and the launcher from the same revision: each rejects the other's output from a different one.
+The API asks the launcher its protocol when it starts and refuses to start on another answer;
+a launcher replaced while the API runs is found only by its first frame, and every build would
+then retain its slot.
 
 | Source | Host destination | Ownership and mode |
 | --- | --- | --- |
@@ -113,7 +115,15 @@ retained until the operator has cleaned up.
 
 ## Launcher contract for another provider
 
-The API starts the configured executable with no arguments, a private file on stdin, bounded
+Before it serves, the API runs the configured executable once with the single argument
+`--protocol`, no input and a minimal host environment. The launcher must print exactly the line
+`build-worker-job/v1 contained-build-result/v2` (the job schema it reads and the frame schema it
+writes) and exit 0, without reading its configuration or starting anything. Any other answer or
+a non-zero exit stops the API's startup with an error naming the revision mismatch; a launcher
+that predates the query takes no argument and is refused the same way. One that does not answer
+within 10 seconds is killed with its process group and reported as a timeout; the API waits up
+to 5 more seconds for each of its two output pipes to close, so at most 20 seconds in all. For
+each job, the API starts the executable with no arguments, a private file on stdin, bounded
 stdout capture, and a minimal host environment. The input is JSON with schema
 `build-worker-job/v1`, `crate_name`, `files` (an array of `{path, body}`), `timeout_seconds`, and
 `jobs`. Time and parallelism originate in operator configuration, and the launcher must check
@@ -128,9 +138,21 @@ The worker's bounded JSON result has schema `build-worker-result/v1` and `artifa
 null for a failed build or an object containing `wasm_base64`, `wasm_hash`, and `toolchain`.
 Toolchain contains `rustc_version`, `stellar_cli_version`, and `builder`. The worker cannot
 claim cleanup. After independently proving the disposable job has ended and its writable
-state is gone, the launcher writes a separate object with schema `contained-build-result/v1`,
-`job_hash` (SHA-256 of the exact stdin bytes), `containment` equal to `removed`, and `result`
-containing the validated worker result or null, after its `ready` line. Both stdout layers are
+state is gone, the launcher writes a separate object with schema `contained-build-result/v2`,
+`job_hash` (SHA-256 of the exact stdin bytes), `image` (its configured image, exactly as passed
+to the runtime: `sha256:<64 hex>` or `host[:port]/path@sha256:<64 hex>`, at most 256 characters,
+a bound the launcher's configuration enforces too), `containment` equal to
+`removed`, and `result` containing the validated worker result or null, after its `ready` line.
+The API refuses a frame whose `image` is not such an immutable identity, and records it in the
+BuildManifest as `producer.build_image`. It is the operator's statement of which image ran, not
+an attestation: the launcher is trusted for it in the same way it is trusted for teardown.
+A frame of another `contained-build-result` version comes from a launcher installed from another
+revision after the API started (the startup query refuses one installed before). The API cannot
+read its removal claim, so it handles the job as it handles a dead
+launcher: the slot stays retained. The error then says that the launcher is from another
+revision, rather than only that cleanup is unconfirmed. Once every slot is retained, worker mode
+accepts no builds. Install the API and the launcher from the same revision, confirm cleanup, and
+restart. Both stdout layers are
 capped at 4 MiB; Wasm is capped at 2 MiB. No diagnostic strings are part of either protocol.
 
 A different provider adapter must retain the same independent runtime deadline, disposable

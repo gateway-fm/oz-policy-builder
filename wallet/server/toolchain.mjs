@@ -1,18 +1,53 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { StrKey } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, freezeCopy } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { RawJson, parseJsonExact, requestText } from './raw-json.mjs';
 import { runTool } from './tool.mjs';
 import { checkProposalSpec } from '../shared/proposal.mjs';
 
-const NETWORK = 'Test SDF Network ; September 2015';
 const HASH = /^[0-9a-f]{64}$/;
 const FILES = ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'rustfmt.toml', 'src/contract.rs', 'src/lib.rs'];
 const refuse = (code) => {
-  throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), code ? { code } : {});
+  throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), code ? { code } : {},
+    // The CLI refused the registry's root policy (the development root on mainnet, for one): the page says so.
+    code === REGISTRY_ROOT_POLICY ? { reason: 'registry_root_refused' } : {});
 };
+/** The CLI's refusal of a registry root policy it will not trust; surfaced from every registry-reading call. */
+export const REGISTRY_ROOT_POLICY = 'E_REGISTRY_ROOT_POLICY';
+/**
+ * `ozpb registry monitor`'s exit statuses (docs/REGISTRY-GOVERNANCE.md#monitoring): what each means and
+ * what to do. Status 1, a published log that cannot be verified against the checkpoint, is an incident.
+ */
+export const REGISTRY_MONITOR = Object.freeze({
+  0: Object.freeze({ status: 'current', meaning: 'current, not expiring within the window', action: 'none' }),
+  3: Object.freeze({ status: 'newer_version', meaning: 'a newer version is published', action: 'review it, then advance the checkpoint' }),
+  7: Object.freeze({ status: 'not_yet_valid', meaning: 'the head\'s interval has not started',
+    action: 'nothing loads it yet; keep the current version until it starts, and check the start date was intended' }),
+  4: Object.freeze({ status: 'expires_soon', meaning: 'the head expires within the window', action: 'ask the custodians for a successor' }),
+  5: Object.freeze({ status: 'expired', meaning: 'the head has expired', action: 'synthesis and checks now refuse it; ask the custodians for a successor' }),
+  6: Object.freeze({ status: 'revoked', meaning: 'a watched hash is revoked', action: 'the emergency-removal path: revoke the grant, or move the funds' }),
+  1: Object.freeze({ status: 'log_unverifiable', meaning: 'the published log cannot be verified against the checkpoint',
+    action: 'treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned' }),
+});
+const unverifiable = () => freezeCopy({ status: REGISTRY_MONITOR[1].status, exit: 1, meaning: REGISTRY_MONITOR[1].meaning,
+  action: REGISTRY_MONITOR[1].action });
+/**
+ * The registry faults `ozpb registry monitor` names when the published log does not verify against the
+ * checkpoint (its exit 1 with one of these leading its standard error): the incident.
+ */
+const REGISTRY_FAULTS = ['E_REGISTRY_SIGNATURE', 'E_REGISTRY_TRANSPARENCY', 'E_REGISTRY_ROLLBACK', 'E_REGISTRY_PARSE',
+  'E_REGISTRY_SCHEMA', 'E_REGISTRY_NETWORK'];
+/** The monitor gave no verdict: the CLI is missing, timed out, refused its trust files, or failed on anything but the log. */
+export const MONITOR_UNAVAILABLE = Object.freeze({ status: 'monitor_unavailable',
+  meaning: 'the registry monitor did not run to a verdict, so the published log is not being watched',
+  action: 'check the operator configuration (the CLI, registryPublishedPath and the registry trust files), then run the monitor again' });
+const unavailable = () => freezeCopy({ ...MONITOR_UNAVAILABLE });
+
+/** Keeps only that refusal's code from an error a catch-all would otherwise discard. */
+const rootPolicy = (error) => (error?.code === REGISTRY_ROOT_POLICY ? REGISTRY_ROOT_POLICY : undefined);
 // `capture-target` codes that name the call's own outcome rather than an endpoint fault.
 const TARGET_CODES = Object.freeze(['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED']);
 const integer = (n, low, high) => Number.isSafeInteger(n) && n >= low && n <= high;
@@ -20,23 +55,59 @@ const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const display = (value) => JSON.parse(JSON.stringify(value, (_key, part) => typeof part === 'bigint' ? part.toString() : part));
 const save = (path, body) => writeFileSync(path, body, { mode: 0o600, flag: 'wx' });
 
-/** Only this wallet-owned process chooses executable, trust roots, RPC and artifact paths. */
-export class WalletToolchain {
-  #config; #root; #runner; #records = new Map(); #artifacts = new Map(); #trustArgs;
+const WORK_ROOT_MARKER = 'ozpb-wallet-network.json';
 
-  constructor({ executable, workRoot, rpcUrl, registrySnapshot, registryRoots, registryMinimumVersion, runner = runTool, buildEnvironment = {} }) {
+/**
+ * Binds the operator's work root to one network, so that retained state (session journals, records,
+ * artifacts) of one network is never read or extended by a session of the other. The first session
+ * writes the marker; a later session for another network is refused at startup. Sessions retained
+ * before the marker existed ran on testnet, the only network supported then.
+ */
+export function bindWorkRoot(workRoot, network) {
+  const refused = () => {
+    throw Object.assign(new Error('wallet work root refused'), { startup: `This work root holds wallet sessions for another network; `
+      + `give the ${network.name} session a work root of its own.` });
+  };
+  const path = join(workRoot, WORK_ROOT_MARKER);
+  let text = null;
+  try {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { if (!fstatSync(fd).isFile() || fstatSync(fd).size > 1024) refuse(); text = readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
+  } catch (error) { if (error?.code !== 'ENOENT') refuse(); }
+  if (text !== null) {
+    const recorded = parseJsonExact(text);
+    if (!recorded || Object.keys(recorded).length !== 2 || recorded.network !== network.name || recorded.networkId !== network.networkId) refused();
+    return;
+  }
+  if (network.name !== 'testnet' && readdirSync(workRoot).some((name) => name.startsWith('wallet-session-'))) refused();
+  save(path, JSON.stringify({ network: network.name, networkId: network.networkId }));
+}
+
+/**
+ * Only this wallet-owned process chooses executable, trust roots, RPC and artifact paths. `network` is
+ * the session's network profile: the CLI's one RPC source is named after it and pinned to its
+ * passphrase, and every record, spec and binding must name its network ID.
+ */
+export class WalletToolchain {
+  #config; #root; #runner; #records = new Map(); #artifacts = new Map(); #trustArgs; #network;
+
+  constructor({ executable, workRoot, rpcUrl, registrySnapshot, registryRoots, registryMinimumVersion, runner = runTool, buildEnvironment = {},
+    network, registryPublishedPath = null }) {
     const url = new URL(rpcUrl);
+    if (!Object.values(WALLET_NETWORKS).includes(network)) refuse();
+    this.#network = network;
     if (!isAbsolute(executable) || !isAbsolute(workRoot) || lstatSync(workRoot).isSymbolicLink()
       || !lstatSync(workRoot).isDirectory() || url.protocol !== 'https:' || url.username || url.password || url.hash || url.search
       || !integer(registryMinimumVersion, 1, Number.MAX_SAFE_INTEGER)
       || Buffer.byteLength(registrySnapshot) > 2 * 1024 * 1024 || Buffer.byteLength(registryRoots) > 256 * 1024) refuse();
     new RawJson(registrySnapshot); new RawJson(registryRoots);
+    bindWorkRoot(workRoot, network);
     this.#root = mkdtempSync(join(workRoot, 'wallet-session-'));
-    this.#config = { executable, rpcUrl, registrySnapshot, registryMinimumVersion, buildEnvironment };
+    this.#config = { executable, rpcUrl, registrySnapshot, registryMinimumVersion, buildEnvironment, registryPublishedPath };
     this.#runner = runner;
     save(join(this.#root, 'registry.signed.json'), registrySnapshot);
     save(join(this.#root, 'registry-roots.json'), registryRoots);
-    save(join(this.#root, 'rpc-sources.json'), JSON.stringify({ testnet: { rpc_url: rpcUrl, network_passphrase: NETWORK } }));
+    save(join(this.#root, 'rpc-sources.json'), JSON.stringify({ [network.name]: { rpc_url: rpcUrl, network_passphrase: network.passphrase } }));
     this.#trustArgs = ['--registry-roots', join(this.#root, 'registry-roots.json'), '--registry-min-version', String(registryMinimumVersion)];
   }
 
@@ -46,16 +117,16 @@ export class WalletToolchain {
     let raw;
     try {
       raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment,
-        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(codes.length ? { codes } : {}) });
+        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}), codes: [...codes, REGISTRY_ROOT_POLICY] });
     } catch (error) {
-      // Only a code this call allowlisted survives; the runner never returns the CLI's text.
-      refuse(codes.includes(error?.code) ? error.code : undefined);
+      // Only a code this call allowlisted, or the registry root refusal, survives; the runner never returns the CLI's text.
+      refuse([...codes, REGISTRY_ROOT_POLICY].includes(error?.code) ? error.code : undefined);
     }
     try {
       if (typeof raw !== 'string' || Buffer.byteLength(raw) > 16 * 1024 * 1024) refuse();
       save(join(directory, `${command}.json`), raw);
       return parser(raw);
-    } catch { refuse(); }
+    } catch (error) { refuse(rootPolicy(error)); }
   }
 
   recordFile(id) { return this.#get(this.#records, id).file; }
@@ -66,13 +137,13 @@ export class WalletToolchain {
     try {
       if (!HASH.test(transactionHash) || !StrKey.isValidContract(accountAddress) || this.#records.size >= 8) refuse();
       const directory = this.#directory();
-      const record = await this.#call(directory, 'record', ['--tx-hash', transactionHash, '--rpc-url', this.#config.rpcUrl, '--network', NETWORK],
+      const record = await this.#call(directory, 'record', ['--tx-hash', transactionHash, '--rpc-url', this.#config.rpcUrl, '--network', this.#network.passphrase],
         (text) => JSON.parse(text, (_key, value, context) => typeof value === 'number' && !Number.isSafeInteger(value)
           && /^-?\d+$/.test(context?.source ?? '') ? BigInt(context.source) : value));
       const bundle = record.bundle;
       const observation = bundle?.contract_executables?.[accountAddress];
       const authorizations = bundle?.authorizations?.filter((auth) => auth.authorizer === accountAddress);
-      if (record.trust !== 'rpc_reported' || !HASH.test(record.recording_hash) || bundle.network_id !== NETWORK_ID
+      if (record.trust !== 'rpc_reported' || !HASH.test(record.recording_hash) || bundle.network_id !== this.#network.networkId
         || bundle.execution !== 'executed_success' || !integer(bundle.ledger, 1, 0xffffffff)
         || observation?.executable?.wasm?.code_hash !== ACCOUNT_WASM
         || !integer(observation.observed_ledger, bundle.ledger, 0xffffffff) || authorizations?.length !== 1) refuse();
@@ -81,7 +152,7 @@ export class WalletToolchain {
         observedLedger: bundle.ledger, authorizations: display(authorizations), trust: 'rpc_reported' });
       this.#records.set(recordId, { file: join(directory, 'record.json'), response });
       return response;
-    } catch { refuse(); }
+    } catch (error) { refuse(rootPolicy(error)); }
   }
 
   async generate({ recordId, delegateAddress, validUntilLedger, maxCalls, grantName, currentLedger, proposal }) {
@@ -104,7 +175,7 @@ export class WalletToolchain {
         '--decisions', join(directory, 'decisions.json'), '--template-family', 'policy-templates/scope@1']);
       const spec = synthesis.spec;
       const rule = spec?.rules?.[0];
-      if (!HASH.test(synthesis.spec_hash) || spec?.network_id !== NETWORK_ID || spec.smart_account?.address !== account.address
+      if (!HASH.test(synthesis.spec_hash) || spec?.network_id !== this.#network.networkId || spec.smart_account?.address !== account.address
         || spec.smart_account?.observed_code_hash !== ACCOUNT_WASM || spec.rules?.length !== 1 || (synthesis.questions?.length ?? 0) !== 0
         || rule.valid_until?.ledger !== validUntilLedger || JSON.stringify(rule.authorization?.signers) !== JSON.stringify(decisions.delegate_signers)
         || rule.policies?.length !== 1 || rule.policies[0].generated?.kind !== 'gen:scope+count'
@@ -146,7 +217,7 @@ export class WalletToolchain {
         limitations: ['Artifact reproduction and reference evaluation do not constitute a complete four-layer dry run.'] });
       this.#artifacts.set(artifactId, { response, directory, wasmBase64: generated.wasm_base64 });
       return response;
-    } catch { refuse(); }
+    } catch (error) { refuse(rootPolicy(error)); }
   }
 
   /** Request objects come only from the trusted wallet controller's retained artifacts. */
@@ -177,7 +248,7 @@ export class WalletToolchain {
   }
 
   /**
-   * `capture-target` through the operator's `testnet` source for one unsigned envelope the
+   * `capture-target` through the operator's RPC source for the session network, for one unsigned envelope the
    * backend built itself. The envelope is confidential input: it reaches the CLI only in a
    * private request file. Neither it nor the capture is kept once the CLI exits, and no refusal
    * repeats either; the worker evidence binds the capture by its hash.
@@ -187,7 +258,7 @@ export class WalletToolchain {
     const directory = this.#directory();
     const request = join(directory, 'request.json');
     try {
-      save(request, JSON.stringify({ network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope }));
+      save(request, JSON.stringify({ network_id: this.#network.networkId, rpc_source: this.#network.name, envelope_xdr_base64: envelope }));
       // A read, not a build: bounded well below the build deadline so the whole check stays bounded.
       return await this.#call(directory, 'capture-target', ['--request', request, '--rpc-sources', join(this.#root, 'rpc-sources.json')],
         parseJsonExact, { signal, timeoutMs: 120_000, codes: TARGET_CODES });
@@ -197,16 +268,46 @@ export class WalletToolchain {
     }
   }
 
+  /**
+   * `ozpb registry monitor` against the operator's published registry log (`registryPublishedPath`)
+   * and the checkpoint in the pinned roots, watching `wasmHashes`: `{ status, exit, meaning, action,
+   * headVersion, expiresAtUnix, revoked }`, or `{ status: 'not_configured' }`. A log the CLI says
+   * cannot be verified (exit 1 naming a registry fault), or a report whose status disagrees with its
+   * exit status, is `log_unverifiable`: an incident. A run that reached no verdict (no CLI, a timeout,
+   * a refused root policy, any other failure) is `monitor_unavailable`.
+   */
+  async registryMonitor({ wasmHashes }) {
+    if (this.#config.registryPublishedPath === null) return freezeCopy({ status: 'not_configured' });
+    if (!Array.isArray(wasmHashes) || !wasmHashes.length || !wasmHashes.every((h) => HASH.test(h))) refuse();
+    const args = ['registry', 'monitor', '--published', this.#config.registryPublishedPath, '--registry-roots',
+      join(this.#root, 'registry-roots.json'), '--network', this.#network.passphrase, '--expiry-window-days', '14',
+      ...wasmHashes.flatMap((h) => ['--wasm-hash', h])];
+    let ran;
+    try {
+      ran = await this.#runner(this.#config.executable, args, { env: this.#config.buildEnvironment, timeoutMs: 120_000,
+        statuses: [3, 4, 5, 6, 7], codes: REGISTRY_FAULTS });
+    } catch (error) { return REGISTRY_FAULTS.includes(error?.code) ? unverifiable() : unavailable(); }
+    try {
+      const known = REGISTRY_MONITOR[ran?.status];
+      const report = parseJsonExact(ran.output);
+      if (!known || ran.status === 1 || report?.schema !== 'registry-monitor/v1' || report.status !== known.status
+        || !Array.isArray(report.revoked) || typeof report.head?.version !== 'string') return unverifiable();
+      return freezeCopy({ status: known.status, exit: ran.status, meaning: known.meaning, action: known.action,
+        headVersion: report.head.version, expiresAtUnix: String(report.expires_at_unix),
+        revoked: report.revoked.map((r) => ({ wasm_hash: r.wasm_hash, capability: r.capability, reason: r.reason })) });
+    } catch { return unverifiable(); }
+  }
+
   bindingRequest(artifactId, policyAddress, resolutionReference) {
     const { response: artifact } = this.artifact(artifactId);
     if (!StrKey.isValidContract(policyAddress) || policyAddress === artifact.spec.smart_account.address
       || typeof resolutionReference !== 'string' || resolutionReference.length < 1 || resolutionReference.length > 256) refuse();
     return { spec: artifact.spec, rule_index: 0, binding_set: {
-      schema: 'policy-binding-set/v1', spec_hash: artifact.specHash, network_id: NETWORK_ID, bindings: [{
+      schema: 'policy-binding-set/v1', spec_hash: artifact.specHash, network_id: this.#network.networkId, bindings: [{
         rule_index: 0, policy_index: 0, contract_address: policyAddress, observed_wasm_hash: artifact.wasmHash,
         recognition: { kind: 'verified_generated_manifest', build_manifest: artifact.buildManifest }, resolution_reference: resolutionReference,
       }],
     }, signed_registry_snapshot: new RawJson(this.#config.registrySnapshot), account_address: artifact.spec.smart_account.address,
-    network_id: NETWORK_ID, rpc_source: 'testnet' };
+    network_id: this.#network.networkId, rpc_source: this.#network.name };
   }
 }

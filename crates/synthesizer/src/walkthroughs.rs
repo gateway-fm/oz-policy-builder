@@ -11,6 +11,10 @@
 //! exactly that the three specs disagree about argument kinds, widening provenance and
 //! constraint mix — one fixture would not tell it much.
 //!
+//! A fourth, two recorded payments of one token, is the only fixture whose rule accepts two
+//! tuples of one function. The others accept one, so no compiled policy built from them can show
+//! that a generated policy refuses the cross products of two accepted calls.
+//!
 //! Architecture §7 describes three end-to-end walkthroughs over these same protocols; those
 //! are second-milestone deliverables. What is here borrows the protocols, not the deliverable:
 //! these are inputs to this milestone's tests.
@@ -267,10 +271,68 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
 }
 
 // ---------------------------------------------------------------------------------------
+// Two recorded payments: one rule, two accepted tuples of one function
+// ---------------------------------------------------------------------------------------
+
+pub const PAYMENT_TOKEN: fn() -> String = || contract(40);
+pub const FIRST_PAYEE: fn() -> String = || contract(41);
+pub const SECOND_PAYEE: fn() -> String = || contract(42);
+
+/// One payment recording: `transfer(SELF, payee, amount)` on [`PAYMENT_TOKEN`]. Both recordings
+/// observe the same token code, because synthesis refuses recordings that disagree about it.
+fn payment_bundle(payee: String, amount: i128, tag: &[u8]) -> RecordingBundle {
+    let token = PAYMENT_TOKEN();
+    let mut bundle = bundle_for(
+        &token,
+        "transfer",
+        vec![
+            ArgSummary::Address(account()),
+            ArgSummary::Address(payee),
+            ArgSummary::I128(amount),
+        ],
+        tag,
+    );
+    if let Some(observation) = bundle.contract_executables.get_mut(&token) {
+        observation.executable = ObservedExecutable::Wasm {
+            code_hash: sha256(b"two-payments-token"),
+        };
+    }
+    bundle
+}
+
+/// Two exact payments, `transfer(SELF, FIRST_PAYEE, 1_000)` and
+/// `transfer(SELF, SECOND_PAYEE, 2_000)`, each from its own recording, with no widening. The
+/// rule accepts exactly those two tuples, so `transfer(SELF, FIRST_PAYEE, 2_000)` and
+/// `transfer(SELF, SECOND_PAYEE, 1_000)` match every position of some accepted call and still
+/// must be refused: the tuple is the unit, never each position on its own.
+pub fn two_payment_spec() -> ValidatedSpec {
+    let mut input = base_input(payment_bundle(FIRST_PAYEE(), 1_000, b"two-payments-first"));
+    input.bundles.push(payment_bundle(
+        SECOND_PAYEE(),
+        2_000,
+        b"two-payments-second",
+    ));
+    input.spending_limit_capability = None; // two exact amounts: the tuples bound the value
+    let decisions = UserDecisions {
+        grant_name: "two-payments".to_string(),
+        delegate_signers: delegate_signers(),
+        predicate: PredicateChoice::AnyOf,
+        valid_until_ledger: Some(4_260_000),
+        no_expiry_acknowledged: false,
+        max_calls: Some(10),
+        unlimited_calls_acknowledged: false,
+        widenings: vec![],
+        spending_limit: None,
+    };
+    let out = synthesize(&input, &decisions).expect("two-payment synthesis");
+    out.spec.validate().expect("two-payment spec validates")
+}
+
+// ---------------------------------------------------------------------------------------
 // A ranged transfer — "spend up to X" without leaving the amount open below
 // ---------------------------------------------------------------------------------------
 
-pub const RANGE_TOKEN: fn() -> String = || contract(40);
+pub const RANGE_TOKEN: fn() -> String = || contract(50);
 
 /// The recorded amount of the ranged transfer, and the range the user chose around it.
 pub const RANGE_RECORDED_AMOUNT: i128 = 250_000_000;
@@ -366,6 +428,35 @@ mod tests {
         ));
         // A claim is inbound → only the generated scope policy, no spending limit.
         assert_eq!(rule.policies.len(), 1);
+    }
+
+    #[test]
+    fn two_payments_are_one_rule_with_two_exact_tuples_differing_in_two_positions() {
+        let spec = two_payment_spec();
+        let [rule] = spec.spec().rules.as_slice() else {
+            panic!("two payments of one token are one rule");
+        };
+        assert_eq!(rule.context.contract, PAYMENT_TOKEN());
+        assert_eq!(rule.policies.len(), 1, "only the generated policy");
+        let [first, second] = rule.allowed_calls.as_slice() else {
+            panic!("each recorded payment is its own accepted tuple");
+        };
+        assert_eq!(first.fn_name, "transfer");
+        assert_eq!(second.fn_name, "transfer");
+        let differing: Vec<usize> = (0..3)
+            .filter(|&i| first.args[i].constraint != second.args[i].constraint)
+            .collect();
+        assert_eq!(
+            differing,
+            vec![1, 2],
+            "payee and amount differ; the payer is SELF in both"
+        );
+        for call in [first, second] {
+            assert!(call
+                .args
+                .iter()
+                .all(|arg| matches!(arg.provenance, ozpb_domain::Provenance::ObservedExact)));
+        }
     }
 
     #[test]

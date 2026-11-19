@@ -73,7 +73,7 @@ use stellar_accounts::smart_account::{AuthPayload, ContextRule, ContextRuleType,
 const PASSPHRASE: &str = "Test SDF Network ; September 2015";
 /// The reviewed generated policy: the golden subscription spec with the fixed test signer.
 const REVIEWED_POLICY_WASM: &str =
-    "2a9beb1a8a7a73cbfc13173e245f4a712185376bd9a3fce3f7f8d7d2cf9b04be";
+    "03f5e8014d3aefda64ab830c58e7a124211e432ddb5363653dd71acf4c08afba";
 /// Compiled into that policy, as in `differential.rs`.
 const VALID_UNTIL: u32 = 4_223_456;
 const MAX_CALLS: u32 = 12;

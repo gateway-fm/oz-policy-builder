@@ -502,9 +502,9 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   reads as `false`). Neither answer is an `E_NEEDS_DECISION` finding; both answers to one
   question (a cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry
   acknowledgement) are contradictory, an `E_INVALID_DECISION` finding. A refusal lists every
-  finding in `details` under the first one's code. Before v0.2.0 a null `max_calls` alone produced
+  finding in `details` under the first one's code. Before v1.0.0 a null `max_calls` alone produced
   an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
-  in the [release notes](release-notes/v0.2.0.md).
+  in the [release notes](release-notes/v1.0.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).
@@ -526,20 +526,22 @@ the tests guide you (TDD: add the failing test first):
    reference semantics). This is the executable spec.
 3. **`crates/codegen`** — emit the check in `emit_lib`'s per-arg match, embedding values as
    validated literals (never interpolated into identifiers); add pre-emission validation in
-   `generate`. Regenerate the three committed examples by running each fixture test explicitly:
+   `generate`. Regenerate the committed examples by running each fixture test explicitly:
 
    ```sh
    UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::golden_crate_matches_committed_output -- --exact
    UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::soroswap_crate_matches_committed_output -- --exact
    UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::range_crate_matches_committed_output -- --exact
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::two_payment_crate_matches_committed_output -- --exact
    ```
 4. **`crates/harness`** (Tranche 2) — add mutation cases for it in `build_suite` so the deny
    suite covers the new boundary; add its `concrete_for` arm.
 5. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
    a `Widening`/adapter). Never let it in heuristically.
 6. **`contracts/`** — the differential suite drives the generated transfer policy in the
-   Soroban environment. The committed Soroswap policy is a second generated example; its
-   complete file set must match regeneration, and it builds as a standalone crate. Add
+   Soroban environment. The committed Soroswap policy is a second generated example, and the
+   two-payment policy, whose rule accepts two tuples of one function, a third; each complete file
+   set must match regeneration, and each builds as a standalone crate. Add
    explicit evaluator/contract cases for new constraints. End-to-end account
    integration and policy-aware live preflight remain separate work.
 
@@ -561,7 +563,11 @@ spec's wire form: `eq_address`, `eq_scval`, `eq_i128`, `le_i128` (a cap), `ge_i1
   independence); cores stay transport/async-free. The harness half of that rule governs a
   Tranche-2 crate.
 - Every generated crate builds standalone (`[profile.release]` with `overflow-checks`) and
-  passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
+  passes the same `rustfmt` as handwritten code, and `clippy -D warnings` too, except
+  `contracts/two-payment-policy`: for several accepted tuples of one function the emitter writes
+  a condition `clippy::nonminimal_bool` refuses, so that crate is formatted but not linted
+  until the emitter groups tuples by function
+  ([audit limit 14](AUDIT-SCOPE.md#known-limits--not-findings)).
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
 - `scripts/check-publication-allowlist.sh`: no confidential material in the public tree.
 - `scripts/mutation-test.sh` (`.github/workflows/mutation.yml`): a pull request that touches one

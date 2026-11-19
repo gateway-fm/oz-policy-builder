@@ -33,3 +33,14 @@
 #![no_std]
 
 pub mod contract;
+
+// Provenance, read with `stellar contract info meta`. The spec this was built
+// from, its registry snapshot and the toolkit revision are in the
+// BuildManifest, not here: they would make one grant shape a different Wasm per
+// spec.
+soroban_sdk::contractmeta!(key = "ozpb_generator", val = "oz-policy-builder/codegen@1");
+soroban_sdk::contractmeta!(key = "ozpb_template_family", val = "policy-templates/scope@1");
+soroban_sdk::contractmeta!(
+    key = "ozpb_codegen_input",
+    val = "4bb21baeb028d0fa128e1f1d44777918cf2363aa6568b0d3b5090efe4a1c904a"
+);

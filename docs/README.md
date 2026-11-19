@@ -17,6 +17,7 @@ the reader it is mainly written for.
 ## Wallet integrators
 
 - [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md) — the reference integration: consent, checks, passkey install, use, revoke.
+- [MAINNET-INSTALL.md](MAINNET-INSTALL.md) — the owner's runbook for one installation on mainnet: prerequisites, every write with its simulated fee, the caps, evidence and removal.
 - [AGENT-WALLET-HANDOFF.md](AGENT-WALLET-HANDOFF.md) — direct local delivery of a confirmed proposal from Claude to the wallet.
 - [INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md) — the unsigned install transaction and what a wallet must check before signing.
 - [LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md) — predicting one call against an installed rule.
@@ -29,6 +30,7 @@ the reader it is mainly written for.
 ## Self-hosters and operators
 
 - [SELF-HOSTING.md](SELF-HOSTING.md) — run the MCP endpoint yourself for trusted clients.
+- [VERSIONING.md](VERSIONING.md) — what a release number promises, what counts as breaking, and the release gate.
 - [ISOLATED-BUILDS.md](ISOLATED-BUILDS.md) — disposable build workers on a separate host.
 - [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md) — which SDK, accounts and protocol versions each part pins, and why.
 - [PROTOCOL-30-VALIDATION.md](PROTOCOL-30-VALIDATION.md) — protocol 30 compatibility observations.
@@ -41,12 +43,15 @@ the reader it is mainly written for.
 ## Security auditors
 
 - [AUDIT-SCOPE.md](AUDIT-SCOPE.md) — the entry point: components, threat model, known limits, gates.
+- [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md) — each audit finding's fix, regression test and status.
+- [MAINNET-GATES.md](MAINNET-GATES.md) — each acceptance gate before mainnet use, its status and the tests CI runs for it.
 - [../SECURITY.md](../SECURITY.md) — disclosure policy, and what is deliberately not claimed.
 - [architecture.md](architecture.md) — the full technical architecture and delivery plan.
 - [SCOPE.md](SCOPE.md) — what is implemented, and the limits each part keeps.
 - [CANONICAL-HASHING.md](CANONICAL-HASHING.md) — the hash specification an independent implementation follows.
 - [RECORDING-EVIDENCE.md](RECORDING-EVIDENCE.md) — the recording format and what a recording hash does and does not prove.
 - [SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md) — advisories accepted temporarily, with their expiry.
+- [SAST-TRIAGE.md](SAST-TRIAGE.md) — each static-analysis finding: fixed, not exploitable (and why), or a false positive.
 - [TESTNET-EVIDENCE.md](TESTNET-EVIDENCE.md) — first-milestone testnet evidence.
 - [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) — second-milestone runs, and how to capture a new one.
 
@@ -60,6 +65,7 @@ the reader it is mainly written for.
 
 - [TRANCHE-1-VERIFICATION.md](TRANCHE-1-VERIFICATION.md) — reproduce the first milestone.
 - [TRANCHE-2-VERIFICATION.md](TRANCHE-2-VERIFICATION.md) — the second milestone's checks and evidence crosswalk.
+- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's crosswalk: each contracted item, what this tree implements, what remains, and the owner's acceptance of deviations.
 
 ## Contributors
 
@@ -67,7 +73,7 @@ the reader it is mainly written for.
 - [EXTENDING.md](EXTENDING.md) — adding a constraint kind, a target adapter or a wallet integration.
 - [CHANGE-REVIEW-PLAN.md](CHANGE-REVIEW-PLAN.md) — how changes to evidence, authority and installation are reviewed.
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — DCO, gates, commit messages and documentation rules.
-- [release-notes/](release-notes/) — breaking changes, security fixes and additions per release.
+- [release-notes/](release-notes/) — breaking changes, security fixes and additions per release, classified by [VERSIONING.md](VERSIONING.md).
 
 [`examples/`](examples/) holds runnable inputs, and [`evidence/`](evidence/) the published run
 summaries the evidence records cite.

@@ -62,8 +62,8 @@ python3 scripts/test-check-wasm-exports.py
 # workspace held a banned type. That is the shape of defect this gate exists to prevent, and CI
 # lints the two workspaces separately for the same reason.
 #
-# `--all` covers only the current workspace. The two generated crates are excluded from
-# `contracts` so they can carry standalone release profiles. Name both explicitly for fmt and
+# `--all` covers only the current workspace. The generated crates are excluded from
+# `contracts` so they can carry standalone release profiles. Name each explicitly for fmt and
 # clippy, as CI does; compiling one as a dependency does not lint or reliably format it.
 #
 # Every command below that resolves a workspace passes --locked, so a lockfile that no longer
@@ -75,11 +75,14 @@ cargo fmt --all --check
 ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
 ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
 ( cd contracts/range-transfer-policy && cargo fmt --all --check )
+( cd contracts/two-payment-policy && cargo fmt --all --check )
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ( cd contracts && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/golden-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/soroswap-swap-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/range-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
+# contracts/two-payment-policy is formatted but not linted: the emitter's two-tuples-of-one-function
+# output trips clippy::nonminimal_bool (see the contracts job in .github/workflows/ci.yml).
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --locked --workspace

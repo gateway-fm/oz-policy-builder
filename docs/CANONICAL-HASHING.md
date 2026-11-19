@@ -26,7 +26,9 @@ hash     = SHA-256(preimage encoded as XDR)
 ```
 
 The canonicalization version is **2**. Version 1 was the JSON scheme and is not reproducible from
-a specification; nothing in the current tree produces it.
+a specification; nothing in the current tree produces it. A build manifest records the version its
+hashes were taken under as `canonicalization_version`, so a reader holding one knows which rules
+reproduce them.
 
 The domain travels inside the preimage rather than as a prefix outside it, following the protocol:
 `HashIdPreimage` is a union whose discriminant names the structure being hashed, and the hash
@@ -53,7 +55,8 @@ two as separate and so does this.
 | `ozpb:v1:signer-set` | the signers of one rule, as the account stores them |
 | `ozpb:v1:registry-snapshot` | a capability registry snapshot |
 | `ozpb:v1:codegen-input` | the normalized inputs a generated crate is emitted from |
-| `ozpb:v1:build-manifest` | a build manifest |
+| `ozpb:v2:build-manifest` | a build manifest, schema `build-manifest/v2` |
+| `ozpb:v1:template-pack` | the generator's template source: `crates/codegen/src/lib.rs` up to its test module, `crates/codegen/src/render.rs`, and `contracts/golden-transfer-policy/Cargo.lock`, as a map from those repository paths to their text |
 | `ozpb:v1:policy-binding-set` | a policy binding set |
 | `ozpb:v1:policy-check-request` | the complete typed `CheckAgainstPolicyInput` |
 | `ozpb:v1:dry-run-request` | the complete typed `DryRunInput`, including artifact claims and nonce |
@@ -193,6 +196,31 @@ the 32-byte length — the charset lives in `impl Validate for ScVal`, which `Sc
 keys. So a struct field name was checked and an enum variant tag inside a `Vec` was not. An
 implementation that skips this check can produce an `ScVal` no host would accept, whose bytes
 still hash.
+
+### The normalized codegen input
+
+`ozpb:v1:codegen-input` hashes `NormalizedInput` (`crates/codegen/src/lib.rs`), the only part of
+a rule that may change emitted bytes. Its value is what a generated policy states as
+`ozpb_codegen_input` in its contract meta, and it is a named struct with these fields, encoded by
+the ordinary rules:
+
+| Field | Value |
+|---|---|
+| `codegen_version` | `U32`, currently 1 |
+| `template_family` | the rule's generated-policy family, e.g. `policy-templates/scope@1` |
+| `target` | the rule's `context.contract` strkey, as a string |
+| `valid_until` | the rule's `valid_until.ledger`, as an `Option` of `U32` |
+| `predicate` | `authorization.kind` as the spec serializes it: `any_of`, `all_of`, `{"threshold": {"n": …}}`, `any_of_current_rule_signers` |
+| `strict_signer_set` | `authorization.strict_signer_set` |
+| `signers` | `authorization.signers`, sorted by `SignerSpec`'s derived order (`delegated` before `external`, then field by field) |
+| `calls` | `allowed_calls` in spec order, each a struct of `fn_name` and `args`: the call's arguments in spec order, each the tuple `(index, constraint)` with the constraint as the spec serializes it |
+| `state` | the rule's `state` entries in spec order |
+
+Everything else in the specification is excluded: its name, network, account, registry snapshot,
+rationale and evidence, the rule's other policies, and each call's justification and each
+argument's provenance. That exclusion is what lets one grant
+shape compile to one Wasm. Recomputing the value therefore needs the specification and these
+rules; the meta entry alone proves nothing about where an artifact came from.
 
 ### Types that are built as `ScVal` directly
 

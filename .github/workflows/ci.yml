@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: every commit carries a Signed-off-by matching its author
         env:
@@ -63,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # rustc and stellar-cli are recorded as the build inputs every shipped wasm hash was
       # produced with, and both land inside the hashed bytes. This is the only workflow that runs
       # on a pull request, so it is the only place the assertion can block a merge: the wasm
@@ -95,8 +98,22 @@ jobs:
         run: bash scripts/test-mcp-server-dev.sh
       - name: agent-transcript checker, and no skill or plugin pre-approves a per-call tool
         run: python3 scripts/test-check-agent-transcript.py
+      # The self-hosting package keeps request data out of logs by retaining none (G12 in
+      # docs/MAINNET-GATES.md). This reads its files and fails on a setting that would turn a log
+      # back on; the self-test changes each setting and requires the refusal.
+      - name: log redaction — the shipped package retains no log and prints no credential
+        run: python3 scripts/check-log-redaction.py
+      - name: log redaction — the check refuses each setting that would retain a log
+        run: python3 scripts/test-check-log-redaction.py
       - name: Phase 2 reference coverage and MCP verification evidence
         run: bash scripts/check-phase2-evidence.sh --host-only
+      # docs/MAINNET-GATES.md is the list: the checker reads it, refuses it when a named test is
+      # not in its file, and runs each named host test once by full name. The contracts and
+      # harness jobs run their parts; the Wasm-gated ones are named, not run, here.
+      - name: mainnet gates refuse renamed, removed and filtered tests
+        run: python3 scripts/test-check-mainnet-gates.py
+      - name: mainnet gates — each named host test passes exactly once
+        run: bash scripts/check-mainnet-gates.sh --part host
       # Source determinism, asserted without a toolchain. This previously shelled out to
       # `ozpb generate`, which compiles the policy and therefore needs the stellar CLI that
       # this runner does not have — so the step failed on every push while proving nothing.
@@ -111,6 +128,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.15.0'
@@ -133,12 +152,20 @@ jobs:
           npm test --prefix testnet-harness/browser
           npm test --prefix wallet
           python3 scripts/test-apply-pollywallet.py
+      - name: mainnet gates — each named wallet test passes exactly once
+        env:
+          OZPB_BIN: ${{ github.workspace }}/target/debug/ozpb
+          OZPB_MCP_BIN: ${{ github.workspace }}/target/debug/ozpb-mcp-server
+          CARGO_NET_OFFLINE: 'true'
+        run: bash scripts/check-mainnet-gates.sh --part wallet
 
   contracts:
     name: contracts (differential suite · generated code compiles)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: differential suite (reference evaluator vs real compiled policy)
         working-directory: contracts
         run: cargo test -p ozpb-differential
@@ -149,6 +176,8 @@ jobs:
         run: cargo test -p ozpb-atomic-live-helper
       - name: Phase 2 partial layer-2 evidence (each named test must run)
         run: bash scripts/check-phase2-evidence.sh --contracts-only
+      - name: mainnet gates — each named contracts test passes exactly once
+        run: bash scripts/check-mainnet-gates.sh --part contracts
 
       # The hash-determinism bans in `clippy.toml` apply to this workspace too — clippy
       # walks up to the repository root to find it — but the host job's `--workspace` never
@@ -172,6 +201,12 @@ jobs:
       # `--all-targets` rather than a bare invocation: it compiles the test target too, which is
       # what makes this also the standing check that a generated crate's committed lockfile is a
       # resolution `soroban-sdk`'s `testutils` can build. It was not, until this branch.
+      #
+      # contracts/two-payment-policy is not linted here, and that is a known emitter defect, not a
+      # waiver: for two accepted tuples of one function the emitter writes
+      # `(fn_0_ok && check_call_0(..)) || (fn_0_ok && check_call_1(..))`, which
+      # `clippy::nonminimal_bool` refuses. The crate is the differential suite's two-tuple
+      # fixture; add it here when the emitter groups tuples by function.
       - name: clippy (each generated crate, which linting a dependency does not cover)
         run: |
           ( cd contracts/golden-transfer-policy && cargo clippy --all-targets -- -D warnings )
@@ -186,14 +221,15 @@ jobs:
       #
       # Three invocations, because `--all` means "the members of this workspace" and the
       # generated crates are excluded to retain their standalone release profiles. The
-      # differential suite reaches the transfer crate as a dependency, but that edge is for
-      # testing rather than formatting coverage. Name both artifacts explicitly.
+      # differential suite reaches them as dependencies, but that edge is for testing rather
+      # than formatting coverage. Name each generated crate explicitly.
       - name: fmt (this workspace and the generated crates it excludes)
         run: |
           ( cd contracts && cargo fmt --all --check )
           ( cd contracts/golden-transfer-policy && cargo fmt --all --check )
           ( cd contracts/soroswap-swap-policy && cargo fmt --all --check )
           ( cd contracts/range-transfer-policy && cargo fmt --all --check )
+          ( cd contracts/two-payment-policy && cargo fmt --all --check )
 
       # The generated crates now ship OpenZeppelin's own `rustfmt.toml`, and most of its options
       # are unstable: a stable rustfmt prints a warning for each and applies only `max_width`,
@@ -223,6 +259,7 @@ jobs:
           ( cd contracts/golden-transfer-policy && cargo "+$NIGHTLY" fmt --all --check )
           ( cd contracts/soroswap-swap-policy && cargo "+$NIGHTLY" fmt --all --check )
           ( cd contracts/range-transfer-policy && cargo "+$NIGHTLY" fmt --all --check )
+          ( cd contracts/two-payment-policy && cargo "+$NIGHTLY" fmt --all --check )
 
   native-execution:
     name: native execution (protocol 30 · framing · ABI)
@@ -230,6 +267,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: format, lint and offline protocol tests
         run: |
           cargo fmt --manifest-path execution-runtime/Cargo.toml --all --check
@@ -241,6 +280,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # Architecture §6.5: the public repo is produced from an allowlist. Two steps, because
       # this one only ever sees a tree with nothing planted in it — it says the current tree is
       # clean, which is necessary but is not the negative test §6.5 promises.
@@ -258,6 +299,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: toolchain
         run: rustup show # rust-toolchain.toml pins the channel + components
       # check-dep-rules.sh asserts only the ABSENCE of forbidden edges, so a declared-and-
@@ -276,6 +319,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # A hash quoted in prose that nothing here produces any more is worse than an
       # out-of-date sentence: the reader follows it, cannot reproduce it, and concludes the
       # attestation chain is broken. Whole classes of derived hash move together whenever the
@@ -288,11 +333,26 @@ jobs:
       - name: Wasm export checker self-tests
         run: python3 scripts/test-check-wasm-exports.py
 
+  release-packaging:
+    name: release packaging (archives · wire-contract export · SHA256SUMS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The release-binaries workflow runs the real binaries only when dispatched: on a tag whose
+      # release is still a draft, or as a dry run on a branch. This runs its packaging script
+      # against stand-ins on every change, so a broken archive, export or checksum step is found
+      # in review rather than at release time.
+      # No toolchain, about a second.
+      - name: release-artifacts self-tests
+        run: python3 scripts/test-release-artifacts.py
+
   supply-chain:
     name: supply-chain (permissive licenses · sources · advisories)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: advisory exception guard regressions
         run: python3 -B scripts/test-check-advisory-exception.py
       # Pinned, not latest — same reasoning as cargo-machete above. cargo-deny decides this

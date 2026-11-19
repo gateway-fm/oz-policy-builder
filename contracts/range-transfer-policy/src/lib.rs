@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! GENERATED POLICY — template family `policy-templates/scope@1`.
 //! Normalized codegen input hash:
-//! c6e42f29d841b28cf3b78e02167ad2c332d773d45d28c8b843922e682f818831
+//! c2c4ccfa67dfe3018d965de3b35866672ab1d3e549a77041e5f27a1646dfec37
 //!
 //! DO NOT EDIT BY HAND: any manual change switches this artifact to CUSTOM
 //! SOURCE MODE (architecture §4.4) — spec conformance, differential testing,
@@ -33,3 +33,14 @@
 #![no_std]
 
 pub mod contract;
+
+// Provenance, read with `stellar contract info meta`. The spec this was built
+// from, its registry snapshot and the toolkit revision are in the
+// BuildManifest, not here: they would make one grant shape a different Wasm per
+// spec.
+soroban_sdk::contractmeta!(key = "ozpb_generator", val = "oz-policy-builder/codegen@1");
+soroban_sdk::contractmeta!(key = "ozpb_template_family", val = "policy-templates/scope@1");
+soroban_sdk::contractmeta!(
+    key = "ozpb_codegen_input",
+    val = "c2c4ccfa67dfe3018d965de3b35866672ab1d3e549a77041e5f27a1646dfec37"
+);

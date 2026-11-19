@@ -14,21 +14,26 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
    free-form generation, immutable per-grant specialization, the generated-code contract, and
    the three rings that keep the reviewed surface small.
 2. `contracts/golden-transfer-policy/src/lib.rs` and `src/contract.rs`: a generated policy exactly
-   as emitted. The crate header states its guarantees and its check order.
+   as emitted. The crate header states its guarantees and its check order; the crate root's three
+   `contractmeta!` entries state its provenance.
 3. `contracts/soroswap-swap-policy/src/contract.rs`: a second shape, with bounds derived by a
-   reviewed target adapter.
+   reviewed target adapter. `contracts/two-payment-policy/src/contract.rs`: a third, one rule
+   with two exact tuples of one function.
 4. [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15, the generated crate measured against
    your `code-quality.md`: what it satisfies, nine argued divergences, and three upstream defects.
-   §6 (events) and §3 (TTL) give the reasoning those rows cite.
+   §6 (events) and §3 (TTL) give the reasoning those rows cite. §2 says what the contract meta
+   and the BuildManifest ([architecture §6.3](architecture.md#63-reproducibility-and-artifact-provenance))
+   state, and that only reproduction establishes an artifact's origin.
 5. `crates/codegen/src/lib.rs` (`emit_lib` and the helpers it calls) and
-   `crates/codegen/src/render.rs`: the snippet library, and the render-safe literal types that are
-   the only way a recorded value reaches the source.
+   `crates/codegen/src/render.rs`: the snippet library, and the render-safe literal types
+   (`MetaValue` among them) that are the only way a recorded value reaches the source.
 6. `crates/policy-spec/src/lib.rs` (`Constraint`, `PredicateKind`, `StateSpec`, validation) with
    `docs/examples/subscription-spec.json`: the vocabulary a grant can express.
 7. The compiled policy under test: `contracts/differential/tests/differential.rs` (verdict and
-   deny reason against the independent reference evaluator), `generated_suite.rs`, `events.rs`,
-   `ttl.rs`, and `account_wasm_invariants.rs`, which runs the generated Wasm inside the pinned
-   account Wasm ([map of what it shows](SCOPE.md#state-invariants-and-direct-calls)).
+   deny reason against the independent reference evaluator), `generated_suite.rs`,
+   `two_payment_generated_suite.rs` (both mixes of the two tuples refused), `events.rs`, `ttl.rs`,
+   and `account_wasm_invariants.rs`, which runs the generated Wasm inside the pinned account Wasm
+   ([map of what it shows](SCOPE.md#state-invariants-and-direct-calls)).
 8. The capability entries for your prebuilt contracts: the `dev` module of
    `crates/registry/src/lib.rs` (each entry's `review_reference`), the exact hashes in
    `ozpb_domain::pinned_upstream` (`crates/domain/src/lib.rs`), and how they are rebuilt from your
@@ -36,6 +41,11 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
 9. [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md): the version boundaries summarized below.
 10. [TARGET-ADAPTERS.md](TARGET-ADAPTERS.md) with `crates/synthesizer/src/adapters.rs`: adapter
     design.
+11. [MAINNET-GATES.md](MAINNET-GATES.md): each acceptance gate before mainnet use with the tests
+    CI runs for it by name; [G4](MAINNET-GATES.md#g4-tuple-correlation) and
+    [G14](MAINNET-GATES.md#g14-security-review) bear on this review. `scripts/mutation-test.sh`
+    is the mutation gate over eight pure cores, codegen, policy-spec and the evaluator among them
+    ([DEVELOPERS.md](DEVELOPERS.md#invariants-ci-enforces-dont-break-these)).
 
 ## How a generated policy uses `stellar-accounts`
 
@@ -70,6 +80,11 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
   divergence 1).
 - **Getters.** `is_installed` and, where a cap exists, `remaining_calls`, in an inherent
   `#[contractimpl]`.
+- **Contract meta.** `soroban_sdk::contractmeta!` entries `ozpb_generator`, `ozpb_template_family`
+  and `ozpb_codegen_input` (the normalized codegen-input hash,
+  [CANONICAL-HASHING.md](CANONICAL-HASHING.md#the-normalized-codegen-input)), readable with
+  `stellar contract info meta`. No enforcement logic; the spec hash and registry root stay in the
+  BuildManifest, so equal grants still share one Wasm (§2).
 - **No setters and no upgrade entry point.** Reconfiguration is remove and reinstall (§8; §15,
   divergence 4).
 
@@ -77,7 +92,7 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
 
 | Component | Versions | Where pinned |
 | --- | --- | --- |
-| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `contracts/golden-transfer-policy/Cargo.toml`, `contracts/soroswap-swap-policy/Cargo.toml`; `Pins::default` in `crates/codegen/src/lib.rs` |
+| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
 | Recognized account | Your `examples/multisig-smart-account/account` at v0.7.3 (`stellar-accounts` 0.7.3, `soroban-sdk` 26.1.0), built here from source | Exact hash in `ozpb_domain::pinned_upstream` |
 | ed25519 and WebAuthn verifiers, reviewed spending-limit policy | Your `examples/multisig-smart-account` at v0.7.2 (`stellar-accounts` 0.7.2, `soroban-sdk` 26.1.0), built here from source | Exact hashes in `ozpb_domain::pinned_upstream` |
 
@@ -111,10 +126,10 @@ exists for each.
 
 | Gate ([§11](architecture.md#11-ecosystem-engagement)) | What exists in this tree | State |
 | --- | --- | --- |
-| PolicySpec and constraint vocabulary, with the signer-predicate and tuple model | `crates/policy-spec`: constraints `EqAddress`, `EqScval`, `EqI128`, `LeI128`, `GeI128`, `RangeI128` (both bounds, inclusive; declared from development registry version 7), `AnyValue`; predicates `AnyOf`, `AllOf`, `Threshold`, `AnyOfCurrentRuleSigners`; `CallCountPerInstallation`; a validation typestate; reference semantics in `crates/evaluator`; [CANONICAL-HASHING.md](CANONICAL-HASHING.md) | In use since Tranche 1 |
-| Capability-registry entries for your prebuilt contracts and verifier hashes | Entries in `registry::dev` for your 0.7.2 spending-limit policy and both verifiers and your 0.7.3 account, each keyed by exact hash with a source-review reference, and the revoked 0.7.2 account entry; the account's method inventory in `crates/registry/src/account_methods.rs`; `scripts/verify-pinned-upstream.sh` | Development registry, signed with a public development key; the entries describe our builds of your source, not artifacts you publish |
-| Template snippet library | `crates/codegen` (`emit_lib`, `render.rs`), one template family, `policy-templates/scope@1` | Covers signer predicate with strict set, target, function and tuple checks, exact and bounded `i128`, address and exact `ScVal`, call count and expiry. Embedding addresses as encoded bytes is deferred to template-pack v2 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)) |
-| Generated-code final form | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15 | Self-assessed against your checklist; provenance metadata still to be added (below) |
+| PolicySpec and constraint vocabulary, with the signer-predicate and tuple model | `crates/policy-spec`: constraints `EqAddress`, `EqScval`, `EqI128`, `LeI128`, `GeI128`, `RangeI128` (both bounds, inclusive; declared from development registry version 7), `AnyValue`; predicates `AnyOf`, `AllOf`, `Threshold`, `AnyOfCurrentRuleSigners`; `CallCountPerInstallation`; a validation typestate; reference semantics in `crates/evaluator`; [CANONICAL-HASHING.md](CANONICAL-HASHING.md); the tuple model's cross products refused through a compiled policy (`two_payment_generated_suite.rs`) | In use since Tranche 1; exact synthesis ([G3](MAINNET-GATES.md#g3-exact-synthesis)) and tuple correlation ([G4](MAINNET-GATES.md#g4-tuple-correlation)) are closed in the gate map; policy-spec and the evaluator are mutation-gated |
+| Capability-registry entries for your prebuilt contracts and verifier hashes | Entries in `registry::dev` for your 0.7.2 spending-limit policy and both verifiers and your 0.7.3 account, each keyed by exact hash with a source-review reference, and the revoked 0.7.2 account entry; the account's method inventory in `crates/registry/src/account_methods.rs`; `scripts/verify-pinned-upstream.sh`; governance tooling, `ozpb registry` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | Development registry, signed with a public development key that every network but testnet refuses; the entries describe our builds of your source, not artifacts you publish. The mainnet log (`registry/mainnet/`) is an unsigned draft until its key ceremony |
+| Template snippet library | `crates/codegen` (`emit_lib`, `render.rs`), one template family, `policy-templates/scope@1`; mutation-gated | Covers signer predicate with strict set, target, function and tuple checks, exact and bounded `i128`, address and exact `ScVal`, call count and expiry. Embedding addresses as encoded bytes is deferred to template-pack v2 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). Output for several tuples of one function is not yet lint-clean (below) |
+| Generated-code final form | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15; provenance in contract meta and in BuildManifest v2 (§2; [architecture §6.3](architecture.md#63-reproducibility-and-artifact-provenance)) | Self-assessed against your checklist. The first three pass `cargo clippy -D warnings` in CI; the two-payment one is formatted but not linted. Provenance is self-asserted; `ozpb verify` reproduces the artifact |
 | Adapter design | [TARGET-ADAPTERS.md](TARGET-ADAPTERS.md), `crates/synthesizer/src/adapters.rs`, `crates/domain/src/target_adapters.rs` | One adapter, `soroswap-router@2`; its router binding is a development-registry assertion whose Wasm was not reproduced from source; no Blend adapter |
 
 ## Upstream items
@@ -134,18 +149,23 @@ exists for each.
 
 ## What will still change before the audited revision
 
-- **Provenance metadata in the contract.** Generated crates gain `contractmeta!` entries naming
-  what the artifact was derived from — the spec hash, the template pack and the generator
-  version; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1, lists the fields
-  considered. This is metadata in the
-  SEP-46 section, readable with `stellar contract info meta`, with no enforcement logic; it
-  changes every generated source and Wasm hash.
-- **Provenance fields in the BuildManifest** that it does not record today
-  ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)). Metadata only; every manifest rehashes.
+- **Tuples of one function, grouped.** For several accepted tuples of one function the emitter
+  writes `(fn_0_ok && check_call_0(..)) || (fn_0_ok && check_call_1(..))`, which
+  `clippy::nonminimal_bool` refuses; the verdicts are unaffected
+  ([G4](MAINNET-GATES.md#g4-tuple-correlation)). Until the emitter groups tuples by function,
+  `contracts/two-payment-policy` is formatted but not linted in CI, and the fix changes the
+  generated source and Wasm of every such rule.
 
-The move of the recognized account from the 0.7.2 example to the 0.7.3 build, for
-GHSA-jpg9-m7w4-c7wc, is already in this tree: a new pinned hash, development registry version 6
-with the 0.7.2 entry revoked, and the pinned-account gate building the 0.7.3 account
+The audited revision is the freeze commit [AUDIT-SCOPE.md](AUDIT-SCOPE.md) names when the audit
+starts.
+
+Already in this tree: the `contractmeta!` provenance above, which changed every generated source
+and Wasm hash ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1); BuildManifest
+schema `build-manifest/v2`, which adds the canonicalization version, the build target and a
+`producer` record, and so rehashed every manifest
+([SCOPE.md item 2](SCOPE.md#implementation-boundaries)); and the recognized account's move from
+the 0.7.2 example to the 0.7.3 build for GHSA-jpg9-m7w4-c7wc, with development registry version 6
+revoking the 0.7.2 entry
 ([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).
 
 Recognizing your 0.8.0 account may follow; it needs the versioned signing, registry, storage and

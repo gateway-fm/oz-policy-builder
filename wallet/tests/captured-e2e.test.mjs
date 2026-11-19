@@ -9,13 +9,14 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Account, Keypair } from '@stellar/stellar-sdk';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution, targetEnvelopeXdr } from '../server/captured-execution.mjs';
 import { checkDryRunPreparation } from '../server/native-execution.mjs';
 import { offlineCapability } from '../server/native-protocol.mjs';
 import { RawJson, parseJsonExact, requestText } from '../server/raw-json.mjs';
 import { runTool } from '../server/tool.mjs';
 import { WalletToolchain } from '../server/toolchain.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const { OZPB_CAPTURED_E2E_CLI: cli, OZPB_CAPTURED_E2E_RUNTIME: runtime, OZPB_CAPTURED_E2E_WORK: work } = process.env;
 const skip = !(cli && runtime && work) && 'requires scripts/test-wallet-native-execution.sh';
@@ -53,7 +54,7 @@ async function replayEndpoint(t) {
 function toolchainFor(url) {
   const toolchain = new WalletToolchain({ executable: cli, workRoot: mkdtempSync(join(work, 'wallet-')),
     rpcUrl: 'https://rpc.invalid/', registrySnapshot: readFileSync(new URL('registry.signed.json', examples), 'utf8'),
-    registryRoots: readFileSync(new URL('registry-roots.json', examples), 'utf8'), registryMinimumVersion: 6 });
+    registryRoots: readFileSync(new URL('registry-roots.json', examples), 'utf8'), registryMinimumVersion: 6, network: WALLET_NETWORKS.testnet });
   // Test only: the replay endpoint is plain HTTP on loopback, which operator configuration refuses.
   writeFileSync(join(toolchain.sessionRoot, 'rpc-sources.json'),
     JSON.stringify({ testnet: { rpc_url: url, network_passphrase: NETWORK } }));
@@ -67,11 +68,11 @@ async function captured(t) {
   const target = capturedCall(spec);
   assert.ok(target, 'the recorded transfer is in the captured scope');
   // Simulation needs an existing source account; the recorded recipient is one. Never signed.
-  const envelope = targetEnvelopeXdr(new Account(recordedCall.recipient, '1'), target.call);
+  const envelope = targetEnvelopeXdr(new Account(recordedCall.recipient, '1'), target.call, WALLET_NETWORKS.testnet.passphrase);
   const capture = await toolchainFor(endpoint.url).captureTarget(envelope);
   assert.deepEqual(endpoint.methods, ['getNetwork', 'simulateTransaction', 'getNetwork', 'getLedgerEntries', 'getLedgers']);
   const checkedCapture = checkTargetCapture(capture, { call: target.call, accountAddress: target.accountAddress,
-    recipient: target.recipient, notBefore: recordedCall.observed_ledger });
+    recipient: target.recipient, notBefore: recordedCall.observed_ledger, networkId: NETWORK_ID });
 
   const manifest = parseJsonExact(readFileSync(join(work, 'generated', 'build-manifest.json'), 'utf8'));
   const wasmBase64 = readFileSync(join(work, 'generated', 'generated_sub_transfer_r0.wasm')).toString('base64');
@@ -93,7 +94,7 @@ async function captured(t) {
     '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '6', '--rpc-sources', sources]));
   const checked = checkDryRunPreparation(output, { specHash: manifest.spec_hash, bindingSetHash: output.binding.binding_set_hash,
     accountAddress: spec.smart_account.address, delegateAddress: delegate.publicKey(), policyAddress: POLICY,
-    policyCodeHash: manifest.wasm_hash, candidateContextRuleId: 3, sourceLedger: checkedCapture.observedLedger });
+    policyCodeHash: manifest.wasm_hash, candidateContextRuleId: 3, sourceLedger: checkedCapture.observedLedger, networkId: NETWORK_ID });
   const account = readFileSync(join(work, 'pinned-account.wasm')).toString('base64');
   return { target, envelope, checkedCapture, maxCalls: spec.rules[0].state[0].call_count_per_installation.max_calls,
     jobText: capturedJobText(request, account, checkedCapture),
@@ -137,5 +138,5 @@ test('the actual capture is refused for a review naming another call', { skip },
   spec.rules[0].allowed_calls[0].args.find((arg) => arg.i === 2).c.eq_i128.value = String(run.target.amount + 1n);
   const other = capturedCall(spec);
   assert.throws(() => checkTargetCapture(run.checkedCapture.capture, { call: other.call, accountAddress: run.target.accountAddress,
-    recipient: run.target.recipient, notBefore: run.checkedCapture.observedLedger }), /refused/);
+    recipient: run.target.recipient, notBefore: run.checkedCapture.observedLedger, networkId: NETWORK_ID }), /refused/);
 });

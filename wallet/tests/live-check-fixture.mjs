@@ -10,6 +10,7 @@ import { DelegateCapabilities } from '../server/native-execution.mjs';
 import { deploymentFixture } from './actions-fixture.mjs';
 import { RECIPIENT } from './captured-execution-fixture.mjs';
 import { denialSimulation, permitChanges, permitSimulation, withProbe } from './live-enforcement-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 export const HELPER = StrKey.encodeContract(Buffer.alloc(32, 0x4c));
 export const START_LEDGER = 1000;
@@ -62,7 +63,7 @@ export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, 
   ledger = START_LEDGER, liveUntil = ledger + 100_000, onSimulate = () => {}, native = null, intentChange = () => {} } = {}) {
   const keys = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
   const publicKey = Buffer.from(await webcrypto.subtle.exportKey('raw', keys.publicKey)).toString('hex');
-  const delegates = new CountingCapabilities();
+  const delegates = new CountingCapabilities(WALLET_NETWORKS.testnet);
   const f = deploymentFixture((d) => {
     d.f.wallet.publicKey = publicKey;
     d.f.intent.authority.verdict.authority_list[0].requirement.signers[0].public_key = publicKey;

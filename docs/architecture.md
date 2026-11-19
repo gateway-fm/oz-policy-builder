@@ -605,10 +605,13 @@ impl GeneratedPolicy {
     (`policy_address_rule_can_uninstall_and_call_surface_refuses_it` in
     `contracts/differential/tests/account_wasm_invariants.rs`).
     `check_policy_call_surface` lists every such rule before installation and refuses one the
-    agent's key can use alone. A rule added later is detected only when someone runs the
-    wallet's [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring),
-    and only for a grant installed by the running backend; it counts any later rule allocation
-    as drift. Nothing monitors in the background. The guarantee stated to a user must be
+    agent's key can use alone. A rule added later is detected when someone runs the wallet's
+    [on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring), for a
+    grant installed by the running backend, or by `ozpb check-installed-grant` on the operator's
+    schedule, whose exit status is the alert
+    ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)); both count
+    any later rule allocation as drift. Nothing in this tree schedules it, and each run sees one
+    ledger. The guarantee stated to a user must be
     "per installation", never "lifetime".
 - **Rendering safety:** all symbols, strings, bytes, and `ScVal` values from recordings are
   untrusted data. They are never interpolated into Rust identifiers, and they reach a string
@@ -631,9 +634,15 @@ impl GeneratedPolicy {
   property test over generated specs, and `cargo fmt --check` on each committed generated crate.
   Reproducible wasm: pinned Rust toolchain (`rust-toolchain.toml`), `--locked` builds, and the
   pinned `stellar contract build` whose version the manifest records and the artifact's own
-  metadata confirms; a containerized builder identified by image digest is future work (§6.3).
-  Provenance lives in the BuildManifest, within the field set §6.3's scope note names — not all
-  of what that section lists is carried yet. Re-derivation is automated by `verify` (§4.6), which
+  metadata confirms. The optional disposable worker ([`ISOLATED-BUILDS.md`](ISOLATED-BUILDS.md))
+  records the image it ran in the manifest; the default builder compiles in the API's own
+  environment and records none (§6.3).
+  The artifact states its own origin in SEP-46 `contractmetav0` entries — generator and codegen
+  version, template family, normalized codegen-input hash — readable with `stellar contract info
+  meta`. Only values the normalized input determines may go there, since they are compiled in:
+  the spec hash or registry snapshot would make one grant shape a different wasm per spec.
+  The rest of the provenance lives in the BuildManifest, with the field set §6.3's scope note
+  names. Re-derivation is automated by `verify` (§4.6), which
   arrives with that section's milestone.
 
 ### 4.5 Dry-run harness (`crates/harness`)
@@ -1392,17 +1401,25 @@ reviewed.
 > pinned build inputs produce byte-identical source and wasm* — is shipped and gated. The
 > sentence after it, about `verify` reporting each dimension separately, describes §4.6's
 > milestone, and so do `DeploymentRecord`, `InstallationRecord` and publishing manifests keyed by
-> wasm hash: none of those three exists as a type or an implementation here. The **field list**
-> immediately below is likewise the target manifest, not the current one. Today's
-> `BuildManifest` carries: `schema`, `spec_hash`, `registry_snapshot`, `rule_index`,
+> wasm hash: none of those three exists as a type or an implementation here. The `BuildManifest`
+> (schema `build-manifest/v2`) carries: `schema`, `spec_hash`, `registry_snapshot`, `rule_index`,
 > `template_family`, `normalized_input_hash`, `source_hash`, `lockfile_hash`, `wasm_hash`,
 > `wasm_size`, `soroban_sdk_version`, `stellar_accounts_version`, `toolchain` (rustc version,
 > stellar-cli version, and which builder produced the artifact — a real build's two version
 > claims are reconciled against the wasm's own SEP-46 metadata, and only the hermetic test stub
-> is exempt) and `build_args`. Absent: source commit and
-> dirty-tree status, template-pack hash, build-container image digest, canonicalization version,
-> and build target. Adding a field rehashes every manifest, so those land together with the
-> containerized builder at a release gate — recorded in `docs/SCOPE.md`. Two further entries below are *referenced* rather than
+> is exempt), `build_args`, `canonicalization_version`, `build_target` (the triple the generated
+> crate declares, confirmed against where the compiler wrote its output), and a `producer` record:
+> the toolkit's own source commit and dirty flag as its build recorded them (for the container
+> image, which has no checkout to ask, the commit its build was given; `null` when none was),
+> the template-pack hash (the emitter
+> source compiled into the toolkit), and the build-container image — the disposable worker's
+> image ID or digest as its launcher reports it, `null` when the API compiles in its own
+> environment (on a host, or inside the Compose package's one container, whose image is not
+> recorded). "Source commit" is the *toolkit's*: a generated crate has no commit, and the
+> generated source is bound by `source_hash` instead. `verify` and binding recognition reproduce
+> every field except `producer`, which describes the build that made a claim and is reported
+> rather than compared. Every field is the producer's own statement; none is attested. Two
+> further entries below are *referenced* rather than
 > recorded, and stay that way by design: the RecordingBundle hashes and the reviewed
 > policy/account/verifier code hashes are reached through `spec_hash` and `registry_snapshot`
 > instead of being copied into the manifest, which is what keeps the artifact chain acyclic.

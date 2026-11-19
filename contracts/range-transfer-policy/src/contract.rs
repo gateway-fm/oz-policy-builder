@@ -72,7 +72,7 @@ pub enum PolicyStorageKey {
 
 // ################## CONSTANTS ##################
 
-const TARGET: &str = "CAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCRUA6";
+const TARGET: &str = "CAZDEMRSGIZDEMRSGIZDEMRSGIZDEMRSGIZDEMRSGIZDEMRSGIZDFJRF";
 /// Defense in depth: the account also enforces the rule's valid_until.
 const VALID_UNTIL_LEDGER: u32 = 4260000;
 const MAX_CALLS: u32 = 5;

@@ -205,7 +205,7 @@ function consentBase() {
   const approval = value.approval;
   const checked = validateAssembly(value);
   const i = approval.intent;
-  const spec = { smart_account: { address: i.account_contract }, rules: [{ context: { contract: i.context_contract },
+  const spec = { network_id: approval.networkId, smart_account: { address: i.account_contract }, rules: [{ context: { contract: i.context_contract },
     valid_until: { ledger: i.valid_until_ledger }, authorization: { signers: [{ delegated: { address: i.delegate_signers[0].address } }] },
     state: [{ call_count_per_installation: { max_calls: 1 } }], allowed_calls: [{ fn: 'transfer', args: [] }] }] };
   return { approval, checked: structuredClone(checked), spec, maxFeeStroops: 10_000_000, ruleId: RULE_ID };

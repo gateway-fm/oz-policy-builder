@@ -153,7 +153,10 @@ ozpb registry verify --replay registry/mainnet --registry-roots registry/mainnet
 
 Every `vNNNN.signed.json` must load as the direct successor of the one before it, from a genesis,
 and the head must be valid now (`--at <unix seconds>` checks a scheduled one). One snapshot can
-be checked against a consumer's checkpoint with `verify --signed <file> --checkpoint <file>`.
+be checked against a consumer's checkpoint with `verify --signed <file> --checkpoint <file>`
+(without `--checkpoint`, the roots file's own). Add `--min-version <floor>` to check it under the
+consumer's floor as well: a checkpoint older than the floor is refused with `E_REGISTRY_ROLLBACK`,
+as a consumer configured that way refuses every request.
 
 ## Publishing
 
@@ -267,11 +270,18 @@ start — against every copy of the log you can reach. With cron:
 ```cron
 # m h dom mon dow
 17 * * * * cd /srv/ozpb && ./registry-monitor.sh >> /var/log/ozpb-registry-monitor.log 2>&1
+47 * * * * cd /srv/ozpb && ./grant-monitor.sh >> /var/log/ozpb-grant-monitor.log 2>&1
 ```
 
 where `registry-monitor.sh` updates the published log (a `git pull` of the repository, or the
-latest release assets), runs the `monitor` command above, and acts on its status. With systemd,
-a oneshot service running that script and a timer:
+latest release assets), runs the `monitor` command above, and acts on its status. The registry
+monitor reports revoked code, not a changed rule on an account: `grant-monitor.sh` runs
+`ozpb check-installed-grant --recorded-authority-commitment --min-ledger` for each installed grant,
+keeps the `observed_ledger` of a run that exited 0 for the next floor (never a stale run's) and
+acts on the exit status ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)). The two
+commands' exit codes differ (3, 4 and 5 mean different things), so each script has its own
+handler.
+With systemd, a oneshot service running each script and a timer:
 
 ```ini
 # ozpb-registry-monitor.timer

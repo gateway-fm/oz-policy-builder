@@ -6,6 +6,7 @@ use ozpb_api_types::{
     GenerateCodeInput, ReferenceSuiteInput, ReferenceSuiteOutput, ToolError, VerifyInput,
     VerifyOutput,
 };
+use ozpb_build_runner::ManifestMatch;
 use ozpb_harness::EvidenceReport;
 use ozpb_policy_spec::PolicySpec;
 use std::collections::BTreeMap;
@@ -138,10 +139,13 @@ pub fn verify_with_build_config(
         .map_err(|error| ToolError::new(EC::EInternal, error.to_string()))?;
     let wasm_matches =
         matches!(claimed_wasm.as_ref(), Some(Ok(claimed)) if claimed == &reproduced_wasm);
-    let manifest_matches = input
+    // The producer record (toolkit revision, template pack, build image) describes whoever built
+    // the claim; a reproduction compares everything else and reports that record separately.
+    let manifest_match = input
         .claimed_build_manifest
         .as_ref()
-        .is_some_and(|claimed| claimed == &generated.build_manifest);
+        .map(|claimed| ozpb_build_runner::compare_manifests(claimed, &generated.build_manifest));
+    let manifest_matches = !matches!(manifest_match, None | Some(ManifestMatch::Differs));
 
     let report = ozpb_harness::run_layer1(&validated);
     let behavior = rule_behavior(&report, input.rule_index);
@@ -175,26 +179,25 @@ pub fn verify_with_build_config(
                 behavior.unmodeled_reviewed_policies.len()
             )
         },
-        wasm_reproduction: match (
-            claimed_wasm.as_ref(),
-            wasm_matches,
-            &input.claimed_build_manifest,
-            manifest_matches,
-        ) {
-            (None, _, _, _) => "not_verified: no claimed Wasm was supplied".to_string(),
-            (Some(Err(error)), _, _, _) => {
+        wasm_reproduction: match (claimed_wasm.as_ref(), wasm_matches, manifest_match) {
+            (None, _, _) => "not_verified: no claimed Wasm was supplied".to_string(),
+            (Some(Err(error)), _, _) => {
                 format!("INVALID: claimed Wasm is not valid base64: {error}")
             }
-            (Some(Ok(_)), false, _, _) => {
+            (Some(Ok(_)), false, _) => {
                 "MISMATCH: claimed Wasm differs from reproduction".to_string()
             }
-            (Some(Ok(_)), true, None, _) => {
-                "not_verified: no BuildManifest was supplied".to_string()
-            }
-            (Some(Ok(_)), true, Some(_), false) => {
+            (Some(Ok(_)), true, None) => "not_verified: no BuildManifest was supplied".to_string(),
+            (Some(Ok(_)), true, Some(ManifestMatch::Differs)) => {
                 "MISMATCH: claimed BuildManifest differs from reproduction".to_string()
             }
-            (Some(Ok(_)), true, Some(_), true) => {
+            (Some(Ok(_)), true, Some(ManifestMatch::ExceptProducer)) => {
+                "reproduced: Wasm and BuildManifest are identical except its producer record \
+                 (toolkit revision, template pack, build image), which describes the build that \
+                 made the claim and is not reproducible"
+                    .to_string()
+            }
+            (Some(Ok(_)), true, Some(ManifestMatch::Identical)) => {
                 "reproduced: Wasm and BuildManifest are identical".to_string()
             }
         },
@@ -395,6 +398,59 @@ mod tests {
         assert_eq!(
             output.wasm_reproduction,
             "MISMATCH: claimed Wasm differs from reproduction"
+        );
+    }
+
+    /// A manifest made by another toolkit revision or inside the build worker's container is the
+    /// same artifact when everything but its producer record reproduces. Verification says so and
+    /// says which part it could not reproduce; a difference anywhere else is still a mismatch.
+    #[test]
+    fn verification_reproduces_a_manifest_from_another_producer_and_says_so() {
+        let spec = serde_json::to_value(wire_spec().spec()).unwrap();
+        let build_config = build_config();
+        let generated = generate_code_with_build_config(
+            &GenerateCodeInput {
+                spec: spec.clone(),
+                rule_index: 0,
+            },
+            &build_config,
+        )
+        .unwrap();
+        let mut claimed_manifest = generated.build_manifest.clone();
+        claimed_manifest["producer"]["build_image"] =
+            serde_json::json!(format!("sha256:{}", "a".repeat(64)));
+        claimed_manifest["producer"]["toolkit_source"] =
+            serde_json::json!({"commit": "b".repeat(40), "dirty": false});
+        let input = VerifyInput {
+            spec,
+            rule_index: 0,
+            claimed_generated_files: generated
+                .files
+                .iter()
+                .filter(|(path, _)| path.as_str() != "Cargo.lock")
+                .map(|(path, contents)| (path.clone(), contents.clone()))
+                .collect(),
+            claimed_wasm_base64: Some(generated.wasm_base64),
+            claimed_build_manifest: Some(claimed_manifest.clone()),
+            generated_artifact: None,
+        };
+        let output = verify_with_build_config(&input, &build_config).unwrap();
+        assert!(output.matches, "{}", output.wasm_reproduction);
+        assert_eq!(
+            output.wasm_reproduction,
+            "reproduced: Wasm and BuildManifest are identical except its producer record \
+             (toolkit revision, template pack, build image), which describes the build that \
+             made the claim and is not reproducible"
+        );
+
+        let mut other_target = input.clone();
+        let manifest = other_target.claimed_build_manifest.as_mut().unwrap();
+        manifest["build_target"] = serde_json::json!("wasm32-unknown-unknown");
+        let output = verify_with_build_config(&other_target, &build_config).unwrap();
+        assert!(!output.matches);
+        assert_eq!(
+            output.wasm_reproduction,
+            "MISMATCH: claimed BuildManifest differs from reproduction"
         );
     }
 

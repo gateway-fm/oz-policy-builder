@@ -158,6 +158,16 @@ enum Command {
         build: BuildConfigArgs,
     },
     /// Observe modeled authority around an exact retained installed grant; never prepares installation.
+    ///
+    /// Prints the observation as JSON. With --recorded-authority-commitment and --min-ledger the
+    /// exit status is for cron: 0 unchanged (the exact recorded rule, nothing allocated after it,
+    /// and the recorded commitment); 3 changed (the rule, its signers or policies, a later rule,
+    /// or the modeled authority); 5 inactive (expired, otherwise unchanged); 4 no answer (the read
+    /// or the check refused: incomplete or archived state, code other than the recognized code,
+    /// an endpoint failure, or an observation older than --min-ledger; the state is unknown); 1 an
+    /// error before any read (configuration, request, registry trust including an expired or
+    /// superseded snapshot, build); 2 a usage error (a malformed or missing flag). Treat any other
+    /// non-zero status as an alert too.
     CheckInstalledGrant(authority::InstalledGrantArgs),
     /// Run the live authority check and, only when nothing is refused or unresolved, print the
     /// exact `add_context_rule` arguments with the answer they were checked against. Never signs

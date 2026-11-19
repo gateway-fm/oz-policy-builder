@@ -1,12 +1,21 @@
-const ENDPOINTS = new Set(['status', 'prepare-account', 'confirm-account', 'prepare-sample', 'submit-sample', 'record', 'generate', 'import-proposal', 'pair-agent', 'agent-inbox', 'disconnect-agent', 'dismiss-agent-proposal', 'review-agent-proposal',
+const ENDPOINTS = new Set(['status', 'readiness', 'prepare-account', 'confirm-account', 'prepare-sample', 'submit-sample', 'record', 'generate', 'import-proposal', 'pair-agent', 'agent-inbox', 'disconnect-agent', 'dismiss-agent-proposal', 'review-agent-proposal',
   'prepare-deploy', 'confirm-deploy', 'review', 'create-delegate', 'check-account', 'prepare-live', 'consent-live', 'run-live',
   'check-replay', 'assemble', 'submit', 'monitor-grant', 'prepare-replacement', 'confirm-replacement', 'prepare-revoke',
-  'confirm-revoke', 'use-grant', 'try-grant-again']);
+  'confirm-revoke', 'use-grant', 'try-grant-again', 'account-rules', 'prepare-earlier-revoke', 'confirm-earlier-revoke']);
 const refused = () => new Error('wallet request refused; reconnect or try a fresh review');
 /** The closed set of reasons a refusal may name (the backend's REFUSAL_REASONS); any other is dropped. */
 export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
-  'review_expired', 'grant_already_used']);
-/** A refusal's reason, from at most 4 KiB of its JSON body; nothing else in it is kept. */
+  'review_expired', 'grant_already_used', 'network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
+  'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events', 'delegate_key_unavailable']);
+/** The operator setting a cap refusal may name, by reason (the backend's CAP_SETTINGS). */
+export const CAP_SETTINGS = Object.freeze({ fee_cap: 'maxUploadFeeStroops', spend_cap: 'sessionSpendCapStroops' });
+const stroops = (value) => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,18})$/.test(value);
+/** A cap refusal's detail, only in its closed shape: the setting, the simulated cost and the least value that lets it through. */
+const capLimit = (reason, limit) => Object.hasOwn(CAP_SETTINGS, reason) && limit && typeof limit === 'object'
+  && Object.keys(limit).length === 3 && limit.setting === CAP_SETTINGS[reason]
+  && stroops(limit.simulatedFeeStroops) && stroops(limit.neededStroops)
+  ? { limit: Object.freeze({ setting: limit.setting, simulatedFeeStroops: limit.simulatedFeeStroops, neededStroops: limit.neededStroops }) } : {};
+/** A refusal's reason, and a cap refusal's detail, from at most 4 KiB of its JSON body; nothing else in it is kept. */
 async function reasonOf(response) {
   const reader = response.body?.getReader();
   try {
@@ -23,22 +32,29 @@ async function reasonOf(response) {
     const buffer = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
-    const reason = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer))?.reason;
-    return REFUSAL_REASONS.has(reason) ? { reason } : {};
+    const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer));
+    const reason = body?.reason;
+    return REFUSAL_REASONS.has(reason) ? { reason, ...capLimit(reason, body.limit) } : {};
   } catch { return {}; } finally { reader?.cancel().catch(() => {}); }
 }
 
-/** Fragment credentials stay in memory and are removed before the first request. */
-export function takeSessionToken(location, history) {
+/**
+ * Fragment credentials stay in memory and are removed before the first request. The launch URL also
+ * names the session's network (`testnet` or `mainnet`), which the page then holds for its lifetime;
+ * a URL without it is a testnet session.
+ */
+export function takeSession(location, history) {
   const url = new URL(location.href);
-  const match = /^#session=([0-9a-f]{64})$/.exec(url.hash);
+  const match = /^#session=([0-9a-f]{64})(?:&network=(testnet|mainnet))?$/.exec(url.hash);
   history.replaceState(null, '', url.pathname);
   if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
     || url.username || url.password || url.search || !match) {
     throw new Error('wallet session unavailable; open the local launcher URL again');
   }
-  return match[1];
+  return Object.freeze({ token: match[1], network: match[2] ?? 'testnet' });
 }
+
+export function takeSessionToken(location, history) { return takeSession(location, history).token; }
 
 export function createClient(token, options = {}) {
   if (!/^[0-9a-f]{64}$/.test(token)) throw refused();

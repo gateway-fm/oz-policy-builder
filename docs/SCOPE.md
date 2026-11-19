@@ -223,18 +223,22 @@ The source-reviewed account method inventory and its limits are described in
    before any read or after it respectively. Freshness is the wallet's: it re-reads and
    compares the commitment immediately before signing.
 
-2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
-   §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
-   canonicalization version, build target). The builder is labelled `local-unattested`, which
-   is what it is, in every build mode. Adding manifest fields rehashes every manifest, so those
-   fields land at a release gate. The memory, disk and cgroup limits in §4.6 are claimed only
-   for the optional [worker mode](ISOLATED-BUILDS.md), which runs each build in a disposable
-   rootless container with CPU, memory, PID and tmpfs limits, which its acceptance suite
-   checks on the chosen host.
-   The default host builder and the [Compose package](SELF-HOSTING.md) do **not** isolate one
-   build from another, and no manifest records a container image. §6.3 carries a scope note
-   listing the fields the manifest holds against the ones it does not, so the gap is stated
-   rather than left for a reader to find by diffing the document against the struct.
+2. **A containerized default builder, and provenance someone else can check** (§4.4, §6.3).
+   The BuildManifest (schema `build-manifest/v2`) carries the fields §6.3 lists: canonicalization
+   version, build target, and a producer record with the toolkit's source commit and dirty flag,
+   the template-pack hash and, when the optional [worker mode](ISOLATED-BUILDS.md) builds, the
+   image its launcher ran. Two things remain. The default builder and the
+   [Compose package](SELF-HOSTING.md) compile in the API's own environment — no container per
+   build, and the Compose package's own image is not recorded — so their manifests name no image,
+   and they do **not** isolate one build from another; the memory, disk and cgroup limits in
+   §4.6 are claimed only for worker mode, whose acceptance suite checks them on the chosen host.
+   And every field is the producer's own statement: the builder is labelled `local-unattested`
+   in every mode, which is what it is, and no signed attestation (SEP-55) or published rebuild
+   recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`. An image
+   built from the hosted build context (`scripts/hosted-context.py`) has no checkout to ask, so
+   its manifests record the toolkit commit its build was given (`OZPB_TOOLKIT_SOURCE`, which
+   the image workflows set to the exported commit), and none without it. §6.3's scope
+   note states which fields `verify` reproduces and which it only reports.
 
 3. **Reviewed-policy composition at the account-Wasm layer** (F5d). The spending-limit
    example is already built from the pinned OpenZeppelin source, recognized by its exact

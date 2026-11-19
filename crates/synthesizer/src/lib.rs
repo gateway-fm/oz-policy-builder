@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use stellar_xdr::{Limits, WriteXdr};
 
 pub mod adapters;
-// Test-support walkthrough builders (W1/W3), shared across crates' tests; `expect` on
+// Test-support walkthrough builders (W1, W3, two payments), shared across crates' tests; `expect` on
 // known-good fixtures is intentional here.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub mod walkthroughs;

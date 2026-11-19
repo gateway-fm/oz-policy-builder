@@ -118,6 +118,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # A pin that disagrees with the recorded provenance is worse than no pin: the gates below
       # would prove reproducibility under inputs no shipped hash was ever built with, and nothing
@@ -310,6 +312,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: recorded build inputs match the pins in use (rustc · stellar-cli)
         run: bash scripts/check-build-input-pins.sh

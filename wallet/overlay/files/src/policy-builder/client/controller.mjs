@@ -3,8 +3,9 @@ import { verificationGate } from './verification.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const refused = () => new Error('wallet action refused; refresh and review the exact grant');
-// A refusal may say why, in one word from the closed set the page explains (client.mjs REFUSAL_REASONS).
-const because = (reason) => Object.assign(refused(), { reason });
+// A refusal may say why, in one word from the closed set the page explains (client.mjs REFUSAL_REASONS),
+// and a cap refusal which operator setting refused it (the client checked its shape).
+const because = (reason, limit) => Object.assign(refused(), { reason }, limit ? { limit } : {});
 const expired = () => because('review_expired');
 const copy = (value) => {
   const result = JSON.parse(JSON.stringify(value));
@@ -16,7 +17,8 @@ const copy = (value) => {
 };
 const sameWallet = (a, b) => ['contractId', 'credentialId', 'publicKey', 'verifier'].every((key) => a?.[key] === b?.[key]);
 const LAYERS = ['reference', 'account_wasm', 'captured_target', 'live_enforcement'];
-// Testnet closes a ledger every 5 s (200 consecutive ledgers measured on 10 November 2026).
+// Testnet closes a ledger every 5 s (200 consecutive ledgers measured on 10 November 2026); mainnet's
+// target close time is the same.
 const LEDGER_MS = 5_000;
 // A submission still has to reach the backend before the backend's own deadline.
 const MARGIN_MS = 5_000;
@@ -27,7 +29,11 @@ const OWNER_READ_LEDGERS = 12;
 const LIVE_CONSENT_MIN_LEDGERS = 8;
 const LIVE_RUN_MIN_LEDGERS = 3;
 
-/** The route supplies the real validators; only serialized XDR crosses SDK versions. */
+/**
+ * The route supplies the real validators; only serialized XDR crosses SDK versions. `pins.network` and
+ * `pins.networkId` are the network this page was launched for, chosen once: a backend reporting any
+ * other network is refused, and every review is derived for this one.
+ */
 export class WalletController {
   #request; #validators; #sign; #origin; #pins; #notify; #pause; #now; #wall; #deadlines = {}; #busy = false; #agentEpoch = 0;
   #state = copy({ status: null, wallet: null, record: null, artifact: null, deployment: null,
@@ -35,10 +41,12 @@ export class WalletController {
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
     removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, agent: null, agentStale: null,
-    grantUse: null, grantRepeat: null, windows: {}, busy: false });
+    grantUse: null, grantRepeat: null, readiness: null, accountRules: null, earlierRevokePreview: null, earlierRemoval: null,
+    windows: {}, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }), now = () => performance.now(), wall = () => Date.now() }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
+    if (!['testnet', 'mainnet'].includes(pins?.network) || !HASH.test(pins?.networkId ?? '')) throw refused();
     this.#origin = origin; this.#pins = copy(pins); this.#notify = onChange; this.#pause = pause; this.#now = now; this.#wall = wall;
   }
   get state() { return this.#state; }
@@ -56,7 +64,7 @@ export class WalletController {
     if (this.#busy) throw refused();
     this.#busy = true; this.#set({ busy: true });
     try { return await operation(); }
-    catch (error) { throw REFUSAL_REASONS.has(error?.reason) ? because(error.reason) : refused(); }
+    catch (error) { throw REFUSAL_REASONS.has(error?.reason) ? because(error.reason, error.limit) : refused(); }
     finally { this.#busy = false; this.#set({ busy: false }); }
   }
   /** Both clocks: the monotonic one may stop while the computer sleeps, but ledgers keep closing. */
@@ -95,7 +103,7 @@ export class WalletController {
   }
   async #status() {
     const status = await this.#request('status', {});
-    if (status?.network !== 'testnet' || Object.keys(this.#pins).some((key) => status[key] !== this.#pins[key])) throw refused();
+    if (Object.keys(this.#pins).some((key) => status?.[key] !== this.#pins[key])) throw refused();
     this.#set({ status });
     // A lost reset acknowledgement is recovered only for this browser's pending action and
     // the independently derived removed-grant display. A stale receipt cannot reset a new cycle.
@@ -191,7 +199,7 @@ export class WalletController {
       if (result.wallet?.credentialId !== preview.summary.credentialId
         || result.wallet?.publicKey !== preview.summary.publicKey || !result.wallet?.contractId || !result.wallet?.verifier) throw refused();
       this.#validators.reviewSample({ wallet: result.wallet, descriptor: result.sample,
-        ownerRuleXdr: result.sample?.ownerRuleXdr });
+        ownerRuleXdr: result.sample?.ownerRuleXdr, networkId: this.#pins.networkId });
       if (!sameWallet(this.#state.wallet, result.wallet)) this.#clearLifecycle();
       this.#set({ wallet: result.wallet, receipt: result.receipts, sample: result.sample });
     });
@@ -206,7 +214,8 @@ export class WalletController {
       const result = await this.#request('prepare-sample', { wallet });
       if (!HASH.test(result.action?.id) || !Number.isInteger(result.action?.expires_in_seconds)
         || result.action.expires_in_seconds < 1 || result.action.expires_in_seconds > 120) throw refused();
-      const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: result.ownerRuleXdr });
+      const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: result.ownerRuleXdr,
+        networkId: this.#pins.networkId });
       this.#validators.validateSampleAssembly({ approval, assembly: result.assembly,
         ownerRuleXdr: result.ownerRuleXdr, limits: result.limits });
       this.#set({ samplePreview: { action: result.action, assembly: result.assembly,
@@ -226,7 +235,8 @@ export class WalletController {
       this.#capability('sampleTransfer');
       if (!wallet || !sample || !samplePreview || sampleAttempted) throw refused();
       if (!open) throw expired();
-      const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: samplePreview.ownerRuleXdr });
+      const approval = this.#validators.reviewSample({ wallet, descriptor: sample, ownerRuleXdr: samplePreview.ownerRuleXdr,
+        networkId: this.#pins.networkId });
       const checked = this.#validators.validateSampleAssembly({ approval, assembly: samplePreview.assembly,
         ownerRuleXdr: samplePreview.ownerRuleXdr, limits: samplePreview.limits });
       const signedAuthEntriesXdr = await this.#sign({ approval, checked });
@@ -263,7 +273,7 @@ export class WalletController {
       this.#capability('importProposal');
       const wallet = this.#state.wallet;
       if (!wallet) throw refused();
-      const proposal = this.#validators.parseGrantProposal(text, wallet.contractId);
+      const proposal = this.#validators.parseGrantProposal(text, wallet.contractId, this.#pins.networkId);
       const result = await this.#request('import-proposal', { proposal: text, wallet });
       if (typeof result.record?.recordId !== 'string' || !HASH.test(result.record.recordId) || result.record.transactionHash !== proposal.transaction_hash
         || result.record.accountAddress !== wallet.contractId) throw refused();
@@ -313,7 +323,7 @@ export class WalletController {
       || !Number.isSafeInteger(connection.expiresInSeconds) || connection.expiresInSeconds < 1 || connection.expiresInSeconds > 1800) throw refused();
     if (result.pending) {
       if (!HASH.test(result.pending.deliveryId)) throw refused();
-      const proposal = this.#validators.parseGrantProposal(result.pending.proposal, connection.account);
+      const proposal = this.#validators.parseGrantProposal(result.pending.proposal, connection.account, this.#pins.networkId);
       if (proposal.decisions.delegate !== connection.delegate) throw refused();
     }
     this.#set({ agent: { pairingCode: null, connection, pending: result.pending ?? null } });
@@ -342,7 +352,7 @@ export class WalletController {
       const agent = this.#state.agent, wallet = this.#state.wallet, delegate = this.#state.delegate;
       if (!agent?.pending || !wallet || !delegate || agent.connection?.account !== wallet.contractId
         || agent.connection?.delegate !== delegate.address) throw refused();
-      const proposal = this.#validators.parseGrantProposal(agent.pending.proposal, wallet.contractId);
+      const proposal = this.#validators.parseGrantProposal(agent.pending.proposal, wallet.contractId, this.#pins.networkId);
       if (proposal.decisions.delegate !== delegate.address) throw refused();
       this.#set({ agent: { ...agent, pending: null } });
       this.#clear();
@@ -405,7 +415,8 @@ export class WalletController {
       const { deployment, artifact, wallet } = this.#state;
       if (!deployment || !artifact || !wallet) throw refused();
       const result = await this.#request('review', { deploymentId: deployment.deploymentId, wallet });
-      if (!result.reviewId || !sameWallet(result.wallet, wallet) || result.expected?.specHash !== artifact.specHash
+      if (!result.reviewId || !sameWallet(result.wallet, wallet) || result.expected?.networkId !== this.#pins.networkId
+        || result.expected?.specHash !== artifact.specHash
         || result.expected?.bindingSetHash !== deployment.bindingSetHash || result.intent?.policies?.length !== 1
         || result.intent.policies[0].address !== deployment.policyAddress) throw refused();
       const approval = this.#validators.reviewIntent(result);
@@ -413,6 +424,17 @@ export class WalletController {
     });
   }
   /** A backend-held automation delegate for the local and live checks; it never replaces the owner passkey. */
+  /**
+   * What the owner must fund or upload before a session on a network the wallet funds nothing on can
+   * run, read by the backend without signing or sending anything. Shown as it is; it decides nothing.
+   */
+  async readiness() {
+    return this.#act(async () => {
+      const result = await this.#request('readiness', {});
+      if (result?.network !== this.#pins.network || !Array.isArray(result.pinned)) throw refused();
+      this.#set({ readiness: result });
+    });
+  }
   async createDelegate() {
     return this.#act(async () => {
       if (this.#state.agent) throw refused();
@@ -420,7 +442,10 @@ export class WalletController {
       if (capabilities?.accountCheck !== true && capabilities?.liveCheck !== true) throw refused();
       const result = await this.#request('create-delegate', {});
       if (!HASH.test(result?.capabilityId) || !/^G[A-Z2-7]{55}$/.test(result.address ?? '')) throw refused();
-      this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address } });
+      // On mainnet the backend reports whether the delegate's account exists; the owner funds it.
+      const account = result.account && typeof result.account.exists === 'boolean'
+        ? { exists: result.account.exists, minimumStroops: String(result.account.minimumStroops) } : null;
+      this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address, ...(account ? { account } : {}) } });
     });
   }
   async checkAccount() {
@@ -741,6 +766,7 @@ export class WalletController {
         || this.#state.monitor.installationId !== installation.installationId
         || (installation.ruleXdr && result.configurationChange.recordedRuleXdr !== installation.ruleXdr))) throw refused();
       const approval = this.#validators.reviewRemoval({ ...installOwner, configurationChange: result.configurationChange ?? null,
+        networkId: this.#pins.networkId,
         installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: result.assembly,
         ownerRuleXdr: result.ownerRuleXdr, limits: result.limits });
@@ -765,6 +791,7 @@ export class WalletController {
       if (!installation || !installOwner || !revokePreview || revokeAttempted) throw refused();
       if (!open) throw expired();
       const approval = this.#validators.reviewRemoval({ ...installOwner, configurationChange: revokePreview.configurationChange ?? null,
+        networkId: this.#pins.networkId,
         installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: revokePreview.assembly,
         ownerRuleXdr: revokePreview.ownerRuleXdr, limits: revokePreview.limits });
@@ -791,6 +818,70 @@ export class WalletController {
         || removal.ruleId !== installation.ruleId || !HASH.test(removal.transactionHash ?? '')
         || confirmed.receipt?.hash !== removal.transactionHash) throw refused();
       this.#set({ removal, receipt: confirmed.receipt, monitor: null });
+    });
+  }
+  /**
+   * The attached wallet's rules as the account stores them now, to remove one an earlier backend
+   * session installed. Each is shown from its own bytes; nothing is signed.
+   */
+  async listRules() {
+    return this.#act(async () => {
+      const { wallet } = this.#state;
+      if (!wallet) throw refused();
+      const result = await this.#request('account-rules', { wallet });
+      if (!Array.isArray(result?.rules) || result.rules.some((rule) => !Number.isSafeInteger(rule?.id) || typeof rule.xdr !== 'string'
+        || typeof rule.owner !== 'boolean' || typeof rule.grant !== 'boolean' || (rule.owner && rule.grant))) throw refused();
+      this.#set({ accountRules: result, earlierRevokePreview: null });
+    });
+  }
+  /** Removal of an earlier session's rule, step 1: validated here against the bytes listed and this wallet's owner rule. */
+  async prepareEarlierRevoke(ruleId) {
+    return this.#act(async () => {
+      this.#set({ earlierRevokePreview: null });
+      const { wallet, accountRules } = this.#state;
+      const listed = accountRules?.rules?.find((rule) => rule.id === ruleId);
+      const owner = accountRules?.rules?.find((rule) => rule.owner);
+      // Only a grant-shaped rule is offered; the validators check its bytes again (shared/revoke.mjs isGrantRule).
+      if (!wallet || !listed || listed.owner || !listed.grant || !owner) throw refused();
+      const status = await this.#status();
+      const started = this.#started();
+      const result = await this.#request('prepare-earlier-revoke', { wallet, ruleId });
+      if (!HASH.test(result?.action?.id ?? '') || result.ruleXdr !== listed.xdr || result.limits?.maxFeeStroops !== status.maxFeeStroops) throw refused();
+      const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: owner.id, ownerRuleXdr: result.ownerRuleXdr,
+        networkId: this.#pins.networkId, installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: listed.xdr } });
+      const checked = this.#validators.validateRemovalAssembly({ approval, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
+        limits: result.limits });
+      const display = this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops });
+      if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
+      this.#set({ earlierRevokePreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
+        ownerRuleId: owner.id, ruleId, ruleXdr: listed.xdr, limits: result.limits, display },
+      windows: this.#windows('earlierRevoke', this.#window(started, result.action)) });
+    });
+  }
+  /** Step 2: the owner's passkey signs exactly the removal shown; success only with the event and the rule reading back absent. */
+  async revokeEarlier() {
+    return this.#act(async () => {
+      const { wallet, earlierRevokePreview: preview, status } = this.#state;
+      const open = this.#open('earlierRevoke');
+      this.#set({ earlierRevokePreview: null });
+      if (!wallet || !preview) throw refused();
+      if (!open) throw expired();
+      const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: preview.ownerRuleId, ownerRuleXdr: preview.ownerRuleXdr,
+        networkId: this.#pins.networkId,
+        installation: { account: wallet.contractId, ruleId: preview.ruleId, transactionHash: null, ruleXdr: preview.ruleXdr } });
+      const checked = this.#validators.validateRemovalAssembly({ approval, assembly: preview.assembly, ownerRuleXdr: preview.ownerRuleXdr,
+        limits: preview.limits });
+      if (JSON.stringify(this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops }))
+        !== JSON.stringify(preview.display)) throw refused();
+      const signedAuthEntriesXdr = await this.#sign({ approval, checked });
+      const signed = await this.#validators.validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr, origin: this.#origin });
+      if (!this.#open('earlierRevoke')) throw expired();
+      const confirmed = await this.#request('confirm-earlier-revoke', { id: preview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
+      const removal = confirmed?.removal;
+      if (removal?.status !== 'removed' || removal.event !== 'verified' || removal.ruleReadback !== 'absent' || removal.ruleId !== preview.ruleId
+        || !HASH.test(removal.transactionHash ?? '') || confirmed.receipt?.hash !== removal.transactionHash) throw refused();
+      this.#set({ earlierRemoval: removal, receipt: confirmed.receipt, accountRules: null });
+      await this.#status().catch(() => {});
     });
   }
 }

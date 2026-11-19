@@ -3,6 +3,7 @@
 // longer than the call that signs with it.
 import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
 } from '@stellar/stellar-sdk';
@@ -28,12 +29,17 @@ export const NATIVE_SAC = Asset.native().contractId(NETWORK_PASSPHRASE);
 
 export const log = (...a) => console.log(...a);
 
-/** A simulation the network rejected. `.error` is the host's text, diagnostic events included. */
+/**
+ * A simulation the network rejected. `.error` is the host's text, with the printed event log up to
+ * stellar-rpc 30.0.0; `.events` the structured diagnostic events (30.0.1 returns only these), kept
+ * out of any serialization.
+ */
 export class SimulationError extends Error {
-  constructor(stage, error) {
+  constructor(stage, error, events = []) {
     super(`${stage} simulation failed: ${String(error).split('\n')[0]}`);
     this.stage = stage;
     this.error = String(error);
+    Object.defineProperty(this, 'events', { value: Array.isArray(events) ? events : [], enumerable: false });
   }
 }
 
@@ -50,10 +56,15 @@ export async function assertTestnet() {
   return net;
 }
 
+/**
+ * Testnet's Friendbot, pinned as the wallet's testnet profile pins it. Never the `friendbotUrl` an
+ * RPC endpoint reports: that is the endpoint's answer, and it must not pick where this machine
+ * sends requests.
+ */
+export const FRIENDBOT_URL = 'https://friendbot.stellar.org';
+
 export async function fund(address) {
-  const net = await server.getNetwork();
-  const base = net.friendbotUrl ?? 'https://friendbot.stellar.org/';
-  const res = await fetch(`${base}?addr=${encodeURIComponent(address)}`);
+  const res = await fetch(`${FRIENDBOT_URL}/?addr=${encodeURIComponent(address)}`);
   if (!res.ok) throw new Error(`friendbot refused ${address}: HTTP ${res.status}`);
 }
 
@@ -176,7 +187,7 @@ export async function submit(payer, operation, { stage = 'submit', onSubmitting,
   if (tx.source !== payer.publicKey()) throw new Error('submission refused: RPC returned another fee payer');
   const expectedEnvelope = Buffer.from(tx.toEnvelope().toXDR());
   const sim = await server.simulateTransaction(tx, undefined, 'enforce');
-  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error);
+  if (rpc.Api.isSimulationError(sim)) throw new SimulationError(stage, sim.error, sim.events);
   const assembled = rpc.assembleTransaction(tx, sim).build();
   checkAssembly(assembled, expectedEnvelope, ceiling);
   assembled.sign(payer);
@@ -292,9 +303,10 @@ export async function enforceSimulation(payer, operation) {
     .addOperation(operation).setTimeout(60).build();
   const simulated = await server.simulateTransaction(tx, undefined, 'enforce');
   const ledger = readLedger(simulated.latestLedger);
-  return rpc.Api.isSimulationError(simulated)
-    ? { result: 'deny', ledger, error: String(simulated.error) }
-    : { result: 'permit', ledger };
+  if (!rpc.Api.isSimulationError(simulated)) return { result: 'permit', ledger };
+  // The structured events ride along unserialized, for `denialCode`.
+  return Object.defineProperty({ result: 'deny', ledger, error: String(simulated.error) }, 'events',
+    { value: simulated.events ?? [], enumerable: false });
 }
 
 /** Simulate a read-only call and return its value as an ScVal. Nothing is signed or sent. */
@@ -386,6 +398,16 @@ export const contractIdOf = (scv) => {
 
 export function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+/**
+ * The spec a run journal names, accepted only when it is `<dir>/spec.json`: the file the run's own
+ * synthesis or spec step wrote. A `spec` that points anywhere else is refused, never opened.
+ */
+export function runSpecPath(dir, run) {
+  const path = join(resolve(dir), 'spec.json');
+  if (typeof run?.spec !== 'string' || resolve(run.spec) !== path) throw new Error('run does not name its own spec');
+  return path;
 }
 
 /**
