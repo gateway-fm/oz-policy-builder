@@ -180,6 +180,10 @@ def check_entrypoint(text):
         # A command substitution's output is captured, not printed: `$(cat "$token_file")` is how
         # the script reads the token. Everything else on the line reaches stdout or stderr.
         shown = re.sub(r"\$\([^()]*\)", "", code)
+        # …unless the substitution sends its output to stderr, which is printed after all.
+        inners = re.findall(r"\$\(([^()]*)\)", code)
+        if any(re.search(r">&2|>\s*/dev/stderr", inner) for inner in inners):
+            problems.append(f"{ENTRYPOINT}: a command substitution prints to stderr")
         start = r"(^|[;&|]\s*)\s*"
         if re.search(start + r"printenv\b", shown) or re.search(start + r"env\s*($|[;&|>])", shown):
             problems.append(f"{ENTRYPOINT}: printenv/env prints the bearer token and trust inputs")

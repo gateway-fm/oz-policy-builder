@@ -69,8 +69,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-              --jq '.assets[].name' | grep -qx SHA256SUMS; then
+          # Read the whole list first: `grep -q` exits at its match, and under pipefail the
+          # writer's SIGPIPE would then fail a release whose list goes on past SHA256SUMS.
+          assets=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name')
+          if ! printf '%s\n' "$assets" | grep -qx SHA256SUMS; then
             echo "release $RELEASE_TAG has no SHA256SUMS: run release-binaries.yml on the draft first" >&2
             exit 1
           fi

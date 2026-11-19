@@ -196,6 +196,7 @@ class LogRedactionTests(unittest.TestCase):
             ("export -p", "export -p"),
             ("set", "set"),
             ('echo "a|b $OZPB_HTTP_BEARER_TOKEN" >&2', "OZPB_HTTP_BEARER_TOKEN"),
+            ('x=$(cat "$token_file" >&2)', "substitution prints to stderr"),
         ):
             with self.subTest(line=line):
                 self.setUp()
