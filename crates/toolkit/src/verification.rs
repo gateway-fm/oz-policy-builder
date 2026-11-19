@@ -18,8 +18,7 @@ use std::collections::BTreeMap;
 pub(crate) fn suite_spec(spec: &serde_json::Value) -> Result<ValidatedSpec, ToolError> {
     let spec: PolicySpec = from_value(spec)?;
     let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
-    let bound = ozpb_harness::suite_bound(&validated);
-    if bound.cases > ozpb_harness::MAX_SUITE_CASES || bound.bytes > ozpb_harness::MAX_SUITE_BYTES {
+    if let Some(bound) = suite_over_limits(&validated) {
         return Err(ToolError::new(
             EC::ESpecInvalid,
             "PolicySpec is too large for its reference suite",
@@ -34,6 +33,13 @@ pub(crate) fn suite_spec(spec: &serde_json::Value) -> Result<ValidatedSpec, Tool
         )]));
     }
     Ok(validated)
+}
+
+/// The size of `spec`'s reference suite when it is over either limit; `None` when it may be built.
+pub(crate) fn suite_over_limits(spec: &ValidatedSpec) -> Option<ozpb_harness::SuiteBound> {
+    let bound = ozpb_harness::suite_bound(spec);
+    (bound.cases > ozpb_harness::MAX_SUITE_CASES || bound.bytes > ozpb_harness::MAX_SUITE_BYTES)
+        .then_some(bound)
 }
 
 /// Run the layer-1 reference suite over a validated policy specification.

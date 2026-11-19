@@ -262,8 +262,10 @@ directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only. The default 
 in the same directory. When neither qualifies (a `~/.cache` that a umask of 002 left
 group-writable does not), the build is refused with `E_BUILD_UNAVAILABLE` before anything runs;
 set `TMPDIR` to a private directory. Your own parents' cargo configuration still applies, as
-`~/.cargo/config.toml` does. A read-only mount is trusted as nobody can write through it; a
-read-only view of a directory others write to elsewhere is not detected.
+`~/.cargo/config.toml` does. A read-only mount is trusted as nobody can write through it, though
+it may be a view of a directory others write to elsewhere; macOS access-control entries
+(`chmod +a`) are not read. Against both, a `.cargo` (other than your cargo home) or a `Cargo.toml`
+already in the build directory or any parent is refused too.
 
 These are deliberately *not* request fields: a caller-chosen timeout is resource exhaustion
 and a caller-chosen builder path is arbitrary execution, so they stay operator configuration

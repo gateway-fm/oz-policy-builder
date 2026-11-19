@@ -716,7 +716,15 @@ fn workspace_parent() -> Result<PathBuf, BuildError> {
     let user_cache = absolute("XDG_CACHE_HOME")
         .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
         .map(|cache| cache.join("ozpb").join("build"));
-    workspace_parent_from(&std::env::temp_dir(), user_cache.as_deref())
+    // Cargo's own home, by the rule `sanitize_build_environment` passes to the builder.
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| absolute("HOME").map(|home| home.join(".cargo")));
+    workspace_parent_from(
+        &std::env::temp_dir(),
+        user_cache.as_deref(),
+        cargo_home.as_deref(),
+    )
 }
 
 #[cfg(not(unix))]
@@ -726,9 +734,13 @@ fn workspace_parent() -> Result<PathBuf, BuildError> {
 
 /// [`workspace_parent`] over explicit candidates: `temp`, else `fallback`, created owner-only.
 #[cfg(unix)]
-fn workspace_parent_from(temp: &Path, fallback: Option<&Path>) -> Result<PathBuf, BuildError> {
+fn workspace_parent_from(
+    temp: &Path,
+    fallback: Option<&Path>,
+    cargo_home: Option<&Path>,
+) -> Result<PathBuf, BuildError> {
     use std::os::unix::fs::DirBuilderExt;
-    let refused = match private_ancestry(temp) {
+    let refused = match private_ancestry(temp, cargo_home) {
         Ok(canonical) => return Ok(canonical),
         Err(reason) => reason,
     };
@@ -737,7 +749,10 @@ fn workspace_parent_from(temp: &Path, fallback: Option<&Path>) -> Result<PathBuf
             .recursive(true)
             .mode(0o700)
             .create(fallback);
-        if let Some(canonical) = created.ok().and_then(|()| private_ancestry(fallback).ok()) {
+        if let Some(canonical) = created
+            .ok()
+            .and_then(|()| private_ancestry(fallback, cargo_home).ok())
+        {
             return Ok(canonical);
         }
     }
@@ -751,24 +766,53 @@ fn workspace_parent_from(temp: &Path, fallback: Option<&Path>) -> Result<PathBuf
 }
 
 /// `dir` resolved, when it and each of its parents admit new entries from root and this user
-/// only; otherwise why not. The path stays out of the reason: it reaches MCP clients (§6.5).
+/// only, and none of them already holds a `.cargo` (other than `cargo_home`, which cargo reads
+/// anyway) or a `Cargo.toml`; otherwise why not. The path stays out of the reason: it reaches MCP
+/// clients (§6.5).
+///
+/// The entries are refused as well as the modes because the modes do not say everything: a
+/// read-only mount can show a directory others write to elsewhere, and macOS access-control
+/// entries (`chmod +a`) can let others write where the mode bits say they cannot. Those are not
+/// read; an entry already planted through either is.
 #[cfg(unix)]
-fn private_ancestry(dir: &Path) -> Result<PathBuf, &'static str> {
+fn private_ancestry(dir: &Path, cargo_home: Option<&Path>) -> Result<PathBuf, &'static str> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     // Resolved first: a link is only a name, and cargo reads the parents of where it leads.
     let canonical = std::fs::canonicalize(dir).map_err(|_| "could not be resolved")?;
+    let cargo_home = cargo_home.and_then(|home| std::fs::canonicalize(home).ok());
     let uid = nix::unistd::getuid().as_raw();
     for ancestor in canonical.ancestors() {
+        let itself = ancestor == canonical;
         let metadata =
             std::fs::metadata(ancestor).map_err(|_| "has a parent that could not be inspected")?;
         let foreign = metadata.uid() != 0 && metadata.uid() != uid;
         let shared = metadata.permissions().mode() & 0o022 != 0;
         if (foreign || shared) && !on_read_only_mount(ancestor) {
-            return Err(match (ancestor == canonical, foreign) {
+            return Err(match (itself, foreign) {
                 (true, true) => "is owned by another user",
                 (true, false) => "is writable by its group or by every user",
                 (false, true) => "has a parent owned by another user",
                 (false, false) => "has a parent writable by its group or by every user",
+            });
+        }
+        let configuration = ancestor.join(".cargo");
+        let is_cargo_home = cargo_home.as_ref().is_some_and(|home| {
+            std::fs::canonicalize(&configuration).is_ok_and(|resolved| &resolved == home)
+        });
+        if std::fs::symlink_metadata(&configuration).is_ok() && !is_cargo_home {
+            return Err(match itself {
+                true => "holds a .cargo directory, whose configuration cargo would read",
+                false => {
+                    "has a parent holding a .cargo directory, whose configuration cargo would read"
+                }
+            });
+        }
+        if std::fs::symlink_metadata(ancestor.join("Cargo.toml")).is_ok() {
+            return Err(match itself {
+                true => "holds a Cargo.toml, which cargo would take for a workspace root",
+                false => {
+                    "has a parent holding a Cargo.toml, which cargo would take for a workspace root"
+                }
             });
         }
     }
@@ -3944,14 +3988,13 @@ mod tests {
         }
     }
 
-    /// A directory beside the test binary: its parents are this user's checkout and the
-    /// system's, unlike the shared temporary directory, which on Linux is itself world-writable.
+    /// A private directory the way a build would get one. Not beside the test binary: its
+    /// parents include this checkout's `Cargo.toml`, which a build directory may not have.
     #[cfg(unix)]
     fn private_base() -> tempfile::TempDir {
-        let binary = std::env::current_exe().unwrap();
         tempfile::Builder::new()
             .prefix(".ozpb-ancestry-")
-            .tempdir_in(binary.parent().unwrap())
+            .tempdir_in(workspace_parent().unwrap())
             .unwrap()
     }
 
@@ -3985,11 +4028,11 @@ mod tests {
         std::os::unix::fs::symlink(&inside_shared, &link).unwrap();
 
         assert_eq!(
-            workspace_parent_from(&private, None).unwrap(),
+            workspace_parent_from(&private, None, None).unwrap(),
             private.canonicalize().unwrap()
         );
         for refused in [&shared, &group, &inside_shared, &link] {
-            match workspace_parent_from(refused, None) {
+            match workspace_parent_from(refused, None, None) {
                 Err(BuildError::Unavailable(message)) => assert!(
                     message.contains("TMPDIR") && !message.contains(".ozpb-ancestry-"),
                     "{message}"
@@ -3997,6 +4040,48 @@ mod tests {
                 other => panic!("{refused:?} must be refused, got {other:?}"),
             }
         }
+    }
+
+    /// Below the ownership check, a `.cargo` or a `Cargo.toml` already in the build directory or
+    /// a parent is refused as well: one a read-only mount shows but does not let anyone remove,
+    /// or one written through a macOS access-control entry the mode bits do not show. The
+    /// user's own cargo home is read by cargo in any case, and does not count.
+    #[test]
+    #[cfg(unix)]
+    fn a_build_directory_under_cargo_configuration_or_a_manifest_is_refused() {
+        let base = private_base();
+        let configured = base.path().join("configured");
+        directory(&configured, 0o700);
+        directory(&configured.join(".cargo"), 0o700);
+        let below_configured = configured.join("inside");
+        directory(&below_configured, 0o700);
+        let manifest = base.path().join("manifest");
+        directory(&manifest, 0o700);
+        std::fs::write(manifest.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let below_manifest = manifest.join("inside");
+        directory(&below_manifest, 0o700);
+        for (refused, names) in [
+            (&configured, ".cargo"),
+            (&below_configured, ".cargo"),
+            (&below_manifest, "Cargo.toml"),
+        ] {
+            match workspace_parent_from(refused, None, None) {
+                Err(BuildError::Unavailable(message)) => {
+                    assert!(
+                        message.contains(names) && message.contains("TMPDIR"),
+                        "{message}"
+                    )
+                }
+                other => panic!("{refused:?} must be refused, got {other:?}"),
+            }
+        }
+        let home = base.path().join("home");
+        directory(&home, 0o700);
+        directory(&home.join(".cargo"), 0o700);
+        let below_home = home.join("tmp");
+        directory(&below_home, 0o700);
+        assert!(workspace_parent_from(&below_home, None, Some(&home.join(".cargo"))).is_ok());
+        assert!(workspace_parent_from(&below_home, None, None).is_err());
     }
 
     /// Where the temporary directory is shared — `/tmp` on Linux — the user's cache stands in,
@@ -4009,7 +4094,7 @@ mod tests {
         let shared = base.path().join("shared");
         directory(&shared, 0o1777);
         let cache = base.path().join("cache").join("ozpb").join("build");
-        let chosen = workspace_parent_from(&shared, Some(&cache)).unwrap();
+        let chosen = workspace_parent_from(&shared, Some(&cache), None).unwrap();
         assert_eq!(chosen, cache.canonicalize().unwrap());
         let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
         assert_eq!(
@@ -4018,7 +4103,7 @@ mod tests {
             "created group- or world-accessible: {mode:o}"
         );
         assert!(matches!(
-            workspace_parent_from(&shared, Some(&shared.join("cache"))),
+            workspace_parent_from(&shared, Some(&shared.join("cache")), None),
             Err(BuildError::Unavailable(_))
         ));
     }
