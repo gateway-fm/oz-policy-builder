@@ -67,8 +67,9 @@ pub enum Command {
     Verify(VerifyArgs),
     /// Compare a consumer's checkpoint with the published log: newer version, validity expiry,
     /// revocations of watched Wasm hashes. Prints JSON; the exit status is for cron: 0 current,
-    /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash revoked, and
-    /// 1 when the published log cannot be verified against the checkpoint.
+    /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash revoked, 7 the
+    /// head's interval has not started, and 1 when the published log cannot be verified against
+    /// the checkpoint.
     Monitor(MonitorArgs),
 }
 
@@ -315,6 +316,7 @@ fn monitor(args: MonitorArgs) -> Result<()> {
         MonitorStatus::ExpiresSoon => 4,
         MonitorStatus::Expired => 5,
         MonitorStatus::Revoked => 6,
+        MonitorStatus::NotYetValid => 7,
     };
     if code != 0 {
         std::process::exit(code);

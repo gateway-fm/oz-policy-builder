@@ -202,18 +202,23 @@ ozpb registry monitor --published registry/mainnet --registry-roots roots.json \
 ```
 
 The checkpoint is the one in the roots file, or `--checkpoint <file>`. The published log (a
-directory, or one head file) is verified as a chain extending that checkpoint, and a JSON report is printed with
-the head, whether it is newer, its validity, and every watched hash it revokes. The exit status is
-for cron:
+directory, or one head file that directly extends the checkpoint) is checked against it: the
+copy of the checkpoint's own version must be exactly what was accepted — its signatures are not
+checked again, so a consumer that re-pinned after a rotation keeps working — and every later
+version must verify under the pinned roots as the chain extending it. A JSON report is printed
+with the head, whether it is newer, its validity, and every watched hash it revokes. The exit
+status is for cron; when several apply, the most urgent wins, in the order revoked, expired,
+expiring, not yet valid, newer:
 
 | Exit | Meaning | Action |
 |---|---|---|
 | 0 | current, not expiring within the window | none |
 | 3 | a newer version is published | review it, then advance the checkpoint |
+| 7 | the head's interval has not started | nothing loads it yet; keep the current version until it starts, and check the start date was intended |
 | 4 | the head expires within the window | ask the custodians for a successor |
 | 5 | the head has expired | synthesis and checks now refuse it; same |
 | 6 | a watched hash is revoked | the emergency-removal path below |
-| 1 | the published log cannot be verified against the checkpoint | treat as an incident: a fork, an equivocation, a rollback, or signatures under other roots |
+| 1 | the published log cannot be verified against the checkpoint | treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned |
 
 Watch the hashes your installed grants rely on: the account's Wasm, each owner verifier's, and
 each reviewed policy's. A generated policy is recognized by its reproduced build, not by a
@@ -255,11 +260,26 @@ procedure with their own custodians, from a genesis of their own.
 
 ## Rotation, lost and compromised keys
 
-Snapshots do not carry the root policy, so there is no in-band rotation: rotation is a re-pin.
-New keys are made in a ceremony, the new `roots.json` is published, and consumers replace their
-pinned policy and keep their checkpoint; the next successor, signed under the new policy, extends
-the chain as usual. `verify --replay` checks a log under one policy, so across a rotation, replay
-the versions before it under the old roots and check the later ones with
+Snapshots do not carry the root policy, so there is no in-band rotation: rotation is an
+out-of-band re-pin, and that is the design for this milestone. The cutover is one step for
+consumers, in this order:
+
+1. New keys are made in a [ceremony](#key-ceremony) and the new `roots.json` is written.
+2. The coordinator builds version N+1 on version N with `successor --registry-roots` naming the
+   **current** roots, which signed version N.
+3. The new custodians sign it, and `combine --registry-roots` names the **new** roots.
+4. Version N+1 and the new `roots.json` are published together, in one commit and one release.
+   Neither is published without the other: new roots with no version signed under them verify
+   nothing new, and a version signed under roots nobody has pinned fails every consumer's monitor.
+5. Each consumer replaces its pinned roots and loads version N+1 in the same change, keeping its
+   checkpoint at N: `verify --signed vN+1 --checkpoint <N>` under the new roots, then the printed
+   checkpoint and floor go into the new roots file. `monitor` under the new roots matches the
+   published version N against the checkpoint without re-checking its signatures, so it follows
+   the log across the rotation.
+
+The roots themselves are announced out of band, like the first ones: the chain does not prove
+that the old custodians handed over. `verify --replay` checks a log under one policy, so across a
+rotation, replay the versions before it under the old roots and check the later ones with
 `verify --signed <file> --checkpoint <file>` under the new.
 
 - A **lost** key: while the remaining custodians still meet the threshold, rotate it out. Below

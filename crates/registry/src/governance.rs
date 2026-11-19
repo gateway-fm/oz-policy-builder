@@ -317,6 +317,7 @@ pub enum ValidityStatus {
 pub enum MonitorStatus {
     Current,
     NewerVersion,
+    NotYetValid,
     ExpiresSoon,
     Expired,
     Revoked,
@@ -355,11 +356,12 @@ pub struct MonitorReport {
 
 /// Check the published head against a consumer's persisted checkpoint.
 ///
-/// `published` is every published version the consumer has not yet accepted (versions at or
-/// below the checkpoint are skipped, except the checkpoint's own version, which must match it).
-/// They are verified as one chain extending the checkpoint, so a fork, a same-version
+/// `published` is the published log, or its head. Versions below the checkpoint are skipped; the
+/// checkpoint's own version must match the checkpoint exactly (its signatures are not re-checked,
+/// so a consumer that re-pinned after a rotation keeps working); every later version is verified
+/// under the pinned roots as one chain extending the checkpoint. A fork, a same-version
 /// equivocation, a gap or an older head is an error, not a finding: the published log itself
-/// cannot be trusted then, and that is louder than any status. Expiry is reported rather than
+/// cannot be trusted then, and that is louder than any status. Validity is reported rather than
 /// refused, because noticing it is what monitoring is for.
 pub fn monitor(
     roots: RootPolicy,
@@ -389,11 +391,16 @@ pub fn monitor(
         .into());
     };
     let mut registry =
-        Registry::with_pinned_roots_for_network_at_checkpoint(roots, network, checkpoint)?;
+        Registry::with_pinned_roots_for_network_at_checkpoint(roots, network, checkpoint.clone())?;
+    let mut head_checkpoint = checkpoint.clone();
     for signed in &relevant {
-        load_historical(&mut registry, signed)?;
+        if signed.snapshot.version == checkpoint_version {
+            require_matches_checkpoint(&signed.snapshot, &checkpoint)?;
+        } else {
+            load_historical(&mut registry, signed)?;
+            head_checkpoint = registry.checkpoint()?;
+        }
     }
-    let head_checkpoint = registry.checkpoint()?;
     let snapshot = &head.snapshot;
     let validity = if now_unix < snapshot.valid_from_unix {
         ValidityStatus::NotYetValid
@@ -425,6 +432,8 @@ pub fn monitor(
         MonitorStatus::Expired
     } else if validity == ValidityStatus::ExpiresSoon {
         MonitorStatus::ExpiresSoon
+    } else if validity == ValidityStatus::NotYetValid {
+        MonitorStatus::NotYetValid
     } else if newer_version_available {
         MonitorStatus::NewerVersion
     } else {
@@ -442,6 +451,27 @@ pub fn monitor(
         expires_at_unix: snapshot.expires_at_unix,
         revoked,
     })
+}
+
+/// The published copy of the version a consumer has already accepted must be exactly what it
+/// accepted: the same root, chain position and revocations. Its signatures are not checked again.
+/// They were checked when it was accepted, and after a rotation they belong to roots the consumer
+/// no longer pins, so re-verifying them would stall every consumer that re-pinned.
+fn require_matches_checkpoint(
+    snapshot: &RegistrySnapshot,
+    checkpoint: &RegistryCheckpoint,
+) -> Result<(), GovernanceError> {
+    if snapshot_root(snapshot)? != checkpoint.root
+        || snapshot.log_index != checkpoint.log_index
+        || snapshot.revocations != checkpoint.revocations
+    {
+        return Err(RegistryError::Transparency(format!(
+            "the published version {} conflicts with the persisted checkpoint",
+            checkpoint.version
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 fn require_key_id(key_id: &str) -> Result<(), GovernanceError> {

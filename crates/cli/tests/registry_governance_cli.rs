@@ -366,14 +366,14 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     );
 
     // 6. A consumer still at version 1 learns of version 2 and of the revocation it watches.
-    let monitor = |checkpoint: &Path, extra: &[&str]| {
+    let monitor_log = |checkpoint: &Path, log: &Path, roots: &Path, extra: &[&str]| {
         let mut args: Vec<String> = [
             "registry",
             "monitor",
             "--checkpoint",
             checkpoint.to_str().unwrap(),
             "--published",
-            published.to_str().unwrap(),
+            log.to_str().unwrap(),
             "--registry-roots",
             roots.to_str().unwrap(),
             "--network",
@@ -385,6 +385,8 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         args.extend(extra.iter().map(|arg| arg.to_string()));
         ozpb(args)
     };
+    let monitor =
+        |checkpoint: &Path, extra: &[&str]| monitor_log(checkpoint, &published, &roots, extra);
     let output = monitor(&checkpoint_v1_path, &["--wasm-hash", &revoked]);
     assert_eq!(output.status.code(), Some(6), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -398,6 +400,14 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let output = monitor(&head_path, &["--expiry-window-days", "90"]);
     assert_eq!(output.status.code(), Some(4), "{output:?}");
+    // The head alone, rather than the log directory, serves when it directly extends the
+    // checkpoint.
+    let output = monitor_log(&checkpoint_v1_path, &v2, &roots, &[]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    // A published head older than the consumer's checkpoint is not a status but a failure: exit 1.
+    let output = monitor_log(&head_path, &v1, &roots, &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    refused(&output, "monitor an older head", "E_REGISTRY_ROLLBACK");
 
     // 7. A toolkit operation trusts the replayed head under the custodians' roots: a testnet
     //    recording of the 0.7.3 account synthesizes, and the spec pins the head's root.
@@ -408,7 +418,7 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     write_json(&account, &fixtures::golden_input().account);
     let decisions = work.path().join("decisions.json");
     write_json(&decisions, &fixtures::golden_decisions());
-    let synthesize = |signed: &Path| {
+    let synthesize_under = |signed: &Path, roots: &Path, floor: &str| {
         ozpb([
             "synthesize".as_ref(),
             "--bundle".as_ref(),
@@ -422,7 +432,7 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
             "--registry-roots".as_ref(),
             roots.as_os_str(),
             "--registry-min-version".as_ref(),
-            "2".as_ref(),
+            floor.as_ref(),
             "--decisions".as_ref(),
             decisions.as_os_str(),
             "--spending-limit-capability".as_ref(),
@@ -431,6 +441,7 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
             "policy-templates/scope@1".as_ref(),
         ])
     };
+    let synthesize = |signed: &Path| synthesize_under(signed, &roots, "2");
     let synthesized = ok(synthesize(&v2), "synthesize");
     assert_eq!(synthesized["spec"]["registry_snapshot"], head.root.to_hex());
     // And the floor the head sets refuses version 1 from now on.
@@ -438,6 +449,114 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         &synthesize(&v1),
         "synthesize under a rolled-back snapshot",
         "E_REGISTRY_ROLLBACK",
+    );
+
+    // 8. Rotation, as a re-pin: three new custodians, a new roots file published together with
+    //    version 3 signed under it. Version 3 is built on version 2 under the roots that signed
+    //    version 2; consumers replace their roots, keep their checkpoint, and move to version 3.
+    let mut rotated_keys = serde_json::Map::new();
+    for id in ["custodian-d", "custodian-e", "custodian-f"] {
+        let printed = ok(
+            ozpb([
+                "registry".as_ref(),
+                "keygen".as_ref(),
+                "--out".as_ref(),
+                custodians.key(id).as_os_str(),
+            ]),
+            "keygen",
+        );
+        rotated_keys.insert(id.to_string(), printed["public_key"].clone());
+    }
+    let rotated = work.path().join("roots-rotated.json");
+    write_json(
+        &rotated,
+        &serde_json::json!({"threshold": 2, "keys": rotated_keys}),
+    );
+    let changes_v3 = work.path().join("changes-v3.json");
+    write_json(
+        &changes_v3,
+        &serde_json::json!({
+            "schema": "registry-change/v1",
+            "valid_from_unix": now() - 30,
+            "expires_at_unix": now() + 90 * 86_400,
+        }),
+    );
+    let unsigned_v3 = work.path().join("v0003.unsigned.json");
+    ok(
+        ozpb([
+            "registry".as_ref(),
+            "successor".as_ref(),
+            "--parent".as_ref(),
+            v2.as_os_str(),
+            "--changes".as_ref(),
+            changes_v3.as_os_str(),
+            "--registry-roots".as_ref(),
+            roots.as_os_str(),
+            "--network".as_ref(),
+            TESTNET.as_ref(),
+            "--out".as_ref(),
+            unsigned_v3.as_os_str(),
+        ]),
+        "successor across the rotation",
+    );
+    let sig_d = work.path().join("v0003.custodian-d.sig.json");
+    let sig_f = work.path().join("v0003.custodian-f.sig.json");
+    custodians.sign(&unsigned_v3, "custodian-d", &sig_d);
+    custodians.sign_externally(&unsigned_v3, "custodian-f", &sig_f);
+    // The old roots cannot combine it; the new ones can.
+    refused(
+        &combine(
+            &unsigned_v3,
+            &[&sig_d, &sig_f],
+            &roots,
+            &work.path().join("old-roots.json"),
+        ),
+        "combine under the retired roots",
+        "is not a key id of the pinned root policy",
+    );
+    let v3 = published.join("v0003.signed.json");
+    ok(
+        combine(&unsigned_v3, &[&sig_d, &sig_f], &rotated, &v3),
+        "combine v3",
+    );
+    // A consumer at version 2 that re-pinned follows the log under the new roots.
+    let output = monitor_log(&head_path, &published, &rotated, &[]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let checkpoint_v3 = ok(
+        ozpb([
+            "registry".as_ref(),
+            "verify".as_ref(),
+            "--signed".as_ref(),
+            v3.as_os_str(),
+            "--checkpoint".as_ref(),
+            head_path.as_os_str(),
+            "--registry-roots".as_ref(),
+            rotated.as_os_str(),
+            "--network".as_ref(),
+            TESTNET.as_ref(),
+        ]),
+        "verify v3 against the version-2 checkpoint",
+    );
+    assert_eq!(checkpoint_v3["version"], "3");
+    // Its roots file now pins the new keys with its version-2 checkpoint; synthesis takes v3.
+    let repinned = work.path().join("roots-repinned.json");
+    write_json(
+        &repinned,
+        &serde_json::json!({"threshold": 2, "keys": rotated_keys, "checkpoint": head}),
+    );
+    let synthesized = ok(
+        synthesize_under(&v3, &repinned, "2"),
+        "synthesize after rotation",
+    );
+    assert_eq!(
+        synthesized["spec"]["registry_snapshot"],
+        checkpoint_v3["root"]
+    );
+    // Without the re-pin, the old roots refuse the new version.
+    refused(
+        &synthesize(&v3),
+        "synthesize v3 under the retired roots",
+        "E_REGISTRY_SIGNATURE",
     );
 }
 

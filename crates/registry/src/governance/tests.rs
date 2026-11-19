@@ -344,7 +344,7 @@ fn replay_accepts_exactly_an_unbroken_chain_from_genesis() {
         replay(roots(), network(), &[chain[0].clone(), fork], 1_600),
         Err(GovernanceError::Registry(RegistryError::Transparency(_)))
     ));
-    // A version 2 that drops a recorded revocation.
+    // A version 3 that drops a revocation version 2 recorded.
     let mut forgetful = chain[2].snapshot.clone();
     forgetful.revocations.clear();
     forgetful.previous_root = Some(snapshot_root(&chain[1].snapshot).unwrap());
@@ -520,5 +520,128 @@ fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
     assert!(matches!(
         monitor(roots(), network(), at_v2, &[foreign], 2_600, 0, &none),
         Err(GovernanceError::Registry(RegistryError::Signature))
+    ));
+}
+
+/// A head whose interval has not started cannot be loaded by anyone yet, whether or not the
+/// consumer has seen it: that is its own status, never "newer version" or "current".
+#[test]
+fn monitoring_reports_a_head_scheduled_to_start_later() {
+    let chain = chain();
+    let none: [Hash32; 0] = [];
+    // Version 3 is valid from 2_500.
+    let behind = monitor(
+        roots(),
+        network(),
+        checkpoint_of(&chain[..1]),
+        &chain,
+        2_000,
+        600,
+        &none,
+    )
+    .unwrap();
+    assert_eq!(
+        (behind.status, behind.validity),
+        (MonitorStatus::NotYetValid, ValidityStatus::NotYetValid)
+    );
+    assert!(behind.newer_version_available);
+    let accepted_early = monitor(
+        roots(),
+        network(),
+        checkpoint_of(&chain),
+        &chain,
+        2_000,
+        600,
+        &none,
+    )
+    .unwrap();
+    assert_eq!(accepted_early.status, MonitorStatus::NotYetValid);
+    // A watched revocation still outranks it.
+    let watched = [revoked_hash()];
+    let revoked = monitor(
+        roots(),
+        network(),
+        checkpoint_of(&chain[..1]),
+        &chain,
+        2_000,
+        600,
+        &watched,
+    )
+    .unwrap();
+    assert_eq!(revoked.status, MonitorStatus::Revoked);
+}
+
+/// Rotation is a re-pin: new custodians sign the next version, consumers replace their roots and
+/// keep their checkpoint. The version they already accepted was signed under the old roots and is
+/// matched against the checkpoint, not re-verified, so monitoring under the new roots goes on.
+#[test]
+fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
+    let chain = chain();
+    let at_v3 = checkpoint_of(&chain);
+    let rotated = RootPolicy {
+        threshold: 2,
+        keys: ["d", "e", "f"]
+            .into_iter()
+            .map(|id| (id.to_string(), custodian(id).verifying_key().to_bytes()))
+            .collect(),
+    };
+    // The successor is built on the parent under the roots that signed it, then signed and
+    // combined under the new ones.
+    let v4 = successor(roots(), network(), &chain[2], &changes(4_000, 9_000), 4_100).unwrap();
+    let detached: Vec<_> = ["d", "f"]
+        .iter()
+        .map(|id| sign_detached(id, &custodian(id), &v4).unwrap())
+        .collect();
+    let v4 = combine(&rotated, v4, &detached).unwrap();
+    let mut published = chain.clone();
+    published.push(v4.clone());
+    let none: [Hash32; 0] = [];
+
+    let report = monitor(
+        rotated.clone(),
+        network(),
+        at_v3.clone(),
+        &published,
+        4_100,
+        600,
+        &none,
+    )
+    .unwrap();
+    assert_eq!(report.status, MonitorStatus::NewerVersion);
+    assert_eq!(report.head.version, 4);
+    assert_eq!(report.head.root, snapshot_root(&v4.snapshot).unwrap());
+
+    // Having advanced, the consumer's own version is now one the new roots signed.
+    let mut consumer = Registry::with_pinned_roots_for_network_at_checkpoint(
+        rotated.clone(),
+        network(),
+        at_v3.clone(),
+    )
+    .unwrap();
+    consumer.load_at(&v4, 4_100).unwrap();
+    let at_v4 = consumer.checkpoint().unwrap();
+    let current = monitor(
+        rotated.clone(),
+        network(),
+        at_v4,
+        &published,
+        4_100,
+        600,
+        &none,
+    )
+    .unwrap();
+    assert_eq!(current.status, MonitorStatus::Current);
+
+    // Matching without re-verifying is matching all the same: different contents for the
+    // accepted version are still an equivocation.
+    let mut forged = chain[2].snapshot.clone();
+    forged.expires_at_unix += 1;
+    let forged = signed_by(&forged, &["a", "b"]);
+    let mut tampered = chain[..2].to_vec();
+    tampered.push(forged);
+    tampered.push(v4);
+    assert!(matches!(
+        monitor(rotated, network(), at_v3, &tampered, 4_100, 600, &none),
+        Err(GovernanceError::Registry(RegistryError::Transparency(_)))
     ));
 }
