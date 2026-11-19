@@ -5,7 +5,7 @@ const ENDPOINTS = new Set(['status', 'prepare-account', 'confirm-account', 'prep
 const refused = () => new Error('wallet request refused; reconnect or try a fresh review');
 /** The closed set of reasons a refusal may name (the backend's REFUSAL_REASONS); any other is dropped. */
 export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
-  'review_expired', 'grant_already_used']);
+  'review_expired', 'grant_already_used', 'network_mismatch', 'protocol_unsupported']);
 /** A refusal's reason, from at most 4 KiB of its JSON body; nothing else in it is kept. */
 async function reasonOf(response) {
   const reader = response.body?.getReader();
@@ -28,17 +28,23 @@ async function reasonOf(response) {
   } catch { return {}; } finally { reader?.cancel().catch(() => {}); }
 }
 
-/** Fragment credentials stay in memory and are removed before the first request. */
-export function takeSessionToken(location, history) {
+/**
+ * Fragment credentials stay in memory and are removed before the first request. The launch URL also
+ * names the session's network (`testnet` or `mainnet`), which the page then holds for its lifetime;
+ * a URL without it is a testnet session.
+ */
+export function takeSession(location, history) {
   const url = new URL(location.href);
-  const match = /^#session=([0-9a-f]{64})$/.exec(url.hash);
+  const match = /^#session=([0-9a-f]{64})(?:&network=(testnet|mainnet))?$/.exec(url.hash);
   history.replaceState(null, '', url.pathname);
   if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
     || url.username || url.password || url.search || !match) {
     throw new Error('wallet session unavailable; open the local launcher URL again');
   }
-  return match[1];
+  return Object.freeze({ token: match[1], network: match[2] ?? 'testnet' });
 }
+
+export function takeSessionToken(location, history) { return takeSession(location, history).token; }
 
 export function createClient(token, options = {}) {
   if (!/^[0-9a-f]{64}$/.test(token)) throw refused();

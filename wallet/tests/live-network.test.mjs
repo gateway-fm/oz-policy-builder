@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { WalletNetwork } from '../server/network.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const RPC = 'https://rpc.example/testnet';
 const ACCOUNT = StrKey.encodeContract(Buffer.alloc(32, 31));
@@ -25,7 +27,7 @@ function fixture(t, { entries = () => [], fetchImpl, latest = 500 } = {}) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const requests = [];
   const server = {
-    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 29 }),
+    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 30 }),
     getLatestLedger: async () => ({ sequence: latest }),
     getLedgerEntries: async (...keys) => {
       requests.push(keys);
@@ -34,7 +36,7 @@ function fixture(t, { entries = () => [], fetchImpl, latest = 500 } = {}) {
     },
   };
   const calls = [];
-  const network = new WalletNetwork({ rpcUrl: RPC, journalRoot: root, server, pause: async () => {},
+  const network = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: RPC, journalRoot: root, server, pause: async () => {},
     fetchImpl: fetchImpl ?? (async (url, init) => { calls.push({ url, init }); return new Response('{}'); }) });
   return { network, requests, calls, root };
 }
@@ -145,7 +147,11 @@ test('readiness: the recipient exists and the account balance covers the amount'
 test('the live obligation is journaled with public data only', async (t) => {
   const f = fixture(t);
   f.network.recordLiveObligation({ signatureExpirationLedger: 530, snapshot: { account: ACCOUNT, nextId: 1 } });
-  const [name] = readdirSync(f.root);
+  const [session, name] = readdirSync(f.root).sort();
+  // The session's network is recorded first, before any obligation.
+  assert.equal(session, '0000.session.json');
+  assert.deepEqual(JSON.parse(readFileSync(join(f.root, session))),
+    { network: 'testnet', networkId: WALLET_NETWORKS.testnet.networkId, protocolVersion: 30 });
   assert.match(name, /^0001\.live-check\.json$/);
   assert.deepEqual(JSON.parse(readFileSync(join(f.root, name))), { signatureExpirationLedger: 530, snapshot: { account: ACCOUNT, nextId: 1 } });
 });
@@ -161,17 +167,17 @@ test('Friendbot is asked at most once per delegate address', async (t) => {
 test('the delegate account and the raw simulation refuse anything but testnet before any request', async (t) => {
   const f = fixture(t, { fetchImpl: async () => assert.fail('nothing may be sent off testnet') });
   const envelope = unsigned(f.network);
-  f.network.assertTestnet = async () => { throw new Error('wallet network operation refused'); };
+  f.network.assertNetwork = async () => { throw new Error('wallet network operation refused'); };
   await assert.rejects(() => f.network.ensureDelegateAccount(Keypair.random().publicKey()), /refused/);
   await assert.rejects(() => f.network.simulateRaw(envelope), /refused/);
   assert.equal(f.requests.length, 0);
   const g = fixture(t);
   // Every read and send is counted: the refusals below are caught, so only the counts show none happened.
   const reached = [];
-  const server = { getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 29 }),
+  const server = { getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 30 }),
     getLatestLedger: async () => { reached.push('getLatestLedger'); return {}; },
     getLedgerEntries: async () => { reached.push('getLedgerEntries'); return { latestLedger: 1, entries: [] }; } };
-  const offTestnet = new WalletNetwork({ rpcUrl: RPC, journalRoot: g.root, server,
+  const offTestnet = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: RPC, journalRoot: mkdtempSync(join(g.root, 'session-')), server,
     fetchImpl: async (url) => { reached.push(url); return new Response('{}'); } });
   await assert.rejects(() => offTestnet.ensureDelegateAccount(Keypair.random().publicKey()), /refused/);
   await assert.rejects(() => offTestnet.simulateRaw(unsigned(offTestnet)), /refused/);
@@ -188,8 +194,8 @@ test('the ledger clock is the latest header, bound to its sequence and hash', as
     ext: xdr.LedgerHeaderExt.v0() });
   const { root } = fixture(t);
   let latest;
-  const network = new WalletNetwork({ rpcUrl: RPC, journalRoot: root, server: {
-    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 29 }), getLatestLedger: async () => latest } });
+  const network = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: RPC, journalRoot: mkdtempSync(join(root, 'session-')), server: {
+    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 30 }), getLatestLedger: async () => latest } });
   const id = (h) => Buffer.from(hash(h.toXDR())).toString('hex');
   latest = { sequence: 500, id: id(header(500, 1792655637)), headerXdr: header(500, 1792655637) };
   assert.deepEqual(await network.ledgerClock(), { sequence: 500, closeTime: 1792655637 });

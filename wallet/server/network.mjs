@@ -2,8 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { Account, Address, Keypair, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { PROTOCOL_VERSION } from '../shared/networks.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
 import { removalCall } from '../shared/revoke.mjs';
 import { ruleReadbackResult } from './install.mjs';
@@ -16,7 +16,12 @@ export const MAX_FEE_STROOPS = 10_000_000;
  * October 2026. Every other transaction keeps MAX_FEE_STROOPS.
  */
 export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
-const refuse = () => { throw new Error('wallet network operation refused; inspect the local journal before retrying'); };
+/** Refusals the page can explain: the endpoint serves another network, or another protocol than 30. */
+export const NETWORK_REASONS = Object.freeze(['network_mismatch', 'protocol_unsupported']);
+const refuse = (cause) => {
+  throw Object.assign(new Error('wallet network operation refused; inspect the local journal before retrying'),
+    NETWORK_REASONS.includes(cause?.reason) ? { reason: cause.reason, ...(cause.protocolVersion !== undefined ? { protocolVersion: cause.protocolVersion } : {}) } : {});
+};
 const bytes = (value) => Buffer.from(value.toXDR());
 const same = (a, b) => a?.toXDR && b?.toXDR && bytes(a).equals(bytes(b));
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -81,15 +86,15 @@ function sourceAuthorization(operation, payer) {
   })] });
 }
 
-/** Exact transaction comparison after allowing only fee/resource fields to be populated. */
-export function checkPreparedEnvelope(assembled, expectedBytes) {
+/** Exact transaction comparison, on the session's `passphrase`, after allowing only fee/resource fields to be populated. */
+export function checkPreparedEnvelope(assembled, expectedBytes, passphrase) {
   try {
     const expected = xdr.TransactionEnvelope.fromXDR(expectedBytes);
     const actual = assembled.toEnvelope();
     const intended = expected.v1.tx.operations;
     const maximum = intended.length === 1 && intended[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm'
       ? MAX_UPLOAD_FEE_STROOPS : MAX_FEE_STROOPS;
-    if (assembled.networkPassphrase !== Networks.TESTNET || actual.type !== 'envelopeTypeTx' || actual.v1.signatures.length) refuse();
+    if (typeof passphrase !== 'string' || assembled.networkPassphrase !== passphrase || actual.type !== 'envelopeTypeTx' || actual.v1.signatures.length) refuse();
     const tx = actual.v1.tx;
     if (!Number.isSafeInteger(tx.fee) || tx.fee < 100 || tx.fee > maximum || tx.ext.type !== 'sorobanData') refuse();
     const data = tx.ext.sorobanData;
@@ -109,7 +114,7 @@ export function checkPreparedEnvelope(assembled, expectedBytes) {
     normalized.v1.tx.fee = expected.v1.tx.fee;
     normalized.v1.tx.ext = expected.v1.tx.ext;
     if (!bytes(normalized).equals(Buffer.from(expectedBytes))) refuse();
-  } catch { refuse(); }
+  } catch (error) { refuse(error); }
 }
 
 /**
@@ -162,37 +167,55 @@ function confirmed(receipt, sent) {
   return { returned, events, observed, feeCharged: receipt.resultXdr.feeCharged.toString() };
 }
 
-/** Trusted backend only. No HTTP route exposes operations, envelopes or this fee payer. */
+/**
+ * Trusted backend only. No HTTP route exposes operations, envelopes or this fee payer. `network` is
+ * the session's network profile (shared/networks.mjs), chosen once at startup: every read checks
+ * that the endpoint serves it, every transaction is built and checked on its passphrase, and the
+ * journal records it first.
+ */
 export class WalletNetwork {
-  #server; #payer = Keypair.random(); #fetch; #journal; #assemble; #pause; #rpcUrl;
+  #server; #payer = Keypair.random(); #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
   #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #delegatesFunded = new Set();
-  constructor({ rpcUrl, journalRoot, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep }) {
+  constructor({ rpcUrl, journalRoot, network, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep }) {
+    if (!network || typeof network.passphrase !== 'string' || typeof network.networkId !== 'string' || !Object.isFrozen(network)) refuse();
+    this.#network = network;
     this.#server = server ?? boundedRpcServer(rpcUrl, fetchImpl);
     this.#rpcUrl = rpcUrl;
     this.#fetch = fetchImpl; this.#journal = journalRoot; this.#assemble = assemble; this.#pause = pause;
+    this.#save(0, 'session', { network: network.name, networkId: network.networkId, protocolVersion: PROTOCOL_VERSION });
   }
+  /** The session's network profile. */
+  get profile() { return this.#network; }
   get payerAddress() { return this.#payer.publicKey(); }
   /** Whether a submission could start now: the payer is funded and no earlier result is uncertain. */
   get canSubmit() { return this.#funded && !this.#ambiguous; }
-  async assertTestnet() {
-    const network = await this.#server.getNetwork();
-    if (network.passphrase !== Networks.TESTNET || !Number.isSafeInteger(network.protocolVersion) || network.protocolVersion < 26) refuse();
-    return network;
+  /**
+   * The endpoint must serve the session's network, at protocol 30: another network refuses as
+   * `network_mismatch`, another protocol (mainnet before its upgrade to 30, for one) as
+   * `protocol_unsupported`, carrying the protocol it reported.
+   */
+  async assertNetwork() {
+    const reported = await this.#server.getNetwork();
+    if (reported?.passphrase !== this.#network.passphrase) refuse({ reason: 'network_mismatch' });
+    if (reported.protocolVersion !== PROTOCOL_VERSION) {
+      refuse({ reason: 'protocol_unsupported', protocolVersion: Number.isSafeInteger(reported.protocolVersion) ? reported.protocolVersion : null });
+    }
+    return reported;
   }
-  async latestLedger() { await this.assertTestnet(); return ledger((await this.#server.getLatestLedger()).sequence); }
+  async latestLedger() { await this.assertNetwork(); return ledger((await this.#server.getLatestLedger()).sequence); }
   /**
    * The latest ledger and its close time (seconds), from the header the RPC returns with it: the
    * header must describe that ledger and hash to its reported ID.
    */
   async ledgerClock() {
     try {
-      await this.assertTestnet();
+      await this.assertNetwork();
       const latest = await this.#server.getLatestLedger();
       const sequence = ledger(latest.sequence);
       const header = latest.headerXdr;
       if (header?.ledgerSeq !== sequence || digest(bytes(header)) !== latest.id || typeof header.scpValue?.closeTime !== 'bigint') refuse();
       return { sequence, closeTime: Number(header.scpValue.closeTime) };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   async sourceCapture() {
     const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: this.#payer.xdrPublicKey() }));
@@ -209,14 +232,14 @@ export class WalletNetwork {
   async prepareSample({ wallet, descriptor, ownerRuleXdr, ownerReadLedger }) {
     try {
       if (!this.#funded || this.#ambiguous || descriptor.recipient !== this.payerAddress) refuse();
-      await this.assertTestnet();
-      const approval = reviewSample({ wallet, descriptor, ownerRuleXdr });
+      await this.assertNetwork();
+      const approval = reviewSample({ wallet, descriptor, ownerRuleXdr, networkId: this.#network.networkId });
       const captured = await this.sourceCapture();
       if (captured.ledger < ledger(ownerReadLedger) || captured.ledger - ownerReadLedger > 12) refuse();
       const maximum = ledger(captured.ledger + 120);
-      const call = sampleCall({ wallet, recipient: this.payerAddress });
+      const call = sampleCall({ wallet, recipient: this.payerAddress, networkId: this.#network.networkId });
       const tx = new TransactionBuilder(new Account(this.payerAddress, captured.sourceSequence),
-        { fee: '1000000', networkPassphrase: Networks.TESTNET })
+        { fee: '1000000', networkPassphrase: this.#network.passphrase })
         .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [] }))
         .setLedgerbounds(captured.ledger, maximum).setTimeout(0).build();
       const simulation = await this.#server.simulateTransaction(tx, undefined, 'record');
@@ -232,13 +255,13 @@ export class WalletNetwork {
       credentials.signatureExpirationLedger = maximum - 1;
       const envelope = tx.toEnvelope();
       envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
-      const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
+      const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), this.#network.passphrase);
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
-      checkPreparedEnvelope(assembled, bytes(envelope));
+      checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase);
       const final = assembled.toEnvelope();
       const restored = final.v1.tx.ext.sorobanData.ext;
       const assembly = {
-        envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: NETWORK_ID,
+        envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: this.#network.networkId,
         fee_payer: this.payerAddress, source_sequence: captured.sourceSequence, fee_stroops: final.v1.tx.fee,
         sequence_read_ledger: captured.ledger, simulation_ledger: simulation.latestLedger,
         min_ledger: captured.ledger, max_ledger: maximum,
@@ -250,7 +273,7 @@ export class WalletNetwork {
         currentLedger: await this.latestLedger(), ownerReadLedger, maxFeeStroops: MAX_FEE_STROOPS, validityLedgers: 120 };
       validateSampleAssembly({ approval, assembly, ownerRuleXdr, limits });
       return { assembly, limits };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   async source() {
     const source = await this.#server.getAccount(this.payerAddress);
@@ -259,11 +282,12 @@ export class WalletNetwork {
     return source;
   }
   async fundPayer() {
-    await this.assertTestnet();
+    await this.assertNetwork();
     if (this.#funded) return;
-    if (this.#fundingAttempted) refuse();
+    // Friendbot exists on testnet alone; no disposable key is ever funded on another network.
+    if (this.#fundingAttempted || !this.#network.friendbot) refuse();
     this.#fundingAttempted = true;
-    const response = await this.#fetch(`https://friendbot.stellar.org/?addr=${this.payerAddress}`, {
+    const response = await this.#fetch(`${this.#network.friendbot}/?addr=${this.payerAddress}`, {
       method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
     });
     await boundedText(response, 256 * 1024);
@@ -276,15 +300,15 @@ export class WalletNetwork {
   }
   async submitOperation(operation, stage) {
     const source = await this.source();
-    const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: Networks.TESTNET })
+    const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: this.#network.passphrase })
       .addOperation(sourceAuthorization(operation, this.payerAddress)).setTimeout(120).build();
     return this.submitEnvelope(tx.toEnvelope().toXDR('base64'), stage);
   }
   async submitEnvelope(envelopeXdr, stage) {
     try {
       if (!this.#funded || this.#ambiguous || typeof stage !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(stage)) refuse();
-      await this.assertTestnet();
-      const original = TransactionBuilder.fromXDR(envelopeXdr, Networks.TESTNET);
+      await this.assertNetwork();
+      const original = TransactionBuilder.fromXDR(envelopeXdr, this.#network.passphrase);
       if (original.source !== this.payerAddress || original.toEnvelope().type !== 'envelopeTypeTx'
         || original.signatures.length || original.operations.length !== 1 || original.toEnvelope().v1.tx.operations[0].sourceAccount !== null
         || original.toEnvelope().v1.tx.operations[0].body.type !== 'invokeHostFunction') refuse();
@@ -293,11 +317,11 @@ export class WalletNetwork {
       if (rpc.Api.isSimulationError(simulation) || !simulation.result) refuse();
       ledger(simulation.latestLedger);
       const assembled = this.#assemble(original, simulation).build();
-      checkPreparedEnvelope(assembled, expected);
+      checkPreparedEnvelope(assembled, expected, this.#network.passphrase);
       assembled.sign(this.#payer);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
       const serial = ++this.#serial;
-      this.#save(serial, 'intended', { stage, hash: txHash, networkId: NETWORK_ID,
+      this.#save(serial, 'intended', { stage, hash: txHash, networkId: this.#network.networkId,
         envelopeXdr: assembled.toEnvelope().toXDR('base64'), status: 'submission_unknown' });
       // From this point an exception may mean a live write. Only a verified receipt
       // releases this guard; a later action cannot silently submit a replacement.
@@ -317,7 +341,7 @@ export class WalletNetwork {
         return { ...result, feeChargedStroops: checked.feeCharged, returnValue: checked.returned, events: checked.events };
       }
       refuse();
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   async #entry(key) {
     const response = await this.#server.getLedgerEntries(key);
@@ -345,7 +369,7 @@ export class WalletNetwork {
    */
   async nativeSource(wasmHash) {
     try {
-      const network = await this.assertTestnet();
+      const network = await this.assertNetwork();
       const latest = await this.#server.getLatestLedger();
       const header = latest.headerXdr;
       const sequence = ledger(latest.sequence);
@@ -369,7 +393,7 @@ export class WalletNetwork {
         base_reserve: header.baseReserve, min_temp_entry_ttl: settings.minTemporaryTtl,
         min_persistent_entry_ttl: settings.minPersistentTtl, max_entry_ttl: settings.maxEntryTtl },
       accountWasmBase64: code.toString('base64') };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /**
    * The unsigned record-mode envelope for one captured call, sourced from the fee payer at its
@@ -377,9 +401,9 @@ export class WalletNetwork {
    */
   async targetEnvelope(call) {
     try {
-      await this.assertTestnet();
-      return targetEnvelopeXdr(await this.source(), call);
-    } catch { refuse(); }
+      await this.assertNetwork();
+      return targetEnvelopeXdr(await this.source(), call, this.#network.passphrase);
+    } catch (error) { refuse(error); }
   }
   /**
    * One enforce-mode `simulateTransaction` of an unsigned envelope, returned as the RPC's raw JSON
@@ -389,7 +413,7 @@ export class WalletNetwork {
    */
   async simulateRaw(envelopeXdr) {
     try {
-      await this.assertTestnet();
+      await this.assertNetwork();
       const url = new URL(this.#rpcUrl);
       if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) refuse();
       if (typeof envelopeXdr !== 'string' || envelopeXdr.length > 256 * 1024) refuse();
@@ -405,12 +429,12 @@ export class WalletNetwork {
       if (data?.jsonrpc !== '2.0' || data.id !== id || !data.result || typeof data.result !== 'object' || Array.isArray(data.result)) refuse();
       ledger(data.result.latestLedger);
       return data.result;
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /** The native SAC is a host executable, not Wasm. Keep that distinction in monitoring. */
   async targetIdentity(contractId) {
-    if (contractId !== Asset.native().contractId(Networks.TESTNET)) refuse();
-    const net = await this.assertTestnet();
+    if (contractId !== this.#network.nativeAsset) refuse();
+    const net = await this.assertNetwork();
     const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(contractId).toScAddress(),
       key: xdr.ScVal.scvLedgerKeyContractInstance(), durability: xdr.ContractDataDurability.persistent }));
     const { entry, ledger: observed } = await this.#entry(key);
@@ -429,7 +453,7 @@ export class WalletNetwork {
   async contractLiveness(contractId) {
     try {
       if (!StrKey.isValidContract(contractId)) refuse();
-      await this.assertTestnet();
+      await this.assertNetwork();
       const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(contractId).toScAddress(),
         key: xdr.ScVal.scvLedgerKeyContractInstance(), durability: xdr.ContractDataDurability.persistent }));
       const response = await this.#server.getLedgerEntries(key);
@@ -449,7 +473,7 @@ export class WalletNetwork {
         || digest(codeEntry.val.contractCode.code) !== wasmHash || codeLedger < observed || codeLedger - observed > 12) refuse();
       return { found: true, wasmHash, instanceLiveUntil: ledger(entry.liveUntilLedgerSeq),
         codeLiveUntil: ledger(codeEntry.liveUntilLedgerSeq), ledger: observed };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /**
    * What a live check's signatures could change, read together: the account instance's `NextId`
@@ -461,7 +485,7 @@ export class WalletNetwork {
     try {
       if (!StrKey.isValidContract(account) || !StrKey.isValidContract(policy) || account === policy
         || !Number.isSafeInteger(ruleId) || ruleId < 0 || ruleId > 0xffffffff) refuse();
-      await this.assertTestnet();
+      await this.assertNetwork();
       const data = (contract, key) => xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
         contract: new Address(contract).toScAddress(), key, durability: xdr.ContractDataDurability.persistent }));
       const keyed = (name, ...rest) => xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name), ...rest]);
@@ -497,7 +521,7 @@ export class WalletNetwork {
       if (marker !== null && marker !== xdr.ScVal.scvBool(true).toXDR('base64')) refuse();
       return { ledger: observed, account, policy, ruleId, nextId, count, accountWasmHash: again.wasmHash,
         rules: ruleKeys.map((key, id) => ({ id, xdr: value(key) })), installed: marker !== null };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /**
    * The generated policy's `CallCount(account, ruleId)`: how many calls this installation has used.
@@ -507,7 +531,7 @@ export class WalletNetwork {
     try {
       if (!StrKey.isValidContract(account) || !StrKey.isValidContract(policy) || account === policy
         || !Number.isSafeInteger(ruleId) || ruleId < 0 || ruleId > 0xffffffff) refuse();
-      await this.assertTestnet();
+      await this.assertNetwork();
       const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(policy).toScAddress(),
         key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallCount'), new Address(account).toScVal(), xdr.ScVal.scvU32(ruleId)]),
         durability: xdr.ContractDataDurability.persistent }));
@@ -519,7 +543,7 @@ export class WalletNetwork {
       const value = entries[0].val?.type === 'contractData' ? entries[0].val.contractData.val : refuse();
       if (value.type !== 'scvU32') refuse();
       return { ledger: observed, count: value.u32 };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /**
    * The wallet's automation delegate as a classic testnet account, which the host needs to check its
@@ -529,7 +553,7 @@ export class WalletNetwork {
   async ensureDelegateAccount(address) {
     try {
       if (!StrKey.isValidEd25519PublicKey(address) || address === this.payerAddress) refuse();
-      await this.assertTestnet();
+      await this.assertNetwork();
       const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: Keypair.fromPublicKey(address).xdrAccountId() }));
       const read = async () => {
         const response = await this.#server.getLedgerEntries(key);
@@ -543,9 +567,9 @@ export class WalletNetwork {
       };
       const existing = await read();
       if (existing) return { ...existing, createdNow: false };
-      if (this.#delegatesFunded.has(address)) refuse();
+      if (this.#delegatesFunded.has(address) || !this.#network.friendbot) refuse();
       this.#delegatesFunded.add(address);
-      const response = await this.#fetch(`https://friendbot.stellar.org/?addr=${address}`, {
+      const response = await this.#fetch(`${this.#network.friendbot}/?addr=${address}`, {
         method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
       });
       await boundedText(response, 256 * 1024);
@@ -555,7 +579,7 @@ export class WalletNetwork {
         await this.#pause(2000);
       }
       refuse();
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /**
    * Whether the exact transfer can run against current state, so that a target-side failure is not
@@ -566,8 +590,8 @@ export class WalletNetwork {
     try {
       if (!StrKey.isValidContract(account) || !StrKey.isValidEd25519PublicKey(recipient)
         || typeof amount !== 'string' || !/^[1-9][0-9]{0,18}$/.test(amount)) refuse();
-      await this.assertTestnet();
-      const sac = Asset.native().contractId(Networks.TESTNET);
+      await this.assertNetwork();
+      const sac = this.#network.nativeAsset;
       const balanceKey = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({ contract: new Address(sac).toScAddress(),
         key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Balance'), new Address(account).toScVal()]),
         durability: xdr.ContractDataDurability.persistent }));
@@ -581,7 +605,7 @@ export class WalletNetwork {
       const value = balance ? scValToNative(balance.val.contractData.val) : null;
       const funds = typeof value?.amount === 'bigint' ? value.amount : 0n;
       return { ledger: observed, recipientExists: Boolean(target), covered: funds >= BigInt(amount) };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /** The live check's replay obligation, kept in the session journal: public addresses, ledgers and reads only. */
   recordLiveObligation(record) {
@@ -603,13 +627,13 @@ export class WalletNetwork {
   async prepareRemoval({ wallet, ruleId, ownerReadLedger }) {
     try {
       if (!this.#funded || this.#ambiguous || !StrKey.isValidContract(wallet?.contractId)) refuse();
-      await this.assertTestnet();
+      await this.assertNetwork();
       const captured = await this.sourceCapture();
       if (captured.ledger < ledger(ownerReadLedger) || captured.ledger - ownerReadLedger > 12) refuse();
       const maximum = ledger(captured.ledger + 120);
       const call = removalCall(wallet.contractId, ruleId);
       const tx = new TransactionBuilder(new Account(this.payerAddress, captured.sourceSequence),
-        { fee: '1000000', networkPassphrase: Networks.TESTNET })
+        { fee: '1000000', networkPassphrase: this.#network.passphrase })
         .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [] }))
         .setLedgerbounds(captured.ledger, maximum).setTimeout(0).build();
       const simulation = await this.#server.simulateTransaction(tx, undefined, 'record');
@@ -624,13 +648,13 @@ export class WalletNetwork {
       credentials.signatureExpirationLedger = maximum - 1;
       const envelope = tx.toEnvelope();
       envelope.v1.tx.operations[0].body.invokeHostFunctionOp.auth = [entry];
-      const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
+      const unsigned = TransactionBuilder.fromXDR(envelope.toXDR('base64'), this.#network.passphrase);
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
-      checkPreparedEnvelope(assembled, bytes(envelope));
+      checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase);
       const final = assembled.toEnvelope();
       const restored = final.v1.tx.ext.sorobanData.ext;
       return { assembly: {
-        envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: NETWORK_ID,
+        envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: this.#network.networkId,
         fee_payer: this.payerAddress, source_sequence: captured.sourceSequence, fee_stroops: final.v1.tx.fee,
         sequence_read_ledger: captured.ledger, simulation_ledger: simulation.latestLedger, min_ledger: captured.ledger, max_ledger: maximum,
         restoration: restored.type === 'resourceExt' && restored.resourceExt.archivedSorobanEntries.length
@@ -638,7 +662,7 @@ export class WalletNetwork {
         simulation_auth_mode: 'record', evidence_trust: 'rpc_reported', state_dependent: true, writes_committed: false,
       }, limits: { feePayer: this.payerAddress, sourceSequence: captured.sourceSequence, currentLedger: await this.latestLedger(),
         ownerReadLedger, maxFeeStroops: MAX_FEE_STROOPS, validityLedgers: 120 } };
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   /**
    * `account.get_context_rule(ruleId)` in one enforce-mode simulation from the fee payer, judged from
@@ -648,14 +672,14 @@ export class WalletNetwork {
   async ruleReadback(account, ruleId) {
     try {
       if (!StrKey.isValidContract(account) || !Number.isSafeInteger(ruleId) || ruleId < 0 || ruleId > 0xffffffff) refuse();
-      await this.assertTestnet();
+      await this.assertNetwork();
       const source = await this.source();
       const envelope = new TransactionBuilder(new Account(source.accountId(), source.sequenceNumber()),
-        { fee: '100', networkPassphrase: Networks.TESTNET })
+        { fee: '100', networkPassphrase: this.#network.passphrase })
         .addOperation(Operation.invokeContractFunction({ contract: account, function: 'get_context_rule', args: [xdr.ScVal.scvU32(ruleId)] }))
         .setTimeout(0).build().toEnvelope().toXDR('base64');
       return ruleReadbackResult(await this.simulateRaw(envelope), { account });
-    } catch { refuse(); }
+    } catch (error) { refuse(error); }
   }
   async requireInstance(contractId, wasmHash) {
     if (!StrKey.isValidContract(contractId)) refuse();
@@ -674,7 +698,7 @@ export class WalletNetwork {
     return { contractId, wasmHash, ledger: code.ledger, instanceLedger: observed, codeLedger: code.ledger, nonAtomic: true };
   }
   async view(contract, name, args = []) {
-    const tx = new TransactionBuilder(await this.source(), { fee: '100', networkPassphrase: Networks.TESTNET })
+    const tx = new TransactionBuilder(await this.source(), { fee: '100', networkPassphrase: this.#network.passphrase })
       .addOperation(Operation.invokeContractFunction({ contract, function: name, args })).setTimeout(60).build();
     const result = await this.#server.simulateTransaction(tx, undefined, 'enforce');
     if (rpc.Api.isSimulationError(result) || !result.result || result.result.auth?.length) refuse();
@@ -687,7 +711,7 @@ export class WalletNetwork {
     const func = operation.body.invokeHostFunctionOp.hostFunction;
     const preimage = (func.createContractV2 ?? func.createContract).contractIdPreimage;
     const id = xdr.HashIdPreimage.envelopeTypeContractId(new xdr.HashIdPreimageContractId({
-      networkId: Buffer.from(NETWORK_ID, 'hex'), contractIdPreimage: preimage,
+      networkId: Buffer.from(this.#network.networkId, 'hex'), contractIdPreimage: preimage,
     }));
     const expected = StrKey.encodeContract(hash(id.toXDR()));
     const receipt = await this.submitOperation(operation, stage);

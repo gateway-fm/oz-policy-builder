@@ -3,7 +3,7 @@ export { NATIVE_LIMITS } from '../shared/execution-limits.mjs';
 import { randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, freezeCopy } from '../shared/approval.mjs';
 import { predictedRefusal } from '../shared/dry-run.mjs';
 import { createLiveCapability, createUseCapability } from './live-signing.mjs';
 import { createOfflineSigner, offlineCapability, offlineDomain } from './native-protocol.mjs';
@@ -45,13 +45,16 @@ const guarded = (check) => (...args) => { try { return check(...args); } catch {
  * browser receives the public address and an opaque capability ID, the worker only the address.
  * A key signs through exactly three capabilities and never raw bytes: `offline` signs authorization
  * preimages in the derived offline execution network only; `live` builds and signs one live case's
- * transfer authorization on testnet only; `use` builds and signs one use of an installed grant, the
- * granted transfer under the installed rule, on testnet only. The testnet ones refuse the offline
- * network and the offline one refuses testnet.
+ * transfer authorization on the session's network only; `use` builds and signs one use of an installed
+ * grant, the granted transfer under the installed rule, on the session's network only. Those refuse the
+ * offline network and every other live network; the offline one refuses every live network.
  */
 export class DelegateCapabilities {
   #keys = new Map();
   #consents = new Set();
+  #network;
+  /** `network` is the session's network profile; without it no live or use capability is minted. */
+  constructor(network = null) { this.#network = network; }
   create() {
     if (this.#keys.size >= MAX_DELEGATES) refuse();
     const key = Keypair.random();
@@ -74,13 +77,13 @@ export class DelegateCapabilities {
   live(capabilityId, address, { consent, ...approved } = {}) {
     const key = this.#key(capabilityId, address);
     if (typeof consent !== 'string' || !HASH.test(consent) || this.#consents.has(consent)) refuse();
-    const capability = createLiveCapability(key, approved);
+    const capability = createLiveCapability(key, approved, this.#network);
     this.#consents.add(consent);
     return capability;
   }
   /** A use capability for one use of an installed grant (`createUseCapability`): one transfer, signed once. */
   use(capabilityId, address, approved) {
-    return createUseCapability(this.#key(capabilityId, address), approved);
+    return createUseCapability(this.#key(capabilityId, address), approved, this.#network);
   }
 }
 
@@ -92,7 +95,7 @@ export const checkDryRunPreparation = guarded((output, candidate) => {
     'rule_index', 'candidate_context_rule_id', 'suite_hash', 'policy_code_hashes']);
   if (output.schema !== 'ozpb:dry-run:v1' || !HASH.test(output.run_hash) || output.complete !== false
     || b.spec_hash !== candidate.specHash || b.binding_set_hash !== candidate.bindingSetHash || !HASH.test(b.registry_snapshot_root)
-    || b.account_address !== candidate.accountAddress || b.account_code_hash !== ACCOUNT_WASM || b.network_id !== NETWORK_ID
+    || b.account_address !== candidate.accountAddress || b.account_code_hash !== ACCOUNT_WASM || !HASH.test(candidate.networkId ?? '') || b.network_id !== candidate.networkId
     || b.rule_index !== 0 || b.candidate_context_rule_id !== candidate.candidateContextRuleId || !HASH.test(b.suite_hash)
     || !isDeepStrictEqual(b.policy_code_hashes, { [candidate.policyAddress]: candidate.policyCodeHash })
     || output.artifact_verification?.matches !== true || !Array.isArray(output.layers) || output.layers.length !== LAYERS.length
@@ -116,7 +119,7 @@ export const checkDryRunPreparation = guarded((output, candidate) => {
         : outcome.expected === 'deny' && /^deny\([A-Za-z]+\)$/.test(outcome.actual)) || outcome.agree !== true) refuse();
   }
   return freezeCopy({
-    expected: { runHash: output.run_hash, suiteHash: b.suite_hash, accountAddress: candidate.accountAddress,
+    expected: { networkId: candidate.networkId, runHash: output.run_hash, suiteHash: b.suite_hash, accountAddress: candidate.accountAddress,
       delegateAddress: candidate.delegateAddress, policyAddress: candidate.policyAddress, policyCodeHash: candidate.policyCodeHash,
       candidateContextRuleId: candidate.candidateContextRuleId, sourceLedger: candidate.sourceLedger, boundaryCases: outcomes.length },
     reference: { outcomes, requiredClasses: required, caseLedgers },
@@ -147,7 +150,7 @@ export const checkPrepared = guarded((frame, expected) => {
   const ledgers = frame.signature_expiration_ledgers;
   if (frame.type !== 'prepared' || frame.schema !== 1 || frame.execution_network_id !== domain.networkId
     || binding.run_hash !== expected.runHash || binding.suite_hash !== expected.suiteHash
-    || binding.source_network_id !== NETWORK_ID || binding.source_ledger !== expected.sourceLedger
+    || !HASH.test(expected.networkId ?? '') || binding.source_network_id !== expected.networkId || binding.source_ledger !== expected.sourceLedger
     || binding.account_address !== expected.accountAddress || binding.delegate_address !== expected.delegateAddress
     || frame.account_code_hash !== ACCOUNT_WASM || frame.policy_address !== expected.policyAddress
     || frame.policy_address === binding.account_address || !StrKey.isValidContract(frame.policy_address)

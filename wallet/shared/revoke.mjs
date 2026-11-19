@@ -2,7 +2,8 @@
 // installed and recorded. Validated in the browser and the backend before the passkey is asked.
 import { Buffer } from 'buffer';
 import { Address, StrKey, hash, scValToNative, xdr } from '#wallet-stellar-sdk';
-import { NETWORK_ID, freezeCopy } from './approval.mjs';
+import { freezeCopy } from './approval.mjs';
+import { networkById, stroopsText } from './networks.mjs';
 import { decodeEnvelope, resources } from './assembly.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 import { decodeBase64Url } from './base64url.mjs';
@@ -58,19 +59,20 @@ export function removalConfigurationChange(change, ruleId) {
  * installation (account, rule ID, installation transaction). Its commitment is what the
  * signature checks compare.
  */
-export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null }) {
+export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null, networkId }) {
   try {
+    const network = networkById(networkId);
     if (!StrKey.isValidContract(wallet.contractId) || !StrKey.isValidContract(wallet.verifier)
       || !/^04[0-9a-f]{128}$/.test(wallet.publicKey) || !/^[A-Za-z0-9_-]{1,1366}$/.test(wallet.credentialId)
       || !integer(ownerRuleId, 0) || installation.account !== wallet.contractId || !integer(installation.ruleId)
       || installation.ruleId === ownerRuleId || !/^[0-9a-f]{64}$/.test(installation.transactionHash)) refuse();
     ownerRuleMatches(wallet, ownerRuleId, ownerRuleXdr);
     const changed = configurationChange === null ? null : removalConfigurationChange(configurationChange, installation.ruleId);
-    const preimage = ['wallet-revoke/v1', NETWORK_ID, wallet.contractId, wallet.verifier,
+    const preimage = ['wallet-revoke/v1', network.networkId, wallet.contractId, wallet.verifier,
       wallet.publicKey, wallet.credentialId, ownerRuleId, ownerRuleXdr, installation.ruleId, installation.transactionHash];
     if (changed) preimage.push('configuration_drift', changed.recordedRuleHash, changed.observedRuleHash);
     const commitment = Buffer.from(hash(Buffer.from(JSON.stringify(preimage)))).toString('hex');
-    return freezeCopy({ wallet, ownerRuleId, ownerRuleXdr, commitment,
+    return freezeCopy({ networkId: network.networkId, wallet, ownerRuleId, ownerRuleXdr, commitment,
       ...(changed ? { configurationChange } : {}),
       installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
   } catch { return refuse(); }
@@ -80,12 +82,12 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
 export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limits }) {
   try {
     const fresh = reviewRemoval({ wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr,
-      installation: approval.installation, configurationChange: approval.configurationChange ?? null });
+      installation: approval.installation, configurationChange: approval.configurationChange ?? null, networkId: approval.networkId });
     if (fresh.commitment !== approval.commitment || limits.maxFeeStroops !== REMOVAL_MAX_FEE_STROOPS || !sequence(limits.sourceSequence)
       || !integer(limits.validityLedgers, 2, 120) || !integer(limits.currentLedger) || !integer(limits.ownerReadLedger)
       || limits.currentLedger < limits.ownerReadLedger || limits.currentLedger - limits.ownerReadLedger > 12
       || !StrKey.isValidEd25519PublicKey(limits.feePayer)
-      || assembly.network_id !== NETWORK_ID || assembly.fee_payer !== limits.feePayer
+      || assembly.network_id !== approval.networkId || assembly.fee_payer !== limits.feePayer
       || assembly.source_sequence !== limits.sourceSequence || assembly.simulation_auth_mode !== 'record'
       || assembly.evidence_trust !== 'rpc_reported' || assembly.state_dependent !== true || assembly.writes_committed !== false
       || !['none', 'automatic_within_invocation'].includes(assembly.restoration)) refuse();
@@ -130,15 +132,16 @@ export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limi
 export function revokeConsent({ approval, checked, maxFeeStroops }) {
   try {
     const { account, ruleId, transactionHash } = approval.installation;
+    const network = networkById(approval.networkId);
     if (checked.authorityCommitment !== approval.commitment || checked.ownerRuleId !== approval.ownerRuleId
       || maxFeeStroops !== REMOVAL_MAX_FEE_STROOPS || !integer(checked.feeStroops, 100, maxFeeStroops)) refuse();
     return freezeCopy({
-      schema: 'ozpb-revoke-consent/v1', network: 'testnet', network_id: NETWORK_ID,
+      schema: 'ozpb-revoke-consent/v1', network: network.name, network_id: network.networkId,
       owner_signs: { contract: account, function: 'remove_context_rule', args: [ruleId], context_rule_ids: [approval.ownerRuleId] },
       installation: { rule_id: ruleId, transaction: transactionHash },
       ...(approval.configurationChange ? { configurationChange: removalConfigurationChange(approval.configurationChange, ruleId) } : {}),
       transaction: { min_ledger: checked.minLedger, max_ledger: checked.maxLedger, signature_expiration_ledger: checked.expirationLedger },
-      fee: { prepared_fee_stroops: checked.feeStroops, max_fee_stroops: maxFeeStroops, paid_by: 'the local testnet fee payer, not this account' },
+      fee: { prepared_fee_stroops: checked.feeStroops, max_fee_stroops: maxFeeStroops, paid_by: `the local ${network.name} fee payer, not this account` },
       warning: (approval.configurationChange ? 'The rule configuration differs from the installation record. The current configuration shown below will be removed. ' : '')
         + `Your passkey signs one transaction that removes rule ${ruleId} from account ${account}. Once it is confirmed, the `
         + 'delegate can no longer act under that rule. The account removes the rule\'s policies on a best effort basis: the wallet '

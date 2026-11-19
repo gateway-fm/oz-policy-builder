@@ -6,10 +6,12 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
-import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
+import { ACCOUNT_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { WalletToolchain } from '../server/toolchain.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
 import { parseGrantProposal } from '../shared/proposal.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 function setup(t, change = () => {}, pipeline) {
   const root = mkdtempSync(join(tmpdir(), 'ozpb-wallet-tools-'));
@@ -238,7 +240,7 @@ for (const changed of [false, true]) test(`proposal grant comparison ${changed ?
   const recorded = await toolchain.record({ transactionHash: f.proposal.transaction_hash, accountAddress: f.wallet.contractId });
   const generate = () => toolchain.generate({ recordId: recorded.recordId, delegateAddress: f.proposal.decisions.delegate,
     validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101,
-    proposal: parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId) });
+    proposal: parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID) });
   if (changed) {
     await assert.rejects(generate, /refused/);
     assert.deepEqual(calls.map(c => c.args[0]), ['record', 'synthesize']);

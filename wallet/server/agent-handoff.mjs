@@ -1,6 +1,7 @@
 import { NATIVE_LIMITS } from '../shared/execution-limits.mjs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { freezeCopy } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { parseGrantProposal } from '../shared/proposal.mjs';
 
 export const PAIR_TTL_MS = 5 * 60_000;
@@ -17,10 +18,13 @@ export class AgentRefusal extends Error {
 const refuse = (reason = 'unavailable') => { throw new AgentRefusal(reason); };
 const walletEqual = (a, b) => ['contractId', 'credentialId', 'publicKey', 'verifier'].every(k => a?.[k] === b?.[k]);
 
-/** Draft-only state. Its owner validates wallet/delegate capabilities before pairing. */
+/**
+ * Draft-only state. Its owner validates wallet/delegate capabilities before pairing. `network` is the
+ * session's network profile: a proposal for any other network is refused on delivery.
+ */
 export class AgentHandoff {
-  #now; #pairing = null; #connection = null; #pending = null; #seen = new Map();
-  constructor({ now = () => performance.now() } = {}) { this.#now = now; }
+  #now; #network; #pairing = null; #connection = null; #pending = null; #seen = new Map();
+  constructor({ now = () => performance.now(), network = WALLET_NETWORKS.testnet } = {}) { this.#now = now; this.#network = network; }
   disconnect() { this.#pairing = null; this.#connection = null; this.#pending = null; this.#seen.clear(); }
   #expire() {
     const now = this.#now();
@@ -33,7 +37,7 @@ export class AgentHandoff {
   #public() {
     const c = this.#connection;
     return c ? { connectionId: c.connectionId, account: c.wallet.contractId, delegate: c.delegate.address,
-      networkId: NETWORK_ID, expiresInSeconds: Math.max(0, Math.ceil((c.expires - this.#now()) / 1000)),
+      networkId: this.#network.networkId, expiresInSeconds: Math.max(0, Math.ceil((c.expires - this.#now()) / 1000)),
       limits: { maxValidityLedgers: 17280, maxCalls: NATIVE_LIMITS.maxCalls, exactNativeTransferOnly: true } } : null;
   }
   pair({ wallet, delegate }) {
@@ -65,7 +69,7 @@ export class AgentHandoff {
     if (typeof proposal !== 'string' || Buffer.byteLength(proposal) > 16384
       || typeof deliveryId !== 'string' || !/^[0-9a-f]{64}$/.test(deliveryId) || deliveryId !== hash(proposal)) refuse('proposal_invalid');
     let parsed;
-    try { parsed = parseGrantProposal(proposal, this.#connection.wallet.contractId); } catch { refuse('proposal_invalid'); }
+    try { parsed = parseGrantProposal(proposal, this.#connection.wallet.contractId, this.#network.networkId); } catch { refuse('proposal_invalid'); }
     if (parsed.decisions.delegate !== this.#connection.delegate.address) refuse('delegate_mismatch');
     if (parsed.decisions.max_calls > NATIVE_LIMITS.maxCalls) refuse('call_limit');
     // A lost-response retry gets its receipt even while another draft waits or the limit is reached.

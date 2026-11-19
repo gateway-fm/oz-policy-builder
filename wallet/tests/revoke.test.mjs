@@ -5,13 +5,15 @@ import { reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared
 import { ruleReadbackResult } from '../server/install.mjs';
 import { fixture } from './approval-fixture.mjs';
 import { RULE_ID, removalFor } from './install-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const PAYER = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 11)).publicKey();
 const LEDGER = 200000;
 
 function removal(mutate) {
   const f = fixture();
-  const approval = reviewRemoval({ wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
+  const approval = reviewRemoval({ networkId: NETWORK_ID, wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
     installation: { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: 'e'.repeat(64) } });
   const value = removalFor({ account: f.wallet.contractId, payer: PAYER, sequence: '100', ledger: LEDGER, mutate });
   return { approval, ownerRuleXdr: f.ownerRuleXdr, ...value, f };
@@ -34,7 +36,7 @@ test('removal validation returns only the exact unsigned owner entry for remove_
 
 test('the removal approval is bound to the installation and the owner rule it was reviewed with', () => {
   const f = fixture();
-  const base = { wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
+  const base = { networkId: NETWORK_ID, wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
     installation: { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: 'e'.repeat(64) } };
   const commitment = reviewRemoval(base).commitment;
   assert.notEqual(reviewRemoval({ ...base, installation: { ...base.installation, ruleId: 2 } }).commitment, commitment);

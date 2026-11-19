@@ -358,8 +358,12 @@ test('an account error is failed, never a policy denial', () => {
 test('the approved case is checked before anything is compared with it', () => {
   assert.equal(liveCase(F.intent()).asset, PROBE.asset, 'the asset is the testnet native asset, derived, not supplied');
   assert.ok(Object.isFrozen(liveCase(F.intent())));
+  // A mainnet case is a case on mainnet: its asset is mainnet's native asset, derived from the network ID.
+  const mainnet = '7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979';
+  assert.equal(liveCase(F.intent({ network_id: mainnet })).asset, 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA');
   for (const [name, change] of [
-    ['mainnet', { network_id: '7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979' }],
+    ['futurenet', { network_id: 'a3a1c6a78286713e29be0e9785670fa838d13917cd8eaeb4a3579ff1debc7fd5' }],
+    ['no network', { network_id: undefined }],
     ['delegate is a contract', { delegate: PROBE.account }],
     ['delegate is the recipient', { delegate: PROBE.recipient }],
     ['policy is the helper', { policy: PROBE.helper }],

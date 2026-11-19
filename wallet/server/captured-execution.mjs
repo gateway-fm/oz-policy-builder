@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { Address, Keypair, Operation, StrKey, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { ACCOUNT_WASM, freezeCopy } from '../shared/approval.mjs';
+import { networkById } from '../shared/networks.mjs';
 import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 import { nativeJobText } from './native-execution.mjs';
 import { createOfflineSigner, offlineDomain } from './native-protocol.mjs';
@@ -10,7 +11,8 @@ import { RawJson, requestText } from './raw-json.mjs';
 
 const HASH = /^[0-9a-f]{64}$/;
 const HOST = 'soroban-env-host/30.0.0';
-const SAC = Asset.native().contractId(Networks.TESTNET);
+/** The native asset contract of the network `networkId` names (testnet or mainnet); anything else refuses. */
+const sacOf = (networkId) => networkById(networkId).nativeAsset;
 const I64_MAX = 9223372036854775807n;
 /** Fixed by the worker: the original call, the adjacent amount and the unsigned call, in this order. */
 export const TARGET_CASE_IDS = Object.freeze(['target:original:0', 'target:argument-denial:0', 'target:empty-signers:0']);
@@ -56,13 +58,14 @@ const nonceKey = (address, nonce) => b64(contractKey(address, xdr.ScVal.scvLedge
   xdr.ContractDataDurability.temporary));
 
 /**
- * The one call the captured layer supports, derived from the retained spec: the testnet native
- * SAC's `transfer(SELF, G recipient, exact amount)`. Anything else is unsupported (null), never
+ * The one call the captured layer supports, derived from the retained spec: the native SAC of the
+ * spec's network, `transfer(SELF, G recipient, exact amount)`. Anything else is unsupported (null), never
  * approximated; the worker refuses the same shapes independently.
  */
 export function capturedCall(spec) {
   try {
     const accountAddress = spec?.smart_account?.address;
+    const SAC = sacOf(spec.network_id);
     const [rule] = spec.rules;
     const [allowed] = rule.allowed_calls;
     if (spec.rules.length !== 1 || !StrKey.isValidContract(accountAddress) || rule.context?.contract !== SAC
@@ -82,9 +85,10 @@ export function capturedCall(spec) {
   } catch { return null; }
 }
 
-/** The unsigned envelope `capture-target` simulates in record mode. It is never signed or submitted. */
-export function targetEnvelopeXdr(source, call) {
-  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: Networks.TESTNET })
+/** The unsigned envelope `capture-target` simulates in record mode, on `passphrase`. It is never signed or submitted. */
+export function targetEnvelopeXdr(source, call, passphrase) {
+  if (typeof passphrase !== 'string') refuse();
+  const tx = new TransactionBuilder(source, { fee: '100', networkPassphrase: passphrase })
     .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth: [] }))
     .setTimeout(0).build();
   if (tx.signatures.length) refuse();
@@ -135,7 +139,7 @@ function capturedStateHash(runHash, captureDigest, candidateStateHash) {
 }
 
 /** Ledger keys of the supported transfer: the SAC instance, the sender's SAC balance and the recipient account. */
-function transferKeys(accountAddress, recipient) {
+function transferKeys(accountAddress, recipient, SAC) {
   const persistent = xdr.ContractDataDurability.persistent;
   return {
     instance: b64(contractKey(SAC, xdr.ScVal.scvLedgerKeyContractInstance(), persistent)),
@@ -145,14 +149,15 @@ function transferKeys(accountAddress, recipient) {
 }
 
 /**
- * The CLI's capture, accepted only for the review's exact call on testnet, from the pinned account
+ * The CLI's capture, accepted only for the review's exact call on the session's network, from the pinned account
  * code, at a ledger no older than the backend's read before requesting it. Returns the job ledger
  * the worker requires: the capture's own header and archival configuration.
  */
-export const checkTargetCapture = guarded((capture, { call, accountAddress, recipient, notBefore }) => {
+export const checkTargetCapture = guarded((capture, { call, accountAddress, recipient, notBefore, networkId }) => {
   exact(capture, CAPTURE);
   const observed = capture.observed_ledger;
-  if (capture.schema !== 1 || capture.provenance !== 'rpc_reported' || capture.network_id !== NETWORK_ID
+  const SAC = sacOf(networkId);
+  if (capture.schema !== 1 || capture.provenance !== 'rpc_reported' || capture.network_id !== networkId
     || capture.account_code_hash !== ACCOUNT_WASM || !u32(observed) || observed < 1 || !u32(notBefore)
     || observed < notBefore || observed - notBefore > FRESHNESS_LEDGERS) refuse();
   // Foreign capture: the call, and the authorization root it recorded, must be exactly this review's.
@@ -180,7 +185,7 @@ export const checkTargetCapture = guarded((capture, { call, accountAddress, reci
     || archival.live_until_ledger !== null || limits.some((n) => !u32(n) || n < 1)
     || settings.minTemporaryTtl > settings.maxEntryTtl || settings.minPersistentTtl > settings.maxEntryTtl) refuse();
   // Exactly the native transfer's closure for this sender and recipient, nothing else.
-  const keys = transferKeys(accountAddress, recipient);
+  const keys = transferKeys(accountAddress, recipient, SAC);
   const sorted = (list) => Array.isArray(list) && list.every((key, i) => typeof key === 'string' && (i === 0 || list[i - 1] < key));
   if (!sorted(capture.read_only_keys) || !sorted(capture.read_write_keys) || !Array.isArray(capture.entries)
     || !isDeepStrictEqual(capture.read_only_keys, [keys.instance])
@@ -215,9 +220,10 @@ export const checkCapturedPrepared = guarded((frame, expected) => {
   const binding = frame.binding;
   const domain = offlineDomain(binding);
   const observed = expected.observedLedger;
+  const SAC = sacOf(expected.networkId);
   if (frame.type !== 'prepared' || frame.schema !== 1 || frame.layer !== 'captured_target'
     || frame.execution_network_id !== domain.networkId || binding.run_hash !== expected.runHash
-    || binding.source_network_id !== NETWORK_ID || binding.source_ledger !== observed
+    || binding.source_network_id !== expected.networkId || binding.source_ledger !== observed
     || binding.account_address !== expected.accountAddress || binding.delegate_address !== expected.delegateAddress
     || frame.account_code_hash !== ACCOUNT_WASM || frame.policy_address !== expected.policyAddress
     || frame.policy_address === binding.account_address || !StrKey.isValidContract(frame.policy_address)
@@ -240,6 +246,7 @@ export const checkCapturedResult = guarded((frame, { prepared, expected, maxCall
   const capped = maxCalls !== null;
   if (capped && (!Number.isSafeInteger(maxCalls) || maxCalls < 1)) refuse();
   const policy = prepared.policy_address;
+  const SAC = sacOf(expected.networkId);
   if (frame.type !== 'result' || frame.schema !== 1 || frame.layer !== 'captured_target'
     || !isDeepStrictEqual(frame.binding, prepared.binding) || frame.execution_network_id !== prepared.execution_network_id
     || frame.capture_hash !== prepared.capture_hash || frame.capture_hash !== expected.captureHash
@@ -251,7 +258,7 @@ export const checkCapturedResult = guarded((frame, { prepared, expected, maxCall
     || frame.provenance !== PROVENANCE || frame.passed !== true || frame.complete !== false
     || !Array.isArray(frame.cases) || frame.cases.length !== TARGET_CASE_IDS.length) refuse();
   const account = prepared.binding.account_address;
-  const keys = transferKeys(account, expected.recipient);
+  const keys = transferKeys(account, expected.recipient, SAC);
   const captured = new Set([keys.instance, keys.balance, keys.recipient]);
   const counterKey = b64(contractKey(policy, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallCount'), new Address(account).toScVal(),
     xdr.ScVal.scvU32(1)]), xdr.ContractDataDurability.persistent));

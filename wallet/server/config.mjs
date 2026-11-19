@@ -2,9 +2,10 @@ import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readS
 import { isAbsolute, normalize } from 'node:path';
 import { StrKey } from '@stellar/stellar-sdk';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
+import { walletNetwork } from '../shared/networks.mjs';
 
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
-const OPTIONAL = ['stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
+const OPTIONAL = ['network', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
 const integer = (value, max) => Number.isSafeInteger(value) && value >= 1 && value <= max;
 
@@ -56,6 +57,8 @@ export function loadWalletConfig(path) {
       || REQUIRED.some((name) => !Object.hasOwn(value, name))
       || Object.keys(value).some((name) => !REQUIRED.includes(name) && !OPTIONAL.includes(name))
       || !integer(value.registryMinimumVersion, Number.MAX_SAFE_INTEGER)) refused();
+    // The session's network, chosen once here: `testnet` (the default) or `mainnet`, nothing else.
+    const network = walletNetwork(Object.hasOwn(value, 'network') ? value.network : 'testnet');
     const url = new URL(value.rpcUrl);
     if (typeof value.rpcUrl !== 'string' || value.rpcUrl.length > 2048 || url.protocol !== 'https:'
       || url.username || url.password || url.search || url.hash) refused();
@@ -79,7 +82,7 @@ export function loadWalletConfig(path) {
     // Its code is read back and matched to the reviewed hash before every use, never trusted from here.
     if (Object.hasOwn(value, 'liveHelper') && (typeof value.liveHelper !== 'string' || !StrKey.isValidContract(value.liveHelper))) refused();
     const liveHelper = Object.hasOwn(value, 'liveHelper') ? value.liveHelper : null;
-    return Object.freeze({ executable: executable(value.executable), workRoot: directory(value.workRoot, true),
+    return Object.freeze({ network, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
       rpcUrl: url.href, registrySnapshot, registryRoots, registryMinimumVersion: value.registryMinimumVersion,
       buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable, liveHelper });
   } catch { refused(); }

@@ -1,4 +1,5 @@
 export const REFUSAL_REASONS: ReadonlySet<string>;
+export function takeSession(location: Pick<Location, 'href'>, history: Pick<History, 'replaceState'>): Readonly<{ token: string; network: 'testnet' | 'mainnet' }>;
 export function takeSessionToken(location: Pick<Location, 'href'>, history: Pick<History, 'replaceState'>): string;
 export function createClient(token: string, options?: {
   fetch?: typeof fetch; maxBytes?: number; timeoutMs?: number;

@@ -2,13 +2,15 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Buffer } from "buffer";
-import { Networks, xdr } from "@stellar/stellar-sdk";
+import { xdr } from "@stellar/stellar-sdk";
 import { createPasskey, signWalletAuthEntries } from "../lib/passkey";
-import { createClient, takeSessionToken } from "../policy-builder/client/client.mjs";
+import { createClient, takeSession } from "../policy-builder/client/client.mjs";
 import { WalletController } from "../policy-builder/client/controller.mjs";
 import type { WalletState } from "../policy-builder/client/controller.mjs";
 import { installDeadline, verificationGate } from "../policy-builder/client/verification.mjs";
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, reviewIntent } from "../policy-builder/shared/approval.mjs";
+import { ACCOUNT_WASM, WEBAUTHN_WASM, reviewIntent } from "../policy-builder/shared/approval.mjs";
+import { walletNetwork } from "../policy-builder/shared/networks.mjs";
+import type { WalletNetworkProfile } from "../policy-builder/shared/networks.mjs";
 import { validateAssembly } from "../policy-builder/shared/assembly.mjs";
 import { validateLiveOwnerSignature, validateSignedAuthorization } from "../policy-builder/shared/signature.mjs";
 import { checkLiveOwnerEntry, consentDisplay, liveCases, statementHash } from "../policy-builder/shared/live-consent.mjs";
@@ -37,10 +39,15 @@ const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const items = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const label = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : "Unavailable";
+/**
+ * The network this page was launched for, from the backend's launch URL. It is set once, when the page
+ * takes its session, before the controller connects or any amount is shown, and never changes after.
+ */
+let NETWORK: WalletNetworkProfile = walletNetwork("testnet");
 const xlm = (value: unknown) => {
   const amount = typeof value === "string" && /^(0|[1-9][0-9]{0,15})$/.test(value) ? Number(value) : value;
   return typeof amount === "number" && Number.isSafeInteger(amount) && amount >= 0
-    ? `${amount / 10_000_000} testnet XLM` : "Unavailable";
+    ? `${amount / 10_000_000} ${NETWORK.unit}` : "Unavailable";
 };
 
 /** Time left in a prepared review, on the controller's monotonic clock; at its end, what to do instead. */
@@ -56,14 +63,16 @@ function ReviewWindow({ until, now, expired = "Prepare it again." }: { until: nu
 /** What a refusal's reason means for the owner, and what to do next (reasons: client.mjs REFUSAL_REASONS). */
 const REFUSED: Record<string, string> = {
   busy: "the wallet backend is still finishing an earlier step. Wait a few seconds, then try again.",
-  rpc_too_slow: "the testnet RPC answered too slowly for this step to be done safely (its reads must fit within about a minute), so the backend stopped before submitting anything. Try again; if it keeps happening, the operator needs a faster RPC endpoint.",
+  rpc_too_slow: "the RPC answered too slowly for this step to be done safely (its reads must fit within about a minute), so the backend stopped before submitting anything. Try again; if it keeps happening, the operator needs a faster RPC endpoint.",
   evidence_stale: "the checks are more than 30 minutes old. Run them again: section 4, then the live check, then install.",
   signatures_still_valid: "signatures this wallet released earlier, by the live check or an installation entry, are still valid. Wait until their ledger has passed, then try again.",
   account_changed: "your account changed while signatures this wallet released were valid. Do not install; find out what changed first.",
   grant_already_used: "the policy says this grant was already used, but not from this page: someone holding the automation key's signatures used it. Nothing was sent. Revoke the grant.",
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",
+  network_mismatch: "the operator's RPC endpoint serves another network than this session's. Nothing was signed or sent; the operator must fix the backend configuration.",
+  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
 };
-const explorer = (hash: string) => `https://stellar.expert/explorer/testnet/tx/${hash}`;
+const explorer = (hash: string) => `${NETWORK.explorer}/tx/${hash}`;
 /** Technical detail kept for reviewers, folded so the step itself stays readable. */
 function Details({ children, title = "Details" }: { children: ReactNode; title?: string }) {
   return <details className="rounded-lg border border-slate-700 p-3 text-sm text-slate-400">
@@ -172,7 +181,7 @@ function LiveConsent({ display }: { display: unknown }) {
       <li>Your passkey signs a real installation of the grant “{label(owner.name)}”.</li>
       <li>The automation key signs two payments to {label(first.to)}: exactly {xlm(first.amount_stroops)}, which the policy
         must allow, and one stroop more, which it must refuse.</li>
-      <li>The wallet only simulates them on testnet and never submits them. The signatures stop working at
+      <li>The wallet only simulates them on {NETWORK.name} and never submits them. The signatures stop working at
         ledger <strong>{label(d.signature_expiration_ledger)}</strong>.</li>
     </ul>
     <p className="font-medium text-amber-200">{label(d.warning)}</p>
@@ -261,6 +270,8 @@ function PolicyBuilder() {
   const creatingRef = useRef(false);
   const [state, setState] = useState<WalletState | null>(null);
   const [message, setMessage] = useState("Open this page using the local wallet launcher's session URL.");
+  // The network named by the launch URL, shown on every screen once known.
+  const [launched, setLaunched] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   // The public half of the passkey this page created, so an expired account preview can be shown again.
   const [credential, setCredential] = useState<{ credentialId: string; publicKey: string } | null>(null);
@@ -276,26 +287,28 @@ function PolicyBuilder() {
   useEffect(() => {
     if (controller.current) return;
     try {
-      const token = takeSessionToken(window.location, window.history);
+      const session = takeSession(window.location, window.history);
+      NETWORK = walletNetwork(session.network);
+      setLaunched(NETWORK.name);
       const instance = new WalletController({
-        request: createClient(token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
+        request: createClient(session.token), validators: { reviewIntent, validateAssembly, validateSignedAuthorization,
           reviewSample, validateSampleAssembly, liveCases, consentDisplay, statementHash, checkLiveOwnerEntry, validateLiveOwnerSignature,
           installConsent, reviewRemoval, validateRemovalAssembly, revokeConsent, replacementConsent, parseGrantProposal, checkProposalArtifact },
-        pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
+        pins: { network: NETWORK.name, networkId: NETWORK.networkId, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
         origin: window.location.origin, onChange: setState,
         sign: async ({ approval, checked }) => {
           // Upstream SDK16 owns WebAuthn. The nested SDK17 validators receive serialized XDR.
           const entries = checked.authEntriesXdr.map((raw) => xdr.SorobanAuthorizationEntry.fromXDR(raw, "base64"));
           const signed = await signWalletAuthEntries({ authEntries: entries, wallet: approval.wallet,
             contextRuleIds: [checked.ownerRuleId], expiration: checked.expirationLedger,
-            verifier: approval.wallet.verifier, networkPassphrase: Networks.TESTNET });
+            verifier: approval.wallet.verifier, networkPassphrase: NETWORK.passphrase });
           return signed.map((entry) => entry.toXDR("base64"));
         },
       });
       controller.current = instance;
       setState(instance.state);
-      setMessage("Connecting to the local testnet wallet backend…");
-      void instance.connect().then(() => setMessage("Connected to the local testnet wallet backend."))
+      setMessage(`Connecting to the local ${NETWORK.name} wallet backend…`);
+      void instance.connect().then(() => setMessage(`Connected to the local ${NETWORK.name} wallet backend.`))
         .catch(() => setMessage("Connection refused. Open a fresh local launcher session."));
     } catch {
       setMessage("Session unavailable. Open a fresh local launcher session.");
@@ -340,7 +353,7 @@ function PolicyBuilder() {
     return () => window.clearInterval(timer);
   }, [reviewing]);
   const open = (kind: string, preview: unknown) => Boolean(preview) && now < (windows[kind] ?? -Infinity);
-  // What this session sent to testnet, in order, with public links.
+  // What this session sent to its network, in order, with public links.
   const [activity, setActivity] = useState<{ step: string; hash: string; ledger: string }[]>([]);
   const remember = (steps: string[]) => {
     const receipts = ([] as unknown[]).concat(controller.current?.state.receipt ?? []);
@@ -374,7 +387,7 @@ function PolicyBuilder() {
       const created = { credentialId: passkey.credentialId, publicKey: Buffer.from(passkey.publicKey).toString("hex") };
       setCredential(created);
       await controller.current.prepareAccount(created);
-      setMessage("Passkey created. Next: Confirm testnet account deployment.");
+      setMessage(`Passkey created. Next: Confirm ${NETWORK.name} account deployment.`);
     } catch { setMessage("Passkey creation or account preparation was refused."); }
     finally { creatingRef.current = false; setCreating(false); }
   };
@@ -411,7 +424,10 @@ function PolicyBuilder() {
     </div>}
     <div className="mx-auto max-w-4xl space-y-6">
       <header>
-        <p className="text-sm text-cyan-400">Pollywallet · Stellar testnet · local operator backend</p>
+        <p className="text-sm text-cyan-400">Pollywallet · Stellar {NETWORK.name} · local operator backend</p>
+        {launched === "mainnet" && <p role="alert" className="rounded-lg border border-red-500 bg-red-950/60 p-3 text-sm font-semibold text-red-100">
+          Mainnet. Every transaction here moves or spends real XLM, and every signature is valid on the public network. Keep the
+          amounts minimal: the account&apos;s passkey works only from this browser at localhost.</p>}
         <h1 className="mt-2 text-3xl font-semibold">Policy Builder</h1>
         <p className="mt-3 text-slate-300">Give an automation key one narrow permission on your account, check that the permission
           does exactly that, and take it back. Your passkey approves each step; it never leaves your device.</p>
@@ -421,20 +437,20 @@ function PolicyBuilder() {
 
       <section className={panel} aria-labelledby="wallet-heading">
         <h2 id="wallet-heading" className="text-xl font-semibold">1. Your account</h2>
-        <Intro>Create a smart account on testnet whose only owner is a new passkey (Touch ID). Then make one small payment from it,
+        <Intro>Create a smart account on {NETWORK.name} whose only owner is a new passkey (Touch ID). Then make one small payment from it,
           which the grant is built from.</Intro>
         <button className={button} disabled={busy || agentActive || !!state?.accountPreview || accountCreated}
           onClick={() => void create()}>Create owner passkey and preview account</button>
         {state?.accountPreview && <div className="space-y-3 rounded-lg border border-cyan-700 p-3 text-sm">
           <p>The account gets {xlm(object(state.accountPreview.summary).sampleFundingStroops)} for the sample payment. Fees, at most
-            {" "}{xlm(object(state.accountPreview.summary).maxTotalFeeStroops)}, are paid by the backend's test account, not you.</p>
+            {" "}{xlm(object(state.accountPreview.summary).maxTotalFeeStroops)}, are paid by the backend's fee payer, not you.</p>
           <ReviewWindow until={windows.account} now={now} expired="Preview the account again; it reuses the passkey you created." />
           <div className="flex flex-wrap gap-3">
             <button className={button} disabled={busy || agentActive || !open("account", state.accountPreview)}
-              onClick={() => void run((value) => value.confirmAccount(), "Deploying your account on testnet: its passkey verifier, the account and its funding (about 20–40 s)…",
-                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", "Fund the account with 1 test XLM"])}>Confirm testnet account deployment</button>
+              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier, the account and its funding (about 20–40 s)…`,
+                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", `Fund the account with 1 ${NETWORK.unit}`])}>Confirm {NETWORK.name} account deployment</button>
             {!open("account", state.accountPreview) && credential && <button className={button} disabled={busy || agentActive}
-              onClick={() => void run((value) => value.prepareAccount(credential), "Preparing the account preview again…", "Next: Confirm testnet account deployment.")}>Preview the account again</button>}
+              onClick={() => void run((value) => value.prepareAccount(credential), "Preparing the account preview again…", `Next: Confirm ${NETWORK.name} account deployment.`)}>Preview the account again</button>}
           </div>
           <Details title="Exact deployment (account and verifier code)"><Evidence title="Account deployment preview" value={state.accountPreview} /></Details>
         </div>}
@@ -446,7 +462,7 @@ function PolicyBuilder() {
         </div>}
         {state?.sample && <div className="space-y-3 rounded-lg border border-cyan-700 bg-cyan-950/20 p-4">
           <h3 className="font-semibold">Create a sample transaction with this new account</h3>
-          <p className="text-sm">Send exactly 0.1 test XLM from the account to the backend's test account. Your passkey approves only this
+          <p className="text-sm">Send exactly 0.1 {NETWORK.unit} from the account to the backend's fee payer. Your passkey approves only this
             payment; the backend pays the fee.</p>
           <button className={button} disabled={busy || state.sampleAttempted || open("sample", state.samplePreview)
             || !state.status?.capabilities.sampleTransfer}
@@ -456,7 +472,7 @@ function PolicyBuilder() {
             <div className="flex flex-wrap gap-3">
               <button className={button} disabled={busy || !open("sample", state.samplePreview)}
                 onClick={() => void run((value) => value.approveSample(), "Approve with your passkey. The wallet then submits the payment and waits for it (about 10 s)…",
-                  "Sample payment confirmed. Next: Connect Claude, or record and generate the grant yourself in section 2.", ["Sample payment, 0.1 test XLM"])}>Approve 0.1 XLM transfer with owner passkey</button>
+                  "Sample payment confirmed. Next: Connect Claude, or record and generate the grant yourself in section 2.", [`Sample payment, 0.1 ${NETWORK.unit}`])}>Approve 0.1 XLM transfer with owner passkey</button>
               <button className={button} disabled={busy}
                 onClick={() => void run((value) => value.cancelSample(), "Cancelling…", "Cancelled. Nothing was signed.")}>Cancel sample review</button>
             </div>
@@ -545,7 +561,7 @@ function PolicyBuilder() {
         {state?.artifact && <Details title="Exact specification, source and verification"><Evidence title="Generated artifact" value={state.artifact} /></Details>}
         {(state?.status?.capabilities.accountCheck || state?.status?.capabilities.liveCheck) && <div className="space-y-2 text-sm">
           <button className={button} disabled={busy || !!state.delegate}
-            onClick={() => void run((value) => value.createDelegate(), "Creating the automation key and its testnet account (about 10 s)…", "Automation key created.")}>Create local automation delegate</button>
+            onClick={() => void run((value) => value.createDelegate(), `Creating the automation key and its ${NETWORK.name} account (about 10 s)…`, "Automation key created.")}>Create local automation delegate</button>
           <p className="text-slate-400">The automation key the grant names. Connect Claude creates it for you; without Claude, create it here.</p>
         </div>}
         <details className="space-y-3 rounded-lg border border-slate-600 p-4">
@@ -571,7 +587,7 @@ function PolicyBuilder() {
         </details>
         <details className="space-y-3 rounded-lg border border-slate-600 p-4">
           <summary className="cursor-pointer font-semibold">Record and generate here, without Claude</summary>
-          <label htmlFor="record-hash" className="block text-sm">Confirmed testnet transaction hash authorized by this account</label>
+          <label htmlFor="record-hash" className="block text-sm">Confirmed {NETWORK.name} transaction hash authorized by this account</label>
           <input id="record-hash" className={input} value={transactionHash} onChange={(event) => setTransactionHash(event.target.value)} />
           <button className={button} disabled={busy || !state?.wallet || !state?.status?.capabilities.record}
             onClick={() => void run((value) => value.record(transactionHash.trim()), "Recording the transaction…", "Recorded. Next: set the limits and Generate and verify policy.")}>Record transaction</button>
@@ -593,7 +609,7 @@ function PolicyBuilder() {
 
       <section className={panel} aria-labelledby="deploy-heading">
         <h2 id="deploy-heading" className="text-xl font-semibold">3. Deploy the policy</h2>
-        <Intro>Put the generated policy contract on testnet. This gives no one any permission yet; the backend's test account pays.</Intro>
+        <Intro>Put the generated policy contract on {NETWORK.name}. This gives no one any permission yet; the backend's fee payer pays.</Intro>
         <button className={button} disabled={busy || !state?.artifact || !!state.deployment || open("deploy", state?.deployPreview)
           || !state?.status?.capabilities.deploy}
           onClick={() => void run((value) => value.prepareDeploy(), "Preparing the deployment…", "Next: Confirm exact policy deployment.")}>Preview deployment</button>
@@ -641,8 +657,8 @@ function PolicyBuilder() {
       </section>
 
       <section className={panel} aria-labelledby="live-heading">
-        <h2 id="live-heading" className="text-xl font-semibold">5. Live check on testnet</h2>
-        <Intro>Try the grant on testnet without submitting anything: the exact payment must be allowed, one stroop more refused.
+        <h2 id="live-heading" className="text-xl font-semibold">5. Live check on {NETWORK.name}</h2>
+        <Intro>Try the grant on {NETWORK.name} without submitting anything: the exact payment must be allowed, one stroop more refused.
           Consent right after Prepare: the window is about a minute.</Intro>
         {state?.status?.capabilities.liveCheck && <button className={button}
           disabled={busy || !state?.review || !state?.delegate || open("live", state?.livePreview)}
@@ -651,7 +667,7 @@ function PolicyBuilder() {
         {state?.livePreview && <ReviewWindow until={windows.live} now={now} />}
         {state?.livePreview && <div className="flex flex-wrap gap-3">
           <button className={button} disabled={busy || !open("live", state.livePreview)}
-            onClick={() => void run((value) => value.consentLive(), "Approve with your passkey. The wallet then simulates both cases on testnet…",
+            onClick={() => void run((value) => value.consentLive(), `Approve with your passkey. The wallet then simulates both cases on ${NETWORK.name}…`,
               "Live check done. Wait about a minute for its signatures to expire, then Check that the live-check signatures were not used.")}>I consent: sign the installation with my owner passkey and simulate both cases</button>
           <button className={button} disabled={busy}
             onClick={() => void run((value) => value.cancelLive(), "Cancelling…", "Cancelled. Nothing was signed.")}>Cancel live check</button>
@@ -739,7 +755,7 @@ function PolicyBuilder() {
               "Paid by the automation key alone. Next: Try the same payment again.", ["Automation key pays, no passkey"])}>Pay with the automation key</button>
           <button className={button} disabled={busy || state?.grantUse?.status !== "used" || !!state?.removal
             || state?.grantRepeat?.outcome === "deny" || state?.grantRepeat?.reason === "permitted" || !state?.status?.capabilities.grantRepeat}
-            onClick={() => void run((value) => value.tryGrantAgain(), "The automation key signs the same payment again; the wallet simulates it on testnet…",
+            onClick={() => void run((value) => value.tryGrantAgain(), `The automation key signs the same payment again; the wallet simulates it on ${NETWORK.name}…`,
               (value) => value.state.grantRepeat?.outcome === "deny" ? "Refused: the grant's one use is spent. Next: section 9, Prepare revocation."
                 : "Read the result below.")}>Try the same payment again</button>
         </div>
@@ -750,19 +766,19 @@ function PolicyBuilder() {
         {state?.grantUse && <Details title="Payment record"><Evidence title="Use" value={state.grantUse} /></Details>}
         {state?.grantRepeat && <p className="text-sm">{state.grantRepeat.outcome === "deny"
           ? <><Badge tone="pass">Refused</Badge> The policy refused the same payment with CallCountExceeded: the grant&apos;s one use is spent.
-            Simulated on testnet; nothing was sent.</>
+            Simulated on {NETWORK.name}; nothing was sent.</>
           : state.grantRepeat.reason === "permitted"
             ? <><Badge tone="fail">Not refused</Badge> The policy let the second payment through: the one-use limit did not hold. Its
               signatures stay valid until ledger {label(state.grantRepeat.signatureExpirationLedger)}: revoke the grant now.</>
-            : <><Badge tone="wait">No answer</Badge> Testnet&apos;s answer to the second try settled nothing ({label(state.grantRepeat.reason)});
+            : <><Badge tone="wait">No answer</Badge> The network&apos;s answer to the second try settled nothing ({label(state.grantRepeat.reason)});
               nothing was sent. Try it again.</>}</p>}
         {state?.grantRepeat && <Details title="Second try"><Evidence title="Second try" value={state.grantRepeat} /></Details>}
         <Details>
           <p>The payment is the native asset&apos;s transfer from your account, authorized only by the automation key under the installed
-            rule; the backend&apos;s test account pays the fee and submits it. Your account checks the rule and its signer, and the policy
+            rule; the backend&apos;s fee payer pays the fee and submits it. Your account checks the rule and its signer, and the policy
             checks the exact recipient and amount and counts the call. The wallet accepts the payment only with the asset&apos;s transfer
             event and the policy&apos;s counter read at 1 afterwards.</p>
-          <p>The second try signs the same payment again, with fresh signatures, and only simulates it on testnet. It counts as refused
+          <p>The second try signs the same payment again, with fresh signatures, and only simulates it on {NETWORK.name}. It counts as refused
             only if the policy itself raised CallCountExceeded (7) for exactly that transaction, answered by a node that has seen the
             payment. Those signatures expire within about two and a half minutes. While the use is spent the policy refuses them; if
             it ever let one through, revoke at once.</p>
@@ -807,7 +823,7 @@ function PolicyBuilder() {
       </section>
 
       <section className={panel} aria-labelledby="activity-heading">
-        <h2 id="activity-heading" className="text-xl font-semibold">Confirmed on testnet</h2>
+        <h2 id="activity-heading" className="text-xl font-semibold">Confirmed on {NETWORK.name}</h2>
         <Intro>Transactions this page saw confirmed, with public links. The checks only simulate and send nothing. The backend's
           journal keeps the full record, including anything not confirmed here.</Intro>
         {activity.length === 0 ? <p className="text-sm text-slate-400">Nothing sent yet.</p> : <ol className="space-y-2 text-sm">

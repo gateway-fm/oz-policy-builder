@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Asset, Networks, xdr } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { installedRuleIdentity, monitorInstallation } from '../server/monitor.mjs';
 import { installable, installedRule } from './install-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 const H = (n) => n.repeat(64);
 async function fixture() {
   const f = await installable();
   const ruleXdr = installedRule(f.f.intent).toXDR('base64');
-  const record = { status: 'installed', installationId: H('1'), account: f.f.wallet.contractId, ruleId: 1,
+  const record = { status: 'installed', networkId: NETWORK_ID, installationId: H('1'), account: f.f.wallet.contractId, ruleId: 1,
     ledger: f.state.ledger, ruleXdr, policy: f.policy, policyCodeHash: f.artifact.wasmHash,
     authorityCommitment: f.f.intent.authority.verdict.authority_commitment, specHash: f.artifact.specHash,
     bindingSetHash: f.f.expected.bindingSetHash, validUntilLedger: f.f.intent.valid_until_ledger };
@@ -30,7 +32,7 @@ async function fixture() {
     marker: { account: record.account, policy: record.policy, ruleId: 1, accountWasmHash: ACCOUNT_WASM, installed: true, ledger: f.state.ledger },
   };
   const owner = { wallet: f.f.wallet, ownerRuleId: 7, ownerRuleXdr: f.f.ownerRuleXdr };
-  const network = { assertTestnet: async () => {}, ledgerClock: async () => ({ sequence: f.state.ledger, closeTime: Math.floor(Date.now() / 1000) }),
+  const network = { profile: WALLET_NETWORKS.testnet, assertNetwork: async () => {}, ledgerClock: async () => ({ sequence: f.state.ledger, closeTime: Math.floor(Date.now() / 1000) }),
     contractLiveness: async (a) => a === record.account ? values.account : a === owner.wallet.verifier ? values.verifier : values.policy,
     targetIdentity: async () => values.target, view: async () => values.owner,
     ruleReadback: async () => values.rule, liveState: async () => values.marker };

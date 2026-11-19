@@ -83,6 +83,7 @@ an operator JSON file using absolute canonical paths:
 
 ```json
 {
+  "network": "testnet",
   "executable": "/absolute/path/oz-policy-builder/target/debug/ozpb",
   "workRoot": "/absolute/path/wallet-state",
   "rpcUrl": "https://soroban-testnet.stellar.org",
@@ -94,7 +95,8 @@ an operator JSON file using absolute canonical paths:
 }
 ```
 
-`rpcUrl` is used by the backend and the CLI alike. Any standard Stellar RPC endpoint works, but the
+`network` is `testnet` (the default when it is left out) or `mainnet`, and nothing else; see
+[Network selection](#network-selection). `rpcUrl` is used by the backend and the CLI alike. Any standard Stellar RPC endpoint works, but the
 sample transfer, installation and removal must finish their reads within 12 ledgers (about a
 minute), so the endpoint has to answer in about a second a request or better. On 10 November 2026
 SDF's public testnet endpoint answered in 8–9 s a request and the sample was refused at
@@ -122,7 +124,9 @@ node wallet/server/main.mjs --config /absolute/path/operator.json
 In the applied Pollywallet checkout, run `pnpm dev`, then open the one-time session URL
 printed by the backend. The equivalent backend entrypoint in that checkout is
 `node src/policy-builder/server/main.mjs --config /absolute/path/operator.json`.
-Startup does not fund an account, execute the CLI or submit a transaction. The backend
+Startup reads `getNetwork` once and refuses, with the reason on standard error, an endpoint that
+serves another network than `network` or a protocol other than 30. It does not fund an account,
+execute the CLI or submit a transaction. The backend
 listens only on `127.0.0.1:4317`; the approved browser origin is exactly
 `http://localhost:3000`; the numeric-IP browser origin is refused.
 
@@ -135,6 +139,38 @@ sample balance (`sampleFundingStroops: "10000000"`) and at most three testnet XL
 across its three transactions (`maxTotalFeeStroops: 30000000`).
 On SIGINT or SIGTERM the listener stops accepting new requests; an already admitted request
 can finish and write its receipt before shutdown. Keep the journal when interrupting a session.
+
+## Network selection
+
+The operator configuration's `network` chooses the session's network once, at startup; no request
+and no page can change it. Everything that depends on it is derived from that network's
+passphrase in [`wallet/shared/networks.mjs`](../wallet/shared/networks.mjs): its network ID, its
+native asset's contract, the unit shown to the owner, the explorer links. The backend binds to it
+as follows:
+
+- **The endpoint.** Every RPC read first checks that `getNetwork` reports the session's passphrase
+  and protocol 30. Another network is refused as `network_mismatch`; another protocol as
+  `protocol_unsupported`. Protocol 30 is the only one this wallet supports on either network, so a
+  mainnet endpoint still on protocol 29 is refused, at startup and on every read.
+- **The journal.** The session journal's first entry, `0000.session.json`, records the network
+  name and ID, before any obligation or submission.
+- **The work root.** The first session writes `ozpb-wallet-network.json` into `workRoot`. A later
+  session for the other network refuses to start there. Sessions retained before that marker
+  existed were testnet sessions, so a mainnet session refuses a work root that holds them. Give
+  each network its own work root.
+- **Reviews and signatures.** Proposals, owner reviews, sample and removal approvals, live cases,
+  the delegate's capabilities and installation records all name the network ID, and one for the
+  other network is refused: a testnet proposal in a mainnet session, a testnet approval or
+  assembly, a capability for the other network's native asset.
+- **The page.** The launch URL names the network
+  (`http://localhost:3000/policy-builder#session=…&network=mainnet`), and the page keeps it until it
+  is closed: a backend whose status reports another network is refused, and every statement and
+  amount on the page is derived for that network. A mainnet page shows a mainnet warning on every
+  screen.
+
+Friendbot exists on testnet alone. On mainnet the backend never funds its fee payer or a
+delegate account: a mainnet session can submit nothing until it has a fee payer funded by its
+owner (below).
 
 ## Receiving a proposal directly from Claude
 
@@ -762,6 +798,8 @@ cannot be repeated in the session, whatever the cause.
 | `account_changed` | The replay check found the account changed while released signatures were valid. |
 | `review_expired` | The prepared action is no longer available, in the backend or in this browser: it expired or was already used. |
 | `grant_already_used` | The policy counted a use of the installed grant that this page did not make; nothing was signed or sent. Revoke the grant. |
+| `network_mismatch` | The operator's RPC endpoint serves another network than the session's; nothing was signed or sent. |
+| `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
 
 The installation section shows the last ledger at which this review's evidence is still accepted
 (`installDeadline`), from the captured and live evidence the browser already holds. Submission

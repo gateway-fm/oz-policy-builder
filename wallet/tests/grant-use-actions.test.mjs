@@ -3,11 +3,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Address, Networks, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { USE_SIGNATURE_LEDGERS, USE_SUBMIT_MIN_LEDGERS } from '../server/live-signing.mjs';
 import { RECIPIENT } from './captured-execution-fixture.mjs';
 import { RULE_ID, contractEvent, installable, signInstall, verified } from './install-fixture.mjs';
 import { SAC, useDenial, usePermit } from './grant-use-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const sym = (s) => xdr.ScVal.scvSymbol(s);
 const addr = (a) => new Address(a).toScVal();

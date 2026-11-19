@@ -1,12 +1,11 @@
 // On-demand detection for a retained installation. Read-only, non-atomic RPC observations;
 // no replacement baseline, signer, transaction or automatic remediation.
 import { createHash } from 'node:crypto';
-import { Asset, Networks, scValToNative, xdr } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy } from '../shared/approval.mjs';
+import { scValToNative, xdr } from '@stellar/stellar-sdk';
+import { ACCOUNT_WASM, WEBAUTHN_WASM, freezeCopy } from '../shared/approval.mjs';
 import { clockedLedger } from './live-check.mjs';
 const HASH = /^[0-9a-f]{64}$/;
 const PROJECTION = 'modeled_authority_without_exact_last_installed_rule; not_installation_approval';
-const SAC = Asset.native().contractId(Networks.TESTNET);
 const u32 = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 0xffffffff;
 const refuse = () => { throw new Error('wallet monitoring unavailable'); };
 
@@ -27,6 +26,8 @@ export function installedRuleIdentity(record) {
 export async function monitorInstallation({ network, toolchain, record, owner, candidate }) {
   if (record.status !== 'installed' || !HASH.test(record.authorityCommitment) || !candidate) refuse();
   const identity = installedRuleIdentity(record);
+  const net = network.profile;
+  if (record.networkId !== net.networkId) refuse();
   const reasons = [], unavailable = [], inactive = [];
   let observedRuleHash = null;
   let authority = null, projectedCommitment = null;
@@ -47,7 +48,7 @@ export async function monitorInstallation({ network, toolchain, record, owner, c
       const p = authority.projected_authority, v = p?.verdict;
       if (p?.spec_hash !== record.specHash || p.binding_set_hash !== record.bindingSetHash
         || p.registry_snapshot_root !== candidate.spec.registry_snapshot || v?.account_address !== record.account
-        || v.account_code_hash !== ACCOUNT_WASM || v.network_id !== NETWORK_ID
+        || v.account_code_hash !== ACCOUNT_WASM || v.network_id !== net.networkId
         || v.observed_ledger !== authority.observed_ledger
         || v.evidence?.raw_ordered_entry_digest !== authority.actual_raw_entry_digest
         || !HASH.test(v.authority_commitment) || !Array.isArray(v.refusals) || !Array.isArray(v.unresolved)) refuse();
@@ -56,7 +57,7 @@ export async function monitorInstallation({ network, toolchain, record, owner, c
     } else refuse();
   } catch { authority = null; unavailable.push('authority_observation_unavailable'); }
 
-  await network.assertTestnet();
+  await network.assertNetwork();
   const read = await Promise.allSettled([
     network.contractLiveness(record.account), network.contractLiveness(record.policy),
     network.targetIdentity(identity.context_contract),
@@ -83,7 +84,7 @@ export async function monitorInstallation({ network, toolchain, record, owner, c
     } else if (index === 2) {
       // This wallet supports the native SAC only: its executable is a host builtin, with no
       // Wasm hash to invent. The canonical native address and protocol are its code identity.
-      if (identity.context_contract !== SAC || value.address !== SAC || value.executable !== 'stellar_asset'
+      if (identity.context_contract !== net.nativeAsset || value.address !== net.nativeAsset || value.executable !== 'stellar_asset'
         || value.protocolVersion !== 30) reasons.push('target_identity_changed');
     } else if (index === 3) {
       if (value.value?.toXDR('base64') !== owner.ownerRuleXdr) reasons.push('owner_rule_changed');

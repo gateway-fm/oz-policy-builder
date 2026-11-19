@@ -56,7 +56,7 @@ export class WalletController {
   constructor(options: {
     request(name: string, data: unknown): Promise<unknown>;
     validators: {
-      parseGrantProposal(text: string, accountAddress: string): GrantProposal;
+      parseGrantProposal(text: string, accountAddress: string, networkId: string): GrantProposal;
       checkProposalArtifact(proposal: GrantProposal, artifact: unknown): ProposalReview;
       reviewIntent(input: unknown): Approval;
       validateAssembly(input: unknown): CheckedAssembly;
@@ -76,7 +76,7 @@ export class WalletController {
     };
     sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly | LiveOwnerChecked }): Promise<string[]>;
     origin: string;
-    pins: { networkId: string; accountWasm: string; verifierWasm: string };
+    pins: { network: 'testnet' | 'mainnet'; networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
     pause?(ms: number): Promise<void>;
     /** Monotonic milliseconds; defaults to performance.now(). */

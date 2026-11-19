@@ -1,13 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { StrKey } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, freezeCopy } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { RawJson, parseJsonExact, requestText } from './raw-json.mjs';
 import { runTool } from './tool.mjs';
 import { checkProposalSpec } from '../shared/proposal.mjs';
 
-const NETWORK = 'Test SDF Network ; September 2015';
 const HASH = /^[0-9a-f]{64}$/;
 const FILES = ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'rustfmt.toml', 'src/contract.rs', 'src/lib.rs'];
 const refuse = (code) => {
@@ -20,23 +20,59 @@ const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const display = (value) => JSON.parse(JSON.stringify(value, (_key, part) => typeof part === 'bigint' ? part.toString() : part));
 const save = (path, body) => writeFileSync(path, body, { mode: 0o600, flag: 'wx' });
 
-/** Only this wallet-owned process chooses executable, trust roots, RPC and artifact paths. */
-export class WalletToolchain {
-  #config; #root; #runner; #records = new Map(); #artifacts = new Map(); #trustArgs;
+const WORK_ROOT_MARKER = 'ozpb-wallet-network.json';
 
-  constructor({ executable, workRoot, rpcUrl, registrySnapshot, registryRoots, registryMinimumVersion, runner = runTool, buildEnvironment = {} }) {
+/**
+ * Binds the operator's work root to one network, so that retained state (session journals, records,
+ * artifacts) of one network is never read or extended by a session of the other. The first session
+ * writes the marker; a later session for another network is refused at startup. Sessions retained
+ * before the marker existed ran on testnet, the only network supported then.
+ */
+export function bindWorkRoot(workRoot, network) {
+  const refused = () => {
+    throw Object.assign(new Error('wallet work root refused'), { startup: `This work root holds wallet sessions for another network; `
+      + `give the ${network.name} session a work root of its own.` });
+  };
+  const path = join(workRoot, WORK_ROOT_MARKER);
+  let text = null;
+  try {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { if (!fstatSync(fd).isFile() || fstatSync(fd).size > 1024) refuse(); text = readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
+  } catch (error) { if (error?.code !== 'ENOENT') refuse(); }
+  if (text !== null) {
+    const recorded = parseJsonExact(text);
+    if (!recorded || Object.keys(recorded).length !== 2 || recorded.network !== network.name || recorded.networkId !== network.networkId) refused();
+    return;
+  }
+  if (network.name !== 'testnet' && readdirSync(workRoot).some((name) => name.startsWith('wallet-session-'))) refused();
+  save(path, JSON.stringify({ network: network.name, networkId: network.networkId }));
+}
+
+/**
+ * Only this wallet-owned process chooses executable, trust roots, RPC and artifact paths. `network` is
+ * the session's network profile: the CLI's one RPC source is named after it and pinned to its
+ * passphrase, and every record, spec and binding must name its network ID.
+ */
+export class WalletToolchain {
+  #config; #root; #runner; #records = new Map(); #artifacts = new Map(); #trustArgs; #network;
+
+  constructor({ executable, workRoot, rpcUrl, registrySnapshot, registryRoots, registryMinimumVersion, runner = runTool, buildEnvironment = {},
+    network = WALLET_NETWORKS.testnet }) {
     const url = new URL(rpcUrl);
+    if (!Object.values(WALLET_NETWORKS).includes(network)) refuse();
+    this.#network = network;
     if (!isAbsolute(executable) || !isAbsolute(workRoot) || lstatSync(workRoot).isSymbolicLink()
       || !lstatSync(workRoot).isDirectory() || url.protocol !== 'https:' || url.username || url.password || url.hash || url.search
       || !integer(registryMinimumVersion, 1, Number.MAX_SAFE_INTEGER)
       || Buffer.byteLength(registrySnapshot) > 2 * 1024 * 1024 || Buffer.byteLength(registryRoots) > 256 * 1024) refuse();
     new RawJson(registrySnapshot); new RawJson(registryRoots);
+    bindWorkRoot(workRoot, network);
     this.#root = mkdtempSync(join(workRoot, 'wallet-session-'));
     this.#config = { executable, rpcUrl, registrySnapshot, registryMinimumVersion, buildEnvironment };
     this.#runner = runner;
     save(join(this.#root, 'registry.signed.json'), registrySnapshot);
     save(join(this.#root, 'registry-roots.json'), registryRoots);
-    save(join(this.#root, 'rpc-sources.json'), JSON.stringify({ testnet: { rpc_url: rpcUrl, network_passphrase: NETWORK } }));
+    save(join(this.#root, 'rpc-sources.json'), JSON.stringify({ [network.name]: { rpc_url: rpcUrl, network_passphrase: network.passphrase } }));
     this.#trustArgs = ['--registry-roots', join(this.#root, 'registry-roots.json'), '--registry-min-version', String(registryMinimumVersion)];
   }
 
@@ -66,13 +102,13 @@ export class WalletToolchain {
     try {
       if (!HASH.test(transactionHash) || !StrKey.isValidContract(accountAddress) || this.#records.size >= 8) refuse();
       const directory = this.#directory();
-      const record = await this.#call(directory, 'record', ['--tx-hash', transactionHash, '--rpc-url', this.#config.rpcUrl, '--network', NETWORK],
+      const record = await this.#call(directory, 'record', ['--tx-hash', transactionHash, '--rpc-url', this.#config.rpcUrl, '--network', this.#network.passphrase],
         (text) => JSON.parse(text, (_key, value, context) => typeof value === 'number' && !Number.isSafeInteger(value)
           && /^-?\d+$/.test(context?.source ?? '') ? BigInt(context.source) : value));
       const bundle = record.bundle;
       const observation = bundle?.contract_executables?.[accountAddress];
       const authorizations = bundle?.authorizations?.filter((auth) => auth.authorizer === accountAddress);
-      if (record.trust !== 'rpc_reported' || !HASH.test(record.recording_hash) || bundle.network_id !== NETWORK_ID
+      if (record.trust !== 'rpc_reported' || !HASH.test(record.recording_hash) || bundle.network_id !== this.#network.networkId
         || bundle.execution !== 'executed_success' || !integer(bundle.ledger, 1, 0xffffffff)
         || observation?.executable?.wasm?.code_hash !== ACCOUNT_WASM
         || !integer(observation.observed_ledger, bundle.ledger, 0xffffffff) || authorizations?.length !== 1) refuse();
@@ -104,7 +140,7 @@ export class WalletToolchain {
         '--decisions', join(directory, 'decisions.json'), '--template-family', 'policy-templates/scope@1']);
       const spec = synthesis.spec;
       const rule = spec?.rules?.[0];
-      if (!HASH.test(synthesis.spec_hash) || spec?.network_id !== NETWORK_ID || spec.smart_account?.address !== account.address
+      if (!HASH.test(synthesis.spec_hash) || spec?.network_id !== this.#network.networkId || spec.smart_account?.address !== account.address
         || spec.smart_account?.observed_code_hash !== ACCOUNT_WASM || spec.rules?.length !== 1 || (synthesis.questions?.length ?? 0) !== 0
         || rule.valid_until?.ledger !== validUntilLedger || JSON.stringify(rule.authorization?.signers) !== JSON.stringify(decisions.delegate_signers)
         || rule.policies?.length !== 1 || rule.policies[0].generated?.kind !== 'gen:scope+count'
@@ -177,7 +213,7 @@ export class WalletToolchain {
   }
 
   /**
-   * `capture-target` through the operator's `testnet` source for one unsigned envelope the
+   * `capture-target` through the operator's RPC source for the session network, for one unsigned envelope the
    * backend built itself. The envelope is confidential input: it reaches the CLI only in a
    * private request file. Neither it nor the capture is kept once the CLI exits, and no refusal
    * repeats either; the worker evidence binds the capture by its hash.
@@ -187,7 +223,7 @@ export class WalletToolchain {
     const directory = this.#directory();
     const request = join(directory, 'request.json');
     try {
-      save(request, JSON.stringify({ network_id: NETWORK_ID, rpc_source: 'testnet', envelope_xdr_base64: envelope }));
+      save(request, JSON.stringify({ network_id: this.#network.networkId, rpc_source: this.#network.name, envelope_xdr_base64: envelope }));
       // A read, not a build: bounded well below the build deadline so the whole check stays bounded.
       return await this.#call(directory, 'capture-target', ['--request', request, '--rpc-sources', join(this.#root, 'rpc-sources.json')],
         parseJsonExact, { signal, timeoutMs: 120_000, codes: TARGET_CODES });
@@ -202,11 +238,11 @@ export class WalletToolchain {
     if (!StrKey.isValidContract(policyAddress) || policyAddress === artifact.spec.smart_account.address
       || typeof resolutionReference !== 'string' || resolutionReference.length < 1 || resolutionReference.length > 256) refuse();
     return { spec: artifact.spec, rule_index: 0, binding_set: {
-      schema: 'policy-binding-set/v1', spec_hash: artifact.specHash, network_id: NETWORK_ID, bindings: [{
+      schema: 'policy-binding-set/v1', spec_hash: artifact.specHash, network_id: this.#network.networkId, bindings: [{
         rule_index: 0, policy_index: 0, contract_address: policyAddress, observed_wasm_hash: artifact.wasmHash,
         recognition: { kind: 'verified_generated_manifest', build_manifest: artifact.buildManifest }, resolution_reference: resolutionReference,
       }],
     }, signed_registry_snapshot: new RawJson(this.#config.registrySnapshot), account_address: artifact.spec.smart_account.address,
-    network_id: NETWORK_ID, rpc_source: 'testnet' };
+    network_id: this.#network.networkId, rpc_source: this.#network.name };
   }
 }

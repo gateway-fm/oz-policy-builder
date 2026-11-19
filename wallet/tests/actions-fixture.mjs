@@ -3,15 +3,17 @@ import { Address, Asset, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import { WalletSession } from '../server/session.mjs';
 import { createWalletActions } from '../server/actions.mjs';
 import { fixture } from './approval-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 export function setup({ native = null, live = null, delegates } = {}) {
   const calls = [];
   const f = fixture();
   const session = new WalletSession({ origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000', secret: 'ab'.repeat(32) });
   let creates = 0;
   const network = {
+    profile: WALLET_NETWORKS.testnet,
     payerAddress: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)),
     canSubmit: true,
-    assertTestnet: async () => { calls.push('network'); },
+    assertNetwork: async () => { calls.push('network'); },
     requireCode: async (hash) => { calls.push(['code', hash]); },
     fundPayer: async () => { calls.push('fund'); },
     ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
@@ -46,7 +48,7 @@ export function deploymentFixture(change = () => {}, options = {}) {
   const artifactId = 'a'.repeat(64);
   const policy = f.f.expected.boundPolicies[0];
   const artifact = { artifactId, specHash: f.f.expected.specHash, wasmHash: 'b'.repeat(64), spec: {
-    registry_snapshot: f.f.expected.registrySnapshotRoot, smart_account: { address: f.f.wallet.contractId },
+    network_id: WALLET_NETWORKS.testnet.networkId, registry_snapshot: f.f.expected.registrySnapshotRoot, smart_account: { address: f.f.wallet.contractId },
     rules: [{ context: { contract: f.f.expected.target } }],
   } };
   f.toolchain.artifact = (selected) => {

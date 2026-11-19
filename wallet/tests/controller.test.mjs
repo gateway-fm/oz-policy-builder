@@ -9,7 +9,7 @@ import { WalletController } from '../overlay/files/src/policy-builder/client/con
 import { LIVE_CONSENT_MIN_LEDGERS, LIVE_RUN_MIN_LEDGERS } from '../shared/live-consent.mjs';
 
 const hash = (c) => c.repeat(64);
-const pins = { networkId: hash('1'), accountWasm: hash('2'), verifierWasm: hash('3') };
+const pins = { network: 'testnet', networkId: hash('1'), accountWasm: hash('2'), verifierWasm: hash('3') };
 const wallet = { contractId: 'account', credentialId: 'AQ', publicKey: '04key', verifier: 'verifier' };
 const INSTALL_DISPLAY = { owner_signs: { function: 'add_context_rule' }, grant: { rule_id: 1, delegate: 'delegate' },
   fee: { prepared_fee_stroops: 1100, max_fee_stroops: 10000000 }, warning: 'Once installed, the delegate can act without your passkey.' };
@@ -32,7 +32,7 @@ function fixture() {
     ] }, files: [] },
     'prepare-deploy': { action: { id: 'deploy1', expires_in_seconds: 120 }, summary: { specHash: hash('a'), wasmHash: hash('b') } },
     'confirm-deploy': { deploymentId: 'deployment1', policyAddress: 'policy1', wasmHash: hash('b'), bindingSetHash: hash('c') },
-    review: { reviewId: 'review1', wallet, verification, expected: { specHash: hash('a'), bindingSetHash: hash('c') },
+    review: { reviewId: 'review1', wallet, verification, expected: { networkId: pins.networkId, specHash: hash('a'), bindingSetHash: hash('c') },
       intent: { policies: [{ address: 'policy1', wasm_hash: hash('b') }] }, ownerRuleXdr: 'owner' },
     assemble: { action: { id: hash('5'), expires_in_seconds: 120 }, verification, assembly: {}, ownerRuleXdr: 'owner', limits: {},
       display: INSTALL_DISPLAY },
@@ -235,7 +235,7 @@ function sampleFixture() {
   f.replies['submit-sample'] = { transactionHash: hash('e'), receipt: { hash: hash('e') } };
   f.validators.reviewSample = (input) => {
     assert.deepEqual(input, { wallet, descriptor: { recipient: 'payer', amountStroops: '1000000',
-      ownerRuleXdr: 'created-owner' }, ownerRuleXdr: 'created-owner' });
+      ownerRuleXdr: 'created-owner' }, ownerRuleXdr: 'created-owner', networkId: pins.networkId });
     f.calls.push(['reviewSample', input]);
     return approval;
   };

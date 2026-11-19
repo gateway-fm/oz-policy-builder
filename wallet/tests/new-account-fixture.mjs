@@ -1,6 +1,7 @@
 import { xdr } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 /**
  * A fake testnet for one new account and its sample transfer, for a passkey created at run time:
@@ -12,8 +13,9 @@ export function newAccountNetwork(calls = []) {
   let owner = null;
   const receipt = (c, ledger = 100) => ({ hash: c.repeat(64), ledger, trust: 'rpc_reported' });
   return {
+    profile: WALLET_NETWORKS.testnet,
     payerAddress: draft.descriptor.recipient,
-    assertTestnet: async () => {}, requireCode: async () => {}, fundPayer: async () => { calls.push('fund'); },
+    assertNetwork: async () => {}, requireCode: async () => {}, fundPayer: async () => { calls.push('fund'); },
     requireInstance: async () => ({ ledger: 100 }),
     latestLedger: async () => 101,
     sourceCapture: async () => ({ sourceSequence: '100', ledger: 101 }),

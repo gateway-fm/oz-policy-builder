@@ -35,8 +35,9 @@
 // Pure: no signing, no network, no clock. The result is state-dependent simulation evidence about
 // testnet at the simulation ledger, never a submitted transaction.
 import { Buffer } from 'buffer';
-import { Address, Asset, Networks, StrKey, buildAuthorizationEntryPreimage, hash, nativeToScVal, scValToNative, xdr } from '#wallet-stellar-sdk';
-import { NETWORK_ID, freezeCopy } from './approval.mjs';
+import { Address, StrKey, buildAuthorizationEntryPreimage, hash, nativeToScVal, scValToNative, xdr } from '#wallet-stellar-sdk';
+import { freezeCopy } from './approval.mjs';
+import { networkById } from './networks.mjs';
 import { decodeEnvelope, installCall, signerScVal } from './assembly.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 
@@ -46,8 +47,8 @@ export const HELPER_ERROR_CODES = Object.freeze([7001, 7002, 7003, 7004, 7005, 7
 export const POLICY_NO_TUPLE_MATCHED = 6;
 /** stellar-accounts 0.7.3 `MAX_NAME_SIZE`: the longest rule name `add_context_rule` accepts. */
 const MAX_RULE_NAME_BYTES = 20;
-/** The helper derives the native asset of the executing network itself; so does this module. */
-const NATIVE_ASSET = Asset.native().contractId(Networks.TESTNET);
+/** The helper derives the native asset of the executing network itself; so does this module, from the case's network. */
+const nativeAsset = (networkId) => networkById(networkId).nativeAsset;
 
 class Refusal extends Error {
   constructor(reason, detail, extra = {}) {
@@ -84,8 +85,8 @@ function installIntent(c) {
 }
 
 /**
- * The approved case, checked and frozen. The asset is not an input: it is the testnet native asset
- * contract, the only one the helper transfers. Every party must be distinct, the delegate a classic
+ * The approved case, checked and frozen. The asset is not an input: it is the native asset contract
+ * of the case's network (testnet or mainnet), the only one the helper transfers. Every party must be distinct, the delegate a classic
  * account, and the owner's signer something other than the delegate.
  */
 export function liveCase(intent) {
@@ -93,7 +94,7 @@ export function liveCase(intent) {
     const c = intent;
     const contract = (text) => typeof text === 'string' && StrKey.isValidContract(text);
     const classic = (text) => typeof text === 'string' && StrKey.isValidEd25519PublicKey(text);
-    if (!c || typeof c !== 'object' || c.network_id !== NETWORK_ID || ![c.helper, c.account, c.policy].every(contract)
+    if (!c || typeof c !== 'object' || !networkById(c.network_id) || ![c.helper, c.account, c.policy].every(contract)
       || !classic(c.delegate) || !(contract(c.recipient) || classic(c.recipient))
       || typeof c.policy_code_hash !== 'string' || !/^[0-9a-f]{64}$/.test(c.policy_code_hash)
       || typeof c.amount !== 'string' || !/^[1-9][0-9]{0,37}$/.test(c.amount) || BigInt(c.amount) >= (1n << 127n)
@@ -103,7 +104,7 @@ export function liveCase(intent) {
       // The account refuses longer names (stellar-accounts `MAX_NAME_SIZE`); the bound also keeps
       // the name, which the host prints verbatim in its event log, too short to imitate an event.
       || typeof c.rule_name !== 'string' || Buffer.byteLength(c.rule_name) > MAX_RULE_NAME_BYTES) refuseCase();
-    const parties = [c.helper, c.account, c.policy, c.delegate, c.recipient, NATIVE_ASSET];
+    const parties = [c.helper, c.account, c.policy, c.delegate, c.recipient, nativeAsset(c.network_id)];
     if (new Set(parties).size !== parties.length) refuseCase();
     // A delegated owner is a classic account: a contract signer would need entries of its own below
     // its `__check_auth` entry, and no such entry is accepted.
@@ -112,7 +113,7 @@ export function liveCase(intent) {
       : { kind: c.owner_signer?.kind, verifier: c.owner_signer?.verifier, key_hex: c.owner_signer?.key_hex };
     if (same(signerScVal(owner), signerScVal({ kind: 'delegated', address: c.delegate }))) refuseCase();
     const checked = {
-      network_id: c.network_id, helper: c.helper, account: c.account, asset: NATIVE_ASSET, policy: c.policy,
+      network_id: c.network_id, helper: c.helper, account: c.account, asset: nativeAsset(c.network_id), policy: c.policy,
       policy_code_hash: c.policy_code_hash, delegate: c.delegate, recipient: c.recipient, amount: c.amount,
       expected_rule_id: c.expected_rule_id, owner_rule_id: c.owner_rule_id, owner_signer: owner, rule_name: c.rule_name,
       valid_until_ledger: c.valid_until_ledger, signature_expiration_ledger: c.signature_expiration_ledger,
@@ -161,8 +162,8 @@ function authPayload(credentials) {
 }
 
 /** The `signature_payload` the host hands the account for an entry: the hash of its signature preimage. */
-function signaturePayload({ entry, credentials }) {
-  return sha256(buildAuthorizationEntryPreimage(entry, credentials.signatureExpirationLedger, Networks.TESTNET).toXDR());
+function signaturePayload({ entry, credentials, networkId }) {
+  return sha256(buildAuthorizationEntryPreimage(entry, credentials.signatureExpirationLedger, networkById(networkId).passphrase).toXDR());
 }
 
 /** What a delegated signer authorizes for an account entry: `sha256(payload || xdr(rule ids))`. */
@@ -197,7 +198,7 @@ function checkAuthorizations(c, entries) {
       fail('sub_invocations', 'an account authorization carries sub-invocations; the account checks every context of the tree, executed or not');
     }
     const { ruleIds, signers } = authPayload(credentials);
-    const record = { entry, credentials, ruleIds };
+    const record = { entry, credentials, ruleIds, networkId: c.network_id };
     if (signers.some((s) => same(s.key, owner))) {
       if (signers.length !== 1 || (c.owner_signer.kind === 'delegated') !== (signers[0].proof.length === 0)) {
         fail('owner_signers', 'the owner\'s authorization names other signers or carries the wrong proof');
@@ -713,12 +714,14 @@ function useCase(intent) {
   const c = intent;
   const contract = (text) => typeof text === 'string' && StrKey.isValidContract(text);
   const classic = (text) => typeof text === 'string' && StrKey.isValidEd25519PublicKey(text);
-  if (!c || typeof c !== 'object' || c.network_id !== NETWORK_ID || !contract(c.account) || !contract(c.policy) || !classic(c.delegate)
+  let asset;
+  try { asset = nativeAsset(c?.network_id); } catch { fail('intent', 'the use names no network this wallet runs on'); }
+  if (!c || typeof c !== 'object' || !contract(c.account) || !contract(c.policy) || !classic(c.delegate)
     || !(contract(c.recipient) || classic(c.recipient)) || typeof c.amount !== 'string' || !/^[1-9][0-9]{0,37}$/.test(c.amount)
     || !integer(c.rule_id, 1, 0xffffffff) || !integer(c.signature_expiration_ledger, 1, 0xffffffff)
     || !integer(c.min_ledger, 1, c.signature_expiration_ledger)
-    || new Set([c.account, c.policy, c.delegate, c.recipient, NATIVE_ASSET]).size !== 5) fail('intent', 'the use is malformed');
-  return { network_id: c.network_id, account: c.account, asset: NATIVE_ASSET, policy: c.policy, delegate: c.delegate,
+    || new Set([c.account, c.policy, c.delegate, c.recipient, asset]).size !== 5) fail('intent', 'the use is malformed');
+  return { network_id: c.network_id, account: c.account, asset, policy: c.policy, delegate: c.delegate,
     recipient: c.recipient, amount: c.amount, rule_id: c.rule_id, signature_expiration_ledger: c.signature_expiration_ledger,
     min_ledger: c.min_ledger };
 }
@@ -751,7 +754,7 @@ function useAuthorizations(c, envelopeXdr) {
   if (signers.length !== 1 || !same(signers[0].key, signerScVal({ kind: 'delegated', address: c.delegate })) || signers[0].proof.length) {
     fail('transfer_signers', 'the transfer authorization\'s signers are not exactly {Delegated(delegate)}');
   }
-  const record = { entry: accountEntry, credentials, ruleIds };
+  const record = { entry: accountEntry, credentials, ruleIds, networkId: c.network_id };
   const checkAuth = contractCall(c.account, '__check_auth', [xdr.ScVal.scvBytes(accountDigest(record))]);
   if (Address.fromScAddress(signer.address).toString() !== c.delegate || !rootIs(signerEntry, checkAuth) || signer.signature.type === 'scvVoid') {
     fail('signer_entry', 'the delegate\'s authorization is not one signed entry for exactly the account entry');

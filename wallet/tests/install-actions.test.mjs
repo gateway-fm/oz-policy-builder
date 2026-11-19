@@ -239,7 +239,7 @@ test('submit never resends a pending hash', async () => {
 function slowRpc(f, ledgers, msPerLedger = 40) {
   const n = f.network, base = f.state.ledger, t0 = Date.now();
   const tick = () => { f.state.ledger = Math.max(f.state.ledger, base + Math.floor((Date.now() - t0) / msPerLedger)); };
-  for (const name of ['assertTestnet', 'ledgerClock', 'latestLedger', 'requireInstance', 'view', 'ruleReadback',
+  for (const name of ['assertNetwork', 'ledgerClock', 'latestLedger', 'requireInstance', 'view', 'ruleReadback',
     'prepareRemoval', 'sourceCapture']) {
     const original = n[name];
     if (typeof original !== 'function') continue;

@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, rpc, xdr } from '@stellar/stellar-sdk';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS, assembleTransaction, boundedRpcServer, checkPreparedEnvelope, WalletNetwork } from '../server/network.mjs';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
 import { reviewSample, sampleCall, validateSampleAssembly } from '../shared/sample.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const contract = Asset.native().contractId(Networks.TESTNET);
 function invocation(payer) {
@@ -30,7 +31,7 @@ function prepared(original) {
 test('enforcing assembly can change only bounded resources and fee', () => {
   const original = transaction();
   const assembled = prepared(original);
-  assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR()));
+  assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR(), Networks.TESTNET));
 });
 for (const mutation of ['network', 'source', 'sequence', 'call', 'auth', 'signature', 'timeout', 'fee', 'resource fee']) {
   test(`enforcing assembly refuses substituted ${mutation}`, () => {
@@ -52,7 +53,7 @@ for (const mutation of ['network', 'source', 'sequence', 'call', 'auth', 'signat
     if (mutation === 'fee') tx.fee = 10_000_001;
     if (mutation === 'resource fee') tx.ext.sorobanData.resourceFee = 2001n;
     const changed = TransactionBuilder.fromXDR(envelope.toXDR('base64'), mutation === 'network' ? Networks.PUBLIC : Networks.TESTNET);
-    assert.throws(() => checkPreparedEnvelope(changed, original.toEnvelope().toXDR()), /refused/);
+    assert.throws(() => checkPreparedEnvelope(changed, original.toEnvelope().toXDR(), Networks.TESTNET), /refused/);
   });
 }
 
@@ -107,7 +108,7 @@ function networkFixture(t, change = () => {}, options = {}) {
     }),
   };
   change(server);
-  const network = new WalletNetwork({ rpcUrl: 'https://rpc.example/testnet', journalRoot: root, server,
+  const network = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: 'https://rpc.example/testnet', journalRoot: root, server,
     fetchImpl: async (url) => { calls.push({ funded: url }); return new Response('{}'); },
     assemble: (tx) => ({ build: () => prepared(tx) }), pause: async () => {}, ...options });
   return { network, server, root, calls };
@@ -130,7 +131,7 @@ function sampleNetworkFixture(t, mutation, version = 'legacy') {
   f.server.simulateTransaction = async (tx, _resources, mode) => {
     assert.equal(mode, 'record');
     f.calls.push({ mode, tx });
-    const call = sampleCall({ wallet: sample.wallet, recipient: f.network.payerAddress });
+    const call = sampleCall({ wallet: sample.wallet, recipient: f.network.payerAddress, networkId: NETWORK_ID });
     if (mutation === 'call') call.functionName = 'burn';
     const entry = new xdr.SorobanAuthorizationEntry({
       credentials: xdr.SorobanCredentials[version === 'v2' ? 'sorobanCredentialsAddressV2' : 'sorobanCredentialsAddress'](new xdr.SorobanAddressCredentials({
@@ -152,13 +153,13 @@ test('sample preparation records the fixed call without signing or sending and r
   const f = sampleNetworkFixture(t);
   await f.network.fundPayer();
   const result = await f.network.prepareSample({ ...f.sample, ownerReadLedger: 100 });
-  const checked = validateSampleAssembly({ ...result, ownerRuleXdr: f.sample.ownerRuleXdr, approval: reviewSample(f.sample) });
+  const checked = validateSampleAssembly({ ...result, ownerRuleXdr: f.sample.ownerRuleXdr, approval: reviewSample({ ...f.sample, networkId: NETWORK_ID }) });
   assert.equal(checked.ownerRuleId, 0);
   assert.equal(result.limits.sourceSequence, '7');
   assert.equal(result.assembly.sequence_read_ledger, 101);
   assert.equal(result.assembly.max_ledger, 221);
   assert.ok(!f.calls.some((call) => call.sent));
-  assert.deepEqual(readdirSync(f.root), []);
+  assert.deepEqual(readdirSync(f.root), ['0000.session.json'], 'only the session record: nothing was journaled');
 });
 for (const mutation of ['source identity', 'source key', 'call', 'nested', 'signed', 'two entries', 'old ledger']) {
   test(`sample preparation rejects ${mutation} from its own RPC`, async (t) => {
@@ -371,7 +372,7 @@ test('the capture envelope is the fee payer\'s unsigned call: nothing is simulat
   assert.equal(op.auth.length, 0);
   assert.equal(op.hostFunction.invokeContract.toXDR('base64'), call.toXDR('base64'));
   assert.deepEqual(calls, []);
-  assert.deepEqual(readdirSync(root), []);
+  assert.deepEqual(readdirSync(root), ['0000.session.json'], 'only the session record: nothing was journaled');
   const other = networkFixture(t, (server) => { server.getNetwork = async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 30 }); });
   await assert.rejects(() => other.network.targetEnvelope(call), /refused/);
 });
@@ -415,7 +416,7 @@ test('enforcing assembly of an envelope without time bounds changes only its res
   const original = TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
   assert.throws(() => rpc.assembleTransaction(original, enforced(4000)).build(), /TimeBounds/, 'the SDK builder alone cannot');
   const assembled = assembleTransaction(original, enforced(4000)).build();
-  checkPreparedEnvelope(assembled, envelope.toXDR());
+  checkPreparedEnvelope(assembled, envelope.toXDR(), Networks.TESTNET);
   const tx = assembled.toEnvelope().v1.tx;
   assert.equal(tx.fee, 100 + 4000, 'the inclusion bid plus the enforced resource fee');
   assert.equal(tx.ext.sorobanData.resourceFee, 4000n);
@@ -454,16 +455,16 @@ test('a policy Wasm upload may cost up to 15 testnet XLM; nothing else above 1',
   assert.equal(MAX_FEE_STROOPS, 10_000_000);
   for (const fee of [101_422_794 + 1000, 150_000_000]) {
     const { original, assembled } = upload(fee);
-    assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR()), String(fee));
+    assert.doesNotThrow(() => checkPreparedEnvelope(assembled, original.toEnvelope().toXDR(), Networks.TESTNET), String(fee));
   }
   const over = upload(150_000_001);
-  assert.throws(() => checkPreparedEnvelope(over.assembled, over.original.toEnvelope().toXDR()), /refused/);
+  assert.throws(() => checkPreparedEnvelope(over.assembled, over.original.toEnvelope().toXDR(), Networks.TESTNET), /refused/);
   const original = transaction();
   const envelope = xdr.TransactionEnvelope.fromXDR(original.toEnvelope().toXDR());
   envelope.v1.tx.fee = 101_422_794;
   envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(101_421_794).build());
   assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET),
-    original.toEnvelope().toXDR()), /refused/, 'a contract call above 1 XLM stays refused');
+    original.toEnvelope().toXDR(), Networks.TESTNET), /refused/, 'a contract call above 1 XLM stays refused');
 });
 
 test('target identity reports the canonical native SAC builtin without inventing a Wasm hash', async () => {
@@ -475,7 +476,7 @@ test('target identity reports the canonical native SAC builtin without inventing
     getLedgerEntries: async (key) => ({ latestLedger: capture.observed_ledger, entries: [{ key,
       val: xdr.LedgerEntryData.fromXDR(stored.data_xdr, 'base64'), lastModifiedLedgerSeq: stored.last_modified_ledger,
       liveUntilLedgerSeq: stored.live_until_ledger }] }) };
-  const network = new WalletNetwork({ server });
+  const network = new WalletNetwork({ network: WALLET_NETWORKS.testnet, server, journalRoot: mkdtempSync(join(tmpdir(), 'wallet-network-')) });
   assert.deepEqual(await network.targetIdentity(contract), { address: contract, executable: 'stellar_asset',
     protocolVersion: 30, ledger: capture.observed_ledger });
   await assert.rejects(network.targetIdentity(Keypair.random().publicKey()), /refused/);

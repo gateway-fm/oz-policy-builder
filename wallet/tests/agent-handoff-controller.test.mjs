@@ -4,13 +4,15 @@ import test from 'node:test';
 import { AgentHandoff } from '../server/agent-handoff.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { WalletController } from '../overlay/files/src/policy-builder/client/controller.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 function fixture(sharedHandoff = null) {
   const f = proposalFixture(); const handoff = sharedHandoff ?? new AgentHandoff(); const calls = []; let pollDelay = null; let delegateFails = false;
   const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'a'.repeat(64) };
-  const pins = { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM };
+  const pins = { network: 'testnet', networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM };
   const imported = { record: f.record, artifact: f.artifact,
     proposalReview: checkProposalArtifact(f.proposal, f.artifact) };
   const controller = new WalletController({ pins, validators: { parseGrantProposal, checkProposalArtifact },
