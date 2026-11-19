@@ -225,12 +225,15 @@ does with each:
   "maxUploadFeeStroops": 120000000,
   "sessionSpendCapStroops": 150000000,
   "pinnedWasmDir": "/absolute/path/pinned-wasm",
-  "registryMinimumVersion": 6
+  "registryMinimumVersion": 1
 }
 ```
 
-These fields are refused in a testnet configuration, and a mainnet configuration needs a registry
-floor of at least 6, the development registry's current version.
+These fields are refused in a testnet configuration. `registryMinimumVersion` is the floor of the
+registry the session trusts: 6 is the development registry's, for testnet; the mainnet registry is
+its own chain starting at version 1 ([mainnet registry](../registry/mainnet/README.md)), so a
+mainnet operator sets the version of its own registry it has pinned (1 for the genesis, raised as
+it advances its checkpoint), at least 1.
 
 **Registry trust.** A mainnet session uses only the operator's production trust files:
 `registrySnapshotPath` names the signed production snapshot, and `registryRootsPath` its root

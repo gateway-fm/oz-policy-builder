@@ -121,7 +121,9 @@ development registry version 6 revokes the earlier v0.7.2 build. The revocation 
 version 6 is the floor: versions 1 to 5 still recognize the old build, and a caller can supply
 its own signed snapshot, so operators must set `OZPB_REGISTRY_MIN_VERSION=6` (the CLI's
 `--registry-min-version 6`, the wallet's `registryMinimumVersion: 6`) or persist a version-6
-checkpoint. The shipped configurations and documented commands do. Accounts created on testnet
+checkpoint. The shipped configurations and documented commands do. This floor is the
+development registry's: a mainnet operator pins the production registry, whose own chain starts at
+version 1 and whose genesis already revokes the 0.7.2 build, and sets that registry's floor. Accounts created on testnet
 from the old code, including by the harness, the demo and the wallet, are then refused and are
 not upgraded in place: recreate them from the current code. Execution and the wallet accept only
 the pinned code whatever the floor. Details are in
