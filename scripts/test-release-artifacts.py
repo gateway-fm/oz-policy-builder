@@ -32,11 +32,13 @@ COMMIT = "0123456789abcdef0123456789abcdef01234567"
 # answers initialize and tools/list. FAKE_MODE selects a defect to exercise a refusal.
 FAKE_SERVER = r'''#!/usr/bin/env python3
 import json, os, sys
+# Raw UTF-8 on the wire, as the real server writes its non-ASCII descriptions.
+sys.stdout.reconfigure(encoding="utf-8")
 mode = os.environ.get("FAKE_MODE", "ok")
 if os.environ.get("OZPB_LEAK"):
     mode = "leaked"
 requests = [json.loads(line) for line in sys.stdin if line.strip()]
-tool = {"name": "evaluate_spec", "description": "d",
+tool = {"name": "evaluate_spec", "description": "d \u2192 \u00fc",
         "inputSchema": {"type": "object"}, "outputSchema": {"type": "object"}}
 other = dict(tool, name="generate_code")
 tools = [other, tool]
@@ -57,7 +59,7 @@ for request in requests:
             if mode == "paginated":
                 result["nextCursor"] = "more"
             print("not json")
-            print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": result}))
+            print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": result}, ensure_ascii=False))
 '''
 
 
@@ -185,6 +187,7 @@ class WireContract(unittest.TestCase):
 
     def test_exports_sorted_tools_and_the_error_vocabulary(self):
         document = json.loads(self.export().read_text(encoding="utf-8"))
+        self.assertEqual(document["tools"][0]["description"], "d \u2192 \u00fc")
         self.assertEqual(document["schema"], "ozpb-wire-contract/v1")
         self.assertEqual((document["release"], document["commit"]), (LABEL, COMMIT))
         self.assertEqual([tool["name"] for tool in document["tools"]],

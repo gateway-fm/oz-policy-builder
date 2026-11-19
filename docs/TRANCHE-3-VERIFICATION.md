@@ -5,7 +5,7 @@ what remains, naming whom each remaining step rests on. It claims nothing the tr
 hold: no mainnet installation, audit report or OpenZeppelin sign-off is recorded here.
 [MAINNET-GATES.md](MAINNET-GATES.md) states, for each acceptance gate before any mainnet use,
 whether its tests close it and every deviation that keeps a gate narrowed or open. This guide
-records the owner's acceptance of those deviations, and of the two it states itself, each against
+records the owner's acceptance of those deviations, and of the three it states itself, each against
 the revision it was accepted for.
 
 ## Contracted outcome and milestone boundary
@@ -63,6 +63,15 @@ deviations to accept or refuse are:
    A mainnet installation requires the agent's delegate secret in a 0600 file on the wallet host,
    because three of the four check layers sign as the delegate, and the wallet backend also holds
    the operator's fee-payer key ([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)).
+4. **The wallet's install types are hand-written and drift-tested, not generated.**
+   [§4.11](architecture.md#411-engineering-architecture--workspace-boundaries-and-idioms) planned
+   the wallet's MCP payload types as generated from the `api-types` JSON Schemas. The two
+   wallet-facing install tools' request and response types are hand-written declarations
+   (`wallet/shared/install-wire.d.mts`), so no generator dependency is added, held to the published
+   schemas in [`wire-contract.json`](wire-contract.json) by `wallet/tests/install-wire.test.mjs`,
+   which fails on any difference in a field's name, whether it is required, or its type. The other
+   tools' payloads are not declared in TypeScript, except where the install tools carry them (the
+   authority check's request and answer).
 
 ## Acceptance recorded here
 

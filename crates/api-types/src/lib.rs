@@ -514,8 +514,8 @@ mod tests {
             .map(|code| code.as_str().expect("an error code is a string"))
             .collect();
         let current: Vec<&str> = ErrorCode::ALL.iter().map(|code| code.as_str()).collect();
-        let regenerate = "cargo build -p ozpb-mcp-server && python3 scripts/release-artifacts.py \
-                          check-wire-contract --server target/debug/ozpb-mcp-server --update";
+        let regenerate = "build ozpb-mcp-server, then python3 scripts/release-artifacts.py \
+                          check-wire-contract --server <the built ozpb-mcp-server> --update";
 
         let gone: Vec<&str> = published
             .iter()

@@ -159,8 +159,9 @@ def served_tools(server, timeout):
     # environment of whoever runs this must not shape it.
     env = {key: value for key, value in os.environ.items() if not key.startswith("OZPB_")}
     try:
+        # UTF-8 both ways, not the locale's encoding: the schemas' descriptions are not ASCII.
         done = subprocess.run([str(server)], input=payload, capture_output=True, text=True,
-                              timeout=timeout, env=env, check=False)
+                              encoding="utf-8", timeout=timeout, env=env, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReleaseError(f"could not run {server}: {error}") from error
     responses = {}

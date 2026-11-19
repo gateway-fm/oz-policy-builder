@@ -119,56 +119,59 @@ function union(members) {
 // `const` beside an `enum`, extra properties beside fixed ones) is refused, never half-read.
 const ANNOTATIONS = new Set(['description', 'title', 'format', 'minimum', 'maximum', '$schema']);
 
-function fromSchema(schema, where) {
+/**
+ * The shape a schema states. What the reader cannot read is reported once, through `refuse`, and
+ * becomes an `unread` shape the comparison passes over, so one refusal is one message rather than
+ * every comparison that would have depended on it.
+ */
+function fromSchema(schema, where, refuse) {
+  const unreadable = (why) => { refuse(`${where}: ${why}`); return { k: 'unread' }; };
   if (schema === true) return { k: 'unknown' };
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) throw new Error(`${where}: not a schema`);
-  const unread = (...read) => {
-    const extra = Object.keys(schema).filter((k) => !ANNOTATIONS.has(k) && !read.includes(k));
-    if (extra.length) throw new Error(`${where}: the drift reader does not read ${extra.join(', ')}: ${JSON.stringify(schema)}`);
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return unreadable('not a schema');
+  const extra = (...read) => Object.keys(schema).filter((k) => !ANNOTATIONS.has(k) && !read.includes(k));
+  const reads = (...read) => {
+    const others = extra(...read);
+    return others.length ? unreadable(`the drift reader does not read ${others.join(', ')}: ${JSON.stringify(schema)}`) : null;
   };
   const literal = (v) => (v === null ? { k: 'null' } : { k: 'lit', v });
   if (schema.$ref !== undefined) {
-    unread('$ref');
     const match = /^#\/\$defs\/(\w+)$/.exec(schema.$ref);
-    if (!match) throw new Error(`${where}: unsupported $ref ${schema.$ref}`);
-    return { k: 'ref', name: match[1] };
+    return reads('$ref') ?? (match ? { k: 'ref', name: match[1] } : unreadable(`unsupported $ref ${schema.$ref}`));
   }
   for (const branching of ['oneOf', 'anyOf']) {
     if (schema[branching] !== undefined) {
-      unread(branching);
-      return union(schema[branching].map((branch, i) => fromSchema(branch, `${where}|${i}`)));
+      return reads(branching) ?? union(schema[branching].map((branch, i) => fromSchema(branch, `${where}|${i}`, refuse)));
     }
   }
-  if (schema.const !== undefined) { unread('const', 'type'); return literal(schema.const); }
-  if (schema.enum !== undefined) { unread('enum', 'type'); return union(schema.enum.map(literal)); }
-  if (Array.isArray(schema.type)) return union(schema.type.map((t) => fromSchema({ ...schema, type: t }, where)));
+  if (schema.const !== undefined) return reads('const', 'type') ?? literal(schema.const);
+  if (schema.enum !== undefined) return reads('enum', 'type') ?? union(schema.enum.map(literal));
+  if (Array.isArray(schema.type)) return union(schema.type.map((t) => fromSchema({ ...schema, type: t }, where, refuse)));
   switch (schema.type) {
-    case 'string': case 'boolean': case 'null': unread('type'); return { k: schema.type };
-    case 'integer': case 'number': unread('type'); return { k: 'number' };
-    case 'array': unread('type', 'items'); return { k: 'array', items: fromSchema(schema.items, `${where}[]`) };
+    case 'string': case 'boolean': case 'null': return reads('type') ?? { k: schema.type };
+    case 'integer': case 'number': return reads('type') ?? { k: 'number' };
+    case 'array': return reads('type', 'items') ?? { k: 'array', items: fromSchema(schema.items, `${where}[]`, refuse) };
     case 'object': {
       if (schema.properties !== undefined) {
         // Fixed properties, closed or not; a schema for further properties would be a map beside them.
-        unread('type', 'properties', 'required', 'additionalProperties');
+        const refused = reads('type', 'properties', 'required', 'additionalProperties');
+        if (refused) return refused;
         if (![undefined, false, true].includes(schema.additionalProperties)) {
-          throw new Error(`${where}: properties beside a schema for further ones: ${JSON.stringify(schema)}`);
+          return unreadable(`properties beside a schema for further ones: ${JSON.stringify(schema)}`);
         }
         const required = new Set(schema.required ?? []);
-        for (const field of required) {
-          if (!(field in schema.properties)) throw new Error(`${where}: requires ${field}, which it does not define`);
-        }
+        const undefinedRequired = [...required].filter((field) => !(field in schema.properties));
+        if (undefinedRequired.length) return unreadable(`requires ${undefinedRequired.join(', ')}, which it does not define`);
         return { k: 'object', fields: new Map(Object.entries(schema.properties).map(([field, value]) =>
-          [field, { optional: !required.has(field), type: fromSchema(value, `${where}.${field}`) }])) };
+          [field, { optional: !required.has(field), type: fromSchema(value, `${where}.${field}`, refuse) }])) };
       }
-      unread('type', 'additionalProperties');
       if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
-        return { k: 'map', values: fromSchema(schema.additionalProperties, `${where}{}`) };
+        return reads('type', 'additionalProperties') ?? { k: 'map', values: fromSchema(schema.additionalProperties, `${where}{}`, refuse) };
       }
       break;
     }
     default:
   }
-  throw new Error(`${where}: the drift reader does not cover this schema: ${JSON.stringify(schema)}`);
+  return unreadable(`the drift reader does not cover this schema: ${JSON.stringify(schema)}`);
 }
 
 function key(model) {
@@ -186,94 +189,92 @@ function key(model) {
 
 // --- the comparison --------------------------------------------------------------------------
 
-/** Every way the declarations differ from the two tools' schemas; empty when they match. */
+/**
+ * Every way the declarations differ from the two tools' schemas; empty when they match. Each
+ * root is compared within its own tool schema: a `$ref` resolves in that schema's `$defs` only,
+ * since that is where a client reading that schema resolves it.
+ */
 function drift(source, contract) {
   const errors = [];
+  const refuse = (message) => errors.push(message);
   let declared;
   try { declared = parseDeclarations(source); } catch (error) { return [error.message]; }
   const tools = new Map(contract.tools.map((tool) => [tool.name, tool]));
-  const defs = new Map();
-  const roots = new Map();
-  for (const [root, [tool, field]] of Object.entries(ROOTS)) {
-    const schema = tools.get(tool)?.[field];
-    if (!schema) { errors.push(`${root}: ${tool} has no ${field} in the snapshot`); continue; }
-    const { $defs: local = {}, ...top } = schema;
-    try {
-      for (const [name, def] of Object.entries(local)) {
-        const model = fromSchema(def, name);
-        if (defs.has(name) && key(defs.get(name)) !== key(model)) errors.push(`${name}: the tools' schemas disagree`);
-        defs.set(name, model);
-      }
-      roots.set(root, fromSchema(top, root));
-    } catch (error) { errors.push(error.message); }
-  }
-  const compared = new Set();
   const used = new Set();
-  const definition = (name, where) => {
-    if (compared.has(name)) return;
-    compared.add(name);
-    used.add(name);
-    if (!declared.has(name)) { errors.push(`${where}: the schema defines ${name}; install-wire.d.mts does not declare it`); return; }
-    if (!defs.has(name)) { errors.push(`${where}: install-wire.d.mts names ${name}; the schemas define no such type`); return; }
-    compare(declared.get(name), defs.get(name), name);
-  };
   const variants = (model) => (model.k === 'object'
     ? [...model.fields].filter(([, field]) => field.type.k === 'lit').map(([f, { type }]) => `${f}=${type.v}`).sort().join(',')
     : null);
-  function compare(ts, schema, where) {
-    if (ts.k === 'ref' && schema.k === 'ref') {
-      if (ts.name !== schema.name) errors.push(`${where}: declared ${ts.name}, the schema has ${schema.name}`);
-      else definition(ts.name, where);
-      return;
-    }
-    if (ts.k !== schema.k) { errors.push(`${where}: declared ${key(ts)}, the schema has ${key(schema)}`); return; }
-    switch (ts.k) {
-      case 'object': {
-        for (const [field, want] of schema.fields) {
-          const have = ts.fields.get(field);
-          if (!have) { errors.push(`${where}.${field}: in the schema (${want.optional ? 'optional' : 'required'}), not declared`); continue; }
-          if (have.optional !== want.optional) {
-            errors.push(`${where}.${field}: declared ${have.optional ? 'optional' : 'required'}, the schema has it ${want.optional ? 'optional' : 'required'}`);
-          }
-          compare(have.type, want.type, `${where}.${field}`);
-        }
-        for (const field of ts.fields.keys()) if (!schema.fields.has(field)) errors.push(`${where}.${field}: declared, not in the schema`);
-        return;
-      }
-      case 'array': compare(ts.items, schema.items, `${where}[]`); return;
-      case 'map': compare(ts.values, schema.values, `${where}{}`); return;
-      case 'union': {
-        const wanted = new Map(schema.of.map((member) => [key(member), member]));
-        const have = new Map(ts.of.map((member) => [key(member), member]));
-        // An identical member still names definitions (its own, or inside a variant) to compare.
-        for (const [k, member] of have) if (wanted.has(k)) { compare(member, wanted.get(k), where); wanted.delete(k); have.delete(k); }
-        // A variant that matches by its literal tag but differs inside is compared field by field.
-        for (const [k, member] of [...have]) {
-          const tag = variants(member);
-          const pair = tag && [...wanted].find(([, other]) => variants(other) === tag);
-          if (pair) { compare(member, pair[1], `${where}<${tag}>`); have.delete(k); wanted.delete(pair[0]); }
-        }
-        for (const k of wanted.keys()) errors.push(`${where}: the schema allows ${k}, not declared`);
-        for (const k of have.keys()) errors.push(`${where}: declared ${k}, not in the schema`);
-        return;
-      }
-      default:
-        if (key(ts) !== key(schema)) errors.push(`${where}: declared ${key(ts)}, the schema has ${key(schema)}`);
-    }
-  }
-  for (const [root, schema] of roots) {
-    let ts = declared.get(root);
+
+  for (const [root, [tool, field]] of Object.entries(ROOTS)) {
+    const schema = tools.get(tool)?.[field];
     used.add(root);
+    if (!schema) { errors.push(`${root}: ${tool} has no ${field} in the snapshot`); continue; }
+    const { $defs: local = {}, ...top } = schema;
+    const shapes = new Map();
+    const compared = new Set();
+    const definition = (name, where) => {
+      if (compared.has(name)) return;
+      compared.add(name);
+      used.add(name);
+      if (!Object.hasOwn(local, name)) { errors.push(`${where}: $ref #/$defs/${name} dangles: ${tool} ${field} defines no ${name}`); return; }
+      if (!declared.has(name)) { errors.push(`${where}: the schema defines ${name}; install-wire.d.mts does not declare it`); return; }
+      if (!shapes.has(name)) shapes.set(name, fromSchema(local[name], name, refuse));
+      compare(declared.get(name), shapes.get(name), name);
+    };
+    function compare(ts, want, where) {
+      if (want.k === 'unread') return;
+      if (ts.k === 'ref' && want.k === 'ref') {
+        if (ts.name !== want.name) errors.push(`${where}: declared ${ts.name}, the schema has ${want.name}`);
+        else definition(ts.name, where);
+        return;
+      }
+      if (ts.k !== want.k) { errors.push(`${where}: declared ${key(ts)}, the schema has ${key(want)}`); return; }
+      switch (ts.k) {
+        case 'object': {
+          for (const [name, wanted] of want.fields) {
+            const have = ts.fields.get(name);
+            if (!have) { errors.push(`${where}.${name}: in the schema (${wanted.optional ? 'optional' : 'required'}), not declared`); continue; }
+            if (have.optional !== wanted.optional) {
+              errors.push(`${where}.${name}: declared ${have.optional ? 'optional' : 'required'}, the schema has it ${wanted.optional ? 'optional' : 'required'}`);
+            }
+            compare(have.type, wanted.type, `${where}.${name}`);
+          }
+          for (const name of ts.fields.keys()) if (!want.fields.has(name)) errors.push(`${where}.${name}: declared, not in the schema`);
+          return;
+        }
+        case 'array': compare(ts.items, want.items, `${where}[]`); return;
+        case 'map': compare(ts.values, want.values, `${where}{}`); return;
+        case 'union': {
+          const wanted = new Map(want.of.map((member) => [key(member), member]));
+          const have = new Map(ts.of.map((member) => [key(member), member]));
+          // An identical member still names definitions (its own, or inside a variant) to compare.
+          for (const [k, member] of have) if (wanted.has(k)) { compare(member, wanted.get(k), where); wanted.delete(k); have.delete(k); }
+          // A variant that matches by its literal tag but differs inside is compared field by field.
+          for (const [k, member] of [...have]) {
+            const tag = variants(member);
+            const pair = tag && [...wanted].find(([, other]) => variants(other) === tag);
+            if (pair) { compare(member, pair[1], `${where}<${tag}>`); have.delete(k); wanted.delete(pair[0]); }
+          }
+          if ([...wanted.values()].some((member) => member.k === 'unread')) return;
+          for (const k of wanted.keys()) errors.push(`${where}: the schema allows ${k}, not declared`);
+          for (const k of have.keys()) errors.push(`${where}: declared ${k}, not in the schema`);
+          return;
+        }
+        default:
+          if (key(ts) !== key(want)) errors.push(`${where}: declared ${key(ts)}, the schema has ${key(want)}`);
+      }
+    }
+    let ts = declared.get(root);
     // A root may be declared as an alias of the definition it is (the intent's request is the
     // authority check's request); the schema states that root inline.
     while (ts?.k === 'ref' && declared.has(ts.name)) { used.add(ts.name); ts = declared.get(ts.name); }
     if (!ts) { errors.push(`${root}: not declared in install-wire.d.mts`); continue; }
-    compare(ts, schema, root);
+    compare(ts, fromSchema(top, root, refuse), root);
   }
   for (const name of declared.keys()) {
     if (!used.has(name)) errors.push(`${name}: declared in install-wire.d.mts, used by neither tool's schemas`);
   }
-  // A root that is also a definition elsewhere is compared twice; say each difference once.
+  // A definition several tools carry is compared once per tool; say each difference once.
   return [...new Set(errors)];
 }
 
@@ -373,13 +374,34 @@ for (const [name, [definition, mutate]] of Object.entries(unreadable)) {
       if (def) { mutate(def); changed += 1; }
     }
     assert.ok(changed > 0, `no schema defines ${definition}`);
-    assert.match(drift(declarations(), contract).join('\n'), /does not read|beside a schema for further|requires label/);
+    // One refusal, said once: what depends on the unread definition is not reported again.
+    const errors = drift(declarations(), contract);
+    assert.equal(errors.length, 1, errors.join('\n'));
+    assert.match(errors[0], /does not read|beside a schema for further|requires label/);
   });
 }
 test('the drift check refuses prefixItems on an array', () => {
   const contract = snapshot();
   toolSchema(contract, 'assemble_install_transaction', 'outputSchema').properties.wallet_requirements.prefixItems = [{ type: 'integer' }];
-  assert.match(drift(declarations(), contract).join('\n'), /does not read prefixItems/);
+  const errors = drift(declarations(), contract);
+  assert.equal(errors.length, 1, errors.join('\n'));
+  assert.match(errors[0], /does not read prefixItems/);
+});
+
+test('a $ref resolves in its own tool schema only, and a missing definition is a dangling $ref', () => {
+  // Another tool's schema still defines PolicyClassicSigner; pooled definitions would hide this.
+  const contract = snapshot();
+  delete toolSchema(contract, 'assemble_install_transaction', 'outputSchema').$defs.PolicyClassicSigner;
+  assert.deepEqual(drift(declarations(), contract), [
+    'PolicyClassicAccount.signers[]: $ref #/$defs/PolicyClassicSigner dangles: '
+      + 'assemble_install_transaction outputSchema defines no PolicyClassicSigner',
+  ]);
+});
+
+test('a definition changed in one tool schema only is a difference in that schema', () => {
+  const contract = snapshot();
+  toolSchema(contract, 'prepare_install_intent', 'outputSchema').$defs.PolicyClassicSigner.properties.weight = { type: 'string' };
+  assert.deepEqual(drift(declarations(), contract), ['PolicyClassicSigner.weight: declared number, the schema has string']);
 });
 
 test('a null in an enum is the null type, which `| null` declares', () => {
