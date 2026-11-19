@@ -1453,27 +1453,66 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32, meta: &str) -> (String, String) {
         out.push_str(")\n        {\n");
     }
     out.push_str("            panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }\n");
-    // `&&` binds tighter than `||`, so per-disjunct parens are unnecessary; a single
-    // allowed call must emit no wrapping parens at all (clippy: unnecessary_parens).
-    let multi = rule.calls.len() > 1;
-    let tuple_expr = rule
-        .calls
+    // The tuples, grouped by function name so that each name's guard is read once:
+    // `fn_0_ok && (check_call_0(..) || check_call_1(..))`. A guard per tuple,
+    // `(fn_0_ok && check_call_0(..)) || (fn_0_ok && check_call_1(..))`, means the same and is
+    // what `clippy::nonminimal_bool` refuses. A group takes the place of its name's first tuple,
+    // so a rule whose names have one tuple each emits what it did before grouping, and the
+    // checks run in the same order: at most one name matches, and its tuples are tried in call
+    // order either way.
+    let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (ci, call) in rule.calls.iter().enumerate() {
+        // `fn_names` is sorted and deduplicated just above, so the lookup is a binary search
+        // rather than a scan per call — and it uses the ordering that is already established
+        // instead of building a second index beside it. (A hash map is not an option here in any
+        // case: `clippy.toml` bans `HashMap` across both workspaces, because per-process
+        // iteration order is how emitted bytes stop being reproducible.)
+        let fi = fn_names
+            .binary_search(&call.fn_name.as_str())
+            .unwrap_or_else(|_| unreachable!("fn_names is built from rule.calls"));
+        // A scan, over at most MAX_CALLS_PER_RULE groups, because the groups keep call order.
+        match groups.iter_mut().find(|(group_fi, _)| *group_fi == fi) {
+            Some((_, calls)) => calls.push(ci),
+            None => groups.push((fi, vec![ci])),
+        }
+    }
+    // rustfmt's layouts under the shipped config, measured with the pinned toolchain's rustfmt
+    // and with the nightly CI pins, on generated crates of each shape: a group of several tuples
+    // first, later and alone, up to 32 tuples. CI's own fmt gate sees only the committed shapes,
+    // so `tuples_of_one_function_are_checked_under_one_function_guard` pins the others. Several
+    // groups are parenthesized, each after the first on its own `||` line one level in; a single
+    // group is not (rustc: unused_parens). A group of several tuples breaks after its guard, with
+    // `&& (` one level in from the line the group starts on, and then before each further check,
+    // one level deeper: even two checks, `check_call_0(..) || check_call_1(..)`, are 84 columns,
+    // and after `&& (` at column 16 at the earliest, with at least `)` and one more character
+    // behind them (`;` or `)`), they end at column 102. The first group starts on the `let` line,
+    // a later one on its `||` line, which is a level deeper already.
+    let several = groups.len() > 1;
+    let tuple_expr = groups
         .iter()
         .enumerate()
-        .map(|(ci, call)| {
-            // `fn_names` is sorted and deduplicated just above, so the lookup is a binary
-            // search rather than a scan per call — and it uses the ordering that is already
-            // established instead of building a second index beside it. (A hash map is not an
-            // option here in any case: `clippy.toml` bans `HashMap` across both workspaces,
-            // because per-process iteration order is how emitted bytes stop being reproducible.)
-            let fi = fn_names
-                .binary_search(&call.fn_name.as_str())
-                .unwrap_or_else(|_| unreachable!("fn_names is built from rule.calls"));
-            let inner = format!("fn_{fi}_ok && check_call_{ci}(e, &c.args, &smart_account)");
-            if multi {
-                format!("({inner})")
+        .map(|(gi, (fi, calls))| {
+            let check = |ci: &usize| format!("check_call_{ci}(e, &c.args, &smart_account)");
+            let group = match calls.as_slice() {
+                [ci] => format!("fn_{fi}_ok && {}", check(ci)),
+                _ => {
+                    let (and_indent, or_indent) = if gi == 0 {
+                        ("            ", "                ")
+                    } else {
+                        ("                ", "                    ")
+                    };
+                    let checks = calls
+                        .iter()
+                        .map(check)
+                        .collect::<Vec<_>>()
+                        .join(&format!("\n{or_indent}|| "));
+                    format!("fn_{fi}_ok\n{and_indent}&& ({checks})")
+                }
+            };
+            if several {
+                format!("({group})")
             } else {
-                inner
+                group
             }
         })
         .collect::<Vec<_>>()
@@ -2632,7 +2671,164 @@ mod tests {
                          \n--- source ---\n{source}"
                     )));
                 }
+                // The corpus draws 1 to 32 calls from 36 names, so most cases put several tuples
+                // under one name, in every interleaving: the shape whose repeated guard clippy
+                // refused. A token scan over one statement, so it costs nothing measurable.
+                let names: Vec<&str> = spec.spec().rules[0]
+                    .allowed_calls
+                    .iter()
+                    .map(|call| call.fn_name.as_str())
+                    .collect();
+                let defects = tuple_check_defects(source, &names);
+                if !defects.is_empty() {
+                    return Err(proptest::test_runner::TestCaseError::fail(format!(
+                        "the tuple check is not read-once under the right guards: {defects:?}\
+                         \n--- source ---\n{source}"
+                    )));
+                }
             }
+        }
+
+        /// What is wrong with the `tuple_ok` statement, given the function name of each allowed
+        /// call in emission order: an operand read more than once, a function guard or tuple
+        /// check never read, or a tuple check read under a guard that binds another function.
+        /// Empty in a correct emission.
+        ///
+        /// Read-once is the property the lint gate needs. `clippy::nonminimal_bool` refuses a
+        /// condition it can rewrite with fewer operands, and a condition that reads each operand
+        /// once has none to spare: `(fn_0_ok && check_call_0(..)) || (fn_0_ok &&
+        /// check_call_1(..))` reads `fn_0_ok` twice and was refused. The guard check is what
+        /// grouping must not lose: a tuple checked under another function's guard permits that
+        /// tuple's arguments for the wrong function, and an operand count cannot see it.
+        ///
+        /// A check belongs to the nearest guard before it, which holds for every layout the
+        /// emitter writes: each guard precedes the checks it governs.
+        pub(super) fn tuple_check_defects(source: &str, call_names: &[&str]) -> Vec<String> {
+            use std::collections::BTreeMap;
+            // `let fn_<k>_ok = c.fn_name == Symbol::new(e, "<name>");`, one line each.
+            let guards: BTreeMap<&str, &str> = source
+                .lines()
+                .filter_map(|line| {
+                    let rest = line.trim_start().strip_prefix("let ")?;
+                    let (binding, rest) = rest.split_once(" = c.fn_name == Symbol::new(e, \"")?;
+                    Some((binding, rest.strip_suffix("\");")?))
+                })
+                .collect();
+            let Some(start) = source.find("let tuple_ok = ") else {
+                return vec!["no `let tuple_ok` statement".to_string()];
+            };
+            let statement = &source[start..];
+            let statement = &statement[..statement.find(';').unwrap_or(statement.len())];
+            let mut reads: BTreeMap<&str, usize> = BTreeMap::new();
+            let mut defects = Vec::new();
+            let mut guard: Option<&str> = None;
+            for token in statement.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+                if guards.contains_key(token) {
+                    guard = Some(token);
+                } else if let Some(Ok(ci)) =
+                    token.strip_prefix("check_call_").map(str::parse::<usize>)
+                {
+                    let expected = call_names.get(ci).copied();
+                    let governing = guard.and_then(|g| guards.get(g).copied());
+                    if expected.is_none() || governing != expected {
+                        defects.push(format!(
+                            "{token} (a call to {expected:?}) read under {guard:?}, which binds \
+                             {governing:?}"
+                        ));
+                    }
+                } else {
+                    continue;
+                }
+                *reads.entry(token).or_default() += 1;
+            }
+            defects.extend(
+                reads
+                    .iter()
+                    .filter(|(_, count)| **count != 1)
+                    .map(|(operand, count)| format!("{operand} read {count} times")),
+            );
+            let checks = (0..call_names.len()).map(|ci| format!("check_call_{ci}"));
+            for operand in guards.keys().map(|g| g.to_string()).chain(checks) {
+                if !reads.contains_key(operand.as_str()) {
+                    defects.push(format!("{operand} never read"));
+                }
+            }
+            defects
+        }
+
+        #[test]
+        fn tuple_check_defects_names_each_way_the_statement_can_be_wrong() {
+            let guards = "let fn_0_ok = c.fn_name == Symbol::new(e, \"approve\");\n\
+                          let fn_1_ok = c.fn_name == Symbol::new(e, \"transfer\");\n";
+            let check = |ci: usize| format!("check_call_{ci}(e, &c.args, &smart_account)");
+            let source = |tuple_ok: String| format!("{guards}let tuple_ok = {tuple_ok};\n");
+            let correct = source(format!(
+                "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
+                check(0),
+                check(2),
+                check(1)
+            ));
+            let calls = ["transfer", "approve", "transfer"];
+            assert_eq!(tuple_check_defects(&correct, &calls), Vec::<String>::new());
+
+            // The shape clippy refused: one guard per tuple.
+            let repeated = source(format!(
+                "(fn_1_ok && {}) || (fn_0_ok && {}) || (fn_1_ok && {})",
+                check(0),
+                check(1),
+                check(2)
+            ));
+            assert_eq!(
+                tuple_check_defects(&repeated, &calls),
+                vec!["fn_1_ok read 2 times"]
+            );
+            // A tuple under the other function's guard, every operand still read once.
+            let misplaced = source(format!(
+                "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
+                check(0),
+                check(1),
+                check(2)
+            ));
+            assert_eq!(
+                tuple_check_defects(&misplaced, &calls),
+                vec![
+                    "check_call_1 (a call to Some(\"approve\")) read under Some(\"fn_1_ok\"), \
+                     which binds Some(\"transfer\")",
+                    "check_call_2 (a call to Some(\"transfer\")) read under Some(\"fn_0_ok\"), \
+                     which binds Some(\"approve\")",
+                ]
+            );
+            // A guard and a tuple never read; and a check before any guard.
+            let unread = source(format!("fn_1_ok && ({} || {})", check(0), check(2)));
+            assert_eq!(
+                tuple_check_defects(&unread, &calls),
+                vec!["fn_0_ok never read", "check_call_1 never read"]
+            );
+            let unguarded = source(check(0));
+            assert_eq!(
+                tuple_check_defects(&unguarded, &["transfer"]),
+                vec![
+                    "check_call_0 (a call to Some(\"transfer\")) read under None, which binds None",
+                    "fn_0_ok never read",
+                    "fn_1_ok never read",
+                ]
+            );
+            // Tokens, not substrings: `check_call_10` is neither a read of `check_call_1` nor a
+            // call this rule has.
+            let foreign = source(format!("fn_1_ok && ({} || {})", check(1), check(10)));
+            assert_eq!(
+                tuple_check_defects(&foreign, &["approve", "transfer"]),
+                vec![
+                    "check_call_10 (a call to None) read under Some(\"fn_1_ok\"), which binds \
+                     Some(\"transfer\")",
+                    "fn_0_ok never read",
+                    "check_call_0 never read",
+                ]
+            );
+            assert_eq!(
+                tuple_check_defects(guards, &calls),
+                vec!["no `let tuple_ok` statement"]
+            );
         }
 
         /// Constants the emitted source declares but never reads, and constants it reads but
@@ -5021,6 +5217,78 @@ mod tests {
                 "        let tuple_ok = fn_0_ok && check_call_0(e, &c.args, &smart_account);\n"
             ),
             "{source}"
+        );
+    }
+
+    /// Several accepted tuples of one function are checked under that function's guard once.
+    /// Repeating the guard per tuple, `(fn_0_ok && check_call_0(..)) || (fn_0_ok &&
+    /// check_call_1(..))`, means the same thing, and `clippy::nonminimal_bool` refuses it, which
+    /// kept the two-payment crate out of the lint gate. Each layout below is rustfmt's for the
+    /// shape: `cargo fmt --check`, with the pinned toolchain and with the nightly CI pins, left
+    /// generated crates of these shapes untouched, and `cargo clippy -- -D warnings` passed them.
+    /// Only the two-payment shape is committed, so this test is what holds the mixed one.
+    #[test]
+    fn tuples_of_one_function_are_checked_under_one_function_guard() {
+        // Two tuples of one function: the committed two-payment fixture.
+        let source = emitted_for(&ozpb_synthesizer::walkthroughs::two_payment_spec());
+        assert!(
+            source.contains(
+                "        let tuple_ok = fn_0_ok\n            \
+                 && (check_call_0(e, &c.args, &smart_account)\n                \
+                 || check_call_1(e, &c.args, &smart_account));\n"
+            ),
+            "{source}"
+        );
+
+        // A mix: two names with two tuples each, interleaved, and a third name with one. A group
+        // keeps the position of its name's first tuple, so a rule whose names each have one
+        // tuple emits what it did before grouping; the first group continues the `let` line and
+        // every later one starts its own `||` line, one level deeper.
+        let transfer = golden_spec().spec().rules[0].allowed_calls[0].clone();
+        let mut other_amount = transfer.clone();
+        other_amount.args[2].constraint = Constraint::EqI128 {
+            value: "7".to_string(),
+        };
+        let renamed = |call: &ozpb_policy_spec::AllowedCall, name: &str| {
+            let mut call = call.clone();
+            call.fn_name = name.to_string();
+            call
+        };
+        let mut spec = golden_spec().spec().clone();
+        // A reviewed spending limit covers transfer tuples only.
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        spec.rules[0].allowed_calls = vec![
+            transfer.clone(),
+            renamed(&transfer, "approve"),
+            other_amount.clone(),
+            renamed(&other_amount, "approve"),
+            renamed(&transfer, "burn"),
+        ];
+        let spec = spec
+            .validate()
+            .expect("five distinct tuples under three names validate");
+        let source = emitted_for(&spec);
+        // Bound in sorted order: fn_0 `approve`, fn_1 `burn`, fn_2 `transfer`.
+        assert!(
+            source.contains(
+                "        let tuple_ok = (fn_2_ok\n            \
+                 && (check_call_0(e, &c.args, &smart_account)\n                \
+                 || check_call_2(e, &c.args, &smart_account)))\n            \
+                 || (fn_0_ok\n                \
+                 && (check_call_1(e, &c.args, &smart_account)\n                    \
+                 || check_call_3(e, &c.args, &smart_account)))\n            \
+                 || (fn_1_ok && check_call_4(e, &c.args, &smart_account));\n"
+            ),
+            "{source}"
+        );
+        assert_eq!(
+            compilability::tuple_check_defects(
+                &source,
+                &["transfer", "approve", "transfer", "approve", "burn"]
+            ),
+            Vec::<String>::new()
         );
     }
 
