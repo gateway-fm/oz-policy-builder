@@ -1310,6 +1310,108 @@ mod tests {
         assert_eq!(err.code, EC::ERegistryRollback);
     }
 
+    /// GHSA-jpg9-m7w4-c7wc: development registry version 6 revokes the account built at v0.7.2,
+    /// but version 5, also signed by the development root, still recognizes it, and a caller can
+    /// supply its own snapshot. Only the floor stops that snapshot. The shipped deployment
+    /// configurations must therefore set a floor at or above the revoking version, and under
+    /// that floor synthesis must refuse the 0.7.2 account presented with version 5.
+    #[test]
+    fn the_shipped_floor_keeps_the_revoked_account_out_of_synthesis() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let revoking = registry_dev::account_advisory_successor(network)
+            .unwrap()
+            .version;
+        let floor_in = |text: &str, prefix: &str| -> u64 {
+            let line = text
+                .lines()
+                .find(|line| line.trim_start().starts_with(prefix))
+                .unwrap_or_else(|| panic!("no {prefix} line"));
+            line.trim_start()[prefix.len()..]
+                .trim()
+                .trim_end_matches(['}', '"'])
+                .parse()
+                .unwrap_or_else(|_| panic!("unreadable floor in {line:?}"))
+        };
+        for (name, floor) in [
+            (
+                "deployment/example.env",
+                floor_in(
+                    include_str!("../../../deployment/example.env"),
+                    "OZPB_REGISTRY_MIN_VERSION=",
+                ),
+            ),
+            (
+                "deployment/http.example.env",
+                floor_in(
+                    include_str!("../../../deployment/http.example.env"),
+                    "OZPB_REGISTRY_MIN_VERSION=",
+                ),
+            ),
+            (
+                "scripts/mcp-server-dev.sh",
+                floor_in(
+                    include_str!("../../../scripts/mcp-server-dev.sh"),
+                    "export OZPB_REGISTRY_MIN_VERSION=\"${OZPB_REGISTRY_MIN_VERSION:-",
+                ),
+            ),
+        ] {
+            // A recording of the same call on an account running the 0.7.2 code.
+            let mut executables = ozpb_recorder_core::fixtures::observed_executables();
+            for observation in executables.values_mut() {
+                if let ozpb_recorder_core::ObservedExecutable::Wasm { code_hash } =
+                    &mut observation.executable
+                {
+                    if *code_hash == ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM {
+                        *code_hash = ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM;
+                    }
+                }
+            }
+            let recorded = executed_snapshot().with_contract_executables(executables);
+            let mut input = SynthesizeInput {
+                bundles: vec![
+                    record_snapshot(&recorded, RecordOptions::default())
+                        .unwrap()
+                        .bundle,
+                ],
+                selected_authorizer: Some(fx::golden_account_strkey()),
+                account: None,
+                signed_registry_snapshot: Some(
+                    serde_json::to_value(
+                        ozpb_registry::sign_snapshot(
+                            &registry_dev::dev_signing_key(),
+                            registry_dev::soroswap_deadline_successor(network).unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+                spending_limit_capability: Some(
+                    fx::golden_input()
+                        .spending_limit_capability
+                        .unwrap()
+                        .to_hex(),
+                ),
+                template_family: "policy-templates/scope@1".to_string(),
+            };
+            let mut account = fx::golden_input().account;
+            account.observed_code_hash = ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM;
+            input.account = Some(serde_json::to_value(&account).unwrap());
+            let trust = RegistryTrust {
+                minimum_version: floor,
+                ..registry_trust()
+            };
+            let refused = synthesize_policy(&input, &trust);
+            assert!(
+                floor >= revoking
+                    && matches!(&refused, Err(error) if error.code == EC::ERegistryRollback),
+                "{name} sets registry floor {floor}; the 0.7.2 account must be refused below \
+                 version {revoking}, got {:?}",
+                refused.map(|output| output.spec_hash)
+            );
+        }
+    }
+
     /// Every field the MCP surface made optional, exercised against the one it replaced.
     ///
     /// The assertion is on the spec *hash*, not on "it returned something": these fields feed

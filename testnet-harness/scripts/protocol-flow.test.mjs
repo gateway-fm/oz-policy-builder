@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runProtocolFlow } from './protocol-flow.mjs';
-const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-protocol-flow '));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

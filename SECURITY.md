@@ -69,10 +69,15 @@ them is *false* — that a claimed fail-closed path can be made to open — is t
 [GHSA-jpg9-m7w4-c7wc](https://github.com/OpenZeppelin/stellar-contracts/security/advisories/GHSA-jpg9-m7w4-c7wc):
 in OpenZeppelin `stellar-accounts` before 0.7.3, anyone can authorize a smart account without
 keys when a `Delegated` signer is the contract requesting its authorization, or when delegation
-loops back. The recognized account is now OpenZeppelin's example built at v0.7.3, and the
-development registry revokes the earlier v0.7.2 build. Accounts created on testnet from the old
-code, including by the harness, the demo and the wallet, are refused (the registry resolves that
-code as revoked) and are not upgraded in place: recreate them from the current code. Details are in
+loops back. The recognized account is now OpenZeppelin's example built at v0.7.3, and
+development registry version 6 revokes the earlier v0.7.2 build. The revocation binds only where
+version 6 is the floor: versions 1 to 5 still recognize the old build, and a caller can supply
+its own signed snapshot, so operators must set `OZPB_REGISTRY_MIN_VERSION=6` (the CLI's
+`--registry-min-version 6`, the wallet's `registryMinimumVersion: 6`) or persist a version-6
+checkpoint. The shipped configurations and documented commands do. Accounts created on testnet
+from the old code, including by the harness, the demo and the wallet, are then refused and are
+not upgraded in place: recreate them from the current code. Execution and the wallet accept only
+the pinned code whatever the floor. Details are in
 [`docs/SOROBAN-DEPENDENCIES.md`](docs/SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc).
 
 ## Supported versions

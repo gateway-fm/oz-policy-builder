@@ -189,7 +189,7 @@ The source-reviewed account method inventory and its limits are described in
    hash, like the method inventory) and its signed entry agrees; older binaries refuse the
    version-3 entry's new fields. Version 4 adds one target-adapter binding: the testnet Soroswap
    router's exact code to `soroswap-router@1`. Version 5 extends v4 and rebinds that router
-   to [`soroswap-router@2`](TARGET-ADAPTERS.md#current-binding-development-registry-version-5),
+   to [`soroswap-router@2`](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6),
    preserving the recorded deadline exactly. Both bindings are development-registry assertions,
    and the router's Wasm was not reproduced from source
    ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).

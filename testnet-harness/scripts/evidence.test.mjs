@@ -1690,7 +1690,7 @@ function exactDeadlineEvidence(t, change = () => {}) {
   w.invocations = w.invocations.flatMap(s => s.name === 'any_deadline' ? replace(s, true) : [s]);
   const pipeline = structuredClone(protocolPipeline); pipeline.adapter.name = 'soroswap-router@2';
   pipeline.high_blast_radius = []; pipeline.deadline_unix = String(w.deadline);
-  const spec = structuredClone(JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url))).synthesis.spec);
+  const spec = structuredClone(JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url))).synthesis.spec);
   spec.registry_snapshot = HASH; spec.smart_account.address = C;
   spec.rules[0].allowed_calls[0].args[4].c.eq_scval.xdr_base64 = xdr.ScVal.scvU64(BigInt(w.deadline)).toXDR('base64');
   change({ run, pipeline, spec });

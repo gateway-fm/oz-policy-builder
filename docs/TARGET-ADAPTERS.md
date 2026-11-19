@@ -47,7 +47,7 @@ observations remain `self_supplied` at the synthesis boundary. Governance must r
 actual implementation before binding its hash. This feature alone does not establish a live
 swap walkthrough or effect guarantee.
 
-## Current binding: development registry version 5
+## Current binding: development registry version 5, carried into 6
 
 Version 5 extends the immutable version-4 root and binds the same router code to v2.
 A persisted v3 checkpoint must advance through v4 before v5; checkpoints are not discarded.
