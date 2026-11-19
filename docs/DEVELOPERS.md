@@ -484,6 +484,13 @@ and their own size and time limits. Terminate TLS and add per-client authorizati
 at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
 supplies OS-level compile isolation and a no-secrets worker role.
 
+The endpoints are the operator's, so an `--http` server reports a failed RPC read by its code and
+a fixed description only: a transport error would quote the URL (path included, where providers
+put API keys), and a JSON-RPC error or a reply carries whatever the endpoint wrote. Refusals of
+the caller's own envelope keep their wording. `record_simulation` and `preflight_transaction`
+refuse an envelope carrying signatures before any request. A stdio server, like the CLI, reports
+the endpoint's own words.
+
 A client's `notifications/cancelled` for a tool call, or the end of its MCP session, stops the
 work that call started; as MCP specifies, the cancelled call gets no response. A local build's whole process group
 is killed and its slot released. A disposable worker's launcher is asked to stop (SIGTERM); its

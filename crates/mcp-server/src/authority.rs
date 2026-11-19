@@ -62,6 +62,7 @@ impl PolicyBuilderServer {
     ) -> Result<Json<AssembleInstallTransactionOutput>, CallToolResult> {
         let (trust, source, rpc_url, deadline, slot) =
             self.authority_setup(&input.intent_request, 0)?;
+        let text = self.rpc_error_text();
         let work_ct = ct.child_token();
         let build_config = cancel::build_config(&self.build_config, &work_ct);
         let reads = work_ct.clone();
@@ -84,7 +85,7 @@ impl PolicyBuilderServer {
                 &source.network_passphrase,
                 &request,
             )
-            .map_err(crate::rpc_tool_err)?;
+            .map_err(|error| crate::rpc_tool_err(error, text))?;
             ozpb_toolkit::install_assembly_output(&input, intent, observed)
         });
         Ok(Json(finish(work, deadline, &ct, &work_ct).await?))

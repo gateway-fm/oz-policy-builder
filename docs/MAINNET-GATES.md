@@ -551,8 +551,9 @@ and an agent can use a local stdio server.
 
 For that server, the tests below establish that it reads only allowlisted HTTPS RPC sources and
 refuses SSRF vectors, and refuses to start with a configured source the allowlist does not
-cover; redacts endpoint-controlled error text before it reaches a response; refuses an envelope
-carrying signatures before any request; keeps one session's artifacts from another;
+cover; reports a failed RPC read from any tool by its category only, withholding the endpoint's
+text, the URL a transport error quotes included; refuses an envelope carrying signatures before
+any request, in `preflight_transaction` and `record_simulation`; keeps one session's artifacts from another;
 authenticates before spending quota, bounds request bodies and refuses requests over the quota;
 refuses a spec whose reference suite would exceed its case limit before deriving it; and frees a
 build slot when a request is cancelled. The self-hosted workflow checks the hosted
@@ -588,7 +589,9 @@ ci  crates/mcp-server/src/main.rs  tests::rpc_allowlist_blocks_ssrf_vectors
 ci  crates/mcp-server/src/main.rs  tests::every_configured_rpc_source_must_be_allowlisted_on_a_hosted_server
 ci  crates/mcp-server/src/main.rs  tests::hosted_sessions_do_not_share_generated_artifacts
 ci  crates/mcp-server/src/authority.rs  authority::tests::endpoint_controlled_errors_are_redacted_before_mcp_serialization
+ci  crates/mcp-server/src/main.rs  tests::hosted_rpc_errors_withhold_endpoint_controlled_text_from_every_read
 ci  crates/mcp-server/src/preflight.rs  preflight::tests::hosted_preflight_refuses_signed_material_before_any_request
+ci  crates/mcp-server/src/main.rs  tests::hosted_record_simulation_refuses_signed_material_before_any_request
 ci  crates/mcp-server/src/http.rs  http::tests::unauthenticated_requests_are_refused_without_spending_the_quota
 ci  crates/toolkit/src/verification.rs  verification::tests::a_spec_whose_reference_suite_is_too_large_is_refused_before_any_work
 ci  crates/mcp-server/src/cancel.rs  cancel::tests::cancelled_generate_code_kills_worker_group_and_frees_build_slot
