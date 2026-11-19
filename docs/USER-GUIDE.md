@@ -71,7 +71,7 @@ You sign; nothing is automatic.
    `/oz-policy-builder:policy-builder-install` yourself and import its proposal.
 2. **Review proposal from Claude.** The wallet records the transaction again, regenerates the grant
    and refuses any difference.
-3. Confirm the policy's deployment (a testnet fee; no authority yet) and refresh the authority
+3. Confirm the policy's deployment (a network fee; no authority yet) and refresh the authority
    review. The remaining dry-run layers now run against the deployed policy
    ([report fields](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)):
 
@@ -79,7 +79,7 @@ You sign; nothing is automatic.
    | --- | --- | --- |
    | `account_wasm` | The reference cases through the pinned account Wasm and your policy Wasm | `Run local execution checks`, or `ozpb dry-run` with the native worker and the delegate's key file |
    | `captured_target` | The call against target state captured from the network | the same |
-   | `live_enforcement` | The policy deciding the real call on testnet, in a simulation never submitted | the wallet's live check, after you consent with the passkey |
+   | `live_enforcement` | The policy deciding the real call on the session's network, in a simulation never submitted | the wallet's live check, after you consent with the passkey |
 
    All four layers run only for the wallet's grant shape, one exact native XLM transfer.
 4. **Prepare installation**, read its consent statement, and approve with the passkey
