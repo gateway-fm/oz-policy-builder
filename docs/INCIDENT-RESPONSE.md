@@ -122,13 +122,16 @@ The delegate key signs calls under the grant; the owner rule is the authority ov
 Until the rule is removed, the generated policy still limits the key to the exact recorded calls
 and approved widenings, the call cap per installation and the expiry ledger.
 
-Where the key lives decides the exposure: in the wallet integration the automation key exists only
-in the backend's memory and disappears when the backend stops; `ozpb dry-run` reads a delegate key
-from a 0600 file and signs only offline-domain requests, but the key stays a live credential on its
-own network ([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)). The agent
-holds no key: a compromised agent session can at most deliver a draft the wallet regenerates and
-the owner must approve. **Disconnect Claude** ends draft delivery; it does not revoke an installed
-grant.
+Where the key lives decides the exposure. On testnet the wallet's automation key exists only in the
+backend's memory and disappears when the backend stops. On mainnet the delegate is the agent's own
+key: the wallet backend reads it from the operator's 0600 file (`delegateKeyPath`) and holds it in
+memory, and that file, like every other copy the agent keeps, stays a live credential after the
+backend stops. `ozpb dry-run` reads a delegate key from a 0600 file and signs only offline-domain
+requests, but the key stays a live credential on its own network
+([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)). The Claude session
+and the MCP server hold no key: a compromised agent session can at most deliver a draft the wallet
+regenerates and the owner must approve. **Disconnect Claude** ends draft delivery; it does not
+revoke an installed grant.
 
 A compromised **owner** credential is outside this toolkit: the owner rule can change everything,
 and recovery is the account's and the wallet's own. A compromised **registry custodian** key is

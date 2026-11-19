@@ -255,7 +255,8 @@ shipped grant shape, each with its deviations, are in the
 10. **Local key handling.** Three local tools hold a key read from a 0600 file: `ozpb dry-run` the
     spec delegate's, and its native worker runs unsandboxed as the caller; `ozpb registry sign` a
     custodian's, unless a hardware key signs; the wallet backend in a mainnet session the
-    operator's fee payer and, when supplied, a delegate
+    operator's fee payer and, because installation requires it, the agent's delegate key, whose
+    live-check signature is a real mainnet authorization until it expires
     ([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)).
 11. **Hosted operation** is a shared-token, trusted-client boundary
     ([deviations](TRANCHE-2-VERIFICATION.md#deviations-and-open-gaps-against-the-phase-2-design),
