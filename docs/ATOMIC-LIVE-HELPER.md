@@ -170,11 +170,14 @@ with a reason. Only `permit` and `deny` are evidence:
 A denial requires a top-level `Auth/InvalidAction` failure and rejects conflicting account
 errors in the printed log or transfer authorization events. It needs the `NoTupleMatched` error
 attributed to the candidate policy inside the asset's failed authentication of the account, with
-no ledger changes. It is read twice: from the printed
-event log as the harness reads it, matched only where the log starts an event so that a value it
-prints verbatim, such as the rule name, cannot pass for one, and from the structured diagnostic
-events. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial and settles
-nothing about the policy, and neither is an account error.
+no ledger changes. It is read from the structured diagnostic events, which stellar-rpc returns in
+the simulation's `events` field. Up to 30.0.0 the RPC also printed the event log into the `error`
+text after the host error; 30.0.1 returns the host error alone
+([release notes](https://github.com/stellar/stellar-rpc/releases/tag/v30.0.1): "Error strings no
+longer include the event log"). Where the log is printed, it must show the same denial, matched
+only where the log starts an event so that a value it prints verbatim, such as the rule name,
+cannot pass for one. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial
+and settles nothing about the policy, and neither is an account error.
 
 A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
 address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
@@ -280,11 +283,13 @@ unchanged and no installed candidate. The receipt records `checkout_dirty: true`
 revision: it was produced from the working tree that moved the pin, before that change was
 committed. The throwaway keys were deleted.
 
-The run used `OZPB_RPC_URL=https://rpc.testnet.stellar.gateway.fm`. The script attributes the
-denial by reading the host's event log from the simulation's `error` text; that RPC (30.0.0)
-still includes it there, while `soroban-testnet.stellar.org` (30.0.1) now returns the
-diagnostic events only in the separate `events` field, so against it the denial case reports
-`not_a_policy_denial` although the simulation failed the same way.
+The run used `OZPB_RPC_URL=https://rpc.testnet.stellar.gateway.fm`. At the time the script
+attributed the denial only from the host's event log in the simulation's `error` text; that RPC
+(30.0.0) still includes it there, while `soroban-testnet.stellar.org` (30.0.1) returns the host
+error alone and the diagnostic events only in the separate `events` field, so against it the
+denial case reported `not_a_policy_denial` although the simulation failed the same way. The
+script and the wallet now read the structured events, and the printed log only where there is
+one.
 
 ### Previous SDK 28 helper deployment (account 0.7.2)
 

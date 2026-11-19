@@ -690,8 +690,9 @@ under fresh signatures with the same bounds, reads the counter at 1 first, and o
 enforce mode. It is never submitted. Only an answer from a node at or past the payment's ledger is
 judged. The result counts as the call cap refusing only when the response is the generated
 policy's own `CallCountExceeded` (7). That code must come from the account's authentication of
-exactly this envelope's entry, in the printed log and in the structured events, with the same
-attribution rules as a [live denial](#live-enforcement-check). A permit of exactly this envelope
+exactly this envelope's entry, in the structured events and, where the RPC prints the event log
+into the error (stellar-rpc 30.0.0; 30.0.1 returns the host error alone), in that log too, with
+the same attribution rules as a [live denial](#live-enforcement-check). A permit of exactly this envelope
 (its entries echoed, a successful record of this transfer and this entry's check) is recorded as
 the cap not holding (`permitted`). Either is the verdict, recorded once per use. Any other answer
 settles nothing and the try may be made again, three signatures at most. Those signatures stay

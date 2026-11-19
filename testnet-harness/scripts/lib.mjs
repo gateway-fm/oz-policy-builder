@@ -359,3 +359,47 @@ export function policyDenial(text, account, policy) {
   if (!authFailed || !raised || raised[1] !== raised[2] || raised[1] !== authFailed[1]) return null;
   return Number(raised[1]);
 }
+
+const eventBytes = (value) => Buffer.from(value.toXDR()).toString('hex');
+const contractIdHex = (address) => Buffer.from(StrKey.decodeContract(address)).toString('hex');
+const scSame = (a, b) => a !== undefined && b !== undefined && eventBytes(a) === eventBytes(b);
+/** Diagnostic events as `{ by, topics, data }`, from the SDK's parsed `xdr.DiagnosticEvent`s or their base64. */
+function diagnostics(events) {
+  if (!Array.isArray(events)) return [];
+  return events.map((item) => (typeof item === 'string' ? xdr.DiagnosticEvent.fromXDR(item, 'base64') : item))
+    .filter((item) => item?.event?.type?.name === 'diagnostic' && item.event.body?.v0)
+    .map(({ event }) => ({ by: event.contractId ? eventBytes(event.contractId) : null,
+      topics: event.body.v0.topics, data: event.body.v0.data }));
+}
+
+/** Contract error codes `contract` raised, from the structured diagnostic events (`[error, Error(Contract, N)]`). */
+export function structuredRaised(events, contract) {
+  const id = contractIdHex(contract);
+  return diagnostics(events).filter((e) => e.by === id && e.topics.length === 2 && scSame(e.topics[0], xdr.ScVal.scvSymbol('error'))
+    && e.topics[1].type === 'scvError' && e.topics[1].error.type === 'sceContract')
+    .map((e) => e.topics[1].error.contractCode);
+}
+
+/**
+ * `policyDenial` from the structured diagnostic events instead of the printed log: stellar-rpc 30.0.1
+ * returns the host error alone ("Error strings no longer include the event log", its release notes)
+ * and the events only in `events`; 30.0.0 printed the log into the error as well. The same two facts
+ * must both be there: one failed authentication of `account` carrying a contract code, and the policy
+ * raising that code with "failing with contract error".
+ */
+export function structuredPolicyDenial(events, account, policy) {
+  const all = diagnostics(events);
+  const authError = xdr.ScVal.scvError(xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction));
+  const failed = all.filter((e) => e.topics.length === 2 && scSame(e.topics[0], xdr.ScVal.scvSymbol('error')) && scSame(e.topics[1], authError)
+    && e.data.type === 'scvVec' && e.data.vec?.length === 3
+    && scSame(e.data.vec[0], xdr.ScVal.scvString('failed account authentication with error'))
+    && scSame(e.data.vec[1], new Address(account).toScVal())
+    && e.data.vec[2].type === 'scvError' && e.data.vec[2].error.type === 'sceContract');
+  if (failed.length !== 1) return null;
+  const code = failed[0].data.vec[2].error.contractCode;
+  const id = contractIdHex(policy);
+  const raised = all.some((e) => e.by === id && e.topics.length === 2 && scSame(e.topics[0], xdr.ScVal.scvSymbol('error'))
+    && scSame(e.topics[1], xdr.ScVal.scvError(xdr.ScError.sceContract(code)))
+    && scSame(e.data, xdr.ScVal.scvVec([xdr.ScVal.scvString('failing with contract error'), xdr.ScVal.scvU32(code)])));
+  return raised ? code : null;
+}

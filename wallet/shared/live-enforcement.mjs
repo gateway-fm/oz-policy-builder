@@ -21,8 +21,9 @@
 //     for the new rule, the candidate's installation marker, its counter used once, and every
 //     entry's nonce;
 //   - a denial is the candidate policy's own `NoTupleMatched` (6) inside the asset's failed
-//     authentication of the account, in the printed log and in the structured events alike. A helper
-//     refusal (7001–7009) or an account error is a failed case;
+//     authentication of the account, in the structured events and, where the RPC prints the event
+//     log into the error (stellar-rpc 30.0.0 and earlier; 30.0.1 returns the host error alone), in
+//     that log too. A helper refusal (7001–7009) or an account error is a failed case;
 //   - either way the response's diagnostic events record exactly this envelope, in order: one helper
 //     call with the approved candidate, then the account's `__check_auth` calls for the envelope's two
 //     account entries, once each, with their signature payloads, signatures and contexts; from
@@ -494,6 +495,61 @@ const callsInto = (events, contract, fn) => events.filter((e) => e.host && e.top
   && e.topics[1].type === 'scvBytes' && Buffer.from(e.topics[1].bytes.value).toString('hex') === contractHex(contract)
   && same(e.topics[2], sym(fn)));
 
+/**
+ * As `policyDenial`, from the structured diagnostic events: the code `policy` refused an authorization
+ * of `account` with, or null. The asset's one failed authentication of the account carries the code,
+ * the policy raised that same code, and every error the account raised, and every trap of its
+ * `__check_auth`, carries it too.
+ */
+function structuredDenial(events, asset, account, policy) {
+  const authError = errorVal(xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction));
+  const failed = events.filter((e) => e.host && e.by === contractHex(asset) && e.topics.length === 2 && same(e.topics[0], sym('error'))
+    && same(e.topics[1], authError) && e.data.type === 'scvVec' && e.data.vec?.length === 3
+    && same(e.data.vec[0], xdr.ScVal.scvString('failed account authentication with error')) && same(e.data.vec[1], addressVal(account))
+    && e.data.vec[2].type === 'scvError' && e.data.vec[2].error.type === 'sceContract');
+  if (failed.length !== 1) return null;
+  const code = failed[0].data.vec[2].error.contractCode;
+  const expected = contractError(code);
+  if (!errorsBy(events, policy).some((e) => e.topics[1].error.contractCode === code
+    && same(e.data, vec([xdr.ScVal.scvString('failing with contract error'), u32(code)])))) return null;
+  const conflicting = events.some((e) => {
+    if (!e.host || e.by !== contractHex(account) || !e.topics.length) return false;
+    if (same(e.topics[0], sym('error'))) return e.topics.length !== 2 || !same(e.topics[1], expected);
+    const data = e.data.type === 'scvVec' ? e.data.vec ?? [] : [];
+    return same(e.topics[0], sym('log')) && data.length >= 2 && same(data[0], xdr.ScVal.scvString('VM call trapped with HostError'))
+      && same(data[1], sym('__check_auth')) && (data.length !== 3 || !same(data[2], expected));
+  });
+  return conflicting ? null : code;
+}
+
+/**
+ * The code the policy refused the account's authorization with, from wherever the RPC put the host's
+ * event log. stellar-rpc 30.0.0 and earlier print it into `error` after the host error and return the
+ * same events in `events`; 30.0.1 returns the host error alone ("Error strings no longer include the
+ * event log", its release notes) and the events only in `events`. The structured events decide; a
+ * printed log, where there is one, must show the same denial. `expectedCode` is the code this case
+ * needs: a printed log with another policy code is that decision (`policy_code`) before any event is
+ * read, as it always was. Anything else is `not_a_policy_denial`.
+ */
+function deniedWith(text, rawEvents, { asset, account, policy }, expectedCode, host) {
+  const printed = text.includes('\n') ? policyDenial(text, asset, account, policy) : undefined;
+  if (printed === null) fail('not_a_policy_denial', 'the printed log does not show the policy refusing the account\'s authorization', { host });
+  if (printed !== undefined && printed !== expectedCode) {
+    fail('policy_code', `the policy refused with ${printed}, not ${expectedCode}`, { code: printed, host });
+  }
+  if (!Array.isArray(rawEvents) || !rawEvents.length) {
+    if (printed !== undefined) fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
+    fail('not_a_policy_denial', 'the simulation reported neither an event log nor diagnostic events', { host });
+  }
+  const events = responseEvents({ events: rawEvents });
+  const code = structuredDenial(events, asset, account, policy);
+  if (code === null || (printed !== undefined && code !== printed)) {
+    fail('not_a_policy_denial', 'the structured events do not show the policy refusing the account\'s authorization', { host });
+  }
+  if (code !== expectedCode) fail('policy_code', `the policy refused with ${code}, not ${expectedCode}`, { code, host });
+  return { code, events };
+}
+
 /** The `Vec<Context>` the host passes `__check_auth` for an entry without sub-invocations. */
 function authContexts(entry) {
   const fn = entry.rootInvocation.function.contractFn;
@@ -544,12 +600,7 @@ function denial(c, simulation, records) {
   if (text.split('\n')[0] !== 'HostError: Error(Auth, InvalidAction)') {
     fail('not_a_policy_denial', 'the top-level failure is not the transfer authentication failure', { host });
   }
-  const code = policyDenial(text, c.asset, c.account, c.policy);
-  if (code === null) fail('not_a_policy_denial', 'the candidate policy did not refuse the account\'s authorization', { host });
-  if (code !== POLICY_NO_TUPLE_MATCHED) {
-    fail('policy_code', `the candidate policy refused with ${code}, not NoTupleMatched (${POLICY_NO_TUPLE_MATCHED})`, { code, host });
-  }
-  if (!events) fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
+  const { code } = deniedWith(text, simulation.events, c, POLICY_NO_TUPLE_MATCHED, host);
   // Everything a failed simulation records was rolled back: an event from a successful call is
   // another response's.
   if (events.some((e) => e.ok)) fail('unbound_response', 'a denial\'s events include some from successful calls');
@@ -652,7 +703,7 @@ export function validateLiveCase(input) {
 // again (fresh nonces) and simulated in enforce mode, never submitted. Its refusal counts only as
 // the generated policy's own `CallCountExceeded` (7), raised inside the account's authentication of
 // this envelope's transfer entry, under the same attribution rules as a live denial above: the
-// printed log and the structured events agree, every event comes from a failed call, the call is
+// structured events show it (and a printed log, where the RPC prints one, agrees), every event comes from a failed call, the call is
 // exactly the asset's `transfer` and the account's one recorded check is this entry's.
 
 /** The generated policy's `CallCountExceeded`: this installation has used every call it was granted. */
@@ -750,11 +801,7 @@ function repeatedDenial(c, simulation, { record, transfer }) {
   if (text.split('\n')[0] !== 'HostError: Error(Auth, InvalidAction)') {
     fail('not_a_policy_denial', 'the top-level failure is not the transfer authentication failure', { host });
   }
-  const code = policyDenial(text, c.asset, c.account, c.policy);
-  if (code === null) fail('not_a_policy_denial', 'the policy did not refuse the account\'s authorization', { host });
-  if (code !== CALL_COUNT_EXCEEDED) fail('policy_code', `the policy refused with ${code}, not CallCountExceeded (${CALL_COUNT_EXCEEDED})`, { code, host });
-  if (!Array.isArray(simulation.events) || !simulation.events.length) fail('unbound_response', 'the simulation reported no diagnostic events');
-  const events = responseEvents(simulation);
+  const { code, events } = deniedWith(text, simulation.events, c, CALL_COUNT_EXCEEDED, host);
   if (events.some((e) => e.ok)) fail('unbound_response', 'a refusal\'s events include some from successful calls');
   const transferCheck = repeatedBinding(c, events, { record, transfer });
   const authFailed = vec([xdr.ScVal.scvString('failed account authentication with error'), addressVal(c.account), contractError(code)]);

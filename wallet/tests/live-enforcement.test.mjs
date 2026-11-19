@@ -315,8 +315,7 @@ test('denial requires code 6 from the policy contract id', () => {
   refused(failedWith(F.denialText({ account: PROBE.helper })), 'not_a_policy_denial');
   // Another policy code is a decision, but not this case's denial.
   refused(failedWith(F.denialText({ code: 7 })), 'policy_code');
-  // Text without the event log, or no failure at all.
-  refused(failedWith('HostError: Error(Auth, InvalidAction)'), 'not_a_policy_denial');
+  // A failure that is not a host error at all.
   refused(failedWith(42), 'simulation');
   // The asset's failed authentication of the account is what places the denial in the transfer.
   refused(failedWith(F.denialText({ failedAuthBy: PROBE.helper })), 'not_a_policy_denial');
@@ -906,4 +905,65 @@ test('only the host\'s returns of exactly those calls count against a denial', (
     ['another contract returning __check_auth', at(15, fnReturn(helper, '__check_auth'))],
     ['the account returning another function', at(15, fnReturn(account, 'add_context_rule'))],
   ]) assert.equal(validateLiveCase(input).outcome, 'deny', name);
+});
+
+// --- where the RPC puts the event log ------------------------------------------------------------------
+//
+// stellar-rpc 30.0.0 prints the host's event log into the simulation's `error` after the host error;
+// 30.0.1 returns the host error alone ("Error strings no longer include the event log", its release
+// notes) and the diagnostic events only in `events`. Both carry `events`. A denial is read from the
+// structured events in either case; where the log is printed, it must say the same.
+
+const HOST_ONLY = 'HostError: Error(Auth, InvalidAction)';
+const hostOnly = (simulation) => ({ ...simulation, error: HOST_ONLY });
+
+test('stellar-rpc 30.0.1: a denial whose error is the host error alone is read from the structured events', () => {
+  const base = F.denialSample();
+  const verdict = validateLiveCase({ ...base, simulation: hostOnly(base.simulation) });
+  assert.equal(verdict.outcome, 'deny', JSON.stringify(verdict));
+  assert.deepEqual([verdict.enforcer, verdict.code, verdict.host], [PROBE.policy, POLICY_NO_TUPLE_MATCHED, HOST_ONLY]);
+  // The real 30.0.0 testnet denial with its printed log removed is what 30.0.1 returns for the same call.
+  const real = validateLiveCase(realCase('denial', hostOnly(REAL.denial.simulation)));
+  assert.equal(real.outcome, 'deny', JSON.stringify(real));
+  assert.deepEqual([real.enforcer, real.code], [REAL.provenance.candidate_policy, 6]);
+});
+
+test('stellar-rpc 30.0.1: the structured events alone attribute the denial as strictly as the printed log', () => {
+  const base = F.denialSample();
+  const { entries } = base;
+  const events = (denial) => hostOnly({ ...base.simulation, events: F.callEvents(entries, { amount: PROBE.denialAmount, denial }) });
+  // The same number from another contract, another account's failure, or another contract's failed authentication.
+  refused({ ...base, simulation: events({ raisedBy: PROBE.asset }) }, 'not_a_policy_denial');
+  refused({ ...base, simulation: events({ account: PROBE.helper }) }, 'not_a_policy_denial');
+  refused({ ...base, simulation: events({ failedAuthBy: PROBE.helper }) }, 'not_a_policy_denial');
+  // Another policy code is a decision, but not this case's denial.
+  refused({ ...base, simulation: events({ code: 7 }) }, 'policy_code');
+  // Without events nothing is left to read: no decision.
+  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: [] } }, 'not_a_policy_denial');
+  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: undefined } }, 'not_a_policy_denial');
+  // A conflicting account error anywhere in the response.
+  const conflicting = F.errorEvent(PROBE.account, xdr.ScError.sceContract(3002), xdr.ScVal.scvVoid());
+  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: [conflicting, ...base.simulation.events] } }, 'not_a_policy_denial');
+  // Another top-level failure is not overridden by structured events either.
+  refused({ ...base, simulation: { ...base.simulation, error: 'HostError: Error(Contract, #3002)' } }, 'not_a_policy_denial');
+});
+
+test('stellar-rpc 30.0.1: a helper refusal in the structured events alone is a failed case', () => {
+  const base = F.denialSample();
+  for (const code of HELPER_ERROR_CODES) {
+    const refusal = F.errorEvent(PROBE.helper, xdr.ScError.sceContract(code),
+      xdr.ScVal.scvVec([xdr.ScVal.scvString('failing with contract error'), xdr.ScVal.scvU32(code)]));
+    const verdict = refused({ ...base, simulation: { ...base.simulation, error: `HostError: Error(Contract, #${code})`,
+      events: [...base.simulation.events, refusal] } }, 'helper_refusal');
+    assert.equal(verdict.code, code);
+  }
+});
+
+test('stellar-rpc 30.0.0: a printed log must agree with the structured events', () => {
+  const base = F.denialSample();
+  // Printed: the policy's 6. Structured: another code from the policy, and the account failing with it.
+  const other = F.callEvents(base.entries, { amount: PROBE.denialAmount, denial: { code: 7 } });
+  refused({ ...base, simulation: { ...base.simulation, events: other } }, 'not_a_policy_denial');
+  // An extra line that is no event log is not a printed denial.
+  refused({ ...base, simulation: { ...base.simulation, error: `${HOST_ONLY}\n\nsomething else` } }, 'not_a_policy_denial');
 });
