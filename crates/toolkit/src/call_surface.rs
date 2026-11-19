@@ -539,6 +539,12 @@ pub(crate) fn validate_bindings(
                 "binding observed_wasm_hash must use canonical lowercase hex",
             ));
         }
+        // Code revoked under any role is refused by its hash, whichever way it is recognized: a
+        // generated build has no registry entry, so its family resolving says nothing about a
+        // `policy/<hash>` revocation of this one build.
+        registry
+            .ensure_code_not_revoked(&observed_hash)
+            .map_err(map_registry_err)?;
         let (path, signers) = match (policy, &binding.recognition) {
             (
                 PolicyRef::Reviewed {
@@ -1338,6 +1344,46 @@ mod tests {
             check(&request, &observation).unwrap_err().code,
             EC::EPolicyBindingInvalid
         );
+    }
+
+    /// A generated policy is recognized through its family and by rebuilding it, so it has no
+    /// registry entry for `resolve_policy` to refuse. Custodians can still revoke one build by
+    /// its Wasm hash, `policy/<hash>`, and `ozpb registry monitor --wasm-hash` reports exactly
+    /// that; recognition must refuse it too, wherever a binding is recognized.
+    #[test]
+    fn a_generated_build_revoked_by_its_wasm_hash_is_not_recognized() {
+        let (mut request, mut observation) = fixture();
+        let build = request.binding_set.bindings[1].observed_wasm_hash.clone();
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+        snapshot.revocations.insert(
+            format!("policy/{build}"),
+            ozpb_registry::Revocation {
+                reason: "generated build withdrawn".to_string(),
+                effective_version: snapshot.version,
+            },
+        );
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+        // The family is still registered, and the build does not depend on the snapshot root:
+        // the same Wasm is what the spec under the revoking snapshot reproduces.
+        assert_eq!(request.binding_set.bindings[1].observed_wasm_hash, build);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::ERegistryRevoked, "{error}");
+        assert!(
+            error.message.contains(&format!("policy/{build}")),
+            "{error}"
+        );
+        assert!(
+            error.message.contains("generated build withdrawn"),
+            "{error}"
+        );
+        let Err(error) =
+            crate::plan_call_surface_read(&request, &registry_trust(), &build_config())
+        else {
+            panic!("the live plan must refuse a revoked generated build");
+        };
+        assert_eq!(error.code, EC::ERegistryRevoked, "{error}");
     }
 
     #[test]

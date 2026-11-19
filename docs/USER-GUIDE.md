@@ -112,8 +112,8 @@ the cap refusing it ([using the grant](POLLYWALLET-INTEGRATION.md#using-the-gran
 - **The registry:** `ozpb registry monitor` tells you when something your grant relies on is
   revoked. Watch the account's, the owner verifier's and any reviewed policy's code hashes with
   `--wasm-hash`, and the generated policy's template family with `--template` (its spec's
-  `template_family`): a generated policy has no registry entry of its own, so the revocation of
-  its family is the one that reaches it
+  `template_family`): a generated policy has no registry entry of its own, so its family is what
+  you can watch; a revocation of the family reaches every build of it
   ([incident response](INCIDENT-RESPONSE.md#a-a-hash-you-rely-on-is-revoked-in-the-registry)).
 
 ## 9. Revoke

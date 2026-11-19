@@ -111,8 +111,10 @@ bound to it; with `--template`, the template family of each generated policy (it
 `template_family`). `ozpb registry monitor` matches a watched hash against revoked `policy/`,
 `account/`, `verifier/` and `target_adapter/` entries, and a watched family against revoked
 `template/<family>` entries. A generated policy has no entry of its own: it is recognized through
-its family, so the family's revocation is the one that reaches it, and watching its build's hash
-would never report one. A watch item the head neither registers nor revokes, a typo above all, is
+its family and by rebuilding it, so the family's revocation reaches every build of it. A
+revocation of one build's hash (`policy/<hash>`) is refused by recognition too, but that hash
+cannot be watched in advance: the head registers nothing under it until a revocation names it, so
+watch the family. A watch item the head neither registers nor revokes, a typo above all, is
 refused with exit `1` and named.
 
 The monitor compares the published registry with your checkpoint: the one in your roots file, or
