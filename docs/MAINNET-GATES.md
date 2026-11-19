@@ -224,8 +224,11 @@ Cross products are checked through a compiled policy. The two-payment fixture's 
 `transfer(SELF, first payee, 1,000)` and `transfer(SELF, second payee, 2,000)`, each from its own
 recording; its generated crate is committed exactly as codegen emits it. The derived suite must
 contain both mixes of the two, and each is refused with `NoTupleMatched` by the compiled policy
-through a smart account and by the reference evaluator, while both recorded payments permit. The
-evaluator's handling of a mix that another tuple does accept is covered separately.
+(run through the `stellar-accounts` 0.8 account library with mocked authorization, not the pinned
+account Wasm — tuple matching is the policy's alone) and by the reference evaluator, while both
+recorded payments permit. The evaluator's handling of a mix that another tuple does accept is
+covered separately. The emitter's output for several tuples of one function fails
+`clippy::nonminimal_bool` (semantics unaffected); the crate is fmt-checked but not yet linted.
 
 ```gate-evidence G4
 ci  crates/synthesizer/src/lib.rs  tests::tuple_dedup_merges_identical_and_keeps_distinct
