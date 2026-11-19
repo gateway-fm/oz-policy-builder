@@ -28,10 +28,10 @@ says what changes.
   only after the account's `context_rule_removed` event and a readback that the rule is gone;
   policy cleanup is reported separately. It is offered for installations made by the running
   backend session: a restarted backend cannot revoke a rule an earlier one installed
-  ([After a restart](POLLYWALLET-INTEGRATION.md#after-a-restart)), and this tree has no other
-  passkey-signed removal path. Any tool that can have the owner sign `remove_context_rule` for
-  the rule ID works; for a grant you may need to revoke in a hurry, keep the installing session
-  running.
+  ([After a restart](POLLYWALLET-INTEGRATION.md#after-a-restart)), and nothing else in this tree
+  can have the wallet account's passkey sign a removal. Any tool that can have the owner sign
+  `remove_context_rule` for the rule ID works; for a grant you may need to revoke in a hurry, keep
+  the installing session running.
 - **Testnet harness runs.** `node lifecycle.mjs --run-dir <run>` in `testnet-harness/scripts`: the
   owner signs the removal, so it needs the run's keys
   ([Running the parts](../testnet-harness/README.md#running-the-parts)).
@@ -75,8 +75,9 @@ consumer whose floor is below it still accepts the older, unrevoked snapshot.
 generated policy does not inspect target code on-chain
 ([architecture §6.1](architecture.md#61-what-is-actually-guaranteed-authorization-minimal-vs-effect-minimal)).
 If a grant's target contract is upgraded, the permitted calls may now do something else. The
-spec records the target code hash observed at recording, when there was one. The wallet's `Check installed grant now`
-compares the target's identity for the one grant shape it supports, the native asset contract
+spec records the target code hash observed at recording, when there was one. The wallet's
+`Check installed grant now` compares the target's identity for the one grant shape it supports,
+the native asset contract
 ([monitoring](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)); for any other
 target, compare its current code hash with the spec's yourself. On a change, revoke the grant.
 
@@ -120,9 +121,11 @@ What is specific to generated code:
   ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §8). A fix that changes what codegen emits
   changes every affected source and Wasm hash, so a grant built before it is replaced, not
   updated: revoke it, regenerate from the same recording and decisions, review, and install.
-- **The advisory names what is affected**: the template family, the generator revisions and the
-  grant shapes (constraint kinds, compositions) that reach the defect, so a user can tell from the
-  spec and BuildManifest whether a grant is.
+- **The advisory names what is affected**: the template family, the toolkit releases and the grant
+  shapes (constraint kinds, compositions) that reach the defect. The spec and BuildManifest record
+  the template family and the constraints, but not the generator's source revision
+  ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)), so keep a note of which release
+  generated each grant you install.
 - **A template family that is unsound is revoked** (`template/<family>`); a corrected template is a
   new family version, because a revocation is permanent.
 
@@ -157,15 +160,15 @@ an expiry instead, as for RUSTSEC-2026-0387 ([SECURITY-EXCEPTIONS.md](SECURITY-E
 
 ## After the grant period
 
-Gateway publishes no fixes, advisories or registry versions after Tranche 3. Nothing a user needs
-to protect a grant depends on it:
+After Tranche 3 there is no committed maintenance: no fixes, advisories or registry versions are
+promised. Nothing a user needs to protect a grant depends on them:
 
 - Revoking a grant is always the owner's own transaction.
 - The last published registry version expires on its own date; after that, synthesis and the
   checks refuse it ([Validity](REGISTRY-GOVERNANCE.md#validity-expiry-and-the-end-of-the-grant-period)).
 - Any operator can pin its own root policy and run the same governance, monitoring and
   revocation procedure with its own custodians, from a genesis of its own.
-- Upstream advisories reach users through OpenZeppelin, Stellar and RustSec directly.
+- Upstream advisories are published by their own projects — OpenZeppelin, Stellar, RustSec.
 
 Operators running this toolkit in an organisation map the procedures above to their own incident
 process, for example ISO/IEC 27001:2022 Annex A 5.24–5.26 (incident management planning,

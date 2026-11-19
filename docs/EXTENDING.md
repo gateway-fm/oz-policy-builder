@@ -2,8 +2,9 @@
 
 Three kinds of extension, each with the steps, the tests it must add and the gates it must pass.
 The working detail is in the documents linked from each section; this page is the checklist.
-Every change follows [CONTRIBUTING.md](../CONTRIBUTING.md): a failing test first, DCO sign-off,
-and documents changed in the same commit as the behaviour they describe.
+Every change follows [CONTRIBUTING.md](../CONTRIBUTING.md) — DCO sign-off, the gates, documents
+changed in the commit that changes the behaviour — and DEVELOPERS.md asks for the failing test
+first.
 
 ## A new policy primitive or constraint kind
 
@@ -24,9 +25,13 @@ In order, test first at each step:
 6. **`contracts/differential`** — explicit evaluator-versus-contract cases, so the generated Wasm
    and the evaluator are shown to agree on it.
 
-A new template family or a newly recognized prebuilt policy also needs a capability entry in
-`crates/registry`, keyed by the reviewed Wasm hash, and a signed registry successor before any
-consumer recognizes it ([registry governance](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
+A template family's registry entry declares the constraint kinds and signer predicates it covers,
+and synthesis refuses a spec that uses anything else (`within_declared_capabilities` in
+`crates/toolkit`). A new kind therefore reaches users only through a signed registry successor
+whose template entry declares it. A new template family or a newly recognized prebuilt policy
+likewise needs a capability entry in `crates/registry` — the family by name, the prebuilt by its
+reviewed Wasm hash — and a signed successor
+([registry governance](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
 
 **Gates** ([invariants CI enforces](DEVELOPERS.md#invariants-ci-enforces-dont-break-these)):
 
@@ -82,7 +87,7 @@ current code before relying on them.
 
 The toolkit's wallet-facing surface is small and advisory; the wallet does the deciding
 ([architecture §4.8](architecture.md#48-wallet-integration-wallet), Decision D7). Each operation is
-an MCP tool and a CLI command (`ozpb check-policy-call-surface` and so on):
+an MCP tool and a CLI command (`ozpb check-policy-call-surface` and so on), except where marked:
 
 | Operation | Gives the wallet |
 | --- | --- |

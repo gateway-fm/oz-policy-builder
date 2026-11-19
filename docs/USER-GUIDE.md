@@ -57,7 +57,7 @@ A dry run has four layers ([report fields](DRY-RUN-PREPARATION.md#executed-layer
 | `live_enforcement` | The policy deciding the real call on testnet, in a simulation that is never submitted | the wallet only, after you consent with the passkey |
 
 All four run only for the wallet's grant shape, one exact native XLM transfer. A layer that has not
-run is reported as not run, never as passed.
+run is reported unavailable or not run, never passed.
 
 ## 5. Review the permission card
 
@@ -90,8 +90,8 @@ wallet must validate, recheck, enforce-simulate and have the owner sign
 
 ## 7. Use the grant
 
-The delegate signs calls inside the grant without the owner; anything else is refused by the policy
-or the account. To predict one call against the installed rule, use `check_against_policy` or
+The delegate signs calls inside the grant without the owner; this rule refuses anything outside
+it. To predict one call against the installed rule, use `check_against_policy` or
 `ozpb check-against-policy`: permit, deny or `unsupported` at one ledger, without checking
 signatures ([LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md)). In the wallet,
 `Pay with the automation key` makes the granted payment once and `Try the same payment again` shows
@@ -108,7 +108,7 @@ the cap refusing it ([using the grant](POLLYWALLET-INTEGRATION.md#using-the-gran
 
 ## 9. Revoke
 
-Expiry and the call cap end a grant on their own; revocation ends it now. In the wallet,
+Expiry and the call cap stop a grant on their own; revocation removes its rule now. In the wallet,
 `Prepare revocation` and approve with the passkey. The wallet revokes only grants its running
 session installed ([revocation](POLLYWALLET-INTEGRATION.md#revocation)). What to do in an incident:
 [incident response](INCIDENT-RESPONSE.md).
@@ -118,6 +118,7 @@ session installed ([revocation](POLLYWALLET-INTEGRATION.md#revocation)). What to
 The steps are the same; the wallet is what changes. In this tree the wallet backend and the testnet
 harness act only on testnet and the MCP development launcher configures only a testnet source, so
 installing on mainnet is part of the mainnet wallet integration. Recording a mainnet transaction
-by hash works against a mainnet RPC endpoint, but synthesis needs a mainnet registry signed under roots you pin: the
-development root is refused off testnet, and the [mainnet registry](../registry/mainnet/README.md)
-stays an unsigned draft until its key ceremony ([registry governance](REGISTRY-GOVERNANCE.md)).
+by hash works against a mainnet RPC endpoint, but synthesis needs a mainnet registry signed under
+roots you pin: the development root is refused off testnet, and the
+[mainnet registry](../registry/mainnet/README.md) stays an unsigned draft until its key ceremony
+([registry governance](REGISTRY-GOVERNANCE.md)).

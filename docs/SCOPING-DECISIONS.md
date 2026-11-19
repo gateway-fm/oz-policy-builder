@@ -35,10 +35,10 @@ finding is listed in the refusal's `details`.
 
 | Decision | Fields | Safety meaning |
 | --- | --- | --- |
-| Who may act | `delegate_signers` (one or more `{"delegated": {"address": "G…"}}`), `predicate`: `any_of`, `all_of` or `{"threshold": {"n": N}}` | The policy checks this first. It is never inferred from the account that signed the recording. Named signer sets are strict: a signer added to the rule later does not widen the grant. External-verifier signers are refused. |
+| Who may act | `delegate_signers` (one or more `{"delegated": {"address": "G…"}}`), `predicate`: `any_of`, `all_of` or `{"threshold": {"n": N}}` | The policy checks it before it looks at the call. It is never inferred from the account that signed the recording. Named signer sets are strict: a signer added to the rule later does not widen the grant. External-verifier signers are refused. |
 | How long | `valid_until_ledger`, or `no_expiry_acknowledged: true` | A ledger number, not a time. No expiry is a high-blast-radius choice and is shown as one. |
 | How many calls | `max_calls`, or `unlimited_calls_acknowledged: true` | Counted per installation: reinstalling starts a new count. Unlimited is high blast radius. |
-| Which account | the selected authorizer, when a recording has several | Must be a recognized smart account; an ordinary `G…` account is refused. |
+| Which account | `selected_authorizer`, in the synthesis request, when a recording has several | Must be a recognized smart account; an ordinary `G…` account is refused. |
 | A name | `grant_name` | Names the context rule. |
 
 ## Widenings you may choose
@@ -68,8 +68,8 @@ policy, recognized by its exact Wasm hash, to a supported SEP-41 `transfer` rule
 transferred within a rolling window of P ledgers stays at or below N, across calls. It is
 configured, not generated. It also needs the capability named: `"pinned"` (or that policy's exact
 Wasm hash) in `spending_limit_capability` over MCP, or `--spending-limit-capability` on the CLI.
-Validation refuses a composition whose amount constraint admits no
-non-negative amount within the limit. The [SEP-41 walkthrough](WALKTHROUGH-SEP41.md) composes one.
+Validation refuses a composition whose amount constraint admits no non-negative amount within the
+limit. The [SEP-41 walkthrough](WALKTHROUGH-SEP41.md) composes one.
 
 ## Bounds an adapter derives
 

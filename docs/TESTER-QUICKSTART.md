@@ -2,8 +2,9 @@
 
 Run the whole flow yourself on Stellar testnet: a smart account with your passkey, a payment,
 Claude turning it into a one-call grant, the grant installed, used once, refused the second time,
-and revoked. Everything runs on your own machine; there is no hosted service to sign up for, and
-nothing costs real money. What each step means is in the [user guide](USER-GUIDE.md).
+and revoked. The toolkit, the MCP server and the wallet run on your own machine; there is no hosted
+service to sign up for, and everything happens on testnet, so nothing costs real money. What each
+step means is in the [user guide](USER-GUIDE.md).
 
 Allow for the one-time setup: the first builds take several minutes. The flow itself took about
 twenty minutes in the [recorded run](TESTNET-EVIDENCE-TRANCHE-2.md#25-wallet-run-by-a-person-with-claudes-proposal-11-november-2026).

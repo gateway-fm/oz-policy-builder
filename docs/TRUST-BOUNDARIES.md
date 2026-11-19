@@ -8,9 +8,11 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 
 ## What is guaranteed
 
-- **Nothing happens without you.** The toolkit, the MCP server and the agent never sign, submit,
-  deploy or install. Deploying a policy needs your explicit consent; installing it needs your own
-  account signature over the exact transaction you reviewed.
+- **Nothing happens without you.** The toolkit library, the MCP server and the agent never sign,
+  submit, deploy or install; the CLI's `ozpb dry-run` signs only requests for an offline execution
+  network. Deploying a policy needs your explicit consent; installing it needs your own account
+  signature over the exact transaction you reviewed. The wallet backend, the testnet harness and
+  the demo script submit transactions with disposable testnet keys, and only when you run them.
 - **Exactly what you approved.** The grant permits the recorded calls, deep-equal, plus only the
   widenings you decided or a registry-bound adapter derived, each tagged with where it came from
   ([scoping decisions](SCOPING-DECISIONS.md)).
@@ -46,7 +48,7 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 | Key | Held by | Can | Cannot |
 | --- | --- | --- | --- |
 | Account owner (a passkey in the wallet; an ed25519 key in harness runs) | You, through the wallet | Install and revoke grants; anything the owner rule allows | — |
-| Delegate (automation) key | The wallet backend, in memory; or your 0600 file for `ozpb dry-run`, which signs only offline-domain requests | Sign calls the grant permits | Change the account or reset the grant — the authority check refuses a grant whose delegate could |
+| Delegate (automation) key | The wallet backend, in memory; or your 0600 file for `ozpb dry-run`, which signs only offline-domain requests | Sign calls the grant permits | Change the account or reset the grant — the authority check refuses a grant whose delegate could, at the ledger it reads |
 | Fee payer | The wallet backend: a disposable testnet key, in memory | Pay fees and submit | Authorize anything on your account |
 | Registry custodian keys | Custodians, m-of-n, on separate devices | Sign registry snapshot roots | Touch any account |
 | Development registry root | Anyone: it is published | Sign testnet development snapshots | Be accepted for any network but testnet |
@@ -72,8 +74,8 @@ It does **not** cover:
 - installed grants: revoking an entry makes the toolkit refuse it, but does not remove a rule from
   any account ([incident response](INCIDENT-RESPONSE.md));
 - newer versions a published copy withholds: only each version's expiry bounds a frozen log;
-- mainnet, when signed with the development root, which every command refuses off testnet. The
-  mainnet registry is an unsigned draft until its key ceremony
+- any network but testnet when the signer is the development root: every command refuses that
+  root off testnet. The mainnet registry is an unsigned draft until its key ceremony
   ([`registry/mainnet/`](../registry/mainnet/README.md)).
 
 The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).

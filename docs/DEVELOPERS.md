@@ -537,7 +537,9 @@ the tests guide you (TDD: add the failing test first):
 
 Adding a new *template family* or reviewed prebuilt hash also means a
 `crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove
-what it enforces — an address or claimed kind is never sufficient.
+what it enforces — an address or claimed kind is never sufficient. A new constraint kind must
+also be declared in its template family's registry entry (`constraint_kinds`): synthesis refuses
+a spec that uses a kind the family does not declare.
 
 ### Invariants CI enforces (don't break these)
 
