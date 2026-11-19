@@ -27,6 +27,12 @@ item to an executable check and the artifact it produces.
 The [Tranche 2 verification guide](docs/TRANCHE-2-VERIFICATION.md) maps every contracted item
 of the second milestone to its automated checks and live evidence.
 
+The [audit scope](docs/AUDIT-SCOPE.md) is the entry point for an external security audit:
+components with line counts, entry points, threat model, known limits and every gate.
+
+The [OpenZeppelin review package](docs/OZ-REVIEW-PACKAGE.md) is the entry point for
+OpenZeppelin's technical review of the generated code.
+
 ## Tranche 2 status
 
 This tree delivers the [contracted testnet milestone](https://github.com/gateway-fm/oz-policy-builder/issues/3):
