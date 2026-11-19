@@ -1,6 +1,6 @@
 use super::*;
 use crate::dev;
-use ozpb_domain::{sha256, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE};
+use ozpb_domain::{pinned_upstream, sha256, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE};
 
 fn network() -> NetworkId {
     NetworkId::from_passphrase(TESTNET_PASSPHRASE)
@@ -483,7 +483,7 @@ fn checkpoint_of(chain: &[SignedSnapshot]) -> RegistryCheckpoint {
 fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     let chain = chain();
     let at_v1 = checkpoint_of(&chain[..1]);
-    let watch_nothing: [Hash32; 0] = [];
+    let watch_nothing: [Watched; 0] = [];
 
     let report = monitor(
         roots(),
@@ -502,7 +502,10 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     assert_eq!(report.validity, ValidityStatus::Valid);
 
     // A hash the consumer relies on was revoked in a version it has not seen.
-    let watched = [revoked_hash(), sha256(b"an unrelated hash")];
+    let watched = [
+        Watched::Code(revoked_hash()),
+        Watched::Code(pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM),
+    ];
     let report = monitor(
         roots(),
         network(),
@@ -515,7 +518,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     .unwrap();
     assert_eq!(report.status, MonitorStatus::Revoked);
     assert_eq!(report.revoked.len(), 1);
-    assert_eq!(report.revoked[0].wasm_hash, revoked_hash());
+    assert_eq!(report.revoked[0].watched, Watched::Code(revoked_hash()));
     assert_eq!(report.revoked[0].effective_version, 2);
     assert_eq!(report.revoked[0].reason, "found faulty in review");
 
@@ -572,7 +575,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
 fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
     let chain = chain();
     let at_v2 = checkpoint_of(&chain[..2]);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
 
     // Same version, different contents: equivocation.
     let mut equivocation = chain[1].snapshot.clone();
@@ -628,7 +631,7 @@ fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
 #[test]
 fn monitoring_reports_a_head_scheduled_to_start_later() {
     let chain = chain();
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     // Version 3 is valid from 2_500.
     let behind = monitor(
         roots(),
@@ -657,7 +660,7 @@ fn monitoring_reports_a_head_scheduled_to_start_later() {
     .unwrap();
     assert_eq!(accepted_early.status, MonitorStatus::NotYetValid);
     // A watched revocation still outranks it.
-    let watched = [revoked_hash()];
+    let watched = [Watched::Code(revoked_hash())];
     let revoked = monitor(
         roots(),
         network(),
@@ -695,7 +698,7 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
     let v4 = combine(&rotated, network(), v4, &detached, 4_100).unwrap();
     let mut published = chain.clone();
     published.push(v4.clone());
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
 
     let report = monitor(
         rotated.clone(),
@@ -786,7 +789,7 @@ fn a_pending_review_reference_is_never_combined_or_replayed() {
 fn the_checkpoint_version_must_be_for_the_pinned_network() {
     let chain = chain();
     let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     assert!(matches!(
         monitor(
             roots(),
@@ -807,7 +810,7 @@ fn the_checkpoint_version_must_be_for_the_pinned_network() {
 fn monitoring_validity_boundaries_are_exact() {
     let chain = chain();
     let at_v3 = checkpoint_of(&chain);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     let validity = |now: i64, window: i64| {
         monitor(
             roots(),
@@ -839,7 +842,7 @@ fn monitoring_validity_boundaries_are_exact() {
 fn each_checkpoint_field_mismatch_is_refused_alone() {
     let chain = chain();
     let accepted = checkpoint_of(&chain);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     let check = |checkpoint: RegistryCheckpoint| {
         monitor(roots(), network(), checkpoint, &chain[2..], 2_600, 0, &none)
     };
@@ -863,5 +866,131 @@ fn each_checkpoint_field_mismatch_is_refused_alone() {
             ),
             "a checkpoint differing only in {field} must be refused"
         );
+    }
+}
+
+/// A generated policy is recognized through its template family, so a family revocation is the
+/// revocation that reaches it: watched, it is reported with its reason, like revoked code.
+#[test]
+fn monitoring_reports_a_revoked_watched_template_family() {
+    let chain = chain();
+    let family = "policy-templates/scope@1";
+    let mut revoke = changes(2_500, 6_000);
+    revoke.revocations.insert(
+        format!("template/{family}"),
+        "the template emits a check that can be bypassed".to_string(),
+    );
+    let v4 = successor(roots(), network(), &chain[2], &revoke, 2_600).unwrap();
+    let mut published = chain.clone();
+    published.push(signed_by(&v4, &["a", "b"]));
+    let at_v3 = checkpoint_of(&chain);
+
+    let watched = [Watched::TemplateFamily(family.to_string())];
+    let report = monitor(
+        roots(),
+        network(),
+        at_v3.clone(),
+        &published,
+        2_600,
+        0,
+        &watched,
+    )
+    .unwrap();
+    assert_eq!(report.status, MonitorStatus::Revoked);
+    assert_eq!(
+        report.revoked,
+        vec![RevokedCapability {
+            watched: Watched::TemplateFamily(family.to_string()),
+            capability: format!("template/{family}"),
+            reason: "the template emits a check that can be bypassed".to_string(),
+            effective_version: 4,
+        }]
+    );
+    // Registered code the head does not revoke is not reported.
+    let unrelated = [Watched::Code(pinned_upstream::OZ_SMART_ACCOUNT_WASM)];
+    let report = monitor(roots(), network(), at_v3, &published, 2_600, 0, &unrelated).unwrap();
+    assert_eq!(report.status, MonitorStatus::NewerVersion);
+    assert!(report.revoked.is_empty());
+}
+
+/// A watch item the head neither registers nor revokes can never report anything, so a typo would
+/// leave a cron job reading "current" forever. It is an error naming the item, not a silence.
+#[test]
+fn a_watch_item_the_head_does_not_know_is_an_error() {
+    let chain = chain();
+    let at_v3 = checkpoint_of(&chain);
+    for item in [
+        Watched::TemplateFamily("policy-templates/scope@l".to_string()),
+        Watched::Code(sha256(b"a mistyped hash")),
+    ] {
+        let error = monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            2_600,
+            0,
+            std::slice::from_ref(&item),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, GovernanceError::NotWatchable { item: named, .. } if *named == item),
+            "{error}"
+        );
+        // The message names the item, so the operator can find the typo.
+        let named = match &item {
+            Watched::TemplateFamily(family) => format!("template family {family:?}"),
+            Watched::Code(hash) => format!("wasm hash {}", hash.to_hex()),
+        };
+        assert!(error.to_string().starts_with(&named), "{error}");
+    }
+    // Code registered under each role, alone, is something the head can report on.
+    for registered in [
+        pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM,
+        pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+        pinned_upstream::OZ_ED25519_VERIFIER_WASM,
+        ozpb_domain::target_adapters::SOROSWAP_ROUTER_TESTNET_WASM,
+    ] {
+        monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            2_600,
+            0,
+            &[Watched::Code(registered)],
+        )
+        .unwrap();
+    }
+    // Registered, or revoked without an entry: both are things a head can report on.
+    monitor(
+        roots(),
+        network(),
+        at_v3,
+        &chain,
+        2_600,
+        0,
+        &[
+            Watched::TemplateFamily("policy-templates/scope@1".to_string()),
+            Watched::Code(revoked_hash()),
+        ],
+    )
+    .unwrap();
+}
+
+/// A family name is checked with the registry's own rule before it is watched.
+#[test]
+fn a_watched_template_family_must_be_a_valid_family_name() {
+    assert_eq!(
+        Watched::template_family("policy-templates/scope@1").unwrap(),
+        Watched::TemplateFamily("policy-templates/scope@1".to_string())
+    );
+    for bad in [
+        "",
+        " policy-templates/scope@1",
+        "policy templates",
+        "family\n",
+    ] {
+        assert!(Watched::template_family(bad).is_err(), "{bad:?}");
     }
 }
