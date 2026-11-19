@@ -79,7 +79,7 @@ loc() {
       if (t) test++; else code++ }
     END { printf "%d non-test, %d test\n", code, test }'
 }
-loc crates/codegen    # 1728 non-test, 2593 test
+loc crates/codegen    # 1728 non-test, 2595 test
 ```
 
 A row that names files counts exactly those, with the test modules beside them
@@ -101,19 +101,19 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 
 | Component | Path | Why it is here | Non-test | Test |
 | --- | --- | --- | ---: | ---: |
-| Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,728 | 2,593 |
+| Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,728 | 2,595 |
 | Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the last two are test fixtures, a transfer whose amount is bounded on both sides and a rule with two tuples of one function | 1,180 | tested below |
 | Atomic live helper | `contracts/atomic-live-helper` | On-chain contract the owner signs into for the [live-enforcement check](ATOMIC-LIVE-HELPER.md) | 163 | 50 |
 | Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,816 | 3,119 |
 | Call-surface core | `crates/call-surface-core` | The install-time authority verdict | 1,101 | 1,509 |
-| Synthesizer | `crates/synthesizer` | Exact-by-default decisions, adapters, composition checks | 1,604 | 1,955 |
-| PolicySpec | `crates/policy-spec` | Schema, validation typestate, signer-set hash | 1,343 | 1,399 |
+| Synthesizer | `crates/synthesizer` | Exact-by-default decisions, adapters, composition checks | 1,735 | 2,359 |
+| PolicySpec | `crates/policy-spec` | Schema, validation typestate, signer-set hash | 1,357 | 1,473 |
 | Reference evaluator | `crates/evaluator` | The independent oracle generated code is compared with | 370 | 689 |
 | Domain | `crates/domain` | Canonical hashing, trust labels and the pinned upstream hashes every row above depends on | 848 | 642 |
 | Contract tests | `contracts/differential` | Differential, generated-suite (the two-payment cross products included), event, TTL and pinned-account tests of the contracts above | — | 6,981 |
 | Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.3 | The account every grant is installed into; see below | 57 | not counted |
 | Other pinned OpenZeppelin wrappers | `examples/multisig-smart-account/{spending-limit-policy,ed25519-verifier,webauthn-verifier}` at v0.7.2 | Recognized by exact hash; the spending limit is composed in the [subscription walkthrough](WALKTHROUGH-SEP41.md) | 112 | not counted |
-| **Tier 1** | | | **10,322** | **18,937** |
+| **Tier 1** | | | **10,467** | **19,417** |
 
 **The pinned account is outside OpenZeppelin's own audit.** Their v0.7.0 audit report (in the
 `audits/` directory of their repository) lists only `packages/` files in scope. The account this
@@ -133,14 +133,14 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | --- | --- | --- | ---: | ---: |
 | Recorder core | `crates/recorder-core` | Authorizer selection, evidence trust derivation, attribution | 1,700 | 2,289 |
 | RPC acquisition | `crates/source-rpc`: `src/account_*.rs`, `checked_account_observation.rs`, `classic_account.rs`, `contract_code.rs`, `contract_data.rs`, `ledger_witness.rs`, `assembly.rs`, `policy_state_capture.rs`, `lib.rs`; `tests/{account_storage_conformance,rpc_conformance,mainnet_corpus}.rs` | The account scan behind the authority check, transaction recording (replayed over ten verbatim mainnet transactions), the reads behind install assembly and the live policy check | 4,777 | 6,948 |
-| Toolkit operations | `crates/toolkit`: `src/lib.rs`, `verification.rs`, `install_intent.rs`, `install_assembly.rs`, `call_surface.rs`, `call_surface_live.rs`, `authority_text.rs`, `installed_grant.rs`, `policy_check.rs`; tests in `src/test_support.rs`, `src/target_adapter_tests.rs`, `tests/` | Trust lowering at the synthesis boundary, recognition of generated artifacts by rebuilding them, install intent and unsigned assembly | 3,286 | 4,424 |
+| Toolkit operations | `crates/toolkit`: `src/lib.rs`, `verification.rs`, `install_intent.rs`, `install_assembly.rs`, `call_surface.rs`, `call_surface_live.rs`, `authority_text.rs`, `installed_grant.rs`, `policy_check.rs`; tests in `src/test_support.rs`, `src/target_adapter_tests.rs`, `tests/` | Trust lowering at the synthesis boundary, recognition of generated artifacts by rebuilding them, install intent and unsigned assembly | 3,286 | 4,434 |
 | Wallet validators | `wallet/shared` | Independent re-validation of assembly, consent, revocation and replacement, against the network the session is bound to | 1,839 | 11,273 |
 | Wallet backend install path | `wallet/server/`: `actions.mjs`, `install.mjs`, `network.mjs`, `live-signing.mjs`, `http.mjs`, `session.mjs`, `tool.mjs`, `fee-payer.mjs` | Consent, signature collection, submission, event-verified records; on mainnet, the operator's fee-payer key and the reading of the delegate's key file | 2,496 | in the wallet validators row (all of `wallet/tests`) |
 | Wallet mainnet configuration, delegate key and live check | `wallet/server/`: `config.mjs`, `pinned-code.mjs`, `live-check.mjs`, `native-execution.mjs`, `native-protocol.mjs` | The operator configuration: the development root refused on mainnet, the persisted checkpoint and the registry floor, the fee caps and their ceilings. The checks of the pinned account and verifier code on the network. The live check, whose owner and delegate signatures are real authorizations on the session's network until they expire, and on mainnet are signed with the agent's own key. The delegate key's three signing capabilities and the guard that keeps offline signatures off every live network | 750 | in the wallet validators row |
 | Production endpoint's HTTP boundary | `crates/mcp-server`: `src/http.rs`, `src/tool_limits.rs`, `src/preflight.rs`; `tests/{mcp_http,mcp_stdio_preflight}.rs` | The released self-hosted endpoint ([self-hosting](SELF-HOSTING.md#production-release)): bearer authentication before any quota is spent or body read, the request and per-tool quotas, the body bound, allowed hosts, the RPC allowlist every configured source must pass at startup, and the hosted refusal of signed envelopes ([G12](MAINNET-GATES.md#g12-hosted-processing)) | 445 | 1,031 |
 | Build runner and worker isolation | `crates/build-runner`, `deployment/worker-launcher.py` (tested by `scripts/test-worker-launcher.py` and `scripts/test-worker-containment.py`) | Bounded builds; the BuildManifest (`build-manifest/v2`) and its `producer` record (`build.rs`, `src/toolkit_source.rs`); reconciliation against the Wasm's own metadata; [disposable workers](ISOLATED-BUILDS.md) | 2,320 | 2,246 |
 | Registry governance CLI | `crates/cli/src/registry.rs`, `src/key_file.rs`; `tests/registry_governance_cli.rs` | `ozpb registry`: custodian keys in 0600 files, successor, signing, combining and verification, and the monitor whose exit status is the alert | 499 | 821 |
-| **Tier 2** | | | **18,112** | **29,032** |
+| **Tier 2** | | | **18,112** | **29,042** |
 
 ### Informational — not in scope
 
@@ -149,7 +149,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | Rest of `crates/mcp-server` | 1,484 | 2,557 | Thin shell; its HTTP boundary is in Tier 2 |
 | Rest of `crates/cli` | 2,520 | 1,421 | Thin shell, except that `ozpb dry-run` holds a delegate key (`src/dry_run/`; see SECURITY.md) |
 | `crates/api-types` | 1,116 | 1,104 | Wire types and stable error codes |
-| `crates/harness` | 1,135 | 941 | Derives the permit/deny suite: evidence, not enforcement |
+| `crates/harness` | 1,135 | 946 | Derives the permit/deny suite: evidence, not enforcement |
 | `crates/source-bundle` | 47 | 198 | Import adapter whose output is `self_supplied` |
 | Rest of `crates/source-rpc` (target and footprint capture, target Wasm, preflight; `tests/{target_capture_conformance,protocol30_headers}.rs`) | 1,694 | 2,672 | Dry-run and preflight evidence |
 | Rest of `crates/toolkit` (dry run, its report, preflight, capture) | 1,680 | 1,182 | Same |
@@ -190,7 +190,7 @@ simulated transactions; the registry's roots and checkpoint.
 | Invariant | Enforced in | Tested in |
 | --- | --- | --- |
 | **Signer predicate.** Right after its installation and expiry checks, and before it looks at the call, a generated policy refuses an authorization whose authenticated signers do not satisfy its predicate, the empty set included (the account defers signer checks to policies). For named identities it also refuses when the rule's live signer set differs from the compiled one: validation requires strict mode for them. | `enforce` in each generated `src/contract.rs`, emitted by `crates/codegen` | `zero_signers_denies_in_both`, `unrecognized_signer_denies_in_both`, `strict_mode_denies_grown_and_swapped_signer_sets_in_both` (`differential.rs`); `named_identities_require_strict_signer_set` (`crates/policy-spec`); through the pinned account, `weak_account_rule_cannot_widen_the_grant_signers_but_can_strip_its_policy` |
-| **Exact tuples.** A permitted `(contract, function, args)` deep-equals a compiled-in tuple; bounds and wildcards enter only through explicit, provenance-tagged decisions; tuples are never combined into a Cartesian product. | `crates/synthesizer`, `crates/policy-spec`, `crates/codegen` | `amount_mutations_deny_in_both`, `function_and_target_mutations_deny_in_both`, `arg_arity_and_type_confusion_deny_in_both` (`differential.rs`); `generated_suite.rs`, `swap_generated_suite.rs`; `incomplete_tuples_fail` (`crates/policy-spec`); `widening_applies_only_with_explicit_decision_and_only_to_amounts`, `tuple_dedup_merges_identical_and_keeps_distinct` (`crates/synthesizer`) |
+| **Exact tuples.** A permitted `(contract, function, args)` deep-equals a compiled-in tuple; bounds and wildcards enter only through explicit, provenance-tagged decisions, each loosening one recorded call and never the side a reviewed adapter declares unsafe, rated no lower than the reach of its bound; tuples are never combined into a Cartesian product. | `crates/synthesizer`, `crates/policy-spec`, `crates/codegen` | `amount_mutations_deny_in_both`, `function_and_target_mutations_deny_in_both`, `arg_arity_and_type_confusion_deny_in_both` (`differential.rs`); `generated_suite.rs`, `swap_generated_suite.rs`; `incomplete_tuples_fail`, `a_bound_spanning_the_i128_domain_requires_high_blast_radius` (`crates/policy-spec`); `widening_applies_only_with_explicit_decision_and_only_to_amounts`, `tuple_dedup_merges_identical_and_keeps_distinct`, `a_widening_on_a_multi_tuple_function_is_refused_unless_scoped`, `a_user_bound_against_an_adapter_role_is_refused`, `an_open_above_bound_requires_high_blast_radius` (`crates/synthesizer`) |
 | **Fail-closed recognition.** Unknown account, policy or verifier code, an unloaded registry or an unverifiable snapshot is an error, never a guess. | `crates/registry`, `crates/call-surface-core` | The registry tests in the table above; `queries_before_load_fail_closed` (`crates/registry/src/lib.rs`); `unrecognized_account_fails_closed` (`crates/call-surface-core/src/tests.rs`) |
 | **Authority surface.** Before installation, every live rule that can change the account or reset a bound policy is listed with its exact signers; the check refuses when the agent's key can do either alone, when another rule on the target gets around a stateful limit, or when a rule shape is unsupported. | `crates/call-surface-core`, `crates/toolkit/src/call_surface_live.rs`, the scan in `crates/source-rpc` | `crates/call-surface-core/src/tests.rs`, e.g. `case_6_restricted_key_that_can_manage_alone_is_refused`, `stateful_grant_beside_another_usable_rule_on_the_target_is_refused`, `new_rule_cannot_target_the_account_or_a_bound_policy`; through the pinned account, the direct-call and weak-management rows of the [state-invariant map](SCOPE.md#state-invariants-and-direct-calls) |
 | **Stateful invariants.** Only `install` initializes state; missing state denies; a cap never resets within an installation; TTL extension is bounded; archival is not revocation; reinstalling is a new grant; a failed composition rolls back. | `install`, `enforce`, `uninstall` of each generated policy | The [state-invariant map](SCOPE.md#state-invariants-and-direct-calls), row by row; `contracts/differential/tests/ttl.rs`; `missing_state_denies_in_both`, `install_is_the_only_initializer_and_double_install_fails` (`differential.rs`) |
@@ -303,7 +303,9 @@ shipped grant shape, each with its deviations, are in the
   derived case, natively and as Wasm, in `contracts/differential/tests/range_generated_suite.rs`),
   and it is the form the skill offers for "up to X". A user cap without a floor is refused with `E_NEEDS_DECISION` unless
   it acknowledges that open floor (`no_floor_acknowledged`;
-  `a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged` in `crates/synthesizer`); the
+  `a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged` in `crates/synthesizer`), and so
+  is a range from `i128::MIN`, which renders the same check
+  (`a_range_from_i128_min_asks_the_floor_question_a_cap_asks`); the
   Soroswap adapter derives one for a maximum-input argument as its reviewed claim about the target,
   without that acknowledgement. Relying on the target where a cap is acknowledged or
   adapter-reviewed is the assumption L-06 advises against, and a question for this audit.

@@ -401,8 +401,8 @@ still a fair question. Two of the five entry points check the window, and
 `the_validity_window_is_checked_by_the_two_entry_points_that_extend` is what holds that sentence
 to the code.) A denied
 call extends nothing, `uninstall` extends nothing, and the extension is threshold-conditional
-rather than unconditional, so routine authorizations do not each buy rent. The policy does not
-separately extend the **wasm code** entry (see action 2 below).
+rather than unconditional, so routine authorizations do not each buy rent. The instance
+extension also extends the **wasm code** entry; it is not a separate call (see action 2 below).
 
 That the two agree is structural rather than asserted: the emitter has one extension block and
 both write paths use it, and `only_the_write_paths_extend_and_the_getters_say_why_they_do_not`
@@ -523,12 +523,18 @@ not on who paid for an extension.
    `VALID_UNTIL_LEDGER`, so the entries live no longer than the policy can permit and are
    archived naturally after it expires.
 2. Extend the TTL of the **contract instance and of the wasm code** — their own entries with
-   their own deadlines. **Done for the instance entry**, extended alongside the persistent
-   entries in `install` and in a permitting `enforce`. The **wasm code** entry is deliberately left
-   to the operator/installer: anyone may extend it, an archived entry is restored rather than
-   lost, and the code entry is shared with every other deployment of the same wasm, so its rent
-   is not obviously this policy's to pay. Two emitted comments claimed the code entry was kept
-   alive alongside the instance; they were wrong and now say what the block does. Keep both extensions proportionate: since extensions
+   their own deadlines. **Done for both**, in `install` and in a permitting `enforce`, alongside
+   the persistent entries: `e.storage().instance().extend_ttl` extends the instance and the code
+   entry together (soroban-sdk 28 `Instance::extend_ttl`, which calls the host's
+   `extend_current_contract_instance_and_code_ttl`). `contracts/differential/tests/ttl.rs` reads
+   the instance TTL only: it registers the policy natively, so its environment has no code entry
+   to read, and the code half of the claim rests on the SDK and host. The code entry is shared
+   with every other deployment of the same wasm, so a generated policy also pays some of that
+   shared rent. That is a cost, not a safety property: an archived code entry is restored rather
+   than lost. An instance-only extension (`Deployer::extend_ttl_for_contract_instance`) would
+   leave it out, but would change every generated policy's Wasm, so it is not made here. This
+   item once said the code entry was left to the operator; that was wrong, and the generated
+   comment that repeated it now says what the block does. Keep both extensions proportionate: since extensions
    may not be relied on for functionality or safety, they buy predictability, and any design
    that would need them to hold a guarantee is the wrong design.
 3. Do **not** reject, at generation time, a policy whose `valid_until` exceeds `max_ttl()`.

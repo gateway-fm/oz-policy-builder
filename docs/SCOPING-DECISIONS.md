@@ -51,14 +51,29 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 | --- | --- | --- |
 | `{"range_i128": {"min": "M", "max": "N"}}` — a range, the recommended form of "up to N" with M = 0 | every value from M to N, both included; the generated policy refuses everything else, negatives included | `i128` arguments |
 | `{"le_i128": {"max": "N"}}` — a cap | every value ≤ N, negatives included; only with `"no_floor_acknowledged": true` beside it ([below](#open-question-negative-values-under-a-cap)) | `i128` arguments |
-| `{"ge_i128": {"min": "N"}}` — a floor | every value ≥ N, such as a swap's minimum output | `i128` arguments |
+| `{"ge_i128": {"min": "N"}}` — a floor | every value ≥ N, such as a swap's minimum output; requires `blast_radius: "high"` unless a reviewed adapter declares the argument a minimum output (below) | `i128` arguments |
 | `"any_value"` | anything at that argument | any argument; requires `blast_radius: "high"` |
+
+The rating is yours, but it has a floor where the bound itself shows how far it reaches. A bound
+with no finite top — a floor, or a cap or range whose maximum is `i128::MAX` — admits every larger
+value, which on an amount is any amount, and the type of an argument never says whether it is
+one. So it requires `high`; rated lower it is refused (`E_INVALID_DECISION`). The one exception
+is a minimum output that a reviewed adapter declares, where a higher value only tightens the
+target's own check. A bound at both of the type's limits accepts every `i128`, exactly as
+`any_value` does, and spec validation holds it to `high` like `any_value` whoever produced the
+spec. An end at the type's own limit is no end: the generated check leaves that comparison out.
 
 - An address or other non-`i128` argument stays exact or becomes `any_value`; a numeric bound on
   it is refused.
 - A widening that matches no recorded argument it can apply to is refused, not ignored, and so
   is a numeric bound that excludes the recorded value: a widening loosens the recorded call and
   cannot refuse it.
+- A widening names an argument, not a recorded call. If the function was recorded as several
+  distinct calls of the contract — two payments to different recipients — one widening would
+  loosen that argument in every one of them, so it is refused with an `E_INVALID_DECISION`
+  finding. Recorded calls that differ only in the widened argument become one permitted call, and
+  the widening is that call's. A decision cannot yet say which call it means; until it can, widen
+  from recordings in which the function is one distinct call, or keep the argument exact.
 - One argument carries one constraint: to bound both ends, use a range, not a cap and a floor. A
   decisions document that widens the same argument (contract, function and index) more than once
   is refused with an `E_INVALID_DECISION` finding naming it, rather than applying one bound and
@@ -86,6 +101,18 @@ exact ([TARGET-ADAPTERS.md](TARGET-ADAPTERS.md)). The constraint carries `adapte
 provenance and holds only while the target's code hash matches; an `any_value` from an adapter is
 listed as high blast radius on the card like your own. Without a binding, synthesis stays exact.
 
+Where an adapter declares an argument a minimum output or a maximum input, your widening of it
+may not loosen its unsafe side. On a minimum output, a bound that admits anything below the recorded value — a lower floor, a
+range reaching below it, a cap, `any_value` — weakens the target's only check on the result, and
+lowering it to zero removes that check. On a maximum input, a bound with no finite cap — a floor,
+`any_value`, a maximum of `i128::MAX` — lets the call spend any amount. Either is refused with an
+`E_INVALID_DECISION` finding naming the adapter, whatever blast radius it is rated, since no rating
+restores the check. Raising a minimum output (a floor at or above the recorded value) and capping
+an input at a finite amount, above the recorded one included, stay your decisions. An argument the
+adapter keeps exact (the router's path, recipient and deadline) can still be made `any_value` by
+your decision, which requires `high` and is listed on the card. Without a binding nothing declares
+a role, and your decision stands as made.
+
 ## Open question: negative values under a cap
 
 A cap (`le_i128`) admits every smaller value, negatives included: the generated check refuses only
@@ -100,10 +127,12 @@ infer a direction from the type. The way to close it is to state the floor: a ra
 acknowledgement, and is what the skill offers first. A cap without a floor stays available as an
 explicit choice: it is refused with an `E_NEEDS_DECISION` finding until its widening carries
 `"no_floor_acknowledged": true`, your statement that negative amounts pass the generated policy;
-absent reads as `false`. The rationale repeats the acknowledgement for each cap and names what does
-refuse a negative amount: the composed spending limit for a transfer amount it reads, otherwise
-only the target. On a range, a floor or `any_value` the acknowledgement is refused as an
-`E_INVALID_DECISION`. A cap an adapter derives for a maximum-input role carries no acknowledgement:
+absent reads as `false`. A range whose minimum is `i128::MIN` is the same check as a cap, because
+the generated policy leaves out a comparison against the type's own minimum, so it asks the same
+question and takes the same acknowledgement. The rationale repeats the acknowledgement for each
+cap and names what does refuse a negative amount: the composed spending limit for a transfer
+amount it reads, otherwise only the target. On a range with a floor above `i128::MIN`, a floor or
+`any_value` the acknowledgement is refused as an `E_INVALID_DECISION`. A cap an adapter derives for a maximum-input role carries no acknowledgement:
 it is the adapter's reviewed claim about that target's code. It too sets no floor, and the
 rationale says so in the same words.
 
@@ -130,7 +159,8 @@ The [`policy-builder` skill](../skills/policy-builder/SKILL.md) asks before it c
    only after a reply that just accepts them. A reply that accepts and adds anything is answered and restated.
 3. On a refusal it asks about exactly the findings named in `details`.
 4. The **Confirm before deploy** card lists under **High blast radius** every `any_value`
-   argument, every widening you rated `high`, no expiry and no cap.
+   argument, every widening you rated `high` — every bound with no finite top among them, except
+   on an adapter-declared minimum output — no expiry and no cap.
 
 When the grant is meant for the wallet integration, the skill says so while asking, because the
 wallet accepts one narrow grant shape, with no widening and no spending limit

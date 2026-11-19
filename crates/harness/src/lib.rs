@@ -1976,9 +1976,15 @@ mod tests {
             min: min.to_string(),
             max: max.to_string(),
         };
+        // A range spanning the whole type is any amount, which validation holds to high.
+        let blast_radius = if amount.constraint.spans_the_i128_domain() {
+            ozpb_domain::BlastRadius::High
+        } else {
+            ozpb_domain::BlastRadius::Medium
+        };
         amount.provenance = ozpb_domain::Provenance::UserWidened {
             intent: "spend between min and max".into(),
-            blast_radius: ozpb_domain::BlastRadius::Medium,
+            blast_radius,
         };
         spec.validate().expect("a range on the transfer amount")
     }

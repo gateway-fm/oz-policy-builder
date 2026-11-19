@@ -144,13 +144,27 @@ the address, ledger, name, and limits with the user's choices before calling the
   `{"le_i128":{"max":"100"}}`, `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds
   are canonical decimal i128 strings and apply only to i128 arguments, and must admit the
   recorded value. `blast_radius` is `"low"`,
-  `"medium"`, or `"high"`; `"any_value"` requires `"high"`. A recipient or other
-  non-i128 argument can only stay exact or become fully unconstrained. Each argument takes at
-  most one widening; a second for the same argument is refused.
+  `"medium"`, or `"high"`; `"any_value"` requires `"high"`, and so does a bound with no finite
+  top (`ge_i128`, or a maximum of `170141183460469231731687303715884105727`), because it admits
+  any larger amount — except on an argument a reviewed adapter declares a minimum output. A recipient or other non-i128 argument can only stay exact or become fully
+  unconstrained. Each argument takes at most one widening; a second for the same argument is
+  refused.
+- A widening applies to every recorded call of its function. If the recordings hold more than
+  one distinct call of that function on that contract (say two payments to different
+  recipients), a widening of it is refused with `E_INVALID_DECISION`; say so, and offer to keep
+  the argument exact or to build the grant from a recording with one such call. Calls that
+  differ only in the widened argument (one recipient, two amounts) become one permitted call,
+  and the widening applies.
+- Where the rationale or a refusal names a target adapter, a widening may not loosen what the
+  adapter reviews: on a minimum output only a floor at or above the recorded value, and on a
+  maximum input only a bound with a finite cap. Any other bound on those two arguments is
+  refused with `E_INVALID_DECISION` whatever its blast radius; do not offer it.
 - A cap (`le_i128`) also needs `"no_floor_acknowledged": true`, set only after the user
   explicitly accepts that it has no floor; without it synthesis refuses with
-  `E_NEEDS_DECISION`. A range needs no acknowledgement. On a range, a floor or `"any_value"` the
-  acknowledgement is refused as contradictory: leave it out (absent reads as `false`).
+  `E_NEEDS_DECISION`. A range from `-170141183460469231731687303715884105728` (the type's
+  minimum) is a cap and needs it too. Any other range needs no acknowledgement. On such a range,
+  a floor or `"any_value"` the acknowledgement is refused as contradictory: leave it out (absent
+  reads as `false`).
 - A range is declared by development registry version 7 and later. Under an older snapshot
   synthesis refuses it with `E_UNSUPPORTED_PATTERN` naming `range_i128`; say so, and do not
   substitute a cap without asking.

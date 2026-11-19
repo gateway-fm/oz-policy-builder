@@ -34,7 +34,12 @@ Short, extended, differently typed or malformed calls retain exact constraints. 
 unknown target code, or missing executable observation also leaves synthesis exact unless the
 user explicitly widens it. Explicit user decisions remain separate: for example, a user may
 supply an absolute minimum-output floor, carrying `user_widened` provenance and intent. The
-adapter does not certify that decision or turn it into a trusted quote.
+adapter does not certify that decision or turn it into a trusted quote, but it does bound it: a
+user widening that loosens the unsafe side of the minimum output or the input amount is refused
+with `E_INVALID_DECISION`. On the minimum output that is any bound admitting a value below the
+recorded one; on the input amount, any bound with no finite cap. An argument the adapter keeps
+exact is not held this way: a user may still make it `any_value`, rated high
+([scoping decisions](SCOPING-DECISIONS.md#bounds-an-adapter-derives)).
 
 Adapter-derived constraints retain the adapter identity and target code hash. The resulting
 rule requires that hash and marks drift as a refusal. A wallet or live checker must compare
@@ -100,7 +105,7 @@ Read from the public router source: `soroswap/core`, `contracts/router/src/lib.r
 | Argument | What the router does with it | Role |
 | --- | --- | --- |
 | `amount_in` | Quotes the route for exactly this input and transfers that first amount from `to` to the first pair. A smaller non-negative value can only spend less. The bound sets no floor, so the policy also admits a negative value; what the router does with one is not established here (no control tries one, and its Wasm was not reproduced from source). | Upper bound at the observed amount |
-| `amount_out_min` | Refuses the swap (`InsufficientOutputAmount`) when the route's final output is below it. Lowering it weakens the only slippage check. | No automatic widening; a floor is a user decision |
+| `amount_out_min` | Refuses the swap (`InsufficientOutputAmount`) when the route's final output is below it. Lowering it weakens the only slippage check. | No automatic widening; a floor is a user decision, at or above the recorded value — a lower bound is refused |
 | `path` | The route: input token first, output token last. Each hop's pair is derived from the factory recorded at `initialize`. | Exact |
 | `to` | The only address asked to authorize: the router calls `to.require_auth()`, and the input token's transfer is from `to`. The output is paid to `to`. A swap naming another `to` asks that address, never the account. | Exact (`SELF`) |
 | `deadline` | Refuses the call (`DeadlineExpired`) once the ledger timestamp reaches it. Nothing else reads it. | v1: caller-chosen; v2: exact recorded timestamp |

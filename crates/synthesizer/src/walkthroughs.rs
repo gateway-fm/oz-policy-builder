@@ -183,7 +183,9 @@ pub const SOROSWAP_ROUTER: fn() -> String = || contract(30);
 
 /// `swap_exact_tokens_for_tokens(amount_in, amount_out_min, path, to, deadline)`.
 /// - amount_in: user_widened cap (LeI128)
-/// - amount_out_min: user-provided absolute floor (GeI128) — never auto-derived
+/// - amount_out_min: user-provided absolute floor (GeI128) — never auto-derived. No adapter is
+///   bound here, so nothing tells synthesis this is a minimum output rather than an amount: a
+///   bound with no cap is rated high (`docs/SCOPING-DECISIONS.md`, "Widenings you may choose").
 /// - path: exact (whitelisted route)
 /// - to: SELF
 /// - deadline: user-widened AnyValue (high blast radius; caller-chosen)
@@ -250,7 +252,7 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
                 },
                 no_floor_acknowledged: false,
                 intent: "floor amount_out_min (user-provided absolute slippage floor)".to_string(),
-                blast_radius: BlastRadius::Medium,
+                blast_radius: BlastRadius::High,
             },
             Widening {
                 contract: router,
