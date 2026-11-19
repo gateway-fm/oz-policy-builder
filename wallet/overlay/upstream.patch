@@ -1,112 +1,3 @@
---- a/src/lib/passkey.ts
-+++ b/src/lib/passkey.ts
-@@ -300,6 +300,8 @@
-   contextRuleIds: number[];
-   expiration: number;
-   networkPassphrase?: string;
-+  /** Exact verifier recognized by the wallet review; legacy callers retain their default. */
-+  verifier?: string;
- }): Promise<xdr.SorobanAuthorizationEntry[]> {
-   const {
-     authEntries,
-@@ -307,19 +309,22 @@
-     contextRuleIds,
-     expiration,
-     networkPassphrase = TESTNET_NETWORK_PASSPHRASE,
-+    verifier = TESTNET_WEBAUTHN_VERIFIER,
-   } = params;
-+  if (!StrKey.isValidContract(verifier)) throw new Error("Invalid signer verifier");
-
-   const keyData = buildKeyData(Buffer.from(wallet.publicKey, "hex"), wallet.credentialId);
-   const signer = {
-     tag: "External" as const,
--    values: [TESTNET_WEBAUTHN_VERIFIER, keyData] as const,
-+    values: [verifier, keyData] as const,
-   };
-
-   const signed: xdr.SorobanAuthorizationEntry[] = [];
-   for (const entry of authEntries) {
-     const credType = entry.credentials().switch().name;
--    if (credType === "sorobanCredentialsAddress") {
--      const credentials = entry.credentials().address();
-+    if (credType === "sorobanCredentialsAddress" || credType === "sorobanCredentialsAddressV2") {
-+      const credentials = credType === "sorobanCredentialsAddress"
-+        ? entry.credentials().address() : entry.credentials().addressV2();
-       if (Address.fromScAddress(credentials.address()).toString() === wallet.contractId) {
-         signed.push(await authorizeEntry(
-           entry,
---- a/src/components/Header.tsx
-+++ b/src/components/Header.tsx
-@@ -13,6 +13,9 @@
-         <Badge variant="teal">Testnet</Badge>
-       </span>
-       <nav className="ml-auto flex items-center gap-4">
-+        <Link to="/policy-builder" className="text-sm text-cyan-400 hover:text-cyan-200">
-+          Policy Builder
-+        </Link>
-         <Link
-           to="/rules"
-           className="flex items-center gap-2 text-sm text-gray-400 hover:text-cyan-400 transition-colors"
---- a/vite.config.ts
-+++ b/vite.config.ts
-@@ -6,19 +6,27 @@
- import { fileURLToPath, URL } from 'node:url'
-
- export default defineConfig({
-+  server: {
-+    host: '127.0.0.1', port: 3000, strictPort: true,
-+    proxy: {
-+      '/api/policy-builder': { target: 'http://127.0.0.1:4317', changeOrigin: false },
-+    },
-+  },
-   define: {
-     global: 'globalThis',
-   },
-   resolve: {
-     alias: {
-+      '#wallet-stellar-sdk': fileURLToPath(new URL('./src/policy-builder/node_modules/@stellar/stellar-sdk/lib/esm/index.js', import.meta.url)),
-       buffer: fileURLToPath(new URL('./node_modules/buffer/index.js', import.meta.url)),
-     },
-     tsconfigPaths: true,
-     preserveSymlinks: false,
--    dedupe: ['@stellar/stellar-sdk', '@stellar/stellar-base'],
-+    // The nested Policy Builder validators retain their pinned SDK; XDR crosses versions.
-   },
-   optimizeDeps: {
-     include: [
-+      '#wallet-stellar-sdk',
-       'buffer',
-       '@stellar/stellar-sdk',
-       '@stellar/stellar-sdk/rpc',
-@@ -45,8 +53,15 @@
-   },
-   plugins: [
-     cloudflare({
-+      // The dedicated local wallet checkout never connects remote provider bindings.
-+      remoteBindings: false,
-+      inspectorPort: false,
-       viteEnvironment: { name: 'ssr' },
--      auxiliaryWorkers: [{ configPath: './sandbox-worker/wrangler.jsonc' }],
-+      config: (config) => {
-+        delete config.ai
-+        config.services = []
-+        config.dev = { ...config.dev, enable_containers: false }
-+      },
-     }),
-     tailwindcss(),
-     tanstackStart(),
---- a/vitest.config.ts
-+++ b/vitest.config.ts
-@@ -13,7 +13,7 @@
-     },
-     tsconfigPaths: true,
-     preserveSymlinks: false,
--    dedupe: ['@stellar/stellar-sdk', '@stellar/stellar-base'],
-+    // The nested Policy Builder validators retain their pinned SDK; XDR crosses versions.
-   },
-   plugins: [
-     viteReact(),
-
 diff --git a/package.json b/package.json
 index 81f152c..a2c6294 100644
 --- a/package.json
@@ -138,34 +29,34 @@ index 398984e..8679c75 100644
 @@ -1082,8 +1082,8 @@ packages:
      engines: {node: '>=20.0.0'}
      hasBin: true
-
+ 
 -  '@stellar/stellar-sdk@16.2.0':
 -    resolution: {integrity: sha512-FV/Rm11QvrFzR5X9fIfb6Pg30KyYyrRkNezELGFmYDAYrzoPTjqo7vklnEPd2HEontzjJmZizWk8CjyIh5vp0w==}
 +  '@stellar/stellar-sdk@16.4.1':
 +    resolution: {integrity: sha512-0kT+ShOUE6dc0smLEsajuizss1hvlGDsCooM88FqgxNOCKpY8IuQPzCs75RNKMSMITz+dX7KZ5qGhQ2EWGMTTg==}
      engines: {node: '>=22.0.0'}
      hasBin: true
-
+ 
 @@ -1572,12 +1572,12 @@ packages:
    aws4fetch@1.0.20:
      resolution: {integrity: sha512-/djoAN709iY65ETD6LKCtyyEI04XIBP5xVvfmNxsEP0uJB5tyaGBztSryRr4HqMStr9R06PisQE7m9zDTXKu6g==}
-
+ 
 -  axios@1.18.0:
 -    resolution: {integrity: sha512-E32NzpYKp++W7XRe52rHiXV2ehxmh3wbdgO7MHeFM+vqxLBYHzt0ElkiImtOBxtOmyp0yoC8C6uESVV84Y2/hw==}
 -
    axios@1.19.0:
      resolution: {integrity: sha512-ht/iuYZXEjFxLH/Hkezgd7m6JKlHHXEUSneaDz8uZe1Gj5QZtCnpyDsckvAiEnT89OEbCLmnte4R4sn7P0EKFw==}
-
+ 
 +  axios@1.20.0:
 +    resolution: {integrity: sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg==}
 +
    babel-dead-code-elimination@1.0.12:
      resolution: {integrity: sha512-GERT7L2TiYcYDtYk1IpD+ASAYXjKbLTDPhBtYj7X1NuRMDTMtAx9kyBenub1Ev41lo91OHCKdmP+egTDmfQ7Ig==}
-
+ 
 @@ -3509,12 +3509,12 @@ snapshots:
        - debug
        - supports-color
-
+ 
 -  '@stellar/stellar-sdk@16.2.0':
 +  '@stellar/stellar-sdk@16.4.1':
      dependencies:
@@ -178,9 +69,9 @@ index 398984e..8679c75 100644
        bignumber.js: 11.1.5
        buffer: 6.0.3
 @@ -4002,7 +4002,7 @@ snapshots:
-
+ 
    aws4fetch@1.0.20: {}
-
+ 
 -  axios@1.18.0:
 +  axios@1.19.0:
      dependencies:
@@ -189,9 +80,250 @@ index 398984e..8679c75 100644
 @@ -4012,7 +4012,7 @@ snapshots:
        - debug
        - supports-color
-
+ 
 -  axios@1.19.0:
 +  axios@1.20.0:
      dependencies:
        follow-redirects: 1.16.0
        form-data: 4.0.6
+diff --git a/src/components/Header.tsx b/src/components/Header.tsx
+index f438d6d..84fbef5 100644
+--- a/src/components/Header.tsx
++++ b/src/components/Header.tsx
+@@ -13,6 +13,9 @@ export default function Header() {
+         <Badge variant="teal">Testnet</Badge>
+       </span>
+       <nav className="ml-auto flex items-center gap-4">
++        <Link to="/policy-builder" className="text-sm text-cyan-400 hover:text-cyan-200">
++          Policy Builder
++        </Link>
+         <Link
+           to="/rules"
+           className="flex items-center gap-2 text-sm text-gray-400 hover:text-cyan-400 transition-colors"
+diff --git a/src/lib/passkey.ts b/src/lib/passkey.ts
+index a94b887..ae5df3a 100644
+--- a/src/lib/passkey.ts
++++ b/src/lib/passkey.ts
+@@ -300,6 +300,8 @@ export async function signWalletAuthEntries(params: {
+   contextRuleIds: number[];
+   expiration: number;
+   networkPassphrase?: string;
++  /** Exact verifier recognized by the wallet review; legacy callers retain their default. */
++  verifier?: string;
+ }): Promise<xdr.SorobanAuthorizationEntry[]> {
+   const {
+     authEntries,
+@@ -307,19 +309,22 @@ export async function signWalletAuthEntries(params: {
+     contextRuleIds,
+     expiration,
+     networkPassphrase = TESTNET_NETWORK_PASSPHRASE,
++    verifier = TESTNET_WEBAUTHN_VERIFIER,
+   } = params;
++  if (!StrKey.isValidContract(verifier)) throw new Error("Invalid signer verifier");
+ 
+   const keyData = buildKeyData(Buffer.from(wallet.publicKey, "hex"), wallet.credentialId);
+   const signer = {
+     tag: "External" as const,
+-    values: [TESTNET_WEBAUTHN_VERIFIER, keyData] as const,
++    values: [verifier, keyData] as const,
+   };
+ 
+   const signed: xdr.SorobanAuthorizationEntry[] = [];
+   for (const entry of authEntries) {
+     const credType = entry.credentials().switch().name;
+-    if (credType === "sorobanCredentialsAddress") {
+-      const credentials = entry.credentials().address();
++    if (credType === "sorobanCredentialsAddress" || credType === "sorobanCredentialsAddressV2") {
++      const credentials = credType === "sorobanCredentialsAddress"
++        ? entry.credentials().address() : entry.credentials().addressV2();
+       if (Address.fromScAddress(credentials.address()).toString() === wallet.contractId) {
+         signed.push(await authorizeEntry(
+           entry,
+diff --git a/src/lib/policy-deploy.ts b/src/lib/policy-deploy.ts
+index fb2403e..106c885 100644
+--- a/src/lib/policy-deploy.ts
++++ b/src/lib/policy-deploy.ts
+@@ -1,6 +1,7 @@
+ import { createServerFn } from "@tanstack/react-start";
+ import { env } from "cloudflare:workers";
+ import { MAX_XDR_LENGTH, MAX_AUTH_ENTRIES } from "./relayer";
++import { assertUpstreamEnabled } from "../policy-builder/client/build-guard.mjs";
+ 
+ // --- Types ---
+ 
+@@ -49,6 +50,7 @@ function validateDeployInput(data: unknown): DeployInput {
+ export const deployPolicyWasm = createServerFn({ method: "POST" })
+   .inputValidator(validateDeployInput)
+   .handler(async ({ data }): Promise<DeployResult> => {
++    assertUpstreamEnabled(import.meta.env);
+     const { wasmBase64 } = data;
+ 
+     const sandbox = env.SANDBOX;
+@@ -221,6 +223,7 @@ export const submitPolicyTransaction = createServerFn({ method: "POST" })
+     error: string | null;
+     hash: string | null;
+   }> => {
++    assertUpstreamEnabled(import.meta.env);
+     try {
+       // Lazy import to keep relayer deps server-only
+       const { ChannelsClient } = await import("@openzeppelin/relayer-plugin-channels");
+diff --git a/src/lib/policy-store.ts b/src/lib/policy-store.ts
+index 4f3fa31..9c57b8b 100644
+--- a/src/lib/policy-store.ts
++++ b/src/lib/policy-store.ts
+@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
+ import { env } from "cloudflare:workers";
+ import { StrKey } from "@stellar/stellar-sdk";
+ import type { PolicySchema } from "./policy-schema";
++import { assertUpstreamEnabled } from "../policy-builder/client/build-guard.mjs";
+ import { schemaToJSON, schemaFromJSON, validateSchema } from "./policy-schema";
+ 
+ // --- Types ---
+@@ -57,6 +58,7 @@ function validateSaveInput(data: unknown): SavedPolicyJSON {
+ export const savePolicy = createServerFn({ method: "POST" })
+   .inputValidator(validateSaveInput)
+   .handler(async ({ data }) => {
++    assertUpstreamEnabled(import.meta.env);
+     const kv = env.POLICIES_KV;
+     if (!kv) return { success: false, error: "KV binding not available" };
+ 
+diff --git a/src/lib/relayer.ts b/src/lib/relayer.ts
+index 158f4d5..23b0a41 100644
+--- a/src/lib/relayer.ts
++++ b/src/lib/relayer.ts
+@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
+ import { ChannelsClient } from "@openzeppelin/relayer-plugin-channels";
+ import { Keypair, hash, authorizeEntry, xdr } from "@stellar/stellar-sdk";
+ import { Buffer } from "buffer";
++import { assertUpstreamEnabled } from "../policy-builder/client/build-guard.mjs";
+ import { TESTNET_NETWORK_PASSPHRASE, DEPLOYER_SEED_PHRASE } from "./constants";
+ 
+ 
+@@ -90,6 +91,7 @@ export const signAndSubmitDeploy = createServerFn({ method: "POST" })
+     return data;
+   })
+   .handler(async ({ data }) => {
++    assertUpstreamEnabled(import.meta.env);
+     try {
+       const client = getClient();
+       if (!client) {
+diff --git a/src/routes/__root.tsx b/src/routes/__root.tsx
+index 9235735..d1074e8 100644
+--- a/src/routes/__root.tsx
++++ b/src/routes/__root.tsx
+@@ -1,6 +1,7 @@
+-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
++import { HeadContent, Scripts, createRootRoute, useRouterState } from '@tanstack/react-router'
+ 
+ import Header from '../components/Header'
++import { UPSTREAM_DISABLED, upstreamAllowed } from '../policy-builder/client/build-guard.mjs'
+ 
+ import appCss from '../styles.css?url'
+ 
+@@ -30,14 +31,17 @@ export const Route = createRootRoute({
+ })
+ 
+ function RootDocument({ children }: { children: React.ReactNode }) {
++  // A mainnet build serves the Policy Builder alone: no upstream navigation, and every upstream page refused.
++  const pathname = useRouterState({ select: (state) => state.location.pathname })
++  const upstream = upstreamAllowed(import.meta.env)
+   return (
+     <html lang="en" data-mode="dark">
+       <head>
+         <HeadContent />
+       </head>
+       <body>
+-        <Header />
+-        {children}
++        {upstream && <Header />}
++        {upstream || pathname === '/policy-builder' ? children : <p role="alert">{UPSTREAM_DISABLED}</p>}
+         <Scripts />
+       </body>
+     </html>
+diff --git a/vite.config.ts b/vite.config.ts
+index 6719599..51b4314 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -4,21 +4,49 @@ import viteReact from '@vitejs/plugin-react'
+ import tailwindcss from '@tailwindcss/vite'
+ import { cloudflare } from '@cloudflare/vite-plugin'
+ import { fileURLToPath, URL } from 'node:url'
++import { request } from 'node:http'
++import type { Plugin } from 'vite'
++
++/**
++ * `vite preview` serves a production build, and only it reaches the mainnet backend on 4318: the
++ * Cloudflare plugin answers every preview request itself, so this proxy is registered before it.
++ */
++const mainnetBackendProxy: Plugin = {
++  name: 'ozpb-mainnet-backend-proxy',
++  configurePreviewServer(server) {
++    server.middlewares.use('/api/policy-builder', (req, res) => {
++      const forward = request({ host: '127.0.0.1', port: 4318, method: req.method, path: `/api/policy-builder${req.url}`,
++        headers: req.headers }, (answer) => { res.writeHead(answer.statusCode ?? 502, answer.headers); answer.pipe(res) })
++      forward.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end() })
++      req.pipe(forward)
++    })
++  },
++}
+ 
+ export default defineConfig({
++  server: {
++    host: '127.0.0.1', port: 3000, strictPort: true,
++    proxy: {
++      '/api/policy-builder': { target: 'http://127.0.0.1:4317', changeOrigin: false },
++    },
++  },
++  // A production build is served by `vite preview`, which alone reaches the mainnet backend's port.
++  preview: { host: '127.0.0.1', port: 3000, strictPort: true },
+   define: {
+     global: 'globalThis',
+   },
+   resolve: {
+     alias: {
++      '#wallet-stellar-sdk': fileURLToPath(new URL('./src/policy-builder/node_modules/@stellar/stellar-sdk/lib/esm/index.js', import.meta.url)),
+       buffer: fileURLToPath(new URL('./node_modules/buffer/index.js', import.meta.url)),
+     },
+     tsconfigPaths: true,
+     preserveSymlinks: false,
+-    dedupe: ['@stellar/stellar-sdk', '@stellar/stellar-base'],
++    // The nested Policy Builder validators retain their pinned SDK; XDR crosses versions.
+   },
+   optimizeDeps: {
+     include: [
++      '#wallet-stellar-sdk',
+       'buffer',
+       '@stellar/stellar-sdk',
+       '@stellar/stellar-sdk/rpc',
+@@ -44,9 +72,17 @@ export default defineConfig({
+     },
+   },
+   plugins: [
++    mainnetBackendProxy,
+     cloudflare({
++      // The dedicated local wallet checkout never connects remote provider bindings.
++      remoteBindings: false,
++      inspectorPort: false,
+       viteEnvironment: { name: 'ssr' },
+-      auxiliaryWorkers: [{ configPath: './sandbox-worker/wrangler.jsonc' }],
++      config: (config) => {
++        delete config.ai
++        config.services = []
++        config.dev = { ...config.dev, enable_containers: false }
++      },
+     }),
+     tailwindcss(),
+     tanstackStart(),
+diff --git a/vitest.config.ts b/vitest.config.ts
+index bd94be1..e17a528 100644
+--- a/vitest.config.ts
++++ b/vitest.config.ts
+@@ -13,7 +13,7 @@ export default defineConfig({
+     },
+     tsconfigPaths: true,
+     preserveSymlinks: false,
+-    dedupe: ['@stellar/stellar-sdk', '@stellar/stellar-base'],
++    // The nested Policy Builder validators retain their pinned SDK; XDR crosses versions.
+   },
+   plugins: [
+     viteReact(),

@@ -6,7 +6,8 @@ import re
 import subprocess
 
 UPSTREAM = "853b102983699726f918b68d8e42edbba74e65b9"
-PATCH_PATHS = {"package.json", "pnpm-lock.yaml", "src/lib/passkey.ts", "src/components/Header.tsx", "vite.config.ts", "vitest.config.ts"}
+PATCH_PATHS = {"package.json", "pnpm-lock.yaml", "src/lib/passkey.ts", "src/components/Header.tsx", "vite.config.ts", "vitest.config.ts",
+               "src/routes/__root.tsx", "src/lib/relayer.ts", "src/lib/policy-deploy.ts", "src/lib/policy-store.ts"}
 REQUIRED = {"wallet/package.json", "wallet/package-lock.json", "wallet/overlay/upstream.patch",
             "wallet/overlay/UPSTREAM.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE"}
 FILE = re.compile(r"[A-Za-z0-9_-]+\.(?:mjs|d\.mts|ts|tsx|css)$")

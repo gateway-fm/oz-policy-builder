@@ -13,7 +13,12 @@ import { WalletToolchain } from './toolchain.mjs';
 // Listeners still bind only the IPv4 loopback interface.
 const ORIGIN = 'http://localhost:3000';
 const BACKEND_HOST = '127.0.0.1';
-const BACKEND_PORT = 4317;
+/**
+ * The backend's loopback port per network. The Vite development server proxies only to the testnet
+ * port; only `vite preview`, serving a production build, proxies to the mainnet one, so a mainnet
+ * session cannot be reached from the development server.
+ */
+export const BACKEND_PORTS = Object.freeze({ testnet: 4317, mainnet: 4318 });
 
 /**
  * The operator-facing reason the RPC endpoint cannot serve this session, or null: it must serve the
@@ -60,7 +65,7 @@ export async function startWallet(configPath) {
   if (refused) throw Object.assign(new Error('wallet startup refused'), { startup: refused });
   await new Promise((resolve, reject) => {
     runtime.server.once('error', reject);
-    runtime.server.listen(BACKEND_PORT, BACKEND_HOST, () => {
+    runtime.server.listen(BACKEND_PORTS[runtime.network.name], BACKEND_HOST, () => {
       runtime.server.off('error', reject);
       resolve();
     });

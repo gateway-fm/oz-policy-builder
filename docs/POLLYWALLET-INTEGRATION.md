@@ -59,7 +59,9 @@ The package-scoped `#wallet-stellar-sdk` import and explicit Vite alias keep the
 optimizer from reusing the upstream SDK 16 bundle for SDK 17 validators.
 
 The Vite development server binds to `127.0.0.1:3000`, with a same-origin proxy for
-`/api/policy-builder` to the local backend on `127.0.0.1:4317`. Open the UI through
+`/api/policy-builder` to the testnet backend on `127.0.0.1:4317`. The production preview server
+(`vite preview`) binds to the same address and proxies to the mainnet backend on
+`127.0.0.1:4318` instead; see [Mainnet sessions](#mainnet-sessions). Open the UI through
 `http://localhost:3000`: Chrome requires the `localhost` domain for WebAuthn registration
 and rejects the numeric IP as a relying-party domain.
 Open the backend's session launch URL. Its bearer credential is read once from the fragment,
@@ -127,7 +129,7 @@ printed by the backend. The equivalent backend entrypoint in that checkout is
 Startup reads `getNetwork` once and refuses, with the reason on standard error, an endpoint that
 serves another network than `network` or a protocol other than 30. It does not fund an account,
 execute the CLI or submit a transaction. The backend
-listens only on `127.0.0.1:4317`; the approved browser origin is exactly
+listens only on `127.0.0.1:4317` for testnet and `127.0.0.1:4318` for mainnet; the approved browser origin is exactly
 `http://localhost:3000`; the numeric-IP browser origin is refused.
 
 Each backend launch creates a separate private session directory and an in-memory disposable
@@ -180,6 +182,33 @@ the passkey, so do not keep more in it than the session needs.
 
 Mainnet runs protocol 29 until its validators upgrade it to 30; until then the backend refuses
 to start against a mainnet endpoint (`protocol_unsupported`).
+
+**A production build, never the development server.** The upstream app is a testnet prototype,
+and a mainnet session runs only from a production build made for mainnet. In the applied
+checkout:
+
+```sh
+VITE_OZPB_NETWORK=mainnet pnpm build
+VITE_OZPB_NETWORK=mainnet pnpm exec vite preview
+```
+
+The mainnet backend listens on `127.0.0.1:4318`, which only the preview server proxies to: the
+development server proxies to the testnet port alone, and the page itself refuses a mainnet launch
+URL unless it is a production build made with `VITE_OZPB_NETWORK=mainnet` (and a testnet one in a
+mainnet build). A mainnet build serves the Policy Builder alone: it shows no upstream navigation,
+refuses every other route, and the upstream server functions that sign, relay, deploy or store
+refuse before they do anything. What the overlay takes from upstream, and what a mainnet session
+does with each:
+
+| Inherited from upstream | In a mainnet session |
+| --- | --- |
+| A public `DEPLOYER_SEED_PHRASE` (`src/lib/constants.ts`) from which upstream derives its deployer key and each wallet's deterministic address, so anyone can sign as that deployer and deploy first at a user's predicted address | Replaced: the Policy Builder deploys every contract from the operator's fee payer with a random salt, authorized by that key alone. Upstream's wallet creation and the routes using the seed are refused. The constant still ships in the bundle, since `passkey.ts` imports `constants.ts`; it is public anyway and nothing in the build signs with it |
+| Unauthenticated server functions: `signAndSubmitDeploy` signs any entries with the deployer key and relays them through Channels, `submitPolicyTransaction` relays with the operator's Channels key, `deployPolicyWasm` drives the sandbox, `savePolicy` writes shared KV | Refused: each handler refuses first in a mainnet build. The AI and sandbox bindings were already removed from this checkout |
+| Keys in `localStorage`: `pollywallet:wallet` (credential ID, account, public key) and `pollywallet:ephemeral-signers` (delegate secret keys in plain text) | Not used: only upstream routes write them, and those are refused. The Policy Builder keeps its bearer credential in memory and stores nothing in the browser |
+| Testnet constants: passphrase, RPC, Horizon, Friendbot, Channels URL, verifier, token and explorer addresses | Replaced: the Policy Builder derives every network value from its launch network, and signs with the account's own verifier and the session's passphrase, never upstream's testnet defaults |
+| Friendbot funding and testnet transfers on `/`, and passkey-signed transactions on `/`, `/rules` and `/policies` | Refused: those routes are not served |
+| Passkeys at relying party `localhost`, offered to every page on that origin; upstream's sign-in asks without naming a credential | Contained: no upstream page is served in a mainnet build, so the owner passkey is asked only by the Policy Builder, for the statement it shows. Its signatures name the network |
+| No content security policy or security headers | Unchanged: the preview server is loopback-only and serves this build to the operator's own browser |
 
 **Configuration.** A mainnet operator file adds, to the fields above:
 

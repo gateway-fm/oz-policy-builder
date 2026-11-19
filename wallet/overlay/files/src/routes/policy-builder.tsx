@@ -5,6 +5,7 @@ import { Buffer } from "buffer";
 import { xdr } from "@stellar/stellar-sdk";
 import { createPasskey, signWalletAuthEntries } from "../lib/passkey";
 import { createClient, takeSession } from "../policy-builder/client/client.mjs";
+import { buildNetwork, sessionRefusal } from "../policy-builder/client/build-guard.mjs";
 import { WalletController } from "../policy-builder/client/controller.mjs";
 import type { WalletState } from "../policy-builder/client/controller.mjs";
 import { installDeadline, verificationGate } from "../policy-builder/client/verification.mjs";
@@ -40,10 +41,11 @@ const object = (value: unknown): Record<string, unknown> =>
 const items = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const label = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : "Unavailable";
 /**
- * The network this page was launched for, from the backend's launch URL. It is set once, when the page
- * takes its session, before the controller connects or any amount is shown, and never changes after.
+ * The network this page was launched for, from the backend's launch URL (the build's network until
+ * then). It is set once, when the page takes its session, before the controller connects or any
+ * amount is shown, and never changes after.
  */
-let NETWORK: WalletNetworkProfile = walletNetwork("testnet");
+let NETWORK: WalletNetworkProfile = walletNetwork(buildNetwork(import.meta.env));
 const xlm = (value: unknown) => {
   const amount = typeof value === "string" && /^(0|[1-9][0-9]{0,15})$/.test(value) ? Number(value) : value;
   return typeof amount === "number" && Number.isSafeInteger(amount) && amount >= 0
@@ -325,6 +327,9 @@ function PolicyBuilder() {
     if (controller.current) return;
     try {
       const session = takeSession(window.location, window.history);
+      // A mainnet session only from a production build made for mainnet; never from the development server.
+      const refusal = sessionRefusal(session.network, import.meta.env);
+      if (refusal) { setMessage(refusal); return; }
       NETWORK = walletNetwork(session.network);
       setLaunched(NETWORK.name);
       const instance = new WalletController({
