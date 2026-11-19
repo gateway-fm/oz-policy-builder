@@ -169,6 +169,15 @@ ozpb capture-target --request capture-request.json --rpc-sources rpc-sources.jso
 
 ```
 
+Registry custodians and the operators who pin their roots use `ozpb registry`: `keygen` (a new
+0600 custodian key; prints only the public key), `successor` (the next unsigned version from the
+published parent and a `registry-change/v1` document, refused if a consumer's load would refuse
+it), `sign` (`--print-root`, or a detached signature from a 0600 key file or from an Ed25519
+signature made elsewhere over the printed root), `combine`, `verify` (`--signed` one snapshot, or
+`--replay` a published `registry/<network>/` log from genesis; prints the checkpoint to persist)
+and `monitor` (newer version, expiry, revoked watched hashes; exit 0, 3, 4, 5 or 6 for cron, 1
+when the log cannot be verified). The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).
+
 The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant
 the authority check commits to, and never says "safe": the wallet that holds the owner key
 recomputes the check and decides (Decision D7). `ozpb check-policy-call-surface` produces the
@@ -239,7 +248,8 @@ same-version equivocation after restart. The MCP server receives the same JSON t
 malformed JSON or keys, a weak key, a threshold the keys cannot meet — is refused with
 `E_REGISTRY_ROOT_POLICY`, and so is the committed development root (`docs/examples/registry-roots.json`)
 for any network but testnet: anyone can sign with it, so every command and tool that pins registry
-trust refuses it for mainnet.
+trust refuses it for mainnet. How production roots are held, rotated and monitored is
+[Registry governance](REGISTRY-GOVERNANCE.md).
 
 `OZPB_REGISTRY_SNAPSHOT_JSON` carries the signed snapshot to use when a request omits one. It
 sits beside the roots rather than among them because it is data, not trust: a snapshot is

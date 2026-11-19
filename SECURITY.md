@@ -42,7 +42,7 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   fee-payer keys. The demo script, the testnet harness and the local wallet backend do, on
   testnet only, with disposable keys they generate; the wallet's owner signs with the user's
   own passkey.
-- `ozpb dry-run` is the one CLI command that holds a key: the spec delegate's, read only from a
+- `ozpb dry-run` holds the spec delegate's key, read only from a
   0600 file owned by the caller, never from an argument or the environment, and cleared on a
   best-effort basis when the run ends (a moved value can leave a stack copy). It signs only the
   native worker's requests whose preimage names the run's offline execution network, which it
@@ -55,6 +55,12 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   trust; the CLI refuses one that is writable by its group or others, or owned by neither the
   caller nor root. File mode and owner are the only checks on the key file: an extended ACL
   (macOS or POSIX) that grants someone else access to a 0600 file is not detected.
+- `ozpb registry keygen` and `ozpb registry sign --key-file` handle a registry custodian's key:
+  generated into a new 0600 file, read back under the same file checks as the delegate key, never
+  printed, and used only to sign a registry snapshot root; neither command reads a network. A
+  custodian key is a production root, so keep it on a machine or device used for nothing else, or
+  on a hardware key whose signature `sign` accepts instead of a key file. The procedure, including
+  rotation and compromised keys, is [`docs/REGISTRY-GOVERNANCE.md`](docs/REGISTRY-GOVERNANCE.md).
 - No independent third-party audit has been performed. The evidence that has actually been
   run is in `docs/TESTNET-EVIDENCE.md` and, for the second milestone's controlled testnet
   harness runs, `docs/TESTNET-EVIDENCE-TRANCHE-2.md`; those runs are local RPC observations,

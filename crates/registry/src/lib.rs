@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod account_methods;
+pub mod governance;
 
 pub const REGISTRY_SCHEMA: &str = "registry/v1";
 
@@ -619,11 +620,42 @@ impl Registry {
             return Err(RegistryError::Schema(signed.snapshot.schema.clone()));
         }
         let root = snapshot_root(&signed.snapshot)?;
-        if signed.signatures.len() < self.root_threshold as usize {
+        self.verify_signatures(&signed.signatures, &root)?;
+        self.admit(&signed.snapshot, root, now_unix)?;
+        self.current = Some(Loaded {
+            snapshot: signed.snapshot.clone(),
+            root,
+        });
+        Ok(root)
+    }
+
+    /// Every check [`Self::load_at`] applies to a snapshot except its signatures, against this
+    /// registry's current state, changing nothing: what release tooling asks of a successor it
+    /// has built but nobody has signed yet. Passing here means that, once the pinned threshold
+    /// signs exactly this snapshot, `load_at` at `now_unix` accepts it as the next version.
+    pub(crate) fn check_unsigned(
+        &self,
+        snapshot: &RegistrySnapshot,
+        now_unix: i64,
+    ) -> Result<Hash32, RegistryError> {
+        if snapshot.schema != REGISTRY_SCHEMA {
+            return Err(RegistryError::Schema(snapshot.schema.clone()));
+        }
+        let root = snapshot_root(snapshot)?;
+        self.admit(snapshot, root, now_unix)?;
+        Ok(root)
+    }
+
+    fn verify_signatures(
+        &self,
+        signatures: &BTreeMap<String, String>,
+        root: &Hash32,
+    ) -> Result<(), RegistryError> {
+        if signatures.len() < self.root_threshold as usize {
             return Err(RegistryError::Signature);
         }
         let mut valid_signatures = 0u32;
-        for (id, encoded) in &signed.signatures {
+        for (id, encoded) in signatures {
             let key = self.root_keys.get(id).ok_or(RegistryError::Signature)?;
             let sig_bytes: [u8; 64] = hex::decode(encoded)
                 .map_err(|_| RegistryError::Signature)?
@@ -639,46 +671,55 @@ impl Registry {
         if valid_signatures < self.root_threshold {
             return Err(RegistryError::Signature);
         }
+        Ok(())
+    }
 
+    /// The content, validity and succession checks of [`Self::load_at`], after its signatures.
+    fn admit(
+        &self,
+        snapshot: &RegistrySnapshot,
+        root: Hash32,
+        now_unix: i64,
+    ) -> Result<(), RegistryError> {
         if let Some(expected) = self.expected_network {
-            if signed.snapshot.network_id != expected {
+            if snapshot.network_id != expected {
                 return Err(RegistryError::Network {
                     expected: expected.0.to_hex(),
-                    found: signed.snapshot.network_id.0.to_hex(),
+                    found: snapshot.network_id.0.to_hex(),
                 });
             }
         }
         // A registry built without a network could not decide at construction; the snapshot's
         // own network decides here, so the unpinned constructor is not a way around the rule.
-        self.refuse_development_root_for(signed.snapshot.network_id)?;
-        check_snapshot_validity(&signed.snapshot, now_unix)?;
-        validate_capability_keys(&signed.snapshot)?;
-        for (capability, revocation) in &signed.snapshot.revocations {
+        self.refuse_development_root_for(snapshot.network_id)?;
+        check_snapshot_validity(snapshot, now_unix)?;
+        validate_capability_keys(snapshot)?;
+        for (capability, revocation) in &snapshot.revocations {
             if revocation.reason.trim().is_empty() {
                 return Err(RegistryError::Parse(
                     "revocations require a capability key and non-empty reason".to_string(),
                 ));
             }
-            if revocation.effective_version > signed.snapshot.version {
+            if revocation.effective_version > snapshot.version {
                 return Err(RegistryError::Parse(format!(
                     "revocation {capability} becomes effective after snapshot version {}",
-                    signed.snapshot.version
+                    snapshot.version
                 )));
             }
         }
 
-        if signed.snapshot.version < self.minimum_version {
+        if snapshot.version < self.minimum_version {
             return Err(RegistryError::Rollback {
-                offered: signed.snapshot.version,
+                offered: snapshot.version,
                 current: self.minimum_version,
             });
         }
         if self.current.is_none() {
             if let Some(checkpoint) = &self.pinned_checkpoint {
-                if signed.snapshot.version == checkpoint.version {
+                if snapshot.version == checkpoint.version {
                     if root != checkpoint.root
-                        || signed.snapshot.log_index != checkpoint.log_index
-                        || signed.snapshot.revocations != checkpoint.revocations
+                        || snapshot.log_index != checkpoint.log_index
+                        || snapshot.revocations != checkpoint.revocations
                     {
                         return Err(RegistryError::Transparency(format!(
                             "snapshot version {} conflicts with the persisted checkpoint",
@@ -689,25 +730,22 @@ impl Registry {
                     let expected_index = checkpoint.log_index.checked_add(1).ok_or_else(|| {
                         RegistryError::Transparency("log index overflow".to_string())
                     })?;
-                    if signed.snapshot.log_index != expected_index
-                        || signed.snapshot.previous_root != Some(checkpoint.root)
+                    if snapshot.log_index != expected_index
+                        || snapshot.previous_root != Some(checkpoint.root)
                     {
                         return Err(RegistryError::Transparency(format!(
                             "snapshot does not directly extend persisted checkpoint {}",
                             checkpoint.root
                         )));
                     }
-                    ensure_revocations_extend(
-                        &checkpoint.revocations,
-                        &signed.snapshot.revocations,
-                    )?;
+                    ensure_revocations_extend(&checkpoint.revocations, &snapshot.revocations)?;
                 }
             }
         }
         if let Some(current) = &self.current {
-            if signed.snapshot.version <= current.snapshot.version {
+            if snapshot.version <= current.snapshot.version {
                 return Err(RegistryError::Rollback {
-                    offered: signed.snapshot.version,
+                    offered: snapshot.version,
                     current: current.snapshot.version,
                 });
             }
@@ -716,25 +754,21 @@ impl Registry {
                 .log_index
                 .checked_add(1)
                 .ok_or_else(|| RegistryError::Transparency("log index overflow".to_string()))?;
-            if signed.snapshot.log_index != expected_index {
+            if snapshot.log_index != expected_index {
                 return Err(RegistryError::Transparency(format!(
                     "expected log index {expected_index}, got {}",
-                    signed.snapshot.log_index
+                    snapshot.log_index
                 )));
             }
-            if signed.snapshot.previous_root != Some(current.root) {
+            if snapshot.previous_root != Some(current.root) {
                 return Err(RegistryError::Transparency(format!(
                     "snapshot does not extend the previously accepted root {}",
                     current.root
                 )));
             }
-            ensure_revocations_extend(&current.snapshot.revocations, &signed.snapshot.revocations)?;
+            ensure_revocations_extend(&current.snapshot.revocations, &snapshot.revocations)?;
         }
-        self.current = Some(Loaded {
-            snapshot: signed.snapshot.clone(),
-            root,
-        });
-        Ok(root)
+        Ok(())
     }
 
     /// Parse and load a signed snapshot from JSON.

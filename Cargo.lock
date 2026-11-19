@@ -1267,6 +1267,7 @@ dependencies = [
  "ozpb-recorder-core",
  "ozpb-registry",
  "ozpb-source-rpc",
+ "ozpb-synthesizer",
  "ozpb-toolkit",
  "serde",
  "serde_json",

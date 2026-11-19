@@ -745,9 +745,12 @@ survive registry restarts. Tests cover rollback, same-version equivocation with 
 transparency-chain forks, invalid key encodings, and revocation removal/mutation.
 
 **Verdict.** Conforms as a mechanism; 🗓 as governance. The committed registry key is a
-deterministic development root — suitable for reproducible examples, not production governance,
-which needs independently controlled roots, durable checkpoints, rotation and revocation
-operations, monitoring, and an incident process.
+deterministic development root — suitable for reproducible examples, not production governance —
+and every consumer refuses it for any network but testnet. `ozpb registry` and
+[Registry governance](REGISTRY-GOVERNANCE.md) supply the custodian tooling and procedure: key
+ceremony, successors checked as a consumer would load them, local or hardware signatures, replay
+of the published log before distribution, monitoring, revocation, rotation and an incident path.
+Production governance still needs independently held roots, which exist only after a key ceremony.
 
 ---
 
