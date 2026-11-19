@@ -120,6 +120,11 @@ The `E_*` codes are also pinned without a server build: an `api-types` test
 table with the file's `error_codes`. A code removed or renamed fails it as a breaking change; a
 new code fails it until the file is regenerated, and is additive.
 
+The wallet's TypeScript declarations for the two install tools,
+`wallet/shared/install-wire.d.mts`, are held to the file's schemas by
+`wallet/tests/install-wire.test.mjs`: a regenerated schema they no longer match fails that test
+until they are updated in the same commit.
+
 ## What 1.0 promises, and for how long
 
 During the grant period, which ends when the Stellar Community Fund accepts the third milestone,

@@ -69,6 +69,12 @@ an MCP tool and a CLI command (`ozpb check-policy-call-surface` and so on), exce
 | `check_against_policy` | A permit, deny or `unsupported` prediction for one call against an installed rule ([LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md)) |
 | `ozpb check-installed-grant` (CLI only) | A monitoring observation of one installed grant against its installation commitment |
 
+Every tool's request and response schema is in [`wire-contract.json`](wire-contract.json), which
+CI holds to the built server ([versioning](VERSIONING.md#keeping-the-snapshot-current)). For the
+two install operations, [`wallet/shared/install-wire.d.mts`](../wallet/shared/install-wire.d.mts)
+is a typed client's declarations, held to those schemas by `wallet/tests/install-wire.test.mjs`
+([another wallet](POLLYWALLET-INTEGRATION.md#another-wallet-the-typed-install-surface)).
+
 What the wallet must do itself, every time: decode and validate every field of the unsigned
 transaction against its own RPC; recompute the authority check and match each listed identity to
 the user's own keys or trusted identities; regenerate any agent proposal from the transaction hash
