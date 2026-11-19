@@ -13,6 +13,7 @@ import { REGISTRY_ROOT_POLICY, WalletToolchain } from '../server/toolchain.mjs';
 import { REFUSAL_REASONS } from '../server/http.mjs';
 import { REFUSAL_REASONS as CLIENT_REASONS } from '../overlay/files/src/policy-builder/client/client.mjs';
 import { StrKey } from '@stellar/stellar-sdk';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 /** A persisted checkpoint as the CLI writes it: u64 fields as decimal strings, the root as hex. */
 const CHECKPOINT = (version) => ({ version: String(version), log_index: String(version), root: 'ef'.repeat(32), revocations: {} });
@@ -29,7 +30,8 @@ function operator(t) {
   const keyPath = join(root, 'payer.key');
   writeFileSync(keyPath, `${Keypair.random().secret()}\n`, { mode: 0o600 });
   const path = join(root, 'operator.json');
-  return (roots, extra = {}) => {
+  return (roots, extra = {}, snapshot = '{}') => {
+    writeFileSync(join(root, 'registry.json'), snapshot, { mode: 0o600 });
     writeFileSync(join(root, `roots.json`), typeof roots === 'string' ? roots : JSON.stringify(roots), { mode: 0o600 });
     writeFileSync(path, JSON.stringify({ executable, workRoot, rpcUrl: 'https://rpc.example/', registrySnapshotPath: join(root, 'registry.json'),
       registryRootsPath: join(root, 'roots.json'), registryMinimumVersion: 6, network: 'mainnet', feePayerKeyPath: keyPath, ...extra }),
@@ -78,6 +80,52 @@ test('a mainnet session needs the persisted checkpoint, at or above the configur
     ['a short root', { ...CHECKPOINT(7), root: 'ef' }],
   ]) assert.throws(save({ ...production, checkpoint }), (error) => typeof error.startup === 'string', name);
 });
+
+// The mainnet registry is its own chain from version 1 (registry/mainnet/v0001.draft.json). The
+// fixture is that draft, its pending review reference replaced, signed by two throwaway custodian
+// keys (`ozpb registry keygen`, `sign`, `combine`; the keys were discarded), with the checkpoint
+// `ozpb registry verify` printed for it.
+const MAINNET_V1 = new URL('fixtures/mainnet-registry-v1/', import.meta.url);
+const MAINNET_V1_SIGNED = readFileSync(new URL('registry.signed.json', MAINNET_V1), 'utf8');
+const MAINNET_V1_ROOTS = readFileSync(new URL('registry-roots.json', MAINNET_V1), 'utf8');
+
+test('a mainnet session starts on the mainnet registry\'s signed genesis, version 1, and still refuses a rollback', (t) => {
+  const save = operator(t);
+  const roots = JSON.parse(MAINNET_V1_ROOTS);
+  const genesis = JSON.parse(MAINNET_V1_SIGNED).snapshot;
+  assert.deepEqual([String(genesis.version), String(genesis.log_index), genesis.network_id],
+    ['1', '1', WALLET_NETWORKS.mainnet.networkId]);
+  assert.deepEqual([roots.checkpoint.version, roots.checkpoint.log_index], ['1', '1']);
+  const config = save(MAINNET_V1_ROOTS, { registryMinimumVersion: 1 }, MAINNET_V1_SIGNED)();
+  assert.equal(config.network.name, 'mainnet');
+  assert.equal(config.registryMinimumVersion, 1);
+  assert.equal(config.registrySnapshot, MAINNET_V1_SIGNED);
+  // The floor is the operator's own registry's: a floor above the persisted checkpoint is a rollback, refused.
+  assert.throws(save(MAINNET_V1_ROOTS, { registryMinimumVersion: 2 }, MAINNET_V1_SIGNED),
+    (error) => /older than the configured minimum/.test(error.startup));
+  // And there is no version 0.
+  assert.throws(save(MAINNET_V1_ROOTS, { registryMinimumVersion: 0 }, MAINNET_V1_SIGNED), /configuration/);
+});
+
+// Opt-in, against the real CLI (`OZPB_BIN`): under the root policy alone, as at the ceremony, the
+// fixture verifies on mainnet and prints exactly the committed checkpoint, and a floor above it is
+// refused as a rollback.
+test('the real `ozpb registry verify` accepts the mainnet genesis fixture at floor 1 and refuses it at floor 2',
+  { skip: !process.env.OZPB_BIN }, async (t) => {
+    const { execFileSync, spawnSync } = await import('node:child_process');
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-registry-genesis-')));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const { checkpoint: _persisted, ...policy } = JSON.parse(MAINNET_V1_ROOTS);
+    const roots = join(dir, 'roots.json');
+    writeFileSync(roots, JSON.stringify(policy), { mode: 0o600 });
+    const signed = new URL('registry.signed.json', MAINNET_V1).pathname;
+    const verify = (floor) => ['registry', 'verify', '--signed', signed, '--registry-roots', roots, '--network',
+      'Public Global Stellar Network ; September 2015', '--at', '1798761700', '--min-version', String(floor)];
+    assert.deepEqual(JSON.parse(execFileSync(process.env.OZPB_BIN, verify(1))), JSON.parse(MAINNET_V1_ROOTS).checkpoint);
+    const refused = spawnSync(process.env.OZPB_BIN, verify(2), { encoding: 'utf8' });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /^Error: E_REGISTRY_ROLLBACK: /);
+  });
 
 test('the CLI\'s E_REGISTRY_ROOT_POLICY reaches the page as registry_root_refused, from every registry-reading call', async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-registry-cli-')));

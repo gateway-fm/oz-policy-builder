@@ -20,8 +20,10 @@ with a reason the page explains, when it does not.
 3. **A production registry.** A signed mainnet snapshot, its root policy and the persisted
    checkpoint, from the [mainnet registry](../registry/mainnet/README.md) once its custodians have
    signed it ([registry governance](REGISTRY-GOVERNANCE.md)). The development root is refused on
-   mainnet, by the wallet at startup and by the CLI (`E_REGISTRY_ROOT_POLICY`). Point
-   `registryPublishedPath` at the published log so that monitoring can watch it.
+   mainnet, by the wallet at startup and by the CLI (`E_REGISTRY_ROOT_POLICY`). Set
+   `registryMinimumVersion` to the version of that registry you pinned (1 for its genesis; the
+   development registry's 6 does not apply). Point `registryPublishedPath` at the published log so
+   that monitoring can watch it.
 4. **A funded fee payer.** A classic account you own, its secret seed in a file with mode `0600`
    (`feePayerKeyPath`), funded with its minimum reserve (1 XLM at the current 0.5 XLM base
    reserve) plus the fees below. The wallet never funds it (`payer_unfunded`).

@@ -1,0 +1,18 @@
+{
+  "threshold": 2,
+  "keys": {
+    "fixture-a": "29a8ff0edc3c11ef85686b70c2da12ec9e2e83a611f584e591c18bd99837d84c",
+    "fixture-b": "d22ac9004367a1c9ec72e023bef76d8a0cb1f61b819f8674fb522e8dd4448807"
+  },
+  "checkpoint": {
+    "version": "1",
+    "log_index": "1",
+    "root": "b7082f00a04e57da31dc0f8c8327d0558f8737a5e8d6d0f83ca401012eeb2edd",
+    "revocations": {
+      "account/a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289": {
+        "reason": "GHSA-jpg9-m7w4-c7wc: stellar-accounts before 0.7.3 approves a Delegated signer without any signature when the delegated address is the direct invoker of the account's __check_auth (the contract requesting its authorization, or a delegation that loops back), so anyone can authorize the account without keys. Fixed in 0.7.3; accounts running this code must be recreated on the 0.7.3 build.",
+        "effective_version": "1"
+      }
+    }
+  }
+}
