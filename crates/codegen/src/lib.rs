@@ -2009,9 +2009,10 @@ mod tests {
                 proptest::sample::select(names),
                 // The full declared range here too (MAX_ARGS_PER_CALL is 32): argument
                 // indices reach two digits at 10, which widens every index-bearing line.
-                // Both bounds together cost the property test about 14 seconds instead of
-                // 7 — measured, and paid, because a corpus that stops short of the domain
-                // it quantifies over is how the 32-call corner went unvisited before.
+                // Both bounds together roughly double the property test's run time (about 22
+                // seconds now, with all 256 cases reaching codegen) — measured, and paid,
+                // because a corpus that stops short of the domain it quantifies over is how
+                // the 32-call corner went unvisited before.
                 proptest::collection::vec(constraint_strategy(), 0..=MAX_ARGS_PER_CALL),
             )
                 .prop_map(|(fn_name, constraints)| AllowedCall {
@@ -2054,6 +2055,13 @@ mod tests {
             // (correctly) refuses to embed.
             let mut spec = golden_spec().spec().clone();
             let rule = spec.rules.get_mut(0)?;
+            // Only the generated policy. The golden rule also composes a reviewed spending
+            // limit, which validation lets cover nothing but SEP-41 `transfer` tuples with an
+            // i128 amount at argument 2 — so with it kept, every generated corpus of calls was
+            // refused before reaching codegen, and the property below held over no spec at
+            // all. Codegen never reads a reviewed policy, so dropping it narrows nothing.
+            rule.policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
             rule.allowed_calls = calls;
             rule.authorization.kind = predicate.0;
             rule.authorization.strict_signer_set = predicate.1;
@@ -2171,6 +2179,17 @@ mod tests {
         }
 
         proptest::proptest! {
+            // Bounded shrinking. Proptest's default shrinks without limit in iterations or time,
+            // and every step here re-validates, re-generates and re-parses a crate of up to 32
+            // calls of up to 32 arguments. A regression (or a mutant in the mutation gate) that
+            // fails on a large case could shrink past the gate's 120-second timeout on a loaded
+            // machine, which reports a timeout instead of the failure. The bound keeps a failure
+            // fast and the reported case still small enough to read.
+            #![proptest_config(proptest::prelude::ProptestConfig {
+                max_shrink_iters: 256,
+                max_shrink_time: 10_000,
+                ..proptest::prelude::ProptestConfig::default()
+            })]
             /// Every ValidatedSpec must emit Rust that parses. Parsing (rather than
             /// compiling) keeps this fast enough for CI; `sampled_specs_compile_to_wasm`
             /// covers the real toolchain.
@@ -2186,12 +2205,14 @@ mod tests {
                 max_calls in proptest::option::of(0u32..u32::MAX),
                 extra_signer in proptest::prelude::any::<bool>(),
             ) {
-                let Some(spec) = spec_with(calls, predicate, valid_until, max_calls, extra_signer)
-                else {
-                    // Some combinations are legitimately rejected by spec validation (e.g. a
-                    // threshold above the signer count); those never reach codegen.
-                    return Ok(());
-                };
+                let spec = spec_with(calls, predicate, valid_until, max_calls, extra_signer);
+                // Some combinations are legitimately rejected by spec validation (e.g. a
+                // threshold above the signer count); those never reach codegen. They are
+                // *rejected*, not passed: proptest draws a replacement, and past its global
+                // reject limit fails the run. Returning early here once let a builder that
+                // validated nothing make this property hold over no spec at all.
+                proptest::prop_assume!(spec.is_some());
+                let spec = spec.expect("assumed above");
                 let generated = generate(&spec, 0, &Pins::default())
                     .map_err(|e| proptest::test_runner::TestCaseError::fail(
                         format!("codegen refused a ValidatedSpec: {e}")
@@ -4350,5 +4371,203 @@ mod tests {
         assert!(lockfile.contains("version = \"28.0.0\""));
         assert!(lockfile.contains("name = \"stellar-accounts\""));
         assert!(lockfile.contains("version = \"0.8.0\""));
+    }
+
+    #[test]
+    fn the_generated_crate_may_reach_exactly_the_builder_input_limit() {
+        // The bound is on the whole crate, whatever makes it large. The rust channel pin is the
+        // one free-form input that lands in it verbatim, once, so it can size a crate exactly.
+        let spec = golden_spec();
+        let generated_with = |channel: String| {
+            let pins = Pins {
+                rust_channel: channel,
+                ..Pins::default()
+            };
+            generate(&spec, 0, &pins).map(|g| g.files.values().map(String::len).sum::<usize>())
+        };
+        let base = generated_with("x".to_string()).unwrap();
+        assert_eq!(generated_with("xx".to_string()).unwrap(), base + 1);
+
+        let at_limit = "x".repeat(1 + MAX_GENERATED_CRATE_BYTES - base);
+        assert_eq!(generated_with(at_limit).unwrap(), MAX_GENERATED_CRATE_BYTES);
+        let over = "x".repeat(2 + MAX_GENERATED_CRATE_BYTES - base);
+        assert_eq!(
+            generated_with(over).unwrap_err(),
+            CodegenError::ResourceLimit {
+                actual: MAX_GENERATED_CRATE_BYTES + 1,
+                maximum: MAX_GENERATED_CRATE_BYTES,
+            }
+        );
+    }
+
+    #[test]
+    fn the_lockfile_is_refused_when_either_pin_disagrees_with_it() {
+        for pins in [
+            Pins {
+                soroban_sdk: "0.0.1".to_string(),
+                ..Pins::default()
+            },
+            Pins {
+                stellar_accounts: "0.0.1".to_string(),
+                ..Pins::default()
+            },
+        ] {
+            assert!(
+                matches!(
+                    generate(&golden_spec(), 0, &pins),
+                    Err(CodegenError::Internal(message)) if message.contains("lockfile")
+                ),
+                "{pins:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn several_allowed_names_are_checked_as_one_negated_disjunction() {
+        let transfer = golden_spec().spec().rules[0].allowed_calls[0].clone();
+        let mut approve = transfer.clone();
+        approve.fn_name = "approve".to_string();
+        let mut spec = golden_spec().spec().clone();
+        // A reviewed spending limit covers transfer tuples only.
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        spec.rules[0].allowed_calls = vec![transfer, approve];
+        let spec = spec
+            .validate()
+            .expect("two calls under distinct names validate");
+        let source = emitted_for(&spec);
+        // Names are bound in sorted order: fn_0 is `approve`, fn_1 is `transfer`. The negation
+        // must cover the whole disjunction, and each tuple pairs its own name with its check.
+        assert!(
+            source.contains("        if !(fn_0_ok || fn_1_ok) {\n"),
+            "{source}"
+        );
+        assert!(
+            source.contains(
+                "        let tuple_ok = (fn_1_ok && check_call_0(e, &c.args, &smart_account))\n            \
+                 || (fn_0_ok && check_call_1(e, &c.args, &smart_account));\n"
+            ),
+            "{source}"
+        );
+
+        // One call: neither parenthesized (clippy: unnecessary_parens).
+        let source = emitted_for(&golden_spec());
+        assert!(source.contains("        if !fn_0_ok {\n"), "{source}");
+        assert!(
+            source.contains(
+                "        let tuple_ok = fn_0_ok && check_call_0(e, &c.args, &smart_account);\n"
+            ),
+            "{source}"
+        );
+    }
+
+    #[test]
+    fn a_filled_import_line_may_reach_exactly_max_width() {
+        // `    A…A, B…B,` is 4 + 46 + 2 + 47 + 1 = 100 columns: rustfmt's `max_width` is
+        // inclusive, so the line stays, and only `C` moves to the next.
+        let a = "A".repeat(46);
+        let b = "B".repeat(47);
+        assert_eq!(
+            render::use_statement("soroban_sdk", &[a.as_str(), b.as_str(), "C"]),
+            format!("use soroban_sdk::{{\n    {a}, {b},\n    C,\n}};\n")
+        );
+    }
+
+    #[test]
+    fn a_symbol_renders_as_exactly_its_validated_text() {
+        assert_eq!(
+            render::SymbolName::new("swap_exact_tokens_for_tokens")
+                .unwrap()
+                .to_string(),
+            "swap_exact_tokens_for_tokens"
+        );
+    }
+
+    /// The golden rule, unvalidated, with its signers replaced. Validation refuses external
+    /// signers in Phase 1, so this is how the external-signer rendering is reached at all.
+    fn render_rule_with(signers: Vec<SignerSpec>, kind: PredicateKind, strict: bool) -> RenderRule {
+        let mut rule = golden_spec().spec().rules[0].clone();
+        rule.authorization.signers = signers;
+        rule.authorization.kind = kind;
+        rule.authorization.strict_signer_set = strict;
+        RenderRule::from_rule(&rule, "policy-templates/scope@1").unwrap()
+    }
+
+    fn external_signer() -> SignerSpec {
+        SignerSpec::External {
+            verifier: golden_spec().spec().rules[0].context.contract.clone(),
+            verifier_code_hash: ozpb_domain::sha256(b"verifier"),
+            key_hex: "aabb".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_external_signer_compiles_in_one_key_constant_under_one_name() {
+        assert_eq!(render::signer_key_name(3), "SIGNER_3_KEY");
+        assert_eq!(
+            render::ByteArray::from_hex("aabb")
+                .unwrap()
+                .render_signer_key_const(3),
+            "const SIGNER_3_KEY: [u8; 2] = [0xaa, 0xbb];\n"
+        );
+
+        let rule = render_rule_with(vec![external_signer()], PredicateKind::AnyOf, true);
+        assert!(rule.has_external_signer());
+        let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"));
+        let source = format!("{root}\n{contract}");
+        assert!(
+            source.contains("const SIGNER_0_KEY: [u8; 2] = [0xaa, 0xbb];\n"),
+            "{source}"
+        );
+        assert!(
+            source.contains("Bytes::from_slice(e, &SIGNER_0_KEY)"),
+            "{source}"
+        );
+
+        // Under a dynamic predicate nothing is compiled in, so there is no key to declare.
+        let dynamic = render_rule_with(
+            vec![external_signer()],
+            PredicateKind::AnyOfCurrentRuleSigners,
+            false,
+        );
+        assert!(!dynamic.has_external_signer());
+        let delegated = render_rule_with(
+            vec![SignerSpec::Delegated {
+                address: golden_delegate_strkey(),
+            }],
+            PredicateKind::AnyOf,
+            true,
+        );
+        assert!(!delegated.has_external_signer());
+    }
+
+    #[test]
+    fn enforce_documents_signer_set_divergence_exactly_when_it_can_raise_it() {
+        // Validation pairs strictness with named predicates, but emission reads the two flags
+        // separately; its documentation has to follow the same flags as its checks.
+        let delegate = || SignerSpec::Delegated {
+            address: golden_delegate_strkey(),
+        };
+        for (strict, kind) in [
+            (true, PredicateKind::AnyOf),
+            (false, PredicateKind::AnyOf),
+            (false, PredicateKind::AnyOfCurrentRuleSigners),
+        ] {
+            let rule = render_rule_with(vec![delegate()], kind.clone(), strict);
+            let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"));
+            let source = format!("{root}\n{contract}");
+            let documented = error_bullets(&docs_of(&source, "enforce"))
+                .iter()
+                .any(|(variant, _)| variant == "SignerSetDiverged");
+            let raised = body_of(&source, "enforce")
+                .contains("panic_with_error!(e, PolicyError::SignerSetDiverged)");
+            assert_eq!(documented, raised, "strict={strict} {kind:?}");
+            assert_eq!(
+                raised,
+                strict && kind == PredicateKind::AnyOf,
+                "strict={strict} {kind:?}"
+            );
+        }
     }
 }
