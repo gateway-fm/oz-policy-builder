@@ -2237,8 +2237,16 @@ mod tests {
                         Constraint::EqI128 {
                             value: i128::MIN.to_string(),
                         },
+                        // One below the type's limit: a bound at the limit is vacuous, so codegen
+                        // emits only the type check for it, and the 40-digit positive literal
+                        // this case exists to compile would not reach the compiler.
                         Constraint::LeI128 {
-                            max: i128::MAX.to_string(),
+                            max: (i128::MAX - 1).to_string(),
+                        },
+                        // Both ends one inside the limits: two 40-digit literals in one range.
+                        Constraint::RangeI128 {
+                            min: (i128::MIN + 1).to_string(),
+                            max: (i128::MAX - 1).to_string(),
                         },
                     ],
                 )],
