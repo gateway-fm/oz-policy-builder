@@ -27,7 +27,9 @@ const CANCEL_CONFIRMATION: Duration = Duration::from_secs(2);
 /// The one argument a launcher is started with outside a job: it prints [`launcher_protocol`] and
 /// exits, reading no input or configuration and starting nothing.
 const PROTOCOL_ARGUMENT: &str = "--protocol";
-/// How long a launcher has to answer [`PROTOCOL_ARGUMENT`]: an interpreter's startup.
+/// How long a launcher has to answer [`PROTOCOL_ARGUMENT`]: an interpreter's startup. A launcher
+/// that does not is killed with its process group, and each of its two output pipes then gets
+/// up to `READER_GRACE` (5 s) to close, so startup waits at most 20 s on it.
 #[cfg(not(test))]
 const PROTOCOL_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
@@ -55,7 +57,12 @@ pub(crate) fn check_protocol(path: &Path) -> Result<(), BuildError> {
         .stderr(Stdio::piped());
     let answered = match run_bounded(command, PROTOCOL_TIMEOUT) {
         Ok(output) => output.status.success() && output.stdout == launcher_protocol().as_bytes(),
-        Err(BuildError::Timeout) => false,
+        Err(BuildError::Timeout) => {
+            return Err(BuildError::Unavailable(format!(
+                "the worker launcher did not answer {PROTOCOL_ARGUMENT} within {} seconds",
+                PROTOCOL_TIMEOUT.as_secs()
+            )))
+        }
         Err(error) => return Err(error),
     };
     if answered {
@@ -995,11 +1002,15 @@ time.sleep(30)"#;
             script("import sys\nif len(sys.argv) != 1:\n    sys.exit(1)\nprint('ready')");
         let error = config.check_worker_launcher().unwrap_err();
         assert!(error.to_string().contains("same revision"), "{error}");
-        // One that never answers is bounded.
+        // One that never answers is bounded, and reported as a timeout, not as another revision.
         let (_directory, config, _slots) = script("import time\ntime.sleep(30)");
         let start = std::time::Instant::now();
-        assert!(config.check_worker_launcher().is_err());
+        let error = config.check_worker_launcher().unwrap_err().to_string();
         assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(
+            error.contains("did not answer --protocol within") && !error.contains("same revision"),
+            "{error}"
+        );
         // Without a launcher there is nothing to ask.
         assert_eq!(BuildConfig::default().check_worker_launcher(), Ok(()));
     }

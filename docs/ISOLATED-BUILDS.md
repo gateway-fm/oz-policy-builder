@@ -118,11 +118,13 @@ retained until the operator has cleaned up.
 Before it serves, the API runs the configured executable once with the single argument
 `--protocol`, no input and a minimal host environment. The launcher must print exactly the line
 `build-worker-job/v1 contained-build-result/v2` (the job schema it reads and the frame schema it
-writes) and exit 0, without reading its configuration or starting anything. Any other answer, a
-non-zero exit or no answer within 10 seconds stops the API's startup with an error naming the
-revision mismatch; a launcher that predates the query takes no argument and is refused the same
-way. For each job, the API starts the executable with no arguments, a private file on stdin,
-bounded stdout capture, and a minimal host environment. The input is JSON with schema
+writes) and exit 0, without reading its configuration or starting anything. Any other answer or
+a non-zero exit stops the API's startup with an error naming the revision mismatch; a launcher
+that predates the query takes no argument and is refused the same way. One that does not answer
+within 10 seconds is killed with its process group and reported as a timeout; the API waits up
+to 5 more seconds for each of its two output pipes to close, so at most 20 seconds in all. For
+each job, the API starts the executable with no arguments, a private file on stdin, bounded
+stdout capture, and a minimal host environment. The input is JSON with schema
 `build-worker-job/v1`, `crate_name`, `files` (an array of `{path, body}`), `timeout_seconds`, and
 `jobs`. Time and parallelism originate in operator configuration, and the launcher must check
 them against its own ceilings. The six paths are exactly `Cargo.toml`, `Cargo.lock`,
