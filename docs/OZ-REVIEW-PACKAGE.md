@@ -78,18 +78,21 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
 | Component | Versions | Where pinned |
 | --- | --- | --- |
 | Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `contracts/golden-transfer-policy/Cargo.toml`, `contracts/soroswap-swap-policy/Cargo.toml`; `Pins::default` in `crates/codegen/src/lib.rs` |
-| Recognized account, ed25519 and WebAuthn verifiers, reviewed spending-limit policy | Your `examples/multisig-smart-account` at v0.7.2 (`stellar-accounts` 0.7.2, `soroban-sdk` 26.1.0), built here from source | Exact hashes in `ozpb_domain::pinned_upstream` |
+| Recognized account | Your `examples/multisig-smart-account/account` at v0.7.3 (`stellar-accounts` 0.7.3, `soroban-sdk` 26.1.0), built here from source | Exact hash in `ozpb_domain::pinned_upstream` |
+| ed25519 and WebAuthn verifiers, reviewed spending-limit policy | Your `examples/multisig-smart-account` at v0.7.2 (`stellar-accounts` 0.7.2, `soroban-sdk` 26.1.0), built here from source | Exact hashes in `ozpb_domain::pinned_upstream` |
 
 **Why they differ.** Commit 3207b6ae (28 October 2026) moved generated policies, fixtures and the
 native contract tests to your 0.8.0 release and the SDK major it requires, and kept the deployed
-account's signing protocol and every trust anchor on 0.7.2. A policy depends on the policy
-interface — `enforce`, `install`, `uninstall`, `Signer`, `ContextRule` — while 0.8.0 also changed
-how the account authenticates: external and delegated signers authorize the account-address-bearing
-`AuthDigestPreimage`. Recognizing a 0.8 account therefore needs versioned wallet signing, registry
-and storage-reader support, so until that exists the 0.8 account code is unknown to the toolkit
-and refused ([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md)).
+account's signing protocol and every trust anchor on 0.7.2. The account has since moved to your
+v0.7.3 build for GHSA-jpg9-m7w4-c7wc, which leaves its signed digest, storage and exports
+unchanged ([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).
+A policy depends on the policy interface — `enforce`, `install`, `uninstall`, `Signer`,
+`ContextRule` — while 0.8.0 also changed how the account authenticates: external and delegated
+signers authorize the account-address-bearing `AuthDigestPreimage`. Recognizing a 0.8 account
+therefore needs versioned wallet signing, registry and storage-reader support, so until that
+exists the 0.8 account code is unknown to the toolkit and refused ([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md)).
 
-**What exercises the pairing.** `scripts/test-pinned-account-authorization.sh` builds the 0.7.2
+**What exercises the pairing.** `scripts/test-pinned-account-authorization.sh` builds the 0.7.3
 account from its pinned source, generates and builds a policy with the current pins, and runs it
 through the account's complete `__check_auth`: `pinned_account_wasm_full_authorization` in
 `contracts/differential/tests/account_wasm_auth.rs` (signed delegated authorization, forged
@@ -109,7 +112,7 @@ exists for each.
 | Gate ([§11](architecture.md#11-ecosystem-engagement)) | What exists in this tree | State |
 | --- | --- | --- |
 | PolicySpec and constraint vocabulary, with the signer-predicate and tuple model | `crates/policy-spec`: constraints `EqAddress`, `EqScval`, `EqI128`, `LeI128`, `GeI128`, `AnyValue`; predicates `AnyOf`, `AllOf`, `Threshold`, `AnyOfCurrentRuleSigners`; `CallCountPerInstallation`; a validation typestate; reference semantics in `crates/evaluator`; [CANONICAL-HASHING.md](CANONICAL-HASHING.md) | In use since Tranche 1 |
-| Capability-registry entries for your prebuilt contracts and verifier hashes | Entries in `registry::dev` for your 0.7.2 spending-limit policy, account and both verifiers, each keyed by exact hash with a source-review reference; the account's method inventory in `crates/registry/src/account_methods.rs`; `scripts/verify-pinned-upstream.sh` | Development registry, signed with a public development key; the entries describe our builds of your source, not artifacts you publish |
+| Capability-registry entries for your prebuilt contracts and verifier hashes | Entries in `registry::dev` for your 0.7.2 spending-limit policy and both verifiers and your 0.7.3 account, each keyed by exact hash with a source-review reference, and the revoked 0.7.2 account entry; the account's method inventory in `crates/registry/src/account_methods.rs`; `scripts/verify-pinned-upstream.sh` | Development registry, signed with a public development key; the entries describe our builds of your source, not artifacts you publish |
 | Template snippet library | `crates/codegen` (`emit_lib`, `render.rs`), one template family, `policy-templates/scope@1` | Covers signer predicate with strict set, target, function and tuple checks, exact and bounded `i128`, address and exact `ScVal`, call count and expiry. Embedding addresses as encoded bytes is deferred to template-pack v2 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)) |
 | Generated-code final form | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15 | Self-assessed against your checklist; provenance metadata still to be added (below) |
 | Adapter design | [TARGET-ADAPTERS.md](TARGET-ADAPTERS.md), `crates/synthesizer/src/adapters.rs`, `crates/domain/src/target_adapters.rs` | One adapter, `soroswap-router@2`; its router binding is a development-registry assertion whose Wasm was not reproduced from source; no Blend adapter |
@@ -139,9 +142,11 @@ exists for each.
   changes every generated source and Wasm hash.
 - **Provenance fields in the BuildManifest** that it does not record today
   ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)). Metadata only; every manifest rehashes.
-- **The recognized account moves from the 0.7.2 example to the 0.7.3 build**, for
-  GHSA-jpg9-m7w4-c7wc (delegated signer bypass before 0.7.3), with a new pinned hash and registry
-  entry and a rerun of the pinned-account gate.
+
+The move of the recognized account from the 0.7.2 example to the 0.7.3 build, for
+GHSA-jpg9-m7w4-c7wc, is already in this tree: a new pinned hash, development registry version 6
+with the 0.7.2 entry revoked, and the pinned-account gate building the 0.7.3 account
+([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).
 
 Recognizing your 0.8.0 account may follow; it needs the versioned signing, registry, storage and
 wallet support described in [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md).

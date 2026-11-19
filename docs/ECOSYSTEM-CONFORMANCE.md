@@ -13,6 +13,12 @@ conformance pass, which added §15 and closed §6's open decision. Verified agai
 the repository as of that pass. Sections 9–14 record the subsystems that pass hardened; the
 disallowed-type gate that was pending at first compilation has since landed (§4).
 
+Generated policies have since moved to `soroban-sdk` 28.0.0 and `stellar-accounts` 0.8.0, and the
+recognized account to OpenZeppelin's example built at v0.7.3 (§14,
+[SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md)). A citation below that names `soroban-sdk`
+26.1.0, `stellar-accounts` 0.7.2 or tag v0.7.2 with a line number points into that version, where
+it was read.
+
 **Verdict legend:** ✅ conforms · 🗓 later-milestone scope · ⚠️ diverges · ❌ gap · ℹ️ open decision ·
 — reference, not an assessment
 
@@ -98,7 +104,7 @@ order. The signer set — previously the sharpest divergence, a hand-written
 account itself stores (`SignerSpec::to_stored_scval`, `crates/policy-spec/src/lib.rs:219`; the
 sort over encodings in `signer_set_hash`, `:274`, sorted at `:279`). Call arguments inside the generated contract
 compare as XDR, as they always did (`v{i}.to_xdr(e)`, emitted by `emit_lib`'s `EqScval` arm,
-`crates/codegen/src/lib.rs:1614`).
+`crates/codegen/src/lib.rs`).
 
 Since the hardening pass the preimages are also **bounded before hashing**: encoded evidence is
 capped below the 4 MiB canonical-hash preimage ceiling (per-value and total caps in §14), so a
@@ -197,7 +203,7 @@ artifact was produced. The difference is that SEP-55's attestation is signed by 
 performed the build and checkable against it, whereas `BuildManifest` is checkable only with our
 CLI — which the build runner already says out loud, stamping every real build
 `builder: BUILDER_LOCAL`, whose value is `local-unattested` (stamped in `build_local`,
-`crates/build-runner/src/lib.rs:847`), with the reason in that function's doc comment (`:777-780`):
+`crates/build-runner/src/lib.rs`), with the reason in that function's doc comment:
 "trust requires local reproduction or a separately trusted build attestation".
 
 Those three restatements are no longer taken on the builder's word, which is the one thing about
@@ -240,7 +246,7 @@ one is not waiting on anybody.** It is worth separating from the paragraph above
 one is a standard in progress and this one is a limit of what we can currently promise. We pin
 rustc through `rust-toolchain.toml`, pin
 dependency versions, and build `--locked` (in `BUILD_ARGS`,
-`crates/build-runner/src/lib.rs:463-469`). SEP-58 pins the
+`crates/build-runner/src/lib.rs`). SEP-58 pins the
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
 hash reproduces on a sufficiently similar host and is not guaranteed off it. Containerised builds
@@ -525,7 +531,7 @@ as signers, context rules, and policies; a policy is a separate contract with
 `enforce`/`install`/`uninstall`, and denial is expressed by a panic.
 
 **What we have.** The generated policy implements exactly the `Policy` trait from
-`stellar-accounts` 0.7.2, reads
+`stellar-accounts` 0.8.0, the version it builds against, reads
 `soroban_sdk::auth::Context::Contract(ContractContext { contract, fn_name, args })`, and denies
 by panicking. The order of checks is fixed and documented in the artifact's header: account
 authorization and installation state first, then the signer predicate (the account defers
@@ -882,12 +888,14 @@ it is read against whether or not we ever open a PR there.
 
 Every path in this section that is not prefixed `crates/`, `contracts/`, `docs/` or `scripts/` is
 a path in **their** repository, not ours — worth stating once, since the same document cites both
-and our own `CONTRIBUTING.md` is 77 lines long.
+and both repositories have a `CONTRIBUTING.md`.
 
-The reference points throughout are the pinned audited release, `stellar-accounts` 0.7.2, and the
-two sibling policy examples at tag v0.7.2:
+The reference points throughout are `stellar-accounts` 0.7.2, the audited release pinned when this
+section was written, and the two sibling policy examples at tag v0.7.2:
 `examples/multisig-smart-account/threshold-policy/src/contract.rs` and
-`.../spending-limit-policy/src/contract.rs`.
+`.../spending-limit-policy/src/contract.rs`. Generated policies now build against
+`stellar-accounts` 0.8.0 and `soroban-sdk` 28.0.0 (§14); the line citations stay at the version
+where they were read.
 
 ### What we now satisfy
 
