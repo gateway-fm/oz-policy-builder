@@ -135,7 +135,13 @@ a bound the launcher's configuration enforces too), `containment` equal to
 `removed`, and `result` containing the validated worker result or null, after its `ready` line.
 The API refuses a frame whose `image` is not such an immutable identity, and records it in the
 BuildManifest as `producer.build_image`. It is the operator's statement of which image ran, not
-an attestation: the launcher is trusted for it in the same way it is trusted for teardown. Both stdout layers are
+an attestation: the launcher is trusted for it in the same way it is trusted for teardown.
+A frame of another `contained-build-result` version comes from a launcher installed from another
+revision. The API cannot read its removal claim, so it handles the job as it handles a dead
+launcher: the slot stays retained. The error then says that the launcher is from another
+revision, rather than only that cleanup is unconfirmed. Once every slot is retained, worker mode
+accepts no builds. Install the API and the launcher from the same revision, confirm cleanup, and
+restart. Both stdout layers are
 capped at 4 MiB; Wasm is capped at 2 MiB. No diagnostic strings are part of either protocol.
 
 A different provider adapter must retain the same independent runtime deadline, disposable

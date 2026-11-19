@@ -20,20 +20,43 @@ pub(crate) const INPUTS: &[&str] = &[
     "rust-toolchain.toml",
 ];
 
-/// Run git against `root` and return its standard output, or `None` if it cannot answer.
-///
-/// `--no-optional-locks` keeps `status` from refreshing the index. The build script watches the
-/// index for changes, so a probe that rewrote it would invalidate its own result on every build.
-fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+/// Variables that point git at a repository, index or object store other than the one it would
+/// discover from `root`. Git exports several of them to hooks, so a build started from a hook would
+/// otherwise describe the hook's repository instead of this workspace.
+const REDIRECTING_GIT_ENVIRONMENT: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_NAMESPACE",
+];
+
+/// The git invocation the probe uses: against `root`, with nothing inherited that redirects it.
+pub(crate) fn git_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    for variable in REDIRECTING_GIT_ENVIRONMENT {
+        command.env_remove(variable);
+    }
+    command
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(root)
         .args(args)
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(Stdio::null());
+    command
+}
+
+/// Run git against `root` and return its standard output, or `None` if it cannot answer.
+///
+/// `--no-optional-locks` keeps `status` from refreshing the index. The build script watches the
+/// index for changes, so a probe that rewrote it would invalidate its own result on every build.
+fn git(root: &Path, args: &[&str]) -> Option<String> {
+    let output = git_command(root, args).output().ok()?;
     if !output.status.success() {
         return None;
     }

@@ -109,52 +109,10 @@ struct ContainedResult {
     job_hash: Hash32,
     /// The image the launcher ran the job in: its configured `image`, the same value it passed to
     /// the runtime. Only the trusted launcher writes this frame, so the worker cannot choose it.
-    image: String,
+    /// Parsed, so a frame naming a tag or a malformed digest does not parse at all.
+    image: ImageReference,
     containment: String,
     result: Option<WorkerResult>,
-}
-
-/// Longest image reference accepted from a launcher frame. It is recorded in the manifest.
-const MAX_IMAGE_BYTES: usize = 256;
-
-/// An immutable image identity, in the two forms `deployment/worker-launcher.py` accepts in its
-/// configuration: a local image ID `sha256:<64 hex>`, or `host[:port]/path@sha256:<64 hex>`. A tag
-/// names whatever the registry says today, so it identifies no build and is refused.
-fn is_immutable_image(image: &str) -> bool {
-    let Some((reference, digest)) = image.rsplit_once("sha256:") else {
-        return false;
-    };
-    let hex = |text: &str| {
-        text.len() == 64
-            && text
-                .bytes()
-                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-    };
-    if image.len() > MAX_IMAGE_BYTES || !hex(digest) {
-        return false;
-    }
-    if reference.is_empty() {
-        return true;
-    }
-    let Some((host, path)) = reference
-        .strip_suffix('@')
-        .and_then(|name| name.split_once('/'))
-    else {
-        return false;
-    };
-    let (host, port) = match host.split_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (host, None),
-    };
-    !host.is_empty()
-        && host
-            .bytes()
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
-        && port.is_none_or(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
-        && !path.is_empty()
-        && path
-            .bytes()
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b'-'))
 }
 
 fn unavailable() -> BuildError {
@@ -246,11 +204,32 @@ fn validate_job(job: &Job) -> Result<GeneratedCrate, BuildError> {
     })
 }
 
+/// Why a launcher's job cannot be taken as removed. Either way its capacity stays retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unconfirmed {
+    /// It died, timed out, or framed nothing this API can read.
+    Cleanup,
+    /// It framed `contained-build-result` at another version: a launcher installed from another
+    /// revision than this API. Its removal claim is in a schema this API does not read.
+    OtherRevision,
+}
+
+/// Whether `bytes` are a cleanup frame of another protocol version. Read only to name the cause
+/// of a refusal, never to accept anything.
+fn frames_another_version(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|frame| frame.get("schema")?.as_str().map(str::to_owned))
+        .is_some_and(|schema| {
+            schema.starts_with("contained-build-result/") && schema != CONTAINED_SCHEMA
+        })
+}
+
 /// The outer error means a launcher started but did not prove containment ended.
 pub(crate) fn build(
     request: &BuildRequest<'_>,
     config: &BuildConfig,
-) -> Result<Result<BuildArtifact, BuildError>, ()> {
+) -> Result<Result<BuildArtifact, BuildError>, Unconfirmed> {
     let job = Job {
         schema: JOB_SCHEMA.into(),
         crate_name: request.generated.crate_name.clone(),
@@ -323,7 +302,7 @@ pub(crate) fn build(
             )))
         }
     };
-    let stdout = child.stdout.take().ok_or(())?;
+    let stdout = child.stdout.take().ok_or(Unconfirmed::Cleanup)?;
     let (sender, receiver) = mpsc::sync_channel(1);
     let ready = Arc::new(AtomicBool::new(false));
     let announced = Arc::clone(&ready);
@@ -360,7 +339,7 @@ pub(crate) fn build(
                 let _ = terminate_process_group(&mut child);
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(());
+                return Err(Unconfirmed::Cleanup);
             }
         },
         _ => {
@@ -370,23 +349,26 @@ pub(crate) fn build(
             let _ = terminate_process_group(&mut child);
             let _ = child.kill();
             let _ = child.wait();
-            return Err(());
+            return Err(Unconfirmed::Cleanup);
         }
     };
     let bytes = receiver
         .recv_timeout(Duration::from_secs(1))
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
+        .map_err(|_| Unconfirmed::Cleanup)?
+        .map_err(|_| Unconfirmed::Cleanup)?;
     if !status.success() || bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(());
+        return Err(Unconfirmed::Cleanup);
     }
-    let frame: ContainedResult = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if frames_another_version(&bytes) {
+        return Err(Unconfirmed::OtherRevision);
+    }
+    let frame: ContainedResult =
+        serde_json::from_slice(&bytes).map_err(|_| Unconfirmed::Cleanup)?;
     if frame.schema != CONTAINED_SCHEMA
         || frame.job_hash != sha256(&data)
         || frame.containment != "removed"
-        || !is_immutable_image(&frame.image)
     {
-        return Err(());
+        return Err(Unconfirmed::Cleanup);
     }
     let image = frame.image;
     // After trusted confirmation, malformed compiler output is an ordinary failed job.
@@ -728,7 +710,11 @@ time.sleep(30)"#;
         assert_eq!(manifest.toolchain, tools);
         assert_eq!(manifest.soroban_sdk_version, Pins::default().soroban_sdk);
         assert_eq!(
-            manifest.producer.build_image.as_deref(),
+            manifest
+                .producer
+                .build_image
+                .as_ref()
+                .map(ImageReference::as_str),
             Some(LAUNCHER_IMAGE),
             "the manifest names the image the trusted launcher ran"
         );
@@ -817,6 +803,30 @@ time.sleep(30)"#;
         let (_directory, config, slots) = launcher(&missing);
         assert!(run(&generated(), &config).is_err());
         assert_eq!(slots.available(), 0, "a frame without an image is invalid");
+    }
+
+    /// A launcher from another revision frames another protocol version. Its containment claim
+    /// is unreadable here, so the slot stays retained like any unconfirmed cleanup — but the
+    /// error says what the operator has to fix, instead of only that cleanup is unconfirmed.
+    #[test]
+    fn a_launcher_from_another_revision_is_named_as_such() {
+        let previous = CONFIRMED_FAILURE
+            .replace("contained-build-result/v2", "contained-build-result/v1")
+            .replace("'image':'sha256:'+'ab'*32,", "");
+        let (_directory, config, slots) = launcher(&previous);
+        let error = run(&generated(), &config).unwrap_err();
+        assert!(
+            error.to_string().contains("same revision"),
+            "the error must name the cause: {error}"
+        );
+        assert_eq!(slots.available(), 0, "its cleanup claim was not read");
+
+        let (_directory, config, _slots) = launcher("print('{\"schema\":\"something-else\"}')");
+        let error = run(&generated(), &config).unwrap_err();
+        assert!(
+            !error.to_string().contains("same revision"),
+            "only a contained-build-result frame of another version is a revision mismatch"
+        );
     }
 
     #[test]
