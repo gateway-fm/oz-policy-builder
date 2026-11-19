@@ -39,7 +39,7 @@ fn dry_run_runs_the_captured_layer_through_a_replayed_capture() {
         .arg(work.join("request.json"))
         .arg("--registry-roots")
         .arg(examples.join("registry-roots.json"))
-        .args(["--registry-min-version", "3"])
+        .args(["--registry-min-version", "6"])
         .arg("--rpc-sources")
         .arg(work.join("rpc-sources.json"))
         .arg("--native-worker")
