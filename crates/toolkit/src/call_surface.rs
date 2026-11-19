@@ -249,8 +249,8 @@ pub(crate) fn check_prepared(
     }
 
     // A policy installed on any rule is readable only if its *observed* implementation
-    // resolves in the signed registry with established signer semantics. Address-only
-    // recognition would let an upgrade at that address pass.
+    // resolves in the signed registry with established signer semantics, and its code is not
+    // revoked under any role. Address-only recognition would let an upgrade at that address pass.
     for policy in observation.account_state.policies.values() {
         if recognized_policies.contains_key(&policy.address) {
             continue;
@@ -258,6 +258,9 @@ pub(crate) fn check_prepared(
         let Ok(hash) = Hash32::from_hex(&policy.observed_wasm_hash) else {
             continue;
         };
+        if registry.ensure_code_not_revoked(&hash).is_err() {
+            continue;
+        }
         if let Ok(entry) = registry.resolve_policy(&hash) {
             recognized_policies.insert(
                 policy.address.clone(),
@@ -1495,6 +1498,96 @@ mod tests {
             FindingCode::DelegateGrantOverlap
         );
         assert_eq!(mislabelled.refusals[0].rule_id, Some(2));
+    }
+
+    /// A policy installed on another rule is read through its observed code, and code revoked
+    /// under any role is not recognized there either. The grant here carries only its generated
+    /// policy, so the reviewed build is bound by no binding and only the installed copy on the
+    /// target's owner rule depends on it: readable while unrevoked, refused once revoked.
+    #[test]
+    fn an_installed_policy_whose_code_is_revoked_under_any_role_is_not_recognized() {
+        let pinned = ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM;
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let verdict_with_revocation = |revoked: Option<&str>| {
+            let (mut request, mut observation) = fixture();
+            let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+            if let Some(kind) = revoked {
+                snapshot.revocations.insert(
+                    format!("{kind}/{}", pinned.to_hex()),
+                    ozpb_registry::Revocation {
+                        reason: "spending limit build withdrawn".to_string(),
+                        effective_version: snapshot.version,
+                    },
+                );
+            }
+            let signed =
+                ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot)
+                    .unwrap();
+            let mut spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+            spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
+            spec.rules[0]
+                .policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+            let spec = spec.validate().unwrap();
+            request.spec = serde_json::to_value(spec.spec()).unwrap();
+            request.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+            let generated = generate_code_with_build_config(
+                &GenerateCodeInput {
+                    spec: request.spec.clone(),
+                    rule_index: 0,
+                },
+                &build_config(),
+            )
+            .unwrap();
+            let mut binding = request.binding_set.bindings[1].clone();
+            binding.policy_index = 0;
+            binding.observed_wasm_hash = generated.wasm_hash.clone();
+            binding.recognition = PolicyRecognition::VerifiedGeneratedManifest {
+                build_manifest: generated.build_manifest,
+            };
+            request.binding_set.spec_hash = spec.hash().to_hex();
+            request.binding_set.bindings = vec![binding];
+            observation.bound_policies = vec![BoundPolicy {
+                address: request.binding_set.bindings[0].contract_address.clone(),
+                observed_wasm_hash: generated.wasm_hash,
+            }];
+            // Rule 2: the owner's own key on the grant's target, behind the reviewed build.
+            let state = &mut observation.account_state;
+            state.rules.insert(
+                2,
+                StoredRule {
+                    id: 2,
+                    context_type: StoredContextType::CallContract {
+                        address: spec.spec().rules[0].context.contract.clone(),
+                    },
+                    valid_until: None,
+                    signer_ids: vec![0],
+                    policy_ids: vec![1],
+                },
+            );
+            state.policies.insert(
+                1,
+                StoredPolicy {
+                    id: 1,
+                    address: address(44),
+                    observed_wasm_hash: pinned.to_hex(),
+                },
+            );
+            state.next_id = 3;
+            state.active_count = 3;
+            check(&request, &observation).unwrap().verdict
+        };
+
+        let unrevoked = verdict_with_revocation(None);
+        assert!(unrevoked.refusals.is_empty(), "{:?}", unrevoked.refusals);
+        assert_eq!(unrevoked.notes.target_rules.len(), 1);
+        for kind in ["policy", "account", "verifier", "target_adapter"] {
+            let revoked = verdict_with_revocation(Some(kind));
+            assert!(revoked.notes.target_rules.is_empty(), "{kind}");
+            assert_eq!(revoked.refusals.len(), 1, "{kind}: {:?}", revoked.refusals);
+            assert_eq!(revoked.refusals[0].code, FindingCode::DelegateGrantOverlap);
+            assert_eq!(revoked.refusals[0].rule_id, Some(2));
+        }
     }
 
     /// The observed check is public, and its verdict says the account is recognized. A signed

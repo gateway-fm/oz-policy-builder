@@ -1001,7 +1001,13 @@ verification steps that make it trustworthy:**
      account, spec, bindings, rule index, the exact `add_context_rule` arguments); the human's
      approval binds to it, and the re-read immediately before signing recomputes it at the new
      ledger — re-evaluating expiry, liveness and recognition — so any difference needs approval
-     again. A freshness window is retry policy, never a security-validity interval: without an
+     again. The commitment does not cover the code at the rule's target. Where the rule requires
+     that code (adapter-derived, or refuse on drift), `prepare_install_intent` reads it in the
+     same capture and refuses other code (`E_TARGET_CODE_CHANGED`), so a change between approval
+     and signing is caught only because what the wallet re-runs immediately before signing is
+     the install intent itself: the reference wallet's preparation runs
+     `assemble_install_transaction`, which re-runs it. A wallet that re-runs only
+     `check_policy_call_surface` gets an unchanged commitment and no target check. A freshness window is retry policy, never a security-validity interval: without an
      on-chain rules-version precondition the toolkit cannot know that no unobserved mutation
      happened in between. The result is recorded in the InstallationRecord. Post-install
      monitoring alerts and offers the emergency-removal flow if a later check fails.
