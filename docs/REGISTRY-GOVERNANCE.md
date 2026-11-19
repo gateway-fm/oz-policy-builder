@@ -262,9 +262,12 @@ Once a consumer accepts it, synthesis, the authority check, installed-rule predi
 recognition refuse the capability with `E_REGISTRY_REVOKED` and the reason. **A revocation cannot
 disable an on-chain grant by itself.** What a user does when a hash they installed is revoked:
 
-- A revoked **policy or verifier** in an installed grant: revoke the grant with the wallet — in
+- A revoked **policy** in an installed grant: revoke the grant with the wallet — in
   the reference integration, [`Prepare revocation`](POLLYWALLET-INTEGRATION.md#revocation), which
   removes the context rule with the owner's passkey — before the delegate can use it again.
+- A revoked owner **verifier**: revoking the grant does not help, because the verifier
+  authenticates the owner rule itself. Replace the owner signer with one on a recognized
+  verifier, or move the funds to an account whose owner uses one.
 - A revoked **account** build: removing rules does not change the account's code. Move the funds
   to an account created on a recognized build, as the GHSA-jpg9-m7w4-c7wc revocation of the 0.7.2
   account requires (see [Soroban dependencies](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).

@@ -41,28 +41,44 @@ call counter ([Revoke-first replacement](POLLYWALLET-INTEGRATION.md#revoke-first
 
 ## (a) A hash you rely on is revoked in the registry
 
-**Detect it.** Watch the hashes your installed grants rely on — the account's Wasm, each owner
-verifier's and each reviewed policy's (a generated policy is recognized by its reproduced build,
-not by a registry entry, so it has none):
+**Detect it.** Watch every hash a grant relies on: the account's Wasm, each owner verifier's, each
+reviewed policy's, and the target's code hash where a target adapter is bound to it.
+`ozpb registry monitor` matches a watched hash against revoked `policy/`, `account/`, `verifier/`
+and `target_adapter/` entries. A generated policy has no entry to match (it is recognized by its
+reproduced build), and a template-family revocation (`template/<family>`) is not matched by hash:
+it shows in the report's `head.revocations` and in the project's advisory.
+
+The monitor compares the published registry with your checkpoint: the one in your roots file, or
+the one `ozpb registry verify` printed when you accepted the snapshot. The development roots file
+carries none, so for the development registry on testnet (the commands call `ozpb` from your
+`PATH`; in a checkout built with the [tester quickstart](TESTER-QUICKSTART.md), use
+`target/debug/ozpb`):
 
 ```bash
-ozpb registry monitor --published registry/<network> --registry-roots roots.json \
-  --network "<network passphrase>" \
+N="Test SDF Network ; September 2015"
+# once, when you accept the snapshot:
+ozpb registry verify --signed docs/examples/registry.signed.json \
+  --registry-roots docs/examples/registry-roots.json --network "$N" > checkpoint.json
+# then on a schedule, against the newest published copy:
+ozpb registry monitor --published docs/examples/registry.signed.json --checkpoint checkpoint.json \
+  --registry-roots docs/examples/registry-roots.json --network "$N" \
   --wasm-hash <account wasm hash> --wasm-hash <owner verifier wasm hash> \
-  --wasm-hash <reviewed policy wasm hash>
+  --wasm-hash <reviewed policy wasm hash> --wasm-hash <adapter-bound target wasm hash>
 ```
 
-Exit `6` means a watched hash is revoked; `1` means the published log cannot be verified against
-your checkpoint and is itself an incident (a fork, an equivocation, a rollback, or roots you have
-not pinned). The full table, including `3` (newer version), `4`/`5` (expiring, expired) and `7`
-(not yet valid), is in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring). The report names each
-revoked hash with the custodians' reason.
+A governed registry is monitored the same way with `--published registry/<network>` (its log) and
+your pinned roots. Exit `6` means a watched hash is revoked; the report names each with the
+custodians' reason. Exit `1` means the published log cannot be verified against your checkpoint —
+a fork, an equivocation, a rollback, or roots you have not pinned, each an incident in itself — and
+also any other error, such as a missing checkpoint or an unreadable file, so read its message. The
+other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
 
 **Act on it.**
 
 | Revoked | What to do |
 | --- | --- |
-| A reviewed **policy** or an owner **verifier** in an installed grant | Revoke the grant before the delegate uses it again. |
+| A reviewed **policy** in an installed grant | Revoke the grant before the delegate uses it again. |
+| An owner **verifier** | Revoking the grant does not help: the verifier authenticates the owner rule, which controls the account. Replace the owner signer with one on a recognized verifier, or move the funds to an account whose owner uses one. This tree's wallet integration offers neither, so use the account's own management. |
 | The **account** build | Removing rules does not change the account's code. Move the funds to an account created on a recognized build, then stop using the old one. |
 | A **target adapter** your grant's bounds came from | Revoke the grant; synthesize again (exact by default) if you still need it. |
 | A **template family** | Revoke grants generated from it and install regenerated ones; see [(c)](#c-a-vulnerability-in-the-generator-or-its-templates). |
@@ -112,8 +128,9 @@ and recovery is the account's and the wallet's own. A compromised **registry cus
 ## (c) A vulnerability in the generator or its templates
 
 During the grant period the project handles a report as [SECURITY.md](../SECURITY.md#after-a-report)
-describes: private advisory, assessment, a fix with a failing test first, revocation where a
-registry entry exists, and a published advisory with a release note.
+describes, on a best-effort basis with no promised response times: private advisory, assessment, a
+fix with a failing test first, revocation where a registry entry exists, and a published advisory
+with a release note.
 
 What is specific to generated code:
 
@@ -150,10 +167,8 @@ What the project did, each recorded in the tree:
 4. Recorded the change and the user action in [SECURITY.md](../SECURITY.md#upstream-advisories) and
    the [release notes](release-notes/v0.2.0.md#security), marked breaking.
 
-What users had to do: raise the registry floor to 6 (`OZPB_REGISTRY_MIN_VERSION=6`,
-`--registry-min-version 6`, the wallet's `registryMinimumVersion: 6`) or persist a version-6
-checkpoint, because versions 1 to 5 still recognize the old build; and recreate accounts from the
-0.7.3 code, moving funds out of the old ones, because a deployed account is not upgraded in place.
+What users had to do — raise the registry floor to 6 or persist a version-6 checkpoint, and
+recreate accounts from the 0.7.3 code — is in [SECURITY.md](../SECURITY.md#upstream-advisories).
 
 When an upstream fix cannot be adopted yet, the exposure is accepted explicitly with a scope and
 an expiry instead, as for RUSTSEC-2026-0387 ([SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md)).
@@ -164,8 +179,10 @@ After Tranche 3 there is no committed maintenance: no fixes, advisories or regis
 promised. Nothing a user needs to protect a grant depends on them:
 
 - Revoking a grant is always the owner's own transaction.
-- The last published registry version expires on its own date; after that, synthesis and the
-  checks refuse it ([Validity](REGISTRY-GOVERNANCE.md#validity-expiry-and-the-end-of-the-grant-period)).
+- A governed registry's last published version expires on its own date; after that, synthesis
+  and the checks refuse it
+  ([Validity](REGISTRY-GOVERNANCE.md#validity-expiry-and-the-end-of-the-grant-period)). The
+  development registry's snapshots carry no expiry.
 - Any operator can pin its own root policy and run the same governance, monitoring and
   revocation procedure with its own custodians, from a genesis of its own.
 - Upstream advisories are published by their own projects — OpenZeppelin, Stellar, RustSec.

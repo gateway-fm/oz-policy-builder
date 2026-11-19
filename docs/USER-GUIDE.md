@@ -1,10 +1,10 @@
 # User guide
 
 The path from a transaction you already made to a scoped grant on your smart account, and back:
-record → decide → generate → dry-run → review → install → use → monitor → revoke. Each step names
-its entry points: the agent skill in Claude Code (which calls the MCP tools), the `ozpb` CLI, and
-the local wallet. Set up with the [tester quickstart](TESTER-QUICKSTART.md); do everything on
-testnet first.
+record → decide → generate → reference check → review → install (running the remaining dry-run
+layers) → use → monitor → revoke. Each step names its entry points: the agent skill in Claude
+Code (which calls the MCP tools), the `ozpb` CLI, and the local wallet. Set up with the
+[tester quickstart](TESTER-QUICKSTART.md); do everything on testnet first.
 
 Nothing on this path signs, deploys or installs for you. The agent and the toolkit prepare and
 check; you approve in the wallet ([trust boundaries](TRUST-BOUNDARIES.md)).
@@ -45,19 +45,13 @@ means: [scoping decisions](SCOPING-DECISIONS.md).
 The generated crate is readable Rust; do not edit it. `verify` and the wallet reproduce it from the
 spec, so an edited crate no longer matches.
 
-## 4. Collect dry-run evidence
+## 4. Check the reference evidence
 
-A dry run has four layers ([report fields](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)):
-
-| Layer | What it shows | Where it runs |
-| --- | --- | --- |
-| `reference` | The recorded call permitted and its derived mutations denied, by the independent evaluator | `reference_suite`, `ozpb reference-suite` |
-| `account_wasm` | The same cases through the pinned account Wasm and your policy Wasm | `ozpb dry-run` (needs the native worker and the delegate's key file), or the wallet's `Run local execution checks` |
-| `captured_target` | The call against target state captured from the network | as above |
-| `live_enforcement` | The policy deciding the real call on testnet, in a simulation that is never submitted | the wallet only, after you consent with the passkey |
-
-All four run only for the wallet's grant shape, one exact native XLM transfer. A layer that has not
-run is reported unavailable or not run, never passed.
+Before anything is deployed, only the first of the four dry-run layers can run: `reference_suite`
+or `ozpb reference-suite`, the independent evaluator permitting the recorded call and denying its
+derived mutations. It is layer-1 evidence, not a dry run of the contract; the other three layers
+need the policy deployed and bound, and run in step 6. A layer that has not run is reported as not
+run or unavailable, never as passed.
 
 ## 5. Review the permission card
 
@@ -77,8 +71,17 @@ You sign; nothing is automatic.
    `/oz-policy-builder:policy-builder-install` yourself and import its proposal.
 2. **Review proposal from Claude.** The wallet records the transaction again, regenerates the grant
    and refuses any difference.
-3. Confirm the policy's deployment (a testnet fee; no authority yet), refresh the authority review,
-   run the execution checks and the live check.
+3. Confirm the policy's deployment (a testnet fee; no authority yet) and refresh the authority
+   review. The remaining dry-run layers now run against the deployed policy
+   ([report fields](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)):
+
+   | Layer | What it shows | Where it runs |
+   | --- | --- | --- |
+   | `account_wasm` | The reference cases through the pinned account Wasm and your policy Wasm | `Run local execution checks`, or `ozpb dry-run` with the native worker and the delegate's key file |
+   | `captured_target` | The call against target state captured from the network | the same |
+   | `live_enforcement` | The policy deciding the real call on testnet, in a simulation never submitted | the wallet's live check, after you consent with the passkey |
+
+   All four layers run only for the wallet's grant shape, one exact native XLM transfer.
 4. **Prepare installation**, read its consent statement, and approve with the passkey
    ([installation](POLLYWALLET-INTEGRATION.md#installation)).
 

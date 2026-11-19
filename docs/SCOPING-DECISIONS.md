@@ -38,7 +38,7 @@ finding is listed in the refusal's `details`.
 | Who may act | `delegate_signers` (one or more `{"delegated": {"address": "G…"}}`), `predicate`: `any_of`, `all_of` or `{"threshold": {"n": N}}` | The policy checks it before it looks at the call. It is never inferred from the account that signed the recording. Named signer sets are strict: a signer added to the rule later does not widen the grant. External-verifier signers are refused. |
 | How long | `valid_until_ledger`, or `no_expiry_acknowledged: true` | A ledger number, not a time. No expiry is a high-blast-radius choice and is shown as one. |
 | How many calls | `max_calls`, or `unlimited_calls_acknowledged: true` | Counted per installation: reinstalling starts a new count. Unlimited is high blast radius. |
-| Which account | `selected_authorizer`, in the synthesis request, when a recording has several | Must be a recognized smart account; an ordinary `G…` account is refused. |
+| Which account | `selected_authorizer`, in the synthesis request: over MCP only when a recording has several authorizers; on the CLI `--selected-authorizer` is always required | Must be a recognized smart account; an ordinary `G…` account is refused. |
 | A name | `grant_name` | Names the context rule. |
 
 ## Widenings you may choose
@@ -122,10 +122,9 @@ The [`policy-builder` skill](../skills/policy-builder/SKILL.md) asks before it c
    argument, every widening you rated `high`, no expiry and no cap.
 
 When the grant is meant for the wallet integration, the skill says so while asking, because the
-wallet accepts one shape only: one exact native XLM transfer on testnet, one `any_of` delegate, an
-expiry within 17,280 ledgers, a cap of 1–10,000 calls (at most 512 for the direct Claude handoff),
-no widening and no spending limit
-([importing a proposal](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal)).
+wallet accepts one narrow grant shape, with no widening and no spending limit
+([importing a proposal](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal),
+[direct handoff](AGENT-WALLET-HANDOFF.md)).
 
 With the CLI you write the decisions file yourself and pass it to `ozpb synthesize --decisions`;
 the same refusals apply.
