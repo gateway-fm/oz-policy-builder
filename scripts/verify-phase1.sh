@@ -81,8 +81,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 ( cd contracts/golden-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/soroswap-swap-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/range-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
-# contracts/two-payment-policy is formatted but not linted: the emitter's two-tuples-of-one-function
-# output trips clippy::nonminimal_bool (see the contracts job in .github/workflows/ci.yml).
+( cd contracts/two-payment-policy && cargo clippy --locked --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --locked --workspace

@@ -79,7 +79,7 @@ loc() {
       if (t) test++; else code++ }
     END { printf "%d non-test, %d test\n", code, test }'
 }
-loc crates/codegen    # 1728 non-test, 2593 test
+loc crates/codegen    # 1750 non-test, 2853 test
 ```
 
 A row that names files counts exactly those, with the test modules beside them
@@ -101,8 +101,8 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 
 | Component | Path | Why it is here | Non-test | Test |
 | --- | --- | --- | ---: | ---: |
-| Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,728 | 2,593 |
-| Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the last two are test fixtures, a transfer whose amount is bounded on both sides and a rule with two tuples of one function | 1,180 | tested below |
+| Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,750 | 2,853 |
+| Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the last two are test fixtures, a transfer whose amount is bounded on both sides and a rule with two tuples of one function | 1,181 | tested below |
 | Atomic live helper | `contracts/atomic-live-helper` | On-chain contract the owner signs into for the [live-enforcement check](ATOMIC-LIVE-HELPER.md) | 163 | 50 |
 | Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,823 | 3,177 |
 | Call-surface core | `crates/call-surface-core` | The install-time authority verdict | 1,101 | 1,509 |
@@ -113,7 +113,7 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Contract tests | `contracts/differential` | Differential, generated-suite (the two-payment cross products included), event, TTL and pinned-account tests of the contracts above | — | 6,981 |
 | Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.3 | The account every grant is installed into; see below | 57 | not counted |
 | Other pinned OpenZeppelin wrappers | `examples/multisig-smart-account/{spending-limit-policy,ed25519-verifier,webauthn-verifier}` at v0.7.2 | Recognized by exact hash; the spending limit is composed in the [subscription walkthrough](WALKTHROUGH-SEP41.md) | 112 | not counted |
-| **Tier 1** | | | **10,329** | **18,995** |
+| **Tier 1** | | | **10,345** | **19,197** |
 
 **The pinned account is outside OpenZeppelin's own audit.** Their v0.7.0 audit report (in the
 `audits/` directory of their repository) lists only `packages/` files in scope. The account this
@@ -272,10 +272,6 @@ shipped grant shape, each with its deviations, are in the
 13. **Static-analysis items marked not exploitable** in [SAST-TRIAGE.md](SAST-TRIAGE.md): the
     flagged path or command comes from the operator's own configuration, a run directory the
     operator names, or a constant, and the triage names the source of each value.
-14. **One emitter output is not linted.** For several accepted tuples of one function the emitter
-    writes a condition `clippy::nonminimal_bool` refuses, with unchanged semantics, so
-    `contracts/two-payment-policy` is formatted but not linted
-    ([G4](MAINNET-GATES.md#g4-tuple-correlation)).
 
 ## Prior relevant findings
 

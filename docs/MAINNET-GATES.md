@@ -269,8 +269,8 @@ contain both mixes of the two, and each is refused with `NoTupleMatched` by the 
 (run through the `stellar-accounts` 0.8 account library with mocked authorization, not the pinned
 account Wasm — tuple matching is the policy's alone) and by the reference evaluator, while both
 recorded payments permit. The evaluator's handling of a mix that another tuple does accept is
-covered separately. The emitter's output for several tuples of one function fails
-`clippy::nonminimal_bool` (semantics unaffected); the crate is fmt-checked but not yet linted.
+covered separately. The compiled condition reads each function's guard once, with that
+function's tuples under it, so the crate is linted like every other generated crate.
 
 ```gate-evidence G4
 ci  crates/synthesizer/src/lib.rs  tests::tuple_dedup_merges_identical_and_keeps_distinct
@@ -282,6 +282,7 @@ ci  crates/harness/src/lib.rs  tests::a_mutation_accepted_by_another_tuple_is_la
 ci  crates/harness/src/lib.rs  tests::a_mixed_tuple_accepted_by_a_range_is_labeled_permit
 ci  crates/synthesizer/src/walkthroughs.rs  walkthroughs::tests::two_payments_are_one_rule_with_two_exact_tuples_differing_in_two_positions
 ci  crates/codegen/src/lib.rs  tests::two_payment_crate_matches_committed_output
+ci  crates/codegen/src/lib.rs  tests::tuples_of_one_function_are_checked_under_one_function_guard
 ci  contracts/differential/tests/two_payment_generated_suite.rs  cross_products_of_two_accepted_tuples_are_refused_by_the_compiled_policy_and_the_evaluator
 ci  contracts/differential/tests/differential.rs  amount_mutations_deny_in_both
 ci  contracts/differential/tests/differential.rs  recipient_and_sender_mutations_deny_in_both
