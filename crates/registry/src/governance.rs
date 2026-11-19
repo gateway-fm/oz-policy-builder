@@ -349,10 +349,22 @@ pub enum MonitorStatus {
     Revoked,
 }
 
+/// Something a consumer relies on and must hear about when it is revoked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Watched {
+    /// Exact reviewed code — an account, an owner verifier, a reviewed policy, a target — under
+    /// whichever role the registry holds it.
+    Code(Hash32),
+    /// A template family. A generated policy has no registry entry of its own: it is recognized
+    /// through its family, so revoking the family is the revocation that reaches it.
+    TemplateFamily(String),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RevokedHash {
-    pub wasm_hash: Hash32,
+pub struct RevokedCapability {
+    pub watched: Watched,
     pub capability: String,
     pub reason: String,
     #[serde(with = "ozpb_domain::wide_int")]
@@ -376,8 +388,8 @@ pub struct MonitorReport {
     pub valid_from_unix: i64,
     #[serde(with = "ozpb_domain::wide_int")]
     pub expires_at_unix: i64,
-    /// Every watched hash the head revokes, under any role.
-    pub revoked: Vec<RevokedHash>,
+    /// Every watched capability the head revokes.
+    pub revoked: Vec<RevokedCapability>,
 }
 
 /// Check the published head against a consumer's persisted checkpoint.
@@ -396,7 +408,7 @@ pub fn monitor(
     published: &[SignedSnapshot],
     now_unix: i64,
     expiry_window_secs: i64,
-    watched: &[Hash32],
+    watched: &[Watched],
 ) -> Result<MonitorReport, GovernanceError> {
     let checkpoint_version = checkpoint.version;
     let mut relevant: Vec<&SignedSnapshot> = published
@@ -438,12 +450,18 @@ pub fn monitor(
         ValidityStatus::Valid
     };
     let mut revoked = Vec::new();
-    for hash in watched {
-        for kind in HASH_KINDS {
-            let capability = format!("{kind}/{}", hash.to_hex());
+    for item in watched {
+        let capabilities: Vec<String> = match item {
+            Watched::Code(hash) => HASH_KINDS
+                .iter()
+                .map(|kind| format!("{kind}/{}", hash.to_hex()))
+                .collect(),
+            Watched::TemplateFamily(family) => vec![format!("template/{family}")],
+        };
+        for capability in capabilities {
             if let Some(revocation) = snapshot.revocations.get(&capability) {
-                revoked.push(RevokedHash {
-                    wasm_hash: *hash,
+                revoked.push(RevokedCapability {
+                    watched: item.clone(),
                     capability,
                     reason: revocation.reason.clone(),
                     effective_version: revocation.effective_version,

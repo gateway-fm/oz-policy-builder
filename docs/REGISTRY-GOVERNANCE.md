@@ -218,7 +218,8 @@ the toolkit has checked, and the install-time checks load it again.
 ozpb registry monitor --published registry/mainnet --registry-roots roots.json \
   --network "Public Global Stellar Network ; September 2015" \
   --wasm-hash <account wasm hash> --wasm-hash <owner verifier wasm hash> \
-  --wasm-hash <reviewed policy wasm hash> --expiry-window-days 14
+  --wasm-hash <reviewed policy wasm hash> --template policy-templates/scope@1 \
+  --expiry-window-days 14
 ```
 
 The checkpoint is the one in the roots file, or `--checkpoint <file>`. The published log (a
@@ -226,7 +227,8 @@ directory, or one head file that directly extends the checkpoint) is checked aga
 copy of the checkpoint's own version must be exactly what was accepted — its signatures are not
 checked again, so a consumer that re-pinned after a rotation keeps working — and every later
 version must verify under the pinned roots as the chain extending it. A JSON report is printed
-with the head, whether it is newer, its validity, and every watched hash it revokes. The exit
+with the head, whether it is newer, its validity, and every watched hash or template family it
+revokes. The exit
 status is for cron; when several apply, the most urgent wins, in the order revoked, expired,
 expiring, not yet valid, newer:
 
@@ -237,7 +239,7 @@ expiring, not yet valid, newer:
 | 7 | the head's interval has not started | nothing loads it yet; keep the current version until it starts, and check the start date was intended |
 | 4 | the head expires within the window | ask the custodians for a successor |
 | 5 | the head has expired | synthesis and checks now refuse it; same |
-| 6 | a watched hash is revoked | the emergency-removal path below |
+| 6 | a watched hash or template family is revoked | the emergency-removal path below |
 | 1 | the published log cannot be verified against the checkpoint | treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned |
 
 Monitoring compares your checkpoint with one published source. It detects a log that contradicts
@@ -247,9 +249,54 @@ nobody replaces reaches exit 4 within the window and exit 5 when it ends, after 
 loads it — so keep intervals short enough that a freeze surfaces in time, and where it matters,
 monitor more than one copy of the log (the repository and the release assets).
 
-Watch the hashes your installed grants rely on: the account's Wasm, each owner verifier's, and
-each reviewed policy's. A generated policy is recognized by its reproduced build, not by a
-registry entry, so it has no hash to watch here.
+Watch what your installed grants rely on: the account's Wasm hash, each owner verifier's and
+each reviewed policy's with `--wasm-hash`, and with `--template` the template family of each
+generated policy (its spec names it, `template_family`). A generated policy has no registry entry
+of its own: it is recognized through its family, so revoking the family is the one revocation that
+reaches it, and watching its build's hash would never report one.
+
+## Scheduling the monitor
+
+`monitor` detects; running it is the operator's. Run it on a schedule shorter than the expiry
+window and than the time you can afford to learn of a revocation late — hourly is a reasonable
+start — against every copy of the log you can reach. With cron:
+
+```cron
+# m h dom mon dow
+17 * * * * cd /srv/ozpb && ./registry-monitor.sh >> /var/log/ozpb-registry-monitor.log 2>&1
+```
+
+where `registry-monitor.sh` updates the published log (a `git pull` of the repository, or the
+latest release assets), runs the `monitor` command above, and acts on its status. With systemd,
+a oneshot service running that script and a timer:
+
+```ini
+# ozpb-registry-monitor.timer
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+What each status should set off:
+
+- **0** — nothing; keep the report.
+- **3** — a person reviews the new version (diff it against the one you hold) before the checkpoint
+  and floor advance. Never advance them automatically: that is what makes a checkpoint worth
+  keeping.
+- **7** — nothing yet; alert if the start date is not the one the custodians announced.
+- **4** — notify the custodians (or your own operators, if you pin your own roots) that a
+  successor is due before the end date.
+- **5** — page whoever runs the service: synthesis, the live checks and install intent now refuse
+  every request until a successor is loaded.
+- **6** — page, and start the [emergency-removal path](#revocation-and-emergency-removal) for every
+  grant using the revoked capability; the report names each revoked capability and its reason.
+- **1** — page and treat as a security incident: the published log contradicts what you accepted,
+  or a new version is signed under roots you have not pinned. Do not advance anything until it is
+  explained.
 
 ## Revocation and emergency removal
 
@@ -262,12 +309,28 @@ Once a consumer accepts it, synthesis, the authority check, installed-rule predi
 recognition refuse the capability with `E_REGISTRY_REVOKED` and the reason. **A revocation cannot
 disable an on-chain grant by itself.** What a user does when a hash they installed is revoked:
 
-- A revoked **policy or verifier** in an installed grant: revoke the grant with the wallet — in
-  the reference integration, [`Prepare revocation`](POLLYWALLET-INTEGRATION.md#revocation), which
-  removes the context rule with the owner's passkey — before the delegate can use it again.
-- A revoked **account** build: removing rules does not change the account's code. Move the funds
-  to an account created on a recognized build, as the GHSA-jpg9-m7w4-c7wc revocation of the 0.7.2
-  account requires (see [Soroban dependencies](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).
+- A revoked **policy, verifier or template family** in an installed grant: revoke the grant with
+  the wallet — in the reference integration,
+  [`Prepare revocation`](POLLYWALLET-INTEGRATION.md#revocation), which removes the context rule
+  with the owner's passkey — before the delegate can use it again. Synthesis and the live checks
+  refuse a revoked family for every new generated policy, but one already installed keeps running
+  until its rule is removed.
+- A revoked **account** build: removing rules does not change the account's code. Two paths:
+  - *Upgrade in place.* The pinned wrapper exports `upgrade`, which the
+    [method inventory](ACCOUNT-METHOD-INVENTORY.md) records as guarded by the account's own
+    authorization (`require_auth` on the account, so a rule that covers calls to the account
+    itself — ordinarily the owner's) with a code effect. Calling it with the hash of a
+    recognized build keeps the address, rules, signers and policies and changes the code. It needs
+    that exact Wasm already uploaded to the network, the account's owner to sign, and a storage
+    layout the new build reads: for 0.7.2 to 0.7.3, the reviewed diff leaves storage and the
+    signed digest unchanged. Rules added under the old build stay, including any signer the new
+    build would refuse to add, so re-run the authority check afterwards and remove what it
+    refuses. The toolkit and the reference wallet build no upgrade transaction, and this path has
+    not been exercised here; until it lands, the old code's flaw is live.
+  - *Recreate and move.* Create an account on a recognized build and move the funds — the path
+    the GHSA-jpg9-m7w4-c7wc revocation of the 0.7.2 account documents
+    ([Soroban dependencies](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)) and the one
+    to take when the owner cannot sign an upgrade or the flaw lets someone else act first.
 
 A revocation is permanent. A capability revoked in error stays revoked; a corrected build is a
 new hash and a new entry.

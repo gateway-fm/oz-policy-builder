@@ -176,7 +176,8 @@ it), `sign` (`--print-root`, or a detached signature from a 0600 key file or fro
 signature made elsewhere over the printed root), `combine` (refusing what a consumer's load
 would refuse before it writes), `verify` (`--signed` one snapshot, or
 `--replay` a published `registry/<network>/` log from genesis; prints the checkpoint to persist)
-and `monitor` (newer version, a head not yet valid, expiry, revoked watched hashes; exit 0, 3,
+and `monitor` (newer version, a head not yet valid, expiry, revoked watched hashes and template
+families; exit 0, 3,
 7, 4, 5 or 6 for cron, 1 when the log cannot be verified). The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).
 
 The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant

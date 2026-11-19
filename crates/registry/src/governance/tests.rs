@@ -483,7 +483,7 @@ fn checkpoint_of(chain: &[SignedSnapshot]) -> RegistryCheckpoint {
 fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     let chain = chain();
     let at_v1 = checkpoint_of(&chain[..1]);
-    let watch_nothing: [Hash32; 0] = [];
+    let watch_nothing: [Watched; 0] = [];
 
     let report = monitor(
         roots(),
@@ -502,7 +502,10 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     assert_eq!(report.validity, ValidityStatus::Valid);
 
     // A hash the consumer relies on was revoked in a version it has not seen.
-    let watched = [revoked_hash(), sha256(b"an unrelated hash")];
+    let watched = [
+        Watched::Code(revoked_hash()),
+        Watched::Code(sha256(b"an unrelated hash")),
+    ];
     let report = monitor(
         roots(),
         network(),
@@ -515,7 +518,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     .unwrap();
     assert_eq!(report.status, MonitorStatus::Revoked);
     assert_eq!(report.revoked.len(), 1);
-    assert_eq!(report.revoked[0].wasm_hash, revoked_hash());
+    assert_eq!(report.revoked[0].watched, Watched::Code(revoked_hash()));
     assert_eq!(report.revoked[0].effective_version, 2);
     assert_eq!(report.revoked[0].reason, "found faulty in review");
 
@@ -572,7 +575,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
 fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
     let chain = chain();
     let at_v2 = checkpoint_of(&chain[..2]);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
 
     // Same version, different contents: equivocation.
     let mut equivocation = chain[1].snapshot.clone();
@@ -628,7 +631,7 @@ fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
 #[test]
 fn monitoring_reports_a_head_scheduled_to_start_later() {
     let chain = chain();
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     // Version 3 is valid from 2_500.
     let behind = monitor(
         roots(),
@@ -657,7 +660,7 @@ fn monitoring_reports_a_head_scheduled_to_start_later() {
     .unwrap();
     assert_eq!(accepted_early.status, MonitorStatus::NotYetValid);
     // A watched revocation still outranks it.
-    let watched = [revoked_hash()];
+    let watched = [Watched::Code(revoked_hash())];
     let revoked = monitor(
         roots(),
         network(),
@@ -695,7 +698,7 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
     let v4 = combine(&rotated, network(), v4, &detached, 4_100).unwrap();
     let mut published = chain.clone();
     published.push(v4.clone());
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
 
     let report = monitor(
         rotated.clone(),
@@ -786,7 +789,7 @@ fn a_pending_review_reference_is_never_combined_or_replayed() {
 fn the_checkpoint_version_must_be_for_the_pinned_network() {
     let chain = chain();
     let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     assert!(matches!(
         monitor(
             roots(),
@@ -807,7 +810,7 @@ fn the_checkpoint_version_must_be_for_the_pinned_network() {
 fn monitoring_validity_boundaries_are_exact() {
     let chain = chain();
     let at_v3 = checkpoint_of(&chain);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     let validity = |now: i64, window: i64| {
         monitor(
             roots(),
@@ -839,7 +842,7 @@ fn monitoring_validity_boundaries_are_exact() {
 fn each_checkpoint_field_mismatch_is_refused_alone() {
     let chain = chain();
     let accepted = checkpoint_of(&chain);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     let check = |checkpoint: RegistryCheckpoint| {
         monitor(roots(), network(), checkpoint, &chain[2..], 2_600, 0, &none)
     };
@@ -864,4 +867,51 @@ fn each_checkpoint_field_mismatch_is_refused_alone() {
             "a checkpoint differing only in {field} must be refused"
         );
     }
+}
+
+/// A generated policy is recognized through its template family, so a family revocation is the
+/// revocation that reaches it: watched, it is reported with its reason, like revoked code.
+#[test]
+fn monitoring_reports_a_revoked_watched_template_family() {
+    let chain = chain();
+    let family = "policy-templates/scope@1";
+    let mut revoke = changes(2_500, 6_000);
+    revoke.revocations.insert(
+        format!("template/{family}"),
+        "the template emits a check that can be bypassed".to_string(),
+    );
+    let v4 = successor(roots(), network(), &chain[2], &revoke, 2_600).unwrap();
+    let mut published = chain.clone();
+    published.push(signed_by(&v4, &["a", "b"]));
+    let at_v3 = checkpoint_of(&chain);
+
+    let watched = [Watched::TemplateFamily(family.to_string())];
+    let report = monitor(
+        roots(),
+        network(),
+        at_v3.clone(),
+        &published,
+        2_600,
+        0,
+        &watched,
+    )
+    .unwrap();
+    assert_eq!(report.status, MonitorStatus::Revoked);
+    assert_eq!(
+        report.revoked,
+        vec![RevokedCapability {
+            watched: Watched::TemplateFamily(family.to_string()),
+            capability: format!("template/{family}"),
+            reason: "the template emits a check that can be bypassed".to_string(),
+            effective_version: 4,
+        }]
+    );
+    // Another family, or the family's name read as code, is not reported.
+    let unrelated = [
+        Watched::TemplateFamily("policy-templates/other@1".to_string()),
+        Watched::Code(sha256(family.as_bytes())),
+    ];
+    let report = monitor(roots(), network(), at_v3, &published, 2_600, 0, &unrelated).unwrap();
+    assert_eq!(report.status, MonitorStatus::NewerVersion);
+    assert!(report.revoked.is_empty());
 }
