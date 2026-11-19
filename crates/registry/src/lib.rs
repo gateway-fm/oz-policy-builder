@@ -955,6 +955,18 @@ impl Registry {
             .ok_or_else(|| RegistryError::UnknownTemplate(family.to_string()))
     }
 
+    /// Refuse code revoked under any role. A generated policy build is recognized through its
+    /// template family and by rebuilding it, so it has no entry of its own and no `resolve_*`
+    /// reaches a `policy/<hash>` revocation of it; recognition asks this instead. It refuses
+    /// exactly what `ozpb registry monitor --wasm-hash` reports as revoked.
+    pub fn ensure_code_not_revoked(&self, wasm_hash: &Hash32) -> Result<(), RegistryError> {
+        let identity = wasm_hash.to_hex();
+        for kind in governance::HASH_KINDS {
+            self.ensure_active(kind, &identity)?;
+        }
+        Ok(())
+    }
+
     fn loaded(&self) -> Result<&Loaded, RegistryError> {
         self.current.as_ref().ok_or(RegistryError::NotLoaded)
     }
@@ -2750,6 +2762,69 @@ mod tests {
             Err(RegistryError::Revoked { reason, .. })
                 if reason == "critical authorization bypass"
         ));
+    }
+
+    /// A generated build has no entry of its own, so no `resolve_*` reaches a revocation of its
+    /// hash. Code revoked under any role is refused by hash alone, as the monitor reports it.
+    #[test]
+    fn code_revoked_under_any_role_is_refused_by_hash_alone() {
+        let build = sha256(b"a generated policy build");
+        let loaded = |snapshot: RegistrySnapshot| {
+            let mut loaded = registry();
+            loaded
+                .load(&sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap())
+                .unwrap();
+            loaded
+        };
+        assert_eq!(
+            loaded(dev::dev_snapshot(network(), 1)).ensure_code_not_revoked(&build),
+            Ok(())
+        );
+        for kind in ["policy", "account", "verifier", "target_adapter"] {
+            let mut snapshot = dev::dev_snapshot(network(), 1);
+            snapshot.revocations.insert(
+                format!("{kind}/{}", build.to_hex()),
+                Revocation {
+                    reason: format!("{kind} build withdrawn"),
+                    effective_version: 1,
+                },
+            );
+            // A revocation of other code under the same role does not reach this build.
+            snapshot.revocations.insert(
+                format!("{kind}/{}", sha256(b"other code").to_hex()),
+                Revocation {
+                    reason: "other".to_string(),
+                    effective_version: 1,
+                },
+            );
+            let current = loaded(snapshot);
+            assert_eq!(
+                current.ensure_code_not_revoked(&build),
+                Err(RegistryError::Revoked {
+                    capability: format!("{kind}/{}", build.to_hex()),
+                    reason: format!("{kind} build withdrawn"),
+                }),
+                "{kind}"
+            );
+            assert_eq!(
+                current.ensure_code_not_revoked(&sha256(b"unrevoked code")),
+                Ok(())
+            );
+        }
+        // A template revocation names a family, never code.
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        snapshot.revocations.insert(
+            "template/policy-templates/scope@1".to_string(),
+            Revocation {
+                reason: "family withdrawn".to_string(),
+                effective_version: 1,
+            },
+        );
+        assert_eq!(loaded(snapshot).ensure_code_not_revoked(&build), Ok(()));
+        assert_eq!(
+            registry().ensure_code_not_revoked(&build),
+            Err(RegistryError::NotLoaded)
+        );
     }
 
     fn signed_successor(previous: &RegistrySnapshot, mut next: RegistrySnapshot) -> SignedSnapshot {

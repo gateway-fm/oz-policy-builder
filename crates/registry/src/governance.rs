@@ -30,8 +30,9 @@ pub const MONITOR_SCHEMA: &str = "registry-monitor/v1";
 /// carries one). A snapshot holding one is never combined and never passes `verify`.
 pub const PENDING_REVIEW_PREFIX: &str = "PENDING, replace before signing:";
 
-/// The capability kinds a revocation of an exact code hash can name.
-const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
+/// The capability kinds a revocation of an exact code hash can name. The monitor watches a hash
+/// under all of them, and [`crate::Registry::ensure_code_not_revoked`] refuses it under all of them.
+pub(crate) const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
 
 /// Why a governance step refused. These reach only the `ozpb registry` CLI, never the MCP wire:
 /// the leading labels name the registry code each fault belongs to, and `E_REGISTRY_PARSE` (a
@@ -362,7 +363,8 @@ pub enum Watched {
     /// whichever role the registry holds it.
     Code(Hash32),
     /// A template family. A generated policy has no registry entry of its own: it is recognized
-    /// through its family, so revoking the family is the revocation that reaches it.
+    /// through its family, so the family is what can be watched for it. (A revocation of one
+    /// build's hash is reported through [`Watched::Code`] once it exists.)
     TemplateFamily(String),
 }
 

@@ -372,7 +372,9 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
 - **Install intent (advisory)** — `prepare_install_intent` runs the authority check itself
   (same request) and, only when nothing is refused and nothing is unresolved, returns the
   exact `add_context_rule` arguments derived from the grant the commitment covers, with the
-  answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
+  answer attached. Otherwise it is an error carrying every finding. A rule that requires its
+  target's code (adapter-derived, or refuse on drift) has that code read in the same capture,
+  and other code there is refused with `E_TARGET_CODE_CHANGED`. It never assembles, signs
   or submits.
 - **Unsigned install assembly (advisory)** — `assemble_install_transaction` reruns that check
   and returns bounded unsigned XDR with current sequence and fees. It never signs or

@@ -104,7 +104,7 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,728 | 2,593 |
 | Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the last two are test fixtures, a transfer whose amount is bounded on both sides and a rule with two tuples of one function | 1,180 | tested below |
 | Atomic live helper | `contracts/atomic-live-helper` | On-chain contract the owner signs into for the [live-enforcement check](ATOMIC-LIVE-HELPER.md) | 163 | 50 |
-| Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,816 | 3,119 |
+| Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,823 | 3,177 |
 | Call-surface core | `crates/call-surface-core` | The install-time authority verdict | 1,101 | 1,509 |
 | Synthesizer | `crates/synthesizer` | Exact-by-default decisions, adapters, composition checks | 1,604 | 1,955 |
 | PolicySpec | `crates/policy-spec` | Schema, validation typestate, signer-set hash | 1,343 | 1,399 |
@@ -113,7 +113,7 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Contract tests | `contracts/differential` | Differential, generated-suite (the two-payment cross products included), event, TTL and pinned-account tests of the contracts above | — | 6,981 |
 | Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.3 | The account every grant is installed into; see below | 57 | not counted |
 | Other pinned OpenZeppelin wrappers | `examples/multisig-smart-account/{spending-limit-policy,ed25519-verifier,webauthn-verifier}` at v0.7.2 | Recognized by exact hash; the spending limit is composed in the [subscription walkthrough](WALKTHROUGH-SEP41.md) | 112 | not counted |
-| **Tier 1** | | | **10,322** | **18,937** |
+| **Tier 1** | | | **10,329** | **18,995** |
 
 **The pinned account is outside OpenZeppelin's own audit.** Their v0.7.0 audit report (in the
 `audits/` directory of their repository) lists only `packages/` files in scope. The account this
@@ -146,7 +146,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 
 | Component | Non-test | Test | Note |
 | --- | ---: | ---: | --- |
-| Rest of `crates/mcp-server` | 1,484 | 2,557 | Thin shell; its HTTP boundary is in Tier 2 |
+| Rest of `crates/mcp-server` | 1,486 | 2,557 | Thin shell; its HTTP boundary is in Tier 2 |
 | Rest of `crates/cli` | 2,520 | 1,421 | Thin shell, except that `ozpb dry-run` holds a delegate key (`src/dry_run/`; see SECURITY.md) |
 | `crates/api-types` | 1,126 | 1,215 | Wire types and stable error codes |
 | `crates/harness` | 1,135 | 941 | Derives the permit/deny suite: evidence, not enforcement |

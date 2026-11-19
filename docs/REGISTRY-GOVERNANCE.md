@@ -255,8 +255,10 @@ monitor more than one copy of the log (the repository and the release assets).
 Watch what your installed grants rely on: the account's Wasm hash, each owner verifier's and
 each reviewed policy's with `--wasm-hash`, and with `--template` the template family of each
 generated policy (its spec names it, `template_family`). A generated policy has no registry entry
-of its own: it is recognized through its family, so revoking the family is the one revocation that
-reaches it, and watching its build's hash would never report one. Every watch item must be
+of its own: it is recognized through its family and by rebuilding it. Revoking the family reaches
+every build of it; custodians can also revoke one build by its Wasm hash (`policy/<hash>`), and
+recognition refuses that build too. Watch the family: a build's hash cannot be watched in advance,
+because the head registers nothing under it until a revocation names it. Every watch item must be
 something the head registers or revokes, and a family must be a valid family name: anything else —
 a typo above all — is refused with exit 1 and the item named, because a watch that can never match
 would otherwise read "current" forever.
@@ -320,8 +322,11 @@ user can act on. In an incident, the custodians sign it as soon as the threshold
 validity interval can stay the parent's.
 
 Once a consumer accepts it, synthesis, the authority check, installed-rule prediction and
-recognition refuse the capability with `E_REGISTRY_REVOKED` and the reason. **A revocation cannot
-disable an on-chain grant by itself.** What a user does when a hash they installed is revoked:
+recognition refuse the capability with `E_REGISTRY_REVOKED` and the reason. Recognition refuses a
+policy binding whose observed code hash is revoked under any of the four hash kinds, as
+`--wasm-hash` reports it: this is what reaches a generated build revoked by its hash, which has no
+entry of its own. Synthesis never sees a build's hash, so there only a family revocation applies.
+**A revocation cannot disable an on-chain grant by itself.** What a user does when a hash they installed is revoked:
 
 - A revoked **policy or template family** in an installed grant: revoke the grant with
   the wallet — in the reference integration,

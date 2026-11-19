@@ -150,8 +150,9 @@ pub struct MonitorArgs {
     /// A Wasm hash the consumer relies on (an installed account, policy or verifier); repeat.
     #[arg(long = "wasm-hash")]
     wasm_hashes: Vec<String>,
-    /// A template family an installed generated policy was built from (its revocation is the one
-    /// that reaches a generated policy), e.g. `policy-templates/scope@1`; repeat.
+    /// A template family an installed generated policy was built from (a generated policy has no
+    /// entry of its own, so its family is what can be watched), e.g. `policy-templates/scope@1`;
+    /// repeat.
     #[arg(long = "template")]
     templates: Vec<String>,
     /// Trusted current time (Unix seconds); defaults to the system clock.

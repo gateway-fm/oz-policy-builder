@@ -665,8 +665,8 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         "E_REGISTRY_SIGNATURE",
     );
 
-    // 9. Revoking the template family is the revocation that reaches a generated policy: a
-    //    consumer watching the family hears of it (exit 6), and synthesis refuses the family.
+    // 9. Revoking the template family reaches every generated policy built from it: a consumer
+    //    watching the family hears of it (exit 6), and synthesis refuses the family.
     let family = "policy-templates/scope@1";
     let changes_v4 = work.path().join("changes-v4.json");
     write_json(

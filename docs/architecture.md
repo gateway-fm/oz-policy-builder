@@ -386,9 +386,12 @@ Key properties:
 - **Every constraint carries provenance:** `observed_exact`, `user_widened` (with the user's
   stated intent and a blast-radius label), or `adapter_derived` (with the adapter identity
   and code-hash binding). For adapter-derived claims the expected target hash is a canonical
-  spec input, checked at generation, installation, and live preflight; where it cannot be
-  enforced on-chain, reports call it monitored state-dependent evidence, not a permanent
-  invariant.
+  spec input. Synthesis selects the adapter by the recording's observed hash, which the caller
+  supplies, so that is a match, not a check of the chain; the install intent (and unsigned
+  assembly) reads the target's code in the same capture as the authority check and refuses
+  other code (`E_TARGET_CODE_CHANGED`), and the live policy check refuses it too. The generated
+  policy does not enforce it on-chain, so after installation reports call it monitored
+  state-dependent evidence, not a permanent invariant.
 - **Enforceable vs observational is explicit.** Constraints derive only from the
   authorization context; event/state evidence appears in rationale fields.
 - **State semantics are executable invariants** (§4.4).
@@ -953,9 +956,12 @@ verification steps that make it trustworthy:**
      a rule — a k-of-n threshold, guarded recovery, anything — is refused: the account skips
      its own signer check for a rule with policies, lets the submitter choose that rule and
      hands the policies whatever signers authenticated, possibly none. A rule on the target may
-     carry policies whose signer semantics are established (a recognized registry policy; a
-     generated policy only once its own artifact is reproduced, which Tranche 2 does not do, so
-     it is refused) and is then described by those semantics, never projected to `all_of`
+     carry policies whose signer semantics are established (a recognized registry policy whose
+     semantics were reviewed for its exact build: compiled in by Wasm hash and kind, as the
+     owner verifiers' schemes are, today only OZ's spending limit, so an entry under another
+     hash labelled with that kind is not readable; a generated policy only once its own
+     artifact is reproduced, which Tranche 2 does not do, so it is refused) and is then
+     described by those semantics, never projected to `all_of`
      from its stored signer list. Such rules — who else can call the target — are shown, not
      decided on: their access is their own, not a way around the agent's limit. A rule in
      several sets gets the stricter, protected-surface treatment.
@@ -995,7 +1001,13 @@ verification steps that make it trustworthy:**
      account, spec, bindings, rule index, the exact `add_context_rule` arguments); the human's
      approval binds to it, and the re-read immediately before signing recomputes it at the new
      ledger — re-evaluating expiry, liveness and recognition — so any difference needs approval
-     again. A freshness window is retry policy, never a security-validity interval: without an
+     again. The commitment does not cover the code at the rule's target. Where the rule requires
+     that code (adapter-derived, or refuse on drift), `prepare_install_intent` reads it in the
+     same capture and refuses other code (`E_TARGET_CODE_CHANGED`), so a change between approval
+     and signing is caught only because what the wallet re-runs immediately before signing is
+     the install intent itself: the reference wallet's preparation runs
+     `assemble_install_transaction`, which re-runs it. A wallet that re-runs only
+     `check_policy_call_surface` gets an unchanged commitment and no target check. A freshness window is retry policy, never a security-validity interval: without an
      on-chain rules-version precondition the toolkit cannot know that no unobserved mutation
      happened in between. The result is recorded in the InstallationRecord. Post-install
      monitoring alerts and offers the emergency-removal flow if a later check fails.
