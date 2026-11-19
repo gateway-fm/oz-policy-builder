@@ -1310,8 +1310,12 @@ determinism CI job (two cold builds, byte-equal); `cargo-deny` for licenses and 
 pinned `rust-toolchain.toml` + MSRV.
 
 **Wallet (TypeScript) specifics.** The policy builder is one package inside the pollywallet
-workspace. MCP payload types are **generated from the `api-types` JSON Schemas** — no
-hand-duplicated types, no drift. The install flow is an explicit state machine over
+workspace. The wallet-facing install DTOs (`prepare_install_intent` and
+`assemble_install_transaction`, request and response) are **hand-written type declarations**,
+`wallet/shared/install-wire.d.mts`, not generated: no generator dependency is added. They are held
+to the published `api-types` JSON Schemas in `docs/wire-contract.json` by a drift test,
+`wallet/tests/install-wire.test.mjs`, which fails on any difference in a field's name, whether it
+is required, or its type. The install flow is an explicit state machine over
 discriminated unions (`record → spec → code → bindings → call-surface → sign → verify`), so
 illegal transitions fail the type-checker rather than QA. TanStack Query owns server-state
 caching (matching pollywallet's existing stack); no domain logic lives client-side — the

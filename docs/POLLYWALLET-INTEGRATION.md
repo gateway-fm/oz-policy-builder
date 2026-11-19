@@ -25,6 +25,20 @@ session-local grants, and [on-demand monitoring](#on-demand-installed-grant-moni
 available within the scope below. A virtual authenticator's signature is automation evidence,
 not a human acceptance decision.
 
+## Another wallet: the typed install surface
+
+A wallet other than Pollywallet installs a grant through two toolkit operations,
+`prepare_install_intent` and `assemble_install_transaction`: MCP tools, or the
+`ozpb prepare-install-intent` and `ozpb assemble-install-transaction` commands, which print the
+same JSON. [`wallet/shared/install-wire.d.mts`](../wallet/shared/install-wire.d.mts) types their
+requests and responses for TypeScript. It holds types only, imported with `import type`, and can
+be copied into another project as it is. It is written by hand from the JSON Schemas in
+[`wire-contract.json`](wire-contract.json), the contract CI holds the server to, and
+`wallet/tests/install-wire.test.mjs` fails when a field's name, whether it is required, or its
+type differs from those schemas. The types say what arrives, not that it can be trusted: what a
+wallet checks for itself is in [the extension guide](EXTENDING.md#a-new-wallet-integration), and
+this integration's own checks are `wallet/shared`.
+
 ## Apply to the supported upstream revision
 
 Use a dedicated clean checkout of

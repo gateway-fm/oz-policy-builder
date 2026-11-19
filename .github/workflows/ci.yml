@@ -92,6 +92,15 @@ jobs:
         run: bash scripts/test-mutation-test.sh
       - name: test
         run: cargo test --workspace
+      # docs/wire-contract.json is the MCP wire contract this tree serves, in the form a release
+      # attaches it. This regenerates it from the built server through the release export and
+      # fails on any difference; an intended change updates the snapshot and says in the release
+      # notes whether it is breaking (docs/VERSIONING.md). The E_* half is also pinned without a
+      # server build, by api-types' own tests in the step above.
+      - name: wire contract — the built server serves exactly the committed snapshot
+        run: |
+          cargo build --locked -p ozpb-mcp-server
+          python3 scripts/release-artifacts.py check-wire-contract --server target/debug/ozpb-mcp-server
       - name: Phase 2 gates refuse missing tests, failed producers, and omitted build evidence
         run: python3 scripts/test-check-phase2-evidence.py
       - name: the development MCP wrapper configures a testnet-only RPC source
