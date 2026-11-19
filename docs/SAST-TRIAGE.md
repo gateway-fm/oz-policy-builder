@@ -19,9 +19,9 @@ the testnet harness, the fixture scripts and CI are informational
 ([AUDIT-SCOPE.md](AUDIT-SCOPE.md#informational--not-in-scope)). The harness scripts are
 command-line tools with no network listener. `run.sh` creates the run directory (under
 `testnet-harness/runs/`, or `OZPB_HARNESS_OUT`) and passes it to each script as `--run-dir`.
-Inside that directory the scripts open fixed file names. The two exceptions are `install.mjs` and
-`deploy-live-helper.mjs`, which open the spec path that an earlier step of the same run recorded
-in `run.json`. Every other path comes from a command-line argument or environment variable the
+Inside that directory the scripts open fixed file names. Where a script follows the spec path
+recorded in `run.json`, it first checks that the path is `<run-dir>/spec.json` (`runSpecPath` in
+`rpc.mjs`). Every other path comes from a command-line argument or environment variable the
 operator sets (`--trust`, `--wasm`, `--bundle`, `--evidence`, `--decisions`, the registry files).
 Aikido's line numbers move with edits, so the rows below name the function instead.
 

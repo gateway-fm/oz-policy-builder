@@ -3,6 +3,7 @@
 // longer than the call that signs with it.
 import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   Account, Address, Asset, Keypair, Networks, Operation, StrKey, TransactionBuilder, rpc, scValToNative, xdr,
 } from '@stellar/stellar-sdk';
@@ -397,6 +398,16 @@ export const contractIdOf = (scv) => {
 
 export function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+/**
+ * The spec a run journal names, accepted only when it is `<dir>/spec.json`: the file the run's own
+ * synthesis or spec step wrote. A `spec` that points anywhere else is refused, never opened.
+ */
+export function runSpecPath(dir, run) {
+  const path = join(resolve(dir), 'spec.json');
+  if (typeof run?.spec !== 'string' || resolve(run.spec) !== path) throw new Error('run does not name its own spec');
+  return path;
 }
 
 /**

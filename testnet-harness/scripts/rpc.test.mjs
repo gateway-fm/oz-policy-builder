@@ -213,3 +213,16 @@ test('Friendbot is the pinned testnet service, never a URL the RPC endpoint repo
   await rpcModule.fund(address);
   assert.deepEqual(fetched, [`https://friendbot.stellar.org/?addr=${address}`]);
 });
+
+test('a run journal names only its own run directory\'s spec.json; any other spec path is refused, not opened', async () => {
+  const { join, relative, resolve } = await import('node:path');
+  const { runSpecPath } = await import('./rpc.mjs');
+  const dir = resolve('ozpb-run-spec-fixture'), own = join(dir, 'spec.json');
+  assert.equal(runSpecPath(dir, { spec: own }), own);
+  assert.equal(runSpecPath(relative(process.cwd(), dir), { spec: relative(process.cwd(), own) }), own);
+  for (const spec of [undefined, null, 7, '', '/etc/hosts', join(dir, 'other', 'spec.json'), join(dir, '..', 'spec.json'),
+    join(dir, 'spec.json.bak'), `${dir}-other/spec.json`]) {
+    assert.throws(() => runSpecPath(dir, { spec }), /run does not name its own spec/, String(spec));
+  }
+  assert.throws(() => runSpecPath(dir, null), /run does not name its own spec/);
+});
