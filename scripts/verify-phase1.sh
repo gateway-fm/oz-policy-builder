@@ -87,6 +87,13 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --locked --workspace
 
+echo "== 3b. the built MCP server serves exactly the committed wire contract =="
+# The release export, run against this build: any difference from docs/wire-contract.json fails,
+# and the message says how to update the snapshot when the change is intended (VERSIONING.md).
+cargo build --locked -p ozpb-mcp-server
+python3 scripts/release-artifacts.py check-wire-contract \
+    --server "${CARGO_TARGET_DIR:-target}/debug/ozpb-mcp-server"
+
 echo "== 4. contracts: differential suite (evaluator vs real compiled policy) =="
 ( cd contracts && cargo test --locked -p ozpb-differential )
 

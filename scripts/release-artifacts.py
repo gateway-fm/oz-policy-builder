@@ -11,6 +11,10 @@ build. Policy for what the assets promise is `docs/VERSIONING.md`.
                    vocabulary from the one table the ErrorCode enum is generated from
     assemble       check every target's packages, keep one wire contract (each target's must be
                    byte-identical), and write SHA256SUMS
+    check-wire-contract
+                   export the same contract from a built server, without a release and commit,
+                   and fail on any difference from the committed `docs/wire-contract.json`;
+                   `--update` rewrites it. CI runs it on every change
 
 Archives are deterministic for the same binary: sorted members, a fixed owner, the commit's time
 as every mtime, and a gzip header without a name or timestamp. Repackaging a binary therefore
@@ -18,6 +22,7 @@ reproduces its archive's digest; the binaries themselves are not claimed byte-re
 """
 
 import argparse
+import difflib
 import gzip
 import hashlib
 import io
@@ -35,6 +40,10 @@ BINARIES = ("ozpb", "ozpb-mcp-server", "ozpb-execution-runtime")
 LICENSE_FILES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
 WIRE_CONTRACT_SCHEMA = "ozpb-wire-contract/v1"
 ERROR_CODE_SOURCE = "crates/api-types/src/lib.rs"
+# The current tree's wire contract: a release's export without its `release` and `commit`.
+SNAPSHOT = "docs/wire-contract.json"
+# Lines of unified diff a failed check prints before it stops.
+DIFF_LINES = 400
 # `v` plus a semver version, pre-release allowed: the same shape the tag check accepts.
 LABEL = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?")
 TARGET = re.compile(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_-]+")
@@ -188,22 +197,106 @@ def served_tools(server, timeout):
     return sorted(tools, key=lambda tool: tool["name"])
 
 
+def contract(server, root=ROOT, timeout=120):
+    """The wire contract a built server serves: its tool listing and the E_* vocabulary."""
+    return {
+        "schema": WIRE_CONTRACT_SCHEMA,
+        "tools": served_tools(server, timeout),
+        "error_codes": error_codes(root),
+    }
+
+
+def render(document):
+    return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
 def wire_contract(server, label, commit, out_path, root=ROOT, timeout=120):
     check_label(label)
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
         raise ReleaseError(f"commit {commit!r} is not a full lowercase git object id")
-    document = {
-        "schema": WIRE_CONTRACT_SCHEMA,
-        "release": label,
-        "commit": commit,
-        "tools": served_tools(server, timeout),
-        "error_codes": error_codes(root),
-    }
+    document = dict(contract(server, root, timeout), release=label, commit=commit)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-                        encoding="utf-8")
+    out_path.write_text(render(document), encoding="utf-8")
     return out_path
+
+
+def contract_changes(committed, served):
+    """What differs, by name: facts for the reader, never a verdict on compatibility."""
+    def tools(document):
+        listed = document.get("tools") if isinstance(document, dict) else None
+        if not isinstance(listed, list):
+            return {}
+        return {tool.get("name"): tool for tool in listed if isinstance(tool, dict)}
+
+    def codes(document):
+        listed = document.get("error_codes") if isinstance(document, dict) else None
+        return listed if isinstance(listed, list) else []
+
+    old, new = tools(committed), tools(served)
+    lines = []
+    for label, names in (
+            ("tools served but not in the snapshot", sorted(set(new) - set(old), key=str)),
+            ("tools in the snapshot but not served", sorted(set(old) - set(new), key=str)),
+            ("tools whose listing changed", sorted((name for name in set(old) & set(new) if old[name] != new[name]),
+                               key=str))):
+        if names:
+            lines.append(f"  {label}: {', '.join(map(str, names))}")
+    old_codes, new_codes = codes(committed), codes(served)
+    for label, listed in (
+            ("codes served but not in the snapshot", [c for c in new_codes if c not in old_codes]),
+            ("codes in the snapshot but not served", [c for c in old_codes if c not in new_codes])):
+        if listed:
+            lines.append(f"  {label}: {', '.join(map(str, listed))}")
+    if not lines:
+        lines.append("  no tool or code by name; see the diff")
+    return lines
+
+
+def check_wire_contract(server, snapshot, root=ROOT, timeout=120, update=False):
+    """Compare the contract `server` serves with the committed snapshot, byte for byte.
+
+    The snapshot is only ever written here, so any difference, formatting included, is either a
+    change to the wire contract or a hand edit. Nothing here decides whether a change is
+    breaking: docs/VERSIONING.md does, and the person who makes the change records it.
+    """
+    served = render(contract(server, root, timeout))
+    snapshot = Path(snapshot)
+    if update:
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(served, encoding="utf-8")
+        return snapshot
+    default = snapshot.resolve() == (Path(root) / SNAPSHOT).resolve()
+    named = "" if default else f" --snapshot {snapshot}"
+    update_command = (f"python3 scripts/release-artifacts.py check-wire-contract --server {server}"
+                      f"{named} --update")
+    try:
+        committed = snapshot.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ReleaseError(f"{snapshot} does not exist; write it with: {update_command}") from None
+    if committed == served:
+        return snapshot
+    try:
+        committed_document = json.loads(committed)
+    except json.JSONDecodeError:
+        committed_document = None
+    diff = list(difflib.unified_diff(committed.splitlines(keepends=True),
+                                     served.splitlines(keepends=True),
+                                     fromfile=f"{snapshot} (committed)",
+                                     tofile=f"served by {server}"))
+    shown = "".join(diff[:DIFF_LINES])
+    if len(diff) > DIFF_LINES:
+        shown += f"... {len(diff) - DIFF_LINES} more diff lines\n"
+    summary = "\n".join(contract_changes(committed_document, json.loads(served)))
+    raise ReleaseError(
+        f"the wire contract the built server serves differs from {snapshot}:\n{summary}\n"
+        f"{shown}"
+        "If the change is intended, update the snapshot with\n"
+        f"  {update_command}\n"
+        "and record in the release notes (docs/release-notes/) whether it is breaking under "
+        "docs/VERSIONING.md#breaking-and-additive. Nothing here infers that: whoever makes the "
+        "change decides it from the policy and writes it down. If the change is not intended, "
+        "the change to the server or to crates/api-types is the defect.")
 
 
 def sha256(path):
@@ -273,6 +366,14 @@ def main(argv=None):
     contract.add_argument("--out", required=True)
     contract.add_argument("--timeout", type=int, default=120)
 
+    snapshot = commands.add_parser(
+        "check-wire-contract", help="fail when a built server's contract differs from the snapshot")
+    snapshot.add_argument("--server", required=True)
+    snapshot.add_argument("--snapshot", default=str(ROOT / SNAPSHOT))
+    snapshot.add_argument("--update", action="store_true",
+                          help="rewrite the snapshot from the server instead of comparing")
+    snapshot.add_argument("--timeout", type=int, default=120)
+
     assembly = commands.add_parser("assemble", help="check packages, write SHA256SUMS")
     assembly.add_argument("--label", required=True)
     assembly.add_argument("--dist", required=True)
@@ -286,6 +387,10 @@ def main(argv=None):
         elif args.command == "wire-contract":
             print(wire_contract(args.server, args.label, args.commit, args.out,
                                 timeout=args.timeout))
+        elif args.command == "check-wire-contract":
+            path = check_wire_contract(args.server, args.snapshot, timeout=args.timeout,
+                                       update=args.update)
+            print(f"{'updated' if args.update else 'unchanged'}: {path}")
         else:
             print(assemble(args.label, args.dist, args.targets, args.out).read_text(), end="")
     except (ReleaseError, OSError) as error:

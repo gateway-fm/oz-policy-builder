@@ -208,6 +208,122 @@ class WireContract(unittest.TestCase):
             release.wire_contract(self.server, LABEL, COMMIT[:12], self.dir / "c.json", ROOT)
 
 
+class Snapshot(unittest.TestCase):
+    """`check-wire-contract`: the served contract against the committed snapshot."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.server = executable(self.dir / "server", FAKE_SERVER.encode())
+        self.snapshot = self.dir / "wire-contract.json"
+        self.saved = dict(os.environ)
+        os.environ["FAKE_MODE"] = "ok"
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.saved)
+        self.tmp.cleanup()
+
+    def check(self, update=False, root=ROOT):
+        return release.check_wire_contract(self.server, self.snapshot, root=root, timeout=30,
+                                           update=update)
+
+    def committed(self):
+        return json.loads(self.snapshot.read_text(encoding="utf-8"))
+
+    def assert_drift(self, *expected):
+        with self.assertRaises(release.ReleaseError) as caught:
+            self.check()
+        message = str(caught.exception)
+        for text in ("If the change is intended", "--update", "release notes", "breaking",
+                     "docs/VERSIONING.md", *expected):
+            self.assertIn(text, message)
+        return message
+
+    def test_the_snapshot_is_the_release_export_without_its_release_and_commit(self):
+        self.check(update=True)
+        exported = json.loads(release.wire_contract(
+            self.server, LABEL, COMMIT, self.dir / "release.json", root=ROOT, timeout=30
+        ).read_text(encoding="utf-8"))
+        del exported["release"], exported["commit"]
+        self.assertEqual(self.committed(), exported)
+        self.assertEqual(self.snapshot.read_text(encoding="utf-8"),
+                         json.dumps(exported, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+
+    def test_an_unchanged_contract_passes(self):
+        self.check(update=True)
+        self.check()
+
+    def test_a_renamed_schema_field_fails(self):
+        self.check(update=True)
+        document = self.committed()
+        document["tools"][0]["inputSchema"] = {"type": "object", "properties": {"spec": True}}
+        self.snapshot.write_text(json.dumps(document), encoding="utf-8")
+        self.assert_drift("changed: evaluate_spec")
+
+    def test_a_removed_or_added_code_fails(self):
+        self.check(update=True)
+        document = self.committed()
+        document["error_codes"].remove("E_SPEC_INVALID")
+        document["error_codes"].append("E_NOT_SERVED")
+        self.snapshot.write_text(json.dumps(document), encoding="utf-8")
+        message = self.assert_drift("E_SPEC_INVALID", "E_NOT_SERVED")
+        self.assertIn("codes served but not in the snapshot: E_SPEC_INVALID", message)
+        self.assertIn("codes in the snapshot but not served: E_NOT_SERVED", message)
+
+    def test_a_tool_added_or_removed_fails(self):
+        self.check(update=True)
+        document = self.committed()
+        document["tools"] = [dict(document["tools"][0], name="retired_tool")]
+        self.snapshot.write_text(json.dumps(document), encoding="utf-8")
+        message = self.assert_drift()
+        self.assertIn("tools served but not in the snapshot: evaluate_spec, generate_code", message)
+        self.assertIn("tools in the snapshot but not served: retired_tool", message)
+
+    def test_any_difference_in_the_bytes_fails(self):
+        # Formatting is part of what is compared: the snapshot is only ever written by --update,
+        # so a reformatted file is a hand edit and fails as one.
+        self.check(update=True)
+        self.snapshot.write_text(json.dumps(self.committed()), encoding="utf-8")
+        self.assert_drift()
+
+    def test_a_missing_snapshot_fails_and_names_the_update(self):
+        with self.assertRaises(release.ReleaseError) as caught:
+            self.check()
+        self.assertIn("--update", str(caught.exception))
+
+    def test_an_unreadable_listing_fails_rather_than_passing(self):
+        self.check(update=True)
+        os.environ["FAKE_MODE"] = "silent"
+        with self.assertRaises(release.ReleaseError):
+            self.check()
+
+    def test_the_committed_snapshot_names_every_code_in_the_table(self):
+        # The real snapshot, without a server: what a build would serve for the codes is the
+        # table, so this half of the check needs no Rust build.
+        committed = json.loads((ROOT / release.SNAPSHOT).read_text(encoding="utf-8"))
+        self.assertEqual(committed["schema"], release.WIRE_CONTRACT_SCHEMA)
+        self.assertEqual(committed["error_codes"], release.error_codes(ROOT))
+        self.assertNotIn("release", committed)
+        self.assertNotIn("commit", committed)
+
+    def test_the_command_line_exits_non_zero_on_drift(self):
+        self.check(update=True)
+        self.snapshot.write_text("{}\n", encoding="utf-8")
+        done = subprocess.run(
+            [sys.executable, str(SCRIPT), "check-wire-contract", "--server", str(self.server),
+             "--snapshot", str(self.snapshot)],
+            capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("If the change is intended", done.stderr)
+        updated = subprocess.run(
+            [sys.executable, str(SCRIPT), "check-wire-contract", "--server", str(self.server),
+             "--snapshot", str(self.snapshot), "--update"],
+            capture_output=True, text=True, check=False)
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.check()
+
+
 class Assemble(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

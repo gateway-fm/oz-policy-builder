@@ -16,7 +16,10 @@ structs in `crates/api-types`, the same ones the server parses and returns
 and the codes come from the one `error_codes!` table in `crates/api-types/src/lib.rs`. Each
 release attaches `ozpb-wire-contract-<tag>.json`: the `tools/list` answer of that release's built
 server, every tool with its input and output schema, and the code list. Comparing two releases'
-files shows what changed. The streamable HTTP transport is served at `/v1/mcp`.
+files shows what changed. The tree carries the same export for its own revision, without the
+`release` and `commit` that name a release, as [`wire-contract.json`](wire-contract.json), and CI
+fails when the built server serves anything else ([below](#keeping-the-snapshot-current)). The
+streamable HTTP transport is served at `/v1/mcp`.
 
 **The CLI and operator configuration.** `ozpb` commands, flags and their environment-variable
 fallbacks, the JSON a command prints on standard output (the same `api-types` structures), and
@@ -45,7 +48,7 @@ the files the self-hosted deployment mounts
 | Published build | no version field: `<wasm hash>/<manifest hash>/` holding `SHA256SUMS`, `policy-spec.json`, `build-manifest.json`, `policy.wasm` and `source/` ([publishing](PUBLISHING.md)) | `crates/toolkit/src/publication.rs` |
 | Build worker launcher frames | `build-worker-job/v1` in, `build-worker-result/v1` and `contained-build-result/v2` out; the `--protocol` answer naming both ([launcher contract](ISOLATED-BUILDS.md#launcher-contract-for-another-provider)) | `crates/build-runner/src/worker.rs`, `deployment/worker-launcher.py` |
 | Native worker frames | `schema: 1` in the job and result frames ([machine protocol](NATIVE-EXECUTION.md#machine-protocol)) | `execution-runtime/src/execution.rs`, `execution-runtime/src/captured.rs` |
-| Release wire contract | `schema: "ozpb-wire-contract/v1"` | `scripts/release-artifacts.py` |
+| Release wire contract | `schema: "ozpb-wire-contract/v1"`; `docs/wire-contract.json` is the same document without `release` and `commit` | `scripts/release-artifacts.py` |
 
 The hash domains are specified in [canonical hashing](CANONICAL-HASHING.md#domains).
 
@@ -95,6 +98,28 @@ waiting for a major one would leave users exposed or unable to work. The release
 under breaking changes and say what to do, as the v1.0.0 notes do for the
 [account advisory](release-notes/v1.0.0.md#security).
 
+## Keeping the snapshot current
+
+`docs/wire-contract.json` is written only by the release export, run against a built server:
+
+```sh
+cargo build -p ozpb-mcp-server
+python3 scripts/release-artifacts.py check-wire-contract --server target/debug/ozpb-mcp-server
+```
+
+Without `--update` this compares what the server serves with the committed file, byte for byte,
+and fails on any difference, naming the tools and codes that differ and printing the diff. CI's
+host job and `scripts/verify-phase1.sh` run it. Nothing in it decides whether a difference is
+breaking. When a change to the server or to `crates/api-types` alters the contract on purpose,
+the same commit regenerates the file with `--update` and adds a release-notes entry that says,
+under the rules above, whether the change is breaking or additive. A difference nobody intended
+is a defect in the change that caused it.
+
+The `E_*` codes are also pinned without a server build: an `api-types` test
+(`published_error_codes_are_pinned_by_the_committed_wire_contract`) compares the `error_codes!`
+table with the file's `error_codes`. A code removed or renamed fails it as a breaking change; a
+new code fails it until the file is regenerated, and is additive.
+
 ## What 1.0 promises, and for how long
 
 During the grant period, which ends when the Stellar Community Fund accepts the third milestone,
@@ -119,6 +144,9 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
 
 1. **Choose the number** from the draft notes in `docs/release-notes/`: a breaking change outside
    the exceptions makes it major, an addition minor, anything else a patch.
+   Once the previous release's tree carries `docs/wire-contract.json`,
+   `git diff v<previous> -- docs/wire-contract.json` shows every wire-contract change since then,
+   and each one should already have its entry in the notes.
 2. **Prepare one release commit** on top of the reviewed `main`:
    - set `version` under `[workspace.package]` in `Cargo.toml`, and the same `version` in
      `execution-runtime/Cargo.toml`, the worker's own workspace (the binaries workflow refuses
@@ -137,7 +165,8 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    which can change its Wasm, and the generated crates are byte-for-byte fixtures. The workspace
    version reaches no Wasm and no fixture: the CLI's `--version` reports it, and the release
    workflows check the tag against it.
-3. **Run the gates on that commit**: `bash scripts/verify-phase1.sh`, the CI workflow, the
+3. **Run the gates on that commit**: `bash scripts/verify-phase1.sh` (the
+   [wire-contract check](#keeping-the-snapshot-current) included), the CI workflow, the
    `nightly live` workflow dispatched on it, and a dry run of the binaries
    (`gh workflow run release-binaries.yml --ref <branch>`), which builds and packages every
    platform without uploading. A release that delivers a milestone also needs the acceptance its
