@@ -496,9 +496,9 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   reads as `false`). Neither answer is an `E_NEEDS_DECISION` finding; both answers to one
   question (a cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry
   acknowledgement) are contradictory, an `E_INVALID_DECISION` finding. A refusal lists every
-  finding in `details` under the first one's code. Before v0.2.0 a null `max_calls` alone produced
+  finding in `details` under the first one's code. Before v1.0.0 a null `max_calls` alone produced
   an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
-  in the [release notes](release-notes/v0.2.0.md).
+  in the [release notes](release-notes/v1.0.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).

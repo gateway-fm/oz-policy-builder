@@ -165,7 +165,7 @@ What the project did, each recorded in the tree:
    ([receipt](ATOMIC-LIVE-HELPER.md#current-helper-deployment-account-073)) — and re-recorded the
    protocol-30 target capture, which had come from a 0.7.2 account.
 4. Recorded the change and the user action in [SECURITY.md](../SECURITY.md#upstream-advisories) and
-   the [release notes](release-notes/v0.2.0.md#security), marked breaking.
+   the [release notes](release-notes/v1.0.0.md#security), marked breaking.
 
 What users had to do — raise the registry floor to 6 or persist a version-6 checkpoint, and
 recreate accounts from the 0.7.3 code — is in [SECURITY.md](../SECURITY.md#upstream-advisories).

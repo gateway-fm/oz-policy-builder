@@ -49,6 +49,8 @@ The [documentation index](docs/README.md) lists every document by reader. To use
   it relies on is revoked or compromised.
 - [Extending the toolkit](docs/EXTENDING.md) — new constraint kinds, target adapters and wallet
   integrations.
+- [Versioning](docs/VERSIONING.md) — which interfaces a release keeps stable, what counts as
+  breaking, and which versions are supported.
 
 Security reports and the disclosure process are in [SECURITY.md](SECURITY.md).
 
