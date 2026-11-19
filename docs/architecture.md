@@ -953,9 +953,12 @@ verification steps that make it trustworthy:**
      a rule — a k-of-n threshold, guarded recovery, anything — is refused: the account skips
      its own signer check for a rule with policies, lets the submitter choose that rule and
      hands the policies whatever signers authenticated, possibly none. A rule on the target may
-     carry policies whose signer semantics are established (a recognized registry policy; a
-     generated policy only once its own artifact is reproduced, which Tranche 2 does not do, so
-     it is refused) and is then described by those semantics, never projected to `all_of`
+     carry policies whose signer semantics are established (a recognized registry policy whose
+     semantics were reviewed for its exact build: compiled in by Wasm hash and kind, as the
+     owner verifiers' schemes are, today only OZ's spending limit, so an entry under another
+     hash labelled with that kind is not readable; a generated policy only once its own
+     artifact is reproduced, which Tranche 2 does not do, so it is refused) and is then
+     described by those semantics, never projected to `all_of`
      from its stored signer list. Such rules — who else can call the target — are shown, not
      decided on: their access is their own, not a way around the agent's limit. A rule in
      several sets gets the stricter, protected-surface treatment.

@@ -252,7 +252,7 @@ pub(crate) fn check_prepared(
                 VerifiedPolicy {
                     wasm_hash: hash.to_hex(),
                     path: PolicyRecognitionPath::ReviewedRegistry,
-                    signers: signer_semantics(&entry.kind),
+                    signers: signer_semantics(&hash, &entry.kind),
                 },
             );
         }
@@ -322,17 +322,29 @@ pub(crate) fn check_prepared(
     })
 }
 
-/// What a reviewed policy kind demands of its rule's signers, from source review. OZ's
-/// spending limit refuses unless at least one of the rule's own signers authenticated
-/// (`stellar-accounts` 0.7.2 `policies/spending_limit.rs`, `enforce`: an empty
-/// `authenticated_signers` panics). Any kind not named here is unknown, which leaves a rule
-/// carrying it unresolved: the account hands such a rule to its policies with whatever
+/// The policy builds whose signer semantics were reviewed from source, by exact Wasm hash and
+/// the kind their registry entry must carry. OZ's spending limit refuses unless at least one of
+/// the rule's own signers authenticated (`stellar-accounts` 0.7.2 `policies/spending_limit.rs`,
+/// `enforce`: an empty `authenticated_signers` panics). That was read for this one build, as the
+/// owner verifiers' key schemes and the account's method inventory were: a signed entry can
+/// recognize other code, but its kind label cannot lend that code the reviewed semantics.
+const REVIEWED_POLICY_SIGNER_SEMANTICS: [(Hash32, &str, PolicySignerSemantics); 1] = [(
+    ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM,
+    "oz:spending_limit",
+    PolicySignerSemantics::AtLeastOneRuleSigner,
+)];
+
+/// What a recognized policy demands of its rule's signers: the reviewed semantics when both its
+/// code hash and its registry kind are the reviewed pair, and unknown otherwise, which leaves a
+/// rule carrying it unresolved: the account hands such a rule to its policies with whatever
 /// signers came, possibly none.
-fn signer_semantics(kind: &str) -> PolicySignerSemantics {
-    match kind {
-        "oz:spending_limit" => PolicySignerSemantics::AtLeastOneRuleSigner,
-        _ => PolicySignerSemantics::Unknown,
-    }
+fn signer_semantics(wasm_hash: &Hash32, kind: &str) -> PolicySignerSemantics {
+    REVIEWED_POLICY_SIGNER_SEMANTICS
+        .iter()
+        .find(|(hash, reviewed_kind, _)| hash == wasm_hash && *reviewed_kind == kind)
+        .map_or(PolicySignerSemantics::Unknown, |(_, _, semantics)| {
+            *semantics
+        })
 }
 
 /// The rule being installed, from the hashed spec: its target, its signers (the restricted
@@ -567,7 +579,7 @@ pub(crate) fn validate_bindings(
                 }
                 (
                     PolicyRecognitionPath::ReviewedRegistry,
-                    signer_semantics(&entry.kind),
+                    signer_semantics(&observed_hash, &entry.kind),
                 )
             }
             (
@@ -1384,6 +1396,73 @@ mod tests {
             panic!("the live plan must refuse a revoked generated build");
         };
         assert_eq!(error.code, EC::ERegistryRevoked, "{error}");
+    }
+
+    /// What a policy demands of its rule's signers was reviewed for one exact build (OZ's
+    /// spending limit), not for whatever a signed entry labels `oz:spending_limit`. An owner rule
+    /// on the grant's target carrying such a policy is readable only under the pinned hash;
+    /// under any other hash it may let the agent through, and the install is refused.
+    #[test]
+    fn spending_limit_signer_semantics_belong_to_the_reviewed_build_not_the_kind() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let pinned = ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM;
+        let relabelled = ozpb_domain::sha256(b"other code labelled oz:spending_limit");
+        let verdict_with_target_rule_policy = |code: ozpb_domain::Hash32| {
+            let (mut request, mut observation) = fixture();
+            let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+            let reviewed = snapshot.policies[&pinned.to_hex()].clone();
+            assert_eq!(reviewed.kind, "oz:spending_limit");
+            snapshot.policies.insert(relabelled.to_hex(), reviewed);
+            replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+            let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+            // Rule 2: the owner's own key on the grant's target, behind a policy instance that
+            // is not one of this spec's bindings.
+            let state = &mut observation.account_state;
+            state.rules.insert(
+                2,
+                StoredRule {
+                    id: 2,
+                    context_type: StoredContextType::CallContract {
+                        address: spec.rules[0].context.contract.clone(),
+                    },
+                    valid_until: None,
+                    signer_ids: vec![0],
+                    policy_ids: vec![1],
+                },
+            );
+            state.policies.insert(
+                1,
+                StoredPolicy {
+                    id: 1,
+                    address: address(44),
+                    observed_wasm_hash: code.to_hex(),
+                },
+            );
+            state.next_id = 3;
+            state.active_count = 3;
+            check(&request, &observation).unwrap().verdict
+        };
+
+        let reviewed = verdict_with_target_rule_policy(pinned);
+        assert!(reviewed.refusals.is_empty(), "{:?}", reviewed.refusals);
+        assert_eq!(
+            reviewed
+                .notes
+                .target_rules
+                .iter()
+                .map(|entry| entry.rule_id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let mislabelled = verdict_with_target_rule_policy(relabelled);
+        assert!(mislabelled.notes.target_rules.is_empty());
+        assert_eq!(mislabelled.refusals.len(), 1, "{:?}", mislabelled.refusals);
+        assert_eq!(
+            mislabelled.refusals[0].code,
+            FindingCode::DelegateGrantOverlap
+        );
+        assert_eq!(mislabelled.refusals[0].rule_id, Some(2));
     }
 
     #[test]
