@@ -2009,9 +2009,10 @@ mod tests {
                 proptest::sample::select(names),
                 // The full declared range here too (MAX_ARGS_PER_CALL is 32): argument
                 // indices reach two digits at 10, which widens every index-bearing line.
-                // Both bounds together cost the property test about 14 seconds instead of
-                // 7 — measured, and paid, because a corpus that stops short of the domain
-                // it quantifies over is how the 32-call corner went unvisited before.
+                // Both bounds together roughly double the property test's run time (about 22
+                // seconds now, with all 256 cases reaching codegen) — measured, and paid,
+                // because a corpus that stops short of the domain it quantifies over is how
+                // the 32-call corner went unvisited before.
                 proptest::collection::vec(constraint_strategy(), 0..=MAX_ARGS_PER_CALL),
             )
                 .prop_map(|(fn_name, constraints)| AllowedCall {
@@ -2204,12 +2205,14 @@ mod tests {
                 max_calls in proptest::option::of(0u32..u32::MAX),
                 extra_signer in proptest::prelude::any::<bool>(),
             ) {
-                let Some(spec) = spec_with(calls, predicate, valid_until, max_calls, extra_signer)
-                else {
-                    // Some combinations are legitimately rejected by spec validation (e.g. a
-                    // threshold above the signer count); those never reach codegen.
-                    return Ok(());
-                };
+                let spec = spec_with(calls, predicate, valid_until, max_calls, extra_signer);
+                // Some combinations are legitimately rejected by spec validation (e.g. a
+                // threshold above the signer count); those never reach codegen. They are
+                // *rejected*, not passed: proptest draws a replacement, and past its global
+                // reject limit fails the run. Returning early here once let a builder that
+                // validated nothing make this property hold over no spec at all.
+                proptest::prop_assume!(spec.is_some());
+                let spec = spec.expect("assumed above");
                 let generated = generate(&spec, 0, &Pins::default())
                     .map_err(|e| proptest::test_runner::TestCaseError::fail(
                         format!("codegen refused a ValidatedSpec: {e}")
