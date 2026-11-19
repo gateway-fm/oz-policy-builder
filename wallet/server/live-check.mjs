@@ -1,4 +1,4 @@
-// The live-enforcement layer: the reviewed candidate deciding a real call on testnet, through the
+// The live-enforcement layer: the reviewed candidate deciding a real call on the session's network, through the
 // atomic live helper (docs/ATOMIC-LIVE-HELPER.md), in enforce-mode simulation only.
 //
 //   prepare  reads the helper, the candidate and the account, and builds the consent statement;
@@ -9,10 +9,11 @@
 //            transfers, simulates each case once (never submits) and validates each raw response.
 //   replay   once every case signature has expired, re-reads what they could have changed.
 //
-// Every result is state-dependent simulation evidence about testnet at the simulation ledger.
+// Every result is state-dependent simulation evidence about that network at the simulation ledger.
 import { randomBytes } from 'node:crypto';
-import { Account, Address, Asset, Networks, Operation, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
-import { NETWORK_ID, freezeCopy } from '../shared/approval.mjs';
+import { Account, Address, Operation, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
+import { freezeCopy } from '../shared/approval.mjs';
+import { stroopsText } from '../shared/networks.mjs';
 import { installCall } from '../shared/assembly.mjs';
 import { LIVE_CASES, LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_LABELS, LIVE_RUN_MIN_LEDGERS, LIVE_SIGNATURE_LEDGERS,
   checkLiveOwnerEntry, consentDisplay, liveCases, liveShape, statementHash } from '../shared/live-consent.mjs';
@@ -21,8 +22,19 @@ import { validateLiveOwnerSignature } from '../shared/signature.mjs';
 
 /** The browser origin whose WebAuthn assertion the owner signature must carry. */
 export const LIVE_ORIGIN = 'http://localhost:3000';
-const SAC = Asset.native().contractId(Networks.TESTNET);
 const TTL_DOC = 'docs/ATOMIC-LIVE-HELPER.md#keeping-the-helper-live';
+/**
+ * Where a backend without a configured helper gets one, per network. On mainnet nothing is deployed
+ * for the operator: the owner deploys the reviewed helper and names its contract ID in `liveHelper`.
+ */
+export const HELPER_DEPLOY = Object.freeze({
+  testnet: 'Deploy it with testnet-harness/scripts/deploy-live-helper.mjs (docs/ATOMIC-LIVE-HELPER.md#testnet-deployment) and name it in '
+    + '`liveHelper`.',
+  mainnet: 'Mainnet has none until the owner deploys the reviewed helper: build contracts/atomic-live-helper with `stellar contract '
+    + `build --locked\`, check its SHA-256 is ${LIVE_HELPER_WASM}, then run \`stellar contract deploy --wasm `
+    + 'ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>` and name the contract ID in `liveHelper` '
+    + '(docs/POLLYWALLET-INTEGRATION.md#mainnet-sessions). Installation needs this layer, so it stays unavailable until then.',
+});
 const refuse = () => { throw new Error('live check refused; prepare it again'); };
 const int64 = () => randomBytes(8).readBigInt64BE().toString();
 const layer = (status, detail, evidence) => freezeCopy({ layer: 'live_enforcement', status, detail, ...(evidence ? { evidence } : {}) });
@@ -60,10 +72,13 @@ export async function clockedLedger(network, now = Date.now) {
  * signatures could change. Returns `{ layer }` when the check cannot run, else `{ prepared }`.
  */
 export async function prepareLive({ network, helper, approval, spec, policyAddress, policyCodeHash, nextRuleId }) {
-  const grant = liveShape({ spec, intent: approval.intent, wallet: approval.wallet });
+  const net = network.profile;
+  if (approval.networkId !== net.networkId) refuse();
+  const grant = liveShape({ spec, intent: approval.intent, wallet: approval.wallet, networkId: net.networkId });
   if (!grant.supported) return { layer: layer('unsupported', `${grant.reason} Nothing was signed or simulated.`) };
   if (!helper) {
-    return { layer: layer('unavailable', 'No atomic live helper is configured for this backend (operator `liveHelper`); nothing was signed.') };
+    return { layer: layer('unavailable', `No atomic live helper is configured for this ${net.name} backend (operator \`liveHelper\`). `
+      + `${HELPER_DEPLOY[net.name]} Nothing was signed.`) };
   }
   if (!Number.isSafeInteger(nextRuleId)) {
     return { layer: layer('unavailable', 'The reviewed authority evidence did not establish the next context rule ID; nothing was signed.') };
@@ -88,7 +103,7 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
   }
   const expiry = currentLedger + LIVE_SIGNATURE_LEDGERS;
   if (!helperState.found) {
-    return { layer: layer('unavailable', `The configured helper ${helper} does not exist on testnet (a testnet reset or an evicted `
+    return { layer: layer('unavailable', `The configured helper ${helper} does not exist on ${net.name} (a reset or an evicted `
       + `archive); deploy it again (${TTL_DOC}). Nothing was signed.`) };
   }
   if (helperState.wasmHash !== LIVE_HELPER_WASM) {
@@ -101,7 +116,7 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
       + `${lives}, before the case signatures would expire at ${expiry}. Extend its TTL or deploy it again (${TTL_DOC}). Nothing was signed.`) };
   }
   if (!policyState.found) {
-    return { layer: layer('unavailable', `The deployed candidate ${policyAddress} does not exist on testnet (a testnet reset or an evicted `
+    return { layer: layer('unavailable', `The deployed candidate ${policyAddress} does not exist on ${net.name} (a reset or an evicted `
       + 'archive); deploy and review it again. Nothing was signed.') };
   }
   if (policyState.wasmHash !== policyCodeHash) {
@@ -115,9 +130,16 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
     return { layer: layer('unavailable', `The grant expires at ledger ${approval.intent.valid_until_ledger}, before the live check could `
       + 'install it; nothing was signed.') };
   }
-  // The host checks a classic signer against its account entry, so the delegate must exist on testnet.
-  try { await network.ensureDelegateAccount(grant.delegate); } catch {
-    return { layer: layer('unavailable', 'The automation delegate\'s testnet account could not be created through Friendbot or read back '
+  // The host checks a classic signer against its account entry, so the delegate must exist on the network.
+  try { await network.ensureDelegateAccount(grant.delegate); } catch (error) {
+    if (error?.reason === 'delegate_unfunded') {
+      let minimum = null;
+      try { minimum = (await network.classicAccount(grant.delegate)).minimumStroops; } catch { /* stated without the amount */ }
+      return { layer: layer('unavailable', `The automation delegate ${grant.delegate} has no ${net.name} account, and the wallet creates `
+        + `none there. Send it at least ${minimum ? stroopsText(minimum, net) : 'the minimum reserve (two base reserves)'} from your own `
+        + 'wallet, then prepare the check again. Nothing was signed.') };
+    }
+    return { layer: layer('unavailable', `The automation delegate's ${net.name} account does not exist or could not be read back `
       + 'with its master key alone; nothing was signed.') };
   }
   const cases = liveCases({ approval, spec, helper, policyCodeHash, expectedRuleId: nextRuleId, signatureExpirationLedger: expiry });
@@ -194,14 +216,14 @@ export async function runLive({ network, mintCapability, prepared, approval, own
     }
     stopped();
     // Signed only once everything the envelope needs is in hand, right before it is simulated.
-    const signed = capability.authorizeTransfer({ network_id: NETWORK_ID, account: intent.account, asset: SAC, recipient: intent.recipient,
+    const signed = capability.authorizeTransfer({ network_id: network.profile.networkId, account: intent.account, asset: network.profile.nativeAsset, recipient: intent.recipient,
       amount: intent.amount, expected_rule_id: intent.expected_rule_id, nonce: int64(), signature_expiration_ledger: expiry });
     let envelopeXdr, simulation;
     try {
       const auth = [owner.signedEntryXdr, signed.transferEntryXdr, signed.delegateEntryXdr]
         .map((entry) => xdr.SorobanAuthorizationEntry.fromXDR(entry, 'base64'));
       envelopeXdr = new TransactionBuilder(new Account(source.accountId(), source.sequenceNumber()),
-        { fee: '100', networkPassphrase: Networks.TESTNET })
+        { fee: '100', networkPassphrase: network.profile.passphrase })
         .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(helperCall(intent)), auth }))
         .setTimeout(0).build().toEnvelope().toXDR('base64');
       simulation = await network.simulateRaw(envelopeXdr);
@@ -214,6 +236,11 @@ export async function runLive({ network, mintCapability, prepared, approval, own
     verdicts.push({ case: LIVE_CASES[index], ...validateLiveCase({ intent, envelopeXdr, simulation }) });
   }
   const [permit, denial] = verdicts;
+  if (verdicts.some((v) => v.reason === 'no_diagnostic_events')) {
+    return layer('unavailable', 'The operator RPC returned no diagnostic events, so neither case could be judged; stellar-rpc 30.0.1 '
+      + 'returns them only with --preflight-enable-debug. Use an endpoint that does. Nothing was submitted; the signatures already '
+      + `created stay valid until ledger ${expiry}.`);
+  }
   const passed = permit.outcome === 'permit' && denial.outcome === 'deny' && denial.code === POLICY_NO_TUPLE_MATCHED;
   // A response the validator could not judge — restoration needed, simulated after the signatures
   // expired — is about the endpoint and the timing, not the candidate, but only when every other case
@@ -238,7 +265,7 @@ export async function runLive({ network, mintCapability, prepared, approval, own
   }
   return passed
     ? layer('passed', 'The candidate policy permitted the exact transfer and refused the adjacent amount with NoTupleMatched, in '
-      + 'enforce-mode simulations of the atomic live helper on testnet, through the pinned account, with the owner\'s passkey '
+      + `enforce-mode simulations of the atomic live helper on ${network.profile.name}, through the pinned account, with the owner's passkey `
       + `installation and the wallet's automation delegate. Simulation only and state-dependent; signatures valid until ledger ${expiry}.`, evidence)
     : layer('failed', `The live cases did not both validate (permit: ${permit.outcome}, adjacent amount: ${denial.outcome}); no evidence `
       + 'about the policy was accepted.', evidence);

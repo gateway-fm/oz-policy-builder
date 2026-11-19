@@ -3,6 +3,8 @@ import test from 'node:test';
 import { Address, Asset, Keypair, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import { installCall } from '../shared/assembly.mjs';
 import { LIVE_SIGNATURE_LEDGERS, checkLiveOwnerEntry, consentDisplay, liveCases, liveGrant, liveShape } from '../shared/live-consent.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const SAC = Asset.native().contractId(Networks.TESTNET);
 const ACCOUNT = StrKey.encodeContract(Buffer.alloc(32, 41));
@@ -14,7 +16,7 @@ const RECIPIENT = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 46)).publicKey();
 const N = 1030;
 
 function spec({ amount = '1000000', state = [{ call_count_per_installation: { max_calls: 1 } }] } = {}) {
-  return { smart_account: { address: ACCOUNT }, rules: [{ context: { contract: SAC }, state,
+  return { network_id: NETWORK_ID, smart_account: { address: ACCOUNT }, rules: [{ context: { contract: SAC }, state,
     authorization: { signers: [{ delegated: { address: DELEGATE } }] },
     allowed_calls: [{ fn: 'transfer', args: [{ i: 0, c: { eq_address: { value: 'SELF' } } },
       { i: 1, c: { eq_address: { value: RECIPIENT } } }, { i: 2, c: { eq_i128: { value: amount } } }] }] }] };
@@ -23,7 +25,7 @@ function approval(change = (intent) => intent) {
   const intent = change({ operation: 'add_context_rule', account_contract: ACCOUNT, context_contract: SAC, rule_name: 'live-check',
     valid_until_ledger: 5000, delegate_signers: [{ kind: 'delegated', address: DELEGATE }],
     policies: [{ policy_index: 0, address: POLICY, install_params: { kind: 'generated' } }] });
-  return { intent, ownerRuleId: 0, commitment: 'c'.repeat(64),
+  return { networkId: NETWORK_ID, intent, ownerRuleId: 0, commitment: 'c'.repeat(64),
     wallet: { contractId: ACCOUNT, verifier: VERIFIER, publicKey: `04${'11'.repeat(64)}`, credentialId: 'AQ' } };
 }
 const cases = (a = approval(), expiry = N) => liveCases({ approval: a, spec: spec(), helper: HELPER, policyCodeHash: 'b'.repeat(64),
@@ -74,9 +76,9 @@ test('the consent statement allows an expiry at most 30 ledgers after the ledger
 });
 
 test('the shape is one exact native transfer of at most 1,000,000 stroops, with a call cap, installing exactly the reviewed grant', () => {
-  assert.equal(liveGrant(spec()).supported, true);
-  assert.equal(liveGrant(spec({ amount: '1000001' })).supported, false, 'the adjacent denial would exceed the helper bound');
-  assert.equal(liveGrant(spec({ state: [] })).supported, false);
+  assert.equal(liveGrant(spec(), NETWORK_ID).supported, true);
+  assert.equal(liveGrant(spec({ amount: '1000001' }), NETWORK_ID).supported, false, 'the adjacent denial would exceed the helper bound');
+  assert.equal(liveGrant(spec({ state: [] }), NETWORK_ID).supported, false);
   const wallet = approval().wallet;
   for (const change of [
     (i) => ({ ...i, rule_name: 'a-rule-name-of-21-byt' }), (i) => ({ ...i, valid_until_ledger: null }),
@@ -85,7 +87,7 @@ test('the shape is one exact native transfer of at most 1,000,000 stroops, with 
     (i) => ({ ...i, context_contract: POLICY }), (i) => ({ ...i, account_contract: POLICY }),
   ]) {
     const a = approval(change);
-    assert.equal(liveShape({ spec: spec(), intent: a.intent, wallet }).supported, false);
+    assert.equal(liveShape({ spec: spec(), intent: a.intent, wallet, networkId: NETWORK_ID }).supported, false);
     assert.throws(() => cases(a), /refused/);
   }
   const [permit, denial] = cases();

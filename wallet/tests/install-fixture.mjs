@@ -3,12 +3,13 @@
 // submission and the account's events, each replaceable by a test.
 import assert from 'node:assert/strict';
 import { Account, Address, Networks, Operation, SorobanDataBuilder, StrKey, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { installCall } from '../shared/assembly.mjs';
 import { LIVE_SIGNATURE_LEDGERS } from '../shared/live-consent.mjs';
 import { removalCall } from '../shared/revoke.mjs';
 import { consented, liveReviewed, passkeySign } from './live-check-fixture.mjs';
 import { CAPTURE_LEDGER, fakeNative, stubNativeChecks } from './native-actions-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 /** The ledger the checks start at: the recorded capture's entries were last modified before it. */
 export const BASE_LEDGER = CAPTURE_LEDGER - 2;

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Address, Operation, StrKey, authorizeEntry, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { isMainModule } from './cli-entry.mjs';
-import { contractCall, entryAddress, i128, policyDenial, recipientAuthorizationMissing, signForSmartAccount } from './lib.mjs';
+import { contractCall, denialCode, entryAddress, i128, recipientAuthorizationMissing, signForSmartAccount } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
 import { protocolInvocation, PROTOCOL_TARGETS, soroswapDecisions } from './protocol-calls.mjs';
 import { recheckSoroswapTargets } from './soroswap-preflight.mjs';
@@ -199,7 +199,7 @@ export async function invokeProtocol({ run, name, mode, signer = 'delegate', con
       return observed;
     }
     const attributed = simulated.result === 'deny'
-      && policyDenial(simulated.error, run.account, expected.enforcer) === expected.code;
+      && denialCode(simulated.error, simulated.events, run.account, expected.enforcer) === expected.code;
     Object.assign(observed, { ledger: simulated.ledger,
       status: attributed ? 'verified_denial' : simulated.result === 'permit' ? 'unexpected_permit' : 'unattributed_denial' });
     if (attributed) Object.assign(observed, { enforcer: expected.enforcer, code: expected.code });

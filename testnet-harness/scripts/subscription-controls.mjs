@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Address, Operation, authorizeEntry, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { isMainModule } from './cli-entry.mjs';
-import { contractCall, entryAddress, i128, policyDenial, signForSmartAccount } from './lib.mjs';
+import { contractCall, denialCode, entryAddress, i128, signForSmartAccount } from './lib.mjs';
 import { subscriptionConfig } from './subscription.mjs';
 import * as rpc from './rpc.mjs';
 
@@ -77,7 +77,7 @@ export async function runSubscriptionControls(dir, overrides = {}) {
     const observed = await deps.simulatedTransfer(run, request, deps);
     requireThat(positiveLedger(observed.ledger), 'control lacks an actual simulation ledger');
     const attributed = acceptable.map(([enforcer, code]) => ({ enforcer, code }))
-      .find((item) => observed.result === 'deny' && policyDenial(observed.error, run.account, item.enforcer) === item.code);
+      .find((item) => observed.result === 'deny' && denialCode(observed.error, observed.events, run.account, item.enforcer) === item.code);
     const timely = before === null || observed.ledger < before;
     const result = attributed && timely ? 'verified_denial' : timely ? 'unexpected_result' : 'inconclusive_window_elapsed';
     journal.steps.push({ name, result, ledger: observed.ledger, token: request.token ?? run.sac,

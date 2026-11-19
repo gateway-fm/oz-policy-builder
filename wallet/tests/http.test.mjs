@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import test from 'node:test';
 import { WalletSession } from '../server/session.mjs';
-import { REFUSAL_REASONS, createWalletServer } from '../server/http.mjs';
-import { REFUSAL_REASONS as CLIENT_REASONS } from '../overlay/files/src/policy-builder/client/client.mjs';
+import { CAP_SETTINGS, REFUSAL_REASONS, createWalletServer } from '../server/http.mjs';
+import { CAP_SETTINGS as CLIENT_CAP_SETTINGS, REFUSAL_REASONS as CLIENT_REASONS } from '../overlay/files/src/policy-builder/client/client.mjs';
 
 const token = 'a'.repeat(64);
 async function fixture(t, actions = { status: async () => ({ ready: true }) }) {
@@ -69,6 +69,19 @@ test('a refusal names one closed reason the owner can act on, and nothing else f
     const response = await send();
     assert.equal(response.status, 422);
     assert.deepEqual(JSON.parse(response.body), { error: 'wallet action unavailable; refresh and review again', ...(named ? { reason } : {}) });
+  }
+});
+test('a cap refusal also names the operator setting and its figures, in a closed shape and nothing more', async (t) => {
+  assert.deepEqual(CAP_SETTINGS, CLIENT_CAP_SETTINGS, 'the browser accepts exactly the settings the backend names');
+  const limit = { setting: 'maxUploadFeeStroops', simulatedFeeStroops: '190000000', neededStroops: '190000000' };
+  for (const [reason, given, kept] of [['fee_cap', limit, true], ['spend_cap', { ...limit, setting: 'sessionSpendCapStroops' }, true],
+    ['spend_cap', limit, false], ['rpc_too_slow', limit, false], ['fee_cap', { ...limit, canary: 'secret' }, false],
+    ['fee_cap', { ...limit, simulatedFeeStroops: 190000000 }, false], ['fee_cap', { ...limit, neededStroops: '01' }, false],
+    ['fee_cap', { ...limit, setting: 'feePayerKeyPath' }, false]]) {
+    const send = await fixture(t, { status: async () => { throw Object.assign(new Error('canary'), { reason, limit: given }); } });
+    const response = await send();
+    assert.deepEqual(JSON.parse(response.body), { error: 'wallet action unavailable; refresh and review again', reason,
+      ...(kept ? { limit: given } : {}) }, `${reason} ${JSON.stringify(given)}`);
   }
 });
 test('only one long operation occupies the local wallet backend at a time', async (t) => {

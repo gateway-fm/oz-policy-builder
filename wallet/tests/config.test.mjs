@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { loadWalletConfig } from '../server/config.mjs';
 import { createWalletRuntime } from '../server/main.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-config-')));
@@ -105,7 +106,7 @@ test('launcher creates private retained state without startup network writes or 
   });
   assert.equal(calls, 0);
   assert.equal(runtime.server.listening, false);
-  assert.match(runtime.launchUrl, /^http:\/\/localhost:3000\/policy-builder#session=[a-f0-9]{64}$/);
+  assert.match(runtime.launchUrl, /^http:\/\/localhost:3000\/policy-builder#session=[a-f0-9]{64}&network=testnet$/);
   assert.equal(statSync(captured.toolchain.sessionRoot).mode & 0o777, 0o700);
   assert.equal(statSync(join(captured.toolchain.sessionRoot, 'journal')).mode & 0o777, 0o700);
   assert.equal(readFileSync(join(captured.toolchain.sessionRoot, 'registry.signed.json'), 'utf8'),
@@ -113,7 +114,7 @@ test('launcher creates private retained state without startup network writes or 
   assert.ok(captured.network.payerAddress.startsWith('G'));
   assert.equal(captured.native, null, 'no native worker unless the operator configures one');
   assert.equal(captured.session.authenticate({ host: 'localhost:3000', origin: 'http://localhost:3000',
-    authorization: `Bearer ${new URL(runtime.launchUrl).hash.slice('#session='.length)}` }), true);
+    authorization: `Bearer ${/^#session=([0-9a-f]{64})&network=testnet$/.exec(new URL(runtime.launchUrl).hash)[1]}` }), true);
   assert.throws(() => captured.session.authenticate({ host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000',
     authorization: `Bearer ${new URL(runtime.launchUrl).hash.slice('#session='.length)}` }), /unauthorized/);
 });

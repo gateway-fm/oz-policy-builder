@@ -17,6 +17,7 @@ the reader it is mainly written for.
 ## Wallet integrators
 
 - [POLLYWALLET-INTEGRATION.md](POLLYWALLET-INTEGRATION.md) — the reference integration: consent, checks, passkey install, use, revoke.
+- [MAINNET-INSTALL.md](MAINNET-INSTALL.md) — the owner's runbook for one installation on mainnet: prerequisites, every write with its simulated fee, the caps, evidence and removal.
 - [AGENT-WALLET-HANDOFF.md](AGENT-WALLET-HANDOFF.md) — direct local delivery of a confirmed proposal from Claude to the wallet.
 - [INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md) — the unsigned install transaction and what a wallet must check before signing.
 - [LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md) — predicting one call against an installed rule.

@@ -9,6 +9,8 @@ import { capturedCall, capturedJobText, captureHash, checkCapturedPrepared, chec
 import { Address } from '@stellar/stellar-sdk';
 import { CASE_IDS, RECIPIENT, SAC, captureFixture, capturedFrames, capturedKeys, capturedSignRequest, initializationHash,
   transferCall } from './captured-execution-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const H = (n) => n.repeat(64);
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -22,7 +24,7 @@ function spec({ contract = SAC, args, allowed, rules } = {}) {
     { i: 1, c: { eq_address: { value: RECIPIENT } }, prov: 'observed_exact' },
     { i: 2, c: { eq_i128: { value: '1000000' } }, prov: 'observed_exact' }], justified_by: ['recordings[0]/auth[0]/root'] };
   const rule = { context: { type: 'CallContract', contract }, allowed_calls: allowed ?? [call] };
-  return { smart_account: { address: ACCOUNT }, rules: rules ?? [rule] };
+  return { network_id: NETWORK_ID, smart_account: { address: ACCOUNT }, rules: rules ?? [rule] };
 }
 
 function setup({ maxCalls = 2 } = {}) {
@@ -60,7 +62,7 @@ test('the captured call is derived only from one exact-amount native transfer ru
 test('the capture envelope is unsigned, carries no authorization and is exactly the derived call', () => {
   const call = transferCall({ account: ACCOUNT });
   const source = new Account(Keypair.random().publicKey(), '41');
-  const envelope = targetEnvelopeXdr(source, call);
+  const envelope = targetEnvelopeXdr(source, call, WALLET_NETWORKS.testnet.passphrase);
   const tx = TransactionBuilder.fromXDR(envelope, Networks.TESTNET);
   assert.equal(tx.signatures.length, 0);
   assert.equal(tx.operations.length, 1);
@@ -99,7 +101,7 @@ test('the capture hash follows the canonical TargetCapture encoding and moves wi
 
 test('a capture is accepted only for the review\'s exact call, network, account code and a fresh ledger', () => {
   const { capture, hash } = setup();
-  const expected = { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT, recipient: RECIPIENT, notBefore: LEDGER - 3 };
+  const expected = { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT, recipient: RECIPIENT, notBefore: LEDGER - 3, networkId: NETWORK_ID };
   const checked = checkTargetCapture(clone(capture), expected);
   assert.equal(checked.captureHash, hash);
   assert.equal(checked.observedLedger, LEDGER);
@@ -142,14 +144,14 @@ for (const [name, change, expectation = {}] of [
     const changed = clone(capture);
     change(changed);
     assert.throws(() => checkTargetCapture(changed, { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT,
-      recipient: RECIPIENT, notBefore: LEDGER - 3, ...expectation }), /refused/);
+      recipient: RECIPIENT, notBefore: LEDGER - 3, networkId: NETWORK_ID, ...expectation }), /refused/);
   });
 }
 
 test('the captured job splices the exact native job and capture', () => {
   const { capture } = setup();
   const checked = checkTargetCapture(clone(capture), { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT,
-    recipient: RECIPIENT, notBefore: LEDGER });
+    recipient: RECIPIENT, notBefore: LEDGER, networkId: NETWORK_ID });
   const raw = '{\n  "valid_until": 9223372036854775807\n}';
   const text = capturedJobText({ candidate: { signed_registry_snapshot: new RawJson(raw) }, run_nonce: H('1') }, 'AGFzbQEAAAA=', checked);
   assert.ok(text.includes(raw));
@@ -328,7 +330,7 @@ test('a self-consistently re-signed preparation for another run, ledger, account
   }
 });
 
-const expectedCapture = { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT, recipient: RECIPIENT, notBefore: LEDGER };
+const expectedCapture = { call: transferCall({ account: ACCOUNT }), accountAddress: ACCOUNT, recipient: RECIPIENT, notBefore: LEDGER, networkId: NETWORK_ID };
 const rehashed = (c, change) => {
   const entry = xdr.LedgerHeaderHistoryEntry.fromXDR(c.header_xdr, 'base64');
   const header = new xdr.LedgerHeader({ ...entry.header, ...change });

@@ -5,6 +5,7 @@ export interface WalletIdentity {
   readonly verifier: string;
 }
 export interface Approval {
+  readonly networkId: string;
   readonly wallet: WalletIdentity;
   readonly ownerRuleId: number;
   readonly ownerRuleXdr: string;
@@ -16,7 +17,6 @@ export interface Approval {
   readonly approval_state: 'reviewed_not_signed';
   readonly trust_basis: 'wallet_owned_passkey_identity';
 }
-export const NETWORK_ID: string;
 export const ACCOUNT_WASM: string;
 export const WEBAUTHN_WASM: string;
 export function freezeCopy<T>(value: T): Readonly<T>;

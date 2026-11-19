@@ -1,28 +1,41 @@
 import { createECDH, createHash, randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Account, Address, Asset, Networks, Operation, StrKey, TransactionBuilder, scValToNative, xdr } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
+import { Account, Address, Operation, StrKey, TransactionBuilder, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { ACCOUNT_WASM, WEBAUTHN_WASM, freezeCopy, ownerRule, reviewIntent } from '../shared/approval.mjs';
 import { monitorInstallation } from './monitor.mjs';
 import { replacementConsent } from '../shared/replacement.mjs';
 import { dryRunAcceptance } from '../shared/dry-run.mjs';
 import { decodeBase64Url } from '../shared/base64url.mjs';
-import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
-import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
+import { SAMPLE_AMOUNT_STROOPS, reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { validateAssembly } from '../shared/assembly.mjs';
 import { INSTALL_VALIDITY_LEDGERS, installConsent } from '../shared/install.mjs';
-import { REMOVAL_MAX_FEE_STROOPS, reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared/revoke.mjs';
+import { isGrantRule, isOwnerRule, reviewRemoval, revokeConsent, ruleSummary, validateRemovalAssembly } from '../shared/revoke.mjs';
 import { addedRuleId, installGate, verifyInstallation, verifyRemoval } from './install.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
 import { DelegateCapabilities, NATIVE_LIMITS, checkDryRunPreparation, nativeJobText, runAccountExecution } from './native-execution.mjs';
 import { FRESHNESS_LEDGERS, capturedCall, capturedJobText, checkTargetCapture, runCapturedExecution } from './captured-execution.mjs';
-import { LIVE_ORIGIN, clockedLedger, consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, requireNoReplay, runLive } from './live-check.mjs';
+import { HELPER_DEPLOY, LIVE_ORIGIN, clockedLedger, consentWindow, ownerEntry, prepareLive, replayRecord, replayStatus, requireNoReplay, runLive } from './live-check.mjs';
 import { USE_SIGNATURE_LEDGERS, USE_SUBMIT_MIN_LEDGERS } from './live-signing.mjs';
-import { liveShape } from '../shared/live-consent.mjs';
+import { LIVE_HELPER_WASM, liveShape } from '../shared/live-consent.mjs';
+import { readPinnedWasm, uploadInstruction } from './pinned-code.mjs';
+import { NETWORK_REASONS } from './network.mjs';
 import { validateRepeatedUse } from '../shared/live-enforcement.mjs';
 
 const refuse = () => { throw new Error('wallet action refused; refresh and review again'); };
+const because = (reason) => Object.assign(new Error('wallet action refused; refresh and review again'), { reason });
+/** A fee payer refusal, refused again with its reason kept (a cap, an unfunded account), and nothing else of it. */
+const rethrow = (error) => { throw NETWORK_REASONS.includes(error?.reason) ? because(error.reason) : because(undefined); };
+/**
+ * Whether `value` (an authority verdict, a delegate list) names the fee payer: by its G address, as a
+ * classic or `Delegated` signer, or by its raw Ed25519 key in hex, as an `External` signer carries it.
+ */
+export function payerMentioned(value, payerAddress) {
+  const text = JSON.stringify(value ?? null);
+  const key = Buffer.from(StrKey.decodeEd25519PublicKey(payerAddress)).toString('hex');
+  return text.includes(payerAddress) || text.toLowerCase().includes(key);
+}
 /** Reads that did not fit their ledger window: the RPC answered too slowly, or from a lagging node. */
 class SlowReads extends Error {
   constructor() { super('wallet action refused; refresh and review again'); this.reason = 'rpc_too_slow'; }
@@ -81,20 +94,19 @@ const READBACK_ATTEMPTS = 5;
 const READBACK_PAUSE_MS = 2000;
 const OWNER = Object.freeze({ authentication: 'webauthn_user_verified', human_approval_attested: false });
 const targetLayer = (status, detail) => ({ layer: 'captured_target', status, detail });
-const SAC = Asset.native().contractId(Networks.TESTNET);
 /** How many uses the automation key signs for one installation: attempts that sent nothing, and second tries. */
 const MAX_USE_SIGNATURES = 3;
 const MAX_REPEAT_SIGNATURES = 3;
 const nonce = () => randomBytes(8).readBigInt64BE().toString();
 const contractHex = (address) => Buffer.from(StrKey.decodeContract(address)).toString('hex');
 
-/** The fee payer's unsigned envelope for the native asset's `transfer`, carrying the delegate's two entries. */
-function useEnvelope(source, { account, recipient, amount }, signed, { readLedger, expiry }) {
-  const call = new xdr.InvokeContractArgs({ contractAddress: new Address(SAC).toScAddress(), functionName: 'transfer',
+/** The fee payer's unsigned envelope for the network's native asset's `transfer`, carrying the delegate's two entries. */
+function useEnvelope(net, source, { account, recipient, amount }, signed, { readLedger, expiry }) {
+  const call = new xdr.InvokeContractArgs({ contractAddress: new Address(net.nativeAsset).toScAddress(), functionName: 'transfer',
     args: [new Address(account).toScVal(), new Address(recipient).toScVal(), xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: BigInt(amount) }))] });
   const auth = [signed.transferEntryXdr, signed.delegateEntryXdr].map((entry) => xdr.SorobanAuthorizationEntry.fromXDR(entry, 'base64'));
   // Valid only below the signatures' expiry ledger: it cannot land, and fail, after they expire.
-  return new TransactionBuilder(new Account(source.accountId(), source.sequenceNumber()), { fee: '1000000', networkPassphrase: Networks.TESTNET })
+  return new TransactionBuilder(new Account(source.accountId(), source.sequenceNumber()), { fee: '1000000', networkPassphrase: net.passphrase })
     .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(call), auth }))
     .setLedgerbounds(readLedger, expiry).setTimeout(0).build().toEnvelope().toXDR('base64');
 }
@@ -103,10 +115,10 @@ function useEnvelope(source, { account, recipient, amount }, signed, { readLedge
  * The native asset's one `transfer` event of the confirmed payment: from the account to the recipient,
  * exactly `amount` (CAP-67 topics `[transfer, from, to, "native"]`, data the i128 amount).
  */
-function transferredExactly(events, { account, recipient, amount }) {
+function transferredExactly(net, events, { account, recipient, amount }) {
   if (!Array.isArray(events)) return false;
   const transfers = events.filter((event) => event?.type?.name === 'contract' && event.contractId
-    && Buffer.from(event.contractId.toXDR()).toString('hex') === contractHex(SAC)
+    && Buffer.from(event.contractId.toXDR()).toString('hex') === contractHex(net.nativeAsset)
     && event.body?.v0?.topics?.[0]?.type === 'scvSymbol' && event.body.v0.topics[0].sym.toString() === 'transfer');
   if (transfers.length !== 1) return false;
   const { topics, data } = transfers[0].body.v0;
@@ -116,9 +128,27 @@ function transferredExactly(events, { account, recipient, amount }) {
     && same(data, xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: BigInt(amount) })));
 }
 
-/** Closed HTTP operations. Every privileged input comes from retained state or operator configuration. */
-export function createWalletActions({ session, toolchain, network, native = null, live = null, delegates = new DelegateCapabilities(),
-  pause = sleep, handoff = new AgentHandoff() }) {
+/**
+ * Closed HTTP operations. Every privileged input comes from retained state or operator configuration.
+ * The network is the one `network` (WalletNetwork) was started for, chosen once: every review, proposal,
+ * capability and record is bound to it, and anything naming another network is refused.
+ */
+export function createWalletActions({ session, toolchain, network, native = null, live = null,
+  delegates = new DelegateCapabilities(network?.profile ?? null), pause = sleep, handoff = new AgentHandoff({ network: network?.profile }),
+  pinnedWasmDir = null }) {
+  const net = network?.profile;
+  if (!net || typeof net.networkId !== 'string' || !Object.isFrozen(net)) refuse();
+  // The session's fee caps: testnet's fixed ceilings, or the mainnet operator's configured caps.
+  const fees = network.fees;
+  /** Mainnet: the owner funds every account; the wallet funds nothing and moves no XLM of the fee payer's. */
+  const ownerFunded = !net.friendbot;
+  /** The fee payer is only a transaction source and fee payer, never a signer or delegate on an account. */
+  const notPayer = (address) => { if (address === network.payerAddress) refuse(); };
+  /** The pinned code an account needs, refused with its upload command when it is missing on the network. */
+  async function requirePinned(hash) {
+    const read = await network.codePresent(hash);
+    if (!read.present) throw because('pinned_code_missing');
+  }
   const deployments = new Map();
   const attemptedArtifacts = new Set();
   const reviews = new Map();
@@ -134,6 +164,16 @@ export function createWalletActions({ session, toolchain, network, native = null
   let installAttempts = 0;
   let installAllowance = 0;
   let lastReplacement = null;
+  /** Removals of rules earlier sessions installed, by `account:ruleId`: attempted once, never again in this session. */
+  const earlierRemovals = new Map();
+  /** The attached wallet's rules as stored now, each marked whether it is this wallet's owner rule. */
+  async function accountRules(wallet) {
+    await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
+    await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
+    const read = await network.accountRules(wallet.contractId);
+    return { ledger: read.ledger, rules: read.rules.map(({ id, xdr: raw }) => ({ id, xdr: raw, owner: isOwnerRule(wallet, id, raw),
+      grant: isGrantRule(raw, id), summary: ruleSummary(raw, id) })) };
+  }
   // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
   // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
   const replaceable = () => installAttempts > installAllowance && installAttempts === installations.size
@@ -151,7 +191,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     return results.map((result) => result.value);
   }
   async function sampleOwner(alongside = async () => null) {
-    await network.assertTestnet();
+    await network.assertNetwork();
     // The account and verifier code and the owner rule are read at once, not one after another; the
     // owner read must still come from at or after both code reads, so a lagging answer is asked again.
     const ownerRule = () => network.view(sampleAccount.wallet.contractId, 'get_context_rule', [xdr.ScVal.scvU32(0)]);
@@ -162,7 +202,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     if (observed.ledger < account.ledger || observed.ledger < verifier.ledger
       || observed.ledger - account.ledger > 12 || observed.ledger - verifier.ledger > 12) refuse();
     const ownerRuleXdr = observed.value.toXDR('base64');
-    const approval = reviewSample({ ...sampleAccount, ownerRuleXdr });
+    const approval = reviewSample({ ...sampleAccount, ownerRuleXdr, networkId: net.networkId });
     return { ownerRuleXdr, approval, ownerReadLedger: observed.ledger, also };
   }
   // A complete review with one unused installation allowance (initially, or after verified replacement consent).
@@ -240,7 +280,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     }
   }
   async function replacementState(held) {
-    await network.assertTestnet();
+    await network.assertNetwork();
     const anchor = await clockedLedger(network);
     const owner = await ownerRead(held.owner.wallet, held.owner.ownerRuleId, held.owner.ownerRuleXdr);
     if (owner.ledger < anchor || owner.ledger - anchor > 12) refuse();
@@ -254,8 +294,9 @@ export function createWalletActions({ session, toolchain, network, native = null
   const importProposal = async (input) => {
       exact(input, ['proposal', 'wallet']);
       const wallet = walletIdentity(input.wallet);
-      const proposal = parseGrantProposal(input.proposal, wallet.contractId);
-      await network.assertTestnet();
+      const proposal = parseGrantProposal(input.proposal, wallet.contractId, net.networkId);
+      notPayer(proposal.decisions.delegate);
+      await network.assertNetwork();
       await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
       await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
       const record = await toolchain.record({ transactionHash: proposal.transaction_hash, accountAddress: wallet.contractId });
@@ -273,7 +314,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     use: use ?? null, repeat: repeat ?? null }));
   const unremoved = (held) => !held.removal && !held.removalAttempted;
   /** An installed one-use grant the automation delegate has not tried to use yet. */
-  const usable = (held) => held.record.status === 'installed' && held.grant && !held.use && !held.useAttempted && unremoved(held)
+  const usable = (held) => held.record.status === 'installed' && held.grant && delegates.holds(held.grant.delegate) && !held.use && !held.useAttempted && unremoved(held)
     && held.useSignatures < MAX_USE_SIGNATURES;
   // One recorded second try per use; a try whose simulation did not answer may be repeated, a few times.
   const repeatable = (held) => held.use?.status === 'used' && unremoved(held) && !held.repeat && held.repeatSignatures < MAX_REPEAT_SIGNATURES;
@@ -284,7 +325,7 @@ export function createWalletActions({ session, toolchain, network, native = null
    */
   async function useReads(held, expected, { payment }) {
     const { record, grant } = held;
-    await network.assertTestnet();
+    await network.assertNetwork();
     const readLedger = await clockedLedger(network);
     const expiry = readLedger + USE_SIGNATURE_LEDGERS;
     if (expiry >= grant.validUntilLedger) refuse();
@@ -312,13 +353,45 @@ export function createWalletActions({ session, toolchain, network, native = null
   /** The delegate's two entries for exactly the granted transfer, from a capability that signs once. */
   function signUse(held, capabilityId, { readLedger, expiry }) {
     const { record, grant } = held;
-    const capability = delegates.use(capabilityId, grant.delegate, { network_id: NETWORK_ID, account: record.account,
+    const capability = delegates.use(capabilityId, grant.delegate, { network_id: net.networkId, account: record.account,
       recipient: grant.recipient, expected_rule_id: record.ruleId, amount: grant.amount, signature_expiration_ledger: expiry,
       read_ledger: readLedger });
-    return capability.authorizeTransfer({ network_id: NETWORK_ID, account: record.account, asset: SAC, recipient: grant.recipient,
+    return capability.authorizeTransfer({ network_id: net.networkId, account: record.account, asset: net.nativeAsset, recipient: grant.recipient,
       amount: grant.amount, expected_rule_id: record.ruleId, nonce: nonce(), signature_expiration_ledger: expiry });
   }
   return {
+    // What a session on a network the wallet funds nothing on needs from its owner first, read only:
+    // the fee payer's funded account, the caps and spending so far, the pinned code on the network
+    // (with each missing one's upload command and, when its reproduced Wasm is in `pinnedWasmDir`, its
+    // simulated cost) and the live helper. Nothing is signed or sent.
+    readiness: async (input) => {
+      exact(input, []);
+      const payer = await network.payerAccount();
+      const pinned = [];
+      for (const [name, hash] of [['account', ACCOUNT_WASM], ['verifier', WEBAUTHN_WASM]]) {
+        if ((await network.codePresent(hash)).present) { pinned.push({ name, hash, present: true }); continue; }
+        const wasm = readPinnedWasm(pinnedWasmDir, hash);
+        const cost = wasm ? await network.uploadCost(wasm) : null;
+        pinned.push({ name, hash, present: false,
+          upload: { ...uploadInstruction(net, pinnedWasmDir, hash), simulatedFeeStroops: cost?.feeStroops ?? null } });
+      }
+      // Not configured: the deployment steps and, given the reproduced helper Wasm, its upload's simulated cost.
+      const helperWasm = live ? null : readPinnedWasm(pinnedWasmDir, LIVE_HELPER_WASM);
+      const helperCost = helperWasm ? await network.uploadCost(helperWasm) : null;
+      let helper = { configured: false, reviewedHash: LIVE_HELPER_WASM, instruction: HELPER_DEPLOY[net.name],
+        uploadSimulatedFeeStroops: helperCost?.feeStroops ?? null };
+      if (live) {
+        const state = await network.contractLiveness(live.helper);
+        helper = { configured: true, contract: live.helper, reviewedHash: LIVE_HELPER_WASM, found: state.found,
+          reviewed: state.found && state.wasmHash === LIVE_HELPER_WASM, instanceLiveUntil: state.instanceLiveUntil ?? null,
+          ...(state.found ? {} : { instruction: HELPER_DEPLOY[net.name] }) };
+      }
+      // The live check, the second use and removal's verification read diagnostic events.
+      const diagnosticEvents = await network.diagnosticEvents();
+      return freezeCopy({ network: net.name, ownerFunded, diagnosticEvents,
+        feePayer: { address: network.payerAddress, ...payer },
+        fees: { ...fees, spentStroops: network.spentStroops }, pinned, helper });
+    },
     'pair-agent': async (input) => {
       exact(input, ['wallet', 'delegate']);
       const wallet = walletIdentity(input.wallet);
@@ -339,13 +412,18 @@ export function createWalletActions({ session, toolchain, network, native = null
     },
     status: async (input) => {
       exact(input, []);
-      return { networkId: NETWORK_ID, network: 'testnet', accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
-        maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxValidityLedgers: 120,
-        capabilities: { agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+      return { networkId: net.networkId, network: net.name, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM,
+        maxFeeStroops: fees.maxFeeStroops, maxUploadFeeStroops: fees.maxUploadFeeStroops, maxValidityLedgers: 120,
+        // Both caps and what this session has spent, shown before anything is signed.
+        fees: { maxFeeStroops: fees.maxFeeStroops, maxUploadFeeStroops: fees.maxUploadFeeStroops,
+          sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops },
+        feePayer: { address: network.payerAddress, ownerFunded },
+        capabilities: { delegateKey: delegates.available, agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
           liveCheck: live !== null, monitoring: [...installations.values()].some((held) => held.record.status === 'installed' && !held.removal), replacement: replaceable(), install: [...reviews.values()].some(installable),
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)),
           grantUse: [...installations.values()].some(usable), grantRepeat: [...installations.values()].some(repeatable) },
         installations: summaries(), replacement: lastReplacement,
+        earlierRemovals: [...earlierRemovals.values()].map(({ ruleId, status, transactionHash }) => ({ ruleId, status, transactionHash })),
         // No installation entry is released while an earlier signature the wallet released is still valid.
         installOpensAfterLedger: openRecords().length ? Math.max(...openRecords().map((r) => r.signatureExpirationLedger)) : null,
         verification: missingVerification() };
@@ -355,9 +433,11 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (handoff.view().pairingPending || handoff.view().connection) refuse();
       credential(input);
       if (accountAttempted) refuse();
+      // On mainnet the wallet deploys two contracts and funds nothing: the owner sends the account its XLM.
       const summary = { credentialId: input.credentialId, publicKey: input.publicKey, accountWasm: ACCOUNT_WASM,
-        verifierWasm: WEBAUTHN_WASM, sampleFundingStroops: '10000000', maxFeeStroops: MAX_FEE_STROOPS,
-        maxTotalFeeStroops: 3 * MAX_FEE_STROOPS };
+        verifierWasm: WEBAUTHN_WASM, sampleFundingStroops: ownerFunded ? '0' : '10000000', maxFeeStroops: fees.maxFeeStroops,
+        maxTotalFeeStroops: (ownerFunded ? 2 : 3) * fees.maxFeeStroops, ownerFunds: ownerFunded,
+        sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops };
       return { action: session.issue('create_account', input), summary };
     },
     'confirm-account': async (input) => {
@@ -366,9 +446,10 @@ export function createWalletActions({ session, toolchain, network, native = null
         if (handoff.view().pairingPending || handoff.view().connection) refuse();
         if (accountAttempted) refuse();
         accountAttempted = true;
-        await network.assertTestnet();
-        await network.requireCode(ACCOUNT_WASM);
-        await network.requireCode(WEBAUTHN_WASM);
+        await network.assertNetwork();
+        // Pinned code is never uploaded by the wallet: a missing one refuses with its upload command (`readiness`).
+        await requirePinned(ACCOUNT_WASM);
+        await requirePinned(WEBAUTHN_WASM);
         await network.fundPayer();
         const verifier = await network.create(WEBAUTHN_WASM, [], 'deploy-verifier');
         const signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
@@ -381,8 +462,9 @@ export function createWalletActions({ session, toolchain, network, native = null
         }, account.receipt.ledger);
         if (observed.ledger < account.receipt.ledger || observed.ledger - account.receipt.ledger > 12) refuse();
         freshOwner(observed.value, signer);
-        const funded = await network.submitOperation(Operation.invokeContractFunction({
-          contract: Asset.native().contractId(Networks.TESTNET), function: 'transfer', args: [
+        // Testnet: the disposable fee payer funds the sample. Mainnet: the owner funds the account.
+        const funded = ownerFunded ? null : await network.submitOperation(Operation.invokeContractFunction({
+          contract: net.nativeAsset, function: 'transfer', args: [
             new Address(network.payerAddress).toScVal(), new Address(account.contractId).toScVal(),
             xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 10_000_000n })),
           ],
@@ -390,17 +472,17 @@ export function createWalletActions({ session, toolchain, network, native = null
         const wallet = walletIdentity({ contractId: account.contractId, verifier: verifier.contractId, ...selected });
         const descriptor = freezeCopy({ recipient: network.payerAddress, amountStroops: '1000000',
           ownerRuleXdr: observed.value.toXDR('base64') });
-        reviewSample({ wallet, descriptor, ownerRuleXdr: descriptor.ownerRuleXdr });
+        reviewSample({ wallet, descriptor, ownerRuleXdr: descriptor.ownerRuleXdr, networkId: net.networkId });
         sampleAccount = { wallet, descriptor };
         return { wallet, sample: descriptor,
-          receipts: [verifier.receipt, account.receipt, funded].map(receipt) };
+          receipts: [verifier.receipt, account.receipt, funded].filter(Boolean).map(receipt) };
       });
     },
     record: async (input) => {
       exact(input, ['transactionHash', 'wallet']);
       const wallet = walletIdentity(input.wallet);
       if (!HASH.test(input.transactionHash)) refuse();
-      await network.assertTestnet();
+      await network.assertNetwork();
       await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
       await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
       return toolchain.record({ transactionHash: input.transactionHash, accountAddress: wallet.contractId });
@@ -411,6 +493,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (!sampleAccount || sampleSubmitted
         || ['contractId', 'credentialId', 'publicKey', 'verifier'].some((key) => wallet[key] !== sampleAccount.wallet[key])) refuse();
       session.invalidate('sample');
+      if (ownerFunded) {
+        const ready = await network.transferReadiness({ account: wallet.contractId, recipient: network.payerAddress, amount: SAMPLE_AMOUNT_STROOPS });
+        if (!ready.covered) throw because('account_unfunded');
+      }
       const observed = await sampleOwner();
       const prepared = await network.prepareSample({ ...sampleAccount, ...observed });
       validateSampleAssembly({ ...prepared, ...observed });
@@ -446,15 +532,31 @@ export function createWalletActions({ session, toolchain, network, native = null
     'import-proposal': importProposal,
     generate: async (input) => {
       exact(input, ['recordId', 'delegateAddress', 'validUntilLedger', 'maxCalls', 'grantName']);
+      notPayer(input.delegateAddress);
       return toolchain.generate({ ...input, currentLedger: await network.latestLedger() });
     },
     'prepare-deploy': async (input) => {
       exact(input, ['artifactId']);
-      const { response: artifact } = toolchain.artifact(input.artifactId);
+      const held = toolchain.artifact(input.artifactId);
+      const { response: artifact } = held;
       if (attemptedArtifacts.has(input.artifactId) || attemptedArtifacts.size >= 8) refuse();
+      // Mainnet: the upload's simulated cost is shown first, and refused before consent when either cap would be passed.
+      let uploadSimulatedFeeStroops = null;
+      if (ownerFunded) {
+        const cost = await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
+        uploadSimulatedFeeStroops = cost.feeStroops;
+        // A refusal names the operator setting that refused it, the simulated cost and the least value that lets it through.
+        const capped = (reason, setting, needed) => Object.assign(because(reason),
+          { limit: { setting, simulatedFeeStroops: cost.feeStroops, neededStroops: needed.toString() } });
+        if (BigInt(cost.feeStroops) > BigInt(fees.maxUploadFeeStroops)) throw capped('fee_cap', 'maxUploadFeeStroops', BigInt(cost.feeStroops));
+        // The upload, the policy's creation, and room for an installation and its removal.
+        const needed = BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops);
+        if (needed > BigInt(fees.sessionSpendCapStroops)) throw capped('spend_cap', 'sessionSpendCapStroops', needed);
+      }
       return { action: session.issue('deploy', { artifactId: input.artifactId }), summary: {
-        specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: MAX_FEE_STROOPS,
-        maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, maxTotalFeeStroops: MAX_UPLOAD_FEE_STROOPS + MAX_FEE_STROOPS,
+        specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: fees.maxFeeStroops,
+        maxUploadFeeStroops: fees.maxUploadFeeStroops, maxTotalFeeStroops: fees.maxUploadFeeStroops + fees.maxFeeStroops,
+        uploadSimulatedFeeStroops, sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops,
       } };
     },
     'confirm-deploy': async (input) => {
@@ -486,8 +588,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
       if (artifact.spec.smart_account.address !== wallet.contractId) refuse();
       const intent = await toolchain.authority('prepare-install-intent', deployment.request);
+      // The fee payer must be no signer on this account, on any rule, nor the grant's delegate.
+      if (payerMentioned(intent.authority?.verdict, network.payerAddress) || payerMentioned(intent.delegate_signers, network.payerAddress)) refuse();
       const expected = { account: wallet.contractId, target: artifact.spec.rules[0].context.contract,
-        networkId: NETWORK_ID, specHash: artifact.specHash, bindingSetHash: deployment.response.bindingSetHash,
+        networkId: net.networkId, specHash: artifact.specHash, bindingSetHash: deployment.response.bindingSetHash,
         registrySnapshotRoot: artifact.spec.registry_snapshot, boundPolicies: [deployment.response.policyAddress], ruleIndex: 0 };
       const choices = intent.authority.verdict.authority_list.filter((entry) =>
         entry.requirement?.kind === 'all_of' && entry.requirement.signers?.length === 1
@@ -518,7 +622,15 @@ export function createWalletActions({ session, toolchain, network, native = null
     'create-delegate': async (input) => {
       exact(input, []);
       if (!native && !live || handoff.view().pairingPending || handoff.view().connection) refuse();
+      // Mainnet: no delegate key unless the operator supplied one; the grant then names the agent's own key.
+      if (!delegates.available) throw because('delegate_key_unavailable');
       const created = delegates.create();
+      if (ownerFunded) {
+        // Mainnet: the operator's key; the wallet creates no account for it. Until its owner funds it,
+        // every check that needs it refuses as `delegate_unfunded`.
+        const account = await network.classicAccount(created.address);
+        return { ...created, account: { exists: account.exists, minimumStroops: account.minimumStroops } };
+      }
       // A key whose account could not be created is dropped, so a retry does not use up a slot.
       try { await network.ensureDelegateAccount(created.address); } catch { delegates.release(created.capabilityId); refuse(); }
       return created;
@@ -574,7 +686,7 @@ export function createWalletActions({ session, toolchain, network, native = null
               checked = checkDryRunPreparation(prepared.output, { specHash: artifact.specHash,
                 bindingSetHash: deployment.response.bindingSetHash, accountAddress: artifact.spec.smart_account.address,
                 delegateAddress: delegate, policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
-                candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence });
+                candidateContextRuleId: review.nextRuleId, sourceLedger: source.ledger.sequence, networkId: net.networkId });
             } catch {
               layer = accountLayer('failed', 'Preparation evidence, the native worker or its report was refused; no evidence accepted.');
               captured ??= targetLayer('failed', 'The CLI preparation evidence was refused; the worker did not run.');
@@ -631,7 +743,7 @@ export function createWalletActions({ session, toolchain, network, native = null
           if (!captured) {
             try {
               const checkedCapture = checkTargetCapture(capture.value, { call: target.call, accountAddress: target.accountAddress,
-                recipient: target.recipient, notBefore: capture.notBefore });
+                recipient: target.recipient, notBefore: capture.notBefore, networkId: net.networkId });
               const validUntil = rule.valid_until?.ledger;
               // A call based on the capture lands at the next ledger or later, where such a grant no longer applies.
               if (Number.isSafeInteger(validUntil) && checkedCapture.observedLedger >= validUntil) {
@@ -639,7 +751,7 @@ export function createWalletActions({ session, toolchain, network, native = null
               } else {
                 captured = await runCapturedExecution({ executable: native.executable, run: native.run, signer, maxCalls, signal,
                   jobText: capturedJobText(prepared.request, source.accountWasmBase64, checkedCapture),
-                  expected: { runHash: checked.expected.runHash, accountAddress: target.accountAddress, delegateAddress: delegate,
+                  expected: { networkId: net.networkId, runHash: checked.expected.runHash, accountAddress: target.accountAddress, delegateAddress: delegate,
                     policyAddress: deployment.response.policyAddress, policyCodeHash: artifact.wasmHash,
                     candidateContextRuleId: review.nextRuleId, observedLedger: checkedCapture.observedLedger,
                     captureHash: checkedCapture.captureHash, recipient: target.recipient, amount: target.amount } });
@@ -746,10 +858,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (!installable(review) || accountCheckRunning || liveRunning || network.canSubmit !== true) refuse();
       const deployment = get(deployments, review.deploymentId);
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
-      await network.assertTestnet();
+      await network.assertNetwork();
       await installPreconditions(review, deployment, artifact);
       const assembly = await toolchain.authority('assemble-install-transaction', { intent_request: deployment.request,
-        fee_payer: network.payerAddress, max_fee_stroops: MAX_FEE_STROOPS, validity_ledgers: INSTALL_VALIDITY_LEDGERS });
+        fee_payer: network.payerAddress, max_fee_stroops: fees.maxFeeStroops, validity_ledgers: INSTALL_VALIDITY_LEDGERS });
       // Both after the CLI's observation, and independent: asked at once, then the latest ledger.
       const [owner, source] = await Promise.all([
         ownerRead(review.approval.wallet, review.approval.ownerRuleId, review.approval.ownerRuleXdr), network.sourceCapture()]);
@@ -757,10 +869,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       const observed = assembly?.intent?.authority?.verdict?.observed_ledger;
       if (!Number.isSafeInteger(observed) || owner.ledger < observed || owner.ledger - observed > 12 || source.ledger < observed
         || source.ledger - observed > 12) refuse();
-      const limits = { feePayer: network.payerAddress, sourceSequence: source.sourceSequence, maxFeeStroops: MAX_FEE_STROOPS,
+      const limits = { feePayer: network.payerAddress, sourceSequence: source.sourceSequence, maxFeeStroops: fees.maxFeeStroops,
         validityLedgers: INSTALL_VALIDITY_LEDGERS, currentLedger };
       const checked = validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
-      const display = installConsent({ approval: review.approval, checked, spec: artifact.spec, maxFeeStroops: MAX_FEE_STROOPS,
+      const display = installConsent({ approval: review.approval, checked, spec: artifact.spec, maxFeeStroops: fees.maxFeeStroops,
         ruleId: review.nextRuleId });
       const snapshot = await network.liveState({ account: review.approval.wallet.contractId,
         policy: deployment.response.policyAddress, ruleId: review.nextRuleId });
@@ -795,7 +907,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         const { response: artifact } = toolchain.artifact(deployment.artifactId);
         const { approval } = review;
         const own = liveRecords[held.obligation];
-        await network.assertTestnet();
+        await network.assertNetwork();
         await installPreconditions(review, deployment, artifact, own);
         // The CLI recheck first: it builds and scans, so ledgers close while it runs. The reads it is
         // compared with come after it, within 12 ledgers of its observation.
@@ -830,7 +942,7 @@ export function createWalletActions({ session, toolchain, network, native = null
           const marker = await markerAfter(account, policy, event.ruleId, event.ledger);
           if (marker.installed !== true) refuse();
           const live = review.liveLayer.evidence;
-          record = freezeCopy({ installationId, status: 'installed', network: 'testnet', networkId: NETWORK_ID,
+          record = freezeCopy({ installationId, status: 'installed', network: net.name, networkId: net.networkId,
             account, ruleId: event.ruleId, transactionHash: event.transactionHash, ledger: event.ledger, trust: 'rpc_reported',
             feeChargedStroops: submitted.feeChargedStroops ?? null,
             policy, policyCodeHash: artifact.wasmHash, specHash: artifact.specHash, bindingSetHash: deployment.response.bindingSetHash,
@@ -848,7 +960,7 @@ export function createWalletActions({ session, toolchain, network, native = null
           refuse();
         }
         // A one-use exact native transfer is what the automation delegate can use from the page (`use-grant`).
-        const shape = liveShape({ spec: artifact.spec, intent: approval.intent, wallet: approval.wallet });
+        const shape = liveShape({ spec: artifact.spec, intent: approval.intent, wallet: approval.wallet, networkId: approval.networkId });
         const grant = shape.supported && shape.maxCalls === 1 && Number.isSafeInteger(approval.intent.valid_until_ledger)
           ? freezeCopy({ delegate: shape.delegate, recipient: shape.recipient, amount: shape.amount, maxCalls: 1,
             validUntilLedger: approval.intent.valid_until_ledger }) : null;
@@ -872,7 +984,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       const window = await useReads(held, 0, { payment: true });
       if (!usable(held)) refuse();
       held.useSignatures++;
-      const envelopeXdr = useEnvelope(window.source, { account: record.account, recipient: grant.recipient, amount: grant.amount },
+      const envelopeXdr = useEnvelope(net, window.source, { account: record.account, recipient: grant.recipient, amount: grant.amount },
         signUse(held, input.capabilityId, window), window);
       // Sent only with enough of the signatures' window left to land well before they expire.
       if (held.use || held.useAttempted || !unremoved(held) || network.canSubmit !== true) refuse();
@@ -881,16 +993,16 @@ export function createWalletActions({ session, toolchain, network, native = null
       // that leaves the fee payer able to submit sent nothing.
       held.useAttempted = true;
       let submitted;
-      try { submitted = await network.submitEnvelope(envelopeXdr, 'use-grant'); } catch {
+      try { submitted = await network.submitEnvelope(envelopeXdr, 'use-grant'); } catch (error) {
         if (network.canSubmit === true) held.useAttempted = false;
-        refuse();
+        rethrow(error);
       }
       // Confirmed: listed before any verification can refuse.
       held.use = freezeCopy({ status: 'confirmed_unverified', transactionHash: submitted.hash });
       let after;
       try {
         if (submitted.returnValue?.type !== 'scvVoid'
-          || !transferredExactly(submitted.events, { account: record.account, recipient: grant.recipient, amount: grant.amount })) refuse();
+          || !transferredExactly(net, submitted.events, { account: record.account, recipient: grant.recipient, amount: grant.amount })) refuse();
         after = await readAfter(() => network.callCount({ account: record.account, policy: record.policy, ruleId: record.ruleId }), submitted.ledger);
         if (after.count !== 1) refuse();
       } catch { refuse(); }
@@ -912,11 +1024,11 @@ export function createWalletActions({ session, toolchain, network, native = null
       const window = await useReads(held, 1, { payment: false });
       if (!repeatable(held)) refuse();
       held.repeatSignatures++;
-      const envelopeXdr = useEnvelope(window.source, { account: record.account, recipient: grant.recipient, amount: grant.amount },
+      const envelopeXdr = useEnvelope(net, window.source, { account: record.account, recipient: grant.recipient, amount: grant.amount },
         signUse(held, input.capabilityId, window), window);
       const simulation = await network.simulateRaw(envelopeXdr);
       // Judged only on an answer from a node at or past the payment, where the counter already reads 1.
-      const verdict = validateRepeatedUse({ intent: { network_id: NETWORK_ID, account: record.account, policy: record.policy,
+      const verdict = validateRepeatedUse({ intent: { network_id: net.networkId, account: record.account, policy: record.policy,
         delegate: grant.delegate, recipient: grant.recipient, amount: grant.amount, rule_id: record.ruleId,
         signature_expiration_ledger: window.expiry, min_ledger: held.use.ledger }, envelopeXdr, simulation });
       const judged = freezeCopy({ ...verdict, usedBy: held.use.transactionHash, account: record.account, policy: record.policy,
@@ -970,6 +1082,82 @@ export function createWalletActions({ session, toolchain, network, native = null
         return lastReplacement;
       });
     },
+    // The attached wallet's rules as the account stores them now: what an earlier session may have
+    // installed, for removal. Read only.
+    'account-rules': async (input) => {
+      exact(input, ['wallet']);
+      const wallet = walletIdentity(input.wallet);
+      return freezeCopy(await accountRules(wallet));
+    },
+    // Removal of a rule an earlier backend session installed, which this one holds no record of. The
+    // rule is bound by its exact current bytes, read again before release and before submission. Only a
+    // grant-shaped rule is removed (`isGrantRule`): never the owner rule, a rule naming the owner's
+    // passkey, or a recovery or admin rule. Otherwise as `prepare-revoke`.
+    'prepare-earlier-revoke': async (input) => {
+      exact(input, ['wallet', 'ruleId']);
+      const wallet = walletIdentity(input.wallet);
+      const ruleId = input.ruleId;
+      if (!Number.isSafeInteger(ruleId) || ruleId < 1 || ruleId > 0xffffffff || earlierRemovals.has(`${wallet.contractId}:${ruleId}`)
+        || [...installations.values()].some((held) => held.record.account === wallet.contractId && held.record.ruleId === ruleId)) refuse();
+      const listed = await accountRules(wallet);
+      const owner = listed.rules.find((rule) => rule.owner);
+      const target = listed.rules.find((rule) => rule.id === ruleId);
+      if (!owner || !target || target.owner || !target.grant) refuse();
+      session.invalidate('revoke');
+      const record = { account: wallet.contractId, ruleId, ledger: 0 };
+      const ownerRef = { wallet, ownerRuleId: owner.id, ownerRuleXdr: owner.xdr };
+      const { pins, fresh, rule } = await removalReads(record, ownerRef, owner.xdr);
+      if (rule.status !== 'present' || rule.xdr !== target.xdr) refuse();
+      const approval = reviewRemoval({ ...ownerRef, ownerRuleXdr: fresh.ownerRuleXdr, networkId: net.networkId,
+        installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: rule.xdr } });
+      const prepared = await network.prepareRemoval({ wallet, ruleId, ownerReadLedger: fresh.ledger });
+      const checked = validateRemovalAssembly({ approval, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits });
+      const releaseLedger = await clockedLedger(network);
+      removalReadWindow(pins, fresh, rule, releaseLedger, 0);
+      if (releaseLedger + 1 >= checked.maxLedger) refuse();
+      const display = revokeConsent({ approval, checked, maxFeeStroops: fees.maxFeeStroops });
+      const action = session.issue('revoke', { earlier: { wallet, ownerRuleId: owner.id }, approval, checked, ruleXdr: rule.xdr });
+      return freezeCopy({ action, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits, display,
+        ruleXdr: rule.xdr });
+    },
+    'confirm-earlier-revoke': async (input) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'revoke', async ({ earlier, approval, checked, ruleXdr }) => {
+        if (!earlier || network.canSubmit !== true) refuse();
+        const { account, ruleId } = approval.installation;
+        const key = `${account}:${ruleId}`;
+        if (earlierRemovals.has(key)) refuse();
+        const record = { account, ruleId, ledger: 0 };
+        const ownerRef = { wallet: earlier.wallet, ownerRuleId: earlier.ownerRuleId };
+        const { pins, fresh, rule, also: source } = await removalReads(record, ownerRef, approval.ownerRuleXdr, () => network.sourceCapture());
+        const currentLedger = await network.latestLedger();
+        removalReadWindow(pins, fresh, rule, currentLedger, 0);
+        if (rule.status !== 'present' || rule.xdr !== ruleXdr || source.sourceSequence !== String(sourceOf(checked.envelopeXdr))
+          || currentLedger + 1 >= checked.maxLedger || currentLedger < fresh.ledger || currentLedger - fresh.ledger > 12) refuse();
+        const signed = await validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr: input.signedAuthEntriesXdr,
+          origin: LIVE_ORIGIN });
+        session.invalidate('revoke');
+        // Spent from here, as for an in-session removal: one that may have reached the network is never prepared again.
+        earlierRemovals.set(key, { ruleId, status: 'attempted', transactionHash: null });
+        let submitted;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
+          if (network.canSubmit === true) earlierRemovals.delete(key);
+          rethrow(error);
+        }
+        earlierRemovals.set(key, { ruleId, status: 'confirmed_unverified', transactionHash: submitted.hash });
+        let removal;
+        try {
+          const event = verifyRemoval({ submitted, account, ruleId });
+          const readback = await readbackAfter(account, ruleId, event.ledger);
+          if (readback.status !== 'absent') refuse();
+          removal = freezeCopy({ status: 'removed', ruleId, transactionHash: event.transactionHash, ledger: event.ledger,
+            event: 'verified', ruleReadback: 'absent', readbackLedger: readback.ledger, fromEarlierSession: true,
+            policyCleanup: 'not_checked', cleanupLedger: null, owner: OWNER });
+        } catch { refuse(); }
+        earlierRemovals.set(key, { ruleId, status: 'removed', transactionHash: removal.transactionHash });
+        return freezeCopy({ receipt: receipt(submitted), removal });
+      });
+    },
     // Revocation, step 1: the recorded rule must still be on the account (exactly as installed, for a
     // verified installation), and the owner rule unchanged; the fee payer's record-mode simulation
     // drafts the unsigned removal, which is validated before it is released.
@@ -992,14 +1180,14 @@ export function createWalletActions({ session, toolchain, network, native = null
           || createHash('sha256').update(rule.xdr).digest('hex') !== monitor.observedRuleHash) refuse();
         configurationChange = { recordedRuleXdr: record.ruleXdr, observedRuleXdr: rule.xdr };
       }
-      const approval = reviewRemoval({ ...owner, ownerRuleXdr: fresh.ownerRuleXdr, configurationChange,
+      const approval = reviewRemoval({ ...owner, ownerRuleXdr: fresh.ownerRuleXdr, configurationChange, networkId: net.networkId,
         installation: { account: record.account, ruleId: record.ruleId, transactionHash: record.transactionHash } });
       const prepared = await network.prepareRemoval({ wallet: owner.wallet, ruleId: record.ruleId, ownerReadLedger: fresh.ledger });
       const checked = validateRemovalAssembly({ approval, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits });
       const releaseLedger = await clockedLedger(network);
       removalReadWindow(pins, fresh, rule, releaseLedger, record.ledger);
       if (releaseLedger + 1 >= checked.maxLedger) refuse();
-      const display = revokeConsent({ approval, checked, maxFeeStroops: REMOVAL_MAX_FEE_STROOPS });
+      const display = revokeConsent({ approval, checked, maxFeeStroops: fees.maxFeeStroops });
       const action = session.issue('revoke', { installationId: input.installationId, approval, checked, ruleXdr: rule.xdr });
       return freezeCopy({ action, installation: record, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr,
         limits: prepared.limits, display, ...(configurationChange ? { configurationChange } : {}) });
@@ -1028,9 +1216,9 @@ export function createWalletActions({ session, toolchain, network, native = null
         // refusal that leaves the fee payer able to submit sent nothing, so removal stays available.
         held.removalAttempted = true;
         let submitted;
-        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch {
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
           if (network.canSubmit === true) held.removalAttempted = false;
-          refuse();
+          rethrow(error);
         }
         // Confirmed: keep its identity before any verification can refuse.
         held.removal = { status: 'confirmed_unverified', ruleId: record.ruleId, transactionHash: submitted.hash, ledger: submitted.ledger };
