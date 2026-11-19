@@ -68,12 +68,15 @@ jobs:
       - name: build immutable source context and both images
         run: |
           set -euo pipefail
-          python3 scripts/hosted-context.py HEAD > "$RUNNER_TEMP/ozpb-context.tar"
+          # One commit for the context and the toolkit commit the image's manifests record.
+          revision=$(git rev-parse --verify 'HEAD^{commit}')
+          python3 scripts/hosted-context.py "$revision" > "$RUNNER_TEMP/ozpb-context.tar"
           # The source label links the GHCR packages to this repository.
           docker build --pull --target proxy --file deployment/Dockerfile \
             --label "org.opencontainers.image.source=$SOURCE_URL" \
             --tag ozpb-proxy:check - < "$RUNNER_TEMP/ozpb-context.tar"
           docker build --pull --file deployment/Dockerfile \
+            --build-arg OZPB_TOOLKIT_SOURCE="$revision" \
             --label "org.opencontainers.image.source=$SOURCE_URL" \
             --tag ozpb-self-host:check - < "$RUNNER_TEMP/ozpb-context.tar"
       - name: TLS transport and real offline artifact reproduction

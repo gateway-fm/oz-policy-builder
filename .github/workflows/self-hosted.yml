@@ -37,9 +37,12 @@ jobs:
       - name: build immutable source context (no image publication)
         run: |
           set -euo pipefail
-          python3 scripts/hosted-context.py HEAD > "$RUNNER_TEMP/ozpb-context.tar"
+          # One commit for the context and the toolkit commit the image's manifests record.
+          revision=$(git rev-parse --verify 'HEAD^{commit}')
+          python3 scripts/hosted-context.py "$revision" > "$RUNNER_TEMP/ozpb-context.tar"
           docker build --pull --target proxy --file deployment/Dockerfile --tag ozpb-proxy:check - < "$RUNNER_TEMP/ozpb-context.tar"
-          docker build --pull --file deployment/Dockerfile --tag ozpb-self-host:check - < "$RUNNER_TEMP/ozpb-context.tar"
+          docker build --pull --file deployment/Dockerfile --build-arg OZPB_TOOLKIT_SOURCE="$revision" \
+            --tag ozpb-self-host:check - < "$RUNNER_TEMP/ozpb-context.tar"
       - name: TLS transport and real offline artifact reproduction
         run: |
           set -euo pipefail
