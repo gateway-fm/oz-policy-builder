@@ -118,10 +118,12 @@ session installed ([revocation](POLLYWALLET-INTEGRATION.md#revocation)). What to
 
 ## On mainnet
 
-The steps are the same; the wallet is what changes. In this tree the wallet backend and the testnet
-harness act only on testnet and the MCP development launcher configures only a testnet source, so
-installing on mainnet is part of the mainnet wallet integration. Recording a mainnet transaction
-by hash works against a mainnet RPC endpoint, but synthesis needs a mainnet registry signed under
-roots you pin: the development root is refused off testnet, and the
-[mainnet registry](../registry/mainnet/README.md) stays an unsigned draft until its key ceremony
-([registry governance](REGISTRY-GOVERNANCE.md)).
+The steps are the same; the wallet is what changes. The wallet backend runs a mainnet session from
+a mainnet operator configuration and a production build of the page
+([mainnet sessions](POLLYWALLET-INTEGRATION.md#mainnet-sessions)); the testnet harness stays on
+testnet and the MCP development launcher configures only a testnet source. Synthesis on mainnet
+needs a mainnet registry signed under roots you pin: the development root is refused off testnet,
+and the [mainnet registry](../registry/mainnet/README.md) stays an unsigned draft until its key
+ceremony ([registry governance](REGISTRY-GOVERNANCE.md)). The prerequisites, every mainnet write
+with its simulated fee, the caps and what to keep as evidence are in
+[Installing on mainnet](MAINNET-INSTALL.md).

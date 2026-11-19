@@ -176,7 +176,8 @@ delegate account; see [Mainnet sessions](#mainnet-sessions).
 ## Mainnet sessions
 
 A mainnet session spends real XLM, and every signature in it is valid on the public network.
-Keep every amount minimal. The account's owner is a passkey whose relying party is `localhost`:
+Keep every amount minimal. [Installing on mainnet](MAINNET-INSTALL.md) is the owner's runbook:
+prerequisites, every write with its simulated fee, and the caps against them. The account's owner is a passkey whose relying party is `localhost`:
 the account can be used only from a browser at `http://localhost:3000` on the machine that holds
 the passkey, and any other page served on a `localhost` port can ask for the same passkey (see the
 table below), so do not keep more in it than the session needs.
