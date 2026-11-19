@@ -126,10 +126,14 @@ to do in an incident: [incident response](INCIDENT-RESPONSE.md).
 
 ## On mainnet
 
-The steps are the same; the wallet is what changes. The wallet backend runs a mainnet session from
-a mainnet operator configuration and a production build of the page
-([mainnet sessions](POLLYWALLET-INTEGRATION.md#mainnet-sessions)); the testnet harness stays on
-testnet and the MCP development launcher configures only a testnet source. Synthesis on mainnet
+The wallet's steps are the same: its backend runs a mainnet session from a mainnet operator
+configuration and a production build of the page
+([mainnet sessions](POLLYWALLET-INTEGRATION.md#mainnet-sessions)). The testnet harness stays on
+testnet. The agent's side is narrower. The development launcher behind the plugin configures
+only testnet, so a mainnet MCP server is one you configure yourself, and the direct handoff of
+step 6.1 reaches only a testnet wallet: on mainnet, import the confirmed proposal by hand, or
+record and generate in the wallet itself. Either way the wallet drives the mainnet installation
+([MCP on mainnet](MCP-WALKTHROUGH.md#6-on-mainnet)). Synthesis on mainnet
 needs a mainnet registry signed under roots you pin: the development root is refused off testnet,
 and the [mainnet registry](../registry/mainnet/README.md) stays an unsigned draft until its key
 ceremony ([registry governance](REGISTRY-GOVERNANCE.md)). The prerequisites, every mainnet write
