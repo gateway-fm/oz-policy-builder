@@ -153,7 +153,10 @@ ozpb registry verify --replay registry/mainnet --registry-roots registry/mainnet
 
 Every `vNNNN.signed.json` must load as the direct successor of the one before it, from a genesis,
 and the head must be valid now (`--at <unix seconds>` checks a scheduled one). One snapshot can
-be checked against a consumer's checkpoint with `verify --signed <file> --checkpoint <file>`.
+be checked against a consumer's checkpoint with `verify --signed <file> --checkpoint <file>`
+(without `--checkpoint`, the roots file's own). Add `--min-version <floor>` to check it under the
+consumer's floor as well: a checkpoint older than the floor is refused with `E_REGISTRY_ROLLBACK`,
+as a consumer configured that way refuses every request.
 
 ## Publishing
 

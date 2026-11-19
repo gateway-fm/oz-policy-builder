@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
+use ozpb_api_types::{ErrorCode, ToolError};
 use ozpb_domain::{Hash32, NetworkId};
 use ozpb_registry::governance::{self, ChangeSet, DetachedSignature, MonitorStatus, Watched};
 use ozpb_registry::{snapshot_root, RegistryCheckpoint, RegistrySnapshot, SignedSnapshot};
@@ -124,7 +125,8 @@ pub struct VerifyArgs {
     /// directly extend. Without one, the roots file's own checkpoint applies, if it has one.
     #[arg(long, conflicts_with = "replay")]
     checkpoint: Option<PathBuf>,
-    /// With --signed and no checkpoint: the minimum acceptable version.
+    /// With --signed: the minimum acceptable version. A checkpoint (given, or the roots file's)
+    /// older than it is refused with E_REGISTRY_ROLLBACK, as consumers refuse it.
     #[arg(long, conflicts_with = "replay", default_value_t = 0)]
     min_version: u64,
     /// Trusted current time (Unix seconds); defaults to the system clock.
@@ -269,6 +271,22 @@ fn verify(args: VerifyArgs) -> Result<()> {
         Some(path) => Some(read_json::<RegistryCheckpoint>(&path)?),
         None => config.checkpoint,
     };
+    // The floor binds whichever checkpoint is checked against. A consumer configured with a
+    // checkpoint older than its floor refuses every request, so this gate refuses that combination
+    // too rather than printing a checkpoint no consumer would accept.
+    if let Some(checkpoint) = &checkpoint {
+        if checkpoint.version < args.min_version {
+            return Err(ToolError::new(
+                ErrorCode::ERegistryRollback,
+                format!(
+                    "the checkpoint is at version {}, older than --min-version {}; a consumer \
+                     configured this way refuses every request",
+                    checkpoint.version, args.min_version
+                ),
+            )
+            .into());
+        }
+    }
     let mut registry = match checkpoint {
         Some(checkpoint) => ozpb_registry::Registry::with_pinned_roots_for_network_at_checkpoint(
             config.root_policy,

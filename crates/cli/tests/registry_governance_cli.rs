@@ -802,3 +802,70 @@ fn the_committed_mainnet_log_awaits_its_key_ceremony() {
         "no signed snapshot",
     );
 }
+
+/// `--min-version` is a floor whichever checkpoint `verify` checks against. A checkpoint older
+/// than the floor — the roots file's own, or one given with `--checkpoint` — is the combination
+/// every consumer refuses (`E_REGISTRY_ROLLBACK` before any read), so the gate before distribution
+/// refuses it too, instead of ignoring the floor and printing a checkpoint no consumer accepts.
+#[test]
+fn verify_refuses_a_checkpoint_older_than_the_floor() {
+    let examples = repo().join("docs/examples");
+    let signed = examples.join("registry.signed.json");
+    let roots = examples.join("registry-roots.json");
+    let work = tempfile::tempdir().unwrap();
+    let verify = |roots: &Path, extra: &[&str]| {
+        let mut args: Vec<String> = [
+            "registry",
+            "verify",
+            "--signed",
+            signed.to_str().unwrap(),
+            "--registry-roots",
+            roots.to_str().unwrap(),
+            "--network",
+            TESTNET,
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        args.extend(extra.iter().map(|arg| arg.to_string()));
+        ozpb(args)
+    };
+    let checkpoint = ok(verify(&roots, &[]), "verify the development snapshot");
+    let version: u64 = checkpoint["version"].as_str().unwrap().parse().unwrap();
+    let checkpoint_path = work.path().join("checkpoint.json");
+    write_json(&checkpoint_path, &checkpoint);
+    let mut pinned: serde_json::Value = read(&roots);
+    pinned["checkpoint"] = checkpoint.clone();
+    let pinned_path = work.path().join("roots-with-checkpoint.json");
+    write_json(&pinned_path, &pinned);
+
+    let above = (version + 1).to_string();
+    refused(
+        &verify(&pinned_path, &["--min-version", &above]),
+        "verify under a roots checkpoint older than the floor",
+        "E_REGISTRY_ROLLBACK",
+    );
+    refused(
+        &verify(
+            &roots,
+            &[
+                "--checkpoint",
+                checkpoint_path.to_str().unwrap(),
+                "--min-version",
+                &above,
+            ],
+        ),
+        "verify against a given checkpoint older than the floor",
+        "E_REGISTRY_ROLLBACK",
+    );
+    // Control: at the checkpoint's own version the floor admits it, so the refusals above are the
+    // floor's and not the checkpoint's.
+    let at = version.to_string();
+    assert_eq!(
+        ok(
+            verify(&pinned_path, &["--min-version", &at]),
+            "floor at the checkpoint"
+        ),
+        checkpoint
+    );
+}
