@@ -1,9 +1,9 @@
 {
   "snapshot": {
     "schema": "registry/v1",
-    "version": "6",
-    "log_index": "6",
-    "previous_root": "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6",
+    "version": "7",
+    "log_index": "7",
+    "previous_root": "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8",
     "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
     "valid_from_unix": "-9223372036854775808",
     "expires_at_unix": "9223372036854775807",
@@ -94,7 +94,8 @@
           "eq_i128",
           "eq_scval",
           "ge_i128",
-          "le_i128"
+          "le_i128",
+          "range_i128"
         ],
         "review_reference": "audited with the template pack"
       }
@@ -107,6 +108,6 @@
     }
   },
   "signatures": {
-    "legacy": "36bf1de75b5916c894d85f5a4652a8fae318546587bc6e6bc892df582ff9ab42d0b19b59104e8203ea1061453639180ab896fb9eeb697511c7afecaadf612507"
+    "legacy": "2da36b4ae1945e69c7f74d5a95e5f71ec332c5d48b3fed9a94805898d40a46cc281e05e9de54fc72e7ba334669d58bb17e2a7a91b716e472c10e4ed99e061c0d"
   }
 }

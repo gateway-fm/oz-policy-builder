@@ -1,6 +1,6 @@
 //! `registry/mainnet/v0001.draft.json` is the unsigned genesis custodians would sign for mainnet.
 //!
-//! It is derived, not hand-written: the reviewed entries of development version 6 whose code is
+//! It is derived, not hand-written: the reviewed entries of development version 7 whose code is
 //! identical on every network — the 0.7.3 account with its scan protocol and method inventory,
 //! the ed25519 and WebAuthn verifiers, OpenZeppelin's spending limit and the template pack — as
 //! version 1 of a new chain keyed by the mainnet network ID, keeping the revocation of the 0.7.2
@@ -37,7 +37,7 @@ fn path() -> PathBuf {
 }
 
 fn derived() -> RegistrySnapshot {
-    let mut snapshot = dev::account_advisory_successor(mainnet()).unwrap();
+    let mut snapshot = dev::range_constraint_successor(mainnet()).unwrap();
     snapshot.version = 1;
     snapshot.log_index = 1;
     snapshot.previous_root = None;

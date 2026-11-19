@@ -47,7 +47,7 @@ fn dev_registry(version: u64) -> Registry {
 #[test]
 fn dev_registry_resolves_soroswap_router_adapter_for_pinned_hash() {
     let router = target_adapters::SOROSWAP_ROUTER_TESTNET_WASM;
-    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 6);
+    assert_eq!(dev::SIGNED_EXAMPLE_VERSION, 7);
     let current = dev_registry(dev::SIGNED_EXAMPLE_VERSION);
     assert_eq!(
         current.resolve_target_adapter(&router).unwrap(),
@@ -293,6 +293,57 @@ fn v6_extends_v5_and_revokes_the_vulnerable_account() {
             if reason == dev::ACCOUNT_0_7_2_REVOCATION_REASON
     ));
     registry.resolve_account_authority(&fixed).unwrap();
+    assert_eq!(
+        registry
+            .resolve_target_adapter(&target_adapters::SOROSWAP_ROUTER_TESTNET_WASM)
+            .unwrap(),
+        Some(target_adapters::soroswap_router_v2())
+    );
+}
+
+/// Version 6 as it was published, byte for byte, before version 7 replaced the committed
+/// example. Version 7 extends it and changes one thing: the scope template also declares the
+/// inclusive range, so a spec that bounds an amount on both sides is within its capabilities.
+#[test]
+fn v7_extends_v6_and_declares_the_range_kind() {
+    let text = include_str!("published-v6.signed.json");
+    let network = NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+    let old: SignedSnapshot = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&dev::dev_trust_files(network, 6).unwrap().0)
+            .unwrap(),
+        serde_json::from_str::<serde_json::Value>(text).unwrap()
+    );
+    let new = sign_snapshot(
+        &dev::dev_signing_key(),
+        dev::range_constraint_successor(network).unwrap(),
+    )
+    .unwrap();
+    let mut registry = Registry::with_pinned_roots(RootPolicy {
+        threshold: 1,
+        keys: BTreeMap::from([("legacy".into(), dev::dev_root_verifying_bytes())]),
+    })
+    .unwrap();
+    let declares_range = |registry: &Registry| {
+        registry
+            .resolve_template("policy-templates/scope@1")
+            .unwrap()
+            .constraint_kinds
+            .iter()
+            .any(|kind| kind == "range_i128")
+    };
+    registry.load(&old).unwrap();
+    assert!(!declares_range(&registry));
+    registry.load(&new).unwrap();
+    assert!(declares_range(&registry));
+    // Everything version 6 resolved still resolves the same way.
+    registry
+        .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)
+        .unwrap();
+    assert!(matches!(
+        registry.resolve_account(&pinned_upstream::OZ_SMART_ACCOUNT_0_7_2_WASM),
+        Err(RegistryError::Revoked { .. })
+    ));
     assert_eq!(
         registry
             .resolve_target_adapter(&target_adapters::SOROSWAP_ROUTER_TESTNET_WASM)

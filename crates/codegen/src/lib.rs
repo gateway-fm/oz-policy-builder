@@ -1669,6 +1669,14 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                         "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
                     ));
                 }
+                // `x < min || x > max` as two checks: one condition holding two 40-digit
+                // literals outgrows rustfmt's width, and the generated crate must be rustfmt's
+                // own output.
+                RenderConstraint::RangeI128 { min, max } => {
+                    helpers.push_str(&format!(
+                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {min} {{\n                return false;\n            }}\n            if x > {max} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
+                    ));
+                }
                 // The bytes are a module constant (emitted above), so this line is short
                 // whatever the recorded `ScVal` encodes to.
                 RenderConstraint::EqScval(_) => {
@@ -1980,7 +1988,22 @@ mod tests {
                     .prop_map(|value| Constraint::EqI128 { value }),
                 proptest::sample::select(numbers.clone())
                     .prop_map(|max| Constraint::LeI128 { max }),
-                proptest::sample::select(numbers).prop_map(|min| Constraint::GeI128 { min }),
+                proptest::sample::select(numbers.clone())
+                    .prop_map(|min| Constraint::GeI128 { min }),
+                // Two draws put in order, so every pair is a valid range, equal ends included.
+                (
+                    proptest::sample::select(numbers.clone()),
+                    proptest::sample::select(numbers)
+                )
+                    .prop_map(|(a, b)| {
+                        let (min, max) = if a.parse::<i128>().unwrap() <= b.parse::<i128>().unwrap()
+                        {
+                            (a, b)
+                        } else {
+                            (b, a)
+                        };
+                        Constraint::RangeI128 { min, max }
+                    }),
                 proptest::sample::select(vec![
                     scval_b64(ScVal::U32(0)),
                     scval_b64(ScVal::U64(u64::MAX)),
@@ -2588,6 +2611,12 @@ mod tests {
                         },
                         6 | 31 => Constraint::GeI128 {
                             min: "-1".to_string(),
+                        },
+                        // The widest range line: both ends 40 characters, neither the named
+                        // constant.
+                        7 => Constraint::RangeI128 {
+                            min: (i128::MIN + 1).to_string(),
+                            max: i128::MAX.to_string(),
                         },
                         _ => Constraint::AnyValue,
                     };

@@ -46,6 +46,9 @@ fn matches_constraint(constraint: &Constraint, smart_account: &str, value: &Valu
         Constraint::GeI128 { min } => {
             matches!(value, Value::I128(actual) if min.parse::<i128>().is_ok_and(|bound| *actual >= bound))
         }
+        Constraint::RangeI128 { min, max } => matches!(value, Value::I128(actual)
+            if min.parse::<i128>().is_ok_and(|low| low <= *actual)
+                && max.parse::<i128>().is_ok_and(|high| *actual <= high)),
         Constraint::AnyValue => true,
     }
 }
@@ -90,6 +93,38 @@ mod tests {
                 Constraint::GeI128 { min: "20".into() },
                 Value::I128(20),
                 true,
+            ),
+            (
+                Constraint::RangeI128 {
+                    min: "0".into(),
+                    max: "20".into(),
+                },
+                Value::I128(-1),
+                false,
+            ),
+            (
+                Constraint::RangeI128 {
+                    min: "0".into(),
+                    max: "20".into(),
+                },
+                Value::I128(0),
+                true,
+            ),
+            (
+                Constraint::RangeI128 {
+                    min: "0".into(),
+                    max: "20".into(),
+                },
+                Value::I128(20),
+                true,
+            ),
+            (
+                Constraint::RangeI128 {
+                    min: "0".into(),
+                    max: "20".into(),
+                },
+                Value::I128(21),
+                false,
             ),
             (Constraint::AnyValue, Value::Address("A"), true),
             (

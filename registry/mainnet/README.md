@@ -8,7 +8,7 @@ per version. The procedure that produces and checks it is
 **Nothing here is signed, and nothing here is trusted yet.**
 
 - `v0001.draft.json` is the **draft, unsigned** genesis. It is derived from the development
-  registry's version 6 (`crates/registry/tests/mainnet_draft.rs` checks that it still is) and
+  registry's version 7 (`crates/registry/tests/mainnet_draft.rs` checks that it still is) and
   holds only reviewed code that is byte-identical on every network: OpenZeppelin's multisig smart
   account built at v0.7.3 with its bounded scan protocol and method inventory, the ed25519 and
   WebAuthn (passkey) verifiers, the spending-limit policy, and the `policy-templates/scope@1`

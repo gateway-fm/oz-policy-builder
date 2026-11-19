@@ -396,6 +396,11 @@ pub enum RenderConstraint {
     EqI128(I128Literal),
     LeI128(I128Literal),
     GeI128(I128Literal),
+    /// Inclusive `min..=max`; the spec's validation guarantees `min <= max`.
+    RangeI128 {
+        min: I128Literal,
+        max: I128Literal,
+    },
     EqScval(ByteArray),
     AnyValue,
 }
@@ -484,6 +489,10 @@ impl RenderRule {
                             Constraint::GeI128 { min } => {
                                 RenderConstraint::GeI128(I128Literal::new(min)?)
                             }
+                            Constraint::RangeI128 { min, max } => RenderConstraint::RangeI128 {
+                                min: I128Literal::new(min)?,
+                                max: I128Literal::new(max)?,
+                            },
                             Constraint::EqScval { xdr_base64 } => {
                                 RenderConstraint::EqScval(ByteArray::from_base64(xdr_base64)?)
                             }

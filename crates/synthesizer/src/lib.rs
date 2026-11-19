@@ -770,6 +770,20 @@ fn validate_spending_limit_shape(
                     ));
                 }
             }
+            Constraint::RangeI128 { min, max } => {
+                let (Ok(min), Ok(max)) = (min.parse::<i128>(), max.parse::<i128>()) else {
+                    return Err(
+                        "transfer argument 2 must be constrained as a canonical i128".to_string(),
+                    );
+                };
+                if max < 0 || min > limit {
+                    return Err(format!(
+                        "transfer amount range {min}..={max} shares no amount with the spending \
+                         limit's 0..={limit}; the composed policies would deny every matching \
+                         amount"
+                    ));
+                }
+            }
             Constraint::EqAddress { .. } | Constraint::EqScval { .. } | Constraint::AnyValue => {
                 return Err(
                     "oz:spending_limit requires every transfer argument 2 to be constrained as \
@@ -2237,6 +2251,10 @@ mod tests {
             limit: "10".to_string(),
             period_ledgers: 1,
         };
+        let range = |min: &str, max: &str| Constraint::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
         for (constraint, accepted) in [
             (Constraint::EqI128 { value: "-1".into() }, false),
             (Constraint::EqI128 { value: "0".into() }, true),
@@ -2246,6 +2264,15 @@ mod tests {
             (Constraint::LeI128 { max: "0".into() }, true),
             (Constraint::GeI128 { min: "10".into() }, true),
             (Constraint::GeI128 { min: "11".into() }, false),
+            // A range meets 0..=10 unless it ends below 0 or starts above 10.
+            (range("-5", "-1"), false),
+            (range("-5", "0"), true),
+            (range("10", "15"), true),
+            (range("11", "15"), false),
+            (range("-5", "15"), true),
+            // Unparsable at either end; a non-canonical but parsable one is the spec's to refuse.
+            (range("x", "5"), false),
+            (range("0", "5 "), false),
         ] {
             let call = transfer_with_amount(constraint.clone());
             assert_eq!(

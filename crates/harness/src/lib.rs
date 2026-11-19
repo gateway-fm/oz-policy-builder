@@ -237,7 +237,9 @@ fn expected_classes_for_rule(rule: &RuleSpec) -> BTreeSet<MutationClass> {
                     expected.insert(MutationClass::NumericBoundary);
                     expected.insert(MutationClass::TypeConfusion);
                 }
-                Constraint::LeI128 { .. } | Constraint::GeI128 { .. } => {
+                Constraint::LeI128 { .. }
+                | Constraint::GeI128 { .. }
+                | Constraint::RangeI128 { .. } => {
                     expected.insert(MutationClass::NumericBoundary);
                     expected.insert(MutationClass::TypeConfusion);
                 }
@@ -981,6 +983,52 @@ fn arg_mutations(
                 false,
             ));
         }
+        (ArgValue::I128(_), Some(Constraint::RangeI128 { min, max })) => {
+            if let (Ok(low), Ok(high)) = (min.parse::<i128>(), max.parse::<i128>()) {
+                // Below the floor: one past it, and the far end of the signed range, which is
+                // the negative amount a cap alone would have let through.
+                if let Some(below) = low.checked_sub(1) {
+                    out.push((
+                        "below range minimum".into(),
+                        ArgValue::I128(below),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                    out.push((
+                        "i128 minimum".into(),
+                        ArgValue::I128(i128::MIN),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                }
+                out.push((
+                    "at range minimum".into(),
+                    ArgValue::I128(low),
+                    MutationClass::NumericBoundary,
+                    true,
+                ));
+                out.push((
+                    "at range maximum".into(),
+                    ArgValue::I128(high),
+                    MutationClass::NumericBoundary,
+                    true,
+                ));
+                if let Some(above) = high.checked_add(1) {
+                    out.push((
+                        "above range maximum".into(),
+                        ArgValue::I128(above),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                }
+            }
+            out.push((
+                "type: address where i128".into(),
+                ArgValue::Address(stranger_addr()),
+                MutationClass::TypeConfusion,
+                false,
+            ));
+        }
         (ArgValue::Address(_), Some(Constraint::EqAddress { .. })) => {
             out.push((
                 "different address".into(),
@@ -1137,6 +1185,7 @@ fn concrete_for(spec: &ValidatedSpec, _rule: &RuleSpec, c: &Constraint) -> ArgVa
         // For a bound, pick a value satisfying it (the "original" for a widened arg).
         Constraint::LeI128 { max } => ArgValue::I128(max.parse::<i128>().unwrap_or(0)),
         Constraint::GeI128 { min } => ArgValue::I128(min.parse::<i128>().unwrap_or(0)),
+        Constraint::RangeI128 { max, .. } => ArgValue::I128(max.parse::<i128>().unwrap_or(0)),
         Constraint::EqScval { xdr_base64 } => ArgValue::ScvalXdr(xdr_base64.clone()),
         // A wildcard accepts anything; the "original" concrete value is arbitrary.
         Constraint::AnyValue => ArgValue::I128(0),
@@ -1908,6 +1957,80 @@ mod tests {
             );
         }
         assert!(run_layer1(&soroswap_swap_spec()).all_agree());
+    }
+
+    fn golden_with_amount_range(min: i128, max: i128) -> ValidatedSpec {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let amount = &mut spec.rules[0].allowed_calls[0].args[2];
+        amount.constraint = Constraint::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
+        amount.provenance = ozpb_domain::Provenance::UserWidened {
+            intent: "spend between min and max".into(),
+            blast_radius: ozpb_domain::BlastRadius::Medium,
+        };
+        spec.validate().expect("a range on the transfer amount")
+    }
+
+    /// A range denies just outside either end and the whole negative half below a floor, and
+    /// permits at both ends; each case's label says which, and layer 1 agrees on all of them.
+    #[test]
+    fn a_range_tests_both_ends_one_past_each_and_the_signed_minimum() {
+        let amounts = |suite: &[Case]| -> BTreeMap<String, (i128, bool)> {
+            suite
+                .iter()
+                .filter(|case| case.class == MutationClass::NumericBoundary)
+                .filter_map(|case| match case.invocation.args.get(2) {
+                    Some(ArgValue::I128(amount)) => {
+                        Some((case.label.clone(), (*amount, case.expect_permit)))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let spec = golden_with_amount_range(0, 1_000);
+        let found = amounts(&build_suite(&spec));
+        for (label, amount, permit) in [
+            ("below range minimum", -1, false),
+            ("at range minimum", 0, true),
+            ("at range maximum", 1_000, true),
+            ("above range maximum", 1_001, false),
+            ("i128 minimum", i128::MIN, false),
+        ] {
+            assert!(
+                found
+                    .iter()
+                    .any(|(name, value)| name.contains(label) && *value == (amount, permit)),
+                "missing {label} = {amount} (permit {permit}): {found:#?}"
+            );
+        }
+        assert!(run_layer1(&spec).all_agree());
+        assert!(build_suite(&spec)
+            .iter()
+            .any(|case| { case.class == MutationClass::TypeConfusion && !case.expect_permit }));
+
+        // At the ends of i128 nothing lies one past a bound, and i128::MIN is the floor itself.
+        let full = golden_with_amount_range(i128::MIN, i128::MAX);
+        let found = amounts(&build_suite(&full));
+        assert!(
+            found
+                .iter()
+                .all(|(name, _)| !name.contains("below range minimum")
+                    && !name.contains("above range maximum")
+                    && !name.contains("i128 minimum")),
+            "{found:#?}"
+        );
+        assert!(found
+            .iter()
+            .any(|(name, value)| name.contains("at range minimum") && *value == (i128::MIN, true)));
+        assert!(found
+            .iter()
+            .any(|(name, value)| name.contains("at range maximum") && *value == (i128::MAX, true)));
+        assert!(run_layer1(&full).all_agree());
     }
 
     #[test]

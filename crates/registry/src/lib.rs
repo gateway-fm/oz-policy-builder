@@ -1123,10 +1123,24 @@ pub mod dev {
     use ozpb_domain::sha256;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
-    /// Version of the committed, signed development example. Versions 1 to 5 remain
+    /// Version of the committed, signed development example. Versions 1 to 6 remain
     /// historical parents; changing their contents would fork persisted checkpoints. The same
     /// holds for this version once published, so tests pin every root.
-    pub const SIGNED_EXAMPLE_VERSION: u64 = 6;
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 7;
+
+    /// The scope template's constraint vocabulary as versions 1 to 6 signed it. Frozen, not
+    /// derived: those roots are published, and deriving this from [`Constraint::KINDS`] would
+    /// rewrite all six the moment a kind is added. A new kind is declared by a successor
+    /// instead ([`range_constraint_successor`]), and `historical_kinds_are_the_current_ones_minus_range`
+    /// holds this list to the enum.
+    pub const CONSTRAINT_KINDS_V1_TO_V6: &[&str] = &[
+        "any_value",
+        "eq_address",
+        "eq_i128",
+        "eq_scval",
+        "ge_i128",
+        "le_i128",
+    ];
 
     /// Why version 6 revokes the account built at v0.7.2. Stated in the signed snapshot, so a
     /// refusal names the advisory rather than an unknown hash.
@@ -1154,6 +1168,7 @@ pub mod dev {
         version: u64,
     ) -> Result<(String, String), RegistryError> {
         let snapshot = match version {
+            7 => range_constraint_successor(network_id)?,
             6 => account_advisory_successor(network_id)?,
             5 => soroswap_deadline_successor(network_id)?,
             4 => soroswap_router_successor(network_id)?,
@@ -1331,6 +1346,29 @@ pub mod dev {
         Ok(snapshot)
     }
 
+    /// Version 7: version 6 plus the inclusive range constraint (`range_i128`) in the scope
+    /// template's declared vocabulary, which is now [`Constraint::KINDS`] in full. Synthesis
+    /// refuses a spec whose kinds its template family does not declare, so a grant that bounds
+    /// an amount on both sides (`0..=X`) needs this version. Nothing else changes.
+    pub fn range_constraint_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        let previous = account_advisory_successor(network_id)?;
+        let mut snapshot = previous.clone();
+        snapshot.version = 7;
+        snapshot.log_index = 7;
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let template = snapshot
+            .templates
+            .get_mut("policy-templates/scope@1")
+            .ok_or_else(|| RegistryError::Internal("scope template family is absent".into()))?;
+        template.constraint_kinds = Constraint::KINDS
+            .iter()
+            .map(|kind| (*kind).to_string())
+            .collect();
+        Ok(snapshot)
+    }
+
     /// Version 5 preserves v4 and replaces its router binding with v2's exact deadline.
     pub fn soroswap_deadline_successor(
         network_id: NetworkId,
@@ -1426,15 +1464,16 @@ pub mod dev {
                 //
                 // Deriving them removes that whole class: `KINDS` and the `kind_name` a
                 // checker reads are generated from one exhaustive list in `ozpb-policy-spec`,
-                // so a new variant is a compile error there and this entry grows with it. The
-                // scope template implements the full vocabulary of both types; a future
-                // family that implements a subset would name that subset instead, which is
-                // what makes these lists worth declaring at all.
+                // so a new variant is a compile error there. The scope template implements the
+                // full vocabulary of both types; a future family that implements a subset
+                // would name that subset instead, which is what makes these lists worth
+                // declaring at all. The constraint kinds of these published versions are the
+                // frozen historical list; version 7 declares `Constraint::KINDS` in full.
                 signer_predicates: PredicateKind::KINDS
                     .iter()
                     .map(|kind| (*kind).to_string())
                     .collect(),
-                constraint_kinds: Constraint::KINDS
+                constraint_kinds: CONSTRAINT_KINDS_V1_TO_V6
                     .iter()
                     .map(|kind| (*kind).to_string())
                     .collect(),
@@ -1507,7 +1546,7 @@ mod tests {
             "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6";
         assert_eq!(
             dev::SIGNED_EXAMPLE_VERSION,
-            6,
+            7,
             "a new signed example version must pin its own published root here"
         );
         // Version 2 is a published parent: the verifier fields it never carried must not move
@@ -1541,14 +1580,66 @@ mod tests {
         );
         let v6 = dev::account_advisory_successor(network()).unwrap();
         assert_eq!(v6.previous_root, Some(snapshot_root(&v5).unwrap()));
+        assert_eq!(
+            snapshot_root(&v6).unwrap().to_hex(),
+            "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8",
+            "published development example v6 changed; publish new contents as a new version"
+        );
+        let v7 = dev::range_constraint_successor(network()).unwrap();
+        assert_eq!(v7.previous_root, Some(snapshot_root(&v6).unwrap()));
         let committed: SignedSnapshot =
             serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
                 .unwrap();
-        assert_eq!(v6, committed.snapshot);
+        assert_eq!(v7, committed.snapshot);
         assert_eq!(
-            snapshot_root(&v6).unwrap().to_hex(),
-            "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8"
+            snapshot_root(&v7).unwrap().to_hex(),
+            "86c6b570daef2e92e3b6aa9b179d3a6cabdc4bf826f531a23d771c7ebf7abdc6"
         );
+    }
+
+    /// Versions 1 to 6 declare the vocabulary they were signed with; version 7 declares the
+    /// enum's, which is that plus the range. A kind added to the enum without a successor shows
+    /// up here as a difference other than `range_i128`.
+    #[test]
+    fn historical_kinds_are_the_current_ones_minus_range() {
+        let mut current: Vec<&str> = Constraint::KINDS.to_vec();
+        current.retain(|kind| *kind != "range_i128");
+        assert_eq!(current, dev::CONSTRAINT_KINDS_V1_TO_V6);
+        assert_eq!(
+            Constraint::KINDS.len(),
+            dev::CONSTRAINT_KINDS_V1_TO_V6.len() + 1
+        );
+        let scope = |snapshot: RegistrySnapshot| {
+            snapshot.templates["policy-templates/scope@1"]
+                .constraint_kinds
+                .clone()
+        };
+        for version in 1..=6 {
+            let snapshot = dev::dev_trust_files(network(), version)
+                .map(|(json, _)| {
+                    serde_json::from_str::<SignedSnapshot>(&json)
+                        .unwrap()
+                        .snapshot
+                })
+                .unwrap();
+            assert_eq!(
+                scope(snapshot),
+                dev::CONSTRAINT_KINDS_V1_TO_V6,
+                "v{version}"
+            );
+        }
+        let v7 = dev::range_constraint_successor(network()).unwrap();
+        assert_eq!(scope(v7.clone()), Constraint::KINDS);
+        // The range is the only change from version 6.
+        let mut v6 = dev::account_advisory_successor(network()).unwrap();
+        v6.templates
+            .get_mut("policy-templates/scope@1")
+            .unwrap()
+            .constraint_kinds = scope(v7.clone());
+        v6.version = 7;
+        v6.log_index = 7;
+        v6.previous_root = v7.previous_root;
+        assert_eq!(v6, v7);
     }
 
     /// GHSA-jpg9-m7w4-c7wc: `stellar-accounts` before 0.7.3 approves a `Delegated` signer
@@ -1684,8 +1775,8 @@ mod tests {
                 .unwrap();
         assert_eq!(committed.snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
 
-        // An operator persisted a checkpoint at v3: v4 extends it directly, and v5 and the
-        // committed v6 follow in order.
+        // An operator persisted a checkpoint at v3: v4 extends it directly, and v5, v6 and the
+        // committed v7 follow in order.
         let mut registry = pinned_test_registry();
         for signed in [&v1, &v2, &v3] {
             registry.load_at(signed, 100).unwrap();
@@ -1710,6 +1801,12 @@ mod tests {
         )
         .unwrap();
         restored.load_at(&v5, 100).unwrap();
+        let v6 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::account_advisory_successor(network()).unwrap(),
+        )
+        .unwrap();
+        restored.load_at(&v6, 100).unwrap();
         assert_eq!(
             committed.snapshot.previous_root,
             Some(restored.checkpoint().unwrap().root)
@@ -1805,7 +1902,7 @@ mod tests {
     /// constant; this test asserts the snapshot actually uses it.
     #[test]
     fn the_shipped_snapshot_pins_real_upstream_wasm_hashes() {
-        let snapshot = dev::account_advisory_successor(NetworkId::from_passphrase(
+        let snapshot = dev::range_constraint_successor(NetworkId::from_passphrase(
             ozpb_domain::TESTNET_PASSPHRASE,
         ))
         .unwrap();
@@ -2098,6 +2195,15 @@ mod tests {
         );
         assert_eq!(
             t.constraint_kinds,
+            dev::CONSTRAINT_KINDS_V1_TO_V6,
+            "version 1 declares the vocabulary it was signed with"
+        );
+        // The committed example, the version a reader runs, declares the enum's in full.
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(
+            committed.snapshot.templates["policy-templates/scope@1"].constraint_kinds,
             Constraint::KINDS,
             "the scope template declares Constraint's full vocabulary"
         );
