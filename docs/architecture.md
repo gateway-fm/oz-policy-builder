@@ -440,11 +440,18 @@ Derivation rules:
      the skill/wallet), with a blast-radius label proportional to what it unconstrains —
      e.g. accepting "any deadline" is flagged high-blast-radius, with the report stating the
      downstream argument is then unconstrained (the rule's own `valid_until` still bounds
-     *when* authorization can occur); or
+     *when* authorization can occur). The label is not only self-declared: a bound with no
+     finite top admits any larger amount and must be rated high, unless an adapter declares the
+     argument a minimum output, and a bound spanning the whole `i128` range is held to high by
+     spec validation, as `any_value` is. A decision names an argument, not a recorded call, so
+     one that would loosen several distinct recorded calls of a function is refused; or
   2. a **versioned contract adapter** bound to a verified target code hash that declares
      argument semantics — max-input vs min-output vs deadline vs identifier — for that
      specific contract (§6.1). The XDR type alone never determines direction: lowering a
      minimum-output makes a swap *less* safe, so `<= observed` as a generic rule is unsound.
+     Where an adapter declares a role, a user decision may not loosen what it requires either:
+     a bound admitting values below the recorded minimum output, one leaving the maximum input
+     uncapped, or any widening of an argument the adapter keeps exact is refused.
 - **Value caps:** token-movement events *suggest* which argument carries value; the
   suggestion is presented as evidence for the user/adapter decision, never applied silently.
   SEP-41 `transfer` cadence/rate limiting composes the audited OZ `spending_limit`

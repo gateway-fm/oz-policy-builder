@@ -218,16 +218,21 @@ Every observed argument becomes an exact constraint. A bound enters only through
 decision on an amount argument, with canonical numerals and a declared blast radius, or through
 a reviewed adapter bound to the observed code hash and whole argument shape. The adapter takes
 direction from the argument's meaning: a maximum input admits an upper bound, and a minimum
-output gets no invented floor. A widening that matches nothing, or that contradicts
-observed-exact provenance, is refused, and an unverified registry never widens. The adapter is
-selected by the recording's observed hash, which the caller supplies; the install intent reads
-the target's code in the same capture as the authority check and refuses other code.
+output gets no invented floor. A user decision cannot loosen what an adapter's role requires:
+a bound below a recorded minimum output, one leaving a maximum input with no finite cap, or any
+widening of an argument the adapter keeps exact is refused. A widening that matches nothing, or
+that contradicts observed-exact provenance, is refused, and an unverified registry never widens.
+The adapter is selected by the recording's observed hash, which the caller supplies; the install
+intent reads the target's code in the same capture as the authority check and refuses other code.
 
 A bound must admit the recorded value, and an argument takes one widening. A cap on a signed
 amount sets no floor, so synthesis asks for one: the answer is a range, `min <= x <= max`, which
 the generated policy checks at both ends (development registry version 7 declares the kind;
-earlier versions refuse it), or an explicit acknowledgement of the open floor. No floor is ever
-inferred from the type. The ranged-transfer fixture's generated crate is committed exactly as
+earlier versions refuse it), or an explicit acknowledgement of the open floor; a range from
+`i128::MIN` is a cap and asks the same. No floor is ever inferred from the type. The declared
+blast radius has a floor of its own: a bound with no finite top must be rated high unless an
+adapter declares the argument a minimum output, and validation holds a bound spanning the whole
+`i128` range to high, as it does `any_value`. The ranged-transfer fixture's generated crate is committed exactly as
 codegen emits it, and every case the harness derives from it is decided the same way by the
 compiled policy and the reference evaluator.
 
@@ -252,6 +257,12 @@ ci  crates/toolkit/src/lib.rs  tests::a_range_synthesizes_under_a_registry_that_
 ci  crates/codegen/src/lib.rs  tests::range_crate_matches_committed_output
 ci  crates/codegen/src/lib.rs  tests::a_bound_at_the_i128_limit_emits_no_vacuous_comparison
 ci  contracts/differential/tests/range_generated_suite.rs  range_cases_agree_through_the_compiled_policy
+ci  crates/synthesizer/src/lib.rs  tests::a_user_bound_against_an_adapter_role_is_refused
+ci  crates/synthesizer/src/lib.rs  tests::a_user_widening_of_an_argument_an_adapter_keeps_exact_is_refused
+ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::explicit_user_widening_keeps_its_distinct_intent_and_provenance
+ci  crates/synthesizer/src/lib.rs  tests::an_open_above_bound_requires_high_blast_radius
+ci  crates/policy-spec/src/lib.rs  tests::a_bound_spanning_the_i128_domain_requires_high_blast_radius
+ci  crates/synthesizer/src/lib.rs  tests::a_range_from_i128_min_asks_the_floor_question_a_cap_asks
 ```
 
 ## G4. Tuple correlation
@@ -259,7 +270,9 @@ ci  contracts/differential/tests/range_generated_suite.rs  range_cases_agree_thr
 An allowed call is one whole `(contract, function, arguments)` tuple. Validation refuses an
 incomplete tuple and one without evidence and justification, and evidence references must name
 a recording in range. Identical tuples merge and distinct ones stay distinct, never combined into
-a product, and each recording of a distinct call becomes its own tuple. Changing any one position
+a product, and each recording of a distinct call becomes its own tuple. A widening names an
+argument rather than a call, so one that would loosen several distinct tuples of a function is
+refused: it cannot carry one recorded call's bound into another's. Changing any one position
 of the recorded call is denied by both the reference evaluator and the compiled policy.
 
 Cross products are checked through a compiled policy. The two-payment fixture's rule accepts
@@ -274,6 +287,7 @@ function's tuples under it, so the crate is linted like every other generated cr
 
 ```gate-evidence G4
 ci  crates/synthesizer/src/lib.rs  tests::tuple_dedup_merges_identical_and_keeps_distinct
+ci  crates/synthesizer/src/lib.rs  tests::a_widening_on_a_multi_tuple_function_is_refused_unless_scoped
 ci  crates/policy-spec/src/lib.rs  tests::incomplete_tuples_fail
 ci  crates/policy-spec/src/lib.rs  tests::missing_evidence_and_justification_fail
 ci  crates/policy-spec/src/lib.rs  tests::evidence_references_are_structural_and_in_range

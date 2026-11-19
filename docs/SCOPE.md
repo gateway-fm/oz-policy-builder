@@ -408,3 +408,14 @@ The source-reviewed account method inventory and its limits are described in
    — snapshots do not carry the root policy — with the cutover order in
    [Rotation](REGISTRY-GOVERNANCE.md#rotation-lost-and-compromised-keys). The mainnet registry
    is an unsigned draft until its key ceremony ([`registry/mainnet/`](../registry/mainnet/README.md)).
+8. **Decision rules are synthesis's.** The rules that judge a user's widening — a bound may not
+   loosen what a bound adapter's role requires, a bound with no finite top must be rated high,
+   one widening loosens one recorded call — run in synthesis, which has the decisions, the
+   recorded values and the adapter roles. Validation holds only what a spec shows on its own: a
+   bound spanning the whole `i128` range, like `any_value`, needs `high`. `generate_code` and
+   `ozpb generate` take a spec and no decisions, so a spec edited by hand and passed straight to
+   them can carry an open-top bound rated low or medium, or a widening an adapter's role would
+   refuse; the generated policy enforces the bound as written, and only its rating is wrong.
+   No rule decides when a finite cap is too large: its rating is the user's, and the skill's card
+   sets each bound beside the recorded value instead
+   ([scoping decisions](SCOPING-DECISIONS.md#widenings-you-may-choose)).

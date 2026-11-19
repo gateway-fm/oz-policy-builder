@@ -144,13 +144,29 @@ the address, ledger, name, and limits with the user's choices before calling the
   `{"le_i128":{"max":"100"}}`, `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds
   are canonical decimal i128 strings and apply only to i128 arguments, and must admit the
   recorded value. `blast_radius` is `"low"`,
-  `"medium"`, or `"high"`; `"any_value"` requires `"high"`. A recipient or other
-  non-i128 argument can only stay exact or become fully unconstrained. Each argument takes at
-  most one widening; a second for the same argument is refused.
+  `"medium"`, or `"high"`; `"any_value"` requires `"high"`, and so does a bound with no finite
+  top (`ge_i128`, or a maximum of `170141183460469231731687303715884105727`), because it admits
+  any larger amount — except on an argument a reviewed adapter declares a minimum output. A recipient or other non-i128 argument can only stay exact or become fully
+  unconstrained. Each argument takes at most one widening; a second for the same argument is
+  refused.
+- A widening applies to every recorded call of its function. If the recordings hold more than
+  one distinct call of that function on that contract (say two payments to different
+  recipients), a widening of it is refused with `E_INVALID_DECISION`; say so, and offer to keep
+  the argument exact or to build the grant from a recording with one such call. Calls that
+  differ only in the widened argument (one recipient, two amounts) become one permitted call,
+  and the widening applies.
+- Where the rationale or a refusal names a target adapter, a widening may not loosen what the
+  adapter reviews: on a minimum output only a floor at or above the recorded value, on a
+  maximum input only a bound with a finite cap, and on an argument it keeps exact (such as a
+  swap's path, recipient or fixed deadline) nothing at all, `"any_value"` included. Anything
+  else on those arguments is refused with `E_INVALID_DECISION` whatever its blast radius; do not
+  offer it.
 - A cap (`le_i128`) also needs `"no_floor_acknowledged": true`, set only after the user
   explicitly accepts that it has no floor; without it synthesis refuses with
-  `E_NEEDS_DECISION`. A range needs no acknowledgement. On a range, a floor or `"any_value"` the
-  acknowledgement is refused as contradictory: leave it out (absent reads as `false`).
+  `E_NEEDS_DECISION`. A range from `-170141183460469231731687303715884105728` (the type's
+  minimum) is a cap and needs it too. Any other range needs no acknowledgement. On such a range,
+  a floor or `"any_value"` the acknowledgement is refused as contradictory: leave it out (absent
+  reads as `false`).
 - A range is declared by development registry version 7 and later. Under an older snapshot
   synthesis refuses it with `E_UNSUPPORTED_PATTERN` naming `range_i128`; say so, and do not
   substitute a cap without asking.
@@ -315,8 +331,8 @@ address and hash in full: an abbreviated address can be swapped for a look-alike
 **Grant:** <grant name> on <network> for account <C… in full>; spec hash <spec_hash>
 **Permitted:** each allowed call: contract, function, and every argument's constraint
 **Not constrained:** every argument that accepts any value or a range (a cap with no floor
-also accepts every negative value), and everything the grant does not limit; "nothing" only when
-every argument is exact
+also accepts every negative value), each bound beside its recorded value, and everything the
+grant does not limit; "nothing" only when every argument is exact
 **High blast radius:** each item below, or "none"
 **Signer:** the predicate and every delegate address
 **Expiry:** valid until ledger <N>, or "never (acknowledged)"
@@ -340,6 +356,12 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
   decimal value, `>= min and <= max`, `<= value`, `>= value`, or `any_value`. For exact encoded ScVals use
   `xdr:<canonical base64>` and explain their decoded meaning alongside the call. A number
   elsewhere on the card does not describe the argument. Repeat the form for every call.
+- **Not constrained** sets every bound the user chose beside the value the recording held,
+  which the rationale states as `recorded value <N>` for that argument, and says how far it
+  reaches: the bound's maximum as a multiple of the recorded value (`×10³⁶ the recorded
+  amount`, or the plain ratio when it is small; the maximum alone when the recorded value is 0),
+  or that it has no maximum. Write the recorded value as an ungrouped decimal. A rating stays the user's however large a finite bound is, so
+  this comparison is how the card shows a cap far beyond what was recorded.
 - **High blast radius** lists every `any_value` argument, whether user-widened or
   adapter-derived. An adapter derives `any_value` for a caller-chosen argument such as a swap
   deadline; its provenance names the adapter but carries no blast-radius field, and accepting

@@ -500,11 +500,22 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   The XDR type alone never implies a direction (lowering a `min_output` makes a swap
   *less* safe). An argument takes at most one widening: a second one naming the same contract,
   function and index is an `E_INVALID_DECISION` finding, never silently dropped, as is a numeric
-  bound that excludes the recorded value. A range (`range_i128`) bounds both ends and needs no
-  further decision; it is the safe form of "up to X". A cap
-  (`le_i128`) bounds a signed `i128` from above only, so its widening also needs
+  bound that excludes the recorded value, and a widening that would apply to more than one
+  distinct permitted call of its function (a decision names an argument, not a call). A range
+  (`range_i128`) bounds both ends and needs no further decision; it is the safe form of "up to
+  X". A cap (`le_i128`) bounds a signed `i128` from above only, so its widening also needs
   `no_floor_acknowledged: true` (absent reads as `false`): without it, an `E_NEEDS_DECISION`
-  finding; on a floor or `any_value`, an `E_INVALID_DECISION`. Synthesis never adds a floor.
+  finding; on a floor or `any_value`, an `E_INVALID_DECISION`. A range from `i128::MIN` renders
+  the same check as a cap and is held to the same acknowledgement. Synthesis never adds a floor.
+- **The blast radius has a floor the bound sets.** A bound with no finite top (a floor, or a
+  maximum of `i128::MAX`) admits any larger value, so synthesis requires `high` for it, except on
+  a minimum output a reviewed adapter declares; a bound at both type limits is `any_value` by
+  another name, and spec validation holds it to `high` (`E_SPEC_ANY_VALUE_BLAST_RADIUS`).
+- **A user bound cannot contradict an adapter's role.** Where a bound adapter declares an
+  argument a minimum output, a widening that admits anything below the recorded value is an
+  `E_INVALID_DECISION`; where it declares a maximum input, so is one with no finite cap; where it
+  keeps the argument exact, so is any widening. These rules and the open-top rating run in
+  synthesis only: `generate` takes a spec and no decisions.
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).

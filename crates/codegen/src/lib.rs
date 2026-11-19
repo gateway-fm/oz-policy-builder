@@ -545,9 +545,11 @@ fn caller_managed_ttl_note() -> String {
 /// just spent its last permitted call can never permit again, and buying the largest possible
 /// extension at exactly that moment is the opposite of what the artifact claims to do. The shared
 /// instance entry stays alive through whichever *other* installation is still active, and when
-/// none is, the contract is useless to everyone and is meant to expire. The **code** entry is not
-/// extended here at all — it is shared with every other deployment of the same wasm, so its rent
-/// is not this policy's to pay (§3 of the conformance record states that as a decision).
+/// none is, the contract is useless to everyone and is meant to expire. `instance().extend_ttl`
+/// extends the Wasm **code** entry together with the instance (soroban-sdk 28
+/// `Instance::extend_ttl`, the host's `extend_current_contract_instance_and_code_ttl`), so this
+/// block also pays rent on a code entry shared with every other deployment of the same Wasm. That
+/// is a cost, not a safety property; §3 of the conformance record says why it stays.
 ///
 /// The chained `extend_ttl` calls are one line each: `chain_width` is `max_width` under
 /// `use_small_heuristics = "Max"`, so the three-segment chain no longer breaks across lines the
@@ -570,10 +572,10 @@ fn ttl_extension_block(has_state: bool) -> String {
             render::wrap_comment(
                 "        // ",
                 "Not a permission check — nothing here decides anything. This keeps this \
-                 installation and the contract instance out of archival. The wasm code entry is \
-                 deliberately not extended: it is shared with every other deployment of the same \
-                 code. With no call cap there is no condition under which the extension is \
-                 withheld."
+                 installation, the contract instance and its Wasm code out of archival: the \
+                 instance extension extends the code entry with it, and that entry is shared \
+                 with every deployment of the same Wasm. With no call cap there is no condition \
+                 under which the extension is withheld."
             )
         )
     }
@@ -2355,9 +2357,12 @@ mod tests {
             if constraint.is_widening() {
                 Provenance::UserWidened {
                     intent: "property-test widening".to_string(),
-                    // AnyValue is the maximal widening: validation holds it to the
-                    // high-blast-radius acknowledgement its schema contract states.
-                    blast_radius: if matches!(constraint, Constraint::AnyValue) {
+                    // AnyValue is the maximal widening, and so is a bound spanning the whole
+                    // i128 range: validation holds both to the high-blast-radius
+                    // acknowledgement the schema contract states.
+                    blast_radius: if matches!(constraint, Constraint::AnyValue)
+                        || constraint.spans_the_i128_domain()
+                    {
                         BlastRadius::High
                     } else {
                         BlastRadius::Medium
@@ -3472,9 +3477,11 @@ mod tests {
             let mut spec = golden_spec().spec().clone();
             let amount = &mut spec.rules[0].allowed_calls[0].args[2];
             amount.constraint = constraint;
+            // High: validation holds a bound spanning the whole i128 range to it, as it does
+            // any_value.
             amount.provenance = ozpb_domain::Provenance::UserWidened {
                 intent: "a bound at the limit".to_string(),
-                blast_radius: ozpb_domain::BlastRadius::Medium,
+                blast_radius: ozpb_domain::BlastRadius::High,
             };
             let generated = generate(&spec.validate().unwrap(), 0, &Pins::default()).unwrap();
             for (path, source) in rust_files(&generated) {
