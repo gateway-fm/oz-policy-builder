@@ -19,10 +19,11 @@
 
 use ozpb_domain::{LedgerSeq, NetworkId, TrustLevel};
 use ozpb_recorder_core::{
-    record, referenced_contract_addresses, ArgSummary, AuthorizationRecord, AuthorizedCall,
-    CredentialRecord, EvidenceSnapshot, Execution, InvocationNode, MovementKind,
-    ObservedExecutable, RecordError, RecordOptions, RecordingBundle,
+    record, ArgSummary, AuthorizationRecord, AuthorizedCall, CredentialRecord, EvidenceSnapshot,
+    Execution, InvocationNode, MovementKind, ObservedExecutable, RecordError, RecordOptions,
+    RecordingBundle,
 };
+use ozpb_source_bundle::{import_json, ImportedBundle};
 use ozpb_source_rpc::{get_transaction, xdr_limits, RpcError, RpcTransport};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -139,9 +140,10 @@ fn recorded(case: &str) -> RecordingBundle {
             .contract_executables
             .keys()
             .cloned()
-            .collect::<Vec<_>>(),
-        referenced_contract_addresses(&snapshot).unwrap(),
-        "{case}: every contract the authorization reaches carries its observed executable"
+            .collect::<BTreeSet<_>>(),
+        contracts_in_xdr(&envelope(case)),
+        "{case}: every contract the invocation and its authorization reach carries its observed \
+         executable, and nothing else does"
     );
     assert_eq!(
         bundle.verify().unwrap(),
@@ -154,6 +156,7 @@ fn recorded(case: &str) -> RecordingBundle {
     assert_eq!(bundle.authorizations.len(), entries.len(), "{case}");
     for (record, entry) in bundle.authorizations.iter().zip(&entries) {
         assert_eq!(record.authorizer, authorizer_of(entry, &envelope), "{case}");
+        assert_eq!(record.credential, credential_of(entry), "{case}");
         assert_eq!(
             shape(&record.root),
             xdr_shape(&entry.root_invocation),
@@ -237,6 +240,63 @@ fn authorizer_of(
     }
 }
 
+/// The credential arm and its policy-relevant fields, read straight from the entry's XDR.
+fn credential_of(entry: &stellar_xdr::SorobanAuthorizationEntry) -> CredentialRecord {
+    fn delegates(list: &[stellar_xdr::SorobanDelegateSignature]) -> u32 {
+        list.iter()
+            .map(|d| 1 + delegates(&d.nested_delegates))
+            .sum()
+    }
+    match &entry.credentials {
+        SorobanCredentials::SourceAccount => CredentialRecord::SourceAccount,
+        SorobanCredentials::Address(c) => CredentialRecord::Address {
+            nonce: c.nonce,
+            signature_expiration_ledger: c.signature_expiration_ledger,
+        },
+        SorobanCredentials::AddressV2(c) => CredentialRecord::AddressV2 {
+            nonce: c.nonce,
+            signature_expiration_ledger: c.signature_expiration_ledger,
+        },
+        SorobanCredentials::AddressWithDelegates(c) => CredentialRecord::AddressWithDelegates {
+            nonce: c.address_credentials.nonce,
+            signature_expiration_ledger: c.address_credentials.signature_expiration_ledger,
+            delegate_count: delegates(&c.delegates),
+        },
+    }
+}
+
+/// Every contract the invocation and its authorization entries name: the invoked contract,
+/// contract authorizers, and every contract call in every authorized tree.
+fn contracts_in_xdr(envelope: &TransactionEnvelope) -> BTreeSet<String> {
+    fn walk(node: &SorobanAuthorizedInvocation, into: &mut BTreeSet<String>) {
+        if let SorobanAuthorizedFunction::ContractFn(call) = &node.function {
+            if let ScAddress::Contract(_) = call.contract_address {
+                into.insert(address_strkey(&call.contract_address));
+            }
+        }
+        for child in node.sub_invocations.iter() {
+            walk(child, into);
+        }
+    }
+    let invoke = invocation(envelope);
+    let mut contracts = BTreeSet::new();
+    if let HostFunction::InvokeContract(call) = &invoke.host_function {
+        contracts.insert(address_strkey(&call.contract_address));
+    }
+    for entry in invoke.auth.iter() {
+        let address = match &entry.credentials {
+            SorobanCredentials::SourceAccount => None,
+            SorobanCredentials::Address(c) | SorobanCredentials::AddressV2(c) => Some(&c.address),
+            SorobanCredentials::AddressWithDelegates(c) => Some(&c.address_credentials.address),
+        };
+        if let Some(address @ ScAddress::Contract(_)) = address {
+            contracts.insert(address_strkey(address));
+        }
+        walk(&entry.root_invocation, &mut contracts);
+    }
+    contracts
+}
+
 fn call(node: &InvocationNode) -> (&str, &str, &[ArgSummary]) {
     match &node.call {
         AuthorizedCall::Contract {
@@ -278,6 +338,11 @@ fn summarizes(summary: &ArgSummary, value: &ScVal) -> bool {
         (ArgSummary::U64(n), ScVal::U64(m)) => n == m,
         (ArgSummary::U32(n), ScVal::U32(m)) => n == m,
         (ArgSummary::Symbol(text), ScVal::Symbol(symbol)) => *text == symbol.to_utf8_string_lossy(),
+        // The recorder types these five kinds; one of them kept only as raw XDR is a regression.
+        (
+            ArgSummary::Other { .. },
+            ScVal::Address(_) | ScVal::I128(_) | ScVal::U64(_) | ScVal::U32(_) | ScVal::Symbol(_),
+        ) => false,
         (ArgSummary::Other { xdr_base64 }, value) => {
             *xdr_base64 == value.to_xdr_base64(xdr_limits()).unwrap()
         }
@@ -383,9 +448,10 @@ fn the_manifest_names_exactly_the_captured_transactions() {
     }
 }
 
-/// Mainnet now emits meta v4 (protocol 23) for classic and Soroban transactions alike, so it
-/// offers no v3 to capture. The v3 path stays covered by the recorder's synthetic fixtures; this pins that the
-/// real corpus exercises v4 and that nothing in it is a version the recorder refuses.
+/// Mainnet now emits meta v4 (protocol 23) for classic and Soroban transactions alike, so public
+/// RPC, within its retention window, offers no v3 to capture. The v3 path stays covered by the
+/// recorder's synthetic fixtures; this pins that the real corpus exercises v4 and that nothing in
+/// it is a version the recorder refuses.
 #[test]
 fn every_mainnet_meta_is_v4() {
     for case in manifest().keys() {
@@ -399,23 +465,23 @@ fn every_mainnet_meta_is_v4() {
 }
 
 #[test]
-fn a_sac_transfer_records_the_source_account_authorization_and_the_movement() {
+fn a_fee_bumped_sac_transfer_resolves_the_source_account_credential_to_the_inner_source() {
     let case = "sac-transfer-source-account";
     let bundle = recorded(case);
     let envelope = envelope(case);
+    // Fee-bumped on purpose: with two sources in the envelope, only resolving the credential to
+    // the inner transaction's source passes. A plain envelope could not tell the two apart.
+    let TransactionEnvelope::TxFeeBump(bump) = &envelope else {
+        panic!("the case is a fee-bumped transfer");
+    };
+    let fee_source = muxed_strkey(&bump.tx.fee_source);
+    let inner_source = muxed_strkey(&inner(&envelope).source_account);
+    assert_ne!(fee_source, inner_source, "the fee payer is another account");
     let [authorization] = bundle.authorizations.as_slice() else {
         panic!("one authorizer");
     };
     assert_eq!(authorization.credential, CredentialRecord::SourceAccount);
-    // The source-account credential resolves to the transaction's own source — the inner one
-    // when the envelope is a fee bump, never the fee payer.
-    assert_eq!(
-        authorization.authorizer,
-        muxed_strkey(&inner(&envelope).source_account)
-    );
-    if let TransactionEnvelope::TxFeeBump(bump) = &envelope {
-        assert_ne!(authorization.authorizer, muxed_strkey(&bump.tx.fee_source));
-    }
+    assert_eq!(authorization.authorizer, inner_source);
     let (token, function, args) = call(&authorization.root);
     assert_eq!(function, "transfer");
     assert!(authorization.root.sub_invocations.is_empty());
@@ -706,9 +772,10 @@ fn address_v2_credentials_are_recorded_by_arm() {
     }
 }
 
-/// The same raw evidence imported rather than fetched decodes identically but carries the
-/// import's label: `self_supplied` when the result backs the claimed outcome, `incomplete`
-/// without it — never the RPC label, and without the RPC's executable observations.
+/// The same raw evidence imported through `source-bundle` rather than fetched decodes
+/// identically but carries the import's label: `self_supplied` when the result backs the
+/// claimed outcome, `incomplete` without it — never the RPC label, and without the RPC's
+/// executable observations.
 #[test]
 fn the_same_mainnet_evidence_imported_is_labelled_by_its_acquisition() {
     let case = "smart-account-credential";
@@ -716,15 +783,17 @@ fn the_same_mainnet_evidence_imported_is_labelled_by_its_acquisition() {
     let tx = captured(case, "getTransaction");
     let text = |field: &str| tx[field].as_str().unwrap().to_string();
     let import = |result: Option<String>| {
-        EvidenceSnapshot::from_import(
-            MAINNET,
-            text("envelopeXdr"),
-            Some(text("resultMetaXdr")),
-            result,
-            Some(manifest()[case].ledger),
-            Some(text("createdAt").parse().unwrap()),
-            true,
-        )
+        let document = serde_json::to_string(&ImportedBundle {
+            network_passphrase: MAINNET.to_string(),
+            envelope_xdr_base64: text("envelopeXdr"),
+            result_meta_xdr_base64: Some(text("resultMetaXdr")),
+            result_xdr_base64: result,
+            ledger: Some(manifest()[case].ledger),
+            created_at_unix: Some(text("createdAt").parse().unwrap()),
+            successful: true,
+        })
+        .unwrap();
+        import_json(&document).unwrap()
     };
     let imported = record(&import(Some(text("resultXdr"))), RecordOptions::default()).unwrap();
     assert_eq!(imported.trust, TrustLevel::self_supplied());

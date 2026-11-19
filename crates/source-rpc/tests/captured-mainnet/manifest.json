@@ -1,13 +1,40 @@
 {
   "network_passphrase": "Public Global Stellar Network ; September 2015",
   "protocol_version": 29,
+  "scanned": {
+    "rpc": "https://rpc.mainnet.stellar.gateway.fm",
+    "getTransactions": [
+      [
+        65480000,
+        65480027
+      ],
+      [
+        65520000,
+        65520012
+      ],
+      [
+        65550000,
+        65550018
+      ]
+    ],
+    "getEvents": [
+      65431974,
+      65552833
+    ],
+    "events": [
+      "spending_limit_enforced",
+      "simple_enforced",
+      "weighted_enforced",
+      "signer_added"
+    ]
+  },
   "cases": [
     {
       "case": "sac-transfer-source-account",
       "tx_hash": "5f942cf31cd97d658661d1d05f727be0ce4c61ced72ee0b59d4d29ad078e326b",
       "ledger": 65480010,
       "status": "SUCCESS",
-      "covers": "Stellar Asset Contract transfer invoked by a G-account and authorized by the source-account credential"
+      "covers": "Stellar Asset Contract transfer in a fee-bump envelope, authorized by the inner transaction source's source-account credential"
     },
     {
       "case": "classic-address-credential",

@@ -55,14 +55,15 @@ regenerated from their source fixtures and reviewed as a complete derived chain.
 `crates/source-rpc/tests/captured-mainnet/` holds real mainnet transactions, captured on
 protocol 29. Each case directory keeps the unedited `result` of every call `get_transaction`
 makes: `getNetwork`, `getTransaction`, and `getLedgerEntries` for the referenced contract
-instances. `manifest.json` names each case's transaction, ledger and coverage.
+instances. `manifest.json` names each case's transaction, ledger and coverage, and the ledger
+windows the search scanned.
 `crates/source-rpc/tests/mainnet_corpus.rs` replays them through `get_transaction` and `record`.
 It compares every recorded authorizer, invocation tree and authorized argument with the
 envelope's own XDR.
 
 | Case | What the recorder does with it |
 |---|---|
-| `sac-transfer-source-account` | source-account credential resolved to the inner source, not the fee-bump payer; Stellar Asset Contract executable; one typed transfer |
+| `sac-transfer-source-account` | fee-bumped on purpose: the source-account credential resolves to the inner source, never the fee payer; Stellar Asset Contract executable; one typed transfer |
 | `classic-address-credential` | `Address` credential of a G-account that did not submit the transaction |
 | `smart-account-credential` | account built on OpenZeppelin `stellar-accounts` authorizing a call that moves native XLM out of it under a spending-limit policy; its Wasm hash is observed |
 | `nested-auth-tree` | a swap whose authorized root reaches a token transfer; every contract in the tree observed |
@@ -73,17 +74,18 @@ envelope's own XDR.
 | `auth-args-divergence` | `require_auth_for_args`: the authorized arguments are recorded, not the invoked ones |
 | `credential-address-v2` | the protocol-27 `AddressV2` arm, with its nonce and expiration |
 
-The same evidence recorded through the import constructor is `self_supplied` with its
-transaction result and `incomplete` without it.
+The same evidence imported through `source-bundle` is `self_supplied` with its transaction
+result and `incomplete` without it.
 
 Mainnet cannot supply the rest of what architecture §8 lists for this corpus:
 
-- meta v3: mainnet now emits meta v4, introduced in protocol 23, for classic and Soroban
-  transactions alike. The recorder's synthetic fixtures cover v3;
+- meta v3: mainnet has emitted meta v4 since protocol 23, for classic and Soroban transactions
+  alike, so public RPC cannot supply v3 within its retention window. Older history has v3,
+  but only an archive or indexer serves it. The recorder's synthetic fixtures cover v3;
 - operation selection among several invocations: Stellar admits a smart-contract operation only
   as a transaction's single operation. Synthetic envelopes cover selection;
-- `AddressWithDelegates`: none appeared in the ledgers scanned. A synthetic delegate tree covers
-  the arm;
+- `AddressWithDelegates`: none appeared in the windows the manifest records. A synthetic
+  delegate tree covers the arm;
 - `ledger_verified` and `trusted_indexer`: no acquisition path in this tree mints either label.
 
 Public RPC keeps a transaction for about seven days, so a fixture cannot be fetched again
@@ -95,7 +97,15 @@ python3 -I scripts/mainnet-recorder-fixture.py capture picks.json
 ```
 
 `find` scans `getTransactions` from each `--start` (repeatable) and the transactions behind
-OpenZeppelin account events across the retention window. Running `capture` on the committed
-`manifest.json` refreshes the same transactions while they are still retained. The
-`getLedgerEntries` responses are current state, so a refresh changes the observed ledgers.
-Both commands only read: nothing is signed, simulated or submitted.
+OpenZeppelin account events across the retention window. It uses Gateway's public mainnet RPC,
+or `mainnet.sorobanrpc.com` when Gateway's does not answer; `--rpc` names another.
+`capture` replaces the corpus only after every case is stored. Running it on the committed
+`manifest.json` refreshes the same transactions while they are still retained. Both commands
+only read: nothing is signed, simulated or submitted.
+
+A refresh changes more than the anchors. `getLedgerEntries` returns current state, so the
+observed ledgers move. Two endpoints can also return different meta bytes for the same
+transaction: diagnostic events carry node-local timings, and the order of ledger changes in an
+operation can differ. The authorizations and their fingerprints are unchanged, but recording
+hashes are not. When mainnet moves to protocol 30, a refresh must also update
+`CAPTURED_PROTOCOL` in `mainnet_corpus.rs`.

@@ -8,14 +8,20 @@ script does both halves, read-only, against a public mainnet RPC:
   find [--rpc URL] [--start LEDGER ...] [--pages N]
       Scan `getTransactions` (decoded with `xdrFormat: json`) forward from each START, plus
       the transactions behind OpenZeppelin smart-account events (`getEvents`) across the
-      retention window, and print, as JSON, one distinct transaction per corpus case found.
-      Every referenced contract instance must still be live. Nothing is written.
+      retention window, and print, as JSON, one distinct transaction per corpus case found
+      and the ledger windows scanned. Every referenced contract instance must still be live.
+      Nothing is written.
   capture [--rpc URL] SELECTION.json
       For each case in SELECTION (the output of `find`, or the committed manifest, to refresh
       the same transactions while they are retained), store the verbatim `result` of every
       call the recorder's acquisition path makes for it: `getNetwork`, `getTransaction`
       (base64, as `ozpb_source_rpc::get_transaction` asks), and `getLedgerEntries` for the
-      contract instances the transaction references. Then write the manifest.
+      contract instances the transaction references. Then write the manifest. The corpus is
+      replaced only once every case has been captured, so a transaction that has left the
+      endpoint's retention cannot leave a mix of old and new cases behind.
+
+Without --rpc, Gateway's public mainnet RPC is used, and mainnet.sorobanrpc.com if it does
+not answer.
 
 Nothing is signed, simulated or submitted. Every value stored is public ledger data. Run with
 `python3 -I`; it imports only the standard library.
@@ -23,20 +29,22 @@ Nothing is signed, simulated or submitted. Every value stored is public ledger d
 import argparse
 import base64
 import json
+import shutil
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 PASSPHRASE = "Public Global Stellar Network ; September 2015"
-DEFAULT_RPC = "https://mainnet.sorobanrpc.com"
+DEFAULT_RPCS = ["https://rpc.mainnet.stellar.gateway.fm", "https://mainnet.sorobanrpc.com"]
 ROOT = Path(__file__).resolve().parent.parent
 CORPUS = ROOT / "crates/source-rpc/tests/captured-mainnet"
 USER_AGENT = "ozpb-fixture-capture/1"
 
 # Case name -> what the fixture exercises. The order is the manifest's order.
 CASES = {
-    "sac-transfer-source-account": "Stellar Asset Contract transfer invoked by a G-account and authorized by the source-account credential",
+    "sac-transfer-source-account": "Stellar Asset Contract transfer in a fee-bump envelope, authorized by the inner transaction source's source-account credential",
     "classic-address-credential": "invocation authorized by an address credential of an ed25519 (G) account that is not the transaction source",
     "smart-account-credential": "invocation authorized by the address credential of a smart account built on OpenZeppelin stellar-accounts, so its __check_auth ran",
     "nested-auth-tree": "authorization entry whose root invocation has sub-invocations, such as a swap reaching a token transfer",
@@ -64,11 +72,27 @@ def rpc(url, method, params=None):
             break
         except OSError as error:
             if attempt == 3:
-                raise SystemExit(f"{method}: {error}")
+                raise SystemExit(f"{method} at {url}: {error}")
             time.sleep(2 * (attempt + 1))
-    if "error" in reply:
-        raise SystemExit(f"{method}: {reply['error']}")
+        except ValueError as error:
+            raise SystemExit(f"{method} at {url}: the response is not JSON: {error}")
+    if not isinstance(reply, dict) or "error" in reply or "result" not in reply:
+        raise SystemExit(f"{method} at {url}: {reply.get('error', reply) if isinstance(reply, dict) else reply}")
     return reply["result"]
+
+
+def endpoint(requested):
+    """The RPC to use: the one asked for, or the first default that answers as mainnet."""
+    for url in [requested] if requested else DEFAULT_RPCS:
+        try:
+            network = rpc(url, "getNetwork")
+        except SystemExit as error:
+            print(f"skipping {url}: {error}", file=sys.stderr)
+            continue
+        if network.get("passphrase") != PASSPHRASE:
+            raise SystemExit(f"{url} is not mainnet: {network.get('passphrase')}")
+        return url, network
+    raise SystemExit("no mainnet RPC answered")
 
 
 def strkey_payload(address):
@@ -164,7 +188,9 @@ def cases_of(record):
         # The relayer pattern: one party pays the fee, another authorizes the call.
         found["fee-bump-invocation"] = 0 if "address" in arms else 1
     if call and call["function_name"] == "transfer" and arms == ["source_account"]:
-        found["sac-transfer-source-account"] = plain
+        # Fee-bumped, so the case pins that the credential resolves to the inner source and
+        # never to the fee payer.
+        found["sac-transfer-source-account"] = 0 if kind == "tx_fee_bump" else 1
     if arms == ["address"] and authorizers[0].startswith("G") and authorizers[0] != tx["source_account"]:
         found["classic-address-credential"] = plain
     if any(a.startswith("C") for a in authorizers):
@@ -244,15 +270,16 @@ def symbol_topic(name):
 
 
 def oz_transactions(url):
-    oldest = rpc(url, "getHealth")["oldestLedger"]
+    """Transactions carrying OpenZeppelin account events, and the ledger window searched."""
+    start = rpc(url, "getHealth")["oldestLedger"] + 100
     filters = [{"type": "contract", "topics": [[symbol_topic(n), "**"]]} for n in OZ_EVENTS]
-    params = {"startLedger": oldest + 100, "filters": filters, "pagination": {"limit": 1000}}
+    params = {"startLedger": start, "filters": filters, "pagination": {"limit": 1000}}
     hashes = []
     while True:
         page = rpc(url, "getEvents", params)
         hashes += [e["txHash"] for e in page["events"] if e["txHash"] not in hashes]
         if int(page["cursor"].split("-")[0]) >> 32 >= page["latestLedger"]:
-            return hashes
+            return hashes, [start, page["latestLedger"]]
         params = {"filters": filters, "pagination": {"cursor": page["cursor"], "limit": 1000}}
 
 
@@ -273,7 +300,7 @@ PICK_ORDER = [
 
 
 def find(args):
-    url = args.rpc
+    url, _ = endpoint(args.rpc)
     candidates = {}
     scanned = []
 
@@ -296,7 +323,8 @@ def find(args):
                 break
             params = {"pagination": {"cursor": page["cursor"], "limit": 200}, "xdrFormat": "json"}
         scanned.append([start, last])
-    for tx_hash in oz_transactions(url):
+    oz_hashes, event_window = oz_transactions(url)
+    for tx_hash in oz_hashes:
         record = rpc(url, "getTransaction", {"hash": tx_hash, "xdrFormat": "json"})
         record["txHash"] = tx_hash
         consider(record)
@@ -312,7 +340,8 @@ def find(args):
                 used.add(record["txHash"])
                 break
     counts = {case: len(found) for case, found in sorted(candidates.items())}
-    print(json.dumps({"scanned": scanned, "counts": counts, "cases": picks}, indent=2))
+    windows = {"rpc": url, "getTransactions": scanned, "getEvents": event_window, "events": OZ_EVENTS}
+    print(json.dumps({"scanned": windows, "counts": counts, "cases": picks}, indent=2))
 
 
 def write(path, value):
@@ -321,56 +350,62 @@ def write(path, value):
 
 
 def capture(args):
-    url = args.rpc
+    url, network = endpoint(args.rpc)
     selection = json.loads(Path(args.selection).read_text())
     picks = selection["cases"] if isinstance(selection.get("cases"), dict) else {c["case"]: c for c in selection["cases"]}
-    network = rpc(url, "getNetwork")
-    if network["passphrase"] != PASSPHRASE:
-        raise SystemExit(f"{url} is not mainnet: {network['passphrase']}")
-    manifest = []
-    for case in [c for c in CASES if c in picks] + sorted(set(picks) - set(CASES)):
-        tx_hash = picks[case]["tx_hash"]
-        directory = CORPUS / case
-        transaction = rpc(url, "getTransaction", {"hash": tx_hash, "xdrFormat": "base64"})
-        if transaction["status"] == "NOT_FOUND":
-            raise SystemExit(f"{case}: {tx_hash} is outside this endpoint's retention")
-        decoded = rpc(url, "getTransaction", {"hash": tx_hash, "xdrFormat": "json"})
-        write(directory / "getNetwork.json", network)
-        write(directory / "getTransaction.json", transaction)
-        contracts = referenced_contracts(decoded["envelopeJson"])
-        entries = directory / "getLedgerEntries.json"
-        if contracts:
+    staging = Path(tempfile.mkdtemp(prefix=".captured-mainnet-", dir=CORPUS.parent))
+    try:
+        manifest = []
+        for case in [c for c in CASES if c in picks] + sorted(set(picks) - set(CASES)):
+            tx_hash = picks[case]["tx_hash"]
+            transaction = rpc(url, "getTransaction", {"hash": tx_hash, "xdrFormat": "base64"})
+            if transaction["status"] == "NOT_FOUND":
+                raise SystemExit(f"{case}: {tx_hash} is outside this endpoint's retention; the corpus is unchanged")
+            decoded = rpc(url, "getTransaction", {"hash": tx_hash, "xdrFormat": "json"})
+            write(staging / case / "getNetwork.json", network)
+            write(staging / case / "getTransaction.json", transaction)
+            contracts = referenced_contracts(decoded["envelopeJson"])
             if len(contracts) > 200:
                 raise SystemExit(f"{case}: {len(contracts)} instances need batching; pick another transaction")
-            write(entries, rpc(url, "getLedgerEntries", {"keys": [instance_key(c) for c in contracts], "xdrFormat": "base64"}))
-        elif entries.exists():
-            entries.unlink()
-        item = {
-            "case": case,
-            "tx_hash": tx_hash,
-            "ledger": transaction["ledger"],
-            "status": transaction["status"],
-            "covers": CASES.get(case, picks[case].get("covers", "")),
-        }
-        manifest.append(item)
-        print(f"{case}: {tx_hash} ledger {transaction['ledger']} {transaction['status']}", file=sys.stderr)
-    write(
-        CORPUS / "manifest.json",
-        {"network_passphrase": PASSPHRASE, "protocol_version": network["protocolVersion"], "cases": manifest},
-    )
+            if contracts:
+                keys = [instance_key(c) for c in contracts]
+                write(staging / case / "getLedgerEntries.json", rpc(url, "getLedgerEntries", {"keys": keys, "xdrFormat": "base64"}))
+            manifest.append(
+                {
+                    "case": case,
+                    "tx_hash": tx_hash,
+                    "ledger": transaction["ledger"],
+                    "status": transaction["status"],
+                    "covers": CASES.get(case, picks[case].get("covers", "")),
+                }
+            )
+            print(f"{case}: {tx_hash} ledger {transaction['ledger']} {transaction['status']}", file=sys.stderr)
+        header = {"network_passphrase": PASSPHRASE, "protocol_version": network["protocolVersion"]}
+        if "scanned" in selection:
+            # Where `find` looked, so a case it did not find can be looked for again.
+            header["scanned"] = selection["scanned"]
+        write(staging / "manifest.json", {**header, "cases": manifest})
+        # Swap only now: a case no longer picked leaves with the old corpus.
+        retired = CORPUS.with_name(staging.name + "-old")
+        if CORPUS.exists():
+            CORPUS.rename(retired)
+        staging.rename(CORPUS)
+        shutil.rmtree(retired, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     finder = sub.add_parser("find")
-    finder.add_argument("--rpc", default=DEFAULT_RPC)
+    finder.add_argument("--rpc", help="mainnet RPC URL (default: Gateway's, then mainnet.sorobanrpc.com)")
     finder.add_argument("--start", type=int, action="append", help="first ledger of a window to scan; repeatable (default: latest - 2000)")
     finder.add_argument("--pages", type=int, default=40, help="getTransactions pages of 200 per window")
     finder.add_argument("--max-bytes", type=int, default=150_000, help="skip larger decoded transactions")
     finder.add_argument("--verify", type=int, default=8, help="candidates per case checked for live instances")
     capturer = sub.add_parser("capture")
-    capturer.add_argument("--rpc", default=DEFAULT_RPC)
+    capturer.add_argument("--rpc", help="mainnet RPC URL (default: Gateway's, then mainnet.sorobanrpc.com)")
     capturer.add_argument("selection")
     args = parser.parse_args()
     find(args) if args.command == "find" else capture(args)
