@@ -199,8 +199,14 @@ vocabulary to stay compatible with, not a finalized standard we are in breach of
 
 **What we have.** The generated crate root emits three `contractmeta!` entries, shown above:
 `ozpb_generator` (the generator and its codegen version), `ozpb_template_family`, and
-`ozpb_codegen_input` (the normalized codegen-input hash). A reader with the spec can recompute the
-last one and knows which generator to regenerate it with, using standard tooling alone. The keys
+`ozpb_codegen_input` (the normalized codegen-input hash). `stellar contract info meta` reads all
+three. Recomputing `ozpb_codegen_input` from a spec is not a standard-tooling operation: it needs
+`ozpb`, or a reimplementation of the normalization and canonical hash that
+[`CANONICAL-HASHING.md`](CANONICAL-HASHING.md#the-normalized-codegen-input) specifies. The entries
+are also self-asserted — any contract can carry the same three strings — so they state what an
+artifact claims to be. Only reproduction establishes where it came from: `ozpb verify`, or
+generated-binding recognition, which rebuilds the artifact from its spec and compares code hashes.
+The keys
 are namespaced because no standard key fits: SEP-46 defines no registry and leaves keys to other
 SEPs; SEP-55's `source_repo` would send a verifier looking for a build attestation of this Wasm
 that no repository holds; SEP-58's fields are taken up below.
@@ -255,9 +261,10 @@ one instead of an asserted one.
 invent.** Our artifacts are **readable** by standard tooling — `stellar contract info meta` shows
 the SEP-46 keys the toolchain writes itself (`rsver`/`cliver`/`rssdkver`) and the generator's
 three, and anyone can compute the wasm hash. What they do not carry is the spec they were
-derived from, nor the fields either verification SEP needs. So a reader holding a spec can check
-"this Wasm is this grant shape from this generator" with standard tooling, and the full link
-"artifact ↔ specification" only with our `BuildManifest` and our CLI.
+derived from, nor the fields either verification SEP needs. So standard tooling shows what an
+artifact claims about its origin. Checking that claim — that this Wasm is this grant shape from
+this generator, and the full link "artifact ↔ specification" — needs our CLI, which reproduces
+the artifact.
 
 Nothing requires otherwise. No SEP obliges a contract to write meta of its own; both
 verification SEPs are Draft and no released `stellar-cli` implements either; neither the RFP this

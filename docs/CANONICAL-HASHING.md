@@ -197,6 +197,31 @@ keys. So a struct field name was checked and an enum variant tag inside a `Vec` 
 implementation that skips this check can produce an `ScVal` no host would accept, whose bytes
 still hash.
 
+### The normalized codegen input
+
+`ozpb:v1:codegen-input` hashes `NormalizedInput` (`crates/codegen/src/lib.rs`), the only part of
+a rule that may change emitted bytes. Its value is what a generated policy states as
+`ozpb_codegen_input` in its contract meta, and it is a named struct with these fields, encoded by
+the ordinary rules:
+
+| Field | Value |
+|---|---|
+| `codegen_version` | `U32`, currently 1 |
+| `template_family` | the rule's generated-policy family, e.g. `policy-templates/scope@1` |
+| `target` | the rule's `context.contract` strkey, as a string |
+| `valid_until` | the rule's `valid_until.ledger`, as an `Option` of `U32` |
+| `predicate` | `authorization.kind` as the spec serializes it: `any_of`, `all_of`, `{"threshold": {"n": …}}`, `any_of_current_rule_signers` |
+| `strict_signer_set` | `authorization.strict_signer_set` |
+| `signers` | `authorization.signers`, sorted by `SignerSpec`'s derived order (`delegated` before `external`, then field by field) |
+| `calls` | `allowed_calls` in spec order, each a struct of `fn_name` and `args`: the call's arguments in spec order, each the tuple `(index, constraint)` with the constraint as the spec serializes it |
+| `state` | the rule's `state` entries in spec order |
+
+Everything else in the specification is excluded: its name, network, account, registry snapshot,
+rationale and evidence, the rule's other policies, and each call's justification and each
+argument's provenance. That exclusion is what lets one grant
+shape compile to one Wasm. Recomputing the value therefore needs the specification and these
+rules; the meta entry alone proves nothing about where an artifact came from.
+
 ### Types that are built as `ScVal` directly
 
 Two preimages are not derived from a Rust type through serde, because their inputs are already
