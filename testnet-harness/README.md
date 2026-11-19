@@ -91,6 +91,11 @@ node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run --write
 preserves the previous summary; an output symlink is replaced without writing to its target.
 Without `--write`, the command prints the summary to stdout.
 
+The summary's `schema_version` is 2: a Soroswap run's `operator_decisions` now also carry the
+decisions file's `schema` and `transfer_cap_no_floor_acknowledged`. A reader takes 1 and 2 alike,
+the fields absent from 1; the summaries committed under `docs/evidence/` were written at 1 and
+stay as written.
+
 Old runs say provenance is unavailable. A missing install record means installation was not
 recorded, not that nothing was submitted. Permits carry submitted transaction hashes; denials
 are labeled enforcing simulations and have no transaction hash. Artifact digests cover exact

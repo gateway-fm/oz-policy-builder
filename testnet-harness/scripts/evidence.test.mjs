@@ -1710,6 +1710,13 @@ test('v2 deadline evidence exports the exact cutoff and both policy denials', (t
     assert.equal(step.result, 'verified_denial'); assert.equal(step.code, 6);
   }
 });
+test('the summary is schema version 2: version 1 lacked the operator decisions\' schema and floor acknowledgement', (t) => {
+  // Committed docs/evidence summaries stay as written, at version 1; the shape only grew.
+  const report = exportEvidence(exactDeadlineEvidence(t));
+  assert.equal(report.schema_version, 2);
+  assert.deepEqual(Object.keys(report.walkthrough.operator_decisions).filter((k) => ['schema', 'transfer_cap_no_floor_acknowledged'].includes(k)),
+    ['schema', 'transfer_cap_no_floor_acknowledged']);
+});
 test('v3 decisions export their schema and the transfer cap\'s accepted open floor; v3 without it is refused', (t) => {
   const v3 = ({ run }) => {
     const d = run.walkthrough.operator_decisions;

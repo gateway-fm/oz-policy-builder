@@ -887,7 +887,9 @@ export function exportEvidence(runDir) {
       && artifacts[`policy_wasm_rule_${index}`].sha256 !== entry.wasm_hash) fail();
   }
   return {
-    schema_version: 1,
+    // 2: a W3 walkthrough's operator_decisions gained `schema` and
+    // `transfer_cap_no_floor_acknowledged`. Version 1 summaries are otherwise the same shape.
+    schema_version: 2,
     evidence_kind: 'local_harness_record',
     limitations: [
       'Local files can be edited; this summary is not authenticated ledger evidence or a milestone verdict.',
