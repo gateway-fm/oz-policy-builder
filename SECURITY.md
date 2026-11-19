@@ -16,7 +16,31 @@ spec describes, a validator that accepts a spec codegen cannot render safely, an
 label a caller can raise, or a registry snapshot that widens a capability are all in scope
 and all interesting.
 
-We will acknowledge a report and tell you what we think of it. There is no bounty.
+There is no bounty.
+
+## After a report
+
+During the grant period — through Tranche 3, after which there is no committed maintenance
+([architecture §10, Maintenance](docs/architecture.md#10-delivery-plan)) — the maintainers handle a
+report in these steps, on a best-effort basis and with no promised response times:
+
+1. **Acknowledge** it in the private advisory and say whether we can reproduce it.
+2. **Assess** it with you: whether it is in scope, what a caller gains, and which releases and
+   fielded artifacts it reaches — generated policies, registry entries, the wallet integration.
+3. **Fix** it privately, in the advisory's temporary private fork, with a test that fails before
+   the fix, and release it in the latest release line ([Supported versions](#supported-versions)).
+4. **Revoke** whatever the defect makes untrustworthy that has a registry entry — a template
+   family, a reviewed policy, an account or verifier build, a target adapter — in a signed
+   registry successor ([revocation](docs/REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal)).
+5. **Disclose** in coordination with you: publish the GitHub security advisory, saying what users
+   must do, and an entry in the release notes (`docs/release-notes/`). You are credited there if
+   you want to be.
+
+A defect in an upstream component — OpenZeppelin `stellar-contracts`, the Soroban SDK or host,
+`stellar-cli` — goes to its maintainers through their own channel and is handled here as an
+[upstream advisory](#upstream-advisories). What users and operators do when a policy, account or
+registry entry they rely on is affected, during the grant and after it, is
+[incident response](docs/INCIDENT-RESPONSE.md).
 
 ## What this milestone does and does not claim
 
@@ -89,7 +113,16 @@ not upgraded in place: recreate them from the current code. Execution and the wa
 the pinned code whatever the floor. Details are in
 [`docs/SOROBAN-DEPENDENCIES.md`](docs/SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc).
 
+When a fixed upstream release cannot be adopted yet, as for RUSTSEC-2026-0387, the exposure is
+accepted explicitly, with a reviewed scope and an expiry
+([`docs/SECURITY-EXCEPTIONS.md`](docs/SECURITY-EXCEPTIONS.md)). The
+[incident-response guide](docs/INCIDENT-RESPONSE.md#d-an-upstream-advisory) walks through the
+advisory above as a worked example.
+
 ## Supported versions
 
-One milestone is implemented so far, and later ones land in this same repository. Fixes go on
-`main`; there are no maintained release branches, and no backports.
+The first two milestones are delivered in this repository, and later ones land in it too. During
+the grant period the latest release line is supported: fixes go on `main` and into its next
+release. There are no maintained release branches and no backports to earlier releases. After the
+grant period no version is supported; the code stays open source for anyone to run, fork or
+maintain.
