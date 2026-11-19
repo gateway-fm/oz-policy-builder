@@ -461,9 +461,38 @@ test('mainnet: the spend cap counts every fee sent from this work root, not only
   assert.equal(f.network.spentStroops, '5100000');
   await f.network.fundPayer();
   await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'install-policy'), (error) => error.reason === 'spend_cap');
+  // Past serial 9999 the names grow a digit; those entries count too.
+  intended('wallet-session-other', '10000', 700_000);
+  assert.equal(journaledSpend(workRoot, MAINNET), '5800000');
   // An entry from another network, or one that does not decode, refuses: the work root cannot be accounted.
   intended('wallet-session-wrong', '0001', 100, WALLET_NETWORKS.testnet.networkId);
   assert.throws(() => journaledSpend(workRoot, MAINNET), (error) => /journal/.test(error.startup));
+});
+
+test('mainnet: a final journal entry a crash left truncated is counted at the largest cap, never as nothing', async (t) => {
+  const { journaledSpend } = await import('../server/network.mjs');
+  const workRoot = scratch(t, 'wallet-work-truncated-');
+  const journal = join(workRoot, 'wallet-session-crashed', 'journal');
+  mkdirSync(journal, { recursive: true, mode: 0o700 });
+  const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), '7'), { fee: '1200000', networkPassphrase: Networks.PUBLIC })
+    .addOperation(Operation.bumpSequence({ bumpTo: '9' })).setTimeout(60).build();
+  const whole = JSON.stringify({ stage: 'deploy-policy', hash: 'a'.repeat(64), networkId: MAINNET.networkId,
+    envelopeXdr: tx.toEnvelope().toXDR('base64'), status: 'submission_unknown' });
+  writeFileSync(join(journal, '0001.intended.json'), whole, { mode: 0o600 });
+  writeFileSync(join(journal, '0001.confirmed.json'), '{}', { mode: 0o600 });
+  // The process stopped while writing the next intended entry: whether that transaction left is unknown.
+  writeFileSync(join(journal, '0002.intended.json'), whole.slice(0, 40), { mode: 0o600 });
+  const caps = { maxFeeStroops: 10_000_000, maxUploadFeeStroops: 200_000_000 };
+  assert.equal(journaledSpend(workRoot, MAINNET, caps), String(1_200_000 + 200_000_000));
+  // An empty final entry is the same case.
+  writeFileSync(join(journal, '0002.intended.json'), '', { mode: 0o600, flag: 'w' });
+  assert.equal(journaledSpend(workRoot, MAINNET, caps), String(1_200_000 + 200_000_000));
+  // Anything after it means it was not the last write: an unreadable entry in the middle still refuses.
+  writeFileSync(join(journal, '0003.intended.json'), whole, { mode: 0o600 });
+  assert.throws(() => journaledSpend(workRoot, MAINNET, caps), (error) => /journal/.test(error.startup));
+  rmSync(join(journal, '0003.intended.json'));
+  writeFileSync(join(journal, '0002.submitted.json'), '{}', { mode: 0o600 });
+  assert.throws(() => journaledSpend(workRoot, MAINNET, caps), (error) => /journal/.test(error.startup), 'a later phase of the same entry');
 });
 
 test('readiness probes whether the endpoint returns diagnostic events, which the live check and removal need', async () => {
@@ -485,6 +514,21 @@ test('a simulation answer without diagnostic events is its own reason, from the 
   const { NETWORK_REASONS } = await import('../server/network.mjs');
   const { REFUSAL_REASONS } = await import('../server/http.mjs');
   assert.ok(NETWORK_REASONS.includes('no_diagnostic_events') && REFUSAL_REASONS.has('no_diagnostic_events'));
+});
+
+test('mainnet: once this session has installed a grant, using it keeps room only for its removal', async (t) => {
+  const fees = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 14_000 };
+  // No installation yet: a step keeps room for one and for its removal (4000 + 4000 + 2 × 4500 > 14000).
+  const before = mainnet(t, { fee: 4_000, fees, spent: '4000' });
+  await before.network.fundPayer();
+  await assert.rejects(() => before.network.submitEnvelope(contractCall(before.network.payerAddress), 'use-grant'),
+    (error) => error.reason === 'spend_cap');
+  // Installed in this session: the use needs room only for the removal (4000 + 4000 + 4500 = 12500).
+  const after = mainnet(t, { fee: 4_000, fees });
+  await after.network.fundPayer();
+  await after.network.submitEnvelope(contractCall(after.network.payerAddress), 'install-policy');
+  await after.network.submitEnvelope(contractCall(after.network.payerAddress), 'use-grant');
+  assert.equal(after.network.spentStroops, '8000');
 });
 
 test('mainnet: removal is never blocked by the session cap, and every other step leaves room for an installation and a removal', async (t) => {

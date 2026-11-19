@@ -830,7 +830,7 @@ export class WalletController {
       if (!wallet) throw refused();
       const result = await this.#request('account-rules', { wallet });
       if (!Array.isArray(result?.rules) || result.rules.some((rule) => !Number.isSafeInteger(rule?.id) || typeof rule.xdr !== 'string'
-        || typeof rule.owner !== 'boolean')) throw refused();
+        || typeof rule.owner !== 'boolean' || typeof rule.grant !== 'boolean' || (rule.owner && rule.grant))) throw refused();
       this.#set({ accountRules: result, earlierRevokePreview: null });
     });
   }
@@ -841,7 +841,8 @@ export class WalletController {
       const { wallet, accountRules } = this.#state;
       const listed = accountRules?.rules?.find((rule) => rule.id === ruleId);
       const owner = accountRules?.rules?.find((rule) => rule.owner);
-      if (!wallet || !listed || listed.owner || !owner) throw refused();
+      // Only a grant-shaped rule is offered; the validators check its bytes again (shared/revoke.mjs isGrantRule).
+      if (!wallet || !listed || listed.owner || !listed.grant || !owner) throw refused();
       const status = await this.#status();
       const started = this.#started();
       const result = await this.#request('prepare-earlier-revoke', { wallet, ruleId });

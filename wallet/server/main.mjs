@@ -50,7 +50,7 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const journalRoot = join(toolchain.sessionRoot, 'journal');
   mkdirSync(journalRoot, { mode: 0o700 });
   // On mainnet the spend cap counts what earlier sessions in this (network-bound) work root sent.
-  const spentStroops = config.network.friendbot ? '0' : journaledSpend(config.workRoot, config.network);
+  const spentStroops = config.network.friendbot ? '0' : journaledSpend(config.workRoot, config.network, config.fees);
   const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees,
     spentStroops });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;

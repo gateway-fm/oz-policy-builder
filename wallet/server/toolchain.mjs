@@ -34,6 +34,17 @@ export const REGISTRY_MONITOR = Object.freeze({
 });
 const unverifiable = () => freezeCopy({ status: REGISTRY_MONITOR[1].status, exit: 1, meaning: REGISTRY_MONITOR[1].meaning,
   action: REGISTRY_MONITOR[1].action });
+/**
+ * The registry faults `ozpb registry monitor` names when the published log does not verify against the
+ * checkpoint (its exit 1 with one of these leading its standard error): the incident.
+ */
+const REGISTRY_FAULTS = ['E_REGISTRY_SIGNATURE', 'E_REGISTRY_TRANSPARENCY', 'E_REGISTRY_ROLLBACK', 'E_REGISTRY_PARSE',
+  'E_REGISTRY_SCHEMA', 'E_REGISTRY_NETWORK'];
+/** The monitor gave no verdict: the CLI is missing, timed out, refused its trust files, or failed on anything but the log. */
+export const MONITOR_UNAVAILABLE = Object.freeze({ status: 'monitor_unavailable',
+  meaning: 'the registry monitor did not run to a verdict, so the published log is not being watched',
+  action: 'check the operator configuration (the CLI, registryPublishedPath and the registry trust files), then run the monitor again' });
+const unavailable = () => freezeCopy({ ...MONITOR_UNAVAILABLE });
 
 /** Keeps only that refusal's code from an error a catch-all would otherwise discard. */
 const rootPolicy = (error) => (error?.code === REGISTRY_ROOT_POLICY ? REGISTRY_ROOT_POLICY : undefined);
@@ -260,8 +271,10 @@ export class WalletToolchain {
   /**
    * `ozpb registry monitor` against the operator's published registry log (`registryPublishedPath`)
    * and the checkpoint in the pinned roots, watching `wasmHashes`: `{ status, exit, meaning, action,
-   * headVersion, expiresAtUnix, revoked }`, or `{ status: 'not_configured' }`. A log that cannot be
-   * verified, or a report whose status disagrees with its exit status, is `log_unverifiable`.
+   * headVersion, expiresAtUnix, revoked }`, or `{ status: 'not_configured' }`. A log the CLI says
+   * cannot be verified (exit 1 naming a registry fault), or a report whose status disagrees with its
+   * exit status, is `log_unverifiable`: an incident. A run that reached no verdict (no CLI, a timeout,
+   * a refused root policy, any other failure) is `monitor_unavailable`.
    */
   async registryMonitor({ wasmHashes }) {
     if (this.#config.registryPublishedPath === null) return freezeCopy({ status: 'not_configured' });
@@ -271,8 +284,9 @@ export class WalletToolchain {
       ...wasmHashes.flatMap((h) => ['--wasm-hash', h])];
     let ran;
     try {
-      ran = await this.#runner(this.#config.executable, args, { env: this.#config.buildEnvironment, timeoutMs: 120_000, statuses: [3, 4, 5, 6, 7] });
-    } catch { return unverifiable(); }
+      ran = await this.#runner(this.#config.executable, args, { env: this.#config.buildEnvironment, timeoutMs: 120_000,
+        statuses: [3, 4, 5, 6, 7], codes: REGISTRY_FAULTS });
+    } catch (error) { return REGISTRY_FAULTS.includes(error?.code) ? unverifiable() : unavailable(); }
     try {
       const known = REGISTRY_MONITOR[ran?.status];
       const report = parseJsonExact(ran.output);

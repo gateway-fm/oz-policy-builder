@@ -61,7 +61,7 @@ optimizer from reusing the upstream SDK 16 bundle for SDK 17 validators.
 The Vite development server binds to `127.0.0.1:3000`, with a same-origin proxy for
 `/api/policy-builder` to the testnet backend on `127.0.0.1:4317`. The production preview server
 (`vite preview`) binds to the same address and proxies to the mainnet backend on
-`127.0.0.1:4318` instead; see [Mainnet sessions](#mainnet-sessions). Open the UI through
+`127.0.0.1:4318` instead, for a build made for mainnet only; see [Mainnet sessions](#mainnet-sessions). Open the UI through
 `http://localhost:3000`: Chrome requires the `localhost` domain for WebAuthn registration
 and rejects the numeric IP as a relying-party domain.
 Open the backend's session launch URL. Its bearer credential is read once from the fragment,
@@ -194,10 +194,13 @@ VITE_OZPB_NETWORK=mainnet pnpm build
 VITE_OZPB_NETWORK=mainnet pnpm exec vite preview
 ```
 
-The mainnet backend listens on `127.0.0.1:4318`, which only the preview server proxies to: the
-development server proxies to the testnet port alone, and the page itself refuses a mainnet launch
-URL unless it is a production build made with `VITE_OZPB_NETWORK=mainnet` (and a testnet one in a
-mainnet build). A mainnet build serves the Policy Builder alone: it shows no upstream navigation,
+The mainnet backend listens on `127.0.0.1:4318`, which only the preview server proxies to, and only
+for a build made for mainnet: every build writes the network it was made for into its client output
+(`ozpb-build-network.txt`, from the same resolved env its `import.meta.env` is made from), and the
+preview proxy forwards only when that record says exactly `mainnet`, whatever the shell running
+`vite preview` sets. The development server proxies to the testnet port alone, and the page itself
+refuses a mainnet launch URL unless it is a production build made with `VITE_OZPB_NETWORK=mainnet`
+(and a testnet one in a mainnet build). A mainnet build serves the Policy Builder alone: it shows no upstream navigation,
 refuses every other route, and the upstream server functions that sign, relay, deploy or store
 refuse before they do anything. What the overlay takes from upstream, and what a mainnet session
 does with each:
@@ -260,11 +263,15 @@ for a policy Wasm upload, `maxUploadFeeStroops` (default 12 XLM), and to `sessio
 whole fee each sent transaction may be charged, whatever a receipt later reports, so that an RPC
 cannot give back budget. Fees actually charged are usually lower. A new session starts from the fees
 its work root's earlier session journals recorded as intended, so restarting the backend gives no
-budget back; a journal that cannot be read for its fees refuses startup. To start again from zero,
-use a new work root. A removal (`revoke-policy`) is exempt from the session cap, though not from the
+budget back. A session's last journal entry that is not JSON at all is what a crash while writing
+it leaves, and whether that transaction left is then unknown: it is counted as the most one
+transaction may cost under this configuration (the larger of `maxFeeStroops` and
+`maxUploadFeeStroops`), never as nothing. Any other entry that cannot be read for its fees refuses
+startup; look its transaction up by the fee payer's history, and to start again from zero use a new
+work root. A removal (`revoke-policy`) is exempt from the session cap, though not from the
 per-transaction cap, and every other transaction must leave room under the session cap for one
-installation and one removal (an installation, for one removal), so the cap never stops a grant
-from being taken back. Either cap refuses before signing
+installation and one removal, or only for the removal when it is an installation or this session
+already has one, so the cap never stops a grant from being taken back. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). The defaults are conservative and each cap stays under its ceiling
 (1 XLM, 50 XLM and 50 XLM), with the upload cap at most the session cap. A policy upload on mainnet
 can cost more than the default upload cap (18.78 XLM simulated on protocol 29), so the operator sets
@@ -838,9 +845,13 @@ entries, then review again.
 
 `prepare-earlier-revoke` takes the attached wallet and a rule ID. The backend reads the account's
 rules (`NextId`, then every `ContextRuleData` below it, in one request that must agree with
-`Count`), finds this wallet's owner rule among them, and refuses the owner rule itself, any rule
-naming the owner's passkey and a rule this session installed (use **Prepare revocation** for
-that). It then reads the pinned account and verifier code, the owner rule and the rule within one
+`Count`, and must hold no entry it did not ask for), finds this wallet's owner rule among them, and
+removes only a rule shaped as a grant: a `CallContract` context, one contract's calls, limited by at
+least one policy, as every grant this wallet installs is. It refuses the owner rule itself, any rule
+naming the owner's passkey, a `Default`-context rule or one with no policy (which may be the
+owner's recovery or admin access), and a rule this session installed (use **Prepare revocation**
+for that). The page lists every rule but offers removal only for grant-shaped ones, and the browser
+checks the shape again before the passkey. It then reads the pinned account and verifier code, the owner rule and the rule within one
 ledger window, exactly as for an in-session removal, and binds the removal approval to the rule's
 current bytes in place of an installation transaction. The consent statement, which the browser
 derives itself, shows the rule as stored now and says that this session did not install it.
@@ -851,7 +862,8 @@ most once per session, and `status` lists these removals as `earlierRemovals`.
 
 On mainnet a removal is never stopped by the session spend cap; only the per-transaction cap
 applies to it. Every other transaction keeps room under the session cap for one installation and
-one removal, and an installation for its removal, so the cap can always pay to take a grant back.
+one removal, and an installation, or any step once this session has one, for its removal, so the
+cap can always pay to take a grant back.
 
 ## Using the grant
 
@@ -1136,7 +1148,12 @@ by its reproduced build, not by a registry entry, so it is not watched). The res
 from the grant's: `current` (exit 0), `newer_version` (3), `not_yet_valid` (7), `expires_soon` (4),
 `expired` (5) or `revoked` (6), each with what to do as
 [the governance guide](REGISTRY-GOVERNANCE.md#monitoring) tabulates it, and `log_unverifiable`
-(exit 1, or a report that contradicts its exit status), which is an incident. A revoked account or
+(exit 1 with a registry verification fault leading the CLI's error: `E_REGISTRY_SIGNATURE`,
+`E_REGISTRY_TRANSPARENCY`, `E_REGISTRY_ROLLBACK`, `E_REGISTRY_PARSE`, `E_REGISTRY_SCHEMA` or
+`E_REGISTRY_NETWORK`; or a report that contradicts its exit status), which is an incident. A run
+that reached no verdict (the CLI missing, a timeout, a refused root policy, an unreadable
+published path or any other failure) is `monitor_unavailable`: the log is not being watched until
+the configuration is fixed and the monitor runs again. A revoked account or
 verifier is not fixed by revoking the grant; follow
 [revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal).
 Without that path the registry part reports `not_configured`.

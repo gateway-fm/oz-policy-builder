@@ -22,7 +22,7 @@ const instanceVal = (storage, wasm = Buffer.alloc(32, 9)) => xdr.ScVal.scvContra
   storage: Object.entries(storage).map(([name, n]) => new xdr.ScMapEntry({ key: keyed(name), val: xdr.ScVal.scvU32(n) })) }));
 const same = (a, b) => a.toXDR('base64') === b.toXDR('base64');
 
-function fixture(t, { entries = () => [], fetchImpl, latest = 500 } = {}) {
+function fixture(t, { entries = () => [], fetchImpl, latest = 500, unrequested = () => [] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wallet-live-network-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const requests = [];
@@ -32,7 +32,8 @@ function fixture(t, { entries = () => [], fetchImpl, latest = 500 } = {}) {
     getLedgerEntries: async (...keys) => {
       requests.push(keys);
       const all = entries(requests.length);
-      return { latestLedger: latest + requests.length, entries: keys.flatMap((key) => all.filter((e) => same(e.key, key))) };
+      return { latestLedger: latest + requests.length, entries: [...keys.flatMap((key) => all.filter((e) => same(e.key, key))),
+        ...unrequested(requests.length)] };
     },
   };
   const calls = [];
@@ -110,6 +111,20 @@ test('live state reads NextId, Count, every rule and the candidate marker, twice
   assert.equal((await fixture(t, { entries: world(2, true) }).network.liveState({ account: ACCOUNT, policy: POLICY, ruleId: 2 })).installed, true);
   await assert.rejects(() => fixture(t, { entries: world(3) }).network.liveState({ account: ACCOUNT, policy: POLICY, ruleId: 2 }), /refused/,
     'NextId moved between the two reads');
+});
+
+test('the account\'s rules are read as requested, and an entry for a key not asked for refuses the read', async (t) => {
+  const instanceKey = dataKey(ACCOUNT, xdr.ScVal.scvLedgerKeyContractInstance());
+  const rule = (id) => dataKey(ACCOUNT, keyed('ContextRuleData', xdr.ScVal.scvU32(id)));
+  const world = () => [
+    entry(instanceKey, dataVal(ACCOUNT, xdr.ScVal.scvLedgerKeyContractInstance(), instanceVal({ NextId: 2, Count: 2 }))),
+    entry(rule(0), dataVal(ACCOUNT, keyed('ContextRuleData', xdr.ScVal.scvU32(0)), xdr.ScVal.scvString('owner'))),
+    entry(rule(1), dataVal(ACCOUNT, keyed('ContextRuleData', xdr.ScVal.scvU32(1)), xdr.ScVal.scvString('grant'))),
+  ];
+  const read = await fixture(t, { entries: world }).network.accountRules(ACCOUNT);
+  assert.deepEqual(read.rules.map((r) => r.id), [0, 1]);
+  const stray = entry(rule(5), dataVal(ACCOUNT, keyed('ContextRuleData', xdr.ScVal.scvU32(5)), xdr.ScVal.scvString('stray')));
+  await assert.rejects(() => fixture(t, { entries: world, unrequested: (n) => (n === 2 ? [stray] : []) }).network.accountRules(ACCOUNT), /refused/);
 });
 
 test('the delegate account is created through Friendbot only when missing, and must sign with its master key alone', async (t) => {

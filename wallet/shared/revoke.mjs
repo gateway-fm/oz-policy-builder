@@ -62,6 +62,20 @@ export function isOwnerRule(wallet, ruleId, raw) {
   try { ownerRuleMatches(wallet, ruleId, raw); return true; } catch { return false; }
 }
 
+/**
+ * Whether stored rule `ruleId` is shaped as a grant: one contract's calls (a `CallContract` context)
+ * limited by at least one policy, as every grant this wallet installs is. A `Default`-context rule,
+ * or one with no policy, may be the owner's recovery or admin access, so an earlier session's
+ * removal never takes it.
+ */
+export function isGrantRule(raw, ruleId) {
+  try {
+    const rule = decodeRule(raw, ruleId);
+    return Array.isArray(rule.context) && rule.context[0] === 'CallContract' && StrKey.isValidContract(rule.context[1])
+      && rule.policies.length >= 1;
+  } catch { return false; }
+}
+
 /** A stored rule as the page shows it (`decodeRule`), or null when its bytes are not rule `ruleId`. */
 export function ruleSummary(raw, ruleId) {
   try { return freezeCopy(decodeRule(raw, ruleId)); } catch { return null; }
@@ -89,8 +103,8 @@ export function removalConfigurationChange(change, ruleId) {
  * The removal approval: the wallet's own owner rule and passkey, bound to one installation: a
  * recorded one (account, rule ID, installation transaction), or one installed by an earlier session,
  * which this backend holds no record of (account, rule ID and the rule's exact current bytes, read
- * from the account, with no transaction). Such a rule must not be the owner rule nor name the
- * owner's passkey. Its commitment is what the signature checks compare.
+ * from the account, with no transaction). Such a rule must be shaped as a grant (`isGrantRule`), and
+ * must not be the owner rule nor name the owner's passkey. Its commitment is what the signature checks compare.
  */
 export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null, networkId }) {
   try {
@@ -105,7 +119,8 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
     ownerRuleMatches(wallet, ownerRuleId, ownerRuleXdr);
     if (earlier) {
       decodeRule(installation.ruleXdr, installation.ruleId);
-      if (installation.ruleXdr === ownerRuleXdr || namesOwner(wallet, installation.ruleXdr)) refuse();
+      if (installation.ruleXdr === ownerRuleXdr || namesOwner(wallet, installation.ruleXdr)
+        || !isGrantRule(installation.ruleXdr, installation.ruleId)) refuse();
     }
     const changed = configurationChange === null ? null : removalConfigurationChange(configurationChange, installation.ruleId);
     const preimage = ['wallet-revoke/v1', network.networkId, wallet.contractId, wallet.verifier,

@@ -5,11 +5,14 @@
 // constant. The patch is checked as text here and applied to the pinned upstream revision by
 // scripts/apply-pollywallet.py; the behaviour of the guard it calls is checked directly.
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { UPSTREAM_DISABLED, assertUpstreamEnabled, buildNetwork, sessionAllowed, sessionRefusal, upstreamAllowed }
   from '../overlay/files/src/policy-builder/client/build-guard.mjs';
 import { BACKEND_PORTS } from '../server/main.mjs';
+import { BUILD_MARKER, buildNetworkMarker, builtNetwork } from '../overlay/files/src/policy-builder/client/preview-gate.mjs';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const PATCH = read('../overlay/upstream.patch');
@@ -54,13 +57,39 @@ test('the mainnet backend is reachable only through the production preview serve
   // `vite preview` reaches the mainnet backend through a preview-only hook, registered before the
   // Cloudflare plugin, which otherwise answers every preview request itself (Vite's preview.proxy never runs).
   const plugin = vite.slice(vite.indexOf('const mainnetBackendProxy'), vite.indexOf('export default defineConfig'));
-  assert.match(plugin, /configurePreviewServer\(server\) \{\n {4}server\.middlewares\.use\('\/api\/policy-builder'/);
+  assert.match(plugin, /configurePreviewServer\(server\) \{\n/);
+  assert.match(plugin, /\n {4}server\.middlewares\.use\('\/api\/policy-builder'/);
   assert.match(plugin, /host: '127\.0\.0\.1', port: 4318, method: req\.method, path: `\/api\/policy-builder\$\{req\.url\}`/);
   assert.doesNotMatch(plugin, /configureServer/, 'the development server never gets it');
   assert.match(vite, /preview: \{ host: '127\.0\.0\.1', port: 3000, strictPort: true \}/);
-  // Registered only for a build made for mainnet, and before the Cloudflare plugin.
-  assert.ok(PATCH.includes("+    ...(process.env.VITE_OZPB_NETWORK === 'mainnet' ? [mainnetBackendProxy] : []),\n     cloudflare({"),
-    'only in a mainnet build, before the Cloudflare plugin');
+  // Registered before the Cloudflare plugin, and it forwards only for a build whose own marker says
+  // mainnet: the shell's environment when `vite preview` runs decides nothing.
+  assert.ok(PATCH.includes('+    buildNetworkMarker(),\n+    mainnetBackendProxy,\n     cloudflare({'), 'before the Cloudflare plugin');
+  assert.match(plugin, /if \(builtNetwork\(resolve\(server\.config\.root, client\)\) !== 'mainnet'\) return\n {4}server\.middlewares\.use/);
+  assert.doesNotMatch(vite, /process\.env/, 'nothing in the configuration reads the environment at preview time');
+});
+
+test('the build records the network it was made for, and preview reads only that record', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'wallet-build-marker-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // The marker is written from the build's resolved env (what `import.meta.env` is built from, .env files included).
+  for (const [env, network] of [[{ VITE_OZPB_NETWORK: 'mainnet' }, 'mainnet'], [{ VITE_OZPB_NETWORK: 'Mainnet' }, 'testnet'], [{}, 'testnet']]) {
+    const plugin = buildNetworkMarker();
+    assert.equal(plugin.apply, 'build');
+    plugin.configResolved({ env });
+    const emitted = [];
+    plugin.generateBundle.call({ environment: { name: 'client' }, emitFile: (file) => emitted.push(file) });
+    assert.deepEqual(emitted, [{ type: 'asset', fileName: BUILD_MARKER, source: network }], JSON.stringify(env));
+    const server = [];
+    plugin.generateBundle.call({ environment: { name: 'ssr' }, emitFile: (file) => server.push(file) });
+    assert.deepEqual(server, [], 'only beside the client build that preview serves');
+  }
+  // Preview: only an exact `mainnet` record opens the mainnet backend; no record, or anything else, does not.
+  assert.equal(builtNetwork(root), 'testnet', 'no build');
+  for (const [text, network] of [['mainnet', 'mainnet'], ['testnet', 'testnet'], ['mainnet\n', 'testnet'], ['', 'testnet']]) {
+    writeFileSync(join(root, BUILD_MARKER), text);
+    assert.equal(builtNetwork(root), network, JSON.stringify(text));
+  }
 });
 
 test('a mainnet build serves the Policy Builder alone: upstream routes and navigation are refused', () => {

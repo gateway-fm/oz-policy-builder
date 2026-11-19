@@ -10,7 +10,7 @@ import { SAMPLE_AMOUNT_STROOPS, reviewSample, validateSampleAssembly } from '../
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { validateAssembly } from '../shared/assembly.mjs';
 import { INSTALL_VALIDITY_LEDGERS, installConsent } from '../shared/install.mjs';
-import { isOwnerRule, reviewRemoval, revokeConsent, ruleSummary, validateRemovalAssembly } from '../shared/revoke.mjs';
+import { isGrantRule, isOwnerRule, reviewRemoval, revokeConsent, ruleSummary, validateRemovalAssembly } from '../shared/revoke.mjs';
 import { addedRuleId, installGate, verifyInstallation, verifyRemoval } from './install.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
@@ -172,7 +172,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
     const read = await network.accountRules(wallet.contractId);
     return { ledger: read.ledger, rules: read.rules.map(({ id, xdr: raw }) => ({ id, xdr: raw, owner: isOwnerRule(wallet, id, raw),
-      summary: ruleSummary(raw, id) })) };
+      grant: isGrantRule(raw, id), summary: ruleSummary(raw, id) })) };
   }
   // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
   // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
@@ -1090,8 +1090,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       return freezeCopy(await accountRules(wallet));
     },
     // Removal of a rule an earlier backend session installed, which this one holds no record of. The
-    // rule is bound by its exact current bytes, read again before release and before submission; the
-    // owner rule, and any rule naming the owner's passkey, is never removed. Otherwise as `prepare-revoke`.
+    // rule is bound by its exact current bytes, read again before release and before submission. Only a
+    // grant-shaped rule is removed (`isGrantRule`): never the owner rule, a rule naming the owner's
+    // passkey, or a recovery or admin rule. Otherwise as `prepare-revoke`.
     'prepare-earlier-revoke': async (input) => {
       exact(input, ['wallet', 'ruleId']);
       const wallet = walletIdentity(input.wallet);
@@ -1101,7 +1102,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       const listed = await accountRules(wallet);
       const owner = listed.rules.find((rule) => rule.owner);
       const target = listed.rules.find((rule) => rule.id === ruleId);
-      if (!owner || !target || target.owner) refuse();
+      if (!owner || !target || target.owner || !target.grant) refuse();
       session.invalidate('revoke');
       const record = { account: wallet.contractId, ruleId, ledger: 0 };
       const ownerRef = { wallet, ownerRuleId: owner.id, ownerRuleXdr: owner.xdr };

@@ -105,7 +105,8 @@ anything is signed, and a refusal names the setting that refused it, the simulat
 least value that lets the upload through. Leave a margin for the price to move between preview and
 submission, and add whatever this work root's earlier sessions spent (the page shows it). A
 removal is never stopped by the session cap, and every other step keeps room for one installation
-and one removal, so a grant you install can always be taken back.
+and one removal (only for the removal once this session has installed the grant), so a grant you
+install can always be taken back.
 
 ## Evidence to keep
 
@@ -134,7 +135,9 @@ The owner's passkey signatures are automation-free only if a person approved the
 
 From the page, section 9: **Prepare revocation** for the grant this session installed, or, after a
 restart, attach the account and use **Remove a grant an earlier session installed**, which lists
-the account's rules as stored and removes the one you choose with your passkey. Either way the
+the account's rules as stored and removes the grant you choose with your passkey. Only a
+grant-shaped rule (one contract's calls, limited by at least one policy) is offered; your owner
+rule and any recovery or admin rule are not. Either way the
 removal is verified by the account's `context_rule_removed` event and the rule reading back absent.
 If the registry later revokes the account or the owner verifier, revoking the grant does not help:
 follow [revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal).

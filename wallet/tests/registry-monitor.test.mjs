@@ -7,11 +7,11 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { WalletToolchain, REGISTRY_MONITOR } from '../server/toolchain.mjs';
+import { WalletToolchain, REGISTRY_MONITOR, MONITOR_UNAVAILABLE } from '../server/toolchain.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
 
-function stub(t, { status, exit, report = {} }) {
+function stub(t, { status, exit, report = {}, stderr = '', executable: missing = false }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-registry-monitor-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const body = JSON.stringify({ schema: 'registry-monitor/v1', status, checked_at_unix: '1795000000', checkpoint_version: '6',
@@ -21,7 +21,9 @@ function stub(t, { status, exit, report = {} }) {
     ...report });
   const executable = join(root, 'ozpb');
   writeFileSync(join(root, 'report.json'), body);
-  writeFileSync(executable, `#!/bin/sh\necho "$@" > "${join(root, 'args')}"\ncat "${join(root, 'report.json')}"\nexit ${exit}\n`, { mode: 0o700 });
+  writeFileSync(join(root, 'stderr'), stderr);
+  if (!missing) writeFileSync(executable, `#!/bin/sh\necho "$@" > "${join(root, 'args')}"\ncat "${join(root, 'report.json')}"\n`
+    + `cat "${join(root, 'stderr')}" >&2\nexit ${exit}\n`, { mode: 0o700 });
   const workRoot = join(root, 'work');
   mkdirSync(workRoot, { mode: 0o700 });
   const published = join(root, 'published');
@@ -50,12 +52,37 @@ test('each exit status is read with its meaning, as the governance guide tabulat
 });
 
 test('an unverifiable log, or a report that contradicts its exit status, is an incident, never "current"', async (t) => {
-  const unverifiable = stub(t, { status: 'current', exit: 1 });
-  assert.equal((await unverifiable.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
+  // The CLI's own verdict: it exited 1 naming a registry verification fault.
+  for (const code of ['E_REGISTRY_SIGNATURE', 'E_REGISTRY_TRANSPARENCY', 'E_REGISTRY_ROLLBACK', 'E_REGISTRY_PARSE', 'E_REGISTRY_SCHEMA',
+    'E_REGISTRY_NETWORK']) {
+    const unverifiable = stub(t, { status: 'current', exit: 1, stderr: `Error: ${code}: the published log forks\n` });
+    assert.equal((await unverifiable.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable', code);
+  }
   const contradicting = stub(t, { status: 'current', exit: 6 });
   assert.equal((await contradicting.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
   const malformed = stub(t, { status: 'current', exit: 0, report: { schema: 'something else' } });
   assert.equal((await malformed.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
+});
+
+test('a monitor that could not run to a verdict is monitor_unavailable, not an incident', async (t) => {
+  const expected = { status: MONITOR_UNAVAILABLE.status, meaning: MONITOR_UNAVAILABLE.meaning, action: MONITOR_UNAVAILABLE.action };
+  for (const [label, given] of [
+    ['a missing executable', { status: 'current', exit: 0, executable: true }],
+    ['the toolkit refusing the root policy', { status: 'current', exit: 1, stderr: 'Error: E_REGISTRY_ROOT_POLICY: the development root\n' }],
+    ['an error naming no registry fault (an unreadable published path)', { status: 'current', exit: 1, stderr: 'Error: reading /published\n' }],
+    ['a usage error', { status: 'current', exit: 2, stderr: 'error: unexpected argument\n' }],
+  ]) {
+    const { toolchain } = stub(t, given);
+    assert.deepEqual({ ...(await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })) }, expected, label);
+  }
+  // A runner that timed out or was stopped reports no exit status at all.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-registry-monitor-timeout-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root, rpcUrl: 'https://rpc.example/', registrySnapshot: '{}',
+    registryRoots: '{}', registryMinimumVersion: 6, network: WALLET_NETWORKS.mainnet, registryPublishedPath: root,
+    runner: async () => { throw new Error('ozpb tool failed'); } });
+  assert.deepEqual({ ...(await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })) }, expected, 'a timeout');
+  assert.notEqual(MONITOR_UNAVAILABLE.status, REGISTRY_MONITOR[1].status);
 });
 
 test('without a published registry log configured, the registry part says so', async (t) => {
@@ -70,6 +97,7 @@ test('the installed-grant monitor reports the registry alongside the grant', asy
   const { readFileSync: read } = await import('node:fs');
   const source = read(new URL('../server/monitor.mjs', import.meta.url), 'utf8');
   assert.match(source, /toolchain\.registryMonitor\(\{ wasmHashes: \[ACCOUNT_WASM, WEBAUTHN_WASM\] \}\)/);
+  assert.doesNotMatch(source, /catch \{ registry = \{ status: 'log_unverifiable' \}/, 'a monitor that threw is unavailable, not an incident');
 });
 
 // Opt-in, against the real CLI (`OZPB_BIN`): the development registry on testnet, its committed

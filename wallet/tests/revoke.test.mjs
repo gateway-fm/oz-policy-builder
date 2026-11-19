@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Address, Keypair, StrKey, hash, xdr } from '@stellar/stellar-sdk';
-import { reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared/revoke.mjs';
+import { isGrantRule, reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared/revoke.mjs';
 import { ruleReadbackResult } from '../server/install.mjs';
 import { fixture } from './approval-fixture.mjs';
 import { RULE_ID, removalFor } from './install-fixture.mjs';
@@ -154,11 +154,11 @@ function earlier(change = {}) {
     installation: { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: null, ruleXdr, ...change } });
   return { f, ruleXdr, approval };
 }
-function installedRuleXdr(f, { signers } = {}) {
+function installedRuleXdr(f, { signers, context, policies } = {}) {
   const fields = {
-    context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(f.wallet.contractId).toScVal()]),
+    context_type: context ?? xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(f.wallet.contractId).toScVal()]),
     id: xdr.ScVal.scvU32(RULE_ID), name: xdr.ScVal.scvString('earlier grant'),
-    policies: xdr.ScVal.scvVec([new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]),
+    policies: policies ?? xdr.ScVal.scvVec([new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]),
     policy_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]),
     signers: signers ?? xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Delegated'),
       new Address(Keypair.fromRawEd25519Seed(Buffer.alloc(32, 6)).publicKey()).toScVal()])]),
@@ -184,6 +184,25 @@ test('an earlier session\'s grant is removed by its exact current bytes, shown i
   assert.equal(display.installation.rule.name, 'earlier grant');
   assert.deepEqual(display.installation.rule.signers, [['Delegated', Keypair.fromRawEd25519Seed(Buffer.alloc(32, 6)).publicKey()]]);
   assert.match(display.warning, /not installed by this wallet session/);
+});
+
+test('an earlier session\'s removal takes only a grant-shaped rule: a call-contract context with at least one policy', () => {
+  const f = fixture();
+  const none = xdr.ScVal.scvVec([]);
+  const policy = xdr.ScVal.scvVec([new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]);
+  const defaultContext = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]);
+  const grant = installedRuleXdr(f);
+  assert.equal(isGrantRule(grant, RULE_ID), true);
+  for (const [label, ruleXdr] of [
+    // A recovery or admin rule: any call, no policy limiting it. Removing it could lock the owner out of a recovery path.
+    ['a default-context rule with no policies', installedRuleXdr(f, { context: defaultContext, policies: none })],
+    ['a default-context rule with a policy', installedRuleXdr(f, { context: defaultContext, policies: policy })],
+    ['a call-contract rule with no policies', installedRuleXdr(f, { policies: none })],
+  ]) {
+    assert.equal(isGrantRule(ruleXdr, RULE_ID), false, label);
+    assert.throws(() => earlier({ ruleXdr }), /refused/, label);
+  }
+  assert.equal(isGrantRule(grant, RULE_ID + 1), false, 'bytes for another rule ID');
 });
 
 test('an earlier session\'s removal never takes the owner\'s own rule or a rule the owner signs for', () => {

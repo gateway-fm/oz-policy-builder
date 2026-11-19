@@ -886,14 +886,16 @@ function PolicyBuilder() {
         <details className="space-y-3 rounded-lg border border-slate-600 p-4">
           <summary className="cursor-pointer font-semibold">Remove a grant an earlier session installed</summary>
           <p className="text-sm text-slate-300">A restarted backend keeps no record of what an earlier session installed. Attach the
-            account above, list its rules as it stores them now, and remove one with your passkey. Your own owner rule is never offered.</p>
+            account above, list its rules as it stores them now, and remove one with your passkey. Only a grant is offered: a rule for
+            one contract&apos;s calls limited by at least one policy. Your own owner rule, and any rule for every call or without a policy,
+            which may be your recovery or admin access, is never offered.</p>
           <button className={button} disabled={busy || !state?.wallet}
             onClick={() => void run((value) => value.listRules(), "Reading your account's rules…", "Rules listed.")}>List this account&apos;s rules</button>
           {state?.accountRules && <ul className="space-y-2 text-sm">
             {state.accountRules.rules.map((rule) => <li key={rule.id} className="rounded border border-slate-700 p-2">
-              Rule {rule.id}{rule.owner ? " (your owner rule)" : ""}: {label(object(rule.summary).name)}
+              Rule {rule.id}{rule.owner ? " (your owner rule)" : rule.grant ? "" : " (not a grant: not offered for removal)"}: {label(object(rule.summary).name)}
               <Details title="As stored"><Evidence title={`Rule ${rule.id}`} value={rule.summary} /></Details>
-              {!rule.owner && <button className={button} disabled={busy || open("earlierRevoke", state.earlierRevokePreview)}
+              {!rule.owner && rule.grant && <button className={button} disabled={busy || open("earlierRevoke", state.earlierRevokePreview)}
                 onClick={() => void run((value) => value.prepareEarlierRevoke(rule.id), "Preparing the removal…",
                   "Next: consent with your passkey before the countdown ends.")}>Prepare removal of rule {rule.id}</button>}
             </li>)}

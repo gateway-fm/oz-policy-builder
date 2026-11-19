@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { scValToNative, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM, WEBAUTHN_WASM, freezeCopy } from '../shared/approval.mjs';
 import { clockedLedger } from './live-check.mjs';
+import { MONITOR_UNAVAILABLE } from './toolchain.mjs';
 const HASH = /^[0-9a-f]{64}$/;
 const PROJECTION = 'modeled_authority_without_exact_last_installed_rule; not_installation_approval';
 const u32 = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 0xffffffff;
@@ -104,7 +105,7 @@ export async function monitorInstallation({ network, toolchain, record, owner, c
   // registry entry, so it is not watched here. Reported apart from the grant: it is about the codes.
   let registry;
   try { registry = toolchain.registryMonitor ? await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM] })
-    : { status: 'not_configured' }; } catch { registry = { status: 'log_unverifiable' }; }
+    : { status: 'not_configured' }; } catch { registry = { ...MONITOR_UNAVAILABLE }; }
   return freezeCopy({ registry, schema: 'ozpb:wallet-monitor:v1', installationId: record.installationId, account: record.account,
     ruleId: record.ruleId, status: reasons.length ? 'drift' : unavailable.length ? 'unavailable' : inactive.length ? 'inactive' : 'unchanged',
     reasons: [...new Set([...reasons, ...unavailable, ...inactive])], observation: 'non_atomic_rpc_reported',

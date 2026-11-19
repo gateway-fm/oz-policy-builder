@@ -244,20 +244,25 @@ diff --git a/vite.config.ts b/vite.config.ts
 index 6719599..49b5f41 100644
 --- a/vite.config.ts
 +++ b/vite.config.ts
-@@ -4,21 +4,49 @@ import viteReact from '@vitejs/plugin-react'
+@@ -4,21 +4,54 @@ import viteReact from '@vitejs/plugin-react'
  import tailwindcss from '@tailwindcss/vite'
  import { cloudflare } from '@cloudflare/vite-plugin'
  import { fileURLToPath, URL } from 'node:url'
 +import { request } from 'node:http'
++import { resolve } from 'node:path'
 +import type { Plugin } from 'vite'
++import { buildNetworkMarker, builtNetwork } from './src/policy-builder/client/preview-gate.mjs'
 +
 +/**
-+ * `vite preview` serves a production build, and only it reaches the mainnet backend on 4318: the
-+ * Cloudflare plugin answers every preview request itself, so this proxy is registered before it.
++ * `vite preview` serves a production build, and only it reaches the mainnet backend on 4318, for a
++ * build that recorded it was made for mainnet (preview-gate.mjs), whatever the shell running preview
++ * sets. The Cloudflare plugin answers every preview request itself, so this proxy is registered before it.
 + */
 +const mainnetBackendProxy: Plugin = {
 +  name: 'ozpb-mainnet-backend-proxy',
 +  configurePreviewServer(server) {
++    const client = server.config.environments?.client?.build?.outDir ?? server.config.build.outDir
++    if (builtNetwork(resolve(server.config.root, client)) !== 'mainnet') return
 +    server.middlewares.use('/api/policy-builder', (req, res) => {
 +      const forward = request({ host: '127.0.0.1', port: 4318, method: req.method, path: `/api/policy-builder${req.url}`,
 +        headers: req.headers }, (answer) => { res.writeHead(answer.statusCode ?? 502, answer.headers); answer.pipe(res) })
@@ -295,12 +300,13 @@ index 6719599..49b5f41 100644
        'buffer',
        '@stellar/stellar-sdk',
        '@stellar/stellar-sdk/rpc',
-@@ -44,9 +72,18 @@ export default defineConfig({
+@@ -44,9 +77,19 @@ export default defineConfig({
      },
    },
    plugins: [
-+    // Only a build made for mainnet reaches the mainnet backend, and only through `vite preview`.
-+    ...(process.env.VITE_OZPB_NETWORK === 'mainnet' ? [mainnetBackendProxy] : []),
++    // Every build records the network it was made for; preview reaches the mainnet backend only for mainnet's.
++    buildNetworkMarker(),
++    mainnetBackendProxy,
      cloudflare({
 +      // The dedicated local wallet checkout never connects remote provider bindings.
 +      remoteBindings: false,

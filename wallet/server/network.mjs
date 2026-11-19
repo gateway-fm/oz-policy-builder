@@ -32,9 +32,12 @@ const refuse = (cause) => {
  * The fees every earlier session in this work root may have been charged: the full fee of each
  * transaction it journaled as intended before sending, whatever happened next. A mainnet session
  * starts its spend cap from this, so restarting the backend gives back no budget. The work root is
- * bound to one network; an entry for another, or one that does not decode, refuses startup.
+ * bound to one network; an entry for another, or one that does not decode, refuses startup, except
+ * a session's last entry that is not JSON at all: a crash while writing it, after which whether the
+ * transaction left is unknown. That one counts as the most one transaction may cost under `caps`
+ * (the larger of `maxFeeStroops` and `maxUploadFeeStroops`), never as nothing.
  */
-export function journaledSpend(workRoot, network) {
+export function journaledSpend(workRoot, network, caps = null) {
   const refused = () => { throw Object.assign(new Error('wallet journal refused'), { startup: 'An earlier session journal in this '
     + 'work root could not be read for its fees; inspect it, or give this session a work root of its own.' }); };
   let total = 0n;
@@ -47,7 +50,10 @@ export function journaledSpend(workRoot, network) {
       if (!stat.isDirectory()) refused();
       names = readdirSync(journal);
     } catch (error) { if (error?.code === 'ENOENT') continue; refused(); }
-    for (const name of names.filter((entry) => /^[0-9]{4}\.intended\.json$/.test(entry)).sort()) {
+    // Serials are padded to four digits and grow past them; the last is the highest of any phase.
+    const serial = (entry) => /^([0-9]{4,})\.[a-z]+\.json$/.exec(entry)?.[1];
+    const last = names.map(serial).filter(Boolean).map(BigInt).reduce((a, b) => (b > a ? b : a), -1n);
+    for (const name of names.filter((entry) => /^[0-9]{4,}\.intended\.json$/.test(entry))) {
       let fd;
       try {
         fd = openSync(join(journal, name), constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -55,7 +61,14 @@ export function journaledSpend(workRoot, network) {
         if (!stat.isFile() || stat.size > 1024 * 1024) refused();
         const buffer = Buffer.alloc(stat.size);
         if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) refused();
-        const entry = JSON.parse(buffer.toString('utf8'));
+        let entry;
+        try { entry = JSON.parse(buffer.toString('utf8')); } catch (error) {
+          const truncated = error instanceof SyntaxError && BigInt(serial(name)) === last
+            && names.filter((other) => serial(other) === serial(name)).length === 1;
+          if (!truncated || !caps || !Number.isSafeInteger(caps.maxFeeStroops) || !Number.isSafeInteger(caps.maxUploadFeeStroops)) refused();
+          total += BigInt(Math.max(caps.maxFeeStroops, caps.maxUploadFeeStroops));
+          continue;
+        }
         if (entry?.networkId !== network.networkId || typeof entry.envelopeXdr !== 'string') refused();
         const envelope = xdr.TransactionEnvelope.fromXDR(entry.envelopeXdr, 'base64');
         if (envelope.type !== 'envelopeTypeTx' || !Number.isSafeInteger(envelope.v1.tx.fee)) refused();
@@ -228,7 +241,7 @@ function confirmed(receipt, sent) {
  */
 export class WalletNetwork {
   #server; #payer; #fees; #spent = 0n; #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
-  #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #delegatesFunded = new Set();
+  #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #installed = 0; #delegatesFunded = new Set();
   /**
    * `feePayer` and `fees` are the session's funding model: on testnet a disposable key and testnet's
    * ceilings; on mainnet the operator's own key and its configured caps, a session cap included.
@@ -431,9 +444,9 @@ export class WalletNetwork {
       const cap = isUpload(assembled.toEnvelope().v1.tx.operations) ? this.#fees.maxUploadFeeStroops : this.#fees.maxFeeStroops;
       if (fee > BigInt(cap)) refuse({ reason: 'fee_cap' });
       // The session cap never blocks a removal (only its per-transaction cap applies), and every other
-      // step leaves room for what may still be needed: an installation keeps room for its removal, any
-      // other step for an installation and a removal.
-      const reserve = stage === 'revoke-policy' ? null : stage === 'install-policy' ? 1n : 2n;
+      // step leaves room for what may still be needed: an installation, or any step once this session
+      // has an installation, keeps room for its removal; any other step for an installation and a removal.
+      const reserve = stage === 'revoke-policy' ? null : stage === 'install-policy' || this.#installed > 0 ? 1n : 2n;
       if (this.#fees.sessionSpendCapStroops !== null && reserve !== null
         && this.#spent + fee + reserve * BigInt(this.#fees.maxFeeStroops) > BigInt(this.#fees.sessionSpendCapStroops)) {
         refuse({ reason: 'spend_cap' });
@@ -463,6 +476,8 @@ export class WalletNetwork {
         this.#save(serial, 'confirmed', { ...result, stage, envelopeXdr: receipt.envelopeXdr.toXDR('base64'),
           resultXdr: receipt.resultXdr.toXDR('base64'), resultMetaXdr: receipt.resultMetaXdr.toXDR('base64') });
         this.#ambiguous = false;
+        if (stage === 'install-policy') this.#installed++;
+        else if (stage === 'revoke-policy' && this.#installed > 0) this.#installed--;
         return { ...result, feeChargedStroops: checked.feeCharged, returnValue: checked.returned, events: checked.events };
       }
       refuse();
@@ -677,6 +692,8 @@ export class WalletNetwork {
       const second = await this.#server.getLedgerEntries(instanceKey, ...ruleKeys);
       const observed = ledger(second.latestLedger);
       const again = counters(second);
+      // Only the entries asked for: anything else in the answer refuses the read, as in `liveState`.
+      if ((second.entries ?? []).some((item) => ![instanceKey, ...ruleKeys].some((key) => same(item.key, key)))) refuse();
       const rules = ruleKeys.map((key, id) => {
         const found = (second.entries ?? []).filter((item) => same(item.key, key));
         if (found.length > 1) refuse();
