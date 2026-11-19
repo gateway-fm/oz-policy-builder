@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Address, Asset, Keypair, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import { installCall } from '../shared/assembly.mjs';
-import { LIVE_SIGNATURE_LEDGERS, checkLiveOwnerEntry, consentDisplay, liveCases, liveGrant, liveShape } from '../shared/live-consent.mjs';
+import { DELEGATE_HOLDERS, LIVE_SIGNATURE_LEDGERS, checkLiveOwnerEntry, consentDisplay, delegateHolder, liveCases, liveGrant, liveShape }
+  from '../shared/live-consent.mjs';
+import { readFileSync } from 'node:fs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
 const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
@@ -92,4 +94,32 @@ test('the shape is one exact native transfer of at most 1,000,000 stroops, with 
   }
   const [permit, denial] = cases();
   assert.deepEqual([permit.amount, denial.amount], ['1000000', '1000001']);
+});
+
+test('on mainnet the consent names the agent as the delegate key\'s holder, and says what that allows', () => {
+  const MAINNET = WALLET_NETWORKS.mainnet;
+  const mainnetSpec = spec();
+  mainnetSpec.network_id = MAINNET.networkId;
+  mainnetSpec.rules[0].context.contract = MAINNET.nativeAsset;
+  const mainnetApproval = { ...approval((intent) => ({ ...intent, context_contract: MAINNET.nativeAsset })), networkId: MAINNET.networkId };
+  const mainnetCases = liveCases({ approval: mainnetApproval, spec: mainnetSpec, helper: HELPER, policyCodeHash: 'b'.repeat(64),
+    expectedRuleId: 1, signatureExpirationLedger: N });
+  const display = consentDisplay(mainnetCases, { currentLedger: N - LIVE_SIGNATURE_LEDGERS });
+  assert.doesNotMatch(JSON.stringify(display), /in-memory|discarded/);
+  assert.equal(display.delegate.key, 'the agent\'s key, held by the agent and by this backend from the operator\'s file');
+  assert.match(display.warning, new RegExp(`the delegate ${DELEGATE}, the agent's own key`));
+  assert.match(display.warning, new RegExp(`the agent could submit the installation itself before ledger ${N}`));
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  // Testnet keeps the backend's own in-memory key, and its labels.
+  const testnet = consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS });
+  assert.equal(testnet.labels[3], 'delegate_is_wallet_in_memory_automation_key');
+  assert.match(testnet.delegate.key, /in-memory automation key, discarded when it stops/);
+  assert.doesNotMatch(testnet.warning, /the agent/);
+  // The live evidence names the holder the same way, by network.
+  assert.equal(delegateHolder(WALLET_NETWORKS.testnet.networkId).evidence, 'wallet_in_memory_automation_key');
+  assert.equal(delegateHolder(MAINNET.networkId).evidence, 'agent_key_from_operator_file');
+  assert.deepEqual(Object.keys(DELEGATE_HOLDERS).sort(), ['mainnet', 'testnet']);
+  const liveCheck = readFileSync(new URL('../server/live-check.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(liveCheck, /'wallet_in_memory_automation_key'/, 'the evidence label is derived from the network, not fixed');
+  assert.match(liveCheck, /delegateHolder\(/);
 });

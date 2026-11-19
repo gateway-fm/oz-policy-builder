@@ -46,8 +46,9 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 - **A consistently lying RPC endpoint is not detected.**
 - **The wallet removes grant-shaped rules only.** With the owner's passkey it removes a grant its
   running backend installed or, after a restart, one an earlier session installed, read from the
-  account as stored. It refuses the owner rule, a rule naming the owner's passkey and a
-  `Default`-context or policy-less rule; those need the account's own management
+  account as stored. It refuses the owner rule, a rule naming the owner's passkey, a
+  `Default`-context or policy-less rule, and a rule on the account's own calls or on a policy
+  contract the account binds; those need the account's own management
   ([an earlier session's grant](POLLYWALLET-INTEGRATION.md#removing-an-earlier-sessions-grant),
   [how to revoke](INCIDENT-RESPONSE.md#how-to-revoke-a-grant)). A restarted backend does not read
   the earlier session's replay obligations, so wait as

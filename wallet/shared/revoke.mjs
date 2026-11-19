@@ -66,13 +66,16 @@ export function isOwnerRule(wallet, ruleId, raw) {
  * Whether stored rule `ruleId` is shaped as a grant: one contract's calls (a `CallContract` context)
  * limited by at least one policy, as every grant this wallet installs is. A `Default`-context rule,
  * or one with no policy, may be the owner's recovery or admin access, so an earlier session's
- * removal never takes it.
+ * removal never takes it; nor a rule on the account's own calls (`account`, a guardian or recovery
+ * rule) or on a policy contract, its own or one bound in another of the account's rules
+ * (`boundPolicies`): a grant this wallet installs never targets either.
  */
-export function isGrantRule(raw, ruleId) {
+export function isGrantRule(raw, ruleId, { account = null, boundPolicies = [] } = {}) {
   try {
     const rule = decodeRule(raw, ruleId);
-    return Array.isArray(rule.context) && rule.context[0] === 'CallContract' && StrKey.isValidContract(rule.context[1])
-      && rule.policies.length >= 1;
+    const target = Array.isArray(rule.context) && rule.context[0] === 'CallContract' ? rule.context[1] : null;
+    return StrKey.isValidContract(target) && rule.policies.length >= 1 && target !== account
+      && !rule.policies.includes(target) && !boundPolicies.includes(target);
   } catch { return false; }
 }
 
@@ -120,7 +123,7 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
     if (earlier) {
       decodeRule(installation.ruleXdr, installation.ruleId);
       if (installation.ruleXdr === ownerRuleXdr || namesOwner(wallet, installation.ruleXdr)
-        || !isGrantRule(installation.ruleXdr, installation.ruleId)) refuse();
+        || !isGrantRule(installation.ruleXdr, installation.ruleId, { account: wallet.contractId })) refuse();
     }
     const changed = configurationChange === null ? null : removalConfigurationChange(configurationChange, installation.ruleId);
     const preimage = ['wallet-revoke/v1', network.networkId, wallet.contractId, wallet.verifier,

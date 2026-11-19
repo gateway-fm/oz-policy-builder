@@ -42,8 +42,11 @@ with a reason the page explains, when it does not.
    The live check's delegate signature is a real mainnet authorization: until its expiry, 12
    ledgers (about a minute) after the check is prepared, anyone holding it together with the owner's
    signature could submit the transfer it covers, which is why the wallet installs nothing until
-   that ledger has passed (`signatures_still_valid`). Fund the delegate's account with its minimum
-   reserve (1 XLM).
+   that ledger has passed (`signatures_still_valid`). The agent holds this key too: if it obtains
+   your passkey signature from a live simulation request before that ledger, it could submit the
+   installation itself and use the grant without the wallet. The consents say so; approve only a
+   grant you would give that agent anyway. Fund the delegate's account with its minimum reserve
+   (1 XLM).
 6. **The atomic live helper, deployed by you.** The live check, and so installation, needs it on
    mainnet; the wallet never deploys it. Build `contracts/atomic-live-helper` with
    `stellar contract build --locked` from the release's tag, with the pinned build inputs (Rust
@@ -154,8 +157,9 @@ The owner's passkey signatures are automation-free only if a person approved the
 From the page, section 9: **Prepare revocation** for the grant this session installed, or, after a
 restart, attach the account and use **Remove a grant an earlier session installed**, which lists
 the account's rules as stored and removes the grant you choose with your passkey. Only a
-grant-shaped rule (one contract's calls, limited by at least one policy) is offered; your owner
-rule and any recovery or admin rule are not. Either way the
+grant-shaped rule (another contract's calls, limited by at least one policy) is offered; your
+owner rule and any recovery, guardian or admin rule are not. After a restart the removal needs only
+the fee payer able to pay its fee (`payer_unfunded` otherwise), not a new deployment. Either way the
 removal is verified by the account's `context_rule_removed` event and the rule reading back absent.
 If the registry later revokes the account or the owner verifier, revoking the grant does not help:
 follow [revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal).

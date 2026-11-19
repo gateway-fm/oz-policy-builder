@@ -171,8 +171,10 @@ export function createWalletActions({ session, toolchain, network, native = null
     await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
     await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
     const read = await network.accountRules(wallet.contractId);
+    // Every policy contract the account's rules bind: a rule targeting one is not a grant this wallet installs.
+    const boundPolicies = read.rules.flatMap(({ id, xdr: raw }) => ruleSummary(raw, id)?.policies ?? []);
     return { ledger: read.ledger, rules: read.rules.map(({ id, xdr: raw }) => ({ id, xdr: raw, owner: isOwnerRule(wallet, id, raw),
-      grant: isGrantRule(raw, id), summary: ruleSummary(raw, id) })) };
+      grant: isGrantRule(raw, id, { account: wallet.contractId, boundPolicies }), summary: ruleSummary(raw, id) })) };
   }
   // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
   // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
@@ -1103,6 +1105,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       const owner = listed.rules.find((rule) => rule.owner);
       const target = listed.rules.find((rule) => rule.id === ruleId);
       if (!owner || !target || target.owner || !target.grant) refuse();
+      // A restarted backend has funded nothing yet: the removal's own fee payer is checked (mainnet:
+      // its balance) or funded (testnet: Friendbot) here, so removal never waits for a deployment.
+      await network.fundPayer();
       session.invalidate('revoke');
       const record = { account: wallet.contractId, ruleId, ledger: 0 };
       const ownerRef = { wallet, ownerRuleId: owner.id, ownerRuleXdr: owner.xdr };
@@ -1123,7 +1128,9 @@ export function createWalletActions({ session, toolchain, network, native = null
     'confirm-earlier-revoke': async (input) => {
       exact(input, ['id', 'signedAuthEntriesXdr']);
       return session.consume(input.id, 'revoke', async ({ earlier, approval, checked, ruleXdr }) => {
-        if (!earlier || network.canSubmit !== true) refuse();
+        if (!earlier) refuse();
+        await network.fundPayer();
+        if (network.canSubmit !== true) refuse();
         const { account, ruleId } = approval.installation;
         const key = `${account}:${ruleId}`;
         if (earlierRemovals.has(key)) refuse();
@@ -1166,6 +1173,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       const held = get(installations, input.installationId);
       const { record, owner } = held;
       if (held.removalAttempted || !Number.isSafeInteger(record.ruleId)) refuse();
+      await network.fundPayer();
       session.invalidate('revoke');
       // The anchor's ledger clock checks the network first.
       const { pins, fresh, rule } = await removalReads(record, owner, owner.ownerRuleXdr);

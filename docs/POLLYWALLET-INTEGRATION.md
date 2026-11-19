@@ -304,6 +304,13 @@ operator.
 
 **The delegate.** On mainnet the grant's delegate is the agent's own key, the one its proposal
 names, and the wallet generates no delegate key: there is no in-memory automation key on mainnet.
+The consents say so: on mainnet the live check's and the installation's statements name the
+delegate as the agent's own key, held by the agent and by this backend from the operator's file, and
+state plainly that the agent holds it too: with the owner's passkey signature, which every live
+simulation request carries to the operator's RPC endpoint, the agent could submit the installation
+itself before the live check's expiry ledger and then use the grant without this wallet. The live
+evidence names the holder by network (`agent_key_from_operator_file`, label
+`delegate_is_agent_key_from_operator_file`; testnet keeps `wallet_in_memory_automation_key`).
 **Installation on mainnet requires the delegate's key in a `0600` file** (`delegateKeyPath`: one
 secret seed, checked like the fee payer's and never its key). The account-Wasm, captured-target and
 live checks, three of the four layers, sign as the delegate, and the one use of the grant is the
@@ -633,7 +640,8 @@ two named cases, not the derived deny suite.
    backend's inputs (helper, candidate hash, rule ID, ledgers) and shows it: both exact calls,
    the owner's installation and each delegate transfer, the expiry N, the labels and this
    warning: until ledger N the signatures are real and submittable; the owner's alone installs
-   the rule, which gives the backend-held delegate the grant's authority until it expires;
+   the rule, which gives the delegate the grant's authority until it expires (on testnet the
+   backend's own key; on mainnet the agent's, which the agent holds too, as the statement says);
    none of them names the helper; all of them reach the operator's RPC endpoint inside the
    simulation requests; and the replay check after N compares the account with the state read
    before they existed. Consent returns the statement's SHA-256. The backend accepts it only for
@@ -675,7 +683,8 @@ A passing layer carries public evidence only: the helper, the candidate and thei
 expected rule ID, the expiry ledger, the statement hash, each case's outcome, simulation ledger
 and envelope hash. It also carries the owner's `webauthn_user_verified` with
 `human_approval_attested: false`, and the labels `state_dependent`, `simulation_only`,
-`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key`. It is
+`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key` (on mainnet
+`delegate_is_agent_key_from_operator_file`). It is
 evidence about testnet state at the simulation ledgers. Stored evidence does not age by itself; the
 [installation gate](#installation) bounds the simulation ledgers as it bounds the captured one.
 
@@ -849,12 +858,17 @@ entries, then review again.
 `prepare-earlier-revoke` takes the attached wallet and a rule ID. The backend reads the account's
 rules (`NextId`, then every `ContextRuleData` below it, in one request that must agree with
 `Count`, and must hold no entry it did not ask for), finds this wallet's owner rule among them, and
-removes only a rule shaped as a grant: a `CallContract` context, one contract's calls, limited by at
-least one policy, as every grant this wallet installs is. It refuses the owner rule itself, any rule
-naming the owner's passkey, a `Default`-context rule or one with no policy (which may be the
-owner's recovery or admin access), and a rule this session installed (use **Prepare revocation**
-for that). The page lists every rule but offers removal only for grant-shaped ones, and the browser
-checks the shape again before the passkey. It then reads the pinned account and verifier code, the owner rule and the rule within one
+removes only a rule shaped as a grant: a `CallContract` context, one other contract's calls, limited
+by at least one policy, as every grant this wallet installs is. It refuses the owner rule itself, any
+rule naming the owner's passkey, a `Default`-context rule or one with no policy (which may be the
+owner's recovery or admin access), a rule on the account's own calls (a guardian or recovery rule)
+or on a policy contract that any of the account's rules binds, and a rule this session installed
+(use **Prepare revocation** for that). The page lists every rule but offers removal only for
+grant-shaped ones, and the browser checks the shape again before the passkey. A restarted backend
+has funded nothing yet, so the removal checks its own fee payer first (on mainnet, that the
+operator's account can pay a fee; on testnet, funding the new disposable key through Friendbot):
+removing a grant never waits for an account creation or a deployment, and an unfunded payer is
+refused as `payer_unfunded`, which the page explains. It then reads the pinned account and verifier code, the owner rule and the rule within one
 ledger window, exactly as for an in-session removal, and binds the removal approval to the rule's
 current bytes in place of an installation transaction. The consent statement, which the browser
 derives itself, shows the rule as stored now and says that this session did not install it.

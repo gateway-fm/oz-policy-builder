@@ -3,21 +3,27 @@
 // owner picks one, and the passkey signs `remove_context_rule` for exactly the bytes shown.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Address, Keypair, xdr } from '@stellar/stellar-sdk';
-import { RULE_ID, installable } from './install-fixture.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Address, Keypair, Networks, SorobanDataBuilder, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
+import { RULE_ID, installable, removedEvent } from './install-fixture.mjs';
+import { WalletNetwork } from '../server/network.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 /** A recovery or admin rule: any call (`Default` context), one signer, no policy limiting it. */
 const RECOVERY_ID = RULE_ID + 1;
-const recoveryRuleXdr = () => {
-  const fields = { context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]), id: xdr.ScVal.scvU32(RECOVERY_ID),
-    name: xdr.ScVal.scvString('recovery'), policies: xdr.ScVal.scvVec([]), policy_ids: xdr.ScVal.scvVec([]),
+const recoveryRuleXdr = ({ id = RECOVERY_ID, context = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Default')]), policies = [] } = {}) => {
+  const fields = { context_type: context, id: xdr.ScVal.scvU32(id),
+    name: xdr.ScVal.scvString('recovery'), policies: xdr.ScVal.scvVec(policies.map((p) => new Address(p).toScVal())),
+    policy_ids: xdr.ScVal.scvVec(policies.map((_, i) => xdr.ScVal.scvU32(i))),
     signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(2)]), signers: xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Delegated'),
       new Address(Keypair.fromRawEd25519Seed(Buffer.alloc(32, 8)).publicKey()).toScVal()])]), valid_until: xdr.ScVal.scvVoid() };
   return xdr.ScVal.scvMap(Object.keys(fields).sort().map((key) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val: fields[key] })))
     .toXDR('base64');
 };
 
-async function earlierSession({ recovery = false } = {}) {
+async function earlierSession({ recovery = false, extra = () => [] } = {}) {
   const f = await installable();
   // Installed by an earlier session: on the account, with no record in this backend.
   f.state.installed = true;
@@ -25,7 +31,7 @@ async function earlierSession({ recovery = false } = {}) {
   f.network.accountRules = async (account) => {
     assert.equal(account, f.f.wallet.contractId);
     return { ledger: f.state.ledger, rules: [{ id: 7, xdr: f.f.ownerRuleXdr }, ...(f.state.installed ? [{ id: RULE_ID, xdr: ruleXdr }] : []),
-      ...(recovery ? [{ id: RECOVERY_ID, xdr: recoveryRuleXdr() }] : [])] };
+      ...(recovery ? [{ id: RECOVERY_ID, xdr: recoveryRuleXdr() }] : []), ...extra(f)] };
   };
   return { f, ruleXdr };
 }
@@ -77,6 +83,109 @@ test('an earlier session\'s removal offers only grant-shaped rules, never a reco
   assert.equal((await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID })).ruleXdr, f.rule.toXDR('base64'));
 });
 
+/**
+ * A restarted backend: a fresh WalletNetwork over a stub endpoint, its fee payer never funded by an
+ * account or deployment step. Funding, the removal's draft, the fee payer's sequence and submission go
+ * through it; the account reads stay the fixture's.
+ */
+function restartedNetwork(t, f) {
+  const root = mkdtempSync(join(tmpdir(), 'wallet-earlier-restart-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const account = f.f.wallet.contractId;
+  const calls = [];
+  let sent;
+  const server = {
+    getNetwork: async () => ({ passphrase: Networks.TESTNET, protocolVersion: 30 }),
+    getLatestLedger: async () => ({ sequence: f.state.ledger }),
+    getAccount: async (address) => { calls.push('getAccount'); return { accountId: () => address, sequenceNumber: () => '4242' }; },
+    getLedgerEntries: async (key) => ({ latestLedger: f.state.ledger, entries: [{ key, lastModifiedLedgerSeq: f.state.ledger - 1,
+      val: xdr.LedgerEntryData.account(new xdr.AccountEntry({ accountId: key.account.accountId, balance: 100_000_000n, seqNum: 4242n,
+        numSubEntries: 0, inflationDest: null, flags: 0, homeDomain: '', thresholds: Buffer.from([1, 0, 0, 0]), signers: [],
+        ext: xdr.AccountEntryExt.v0() })) }] }),
+    simulateTransaction: async (tx, _resources, mode) => {
+      calls.push(mode);
+      const op = tx.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp;
+      if (mode === 'record') {
+        const entry = new xdr.SorobanAuthorizationEntry({ credentials: xdr.SorobanCredentials.sorobanCredentialsAddressV2(
+          new xdr.SorobanAddressCredentials({ address: new Address(account).toScAddress(), nonce: 77n, signatureExpirationLedger: 0,
+            signature: xdr.ScVal.scvVoid() })), rootInvocation: new xdr.SorobanAuthorizedInvocation({
+          function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(op.hostFunction.invokeContract), subInvocations: [] }) });
+        return { latestLedger: f.state.ledger, result: { auth: [entry], retval: xdr.ScVal.scvVoid() } };
+      }
+      return { latestLedger: f.state.ledger, result: { auth: op.auth, retval: xdr.ScVal.scvVoid() } };
+    },
+    sendTransaction: async (tx) => {
+      calls.push('send');
+      sent = tx;
+      f.state.ledger += 1;
+      Object.assign(f.state, { installed: false });
+      return { status: 'PENDING', hash: Buffer.from(tx.hash()).toString('hex') };
+    },
+    getTransaction: async () => {
+      const events = [removedEvent(account)];
+      const preimage = new xdr.InvokeHostFunctionSuccessPreImage({ returnValue: xdr.ScVal.scvVoid(), events });
+      return { status: 'SUCCESS', ledger: f.state.ledger, latestLedger: f.state.ledger, envelopeXdr: sent.toEnvelope(),
+        resultXdr: new xdr.TransactionResult({ feeCharged: 2000n, ext: xdr.TransactionResultExt.v0(),
+          result: xdr.TransactionResultResult.txSuccess([xdr.OperationResult.opInner(xdr.OperationResultTr.invokeHostFunction(
+            xdr.InvokeHostFunctionResult.invokeHostFunctionSuccess(Buffer.from(hash(preimage.toXDR())))))]) }),
+        resultMetaXdr: xdr.TransactionMeta.v3(new xdr.TransactionMetaV3({ ext: xdr.ExtensionPoint.v0(), txChangesBefore: [],
+          operations: [new xdr.OperationMeta({ changes: [] })], txChangesAfter: [],
+          sorobanMeta: new xdr.SorobanTransactionMeta({ ext: xdr.SorobanTransactionMetaExt.v0(), events,
+            returnValue: xdr.ScVal.scvVoid(), diagnosticEvents: [] }) })) };
+    },
+  };
+  // Enforce-mode assembly: the resources and fee only, as the RPC's preparation would set them.
+  const assemble = (tx) => ({ build: () => {
+    const envelope = xdr.TransactionEnvelope.fromXDR(tx.toEnvelope().toXDR());
+    envelope.v1.tx.fee = 2000;
+    envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(1000).build());
+    return TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET);
+  } });
+  const network = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: 'https://rpc.example/testnet', journalRoot: root, server,
+    assemble, pause: async () => {}, fetchImpl: async (url) => { calls.push(`friendbot ${new URL(url).origin}`); return new Response('{}'); } });
+  const n = f.network;
+  n.payerAddress = network.payerAddress;
+  n.fundPayer = () => network.fundPayer();
+  Object.defineProperty(n, 'canSubmit', { get: () => network.canSubmit, configurable: true });
+  n.prepareRemoval = (request) => network.prepareRemoval(request);
+  n.sourceCapture = () => network.sourceCapture();
+  n.submitEnvelope = (envelopeXdr, stage) => { f.submissions.push({ envelopeXdr, stage }); return network.submitEnvelope(envelopeXdr, stage); };
+  return { network, calls };
+}
+
+test('a rule on the account\'s own calls, or on a policy the account has bound, is not a grant this wallet installs', async () => {
+  const callContract = (address) => xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(address).toScVal()]);
+  const policyOf = (f) => scValPolicies(f.rule)[0];
+  const { f } = await earlierSession({ extra: (fx) => [
+    // A guardian or recovery rule over the account's own functions, limited by some policy.
+    { id: RULE_ID + 2, xdr: recoveryRuleXdr({ id: RULE_ID + 2, context: callContract(fx.f.wallet.contractId), policies: [policyOf(fx)] }) },
+    // A rule whose target is the grant's own policy contract, bound in another rule.
+    { id: RULE_ID + 3, xdr: recoveryRuleXdr({ id: RULE_ID + 3, context: callContract(policyOf(fx)), policies: [policyOf(fx)] }) },
+  ] });
+  const listed = await f.actions['account-rules']({ wallet: f.f.wallet });
+  assert.deepEqual(listed.rules.map((r) => [r.id, r.grant]), [[7, false], [RULE_ID, true], [RULE_ID + 2, false], [RULE_ID + 3, false]]);
+  for (const ruleId of [RULE_ID + 2, RULE_ID + 3]) {
+    await assert.rejects(() => f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId }), /refused/, String(ruleId));
+  }
+  assert.equal(f.submissions.length, 0);
+});
+const scValPolicies = (rule) => rule.map.find((e) => e.key.sym.toString() === 'policies').val.vec.map((v) => Address.fromScVal(v).toString());
+
+test('after a restart, with no account or deployment step, an earlier session\'s grant is still removed', async (t) => {
+  const { f } = await earlierSession();
+  const { network, calls } = restartedNetwork(t, f);
+  assert.equal(network.canSubmit, false, 'a restarted backend has not funded its fee payer yet');
+  const prepared = await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID });
+  assert.match(prepared.action.id, /^[0-9a-f]{64}$/);
+  assert.equal(prepared.limits.feePayer, network.payerAddress);
+  const signed = await f.signEntry(ownerEntryOf(prepared));
+  const result = await f.actions['confirm-earlier-revoke']({ id: prepared.action.id, signedAuthEntriesXdr: signed });
+  assert.equal(result.removal.status, 'removed');
+  assert.deepEqual(f.submissions.map((s) => s.stage), ['revoke-policy']);
+  assert.equal(calls.filter((c) => c === 'send').length, 1);
+  assert.ok(calls.includes('friendbot https://friendbot.stellar.org'), 'the testnet payer was funded for the removal itself');
+});
+
 test('the in-session and the earlier-session removal actions do not consume each other', async () => {
   const { f } = await earlierSession();
   const prepared = await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID });
@@ -111,6 +220,12 @@ test('the page lists the rules, shows the removal it derived itself and collects
   f.actions['prepare-earlier-revoke'] = async (body) => { asked.push(body.ruleId); return request(body); };
   await assert.rejects(() => controller.prepareEarlierRevoke(RECOVERY_ID), /refused/);
   assert.deepEqual(asked, []);
+  // A fee payer that cannot pay (mainnet: the operator has not funded it) refuses with a reason the page explains.
+  const fund = f.network.fundPayer;
+  f.network.fundPayer = async () => { throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' }); };
+  await assert.rejects(() => controller.prepareEarlierRevoke(RULE_ID), (error) => error.reason === 'payer_unfunded');
+  assert.equal(controller.state.earlierRevokePreview, null);
+  f.network.fundPayer = fund;
   await controller.prepareEarlierRevoke(RULE_ID);
   assert.equal(controller.state.earlierRevokePreview.display.installation.from_earlier_session, true);
   await controller.revokeEarlier();
