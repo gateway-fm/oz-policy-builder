@@ -41,12 +41,22 @@ class LauncherTests(unittest.TestCase):
     def test_configuration_requires_immutable_image_and_safe_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            for changes in ({"image": "example.com/worker:latest"}, {"timeout_seconds": 0},
+            # The API refuses a frame naming an image longer than 256 bytes, so such an image would
+            # strand every slot; it is refused here instead, at the boundary that reads it.
+            def image_of(length):
+                return "r.example/" + "a" * (length - len("r.example/@sha256:") - 64) + "@sha256:" + "a" * 64
+            long_image = image_of(257)
+            for changes in ({"image": "example.com/worker:latest"}, {"image": long_image},
+                            {"timeout_seconds": 0},
                             {"cpus": 0}, {"pids": 10000}, {"tmpfs_mib": 5000},
                             {"jobs": 3}, {"privileged": True}):
                 path.write_text(json.dumps(config() | changes))
                 with self.subTest(changes=changes), self.assertRaises(worker.Refused):
                     worker.load_config(path)
+            at_limit = config() | {"image": image_of(256)}
+            self.assertEqual(len(at_limit["image"]), 256)
+            path.write_text(json.dumps(at_limit))
+            self.assertEqual(worker.load_config(path), at_limit)
             path.write_text(json.dumps(config()))
             self.assertEqual(worker.load_config(path), config())
             path.chmod(0o666)

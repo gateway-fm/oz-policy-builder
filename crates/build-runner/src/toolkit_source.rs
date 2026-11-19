@@ -62,13 +62,16 @@ pub(crate) fn probe(root: &Path) -> Option<String> {
 }
 
 /// The git files whose change can move the answer without touching [`INPUTS`]: `HEAD`, the branch
-/// it names, packed refs and the index. Worktree-aware, because `--git-path` resolves each the way
-/// git itself does. Empty when there is no repository.
+/// it names, packed refs, the index, and `HEAD`'s reflog. The reflog is what catches a move of a
+/// packed branch through a loose ref written later (`reset --soft`, `update-ref`), which none of
+/// the others shows. Worktree-aware, because `--git-path` resolves each the way git itself does.
+/// Empty when there is no repository.
 pub(crate) fn git_state_paths(root: &Path) -> Vec<PathBuf> {
     let mut names = vec![
         "HEAD".to_string(),
         "index".to_string(),
         "packed-refs".to_string(),
+        "logs/HEAD".to_string(),
     ];
     if let Some(branch) = git(root, &["symbolic-ref", "-q", "HEAD"]) {
         names.push(branch.trim_end().to_string());

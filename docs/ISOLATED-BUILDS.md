@@ -130,7 +130,8 @@ Toolchain contains `rustc_version`, `stellar_cli_version`, and `builder`. The wo
 claim cleanup. After independently proving the disposable job has ended and its writable
 state is gone, the launcher writes a separate object with schema `contained-build-result/v2`,
 `job_hash` (SHA-256 of the exact stdin bytes), `image` (its configured image, exactly as passed
-to the runtime: `sha256:<64 hex>` or `host[:port]/path@sha256:<64 hex>`), `containment` equal to
+to the runtime: `sha256:<64 hex>` or `host[:port]/path@sha256:<64 hex>`, at most 256 characters,
+a bound the launcher's configuration enforces too), `containment` equal to
 `removed`, and `result` containing the validated worker result or null, after its `ready` line.
 The API refuses a frame whose `image` is not such an immutable identity, and records it in the
 BuildManifest as `producer.build_image`. It is the operator's statement of which image ran, not

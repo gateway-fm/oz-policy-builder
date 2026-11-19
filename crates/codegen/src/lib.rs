@@ -132,16 +132,26 @@ const TEST_MODULE_MARKER: &str = "\n#[cfg(test)]\nmod tests {";
 /// template family is the behavioural version, and the generated source hash says exactly what
 /// was emitted.
 pub fn template_pack_hash() -> Result<Hash32, CodegenError> {
-    const LIB: &str = include_str!("lib.rs");
-    const RENDER: &str = include_str!("render.rs");
-    const LOCKFILE: &str = include_str!("../../../contracts/golden-transfer-policy/Cargo.lock");
-    let (emitter, _tests) = LIB
+    template_pack_of(
+        include_str!("lib.rs"),
+        include_str!("render.rs"),
+        include_str!("../../../contracts/golden-transfer-policy/Cargo.lock"),
+    )
+}
+
+/// [`template_pack_hash`] over given file contents. Line endings are normalized to LF first, so a
+/// checkout with `core.autocrlf` compiles in the same template pack — and still finds the test
+/// module, which is located by an LF marker.
+fn template_pack_of(lib: &str, render: &str, lockfile: &str) -> Result<Hash32, CodegenError> {
+    let lf = |text: &str| text.replace("\r\n", "\n");
+    let lib = lf(lib);
+    let (emitter, _tests) = lib
         .split_once(TEST_MODULE_MARKER)
         .ok_or_else(|| CodegenError::Internal("codegen test module not found".to_string()))?;
     let files = BTreeMap::from([
-        ("contracts/golden-transfer-policy/Cargo.lock", LOCKFILE),
-        ("crates/codegen/src/lib.rs", emitter),
-        ("crates/codegen/src/render.rs", RENDER),
+        ("contracts/golden-transfer-policy/Cargo.lock", lf(lockfile)),
+        ("crates/codegen/src/lib.rs", emitter.to_string()),
+        ("crates/codegen/src/render.rs", lf(render)),
     ]);
     ozpb_domain::canonical_hash(domains::TEMPLATE_PACK, &files)
         .map_err(|e| CodegenError::Internal(e.to_string()))
@@ -2050,6 +2060,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(template_pack_hash().unwrap(), expected);
+
+        // A checkout with CRLF line endings (`core.autocrlf`) holds the same template pack: the
+        // hash is over LF text, and the test-module marker is still found.
+        let crlf = |text: &str| text.replace('\n', "\r\n");
+        assert_eq!(
+            template_pack_of(
+                &crlf(&lib),
+                &crlf(&read("src/render.rs")),
+                &crlf(&read("../../contracts/golden-transfer-policy/Cargo.lock")),
+            )
+            .unwrap(),
+            expected
+        );
     }
 
     /// The target the manifest records is the one the emitted crate declares.

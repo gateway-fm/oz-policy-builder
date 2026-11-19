@@ -326,7 +326,8 @@ which is what makes the dependency visible, but reproducibility still requires t
    the BuildManifest records it as `producer.build_image`, beside the toolkit's own commit and
    dirty flag and the template-pack hash. It is our field rather than `bldimg`: written into the
    Wasm, the image would make a worker build and a host build of one spec two different
-   artifacts, and the default host builder still runs in no container at all.
+   artifacts, and the default builder still compiles in the API's own environment, with no
+   container per build.
 4. Settle an open design question (ℹ️): a generated contract **has no source in the
    repository** — it is created on demand. This is a smaller obstacle than it first appears,
    because SEP-58 keys verification to `source_sha256` over the bytes of a source archive and

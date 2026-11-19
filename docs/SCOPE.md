@@ -226,8 +226,9 @@ The source-reviewed account method inventory and its limits are described in
    The BuildManifest (schema `build-manifest/v2`) carries the fields §6.3 lists: canonicalization
    version, build target, and a producer record with the toolkit's source commit and dirty flag,
    the template-pack hash and, when the optional [worker mode](ISOLATED-BUILDS.md) builds, the
-   image its launcher ran. Two things remain. The default host builder and the
-   [Compose package](SELF-HOSTING.md) run in no container, so their manifests record no image,
+   image its launcher ran. Two things remain. The default builder and the
+   [Compose package](SELF-HOSTING.md) compile in the API's own environment — no container per
+   build, and the Compose package's own image is not recorded — so their manifests name no image,
    and they do **not** isolate one build from another; the memory, disk and cgroup limits in
    §4.6 are claimed only for worker mode, whose acceptance suite checks them on the chosen host.
    And every field is the producer's own statement: the builder is labelled `local-unattested`

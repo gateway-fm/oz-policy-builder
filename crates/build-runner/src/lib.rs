@@ -131,8 +131,9 @@ pub struct BuildProducer {
     /// [`ozpb_codegen::template_pack_hash`]: the emitter source compiled into the toolkit.
     pub template_pack: Hash32,
     /// The image the disposable build worker ran, as its operator-installed launcher reports it
-    /// (an image ID or registry reference pinned by `sha256` digest, never a tag). `None` for a
-    /// build in the API's own process environment, which ran in no container this toolkit knows of.
+    /// (an image ID or registry reference pinned by `sha256` digest, never a tag). `None` when the
+    /// API compiles in its own environment — on a host, or inside the Compose package's single
+    /// container, whose image the API does not know and so does not record.
     pub build_image: Option<String>,
 }
 
@@ -198,18 +199,25 @@ pub fn compare_manifests(
     claimed: &serde_json::Value,
     reproduced: &serde_json::Value,
 ) -> ManifestMatch {
-    let parse = |value: &serde_json::Value| serde_json::from_value::<BuildManifest>(value.clone());
-    let (Ok(claimed), Ok(reproduced)) = (parse(claimed), parse(reproduced)) else {
+    // Parsed only to hold both to the schema. The comparison is of the JSON as written: parsing
+    // normalizes (a hash decodes from uppercase hex too), and the claim is what a binding set
+    // keeps, so it has to be the reproduced record exactly, not merely decode to it.
+    let parses =
+        |value: &serde_json::Value| serde_json::from_value::<BuildManifest>(value.clone()).is_ok();
+    if !parses(claimed) || !parses(reproduced) {
         return ManifestMatch::Differs;
-    };
+    }
     if claimed == reproduced {
         return ManifestMatch::Identical;
     }
-    let without_producer = BuildManifest {
-        producer: reproduced.producer.clone(),
-        ..claimed
+    let without_producer = |value: &serde_json::Value| {
+        let mut value = value.clone();
+        if let Some(object) = value.as_object_mut() {
+            object.remove("producer");
+        }
+        value
     };
-    if without_producer == reproduced {
+    if without_producer(claimed) == without_producer(reproduced) {
         ManifestMatch::ExceptProducer
     } else {
         ManifestMatch::Differs
@@ -1045,6 +1053,18 @@ fn build_local(
     let target_dir = resolve_target_dir(config, workspace.path());
     prepare_cache_dir(&target_dir)?;
     let manifest_path = workspace.path().join("Cargo.toml");
+    // The manifest records `build_target` from the crate's own declaration. The CLI picks the
+    // triple, not us, so after the build we confirm it wrote under that one, which makes the
+    // field a checked claim about this build. The cache is shared and crate names repeat, so an
+    // earlier build's file is usually there already: it counts only if written during this
+    // build. Not removed beforehand instead, because a concurrent build of a same-named crate
+    // shares the path, and removing its fresh output would fail that build.
+    let expected_name = format!("{}.wasm", request.generated.crate_name.replace('-', "_"));
+    let compiled = target_dir
+        .join(ozpb_codegen::BUILD_TARGET)
+        .join("release")
+        .join(&expected_name);
+    let started = std::time::SystemTime::now();
 
     let command = build_command(
         config,
@@ -1062,15 +1082,7 @@ fn build_local(
         )));
     }
 
-    let expected_name = format!("{}.wasm", request.generated.crate_name.replace('-', "_"));
-    // The manifest records `build_target` from the crate's own declaration. The CLI picks the
-    // triple, not us, so confirm cargo wrote its output under that one: the field is then a
-    // checked claim about this build rather than a restatement of the crate.
-    let compiled = target_dir
-        .join(ozpb_codegen::BUILD_TARGET)
-        .join("release")
-        .join(&expected_name);
-    if !compiled.is_file() {
+    if !written_since(&compiled, started) {
         return Err(BuildError::Unavailable(
             "the builder did not compile for the target the crate declares".to_string(),
         ));
@@ -1117,6 +1129,24 @@ fn build_local(
         manifest_hash,
         wasm,
     })
+}
+
+/// Allowance for filesystems that store modification times coarsely (whole or even two seconds):
+/// a file written during the build must not read as older than its start.
+const MTIME_GRANULARITY: Duration = Duration::from_secs(2);
+
+/// Whether `path` is a regular file modified at or after `started`, within [`MTIME_GRANULARITY`].
+/// `stellar contract build` rewrites its target-directory Wasm on every build, cache hit or not
+/// (measured with 27.0.0), so a file this old was left by some earlier build.
+fn written_since(path: &Path, started: std::time::SystemTime) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let earliest = started.checked_sub(MTIME_GRANULARITY).unwrap_or(started);
+    metadata.file_type().is_file() && modified >= earliest
 }
 
 fn validate_generated(generated: &GeneratedCrate) -> Result<(), BuildError> {
@@ -1872,11 +1902,11 @@ mod tests {
         if toolkit_source_probe::probe(&root).is_none() {
             return; // no checkout: nothing recorded, nothing to watch
         }
-        for name in ["HEAD", "index"] {
+        for name in ["HEAD", "index", "logs/HEAD"] {
             assert!(
                 paths
                     .iter()
-                    .any(|path| path.file_name().is_some_and(|f| f == name) && path.is_file()),
+                    .any(|path| path.ends_with(name) && path.is_file()),
                 "{name} is not among the watched paths {paths:?}"
             );
         }
@@ -1889,9 +1919,17 @@ mod tests {
         let outer = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
             Command::new("git")
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
                 .arg("-C")
                 .arg(outer.path())
                 .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
                 .output()
                 .map(|output| output.status.success())
                 .unwrap_or(false)
@@ -1910,6 +1948,7 @@ mod tests {
                 "user.email=t@example.invalid",
                 "commit",
                 "-q",
+                "--no-verify",
                 "--allow-empty",
                 "-m",
                 "outer"
@@ -1955,6 +1994,15 @@ mod tests {
                 ManifestMatch::Differs
             );
         }
+
+        // The claim is compared as written, not as parsed: a hash spelled in uppercase decodes
+        // to the same bytes but is not the record a reproduction emits.
+        let mut uppercase = reproduced.clone();
+        uppercase["wasm_hash"] = manifest.wasm_hash.to_hex().to_uppercase().into();
+        assert_eq!(
+            compare_manifests(&uppercase, &reproduced),
+            ManifestMatch::Differs
+        );
 
         // Schema 1 cannot match: it lacks fields schema 2 requires.
         let mut v1 = reproduced.clone();
@@ -2880,6 +2928,22 @@ mod tests {
             target_dir: Some(dir.path().join("target")),
             ..BuildConfig::default()
         };
+        // The cache is shared across builds and crate names repeat, so an earlier build's output
+        // is usually already there. It must not stand in for this build's.
+        let leftover = dir
+            .path()
+            .join("target")
+            .join(ozpb_codegen::BUILD_TARGET)
+            .join("release");
+        std::fs::create_dir_all(&leftover).unwrap();
+        let leftover = leftover.join("generated_test_r0.wasm");
+        std::fs::write(&leftover, b"\0asm").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&leftover)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
         match build_local(&request, &config) {
             Err(BuildError::Unavailable(message)) => {
                 assert!(message.contains("target the crate declares"), "{message}")

@@ -785,9 +785,25 @@ time.sleep(30)"#;
             assert!(run(&generated(), &config).is_err(), "{image}");
             assert_eq!(slots.available(), 0, "{image}");
         }
+        // The longest reference the launcher's configuration admits, 256 characters, and one more.
+        let reference = |length: usize| {
+            format!(
+                "'r.example/'+'a'*{}+'@sha256:'+'ab'*32",
+                length - "r.example/@sha256:".len() - 64
+            )
+        };
+        let too_long = CONFIRMED_FAILURE.replace("'sha256:'+'ab'*32", &reference(257));
+        let (_directory, config, slots) = launcher(&too_long);
+        assert!(run(&generated(), &config).is_err());
+        assert_eq!(
+            slots.available(),
+            0,
+            "257 characters is past the shared bound"
+        );
         for image in [
             "'sha256:'+'ab'*32",
             "'registry.example:5000/ozpb/worker@sha256:'+'ab'*32",
+            reference(256).as_str(),
         ] {
             let body = CONFIRMED_FAILURE.replace("'sha256:'+'ab'*32", image);
             let (_directory, config, slots) = launcher(&body);

@@ -632,7 +632,8 @@ impl GeneratedPolicy {
   Reproducible wasm: pinned Rust toolchain (`rust-toolchain.toml`), `--locked` builds, and the
   pinned `stellar contract build` whose version the manifest records and the artifact's own
   metadata confirms. The optional disposable worker ([`ISOLATED-BUILDS.md`](ISOLATED-BUILDS.md))
-  records the image it ran in the manifest; the default host builder runs in no container (§6.3).
+  records the image it ran in the manifest; the default builder compiles in the API's own
+  environment and records none (§6.3).
   The artifact states its own origin in SEP-46 `contractmetav0` entries — generator and codegen
   version, template family, normalized codegen-input hash — readable with `stellar contract info
   meta`. Only values the normalized input determines may go there, since they are compiled in:
@@ -1391,8 +1392,9 @@ reviewed.
 > the toolkit's own source commit and dirty flag as its build recorded them (`null` when that
 > build had no checkout to ask, as for the container image), the template-pack hash (the emitter
 > source compiled into the toolkit), and the build-container image — the disposable worker's
-> image ID or digest as its launcher reports it, `null` for a build on the API's host, which runs
-> in no container. "Source commit" is the *toolkit's*: a generated crate has no commit, and the
+> image ID or digest as its launcher reports it, `null` when the API compiles in its own
+> environment (on a host, or inside the Compose package's one container, whose image is not
+> recorded). "Source commit" is the *toolkit's*: a generated crate has no commit, and the
 > generated source is bound by `source_hash` instead. `verify` and binding recognition reproduce
 > every field except `producer`, which describes the build that made a claim and is reported
 > rather than compared. Every field is the producer's own statement; none is attested. Two

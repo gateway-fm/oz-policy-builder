@@ -80,8 +80,10 @@ def load_config(path=CONFIG):
     config = decode(raw)
     if set(config) != {"image", "timeout_seconds", "cpus", "memory_mib", "pids", "tmpfs_mib", "jobs"}:
         raise Refused()
-    # Locally loaded image ID or fully qualified digest; tags and implicit pulls are forbidden.
-    if not isinstance(config["image"], str) or not re.fullmatch(
+    # Locally loaded image ID or fully qualified digest; tags and implicit pulls are forbidden. At
+    # most 256 characters, the bound the API holds the frame's `image` to: a longer one would be
+    # refused on every build, after the job, with its slot retained.
+    if not isinstance(config["image"], str) or len(config["image"]) > 256 or not re.fullmatch(
         r"(?:sha256:|[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+@sha256:)[0-9a-f]{64}", config["image"]
     ):
         raise Refused()
