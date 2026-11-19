@@ -1685,6 +1685,50 @@ mod tests {
             assert_eq!(err.code, EC::EIncompatibleAccount);
         }
 
+        /// Anyone can attach an authorization entry for someone else's account to their own
+        /// successful transaction: the network never checks an entry no `require_auth` reaches.
+        /// Such an entry, naming the fixture account and a payment out of it, must leave the
+        /// account neither derivable nor selectable — otherwise a stranger's transaction would
+        /// be read as the account having authorized that payment.
+        #[test]
+        fn an_entry_the_network_never_checked_selects_no_account() {
+            use ozpb_recorder_core::fixtures as rec;
+            use stellar_xdr::{Limits, SorobanCredentials, WriteXdr};
+            let stranger = EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                rec::envelope_with(vec![
+                    rec::auth_entry(SorobanCredentials::SourceAccount),
+                    rec::auth_entry(rec::address_credentials(99)),
+                ])
+                .to_xdr_base64(Limits::none())
+                .unwrap(),
+                Some(
+                    rec::meta_v3_consuming(&[])
+                        .to_xdr_base64(Limits::none())
+                        .unwrap(),
+                ),
+                4_200_100,
+                1_780_000_000,
+                true,
+            )
+            .with_rpc_result(rec::transaction_result_base64(true))
+            .with_contract_executables(rec::observed_executables());
+            let rec = record_snapshot(&stranger, RecordOptions::default()).unwrap();
+            let bundle: RecordingBundle = serde_json::from_value(rec.bundle.clone()).unwrap();
+            assert!(bundle
+                .authorizations
+                .iter()
+                .all(|a| a.authorizer != fx::golden_account_strkey()));
+
+            let err = derive_selected_authorizer(&[bundle]).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound);
+
+            let mut named = explicit();
+            named.bundles = vec![rec.bundle];
+            let err = synthesize_policy(&named, &registry_trust()).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound, "{}", err.message);
+        }
+
         /// A recording whose only authorizer is a classic account has no account to synthesize
         /// for — the case behind the funding transfer in the demo, which records fine and
         /// cannot be synthesized from.

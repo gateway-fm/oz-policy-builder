@@ -278,7 +278,10 @@ pub struct RecordingBundle {
     pub ledger: Option<LedgerSeq>,
     pub created_at_unix: Option<i64>,
     pub operation_index: u32,
-    /// One record per address-level authorization entry.
+    /// One record per authorization entry the evidence shows authorized: every simulated and
+    /// source-account entry, and an executed address credential only when the selected
+    /// operation's meta shows the host consuming its nonce. Any other entry was never checked
+    /// by the network and is reported in `evidence_notes` instead.
     pub authorizations: Vec<AuthorizationRecord>,
     /// Explanatory evidence only — never drives constraints automatically.
     pub token_movements: Vec<TokenMovement>,
@@ -816,25 +819,36 @@ fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordErro
     };
 
     // Locate InvokeHostFunction operations; multi-op requires explicit selection.
-    let soroban_ops: Vec<(u32, &stellar_xdr::InvokeHostFunctionOp)> = tx
+    let soroban_ops: Vec<(
+        u32,
+        &stellar_xdr::Operation,
+        &stellar_xdr::InvokeHostFunctionOp,
+    )> = tx
         .operations
         .iter()
         .enumerate()
         .filter_map(|(i, op)| match &op.body {
-            OperationBody::InvokeHostFunction(ihf) => Some((i as u32, ihf)),
+            OperationBody::InvokeHostFunction(ihf) => Some((i as u32, op, ihf)),
             _ => None,
         })
         .collect();
 
-    let (operation_index, op) = match (soroban_ops.len(), parts.operation_index) {
+    let (operation_index, operation, op) = match (soroban_ops.len(), parts.operation_index) {
         (0, _) => return Err(RecordError::NoSorobanOp),
         (1, None) => soroban_ops[0],
         (n, None) => return Err(RecordError::OperationSelection(n)),
         (_, Some(want)) => *soroban_ops
             .iter()
-            .find(|(i, _)| *i == want)
+            .find(|(i, _, _)| *i == want)
             .ok_or(RecordError::NoSorobanOp)?,
     };
+    // The host runs the operation as its own source account when it names one, and only
+    // otherwise as the (inner) transaction's: that account is what a source-account
+    // credential authorizes for.
+    let operation_source = operation
+        .source_account
+        .as_ref()
+        .unwrap_or(&tx.source_account);
 
     // Auth entries: executed txs carry them in the envelope; simulations supply them
     // from the RPC record-mode response. Same XDR type either way.
@@ -852,16 +866,19 @@ fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordErro
         op.auth.iter().cloned().collect()
     };
 
-    let mut authorizations = Vec::new();
+    let decoded = auth_entries
+        .iter()
+        .map(|entry| decode_auth_entry(entry, operation_source))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut evidence_notes = Vec::new();
-    for entry in &auth_entries {
-        authorizations.push(decode_auth_entry(entry, tx)?);
-    }
 
     // Token movements + state changes from meta (evidence only). Tolerant: undecodable
     // events become notes, never guesses.
     let mut token_movements = Vec::new();
     let mut state_changes = parts.simulated_state_changes;
+    // Address-credential nonces the selected operation consumed — the meta's record of which
+    // entries the host actually authenticated.
+    let mut consumed_nonces = Vec::new();
     if let Some(meta_b64) = &parts.raw.result_meta_xdr_base64 {
         let meta = TransactionMeta::from_xdr_base64(meta_b64, xdr_limits())
             .map_err(|e| map_xdr_parse_error("result meta", e, RecordError::MetaParse))?;
@@ -878,6 +895,7 @@ fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordErro
                         StateChangeSource::Operation,
                         &mut state_changes,
                     );
+                    collect_consumed_nonces(&om.changes, &mut consumed_nonces);
                 }
                 collect_changes(
                     &v3.tx_changes_after,
@@ -901,6 +919,7 @@ fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordErro
                         StateChangeSource::Operation,
                         &mut state_changes,
                     );
+                    collect_consumed_nonces(&om.changes, &mut consumed_nonces);
                 }
                 collect_changes(
                     &v4.tx_changes_after,
@@ -927,6 +946,53 @@ fn decode_recording(parts: RecordingParts) -> Result<RecordingBundle, RecordErro
         }
     } else if parts.execution != Execution::Simulated {
         evidence_notes.push("no result meta available; token movements unknown".to_string());
+    }
+
+    // An executed envelope's entries are what the submitter attached, not what the network
+    // checked: the host authenticates an address credential only when a `require_auth` call
+    // reaches its tree, and a transaction succeeds with entries nothing used. The proof that
+    // one was checked is its nonce written in the operation's meta — only the host's
+    // `consume_nonce` writes a nonce key, after the signature verified. A source-account
+    // credential has no nonce; the operation source's signature on the transaction is its
+    // authorization. A simulation's entries are the host's own record of which addresses the
+    // call required, unsigned, so there is nothing to prove.
+    let mut authorizations = Vec::new();
+    for (index, (entry, record)) in auth_entries.iter().zip(decoded).enumerate() {
+        let unproven = match credential_nonce(entry) {
+            _ if parts.execution == Execution::Simulated => None,
+            None => None,
+            Some(own)
+                if auth_entries
+                    .iter()
+                    .filter(|other| credential_nonce(other) == Some(own))
+                    .count()
+                    > 1 =>
+            {
+                Some(format!(
+                    "another entry for the same address carries nonce {}, which the host \
+                     consumes once, and the meta cannot say which entry it checked",
+                    own.1
+                ))
+            }
+            Some((address, nonce))
+                if consumed_nonces
+                    .iter()
+                    .any(|(consumed, n)| consumed == address && *n == nonce) =>
+            {
+                None
+            }
+            Some((_, nonce)) => Some(format!(
+                "the selected operation's result meta does not show its nonce {nonce} \
+                 consumed, so nothing shows the network checked its signature"
+            )),
+        };
+        match unproven {
+            None => authorizations.push(record),
+            Some(reason) => evidence_notes.push(format!(
+                "authorization entry {index} for {} is not authorization evidence: {reason}",
+                record.authorizer
+            )),
+        }
     }
 
     Ok(RecordingBundle {
@@ -1178,15 +1244,51 @@ fn insert_contract_address(
     }
 }
 
+/// The address and nonce an address credential's signature is bound to — the key the host
+/// consumes when it authenticates the entry. `None` for a source-account credential, which
+/// carries neither.
+fn credential_nonce(entry: &SorobanAuthorizationEntry) -> Option<(&ScAddress, i64)> {
+    match &entry.credentials {
+        SorobanCredentials::SourceAccount => None,
+        SorobanCredentials::Address(c) | SorobanCredentials::AddressV2(c) => {
+            Some((&c.address, c.nonce))
+        }
+        SorobanCredentials::AddressWithDelegates(c) => {
+            Some((&c.address_credentials.address, c.address_credentials.nonce))
+        }
+    }
+}
+
+/// Every nonce these operation changes show the host consuming: a created temporary
+/// contract-data entry under the authorizer, keyed `LedgerKeyNonce`. Contract code cannot name
+/// that key (it has no `Val` form), so the host's `consume_nonce` is its only writer, and it
+/// writes it only where no live nonce exists — hence `Created`.
+fn collect_consumed_nonces(
+    changes: &stellar_xdr::LedgerEntryChanges,
+    out: &mut Vec<(ScAddress, i64)>,
+) {
+    for change in changes.iter() {
+        if let stellar_xdr::LedgerEntryChange::Created(stellar_xdr::LedgerEntry {
+            data: stellar_xdr::LedgerEntryData::ContractData(data),
+            ..
+        }) = change
+        {
+            if let ScVal::LedgerKeyNonce(key) = &data.key {
+                out.push((data.contract.clone(), key.nonce));
+            }
+        }
+    }
+}
+
 fn decode_auth_entry(
     entry: &SorobanAuthorizationEntry,
-    tx: &stellar_xdr::Transaction,
+    operation_source: &stellar_xdr::MuxedAccount,
 ) -> Result<AuthorizationRecord, RecordError> {
     // Resolve the authorizer + credential arm. All four Protocol ≤27 arms are handled;
     // anything new fails closed at the XDR parse layer.
     let (authorizer_sc, credential): (ScAddress, CredentialRecord) = match &entry.credentials {
         SorobanCredentials::SourceAccount => {
-            let source = muxed_to_scaddress(&tx.source_account)?;
+            let source = muxed_to_scaddress(operation_source)?;
             (source, CredentialRecord::SourceAccount)
         }
         SorobanCredentials::Address(c) => (
@@ -1899,11 +2001,52 @@ pub mod fixtures {
             .unwrap()
     }
 
+    /// The nonce of the fixture account's address credential in [`executed_snapshot`].
+    pub const FIXTURE_NONCE: i64 = 12345;
+
+    /// Meta v3 of the fixture transaction as the network emits it: operation 0 consumed the
+    /// account's [`FIXTURE_NONCE`] and the token emitted the transfer event.
     pub fn meta_v3() -> TransactionMeta {
+        meta_v3_consuming(&[(account_sc(), FIXTURE_NONCE)])
+    }
+
+    /// The ledger change the host writes into operation meta when it accepts an address
+    /// credential: a temporary contract-data entry under the authorizer, keyed by the
+    /// credential's nonce (`soroban-env-host` `Host::consume_nonce`).
+    pub fn nonce_consumed(address: ScAddress, nonce: i64) -> stellar_xdr::LedgerEntryChange {
+        use stellar_xdr::{
+            ContractDataDurability, ContractDataEntry, LedgerEntry, LedgerEntryData,
+            LedgerEntryExt, ScNonceKey,
+        };
+        stellar_xdr::LedgerEntryChange::Created(LedgerEntry {
+            last_modified_ledger_seq: 4_200_100,
+            data: LedgerEntryData::ContractData(ContractDataEntry {
+                ext: ExtensionPoint::V0,
+                contract: address,
+                key: ScVal::LedgerKeyNonce(ScNonceKey { nonce }),
+                durability: ContractDataDurability::Temporary,
+                val: ScVal::Void,
+            }),
+            ext: LedgerEntryExt::V0,
+        })
+    }
+
+    /// Meta v3 of an executed fixture transaction whose operation 0 consumed each
+    /// `(address, nonce)` and emitted the fixture transfer event.
+    pub fn meta_v3_consuming(nonces: &[(ScAddress, i64)]) -> TransactionMeta {
+        use stellar_xdr::OperationMeta;
+        let changes: Vec<stellar_xdr::LedgerEntryChange> = nonces
+            .iter()
+            .map(|(address, nonce)| nonce_consumed(address.clone(), *nonce))
+            .collect();
         TransactionMeta::V3(TransactionMetaV3 {
             ext: ExtensionPoint::V0,
             tx_changes_before: Default::default(),
-            operations: Default::default(),
+            operations: vec![OperationMeta {
+                changes: changes.try_into().unwrap(),
+            }]
+            .try_into()
+            .unwrap(),
             tx_changes_after: Default::default(),
             soroban_meta: Some(SorobanTransactionMeta {
                 ext: SorobanTransactionMetaExt::V0,
@@ -1965,7 +2108,7 @@ pub mod fixtures {
     pub fn executed_snapshot_on(network_passphrase: &str) -> EvidenceSnapshot {
         EvidenceSnapshot::from_rpc_transaction(
             network_passphrase,
-            envelope_with(vec![auth_entry(address_credentials(12345))])
+            envelope_with(vec![auth_entry(address_credentials(FIXTURE_NONCE))])
                 .to_xdr_base64(Limits::none())
                 .unwrap(),
             Some(meta_v3().to_xdr_base64(Limits::none()).unwrap()),
@@ -1984,7 +2127,7 @@ pub mod fixtures {
     pub fn imported_snapshot(with_transaction_result: bool) -> EvidenceSnapshot {
         EvidenceSnapshot::from_import(
             ozpb_domain::TESTNET_PASSPHRASE,
-            envelope_with(vec![auth_entry(address_credentials(12345))])
+            envelope_with(vec![auth_entry(address_credentials(FIXTURE_NONCE))])
                 .to_xdr_base64(Limits::none())
                 .unwrap(),
             Some(meta_v3().to_xdr_base64(Limits::none()).unwrap()),
@@ -2131,7 +2274,7 @@ mod tests {
     fn approve_event_records_spender_amount_and_expiration() {
         let snapshot = EvidenceSnapshot::from_rpc_transaction(
             ozpb_domain::TESTNET_PASSPHRASE,
-            envelope_with(vec![auth_entry(address_credentials(12345))])
+            envelope_with(vec![auth_entry(address_credentials(FIXTURE_NONCE))])
                 .to_xdr_base64(Limits::none())
                 .unwrap(),
             Some(
@@ -2308,7 +2451,11 @@ mod tests {
         let snap = EvidenceSnapshot::from_rpc_transaction(
             ozpb_domain::TESTNET_PASSPHRASE,
             env.to_xdr_base64(Limits::none()).unwrap(),
-            None,
+            Some(
+                meta_v3_consuming(&[(account_sc(), 5)])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+            ),
             1,
             1,
             true,
@@ -2346,7 +2493,11 @@ mod tests {
         let snap = EvidenceSnapshot::from_rpc_transaction(
             ozpb_domain::TESTNET_PASSPHRASE,
             env.to_xdr_base64(Limits::none()).unwrap(),
-            None,
+            Some(
+                meta_v3_consuming(&[(account_sc(), 6)])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+            ),
             1,
             1,
             true,
@@ -2379,7 +2530,11 @@ mod tests {
         let snap = EvidenceSnapshot::from_rpc_transaction(
             ozpb_domain::TESTNET_PASSPHRASE,
             fb.to_xdr_base64(Limits::none()).unwrap(),
-            None,
+            Some(
+                meta_v3_consuming(&[(account_sc(), 1)])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+            ),
             1,
             1,
             true,
@@ -2493,19 +2648,47 @@ mod tests {
             tx,
             signatures: Default::default(),
         });
-        let snap = EvidenceSnapshot::from_rpc_transaction(
-            ozpb_domain::TESTNET_PASSPHRASE,
-            env.to_xdr_base64(Limits::none()).unwrap(),
-            None,
-            1,
-            1,
-            true,
-        );
+        let contract = |cid: [u8; 32]| ScAddress::Contract(ContractId(Hash(cid)));
+        // Each operation's meta consumes the nonces given for it.
+        let with_meta = |per_operation: [(ScAddress, i64); 2]| {
+            let mut meta = meta_v3_consuming(&[]);
+            let TransactionMeta::V3(v3) = &mut meta else {
+                panic!("the fixture meta is v3");
+            };
+            v3.operations = per_operation
+                .into_iter()
+                .map(|(address, nonce)| stellar_xdr::OperationMeta {
+                    changes: vec![nonce_consumed(address, nonce)].try_into().unwrap(),
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+            EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                env.to_xdr_base64(Limits::none()).unwrap(),
+                Some(meta.to_xdr_base64(Limits::none()).unwrap()),
+                1,
+                1,
+                true,
+            )
+        };
+        let snap = with_meta([(contract([0x11; 32]), 1), (contract([0x22; 32]), 2)]);
+        // A nonce consumed by the other operation proves nothing about the selected one.
+        let crossed = with_meta([(contract([0x22; 32]), 2), (contract([0x11; 32]), 1)]);
 
         for (index, cid, fn_name, nonce) in [
             (0u32, [0x11u8; 32], "transfer", 1i64),
             (1, [0x22; 32], "swap", 2),
         ] {
+            let unproven = record(
+                &crossed,
+                RecordOptions {
+                    operation_index: Some(index),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(unproven.authorizations.is_empty(), "operation {index}");
             let b = record(
                 &snap,
                 RecordOptions {
@@ -2680,6 +2863,388 @@ mod tests {
             format!("{}", stellar_strkey::ed25519::PublicKey(fee_source_key)),
             "the fee source must never be presented as the authorizer"
         );
+    }
+
+    /// The host runs an operation as its own source account when it names one, and a
+    /// source-account credential is that account's authorization — not the transaction's.
+    #[test]
+    fn a_source_account_credential_belongs_to_the_operation_source_when_it_names_one() {
+        let transaction_source_key = [9u8; 32]; // transaction_with()'s source account
+        let operation_source_key = [5u8; 32];
+        let mut tx = transaction_with(vec![auth_entry(SorobanCredentials::SourceAccount)]);
+        let mut operations = tx.operations.to_vec();
+        operations[0].source_account = Some(MuxedAccount::Ed25519(Uint256(operation_source_key)));
+        tx.operations = operations.try_into().unwrap();
+        let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+            tx,
+            signatures: Default::default(),
+        });
+        let snap = EvidenceSnapshot::from_rpc_transaction(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope.to_xdr_base64(Limits::none()).unwrap(),
+            None,
+            1,
+            1,
+            true,
+        );
+        let b = record(&snap, RecordOptions::default()).unwrap();
+        let [authorization] = b.authorizations.as_slice() else {
+            panic!("one authorization: {:?}", b.authorizations);
+        };
+        assert_eq!(authorization.credential, CredentialRecord::SourceAccount);
+        assert_eq!(
+            authorization.authorizer,
+            format!(
+                "{}",
+                stellar_strkey::ed25519::PublicKey(operation_source_key)
+            )
+        );
+        assert_ne!(
+            authorization.authorizer,
+            format!(
+                "{}",
+                stellar_strkey::ed25519::PublicKey(transaction_source_key)
+            )
+        );
+    }
+
+    /// An executed recording of `entries`, whose operation 0 consumed exactly `consumed`.
+    fn executed_with_consumed(
+        entries: Vec<SorobanAuthorizationEntry>,
+        consumed: &[(ScAddress, i64)],
+    ) -> RecordingBundle {
+        let snap = EvidenceSnapshot::from_rpc_transaction(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope_with(entries)
+                .to_xdr_base64(Limits::none())
+                .unwrap(),
+            Some(
+                meta_v3_consuming(consumed)
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+            ),
+            4_200_100,
+            1_780_000_000,
+            true,
+        )
+        .with_rpc_result(transaction_result_base64(true));
+        record(&snap, RecordOptions::default()).unwrap()
+    }
+
+    /// The host checks an address credential lazily: only an entry whose tree a `require_auth`
+    /// call reaches is authenticated and has its nonce consumed, and the transaction succeeds
+    /// with an extra entry nobody used (`soroban-env-host` 30, `test/auth.rs`: "Correct call
+    /// with an unused extra contract signature"). Such an entry's signature was never checked,
+    /// so it is no evidence that its address authorized anything — even in a successful,
+    /// RPC-reported transaction.
+    #[test]
+    fn an_entry_the_network_never_checked_is_not_authorization_evidence() {
+        use stellar_xdr::{ContractId, Hash, InvokeContractArgs, ScSymbol};
+        let victim = ScAddress::Contract(ContractId(Hash([0x77; 32])));
+        let garbage = SorobanAuthorizationEntry {
+            credentials: SorobanCredentials::Address(SorobanAddressCredentials {
+                address: victim.clone(),
+                nonce: 99,
+                signature_expiration_ledger: 4_210_000,
+                signature: ScVal::Bytes(vec![0xde; 64].try_into().unwrap()),
+            }),
+            root_invocation: SorobanAuthorizedInvocation {
+                function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+                    contract_address: token_sc(),
+                    function_name: ScSymbol("transfer".as_bytes().try_into().unwrap()),
+                    args: vec![
+                        ScVal::Address(victim.clone()),
+                        ScVal::Address(merchant_sc()),
+                        i128_val(AMOUNT),
+                    ]
+                    .try_into()
+                    .unwrap(),
+                }),
+                sub_invocations: Default::default(),
+            },
+        };
+        let b = executed_with_consumed(
+            vec![auth_entry(address_credentials(12345)), garbage.clone()],
+            &[(account_sc(), 12345)],
+        );
+        let victim_strkey = format!("{}", stellar_strkey::Contract([0x77; 32]));
+        let authorizers: Vec<&str> = b
+            .authorizations
+            .iter()
+            .map(|a| a.authorizer.as_str())
+            .collect();
+        assert_eq!(
+            authorizers,
+            [format!("{}", stellar_strkey::Contract(ACCOUNT_CID))],
+            "only the entry whose nonce the network consumed is authorization evidence"
+        );
+        assert!(
+            b.evidence_notes
+                .iter()
+                .any(|note| note.starts_with("authorization entry 1 ")
+                    && note.contains(&victim_strkey)),
+            "the unchecked entry is reported, not dropped: {:?}",
+            b.evidence_notes
+        );
+        assert_eq!(b.verify().unwrap(), b.recording_hash().unwrap());
+
+        // What the recorder used to derive from this evidence — the unchecked entry decoded as an
+        // authorization, and no note about it — no longer verifies.
+        let mut forged = b.clone();
+        forged
+            .authorizations
+            .push(decode_auth_entry(&garbage, &MuxedAccount::Ed25519(Uint256([9u8; 32]))).unwrap());
+        forged
+            .evidence_notes
+            .retain(|note| !note.contains(&victim_strkey));
+        assert!(matches!(
+            forged.verify(),
+            Err(RecordError::EvidenceIncoherent(message)) if message.contains("authorizations")
+        ));
+    }
+
+    /// Only a nonce the selected operation *created* proves its entry. A nonce key outside the
+    /// operation's changes, or in any other change kind, is not what `consume_nonce` writes for
+    /// an entry it has just authenticated.
+    #[test]
+    fn only_a_nonce_created_by_the_operation_proves_its_entry() {
+        let created = nonce_consumed(account_sc(), 7);
+        let stellar_xdr::LedgerEntryChange::Created(entry) = created.clone() else {
+            panic!("the fixture change is a creation");
+        };
+        let changes =
+            |list: Vec<stellar_xdr::LedgerEntryChange>| -> stellar_xdr::LedgerEntryChanges {
+                list.try_into().unwrap()
+            };
+        let operation = |list: Vec<stellar_xdr::LedgerEntryChange>| {
+            vec![stellar_xdr::OperationMeta {
+                changes: changes(list),
+            }]
+            .try_into()
+            .unwrap()
+        };
+        let record_with = |mutate: &dyn Fn(&mut stellar_xdr::TransactionMetaV3)| {
+            let mut meta = meta_v3_consuming(&[]);
+            let TransactionMeta::V3(v3) = &mut meta else {
+                panic!("the fixture meta is v3");
+            };
+            mutate(v3);
+            let snap = EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                envelope_with(vec![auth_entry(address_credentials(7))])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+                Some(meta.to_xdr_base64(Limits::none()).unwrap()),
+                1,
+                1,
+                true,
+            );
+            record(&snap, RecordOptions::default())
+                .unwrap()
+                .authorizations
+                .len()
+        };
+        assert_eq!(
+            record_with(&|v3| v3.operations = operation(vec![created.clone()])),
+            1
+        );
+        for (name, kept) in [
+            (
+                "updated in the operation",
+                record_with(&|v3| {
+                    v3.operations = operation(vec![
+                        stellar_xdr::LedgerEntryChange::State(entry.clone()),
+                        stellar_xdr::LedgerEntryChange::Updated(entry.clone()),
+                    ])
+                }),
+            ),
+            (
+                "restored in the operation",
+                record_with(&|v3| {
+                    v3.operations = operation(vec![stellar_xdr::LedgerEntryChange::Restored(
+                        entry.clone(),
+                    )])
+                }),
+            ),
+            (
+                "created before the operation",
+                record_with(&|v3| v3.tx_changes_before = changes(vec![created.clone()])),
+            ),
+            (
+                "created after the operation",
+                record_with(&|v3| v3.tx_changes_after = changes(vec![created.clone()])),
+            ),
+        ] {
+            assert_eq!(kept, 0, "a nonce {name} proves nothing");
+        }
+    }
+
+    /// A consumed nonce proves its own entry only: the nonce key names the address it belongs
+    /// to, and another address's nonce, or another nonce of the same address, says nothing
+    /// about this entry.
+    #[test]
+    fn only_the_entrys_own_address_and_nonce_prove_it_was_checked() {
+        for (consumed, kept) in [
+            (vec![(account_sc(), 7)], true),
+            (vec![(merchant_sc(), 1), (account_sc(), 7)], true),
+            (vec![(account_sc(), 8)], false),
+            (vec![(merchant_sc(), 7)], false),
+            (vec![], false),
+        ] {
+            let b = executed_with_consumed(vec![auth_entry(address_credentials(7))], &consumed);
+            assert_eq!(b.authorizations.len(), usize::from(kept), "{consumed:?}");
+            assert_eq!(
+                b.evidence_notes
+                    .iter()
+                    .filter(|note| note.starts_with("authorization entry 0 "))
+                    .count(),
+                usize::from(!kept),
+                "{consumed:?}: {:?}",
+                b.evidence_notes
+            );
+        }
+    }
+
+    /// The host consumes a nonce once; a second entry with the same address and nonce fails if
+    /// it is reached at all. So in a successful transaction at most one of two such entries was
+    /// checked, and the meta cannot say which — neither is evidence.
+    #[test]
+    fn entries_sharing_one_consumed_nonce_prove_neither() {
+        let mut second = auth_entry(address_credentials(7));
+        let SorobanAuthorizedFunction::ContractFn(call) = &mut second.root_invocation.function
+        else {
+            panic!("the fixture authorizes a contract call");
+        };
+        let mut args = call.args.to_vec();
+        args[2] = i128_val(AMOUNT * 2);
+        call.args = args.try_into().unwrap();
+        let b = executed_with_consumed(
+            vec![auth_entry(address_credentials(7)), second],
+            &[(account_sc(), 7)],
+        );
+        assert!(b.authorizations.is_empty(), "{:?}", b.authorizations);
+        for index in 0..2 {
+            assert!(
+                b.evidence_notes
+                    .iter()
+                    .any(|note| note.starts_with(&format!("authorization entry {index} "))),
+                "{:?}",
+                b.evidence_notes
+            );
+        }
+    }
+
+    /// Every address-credential arm carries the nonce the host consumes, and is proven the same
+    /// way; a failed transaction's meta writes nothing, so it proves no address credential.
+    /// Source-account credentials have no nonce: the operation source's signature on the
+    /// transaction is their authorization, so they are kept either way.
+    #[test]
+    fn every_address_arm_is_proven_by_its_nonce_and_source_credentials_need_none() {
+        use stellar_xdr::SorobanAddressCredentialsWithDelegates;
+        let base = SorobanAddressCredentials {
+            address: account_sc(),
+            nonce: 7,
+            signature_expiration_ledger: 11,
+            signature: ScVal::Void,
+        };
+        for credentials in [
+            SorobanCredentials::Address(base.clone()),
+            SorobanCredentials::AddressV2(base.clone()),
+            SorobanCredentials::AddressWithDelegates(SorobanAddressCredentialsWithDelegates {
+                address_credentials: base.clone(),
+                delegates: Default::default(),
+            }),
+        ] {
+            let proven =
+                executed_with_consumed(vec![auth_entry(credentials.clone())], &[(account_sc(), 7)]);
+            assert_eq!(proven.authorizations.len(), 1, "{credentials:?}");
+            let unproven = executed_with_consumed(vec![auth_entry(credentials.clone())], &[]);
+            assert!(unproven.authorizations.is_empty(), "{credentials:?}");
+        }
+
+        let failed = EvidenceSnapshot::from_rpc_transaction(
+            ozpb_domain::TESTNET_PASSPHRASE,
+            envelope_with(vec![
+                auth_entry(SorobanCredentials::SourceAccount),
+                auth_entry(address_credentials(7)),
+            ])
+            .to_xdr_base64(Limits::none())
+            .unwrap(),
+            Some(
+                meta_v3_consuming(&[])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+            ),
+            1,
+            1,
+            false,
+        )
+        .with_rpc_result(transaction_result_base64(false));
+        let b = record(
+            &failed,
+            RecordOptions {
+                allow_failed: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let [authorization] = b.authorizations.as_slice() else {
+            panic!("only the source-account credential: {:?}", b.authorizations);
+        };
+        assert_eq!(authorization.credential, CredentialRecord::SourceAccount);
+        assert!(b
+            .evidence_notes
+            .iter()
+            .any(|note| note.starts_with("authorization entry 1 ")));
+    }
+
+    /// Meta v4 carries operation changes per operation too; a nonce written there proves its
+    /// entry exactly as in v3.
+    #[test]
+    fn a_meta_v4_operation_proves_its_nonces() {
+        use stellar_xdr::{OperationMetaV2, SorobanTransactionMetaV2, TransactionMetaV4};
+        let meta = |consumed: Vec<stellar_xdr::LedgerEntryChange>| {
+            TransactionMeta::V4(TransactionMetaV4 {
+                ext: ExtensionPoint::V0,
+                tx_changes_before: Default::default(),
+                operations: vec![OperationMetaV2 {
+                    ext: ExtensionPoint::V0,
+                    changes: consumed.try_into().unwrap(),
+                    events: Default::default(),
+                }]
+                .try_into()
+                .unwrap(),
+                tx_changes_after: Default::default(),
+                soroban_meta: Some(SorobanTransactionMetaV2 {
+                    ext: SorobanTransactionMetaExt::V0,
+                    return_value: None,
+                }),
+                events: Default::default(),
+                diagnostic_events: Default::default(),
+            })
+        };
+        for (changes, kept) in [
+            (vec![nonce_consumed(account_sc(), 7)], 1),
+            (
+                vec![stellar_xdr::LedgerEntryChange::Created(
+                    fixtures::contract_data_entry(7),
+                )],
+                0,
+            ),
+        ] {
+            let snap = EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                envelope_with(vec![auth_entry(address_credentials(7))])
+                    .to_xdr_base64(Limits::none())
+                    .unwrap(),
+                Some(meta(changes).to_xdr_base64(Limits::none()).unwrap()),
+                1,
+                1,
+                true,
+            );
+            let b = record(&snap, RecordOptions::default()).unwrap();
+            assert_eq!(b.authorizations.len(), kept);
+        }
     }
 
     #[test]
@@ -3834,19 +4399,14 @@ mod tests {
     // ----- symbol fidelity and token-event shape (evidence, never guessed) -----
 
     fn snapshot_with_event(event: ContractEvent) -> EvidenceSnapshot {
-        use stellar_xdr::{SorobanTransactionMeta, TransactionMetaV3};
-        let meta = TransactionMeta::V3(TransactionMetaV3 {
-            ext: ExtensionPoint::V0,
-            tx_changes_before: Default::default(),
-            operations: Default::default(),
-            tx_changes_after: Default::default(),
-            soroban_meta: Some(SorobanTransactionMeta {
-                ext: SorobanTransactionMetaExt::V0,
-                events: vec![event].try_into().unwrap(),
-                return_value: ScVal::Void,
-                diagnostic_events: Default::default(),
-            }),
-        });
+        // The entry's nonce is consumed, so the only notes are about the event.
+        let mut meta = meta_v3_consuming(&[(account_sc(), 1)]);
+        let TransactionMeta::V3(v3) = &mut meta else {
+            panic!("the fixture meta is v3");
+        };
+        if let Some(soroban) = v3.soroban_meta.as_mut() {
+            soroban.events = vec![event].try_into().unwrap();
+        }
         EvidenceSnapshot::from_rpc_transaction(
             ozpb_domain::TESTNET_PASSPHRASE,
             envelope_with(vec![auth_entry(address_credentials(1))])
@@ -4043,17 +4603,7 @@ mod tests {
             credentials: address_credentials(1),
             root_invocation: root,
         };
-        let snap = EvidenceSnapshot::from_rpc_transaction(
-            ozpb_domain::TESTNET_PASSPHRASE,
-            envelope_with(vec![entry])
-                .to_xdr_base64(Limits::none())
-                .unwrap(),
-            None,
-            1,
-            1,
-            true,
-        );
-        let b = record(&snap, RecordOptions::default()).unwrap();
+        let b = executed_with_consumed(vec![entry], &[(account_sc(), 1)]);
         assert_eq!(b.authorizations[0].root.sub_invocations.len(), 1);
     }
 
