@@ -800,3 +800,68 @@ fn the_checkpoint_version_must_be_for_the_pinned_network() {
         Err(GovernanceError::Registry(RegistryError::Network { .. }))
     ));
 }
+
+/// The validity boundaries, to the second: the head (version 3) is valid from 2_500 to 5_000
+/// inclusive, and "expires soon" starts exactly `window` seconds before its end.
+#[test]
+fn monitoring_validity_boundaries_are_exact() {
+    let chain = chain();
+    let at_v3 = checkpoint_of(&chain);
+    let none: [Hash32; 0] = [];
+    let validity = |now: i64, window: i64| {
+        monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            now,
+            window,
+            &none,
+        )
+        .unwrap()
+        .validity
+    };
+    assert_eq!(validity(2_499, 600), ValidityStatus::NotYetValid);
+    assert_eq!(validity(2_500, 600), ValidityStatus::Valid);
+    assert_eq!(validity(2_501, 600), ValidityStatus::Valid);
+    assert_eq!(validity(4_399, 600), ValidityStatus::Valid);
+    assert_eq!(validity(4_400, 600), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(4_401, 600), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(4_999, 0), ValidityStatus::Valid);
+    assert_eq!(validity(5_000, 0), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(5_000, 600), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(5_001, 600), ValidityStatus::Expired);
+}
+
+/// Each field of the checkpoint match refuses on its own. A consumer's persisted checkpoint is a
+/// file: one corrupted or edited field, with the others intact, must not pass.
+#[test]
+fn each_checkpoint_field_mismatch_is_refused_alone() {
+    let chain = chain();
+    let accepted = checkpoint_of(&chain);
+    let none: [Hash32; 0] = [];
+    let check = |checkpoint: RegistryCheckpoint| {
+        monitor(roots(), network(), checkpoint, &chain[2..], 2_600, 0, &none)
+    };
+    check(accepted.clone()).unwrap();
+
+    let mut root = accepted.clone();
+    root.root = sha256(b"another root");
+    let mut log_index = accepted.clone();
+    log_index.log_index += 1;
+    let mut revocations = accepted.clone();
+    revocations.revocations.clear();
+    for (field, edited) in [
+        ("root", root),
+        ("log_index", log_index),
+        ("revocations", revocations),
+    ] {
+        assert!(
+            matches!(
+                check(edited),
+                Err(GovernanceError::Registry(RegistryError::Transparency(_)))
+            ),
+            "a checkpoint differing only in {field} must be refused"
+        );
+    }
+}
