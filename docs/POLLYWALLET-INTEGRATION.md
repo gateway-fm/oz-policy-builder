@@ -266,8 +266,11 @@ deployment preview shows the upload's simulated cost (its resource fee plus the 
 inclusion bid); a preview whose simulated cost would pass a cap is refused before consent.
 
 **Readiness.** `Check mainnet readiness` reads, without signing or sending anything, the fee payer's
-balance, the caps, whether the pinned account and verifier code is on mainnet and whether the live
-helper is configured. The wallet never uploads pinned code itself: account creation refuses as
+balance, the caps, whether the pinned account and verifier code is on mainnet, whether the live
+helper is configured, and whether the endpoint returns diagnostic events with a simulation. The
+live check, the second use and removal's verification read those events, and stellar-rpc 30.0.1
+returns them only when the endpoint runs with `--preflight-enable-debug`; without them those steps
+refuse as `no_diagnostic_events`. The wallet never uploads pinned code itself: account creation refuses as
 `pinned_code_missing` while either is missing, and the readiness panel shows the exact command,
 `stellar contract upload --wasm <pinnedWasmDir>/<hash>.wasm --network mainnet --source <your funded mainnet key>`,
 with its simulated cost once the reproduced Wasm is at that path (reproduce the account Wasm with
@@ -925,6 +928,7 @@ cannot be repeated in the session, whatever the cause.
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
 | `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |
+| `no_diagnostic_events` | The endpoint returned no diagnostic events, which the step reads (stellar-rpc 30.0.1 returns them only with `--preflight-enable-debug`); nothing was sent. |
 | `registry_root_refused` | The CLI's error began `E_REGISTRY_ROOT_POLICY`: it refused the registry's root policy (the development root off testnet, for one). Configure the production trust files. |
 
 The installation section shows the last ledger at which this review's evidence is still accepted

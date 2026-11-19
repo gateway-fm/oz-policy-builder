@@ -135,7 +135,8 @@ test('stellar-rpc 30.0.1: a second use refused with the host error alone is read
   for (const [label, simulation, reason] of [
     ['NoTupleMatched', hostOnly(useDenial(s.intent, s.entries, { code: 6 })), 'policy_code'],
     ['raised by another contract', hostOnly(useDenial(s.intent, s.entries, { raisedBy: s.intent.account })), 'not_a_policy_denial'],
-    ['no events', { ...hostOnly(useDenial(s.intent, s.entries)), events: [] }, 'not_a_policy_denial'],
+    // An endpoint without --preflight-enable-debug returns no diagnostic events: named as such, never a verdict.
+    ['no events', { ...hostOnly(useDenial(s.intent, s.entries)), events: [] }, 'no_diagnostic_events'],
   ]) {
     const result = validateRepeatedUse({ intent: s.intent, envelopeXdr: s.envelopeXdr, simulation });
     assert.equal(result.outcome, 'failed', label);

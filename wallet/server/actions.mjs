@@ -376,7 +376,9 @@ export function createWalletActions({ session, toolchain, network, native = null
           reviewed: state.found && state.wasmHash === LIVE_HELPER_WASM, instanceLiveUntil: state.instanceLiveUntil ?? null,
           ...(state.found ? {} : { instruction: HELPER_DEPLOY[net.name] }) };
       }
-      return freezeCopy({ network: net.name, ownerFunded,
+      // The live check, the second use and removal's verification read diagnostic events.
+      const diagnosticEvents = await network.diagnosticEvents();
+      return freezeCopy({ network: net.name, ownerFunded, diagnosticEvents,
         feePayer: { address: network.payerAddress, ...payer },
         fees: { ...fees, spentStroops: network.spentStroops }, pinned, helper });
     },

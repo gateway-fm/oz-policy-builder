@@ -172,9 +172,12 @@ errors in the printed log or transfer authorization events. It needs the `NoTupl
 attributed to the candidate policy inside the asset's failed authentication of the account, with
 no ledger changes. It is read from the structured diagnostic events, which stellar-rpc returns in
 the simulation's `events` field. Up to 30.0.0 the RPC also printed the event log into the `error`
-text after the host error; 30.0.1 returns the host error alone
+text after the host error; 30.0.1 returns the host error alone, and the diagnostic events only when
+the endpoint runs with `--preflight-enable-debug`
 ([release notes](https://github.com/stellar/stellar-rpc/releases/tag/v30.0.1): "Error strings no
-longer include the event log"). Where the log is printed, it must show the same denial, matched
+longer include the event log"). An answer with neither is refused as `no_diagnostic_events`, which
+says the endpoint must be configured, not anything about the policy; the public endpoints probed
+on 19 November 2026 (SDF testnet, Gateway testnet, `mainnet.sorobanrpc.com`) returned them. Where the log is printed, it must show the same denial, matched
 only where the log starts an event so that a value it prints verbatim, such as the rule name,
 cannot pass for one. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial
 and settles nothing about the policy, and neither is an account error.

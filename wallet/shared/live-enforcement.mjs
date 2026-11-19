@@ -497,6 +497,17 @@ const callsInto = (events, contract, fn) => events.filter((e) => e.host && e.top
   && same(e.topics[2], sym(fn)));
 
 /**
+ * An answer with no diagnostic events, and no printed log to read instead, says nothing about the
+ * call: stellar-rpc 30.0.1 returns them only when the endpoint runs with `--preflight-enable-debug`.
+ * Named as such, so the operator fixes the endpoint rather than reading it as a verdict.
+ */
+function requireEvents(simulation) {
+  if (!Array.isArray(simulation.events) || !simulation.events.length) {
+    fail('no_diagnostic_events', 'the RPC returned no diagnostic events; stellar-rpc 30.0.1 returns them only with --preflight-enable-debug');
+  }
+}
+
+/**
  * As `policyDenial`, from the structured diagnostic events: the code `policy` refused an authorization
  * of `account` with, or null. The asset's one failed authentication of the account carries the code,
  * the policy raised that same code, and every error the account raised, and every trap of its
@@ -540,7 +551,7 @@ function deniedWith(text, rawEvents, { asset, account, policy }, expectedCode, h
   }
   if (!Array.isArray(rawEvents) || !rawEvents.length) {
     if (printed !== undefined) fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
-    fail('not_a_policy_denial', 'the simulation reported neither an event log nor diagnostic events', { host });
+    requireEvents({ events: rawEvents });
   }
   const events = responseEvents({ events: rawEvents });
   const code = structuredDenial(events, asset, account, policy);
@@ -657,6 +668,7 @@ function permit(c, simulation, entries, records) {
     fail('unbound_response', 'the result does not echo exactly the envelope\'s authorization entries');
   }
   // Nothing in a successful simulation was rolled back: an event from a failed call is another response's.
+  requireEvents(simulation);
   const events = responseEvents(simulation);
   if (events.some((e) => !e.ok)) fail('unbound_response', 'a permit\'s events include some from failed calls');
   requireBinding(c, events, records);
@@ -789,7 +801,7 @@ function repeatedPermit(c, simulation, bound) {
   if (!Array.isArray(auth) || auth.length !== bound.entries.length || auth.some((text, i) => text !== bound.entries[i].toXDR('base64'))) {
     fail('unbound_response', 'the result does not echo exactly the envelope\'s authorization entries');
   }
-  if (!Array.isArray(simulation.events) || !simulation.events.length) fail('unbound_response', 'the simulation reported no diagnostic events');
+  requireEvents(simulation);
   const events = responseEvents(simulation);
   if (events.some((e) => !e.ok)) fail('unbound_response', 'a permit\'s events include some from failed calls');
   repeatedBinding(c, events, bound);

@@ -6,7 +6,7 @@ const refused = () => new Error('wallet request refused; reconnect or try a fres
 /** The closed set of reasons a refusal may name (the backend's REFUSAL_REASONS); any other is dropped. */
 export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
   'review_expired', 'grant_already_used', 'network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
-  'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused']);
+  'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events']);
 /** A refusal's reason, from at most 4 KiB of its JSON body; nothing else in it is kept. */
 async function reasonOf(response) {
   const reader = response.body?.getReader();

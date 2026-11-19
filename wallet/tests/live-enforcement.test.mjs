@@ -436,7 +436,8 @@ test('a response is bound to its envelope: swapped permit and denial responses a
   const a = F.caseEntries();
   const b = F.caseEntries();
   refused(sample(b, { simulation: F.permitSimulation(F.permitChanges(b), { entries: b, events: F.callEvents(a) }) }), 'unbound_response');
-  refused(sample(b, { simulation: F.permitSimulation(F.permitChanges(b), { entries: b, events: [] }) }), 'unbound_response');
+  // With no events at all nothing binds it either; that is the endpoint's configuration, named as such.
+  refused(sample(b, { simulation: F.permitSimulation(F.permitChanges(b), { entries: b, events: [] }) }), 'no_diagnostic_events');
 });
 
 test('a denial is evidence only with its own events: the helper call and the account checks of this envelope', () => {
@@ -694,7 +695,9 @@ test('real responses with one part removed or reordered are refused', () => {
   const nonceless = clone(REAL.permit.simulation);
   nonceless.stateChanges = nonceless.stateChanges.filter((c) => xdr.LedgerKey.fromXDR(c.key, 'base64').contractData?.key.type !== 'scvLedgerKeyNonce');
   refused(realCase('permit', nonceless), 'nonces');
-  refused(realCase('permit', { ...REAL.permit.simulation, events: [] }), 'unbound_response');
+  // No diagnostic events at all is the endpoint's configuration (stellar-rpc 30.0.1 needs --preflight-enable-debug), named as such.
+  refused(realCase('permit', { ...REAL.permit.simulation, events: [] }), 'no_diagnostic_events');
+  // A printed log without the events it is returned with is not a 30.0.1 answer: nothing ties it to the envelope.
   refused(realCase('denial', { ...REAL.denial.simulation, events: undefined }), 'unbound_response');
 });
 
@@ -943,8 +946,8 @@ test('stellar-rpc 30.0.1: the structured events alone attribute the denial as st
   // Another policy code is a decision, but not this case's denial.
   refused({ ...base, simulation: events({ code: 7 }) }, 'policy_code');
   // Without events nothing is left to read: no decision.
-  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: [] } }, 'not_a_policy_denial');
-  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: undefined } }, 'not_a_policy_denial');
+  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: [] } }, 'no_diagnostic_events');
+  refused({ ...base, simulation: { ...hostOnly(base.simulation), events: undefined } }, 'no_diagnostic_events');
   // A conflicting account error anywhere in the response.
   const conflicting = F.errorEvent(PROBE.account, xdr.ScError.sceContract(3002), xdr.ScVal.scvVoid());
   refused({ ...base, simulation: { ...hostOnly(base.simulation), events: [conflicting, ...base.simulation.events] } }, 'not_a_policy_denial');

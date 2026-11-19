@@ -79,6 +79,7 @@ const REFUSED: Record<string, string> = {
   delegate_unfunded: "the automation key has no account on this network, and the wallet creates none. Fund it with the minimum shown under section 2, then try again.",
   pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command under Mainnet readiness, then try again.",
   account_unfunded: "your account's XLM balance does not cover the 0.1 XLM sample payment. Send it at least that from your own wallet, then prepare the sample again.",
+  no_diagnostic_events: "the operator's RPC endpoint returned no diagnostic events, which this step reads (stellar-rpc 30.0.1 returns them only with --preflight-enable-debug). Nothing was sent; the operator needs an endpoint that returns them.",
   registry_root_refused: "the toolkit refused the registry's root policy (on mainnet, the development root is never trusted). Nothing was generated or signed; the operator must configure the production registry trust files.",
 };
 const explorer = (hash: string) => `${NETWORK.explorer}/tx/${hash}`;
@@ -107,6 +108,8 @@ function MainnetReadiness({ readiness, status, busy, check }: { readiness: Recor
             {upload.simulatedFeeStroops ? <>(simulated cost {xlm(upload.simulatedFeeStroops)})</> : <>(the cost is simulated once the
               reproduced Wasm is at {label(upload.wasmPath)})</>}</>}</li>;
       })}
+      <li>Diagnostic events: {object(readiness.diagnosticEvents).returned === true ? "returned by the endpoint."
+        : "not returned. The live check, the second use and removal's verification need them: stellar-rpc 30.0.1 returns them only with --preflight-enable-debug."}</li>
       <li>Live helper: {helper.configured === true && helper.reviewed === true ? <>{label(helper.contract)}, the reviewed helper.</>
         : <>{label(helper.instruction)}{helper.uploadSimulatedFeeStroops
           ? <> Uploading its code costs about {xlm(helper.uploadSimulatedFeeStroops)} (simulated).</> : null}</>}</li>

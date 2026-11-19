@@ -148,8 +148,11 @@ export function ruleReadbackResult(simulation, { account }) {
       return { status: 'present', xdr: results[0].xdr, ledger };
     }
     if (typeof simulation.error !== 'string' || (simulation.results !== undefined && simulation.results !== null
-      && (!Array.isArray(simulation.results) || simulation.results.length)) || !Array.isArray(simulation.events)
-      || simulation.events.length > 4096) refuse();
+      && (!Array.isArray(simulation.results) || simulation.results.length)) || (Array.isArray(simulation.events) && simulation.events.length > 4096)) refuse();
+    // Without diagnostic events (stellar-rpc 30.0.1 without --preflight-enable-debug) absence cannot be told from failure.
+    if (!Array.isArray(simulation.events) || !simulation.events.length) {
+      throw Object.assign(new Error('wallet removal verification refused'), { reason: 'no_diagnostic_events' });
+    }
     const missing = simulation.events.some((text) => {
       if (typeof text !== 'string') refuse();
       const { event } = xdr.DiagnosticEvent.fromXDR(text, 'base64');
@@ -160,5 +163,5 @@ export function ruleReadbackResult(simulation, { account }) {
     });
     if (!missing) refuse();
     return { status: 'absent', ledger };
-  } catch { return refuse(); }
+  } catch (error) { if (error?.reason === 'no_diagnostic_events') throw error; return refuse(); }
 }

@@ -276,6 +276,7 @@ test('mainnet readiness names each missing pinned Wasm with its upload command a
     codePresent: async (hash) => ({ present: hash === WEBAUTHN_WASM, ledger: 100 }),
     payerAccount: async () => ({ exists: true, balanceStroops: '200000000', minimumStroops: '10000000', spendableStroops: '190000000', ledger: 100 }),
     uploadCost: async (wasm) => { uploads.push(wasm); return { resourceFeeStroops: '5000', feeStroops: '5100', ledger: 100 }; },
+    diagnosticEvents: async () => ({ returned: true, ledger: 100 }),
   }, { pinnedWasmDir: dir });
   const ready = await actions.readiness({});
   assert.equal(ready.network, 'mainnet');
@@ -440,4 +441,25 @@ test('mainnet: the spend cap counts every fee sent from this work root, not only
   // An entry from another network, or one that does not decode, refuses: the work root cannot be accounted.
   intended('wallet-session-wrong', '0001', 100, WALLET_NETWORKS.testnet.networkId);
   assert.throws(() => journaledSpend(workRoot, MAINNET), (error) => /journal/.test(error.startup));
+});
+
+test('readiness probes whether the endpoint returns diagnostic events, which the live check and removal need', async () => {
+  for (const events of [true, false]) {
+    const { actions } = mainnetActions({
+      codePresent: async () => ({ present: true, ledger: 100 }),
+      payerAccount: async () => ({ exists: true, balanceStroops: '200000000', minimumStroops: '10000000', spendableStroops: '190000000', ledger: 100 }),
+      diagnosticEvents: async () => ({ returned: events, ledger: 100 }),
+    });
+    const ready = await actions.readiness({});
+    assert.deepEqual(ready.diagnosticEvents, { returned: events, ledger: 100 });
+  }
+});
+
+test('a simulation answer without diagnostic events is its own reason, from the network layer too', async (t) => {
+  const { ruleReadbackResult } = await import('../server/install.mjs');
+  assert.throws(() => ruleReadbackResult({ latestLedger: 100, error: 'HostError: Error(Contract, #3000)', events: [] },
+    { account: 'CAWGOGD3YYSPUR6CPT6PE33DCUIGFNBVZVA5WEDGK2YM34FRLIUQBT5A' }), (error) => error.reason === 'no_diagnostic_events');
+  const { NETWORK_REASONS } = await import('../server/network.mjs');
+  const { REFUSAL_REASONS } = await import('../server/http.mjs');
+  assert.ok(NETWORK_REASONS.includes('no_diagnostic_events') && REFUSAL_REASONS.has('no_diagnostic_events'));
 });

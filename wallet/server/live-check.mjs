@@ -237,6 +237,11 @@ export async function runLive({ network, mintCapability, prepared, approval, own
     verdicts.push({ case: LIVE_CASES[index], ...validateLiveCase({ intent, envelopeXdr, simulation }) });
   }
   const [permit, denial] = verdicts;
+  if (verdicts.some((v) => v.reason === 'no_diagnostic_events')) {
+    return layer('unavailable', 'The operator RPC returned no diagnostic events, so neither case could be judged; stellar-rpc 30.0.1 '
+      + 'returns them only with --preflight-enable-debug. Use an endpoint that does. Nothing was submitted; the signatures already '
+      + `created stay valid until ledger ${expiry}.`);
+  }
   const passed = permit.outcome === 'permit' && denial.outcome === 'deny' && denial.code === POLICY_NO_TUPLE_MATCHED;
   // A response the validator could not judge — restoration needed, simulated after the signatures
   // expired — is about the endpoint and the timing, not the candidate, but only when every other case

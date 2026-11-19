@@ -23,7 +23,7 @@ export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
  * delegate account the owner has not funded yet; pinned code missing on the network.
  */
 export const NETWORK_REASONS = Object.freeze(['network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
-  'delegate_unfunded', 'pinned_code_missing']);
+  'delegate_unfunded', 'pinned_code_missing', 'no_diagnostic_events']);
 const refuse = (cause) => {
   throw Object.assign(new Error('wallet network operation refused; inspect the local journal before retrying'),
     NETWORK_REASONS.includes(cause?.reason) ? { reason: cause.reason, ...(cause.protocolVersion !== undefined ? { protocolVersion: cause.protocolVersion } : {}) } : {});
@@ -688,6 +688,24 @@ export class WalletNetwork {
       const balance = BigInt(account.balance);
       return { exists: true, balanceStroops: balance.toString(), minimumStroops: minimum.toString(),
         spendableStroops: (balance > minimum ? balance - minimum : 0n).toString(), ledger: observed };
+    } catch (error) { refuse(error); }
+  }
+  /**
+   * Whether the endpoint returns diagnostic events with a simulation, which the live check, the second
+   * use and removal's verification read: one enforce-mode simulation of the native asset's `decimals()`
+   * from the fee payer, nothing signed or sent. stellar-rpc 30.0.1 returns them only with
+   * `--preflight-enable-debug`.
+   */
+  async diagnosticEvents() {
+    try {
+      const envelope = new TransactionBuilder(new Account(this.payerAddress, '0'), { fee: '100', networkPassphrase: this.#network.passphrase })
+        .addOperation(Operation.invokeContractFunction({ contract: this.#network.nativeAsset, function: 'decimals', args: [] }))
+        .setTimeout(0).build().toEnvelope().toXDR('base64');
+      const result = await this.simulateRaw(envelope);
+      const returned = Array.isArray(result.events) && result.events.some((text) => {
+        try { return xdr.DiagnosticEvent.fromXDR(text, 'base64').event.type.name === 'diagnostic'; } catch { return false; }
+      });
+      return { returned, ledger: ledger(result.latestLedger) };
     } catch (error) { refuse(error); }
   }
   /** The fee payer's own account (`classicAccount`). */
