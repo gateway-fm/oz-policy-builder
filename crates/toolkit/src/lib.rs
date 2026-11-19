@@ -461,15 +461,8 @@ pub fn registry_trust_from_roots_json(
         keys,
     };
     Registry::with_pinned_roots(root_policy.clone()).map_err(map_registry_err)?;
-    if config
-        .checkpoint
-        .as_ref()
-        .is_some_and(|checkpoint| checkpoint.version < minimum_version)
-    {
-        return Err(ToolError::new(
-            EC::ERegistryRollback,
-            "registry checkpoint is older than the configured minimum version",
-        ));
+    if let Some(checkpoint) = &config.checkpoint {
+        call_surface::refuse_checkpoint_below_floor(checkpoint, minimum_version)?;
     }
     Ok(RegistryTrust {
         root_policy,

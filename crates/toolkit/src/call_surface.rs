@@ -27,7 +27,8 @@ use ozpb_policy_spec::{
     PolicyRef, PolicySpec, ReviewedParams, RuleSpec, SignerSpec, ValidatedSpec,
 };
 use ozpb_registry::{
-    Registry, SignedSnapshot, MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE,
+    Registry, ResolvedAccountAuthority, SignedSnapshot,
+    MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,13 +77,17 @@ pub fn check_observed_call_surface_with_build_config(
 }
 
 /// Everything about a request that does not depend on the ledger read: the validated spec,
-/// the signed registry loaded under the pinned trust, the account capability, the bindings
-/// recognized (generated ones rebuilt, once) and the grant. A live check prepares this before
-/// it reads anything, so a request that cannot be answered costs no read and no build after it.
+/// the signed registry loaded under the pinned trust, the account's resolved authority, the
+/// bindings recognized (generated ones rebuilt, once) and the grant. A live check prepares this
+/// before it reads anything, so a request that cannot be answered costs no read and no build
+/// after it.
 pub(crate) struct PreparedCallSurfaceCheck {
     pub(crate) spec: ValidatedSpec,
     pub(crate) registry: Registry,
     pub(crate) loaded_root: Hash32,
+    /// The signed scan bounds and the method inventory reviewed for this exact account build.
+    /// Every entry point resolves it, so none can report the account recognized without it.
+    pub(crate) account_authority: ResolvedAccountAuthority,
     enumeration: Enumeration,
     binding_set_hash: Hash32,
     bound_recognition: BTreeMap<String, VerifiedPolicy>,
@@ -134,6 +139,12 @@ pub(crate) fn prepare_call_surface_check(
         ));
     }
     let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
+    // Recognizing the hash is not enough to say who can change the account: the method
+    // inventory was reviewed for one exact build, which `check_prepared` then reports as
+    // recognized. Resolved here, so the public observed check cannot skip it.
+    let account_authority = registry
+        .resolve_account_authority(&validated.spec().smart_account.observed_code_hash)
+        .map_err(map_registry_err)?;
     let (binding_set_hash, bound_recognition) =
         validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
     let grant = grant_for(&validated, input.rule_index, &input.binding_set)?;
@@ -141,6 +152,7 @@ pub(crate) fn prepare_call_surface_check(
         spec: validated,
         registry,
         loaded_root,
+        account_authority,
         enumeration,
         binding_set_hash,
         bound_recognition,
@@ -445,16 +457,23 @@ fn record_observed_code<'a>(
 /// The one way this crate turns pinned trust into a registry verifier for a network. The
 /// network-pinned constructors refuse the public development root for any network but testnet,
 /// so every operation built on this inherits that rule rather than restating it.
+///
+/// A checkpoint becomes the registry's floor, so one older than the configured floor would lower
+/// it and let the older version it names load again. The roots-file parser refuses that pair,
+/// but `RegistryTrust`'s fields are public, so it is refused here, where every operation passes.
 pub(crate) fn registry_for(
     trust: &RegistryTrust,
     network: ozpb_domain::NetworkId,
 ) -> Result<Registry, ToolError> {
     match trust.checkpoint.clone() {
-        Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
-            trust.root_policy.clone(),
-            network,
-            checkpoint,
-        ),
+        Some(checkpoint) => {
+            refuse_checkpoint_below_floor(&checkpoint, trust.minimum_version)?;
+            Registry::with_pinned_roots_for_network_at_checkpoint(
+                trust.root_policy.clone(),
+                network,
+                checkpoint,
+            )
+        }
         None => Registry::with_pinned_roots_for_network_at_version(
             trust.root_policy.clone(),
             network,
@@ -462,6 +481,19 @@ pub(crate) fn registry_for(
         ),
     }
     .map_err(map_registry_err)
+}
+
+pub(crate) fn refuse_checkpoint_below_floor(
+    checkpoint: &ozpb_registry::RegistryCheckpoint,
+    minimum_version: u64,
+) -> Result<(), ToolError> {
+    if checkpoint.version < minimum_version {
+        return Err(ToolError::new(
+            EC::ERegistryRollback,
+            "registry checkpoint is older than the configured minimum version",
+        ));
+    }
+    Ok(())
 }
 
 fn supported_rule_enumeration(method: &str) -> Result<Enumeration, ToolError> {
@@ -1463,6 +1495,57 @@ mod tests {
             FindingCode::DelegateGrantOverlap
         );
         assert_eq!(mislabelled.refusals[0].rule_id, Some(2));
+    }
+
+    /// The observed check is public, and its verdict says the account is recognized. A signed
+    /// entry for other account code that copies the reviewed entry's strings and digest must not
+    /// get that answer: the method inventory was reviewed for one exact build, and only the
+    /// live plan used to ask for it.
+    #[test]
+    fn the_observed_check_recognizes_only_the_reviewed_account_build() {
+        let (mut request, mut observation) = fixture();
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let pinned = ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+        let other = ozpb_domain::sha256(b"other account code with the reviewed entry's strings");
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+        let reviewed = snapshot.accounts[&pinned.to_hex()].clone();
+        snapshot.accounts.insert(other.to_hex(), reviewed);
+        request.spec["smart_account"]["observed_code_hash"] = serde_json::json!(other.to_hex());
+        observation.account_code_hash = other.to_hex();
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EIncompatibleAccount, "{error}");
+        assert!(error.message.contains(&other.to_hex()), "{error}");
+    }
+
+    /// `RegistryTrust` has public fields, so a library caller can pair a floor with an older
+    /// checkpoint without going through the roots-file parser that refuses it. The checkpoint
+    /// must not quietly lower the floor: the older version it names would load again.
+    #[test]
+    fn a_checkpoint_older_than_the_floor_is_refused_not_used_as_the_floor() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let v5 = ozpb_registry::sign_snapshot(
+            &ozpb_registry::dev::dev_signing_key(),
+            ozpb_registry::dev::dev_snapshot(network, 5),
+        )
+        .unwrap();
+        let mut loaded = Registry::with_pinned_roots(registry_trust().root_policy).unwrap();
+        loaded.load(&v5).unwrap();
+        let trust_at = |minimum_version| RegistryTrust {
+            minimum_version,
+            checkpoint: Some(loaded.checkpoint().unwrap()),
+            ..registry_trust()
+        };
+
+        let Err(error) = registry_for(&trust_at(6), network) else {
+            panic!("a v5 checkpoint under a floor of 6 must be refused");
+        };
+        assert_eq!(error.code, EC::ERegistryRollback, "{error}");
+
+        // At or above the floor, the checkpoint is what the registry extends.
+        let mut registry = registry_for(&trust_at(5), network).unwrap();
+        assert_eq!(registry.load(&v5).unwrap(), loaded.root().unwrap());
     }
 
     #[test]
