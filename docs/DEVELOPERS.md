@@ -244,6 +244,17 @@ group/world-accessible — a shared cache an attacker can pre-create is a route 
 dependency artifacts, and `verify` reproduces through the same cache, so a poisoned build
 would reproduce identically.
 
+**Where a build runs.** Each build compiles in a fresh directory, and cargo reads
+`.cargo/config.toml` from that directory and every parent of it, and takes a parent's
+`Cargo.toml` as a workspace root. A parent another local user can add entries to lets that user
+choose the compiler, which then runs as you: on Linux, any user can create `/tmp/.cargo`. So the
+build directory is created only under a directory that, like each of its parents, only root and
+you can add entries to (a read-only mount qualifies). That is the system temporary directory
+(`TMPDIR`) when it qualifies, as it does on macOS; otherwise `ozpb/build-workspaces` in your
+cache directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only. When neither qualifies,
+the build is refused with `E_BUILD_UNAVAILABLE` before anything runs; set `TMPDIR` to a private
+directory. Your own parents' cargo configuration still applies, as `~/.cargo/config.toml` does.
+
 These are deliberately *not* request fields: a caller-chosen timeout is resource exhaustion
 and a caller-chosen builder path is arbitrary execution, so they stay operator configuration
 (the same reasoning as the RPC allowlist). There is likewise no flag for the

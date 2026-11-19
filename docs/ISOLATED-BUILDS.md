@@ -89,7 +89,11 @@ That release rejects explicit `uid`/`gid` mount options. The single worker princ
 UID/GID `10001`; its source directory, Cargo home and target directory are mode `0700`
 under umask `0077`. Each container has its own mount, so this does not expose one job's
 files to another job or the API. Linux acceptance observes the actual Rust build directory's
-ownership and mode while compiling, as well as fresh-cache isolation.
+ownership and mode while compiling, as well as fresh-cache isolation. Outside a worker, a build
+refuses a temporary directory any other user can add entries to, because cargo reads
+configuration from every parent of the directory it builds in
+([build configuration](DEVELOPERS.md#build-configuration-operator-side)); the worker builds in
+this `1777` mount anyway, since its only principal is the job itself.
 
 Podman's [runtime timeout](https://docs.podman.io/en/v5.7.0/markdown/podman-run.1.html#timeout-seconds)
 is enforced by conmon, independently of the API and launcher processes. Namespace teardown

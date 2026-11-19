@@ -676,6 +676,99 @@ pub fn prepare_cache_dir(path: &Path) -> Result<(), BuildError> {
     }
 }
 
+/// The directory a build's workspace is created in.
+///
+/// Cargo reads `.cargo/config.toml` (and the older `.cargo/config`) from the directory it runs
+/// in and from every parent of it, and looks upward from the generated manifest for a workspace
+/// root `Cargo.toml`, whose `[patch]` sections and profiles would then apply. The build runs in
+/// its workspace, so whoever can add an entry to any parent of it chooses the compiler
+/// (`build.rustc-wrapper`), its flags or the dependency sources: code that runs as the caller,
+/// who may hold keys, and a Wasm that `verify` on the same host then reproduces. Clearing
+/// environment variables, as [`sanitize_build_environment`] does, does not reach files. Linux's
+/// shared `/tmp` is such a parent: any local user can create `/tmp/.cargo`.
+///
+/// So a workspace is created only under a directory that, like each of its parents up to `/`,
+/// only root and this user can add entries to; a directory on a read-only mount qualifies, since
+/// nobody can. The system temporary directory is used when it qualifies, as macOS's per-user one
+/// does; otherwise `ozpb/build-workspaces` in the user's cache directory (`$XDG_CACHE_HOME`, else
+/// `~/.cache`), created owner-only; and when neither qualifies the build is refused before
+/// anything runs. A disposable worker builds in its job's private mount instead (`worker.rs`).
+#[cfg(unix)]
+fn workspace_parent() -> Result<PathBuf, BuildError> {
+    let absolute = |name: &str| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let user_cache = absolute("XDG_CACHE_HOME")
+        .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
+        .map(|cache| cache.join("ozpb").join("build-workspaces"));
+    workspace_parent_from(&std::env::temp_dir(), user_cache.as_deref())
+}
+
+#[cfg(not(unix))]
+fn workspace_parent() -> Result<PathBuf, BuildError> {
+    Ok(std::env::temp_dir())
+}
+
+/// [`workspace_parent`] over explicit candidates: `temp`, else `fallback`, created owner-only.
+#[cfg(unix)]
+fn workspace_parent_from(temp: &Path, fallback: Option<&Path>) -> Result<PathBuf, BuildError> {
+    use std::os::unix::fs::DirBuilderExt;
+    let refused = match private_ancestry(temp) {
+        Ok(canonical) => return Ok(canonical),
+        Err(reason) => reason,
+    };
+    if let Some(fallback) = fallback {
+        let created = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(fallback);
+        if let Some(canonical) = created.ok().and_then(|()| private_ancestry(fallback).ok()) {
+            return Ok(canonical);
+        }
+    }
+    Err(BuildError::Unavailable(format!(
+        "no private directory to build in: the temporary directory {refused}, and no private \
+         user cache directory stands in. Cargo reads its configuration from every parent of the \
+         directory it builds in, so set TMPDIR to a directory that only you and root can write \
+         to, inside directories only you and root can write to"
+    )))
+}
+
+/// `dir` resolved, when it and each of its parents admit new entries from root and this user
+/// only; otherwise why not. The path stays out of the reason: it reaches MCP clients (§6.5).
+#[cfg(unix)]
+fn private_ancestry(dir: &Path) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // Resolved first: a link is only a name, and cargo reads the parents of where it leads.
+    let canonical = std::fs::canonicalize(dir).map_err(|_| "could not be resolved")?;
+    let uid = nix::unistd::getuid().as_raw();
+    for ancestor in canonical.ancestors() {
+        let metadata =
+            std::fs::metadata(ancestor).map_err(|_| "has a parent that could not be inspected")?;
+        let foreign = metadata.uid() != 0 && metadata.uid() != uid;
+        let shared = metadata.permissions().mode() & 0o022 != 0;
+        if (foreign || shared) && !on_read_only_mount(ancestor) {
+            return Err(match (ancestor == canonical, foreign) {
+                (true, true) => "is owned by another user",
+                (true, false) => "is writable by its group or by every user",
+                (false, true) => "has a parent owned by another user",
+                (false, false) => "has a parent writable by its group or by every user",
+            });
+        }
+    }
+    Ok(canonical)
+}
+
+/// Nobody can add an entry to a directory on a read-only mount, whatever its mode says: the
+/// container images' `/tmp` under a read-only root filesystem.
+#[cfg(unix)]
+fn on_read_only_mount(path: &Path) -> bool {
+    use nix::sys::statvfs::{statvfs, FsFlags};
+    statvfs(path).is_ok_and(|stats| stats.flags().contains(FsFlags::ST_RDONLY))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildArtifact {
     pub manifest: BuildManifest,
@@ -1160,10 +1253,20 @@ fn build_local(
     request: &BuildRequest<'_>,
     config: &BuildConfig,
 ) -> Result<BuildArtifact, BuildError> {
+    build_local_in(request, config, &workspace_parent()?)
+}
+
+/// [`build_local`] with its workspace created in `parent`, which the caller has established is
+/// a directory nobody else can add entries to (see [`workspace_parent`]).
+fn build_local_in(
+    request: &BuildRequest<'_>,
+    config: &BuildConfig,
+    parent: &Path,
+) -> Result<BuildArtifact, BuildError> {
     validate_generated(request.generated)?;
     let workspace = tempfile::Builder::new()
         .prefix("ozpb-build-")
-        .tempdir()
+        .tempdir_in(parent)
         .map_err(|error| BuildError::Internal(error.to_string()))?;
     write_generated(workspace.path(), request.generated)?;
     let output_dir = workspace.path().join("out");
@@ -3620,6 +3723,89 @@ mod tests {
                 "mode {mode:o} must be refused as unusable by its owner"
             );
         }
+    }
+
+    /// A directory beside the test binary: its parents are this user's checkout and the
+    /// system's, unlike the shared temporary directory, which on Linux is itself world-writable.
+    #[cfg(unix)]
+    fn private_base() -> tempfile::TempDir {
+        let binary = std::env::current_exe().unwrap();
+        tempfile::Builder::new()
+            .prefix(".ozpb-ancestry-")
+            .tempdir_in(binary.parent().unwrap())
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn directory(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    // Cargo reads `.cargo/config.toml` from the directory it runs in and every parent, and takes
+    // a parent's `Cargo.toml` as the workspace root. A parent another user can add entries to
+    // lets that user choose the compiler — measured: a `/tmp/.cargo/config.toml` naming a
+    // `rustc-wrapper` ran the wrapper as the caller. A build directory is created only under
+    // parents nobody else can add to.
+    #[test]
+    #[cfg(unix)]
+    fn a_build_directory_whose_parents_another_user_can_write_is_refused() {
+        let base = private_base();
+        let private = base.path().join("private");
+        directory(&private, 0o700);
+        let shared = base.path().join("shared");
+        directory(&shared, 0o1777);
+        let group = base.path().join("group");
+        directory(&group, 0o770);
+        // Private itself, inside a shared parent: cargo still reads the parent.
+        let inside_shared = shared.join("mine");
+        directory(&inside_shared, 0o700);
+        // A private-looking link that resolves into the shared directory.
+        let link = private.join("link");
+        std::os::unix::fs::symlink(&inside_shared, &link).unwrap();
+
+        assert_eq!(
+            workspace_parent_from(&private, None).unwrap(),
+            private.canonicalize().unwrap()
+        );
+        for refused in [&shared, &group, &inside_shared, &link] {
+            match workspace_parent_from(refused, None) {
+                Err(BuildError::Unavailable(message)) => assert!(
+                    message.contains("TMPDIR") && !message.contains(".ozpb-ancestry-"),
+                    "{message}"
+                ),
+                other => panic!("{refused:?} must be refused, got {other:?}"),
+            }
+        }
+    }
+
+    /// Where the temporary directory is shared — `/tmp` on Linux — the user's cache stands in,
+    /// created owner-only; one that is not private itself is refused as well.
+    #[test]
+    #[cfg(unix)]
+    fn a_private_user_cache_stands_in_for_a_shared_temporary_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = private_base();
+        let shared = base.path().join("shared");
+        directory(&shared, 0o1777);
+        let cache = base
+            .path()
+            .join("cache")
+            .join("ozpb")
+            .join("build-workspaces");
+        let chosen = workspace_parent_from(&shared, Some(&cache)).unwrap();
+        assert_eq!(chosen, cache.canonicalize().unwrap());
+        let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "created group- or world-accessible: {mode:o}"
+        );
+        assert!(matches!(
+            workspace_parent_from(&shared, Some(&shared.join("cache"))),
+            Err(BuildError::Unavailable(_))
+        ));
     }
 
     #[test]
