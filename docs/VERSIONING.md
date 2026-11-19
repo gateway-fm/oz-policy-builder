@@ -33,7 +33,7 @@ self-hosted deployment mounts ([self-hosting](SELF-HOSTING.md#configure-the-oper
 | PolicySpec | `schema: "policy-spec/v1"`; hashed under `ozpb:v1:policy-spec` | `crates/policy-spec/src/lib.rs` (`SPEC_SCHEMA`) |
 | RecordingBundle | `schema: "recording/v2"`; hashed under `ozpb:v1:recording` | `crates/recorder-core/src/lib.rs` (`RECORDING_SCHEMA`) |
 | BuildManifest | `schema: "build-manifest/v2"`; hashed under `ozpb:v2:build-manifest` | `crates/build-runner/src/lib.rs` (`BUILD_MANIFEST_SCHEMA`) |
-| PolicyBindingSet | `schema: "policy-binding-set/v1"` | `crates/api-types/src/policy_operations.rs` |
+| PolicyBindingSet | `schema: "policy-binding-set/v1"`; hashed under `ozpb:v1:policy-binding-set` | `crates/api-types/src/policy_operations.rs` |
 | Registry snapshot | `schema: "registry/v1"`; hashed under `ozpb:v1:registry-snapshot` (its `version` and `log_index` number the content, not the format) | `crates/registry/src/lib.rs` (`REGISTRY_SCHEMA`) |
 | Registry governance files | `registry-change/v1`, `registry-signature/v1`, `registry-monitor/v1` | `crates/registry/src/governance.rs` |
 | Registry roots file and checkpoint | no version field: `{threshold, keys[, checkpoint]}` and `{version, log_index, root, revocations}`, both closed objects | `crates/toolkit/src/lib.rs` (`registry_trust_from_roots_json`), `crates/registry/src/lib.rs` (`RegistryCheckpoint`) |
@@ -93,11 +93,11 @@ under breaking changes and say what to do, as the v1.0.0 notes do for the
 
 ## What 1.0 promises, and for how long
 
-During the grant period, through the third milestone, no 1.x release breaks the contracts above
-except under the exceptions; a breaking change waits for 2.0.0. The latest release line is the
-supported one, as in [SECURITY.md](../SECURITY.md#supported-versions): fixes go on `main` and into
-its next release, with no maintained branches and no backports. A 2.0.0, if there is one, ends
-support for 1.x.
+During the grant period, which ends when the Stellar Community Fund accepts the third milestone,
+no 1.x release breaks the contracts above except under the exceptions; a breaking change waits
+for 2.0.0. The latest release line is the supported one, as in
+[SECURITY.md](../SECURITY.md#supported-versions): fixes go on `main` and into its next release,
+with no maintained branches and no backports. A 2.0.0, if there is one, ends support for 1.x.
 
 After the grant period there is no commitment: no further releases, fixes or support are
 promised ([architecture §10, Maintenance](architecture.md#10-delivery-plan)). Releases already
@@ -116,7 +116,9 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
 1. **Choose the number** from the draft notes in `docs/release-notes/`: a breaking change outside
    the exceptions makes it major, an addition minor, anything else a patch.
 2. **Prepare one release commit** on top of the reviewed `main`:
-   - set `version` under `[workspace.package]` in `Cargo.toml`;
+   - set `version` under `[workspace.package]` in `Cargo.toml`, and the same `version` in
+     `execution-runtime/Cargo.toml`, the worker's own workspace (the binaries workflow refuses
+     the two disagreeing);
    - let the lockfiles follow, and move nothing else. The root workspace, `execution-runtime/` and
      `contracts/` each record the workspace crates' version (the last two depend on them by path):
      run `cargo update --workspace` with each one's `--manifest-path`, then check that
@@ -145,9 +147,12 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    and `release-binaries.yml` (binaries, `SHA256SUMS`, the wire contract, attestations). Both
    refuse a tag that does not name the workspace version.
 6. **Check the result**: both workflows green; the assets present and one of them passing
-   `gh attestation verify`; the image references from `publish-image.yml`'s summary added to the
-   release body. `release-binaries.yml` never replaces an asset, so delete a partial upload before
-   re-running it. It uploads after publication, so it needs GitHub's immutable releases off for
-   this repository.
+   `gh attestation verify` with the workflow, tag and runner checks that
+   [self-hosting](SELF-HOSTING.md#obtain-and-verify) gives; the image references from
+   `publish-image.yml`'s summary added to the release body. `release-binaries.yml` never
+   replaces an asset, so delete a partial upload before re-running it, and re-run all its jobs:
+   a re-run of only the failed ones stops, since files pass between its jobs under names that
+   carry the attempt. It uploads after publication, so it needs GitHub's immutable releases off
+   for this repository.
 7. **If the release changes a registry**, attach its new head, `roots.json` and the head
    checkpoint ([publishing](REGISTRY-GOVERNANCE.md#publishing)).

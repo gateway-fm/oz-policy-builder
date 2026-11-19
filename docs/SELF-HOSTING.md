@@ -57,13 +57,18 @@ gh release download "$tag" --repo gateway-fm/oz-policy-builder \
   --pattern '*-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
 # On macOS, `shasum -a 256 --check` in place of `sha256sum --check`.
 grep -- '-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check
-for asset in *.tar.gz SHA256SUMS; do
-  gh attestation verify "$asset" --repo gateway-fm/oz-policy-builder
-done
+# A subshell, so the first failure stops the loop without closing your shell.
+( set -e
+  for asset in *.tar.gz SHA256SUMS; do
+    gh attestation verify "$asset" --repo gateway-fm/oz-policy-builder \
+      --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/release-binaries.yml \
+      --source-ref "refs/tags/$tag" --deny-self-hosted-runners
+  done )
 ```
 
-The verification prints the workflow that built the asset and the ref it ran on: expect
-`release-binaries.yml` at the release's tag. Verify images the same way, by digest. The Linux
+`--repo` alone accepts an attestation from any workflow in the repository; the other three
+flags require the one that publishes releases, run for this tag on a GitHub-hosted runner.
+Verify images the same way, by digest (below). The Linux
 binaries are built on Ubuntu 24.04 and may need a glibc as new as its; on an older host, build
 from the tag instead (`cargo build --locked --release -p ozpb-cli -p ozpb-mcp-server`, and the
 worker as its [guide](NATIVE-EXECUTION.md#machine-protocol) says). The macOS binaries are not
@@ -156,8 +161,15 @@ contains it, `publish-image.yml` builds both images for amd64 and arm64 from the
 runs every check `self-hosted.yml` runs on each, and publishes them to
 `ghcr.io/gateway-fm/oz-policy-builder` and `ghcr.io/gateway-fm/oz-policy-builder-proxy` under
 the release tag, with a GitHub build-provenance attestation. The workflow summary lists both
-`@sha256` references; use those, and check them with
-`gh attestation verify oci://<reference> --repo gateway-fm/oz-policy-builder`. A published
+`@sha256` references; use those, and check each with
+
+```sh
+gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
+  --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/publish-image.yml \
+  --source-ref "refs/tags/<tag>" --deny-self-hosted-runners
+```
+
+A published
 image is software for operators to run; it does not mean an endpoint is running.
 
 GHCR creates a new package as private. After the first publication an organization owner makes
