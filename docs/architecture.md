@@ -162,8 +162,9 @@ replay-invariant **RecordingBundle** with an acquisition-derived evidence label.
 **Inputs (three paths, same output type):**
 
 - *Executed:* Stellar RPC `getTransaction(hash)` → decode `envelopeXdr` →
-  `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the authorization tree the
-  network actually verified), plus `resultXdr` — whose decoded outcome must agree with the
+  `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the entries the submitter
+  attached, of which the network checked only those a `require_auth` reached), plus
+  `resultXdr` — whose decoded outcome must agree with the
   reported status before the response becomes evidence — and `resultMetaXdr` for effects. **Retention caveat
   (documented, surfaced in the UI):** standard RPC retention is short (typically 24 hours,
   up to 7 days) — recording by hash only works within that window.
@@ -249,6 +250,13 @@ definitions and CAP-46-11):
   Protocol 27 (CAP-71) additions `AddressV2` and `AddressWithDelegates` (recursing the
   delegate signature tree). The credential *kind* is recorded; signature material irrelevant
   to policy synthesis is not retained in the fingerprint.
+- **An attached entry is not an authorization.** The host authenticates an entry only when a
+  `require_auth` reaches it, and a transaction succeeds with entries nothing used. An executed
+  address credential counts as an authorization only when the operation's meta shows its nonce
+  consumed. Any other entry is a labeled note and never a selectable authorizer
+  ([recording evidence](RECORDING-EVIDENCE.md#which-authorization-entries-are-evidence)). A
+  `SourceAccount` credential resolves to the operation's source account, or the (inner)
+  transaction's when the operation names none.
 - Fee-bump and multi-operation envelopes are parsed with explicit operation selection.
 - Failed executed transactions are rejected as behavior examples unless the user explicitly
   opts into a failure-analysis mode.
@@ -263,9 +271,9 @@ definitions and CAP-46-11):
   selected operation index, ledger anchor, decoded evidence and notes, executable
   observations, evidence trust level, schema version, and canonicalization version; uniquely
   identifies one recording. Authorizer selection and multi-recording grouping happen in
-  synthesis, not in the recording: a bundle carries **all** authorizers, and the resulting
-  PolicySpec pins the recording hashes it was derived from next to the selected smart
-  account.
+  synthesis, not in the recording: a bundle carries **all** authorizers the evidence shows
+  authorized, and the resulting PolicySpec pins the recording hashes it was derived from next
+  to the selected smart account.
 
 Raw XDR is always preserved alongside decoded views — decoding never replaces evidence.
 Recording sessions group multiple transactions (the RFP's canonical "claim on Blend, then
