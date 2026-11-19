@@ -177,9 +177,18 @@ def check_entrypoint(text):
         code = re.sub(r"(^|\s)#.*$", "", line)
         if re.search(r"\bset\b[^;&|]*?(\s-[A-Za-z]*x|\s-o\s+xtrace\b)", code):
             problems.append(f"{ENTRYPOINT}: shell tracing prints the bearer token as it is read")
-        if re.search(r"(^|[;&|]\s*)\s*(printenv|env)\s*($|[;&|>])", code):
+        # A command substitution's output is captured, not printed: `$(cat "$token_file")` is how
+        # the script reads the token. Everything else on the line reaches stdout or stderr.
+        shown = re.sub(r"\$\([^()]*\)", "", code)
+        start = r"(^|[;&|]\s*)\s*"
+        if re.search(start + r"printenv\b", shown) or re.search(start + r"env\s*($|[;&|>])", shown):
             problems.append(f"{ENTRYPOINT}: printenv/env prints the bearer token and trust inputs")
-        for command in re.findall(r"\b(?:echo|printf)\b[^;&|]*", code):
+        if re.search(r"\bexport\s+-p\b", shown) or re.search(start + r"set\s*($|[;&|>])", shown):
+            problems.append(f"{ENTRYPOINT}: export -p / set prints the bearer token and trust inputs")
+        if re.search(r"\bcat\b[^;&|]*(\$\{?token_file\b|bearer-token)", shown):
+            problems.append(f"{ENTRYPOINT}: cat of the token file prints the bearer token")
+        # To the end of the line: a `|` inside a quoted string must not end the printed text.
+        for command in re.findall(r"\b(?:echo|printf)\b.*", shown):
             for variable in SECRET_VARIABLES:
                 if re.search(rf"\$\{{?{variable}\b", command):
                     problems.append(f"{ENTRYPOINT}: prints {variable}")

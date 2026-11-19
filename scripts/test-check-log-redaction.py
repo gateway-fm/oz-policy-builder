@@ -187,6 +187,22 @@ class LogRedactionTests(unittest.TestCase):
         self.edit(redaction.ENTRYPOINT, "export OZPB_HTTP_BEARER_TOKEN\n", "export OZPB_HTTP_BEARER_TOKEN\nprintenv >&2\n")
         self.refused("printenv")
 
+    def test_entrypoint_printing_the_token_any_other_way_is_refused(self):
+        # Each prints the bearer token or the whole environment without a bare `printenv`, and each
+        # line is one the narrower first version of this check let through.
+        for line, needle in (
+            ("printenv OZPB_HTTP_BEARER_TOKEN >&2", "printenv"),
+            ('cat "$token_file" >&2', "token file"),
+            ("export -p", "export -p"),
+            ("set", "set"),
+            ('echo "a|b $OZPB_HTTP_BEARER_TOKEN" >&2', "OZPB_HTTP_BEARER_TOKEN"),
+        ):
+            with self.subTest(line=line):
+                self.setUp()
+                self.edit(redaction.ENTRYPOINT, "export OZPB_HTTP_BEARER_TOKEN\n",
+                          f"export OZPB_HTTP_BEARER_TOKEN\n{line}\n")
+                self.refused(needle)
+
     # The binaries: a log subscriber is what would make the server's own events reach stderr.
 
     def test_linked_log_subscriber_is_refused(self):
