@@ -11,8 +11,14 @@ import { checkProposalSpec } from '../shared/proposal.mjs';
 const HASH = /^[0-9a-f]{64}$/;
 const FILES = ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'rustfmt.toml', 'src/contract.rs', 'src/lib.rs'];
 const refuse = (code) => {
-  throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), code ? { code } : {});
+  throw Object.assign(new Error('wallet pipeline refused; refresh and review again'), code ? { code } : {},
+    // The CLI refused the registry's root policy (the development root on mainnet, for one): the page says so.
+    code === REGISTRY_ROOT_POLICY ? { reason: 'registry_root_refused' } : {});
 };
+/** The CLI's refusal of a registry root policy it will not trust; surfaced from every registry-reading call. */
+export const REGISTRY_ROOT_POLICY = 'E_REGISTRY_ROOT_POLICY';
+/** Keeps only that refusal's code from an error a catch-all would otherwise discard. */
+const rootPolicy = (error) => (error?.code === REGISTRY_ROOT_POLICY ? REGISTRY_ROOT_POLICY : undefined);
 // `capture-target` codes that name the call's own outcome rather than an endpoint fault.
 const TARGET_CODES = Object.freeze(['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED']);
 const integer = (n, low, high) => Number.isSafeInteger(n) && n >= low && n <= high;
@@ -82,16 +88,16 @@ export class WalletToolchain {
     let raw;
     try {
       raw = await this.#runner(this.#config.executable, [command, ...args], { env: this.#config.buildEnvironment,
-        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(codes.length ? { codes } : {}) });
+        ...(signal ? { signal } : {}), ...(timeoutMs ? { timeoutMs } : {}), codes: [...codes, REGISTRY_ROOT_POLICY] });
     } catch (error) {
-      // Only a code this call allowlisted survives; the runner never returns the CLI's text.
-      refuse(codes.includes(error?.code) ? error.code : undefined);
+      // Only a code this call allowlisted, or the registry root refusal, survives; the runner never returns the CLI's text.
+      refuse([...codes, REGISTRY_ROOT_POLICY].includes(error?.code) ? error.code : undefined);
     }
     try {
       if (typeof raw !== 'string' || Buffer.byteLength(raw) > 16 * 1024 * 1024) refuse();
       save(join(directory, `${command}.json`), raw);
       return parser(raw);
-    } catch { refuse(); }
+    } catch (error) { refuse(rootPolicy(error)); }
   }
 
   recordFile(id) { return this.#get(this.#records, id).file; }
@@ -117,7 +123,7 @@ export class WalletToolchain {
         observedLedger: bundle.ledger, authorizations: display(authorizations), trust: 'rpc_reported' });
       this.#records.set(recordId, { file: join(directory, 'record.json'), response });
       return response;
-    } catch { refuse(); }
+    } catch (error) { refuse(rootPolicy(error)); }
   }
 
   async generate({ recordId, delegateAddress, validUntilLedger, maxCalls, grantName, currentLedger, proposal }) {
@@ -182,7 +188,7 @@ export class WalletToolchain {
         limitations: ['Artifact reproduction and reference evaluation do not constitute a complete four-layer dry run.'] });
       this.#artifacts.set(artifactId, { response, directory, wasmBase64: generated.wasm_base64 });
       return response;
-    } catch { refuse(); }
+    } catch (error) { refuse(rootPolicy(error)); }
   }
 
   /** Request objects come only from the trusted wallet controller's retained artifacts. */

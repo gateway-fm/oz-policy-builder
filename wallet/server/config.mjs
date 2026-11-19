@@ -1,6 +1,6 @@
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, normalize } from 'node:path';
-import { StrKey } from '@stellar/stellar-sdk';
+import { Keypair, StrKey, hash } from '@stellar/stellar-sdk';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { walletNetwork } from '../shared/networks.mjs';
 import { FeePayer, loadFeePayerKey } from './fee-payer.mjs';
@@ -23,6 +23,37 @@ const MAINNET_FEE_CEILINGS = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, max
   sessionSpendCapStroops: 500_000_000 });
 /** The development registry's version: a mainnet session never accepts an older floor than testnet's. */
 const MAINNET_MIN_REGISTRY_VERSION = 6;
+/**
+ * The development registry's root key, derived as the registry crate derives it
+ * (`dev_signing_key`: the Ed25519 key whose seed is SHA-256 of a public label). Anyone can sign with
+ * it, so a mainnet session refuses a root policy that names it.
+ */
+export const DEVELOPMENT_REGISTRY_ROOT = Buffer.from(Keypair.fromRawEd25519Seed(Buffer.from(hash(Buffer.from('ozpb-dev-registry-root-key-v1'))))
+  .rawPublicKey()).toString('hex');
+/**
+ * Mainnet trusts only the operator's production registry: a root policy (threshold and keys) that
+ * does not name the development root, with the persisted checkpoint the CLI rejects rollback and
+ * equivocation against, at or above the configured floor. Refused at startup with the reason.
+ */
+function mainnetRegistryTrust(rootsText, minimumVersion) {
+  const refusedTrust = (detail) => { throw Object.assign(new Error('registry trust refused'), { startup: detail }); };
+  const roots = parseJsonExact(rootsText);
+  const keys = roots?.keys && typeof roots.keys === 'object' && !Array.isArray(roots.keys) ? Object.values(roots.keys) : [];
+  if (!Number.isSafeInteger(roots?.threshold) || roots.threshold < 1 || !keys.length || keys.some((key) => typeof key !== 'string')) {
+    refusedTrust('The registry root policy must name a threshold and at least one key.');
+  }
+  if (keys.some((key) => key.toLowerCase() === DEVELOPMENT_REGISTRY_ROOT)) {
+    refusedTrust('On mainnet the development registry root is refused: anyone can sign with it. Configure the operator\'s '
+      + 'production root policy, signed snapshot and checkpoint.');
+  }
+  const checkpoint = roots.checkpoint;
+  if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) {
+    refusedTrust('On mainnet the registry root policy must carry the persisted checkpoint (`checkpoint`).');
+  }
+  if (!Number.isSafeInteger(checkpoint.version) || checkpoint.version < minimumVersion) {
+    refusedTrust('The persisted registry checkpoint is older than the configured minimum version.');
+  }
+}
 const integer = (value, max) => Number.isSafeInteger(value) && value >= 1 && value <= max;
 
 function pathInfo(path) {
@@ -93,6 +124,7 @@ export function loadWalletConfig(path) {
     const registrySnapshot = file(value.registrySnapshotPath, 2 * 1024 * 1024);
     const registryRoots = file(value.registryRootsPath, 256 * 1024);
     new RawJson(registrySnapshot); new RawJson(registryRoots);
+    if (mainnet) mainnetRegistryTrust(registryRoots, value.registryMinimumVersion);
     const buildEnvironment = { CARGO_NET_OFFLINE: 'true' };
     if (Object.hasOwn(value, 'stellarBinary')) buildEnvironment.OZPB_STELLAR_BINARY = executable(value.stellarBinary);
     if (Object.hasOwn(value, 'cargoHome')) buildEnvironment.CARGO_HOME = directory(value.cargoHome);

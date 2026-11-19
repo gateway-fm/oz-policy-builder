@@ -28,7 +28,9 @@ function setup(t, change = () => {}, pipeline) {
   const calls = [];
   const raw = JSON.stringify(record).replace('"nonce":1', '"nonce":9223372036854775807');
   const runner = async (executable, args, options = {}) => {
-    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}), ...(options.codes ? { codes: options.codes } : {}),
+    // Every call may surface the registry root refusal; only other allowlisted codes are recorded here.
+    const codes = options.codes?.filter((code) => code !== 'E_REGISTRY_ROOT_POLICY');
+    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}), ...(codes?.length ? { codes } : {}),
       ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
     return args[0] === 'record' ? raw : JSON.stringify(await pipeline(args));
   };

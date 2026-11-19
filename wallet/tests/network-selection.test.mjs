@@ -72,7 +72,9 @@ test('the operator chooses the network once, in the configuration: testnet by de
   mkdirSync(workRoot, { mode: 0o700 });
   writeFileSync(executable, '#!/bin/sh\nexit 99\n', { mode: 0o700 });
   writeFileSync(join(root, 'registry.json'), '{}', { mode: 0o600 });
-  writeFileSync(join(root, 'roots.json'), '{}', { mode: 0o600 });
+  // A production-shaped root policy with its persisted checkpoint: mainnet refuses the development root.
+  writeFileSync(join(root, 'roots.json'), JSON.stringify({ threshold: 1, keys: { operator: 'ab'.repeat(32) }, checkpoint: { version: 6 } }),
+    { mode: 0o600 });
   const path = join(root, 'operator.json');
   const save = (extra) => writeFileSync(path, JSON.stringify({ executable, workRoot, rpcUrl: 'https://rpc.example/',
     registrySnapshotPath: join(root, 'registry.json'), registryRootsPath: join(root, 'roots.json'), registryMinimumVersion: 6, ...extra }),
