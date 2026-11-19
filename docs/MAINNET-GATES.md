@@ -218,9 +218,9 @@ Every observed argument becomes an exact constraint. A bound enters only through
 decision on an amount argument, with canonical numerals and a declared blast radius, or through
 a reviewed adapter bound to the observed code hash and whole argument shape. The adapter takes
 direction from the argument's meaning: a maximum input admits an upper bound, and a minimum
-output gets no invented floor. A user decision cannot loosen the side an adapter declares
-unsafe: a bound below a recorded minimum output, or one leaving a maximum input with no finite
-cap, is refused. A widening that matches nothing, or that contradicts observed-exact
+output gets no invented floor. A user decision cannot loosen what an adapter's role requires:
+a bound below a recorded minimum output, one leaving a maximum input with no finite cap, or any
+widening of an argument the adapter keeps exact is refused. A widening that matches nothing, or that contradicts observed-exact
 provenance, is refused, and an unverified registry never widens.
 
 A bound must admit the recorded value, and an argument takes one widening. A cap on a signed
@@ -255,6 +255,7 @@ ci  crates/codegen/src/lib.rs  tests::range_crate_matches_committed_output
 ci  crates/codegen/src/lib.rs  tests::a_bound_at_the_i128_limit_emits_no_vacuous_comparison
 ci  contracts/differential/tests/range_generated_suite.rs  range_cases_agree_through_the_compiled_policy
 ci  crates/synthesizer/src/lib.rs  tests::a_user_bound_against_an_adapter_role_is_refused
+ci  crates/synthesizer/src/lib.rs  tests::a_user_widening_of_an_argument_an_adapter_keeps_exact_is_refused
 ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::explicit_user_widening_keeps_its_distinct_intent_and_provenance
 ci  crates/synthesizer/src/lib.rs  tests::an_open_above_bound_requires_high_blast_radius
 ci  crates/policy-spec/src/lib.rs  tests::a_bound_spanning_the_i128_domain_requires_high_blast_radius

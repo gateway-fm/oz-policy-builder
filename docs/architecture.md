@@ -438,9 +438,9 @@ Derivation rules:
      argument semantics — max-input vs min-output vs deadline vs identifier — for that
      specific contract (§6.1). The XDR type alone never determines direction: lowering a
      minimum-output makes a swap *less* safe, so `<= observed` as a generic rule is unsound.
-     Where an adapter declares a minimum output or a maximum input, a user decision may not
-     loosen its unsafe side either: a bound admitting values below the recorded minimum output,
-     or leaving the maximum input uncapped, is refused.
+     Where an adapter declares a role, a user decision may not loosen what it requires either:
+     a bound admitting values below the recorded minimum output, one leaving the maximum input
+     uncapped, or any widening of an argument the adapter keeps exact is refused.
 - **Value caps:** token-movement events *suggest* which argument carries value; the
   suggestion is presented as evidence for the user/adapter decision, never applied silently.
   SEP-41 `transfer` cadence/rate limiting composes the audited OZ `spending_limit`

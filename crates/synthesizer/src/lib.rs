@@ -636,12 +636,16 @@ pub fn synthesize(
                             .any(|a| a.index == w.arg_index && a.constraint.is_widening())
                 })
         }) else {
-            errors.push(SynthError::AmbiguousArgSemantics {
-                contract: w.contract.clone(),
-                fn_name: w.fn_name.clone(),
-                arg_index: w.arg_index,
-                reason: "widening matched no observed numeric argument".to_string(),
-            });
+            // A widening refused against an adapter's role is left unapplied, so it matches
+            // nothing; it is not reported a second time for that.
+            if !refused(&errors, w) {
+                errors.push(SynthError::AmbiguousArgSemantics {
+                    contract: w.contract.clone(),
+                    fn_name: w.fn_name.clone(),
+                    arg_index: w.arg_index,
+                    reason: "widening matched no observed numeric argument".to_string(),
+                });
+            }
             continue;
         };
         // Decisions name an argument, not a recorded call. Where the function was recorded as
@@ -696,13 +700,7 @@ pub fn synthesize(
         };
         // A widening already refused as stated is not asked about its floor as well: the
         // acknowledgement the question invites would not make it acceptable.
-        let refused = errors.iter().any(|e| {
-            matches!(e, SynthError::InvalidDecision(message) if message.starts_with(&format!(
-                "widening {}/{} arg {}:",
-                w.contract, w.fn_name, w.arg_index
-            )))
-        });
-        if let Some((subject, instead)) = open_floor.filter(|_| !refused) {
+        if let Some((subject, instead)) = open_floor.filter(|_| !refused(&errors, w)) {
             let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
             let refusal = negative_amount_refusal(rule, arg_index);
             if w.no_floor_acknowledged {
@@ -998,6 +996,24 @@ fn exact_constraints(
             .iter()
             .find(|w| w.contract == o.contract && w.fn_name == o.fn_name && w.arg_index == index);
 
+        // A decision that contradicts the role a reviewed adapter declares for this argument is
+        // refused for that alone, and not applied: no other finding about it (its rating, its
+        // floor, its type) could make it acceptable, so none is raised.
+        if let Some(finding) = widening
+            .zip(adapter)
+            .and_then(|(w, ad)| against_adapter_role(o, index, w, ad))
+        {
+            if !errors.contains(&finding) {
+                errors.push(finding);
+            }
+            out.push(ArgConstraint {
+                index,
+                constraint: exact_for(arg, input),
+                provenance: Provenance::ObservedExact,
+            });
+            continue;
+        }
+
         let (constraint, provenance) = match (arg, widening) {
             // AnyValue is a type-agnostic maximal widening (e.g. a caller-chosen
             // deadline); it applies regardless of the observed arg type.
@@ -1010,12 +1026,6 @@ fn exact_constraints(
                     },
                 ),
             ) => {
-                if let Some(finding) = adapter.and_then(|ad| against_adapter_role(o, index, w, ad))
-                {
-                    if !errors.contains(&finding) {
-                        errors.push(finding);
-                    }
-                }
                 rationale.push(format!(
                     "{}/{} arg {index}: user-widened to ACCEPT ANY VALUE ({}), blast \
                      radius {:?} — this argument is unconstrained",
@@ -1033,7 +1043,8 @@ fn exact_constraints(
             // ambiguous semantics and fails closed.
             (ArgSummary::I128(observed), Some(w)) => {
                 rationale.push(format!(
-                    "{}/{} arg {index}: user-widened ({}), blast radius {:?}",
+                    "{}/{} arg {index}: user-widened ({}), blast radius {:?}; recorded value \
+                     {observed}",
                     o.contract, o.fn_name, w.intent, w.blast_radius
                 ));
                 // A widening loosens the recorded call. A bound that excludes the recorded value
@@ -1048,12 +1059,7 @@ fn exact_constraints(
                         errors.push(finding);
                     }
                 }
-                // A bound against an adapter's reviewed role is refused for that alone: asking
-                // for a higher rating as well would suggest the rating could repair it.
-                if let Some(finding) = adapter
-                    .and_then(|ad| against_adapter_role(o, index, w, ad))
-                    .or_else(|| uncapped_below_high(o, index, w, adapter))
-                {
+                if let Some(finding) = uncapped_below_high(o, index, w, adapter) {
                     if !errors.contains(&finding) {
                         errors.push(finding);
                     }
@@ -1170,6 +1176,15 @@ fn excluding_bound(bound: &WideningBound, observed: i128) -> Option<String> {
     }
 }
 
+/// Whether `w` already drew an invalid-decision finding: every such finding about a widening
+/// opens with the argument it names.
+fn refused(errors: &[SynthError], w: &Widening) -> bool {
+    let prefix = format!("widening {}/{} arg {}:", w.contract, w.fn_name, w.arg_index);
+    errors
+        .iter()
+        .any(|e| matches!(e, SynthError::InvalidDecision(message) if message.starts_with(&prefix)))
+}
+
 /// Whether a range's stated floor is the type's own minimum, which the generated check leaves
 /// out: such a range has no floor, the same check as a cap at its maximum.
 fn starts_at_the_type_minimum(min: &str) -> bool {
@@ -1202,26 +1217,38 @@ fn enforced_ends(bound: &WideningBound) -> Option<(Option<i128>, Option<i128>)> 
     })
 }
 
-/// The refusal of a user bound that loosens the unsafe side of an argument a reviewed adapter
-/// declares, if it does. A minimum output is the target's own check on the result, so a bound
-/// admitting anything below the recorded value weakens it — lowering it to zero removes it. A
-/// maximum input is what the call may spend, so a bound with no cap lets it spend any amount. A
-/// rating cannot restore either check, so neither is a question of blast radius: the decision
-/// contradicts the reviewed role and is refused. Raising a minimum output, or capping an input at
-/// a finite amount, stays the user's value decision.
+/// The refusal of a user widening that loosens what a reviewed adapter's role for the argument
+/// requires, if it does. An argument the adapter keeps exact (a swap's path, its recipient, a
+/// fixed deadline) must carry the recorded value, so any widening of it is refused. A minimum
+/// output is the target's own check on the result, so a bound admitting anything below the
+/// recorded value weakens it — lowering it to zero removes it. A maximum input is what the call
+/// may spend, so a bound with no cap lets it spend any amount. A rating cannot restore any of
+/// these checks, so none is a question of blast radius: the decision contradicts the reviewed
+/// role and is refused; loosening a role is a new adapter version's to do. Raising a minimum
+/// output, capping an input at a finite amount, and any decision on a caller-chosen argument stay
+/// the user's.
 fn against_adapter_role(
     o: &Observed<'_>,
     index: u32,
     w: &Widening,
     adapter: &adapters::Adapter,
 ) -> Option<SynthError> {
+    let (contract, fn_name, name) = (&o.contract, &o.fn_name, &adapter.name);
+    let bound = bound_text(&w.bound);
+    let role = adapter.role(fn_name, index as usize)?;
+    if *role == adapters::ArgRole::ExactOnly {
+        return Some(SynthError::InvalidDecision(format!(
+            "widening {contract}/{fn_name} arg {index}: adapter '{name}' reviews this argument as \
+             exact (exact_only): the call must carry the recorded value, and {bound} would loosen \
+             it. No rating restores a check the reviewed role requires; keep it exact, and \
+             loosening it is for a new adapter version"
+        )));
+    }
     let Some(ArgSummary::I128(observed)) = o.args.get(index as usize) else {
         return None;
     };
     let (floor, cap) = enforced_ends(&w.bound)?;
-    let (contract, fn_name, name) = (&o.contract, &o.fn_name, &adapter.name);
-    let bound = bound_text(&w.bound);
-    match adapter.role(fn_name, index as usize)? {
+    match role {
         adapters::ArgRole::MinOutput if floor.is_none_or(|floor| floor < *observed) => {
             Some(SynthError::InvalidDecision(format!(
                 "widening {contract}/{fn_name} arg {index}: adapter '{name}' reviews this \
@@ -3088,7 +3115,8 @@ mod tests {
             out.rationale
         );
         assert!(out.rationale.contains(&format!(
-            "{contract}/transfer arg 2: user-widened (an amount decision), blast radius High"
+            "{contract}/transfer arg 2: user-widened (an amount decision), blast radius High; \
+             recorded value 500000000"
         )));
         assert!(out.spec.validate().is_ok());
 
@@ -3436,6 +3464,62 @@ mod tests {
         let (unbound, _, _) = adapted_swap(false);
         let mut d = decisions;
         d.widenings = vec![swap_widening(&router, 1, range("0", "950"))];
+        assert!(synthesize(&unbound, &d).is_ok());
+    }
+
+    /// An argument a reviewed adapter keeps exact — the router's path, its recipient, and under
+    /// `soroswap-router@2` the deadline — carries a check the reviewed role requires. A decision
+    /// to loosen it, `any_value` at high blast radius included, is refused naming the adapter and
+    /// the role: no rating restores the check, and loosening it is a new adapter version's to do.
+    /// The refusal is the decision's only finding, whatever else it would have drawn.
+    #[test]
+    fn a_user_widening_of_an_argument_an_adapter_keeps_exact_is_refused() {
+        let (input, router, decisions) = adapted_swap(true);
+        let exact = |arg: u32, bound: &str| {
+            vec![SynthError::InvalidDecision(format!(
+                "widening {router}/swap_exact_tokens_for_tokens arg {arg}: adapter \
+                 'soroswap-router@2' reviews this argument as exact (exact_only): the call must \
+                 carry the recorded value, and {bound} would loosen it. No rating restores a \
+                 check the reviewed role requires; keep it exact, and loosening it is for a new \
+                 adapter version"
+            ))]
+        };
+        for (arg_index, bound, text) in [
+            (2, WideningBound::AnyValue, "any_value"),
+            (3, WideningBound::AnyValue, "any_value"),
+            (4, WideningBound::AnyValue, "any_value"),
+            // A numeric bound on the u64 deadline is otherwise ambiguous semantics; the role
+            // answers first.
+            (
+                4,
+                WideningBound::GeI128 {
+                    min: "0".to_string(),
+                },
+                "the floor >= 0",
+            ),
+        ] {
+            let mut d = decisions.clone();
+            d.widenings = vec![swap_widening(&router, arg_index, bound)];
+            assert_eq!(
+                synthesize(&input, &d).unwrap_err(),
+                exact(arg_index, text),
+                "arg {arg_index}"
+            );
+        }
+
+        // An argument the adapter leaves to the caller (`soroswap-router@1`'s deadline) is not
+        // exact, so a decision there stands.
+        let mut v1 = input.clone();
+        v1.adapters = vec![adapters::Adapter::from_semantics(
+            v1.adapters[0].target_code_hash,
+            ozpb_domain::target_adapters::soroswap_router(),
+        )];
+        let mut d = decisions.clone();
+        d.widenings = vec![swap_widening(&router, 4, WideningBound::AnyValue)];
+        assert!(synthesize(&v1, &d).is_ok());
+        // Without the binding nothing declares the role, and the decision stands as made.
+        let (unbound, _, _) = adapted_swap(false);
+        d.widenings = vec![swap_widening(&router, 2, WideningBound::AnyValue)];
         assert!(synthesize(&unbound, &d).is_ok());
     }
 

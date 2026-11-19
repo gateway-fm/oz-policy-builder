@@ -106,14 +106,14 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Atomic live helper | `contracts/atomic-live-helper` | On-chain contract the owner signs into for the [live-enforcement check](ATOMIC-LIVE-HELPER.md) | 163 | 50 |
 | Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,816 | 3,119 |
 | Call-surface core | `crates/call-surface-core` | The install-time authority verdict | 1,101 | 1,509 |
-| Synthesizer | `crates/synthesizer` | Exact-by-default decisions, adapters, composition checks | 1,735 | 2,359 |
+| Synthesizer | `crates/synthesizer` | Exact-by-default decisions, adapters, composition checks | 1,752 | 2,404 |
 | PolicySpec | `crates/policy-spec` | Schema, validation typestate, signer-set hash | 1,357 | 1,473 |
 | Reference evaluator | `crates/evaluator` | The independent oracle generated code is compared with | 370 | 689 |
 | Domain | `crates/domain` | Canonical hashing, trust labels and the pinned upstream hashes every row above depends on | 848 | 642 |
 | Contract tests | `contracts/differential` | Differential, generated-suite (the two-payment cross products included), event, TTL and pinned-account tests of the contracts above | — | 6,981 |
 | Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.3 | The account every grant is installed into; see below | 57 | not counted |
 | Other pinned OpenZeppelin wrappers | `examples/multisig-smart-account/{spending-limit-policy,ed25519-verifier,webauthn-verifier}` at v0.7.2 | Recognized by exact hash; the spending limit is composed in the [subscription walkthrough](WALKTHROUGH-SEP41.md) | 112 | not counted |
-| **Tier 1** | | | **10,467** | **19,417** |
+| **Tier 1** | | | **10,484** | **19,462** |
 
 **The pinned account is outside OpenZeppelin's own audit.** Their v0.7.0 audit report (in the
 `audits/` directory of their repository) lists only `packages/` files in scope. The account this
@@ -190,7 +190,7 @@ simulated transactions; the registry's roots and checkpoint.
 | Invariant | Enforced in | Tested in |
 | --- | --- | --- |
 | **Signer predicate.** Right after its installation and expiry checks, and before it looks at the call, a generated policy refuses an authorization whose authenticated signers do not satisfy its predicate, the empty set included (the account defers signer checks to policies). For named identities it also refuses when the rule's live signer set differs from the compiled one: validation requires strict mode for them. | `enforce` in each generated `src/contract.rs`, emitted by `crates/codegen` | `zero_signers_denies_in_both`, `unrecognized_signer_denies_in_both`, `strict_mode_denies_grown_and_swapped_signer_sets_in_both` (`differential.rs`); `named_identities_require_strict_signer_set` (`crates/policy-spec`); through the pinned account, `weak_account_rule_cannot_widen_the_grant_signers_but_can_strip_its_policy` |
-| **Exact tuples.** A permitted `(contract, function, args)` deep-equals a compiled-in tuple; bounds and wildcards enter only through explicit, provenance-tagged decisions, each loosening one recorded call and never the side a reviewed adapter declares unsafe, rated no lower than the reach of its bound; tuples are never combined into a Cartesian product. | `crates/synthesizer`, `crates/policy-spec`, `crates/codegen` | `amount_mutations_deny_in_both`, `function_and_target_mutations_deny_in_both`, `arg_arity_and_type_confusion_deny_in_both` (`differential.rs`); `generated_suite.rs`, `swap_generated_suite.rs`; `incomplete_tuples_fail`, `a_bound_spanning_the_i128_domain_requires_high_blast_radius` (`crates/policy-spec`); `widening_applies_only_with_explicit_decision_and_only_to_amounts`, `tuple_dedup_merges_identical_and_keeps_distinct`, `a_widening_on_a_multi_tuple_function_is_refused_unless_scoped`, `a_user_bound_against_an_adapter_role_is_refused`, `an_open_above_bound_requires_high_blast_radius` (`crates/synthesizer`) |
+| **Exact tuples.** A permitted `(contract, function, args)` deep-equals a compiled-in tuple; bounds and wildcards enter only through explicit, provenance-tagged decisions, each loosening one recorded call and never the side a reviewed adapter declares unsafe, rated no lower than the reach of its bound; tuples are never combined into a Cartesian product. | `crates/synthesizer`, `crates/policy-spec`, `crates/codegen` | `amount_mutations_deny_in_both`, `function_and_target_mutations_deny_in_both`, `arg_arity_and_type_confusion_deny_in_both` (`differential.rs`); `generated_suite.rs`, `swap_generated_suite.rs`; `incomplete_tuples_fail`, `a_bound_spanning_the_i128_domain_requires_high_blast_radius` (`crates/policy-spec`); `widening_applies_only_with_explicit_decision_and_only_to_amounts`, `tuple_dedup_merges_identical_and_keeps_distinct`, `a_widening_on_a_multi_tuple_function_is_refused_unless_scoped`, `a_user_bound_against_an_adapter_role_is_refused`, `a_user_widening_of_an_argument_an_adapter_keeps_exact_is_refused`, `an_open_above_bound_requires_high_blast_radius` (`crates/synthesizer`) |
 | **Fail-closed recognition.** Unknown account, policy or verifier code, an unloaded registry or an unverifiable snapshot is an error, never a guess. | `crates/registry`, `crates/call-surface-core` | The registry tests in the table above; `queries_before_load_fail_closed` (`crates/registry/src/lib.rs`); `unrecognized_account_fails_closed` (`crates/call-surface-core/src/tests.rs`) |
 | **Authority surface.** Before installation, every live rule that can change the account or reset a bound policy is listed with its exact signers; the check refuses when the agent's key can do either alone, when another rule on the target gets around a stateful limit, or when a rule shape is unsupported. | `crates/call-surface-core`, `crates/toolkit/src/call_surface_live.rs`, the scan in `crates/source-rpc` | `crates/call-surface-core/src/tests.rs`, e.g. `case_6_restricted_key_that_can_manage_alone_is_refused`, `stateful_grant_beside_another_usable_rule_on_the_target_is_refused`, `new_rule_cannot_target_the_account_or_a_bound_policy`; through the pinned account, the direct-call and weak-management rows of the [state-invariant map](SCOPE.md#state-invariants-and-direct-calls) |
 | **Stateful invariants.** Only `install` initializes state; missing state denies; a cap never resets within an installation; TTL extension is bounded; archival is not revocation; reinstalling is a new grant; a failed composition rolls back. | `install`, `enforce`, `uninstall` of each generated policy | The [state-invariant map](SCOPE.md#state-invariants-and-direct-calls), row by row; `contracts/differential/tests/ttl.rs`; `missing_state_denies_in_both`, `install_is_the_only_initializer_and_double_install_fails` (`differential.rs`) |
@@ -276,6 +276,15 @@ shipped grant shape, each with its deviations, are in the
     writes a condition `clippy::nonminimal_bool` refuses, with unchanged semantics, so
     `contracts/two-payment-policy` is formatted but not linted
     ([G4](MAINNET-GATES.md#g4-tuple-correlation)).
+15. **A finite bound's rating is the user's, and synthesis is the gate for the rest.** No rule
+    decides when a finite cap is too large: `le_i128 {max: i128::MAX - 1}` rated low is a bound,
+    and its rating stands. Synthesis states the recorded value beside each user bound in its
+    rationale, the skill's card sets the bound beside it, and the transcript checker requires
+    that value on the card. Validation holds only a bound spanning the whole `i128` range to
+    `high`; an open top rated below `high`, a widening against an adapter's role and one that
+    would loosen several recorded calls are refused by synthesis, which holds the decisions. A
+    spec edited by hand and passed straight to `generate_code` or `ozpb generate`, which take no
+    decisions, can carry any of them ([SCOPE.md](SCOPE.md#implementation-boundaries), item 8).
 
 ## Prior relevant findings
 

@@ -54,7 +54,10 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 | `{"ge_i128": {"min": "N"}}` — a floor | every value ≥ N, such as a swap's minimum output; requires `blast_radius: "high"` unless a reviewed adapter declares the argument a minimum output (below) | `i128` arguments |
 | `"any_value"` | anything at that argument | any argument; requires `blast_radius: "high"` |
 
-The rating is yours, but it has a floor where the bound itself shows how far it reaches. A bound
+The rating is yours, but it has a floor where the bound itself shows how far it reaches. A
+finite bound's rating stays yours however large it is: no rule decides when a cap is too large,
+so synthesis states the recorded value beside each bound you chose, and the skill's card sets
+them side by side — a cap 10³⁶ times the recorded amount reads as one. A bound
 with no finite top — a floor, or a cap or range whose maximum is `i128::MAX` — admits every larger
 value, which on an amount is any amount, and the type of an argument never says whether it is
 one. So it requires `high`; rated lower it is refused (`E_INVALID_DECISION`). The one exception
@@ -101,17 +104,18 @@ exact ([TARGET-ADAPTERS.md](TARGET-ADAPTERS.md)). The constraint carries `adapte
 provenance and holds only while the target's code hash matches; an `any_value` from an adapter is
 listed as high blast radius on the card like your own. Without a binding, synthesis stays exact.
 
-Where an adapter declares an argument a minimum output or a maximum input, your widening of it
-may not loosen its unsafe side. On a minimum output, a bound that admits anything below the recorded value — a lower floor, a
+Where an adapter declares a role for an argument, your widening of it may not loosen what the
+role requires. An argument it keeps exact (the router's path and recipient, and under its
+version 2 the deadline) takes no widening at all, `any_value` included. On a minimum output, a bound that admits anything below the recorded value — a lower floor, a
 range reaching below it, a cap, `any_value` — weakens the target's only check on the result, and
 lowering it to zero removes that check. On a maximum input, a bound with no finite cap — a floor,
 `any_value`, a maximum of `i128::MAX` — lets the call spend any amount. Either is refused with an
-`E_INVALID_DECISION` finding naming the adapter, whatever blast radius it is rated, since no rating
-restores the check. Raising a minimum output (a floor at or above the recorded value) and capping
-an input at a finite amount, above the recorded one included, stay your decisions. An argument the
-adapter keeps exact (the router's path, recipient and deadline) can still be made `any_value` by
-your decision, which requires `high` and is listed on the card. Without a binding nothing declares
-a role, and your decision stands as made.
+`E_INVALID_DECISION` finding naming the adapter and the role, whatever blast radius it is rated,
+since no rating restores a check the reviewed role requires; loosening one is a new adapter
+version's to do. Raising a minimum output (a floor at or above the recorded value), capping an
+input at a finite amount, above the recorded one included, and any decision on an argument the
+adapter leaves to the caller (version 1's deadline) stay yours. Without a binding nothing
+declares a role, and your decision stands as made.
 
 ## Open question: negative values under a cap
 
@@ -158,9 +162,10 @@ The [`policy-builder` skill](../skills/policy-builder/SKILL.md) asks before it c
    as `>= min and <= max`, a cap accepted without a floor as `<= value, no floor` — and synthesizes
    only after a reply that just accepts them. A reply that accepts and adds anything is answered and restated.
 3. On a refusal it asks about exactly the findings named in `details`.
-4. The **Confirm before deploy** card lists under **High blast radius** every `any_value`
-   argument, every widening you rated `high` — every bound with no finite top among them, except
-   on an adapter-declared minimum output — no expiry and no cap.
+4. The **Confirm before deploy** card sets each bound you chose beside the recorded value, with
+   how many times larger it is, under **Not constrained**. It lists under **High blast radius**
+   every `any_value` argument, every widening you rated `high` — every bound with no finite top
+   among them, except on an adapter-declared minimum output — no expiry and no cap.
 
 When the grant is meant for the wallet integration, the skill says so while asking, because the
 wallet accepts one narrow grant shape, with no widening and no spending limit

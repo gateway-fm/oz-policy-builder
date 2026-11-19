@@ -511,7 +511,9 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   another name, and spec validation holds it to `high` (`E_SPEC_ANY_VALUE_BLAST_RADIUS`).
 - **A user bound cannot contradict an adapter's role.** Where a bound adapter declares an
   argument a minimum output, a widening that admits anything below the recorded value is an
-  `E_INVALID_DECISION`; where it declares a maximum input, so is one with no finite cap.
+  `E_INVALID_DECISION`; where it declares a maximum input, so is one with no finite cap; where it
+  keeps the argument exact, so is any widening. These rules and the open-top rating run in
+  synthesis only: `generate` takes a spec and no decisions.
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).

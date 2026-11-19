@@ -149,10 +149,10 @@ def result(tool_id, payload, is_error=False):
          "content": [{"type": "text", "text": text}]}]}}
 
 
-def synthesis(tool_id, decisions=None, spec=SPEC, spec_hash=SPEC_HASH):
+def synthesis(tool_id, decisions=None, spec=SPEC, spec_hash=SPEC_HASH, rationale=()):
     return [call(tool_id, MCP + "synthesize_policy",
                  {"bundles": [BUNDLE], "decisions": decisions or DECISIONS}),
-            result(tool_id, {"spec": spec, "spec_hash": spec_hash, "rationale": []})]
+            result(tool_id, {"spec": spec, "spec_hash": spec_hash, "rationale": list(rationale)})]
 
 
 def handoff(body=None):
@@ -160,7 +160,8 @@ def handoff(body=None):
                + json.dumps(body or proposal(), indent=2) + "\n```")
 
 
-def session(spec=SPEC, card=CARD, decisions=DECISIONS, restatement=RESTATEMENT) -> list:
+def session(spec=SPEC, card=CARD, decisions=DECISIONS, restatement=RESTATEMENT,
+            rationale=()) -> list:
     return [
         user(f"Record testnet transaction {TX_HASH} and build me a policy for it."),
         call("t1", MCP + "record_transaction", {
@@ -173,7 +174,7 @@ def session(spec=SPEC, card=CARD, decisions=DECISIONS, restatement=RESTATEMENT) 
         user(f"Delegate {DELEGATE}, until ledger 5000, at most 3 calls, call it pay-bob."),
         say(restatement),
         user("Yes."),
-        *synthesis("t2", decisions, spec),
+        *synthesis("t2", decisions, spec, rationale=rationale),
         call("t3", MCP + "reference_suite", {"spec": spec}),
         result("t3", {"all_agree": True}),
         say(card),
@@ -323,6 +324,32 @@ class ReviewRegressions(unittest.TestCase):
                       line.replace("<= 2000000", "<= 1000000"), line.replace("and <= 2000000", "and <= 2000000, no floor")):
             self.assertIn("synthesize_before_decisions",
                           checks(session(decisions=decisions, restatement=RESTATEMENT + wrong)), wrong)
+
+    def test_a_widened_bound_is_shown_beside_the_recorded_value(self):
+        # A finite bound's rating is the user's, and no rule says how large is too large. So the
+        # card sets each widened bound beside the value the recording held, which synthesis states
+        # in its rationale: a maximum a million times the recorded amount is read as one.
+        spec = copy.deepcopy(SPEC)
+        spec["rules"][0]["allowed_calls"][0]["args"][2] = {
+            "i": 2, "c": {"range_i128": {"min": "0", "max": "1000000000000"}},
+            "prov": {"user_widened": {"intent": "headroom", "blast_radius": "medium"}}}
+        rationale = [f"{TARGET}/transfer arg 2: user-widened (headroom), blast radius Medium; "
+                     "recorded value 1000000"]
+        permitted = CARD.replace("1000000) on", ">= 0 and <= 1000000000000) on")
+        exact = "**Not constrained:** nothing; every argument is exact."
+        shown = permitted.replace(exact, "**Not constrained:** transfer arg[2] accepts >= 0 and "
+                                  "<= 1000000000000; recorded 1000000, so the maximum is ×10⁶ "
+                                  "the recorded amount.")
+        self.assertNotIn("handoff_without_confirmation",
+                         checks(session(spec=spec, card=shown, rationale=rationale)))
+        hidden = permitted.replace(exact, "**Not constrained:** transfer arg[2] accepts >= 0 and "
+                                   "<= 1000000000000.")
+        self.assertIn("handoff_without_confirmation",
+                      checks(session(spec=spec, card=hidden, rationale=rationale)))
+        # The value has to be on that line: the Permitted call above holds no recorded value.
+        elsewhere = hidden.replace("**Not checked:**", "**Not checked:** recorded 1000000;")
+        self.assertIn("handoff_without_confirmation",
+                      checks(session(spec=spec, card=elsewhere, rationale=rationale)))
 
     def test_readable_shell_proposals_pass_and_unverifiable_writes_refuse(self):
         events = session()[:-1] + [call("write", "Bash", {"command": "cat > proposal.json <<'EOF'\n" + json.dumps(proposal()) + "\nEOF"})]

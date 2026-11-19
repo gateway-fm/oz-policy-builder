@@ -35,10 +35,12 @@ unknown target code, or missing executable observation also leaves synthesis exa
 user explicitly widens it. Explicit user decisions remain separate: for example, a user may
 supply an absolute minimum-output floor, carrying `user_widened` provenance and intent. The
 adapter does not certify that decision or turn it into a trusted quote, but it does bound it: a
-user widening that loosens the unsafe side of the minimum output or the input amount is refused
-with `E_INVALID_DECISION`. On the minimum output that is any bound admitting a value below the
-recorded one; on the input amount, any bound with no finite cap. An argument the adapter keeps
-exact is not held this way: a user may still make it `any_value`, rated high
+user widening that loosens what an argument's role requires is refused with
+`E_INVALID_DECISION` naming the adapter and the role, at any blast radius. On the minimum output
+that is any bound admitting a value below the recorded one; on the input amount, any bound with
+no finite cap; on an argument the adapter keeps exact (path, recipient, and under version 2 the
+deadline), any widening at all, `any_value` included. No rating restores a check the reviewed
+role requires; loosening one is a new adapter version's to do
 ([scoping decisions](SCOPING-DECISIONS.md#bounds-an-adapter-derives)).
 
 Adapter-derived constraints retain the adapter identity and target code hash. The resulting
@@ -67,8 +69,8 @@ its ledger timestamp. It is independent of the grant's ledger expiry and call ca
 The current W3 harness requires decisions schema v2 with
 `"adapter_deadline": "keep_recorded_deadline"`. The original approved timestamp stays fixed;
 it is never refreshed during synthesis. The harness rejects a widened or changed deadline,
-including an explicit user any-value override, even though generic synthesis supports such
-high-blast-radius decisions. Deadline-plus-one and `u64::MAX` are simulation-only denials
+including an explicit user any-value override, and synthesis refuses that override under this
+binding too, since version 2 keeps the deadline exact. Deadline-plus-one and `u64::MAX` are simulation-only denials
 attributed to the router rule's policy (`#6`). Current evidence uses control set 4; historical
 v1/set-3 open-deadline evidence keeps its original permit interpretation. The first live run
 through this binding, on 30 October 2026, observed both deadline denials with that code, as
