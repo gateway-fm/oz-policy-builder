@@ -295,6 +295,11 @@ nothing on chain.
 `sha256sum Cargo.lock`. There is no structure whose encoding it could be confused with, and
 wrapping it would cost that affordance.
 
+The `SHA256SUMS` index of a [published build](PUBLISHING.md) is the same kind of value for every
+file in it, in `sha256sum` output format (`<hex>  <path>`, one line each, in path order), so
+`sha256sum -c SHA256SUMS` checks a copy. The build's two directory names are the Wasm hash above
+and the BuildManifest hash (`ozpb:v2:build-manifest`).
+
 ## Reproducing a hash
 
 These steps apply to the canonical `ScVal` hashes only. The account ledger witness follows its

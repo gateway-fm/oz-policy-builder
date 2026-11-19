@@ -14,6 +14,10 @@
 //!   ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \\
 //!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
 //!     --manifest ./generated/build-manifest.json
+//!   ozpb publish-artifact --spec spec.json --generated-dir ./generated \\
+//!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
+//!     --manifest ./generated/build-manifest.json --out ./published
+//!   ozpb verify-published ./published/<wasm hash>/<build manifest hash>
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
 mod authority;
@@ -22,6 +26,7 @@ mod dry_run;
 mod key_file;
 mod policy_check;
 mod preflight;
+mod publication;
 mod registry;
 mod verification;
 
@@ -282,6 +287,17 @@ enum Command {
     /// Reference evaluation and artifact reproduction commands.
     #[command(flatten)]
     Verification(verification::Command),
+    /// Lay out a generated artifact for publication under its Wasm hash: the crate exactly as
+    /// generated, the spec, the BuildManifest, the Wasm and a SHA256SUMS index, written to
+    /// `<out>/<wasm hash>/<build manifest hash>/`. Refuses files the manifest does not describe
+    /// and a destination holding other content; republishing the same build is a no-op. Writes
+    /// locally only (docs/PUBLISHING.md).
+    PublishArtifact(publication::PublishArgs),
+    /// Check a published build's index, then rebuild it from its spec through `verify` and
+    /// compare with its Wasm and manifest. Exits 0 when the report matches, 3 when it does not
+    /// (a dimension did not reproduce, or the offline behavioural check failed), and 1 when the
+    /// directory is refused or the build fails.
+    VerifyPublished(publication::VerifyPublishedArgs),
     /// Registry governance: custodian keys, successors, signing, verification before
     /// distribution, and monitoring of a published registry (docs/REGISTRY-GOVERNANCE.md).
     #[command(subcommand)]
@@ -558,6 +574,8 @@ fn main() -> Result<()> {
             }
         }
         Command::Verification(command) => command.run()?,
+        Command::PublishArtifact(args) => publication::publish(args)?,
+        Command::VerifyPublished(args) => publication::verify_published(args)?,
         Command::Registry(command) => registry::run(command)?,
         Command::DevRegistry { out } => {
             std::fs::create_dir_all(&out)?;

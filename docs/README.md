@@ -10,6 +10,7 @@ the reader it is mainly written for.
 - [SCOPING-DECISIONS.md](SCOPING-DECISIONS.md) — every decision that shapes a grant and what it means for safety.
 - [TRUST-BOUNDARIES.md](TRUST-BOUNDARIES.md) — what is guaranteed, who holds which key, where trust is checked.
 - [INCIDENT-RESPONSE.md](INCIDENT-RESPONSE.md) — what to do when something a grant relies on is revoked or compromised.
+- [PUBLISHING.md](PUBLISHING.md) — publish a generated policy under its Wasm hash, and check an installed one against its source.
 - [MCP-WALKTHROUGH.md](MCP-WALKTHROUGH.md) — the MCP server and Claude skill, and what each tool needs.
 - [WALKTHROUGH-SEP41.md](WALKTHROUGH-SEP41.md) — W2: a SEP-41 subscription with the reviewed spending limit.
 - [WALKTHROUGH-PROTOCOLS.md](WALKTHROUGH-PROTOCOLS.md) — W3: a bounded Soroswap swap, and W1: a Blend claim.

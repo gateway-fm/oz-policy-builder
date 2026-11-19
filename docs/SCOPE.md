@@ -234,7 +234,9 @@ The source-reviewed account method inventory and its limits are described in
    §4.6 are claimed only for worker mode, whose acceptance suite checks them on the chosen host.
    And every field is the producer's own statement: the builder is labelled `local-unattested`
    in every mode, which is what it is, and no signed attestation (SEP-55) or published rebuild
-   recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`. An image
+   recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`.
+   `ozpb publish-artifact` gives that rerun its inputs under the Wasm hash, and
+   `ozpb verify-published` runs it ([publishing](PUBLISHING.md)); it is still a rerun. An image
    built from the hosted build context (`scripts/hosted-context.py`) has no checkout to ask, so
    its manifests record the toolkit commit its build was given (`OZPB_TOOLKIT_SOURCE`, which
    the image workflows set to the exported commit), and none without it. §6.3's scope

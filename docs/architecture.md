@@ -1396,8 +1396,11 @@ reviewed.
 > **Scope.** The reproducibility claim below — *the same canonical PolicySpec plus identical
 > pinned build inputs produce byte-identical source and wasm* — is shipped and gated. The
 > sentence after it, about `verify` reporting each dimension separately, describes §4.6's
-> milestone, and so do `DeploymentRecord`, `InstallationRecord` and publishing manifests keyed by
-> wasm hash: none of those three exists as a type or an implementation here. The `BuildManifest`
+> milestone, and so do `DeploymentRecord` and `InstallationRecord`: neither exists as a type or
+> an implementation here. Publishing source and manifests keyed by wasm hash is local tooling:
+> `ozpb publish-artifact` writes a build under `<wasm hash>/<manifest hash>/` and
+> `ozpb verify-published` reproduces one ([publishing](PUBLISHING.md)); hosting it is the
+> publisher's, and the project publishes none of its own. The `BuildManifest`
 > (schema `build-manifest/v2`) carries: `schema`, `spec_hash`, `registry_snapshot`, `rule_index`,
 > `template_family`, `normalized_input_hash`, `source_hash`, `lockfile_hash`, `wasm_hash`,
 > `wasm_size`, `soroban_sdk_version`, `stellar_accounts_version`, `toolchain` (rustc version,

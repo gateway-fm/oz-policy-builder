@@ -142,6 +142,15 @@ ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
 
+# 6. optional: lay the same files out under the Wasm hash for others to check
+# (docs/PUBLISHING.md). Writes ./published/<wasm sha256>/<build manifest hash>/ and uploads
+# nothing; the spec is published with it. A reviewer reproduces that build with
+# verify-published, which exits 0 when the report matches, 3 when it does not, 1 refused.
+ozpb publish-artifact --spec spec.json --generated-dir ./generated \
+  --wasm ./generated/generated_sub_transfer_r0.wasm \
+  --manifest ./generated/build-manifest.json --out ./published
+ozpb verify-published ./published/<wasm sha256>/<build manifest hash>
+
 # Optional: simulate an exact envelope with its intended authorization entries.
 # Read it from a file so the base64 and signatures stay out of shell history/process arguments.
 # Signed entries are live authorizations until their signatureExpirationLedger: prefer testnet
@@ -214,8 +223,8 @@ validates local report consistency, not imported evidence authenticity.
 
 ### Build configuration (operator-side)
 
-`generate` and `verify` compile the policy and accept the same build flags (each with an
-environment fallback the MCP server reads too):
+`generate`, `verify` and `verify-published` compile the policy and accept the same build flags
+(each with an environment fallback the MCP server reads too):
 
 | Flag | Env | Default |
 |---|---|---|
