@@ -30,6 +30,7 @@ the reader it is mainly written for.
 ## Self-hosters and operators
 
 - [SELF-HOSTING.md](SELF-HOSTING.md) — run the MCP endpoint yourself for trusted clients.
+- [VERSIONING.md](VERSIONING.md) — what a release number promises, what counts as breaking, and the release gate.
 - [ISOLATED-BUILDS.md](ISOLATED-BUILDS.md) — disposable build workers on a separate host.
 - [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md) — which SDK, accounts and protocol versions each part pins, and why.
 - [PROTOCOL-30-VALIDATION.md](PROTOCOL-30-VALIDATION.md) — protocol 30 compatibility observations.
@@ -70,7 +71,7 @@ the reader it is mainly written for.
 - [EXTENDING.md](EXTENDING.md) — adding a constraint kind, a target adapter or a wallet integration.
 - [CHANGE-REVIEW-PLAN.md](CHANGE-REVIEW-PLAN.md) — how changes to evidence, authority and installation are reviewed.
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — DCO, gates, commit messages and documentation rules.
-- [release-notes/](release-notes/) — breaking changes, security fixes and additions per release.
+- [release-notes/](release-notes/) — breaking changes, security fixes and additions per release, classified by [VERSIONING.md](VERSIONING.md).
 
 [`examples/`](examples/) holds runnable inputs, and [`evidence/`](evidence/) the published run
 summaries the evidence records cite.
