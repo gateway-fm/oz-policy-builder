@@ -1,0 +1,40 @@
+# cargo-mutants configuration (architecture §8, "mutation testing").
+#
+# Mutation testing is aimed at the pure, trust-bearing cores: the recorder, the reference
+# evaluator, the synthesizer, PolicySpec validation, the call-surface check, the capability
+# registry, the canonical encoding in `domain` and the codegen templates.
+# `scripts/mutation-test.sh` names those packages; a mutant that survives there is a deny case or
+# an invariant no test pins, and the fix is a test.
+#
+# Every exclusion below must say why the mutants it removes are not coverage gaps. Two kinds are
+# acceptable: test-support code whose correctness downstream golden or differential suites
+# enforce (they run outside the mutated crate, so mutating it here only produces noise), and
+# equivalent mutants (a change no input can observe). Anything else is a missing test.
+
+# Only the mutated package's own tests run for each mutant. The cores are pure, so their own
+# suites are where their behaviour is pinned. A mutant that only a downstream suite kills gets a
+# direct test in its own crate rather than a workspace-wide test run per mutant.
+test_workspace = false
+
+# Mutants that hang instead of failing (an inverted loop bound, say) are timed out, not waited on.
+timeout_multiplier = 3.0
+
+# Whole-file test support: the W1/W3 walkthrough builders. The walkthrough suites and the golden
+# tests in other crates consume them byte for byte.
+exclude_globs = [
+    "crates/synthesizer/src/walkthroughs.rs",
+]
+
+exclude_re = [
+    # The synthesizer's `fixtures` module: the shared pipeline fixture, `pub` so the codegen
+    # golden tests and the contracts differential suite build from one source. Those suites, not
+    # this crate's unit tests, assert its exact bytes.
+    "golden_account_strkey",
+    "golden_token_strkey",
+    "golden_merchant_strkey",
+    "golden_delegate_strkey",
+    "golden_bundle",
+    "golden_input",
+    "golden_decisions",
+    "golden_spec",
+]
