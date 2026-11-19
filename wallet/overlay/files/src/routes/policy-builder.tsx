@@ -306,6 +306,8 @@ function RevokeConsent({ display }: { display: unknown }) {
     <p>Your signature expires at ledger <strong>{label(tx.signature_expiration_ledger)}</strong>. Prepared fee {xlm(fee.prepared_fee_stroops)},
       at most {xlm(fee.max_fee_stroops)}, paid by {label(fee.paid_by)}.</p>
     {!!d.configurationChange && <Evidence title="Recorded and current rule configuration; the current rule will be removed" value={d.configurationChange} open />}
+    {object(d.installation).from_earlier_session === true
+      && <Evidence title="The rule as your account stores it now; this is what will be removed" value={object(d.installation).rule} open />}
   </div>;
 }
 
@@ -391,7 +393,7 @@ function PolicyBuilder() {
   // A prepared review is open until its window ends; the page re-reads the clock while any review is shown.
   const windows = state?.windows ?? {};
   const reviewing = Boolean(state?.accountPreview || state?.samplePreview || state?.deployPreview || state?.livePreview
-    || state?.installPreview || state?.revokePreview || state?.replacementPreview);
+    || state?.installPreview || state?.revokePreview || state?.replacementPreview || state?.earlierRevokePreview);
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
     if (!reviewing) return;
@@ -865,6 +867,28 @@ function PolicyBuilder() {
         {state?.removal && <p className="text-sm"><Badge tone={tone(label(state.removal.status))}>{label(state.removal.status)}</Badge>
           {" "}{state.removal.status === "removed" ? "The rule is gone from your account." : "Read the removal result below."}</p>}
         {state?.removal && <Details title="Removal result"><Evidence title="Removal" value={state.removal} /></Details>}
+        <details className="space-y-3 rounded-lg border border-slate-600 p-4">
+          <summary className="cursor-pointer font-semibold">Remove a grant an earlier session installed</summary>
+          <p className="text-sm text-slate-300">A restarted backend keeps no record of what an earlier session installed. Attach the
+            account above, list its rules as it stores them now, and remove one with your passkey. Your own owner rule is never offered.</p>
+          <button className={button} disabled={busy || !state?.wallet}
+            onClick={() => void run((value) => value.listRules(), "Reading your account's rules…", "Rules listed.")}>List this account&apos;s rules</button>
+          {state?.accountRules && <ul className="space-y-2 text-sm">
+            {state.accountRules.rules.map((rule) => <li key={rule.id} className="rounded border border-slate-700 p-2">
+              Rule {rule.id}{rule.owner ? " (your owner rule)" : ""}: {label(object(rule.summary).name)}
+              <Details title="As stored"><Evidence title={`Rule ${rule.id}`} value={rule.summary} /></Details>
+              {!rule.owner && <button className={button} disabled={busy || open("earlierRevoke", state.earlierRevokePreview)}
+                onClick={() => void run((value) => value.prepareEarlierRevoke(rule.id), "Preparing the removal…",
+                  "Next: consent with your passkey before the countdown ends.")}>Prepare removal of rule {rule.id}</button>}
+            </li>)}
+          </ul>}
+          {state?.earlierRevokePreview && <RevokeConsent display={state.earlierRevokePreview.display} />}
+          {state?.earlierRevokePreview && <ReviewWindow until={windows.earlierRevoke} now={now} />}
+          {state?.earlierRevokePreview && <button className={button} disabled={busy || !open("earlierRevoke", state.earlierRevokePreview)}
+            onClick={() => void run((value) => value.revokeEarlier(), "Approve with your passkey. The wallet then submits the removal and reads it back (about 10 s)…",
+              "Rule removed: it reads back absent.", ["Remove an earlier session's grant"])}>I consent: sign the removal with my owner passkey</button>}
+          {state?.earlierRemoval && <Details title="Removal result"><Evidence title="Removal" value={state.earlierRemoval} /></Details>}
+        </details>
       </section>
 
       <section className={panel} aria-labelledby="replacement-heading">

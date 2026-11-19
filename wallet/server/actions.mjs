@@ -10,7 +10,7 @@ import { SAMPLE_AMOUNT_STROOPS, reviewSample, validateSampleAssembly } from '../
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { validateAssembly } from '../shared/assembly.mjs';
 import { INSTALL_VALIDITY_LEDGERS, installConsent } from '../shared/install.mjs';
-import { reviewRemoval, revokeConsent, validateRemovalAssembly } from '../shared/revoke.mjs';
+import { isOwnerRule, reviewRemoval, revokeConsent, ruleSummary, validateRemovalAssembly } from '../shared/revoke.mjs';
 import { addedRuleId, installGate, verifyInstallation, verifyRemoval } from './install.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
@@ -164,6 +164,16 @@ export function createWalletActions({ session, toolchain, network, native = null
   let installAttempts = 0;
   let installAllowance = 0;
   let lastReplacement = null;
+  /** Removals of rules earlier sessions installed, by `account:ruleId`: attempted once, never again in this session. */
+  const earlierRemovals = new Map();
+  /** The attached wallet's rules as stored now, each marked whether it is this wallet's owner rule. */
+  async function accountRules(wallet) {
+    await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
+    await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
+    const read = await network.accountRules(wallet.contractId);
+    return { ledger: read.ledger, rules: read.rules.map(({ id, xdr: raw }) => ({ id, xdr: raw, owner: isOwnerRule(wallet, id, raw),
+      summary: ruleSummary(raw, id) })) };
+  }
   // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
   // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
   const replaceable = () => installAttempts > installAllowance && installAttempts === installations.size
@@ -413,6 +423,7 @@ export function createWalletActions({ session, toolchain, network, native = null
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)),
           grantUse: [...installations.values()].some(usable), grantRepeat: [...installations.values()].some(repeatable) },
         installations: summaries(), replacement: lastReplacement,
+        earlierRemovals: [...earlierRemovals.values()].map(({ ruleId, status, transactionHash }) => ({ ruleId, status, transactionHash })),
         // No installation entry is released while an earlier signature the wallet released is still valid.
         installOpensAfterLedger: openRecords().length ? Math.max(...openRecords().map((r) => r.signatureExpirationLedger)) : null,
         verification: missingVerification() };
@@ -535,7 +546,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         const cost = await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
         uploadSimulatedFeeStroops = cost.feeStroops;
         if (BigInt(cost.feeStroops) > BigInt(fees.maxUploadFeeStroops)) throw because('fee_cap');
-        if (BigInt(network.spentStroops) + BigInt(cost.feeStroops) + BigInt(fees.maxFeeStroops) > BigInt(fees.sessionSpendCapStroops)) {
+        // The upload, the policy's creation, and room for an installation and its removal.
+        if (BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops) > BigInt(fees.sessionSpendCapStroops)) {
           throw because('spend_cap');
         }
       }
@@ -1065,6 +1077,81 @@ export function createWalletActions({ session, toolchain, network, native = null
         installAllowance = installAttempts;
         lastReplacement = freezeCopy({ replacementReady: true, actionId: input.id, display });
         return lastReplacement;
+      });
+    },
+    // The attached wallet's rules as the account stores them now: what an earlier session may have
+    // installed, for removal. Read only.
+    'account-rules': async (input) => {
+      exact(input, ['wallet']);
+      const wallet = walletIdentity(input.wallet);
+      return freezeCopy(await accountRules(wallet));
+    },
+    // Removal of a rule an earlier backend session installed, which this one holds no record of. The
+    // rule is bound by its exact current bytes, read again before release and before submission; the
+    // owner rule, and any rule naming the owner's passkey, is never removed. Otherwise as `prepare-revoke`.
+    'prepare-earlier-revoke': async (input) => {
+      exact(input, ['wallet', 'ruleId']);
+      const wallet = walletIdentity(input.wallet);
+      const ruleId = input.ruleId;
+      if (!Number.isSafeInteger(ruleId) || ruleId < 1 || ruleId > 0xffffffff || earlierRemovals.has(`${wallet.contractId}:${ruleId}`)
+        || [...installations.values()].some((held) => held.record.account === wallet.contractId && held.record.ruleId === ruleId)) refuse();
+      const listed = await accountRules(wallet);
+      const owner = listed.rules.find((rule) => rule.owner);
+      const target = listed.rules.find((rule) => rule.id === ruleId);
+      if (!owner || !target || target.owner) refuse();
+      session.invalidate('revoke');
+      const record = { account: wallet.contractId, ruleId, ledger: 0 };
+      const ownerRef = { wallet, ownerRuleId: owner.id, ownerRuleXdr: owner.xdr };
+      const { pins, fresh, rule } = await removalReads(record, ownerRef, owner.xdr);
+      if (rule.status !== 'present' || rule.xdr !== target.xdr) refuse();
+      const approval = reviewRemoval({ ...ownerRef, ownerRuleXdr: fresh.ownerRuleXdr, networkId: net.networkId,
+        installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: rule.xdr } });
+      const prepared = await network.prepareRemoval({ wallet, ruleId, ownerReadLedger: fresh.ledger });
+      const checked = validateRemovalAssembly({ approval, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits });
+      const releaseLedger = await clockedLedger(network);
+      removalReadWindow(pins, fresh, rule, releaseLedger, 0);
+      if (releaseLedger + 1 >= checked.maxLedger) refuse();
+      const display = revokeConsent({ approval, checked, maxFeeStroops: fees.maxFeeStroops });
+      const action = session.issue('revoke', { earlier: { wallet, ownerRuleId: owner.id }, approval, checked, ruleXdr: rule.xdr });
+      return freezeCopy({ action, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits, display,
+        ruleXdr: rule.xdr });
+    },
+    'confirm-earlier-revoke': async (input) => {
+      exact(input, ['id', 'signedAuthEntriesXdr']);
+      return session.consume(input.id, 'revoke', async ({ earlier, approval, checked, ruleXdr }) => {
+        if (!earlier || network.canSubmit !== true) refuse();
+        const { account, ruleId } = approval.installation;
+        const key = `${account}:${ruleId}`;
+        if (earlierRemovals.has(key)) refuse();
+        const record = { account, ruleId, ledger: 0 };
+        const ownerRef = { wallet: earlier.wallet, ownerRuleId: earlier.ownerRuleId };
+        const { pins, fresh, rule, also: source } = await removalReads(record, ownerRef, approval.ownerRuleXdr, () => network.sourceCapture());
+        const currentLedger = await network.latestLedger();
+        removalReadWindow(pins, fresh, rule, currentLedger, 0);
+        if (rule.status !== 'present' || rule.xdr !== ruleXdr || source.sourceSequence !== String(sourceOf(checked.envelopeXdr))
+          || currentLedger + 1 >= checked.maxLedger || currentLedger < fresh.ledger || currentLedger - fresh.ledger > 12) refuse();
+        const signed = await validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr: input.signedAuthEntriesXdr,
+          origin: LIVE_ORIGIN });
+        session.invalidate('revoke');
+        // Spent from here, as for an in-session removal: one that may have reached the network is never prepared again.
+        earlierRemovals.set(key, { ruleId, status: 'attempted', transactionHash: null });
+        let submitted;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
+          if (network.canSubmit === true) earlierRemovals.delete(key);
+          rethrow(error);
+        }
+        earlierRemovals.set(key, { ruleId, status: 'confirmed_unverified', transactionHash: submitted.hash });
+        let removal;
+        try {
+          const event = verifyRemoval({ submitted, account, ruleId });
+          const readback = await readbackAfter(account, ruleId, event.ledger);
+          if (readback.status !== 'absent') refuse();
+          removal = freezeCopy({ status: 'removed', ruleId, transactionHash: event.transactionHash, ledger: event.ledger,
+            event: 'verified', ruleReadback: 'absent', readbackLedger: readback.ledger, fromEarlierSession: true,
+            policyCleanup: 'not_checked', cleanupLedger: null, owner: OWNER });
+        } catch { refuse(); }
+        earlierRemovals.set(key, { ruleId, status: 'removed', transactionHash: removal.transactionHash });
+        return freezeCopy({ receipt: receipt(submitted), removal });
       });
     },
     // Revocation, step 1: the recorded rule must still be on the account (exactly as installed, for a

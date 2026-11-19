@@ -260,7 +260,10 @@ whole fee each sent transaction may be charged, whatever a receipt later reports
 cannot give back budget. Fees actually charged are usually lower. A new session starts from the fees
 its work root's earlier session journals recorded as intended, so restarting the backend gives no
 budget back; a journal that cannot be read for its fees refuses startup. To start again from zero,
-use a new work root. Either cap refuses before signing
+use a new work root. A removal (`revoke-policy`) is exempt from the session cap, though not from the
+per-transaction cap, and every other transaction must leave room under the session cap for one
+installation and one removal (an installation, for one removal), so the cap never stops a grant
+from being taken back. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). Each cap can be lowered, not raised past its ceiling (1 XLM, 15 XLM and
 50 XLM). The page shows both caps and the amount spent before every consent, and the policy
 deployment preview shows the upload's simulated cost (its resource fee plus the wallet's 0.1 XLM
@@ -795,19 +798,41 @@ not read it. So after a restart:
 - The new backend does not know that an installation entry released before the restart may have
   been signed. Until that entry expires, it could still land, and it would install the same grant
   a second time, with a call cap of its own.
-- The new backend cannot revoke a rule the earlier one installed.
+- The new backend has no record of a rule the earlier one installed. It can still remove it:
+  attach the account, then **Remove a grant an earlier session installed** under section 9 lists
+  the account's rules as stored now (`account-rules`), and removal of one is prepared and signed
+  as below, bound to the rule's exact current bytes instead of an installation record.
 
 Before installing again after a restart, the operator:
 
 1. Reads the latest `signatureExpirationLedger` among the earlier session's `live-check` and
    `install-release` journal entries, and waits until that ledger has passed.
-2. Checks the account's rules, for example with a new review, whose authority evidence lists
-   every rule. A rule that is not expected must be removed first, outside this wallet session,
-   for example with the harness's `lifecycle.mjs`.
+2. Checks the account's rules, with the list above or a new review, whose authority evidence lists
+   every rule. A rule that is not expected must be removed first, with the removal above. (The
+   harness's `lifecycle.mjs` is testnet only.)
 3. Only then starts a new review.
 
 An installation that needs a separate restoration transaction is refused. Restore the archived
 entries, then review again.
+
+### Removing an earlier session's grant
+
+`prepare-earlier-revoke` takes the attached wallet and a rule ID. The backend reads the account's
+rules (`NextId`, then every `ContextRuleData` below it, in one request that must agree with
+`Count`), finds this wallet's owner rule among them, and refuses the owner rule itself, any rule
+naming the owner's passkey and a rule this session installed (use **Prepare revocation** for
+that). It then reads the pinned account and verifier code, the owner rule and the rule within one
+ledger window, exactly as for an in-session removal, and binds the removal approval to the rule's
+current bytes in place of an installation transaction. The consent statement, which the browser
+derives itself, shows the rule as stored now and says that this session did not install it.
+`confirm-earlier-revoke` reads everything again and refuses if the rule's bytes changed, checks the
+owner's signature, and submits once. Success needs the account's `context_rule_removed` and the rule
+reading back absent, as below; policy cleanup is reported `not_checked`. Each rule is removed at
+most once per session, and `status` lists these removals as `earlierRemovals`.
+
+On mainnet a removal is never stopped by the session spend cap; only the per-transaction cap
+applies to it. Every other transaction keeps room under the session cap for one installation and
+one removal, and an installation for its removal, so the cap can always pay to take a grant back.
 
 ## Using the grant
 

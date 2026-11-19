@@ -40,7 +40,8 @@ export class WalletController {
     sample: null, samplePreview: null, sampleTransactionHash: null, sampleAttempted: false, delegate: null, livePreview: null,
     replay: null, installPreview: null, installAttempted: false, installRuleId: null, revokePreview: null, revokeAttempted: false,
     removal: null, monitor: null, replacementPreview: null, replacementPending: null, replacement: null, installOwner: null, proposalReview: null, agent: null, agentStale: null,
-    grantUse: null, grantRepeat: null, readiness: null, windows: {}, busy: false });
+    grantUse: null, grantRepeat: null, readiness: null, accountRules: null, earlierRevokePreview: null, earlierRemoval: null,
+    windows: {}, busy: false });
   constructor({ request, validators, sign, origin, pins, onChange = () => {},
     pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }), now = () => performance.now(), wall = () => Date.now() }) {
     this.#request = request; this.#validators = validators; this.#sign = sign;
@@ -816,6 +817,69 @@ export class WalletController {
         || removal.ruleId !== installation.ruleId || !HASH.test(removal.transactionHash ?? '')
         || confirmed.receipt?.hash !== removal.transactionHash) throw refused();
       this.#set({ removal, receipt: confirmed.receipt, monitor: null });
+    });
+  }
+  /**
+   * The attached wallet's rules as the account stores them now, to remove one an earlier backend
+   * session installed. Each is shown from its own bytes; nothing is signed.
+   */
+  async listRules() {
+    return this.#act(async () => {
+      const { wallet } = this.#state;
+      if (!wallet) throw refused();
+      const result = await this.#request('account-rules', { wallet });
+      if (!Array.isArray(result?.rules) || result.rules.some((rule) => !Number.isSafeInteger(rule?.id) || typeof rule.xdr !== 'string'
+        || typeof rule.owner !== 'boolean')) throw refused();
+      this.#set({ accountRules: result, earlierRevokePreview: null });
+    });
+  }
+  /** Removal of an earlier session's rule, step 1: validated here against the bytes listed and this wallet's owner rule. */
+  async prepareEarlierRevoke(ruleId) {
+    return this.#act(async () => {
+      this.#set({ earlierRevokePreview: null });
+      const { wallet, accountRules } = this.#state;
+      const listed = accountRules?.rules?.find((rule) => rule.id === ruleId);
+      const owner = accountRules?.rules?.find((rule) => rule.owner);
+      if (!wallet || !listed || listed.owner || !owner) throw refused();
+      const status = await this.#status();
+      const started = this.#started();
+      const result = await this.#request('prepare-earlier-revoke', { wallet, ruleId });
+      if (!HASH.test(result?.action?.id ?? '') || result.ruleXdr !== listed.xdr || result.limits?.maxFeeStroops !== status.maxFeeStroops) throw refused();
+      const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: owner.id, ownerRuleXdr: result.ownerRuleXdr,
+        networkId: this.#pins.networkId, installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: listed.xdr } });
+      const checked = this.#validators.validateRemovalAssembly({ approval, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
+        limits: result.limits });
+      const display = this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops });
+      if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
+      this.#set({ earlierRevokePreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
+        ownerRuleId: owner.id, ruleId, ruleXdr: listed.xdr, limits: result.limits, display },
+      windows: this.#windows('earlierRevoke', this.#window(started, result.action)) });
+    });
+  }
+  /** Step 2: the owner's passkey signs exactly the removal shown; success only with the event and the rule reading back absent. */
+  async revokeEarlier() {
+    return this.#act(async () => {
+      const { wallet, earlierRevokePreview: preview, status } = this.#state;
+      const open = this.#open('earlierRevoke');
+      this.#set({ earlierRevokePreview: null });
+      if (!wallet || !preview) throw refused();
+      if (!open) throw expired();
+      const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: preview.ownerRuleId, ownerRuleXdr: preview.ownerRuleXdr,
+        networkId: this.#pins.networkId,
+        installation: { account: wallet.contractId, ruleId: preview.ruleId, transactionHash: null, ruleXdr: preview.ruleXdr } });
+      const checked = this.#validators.validateRemovalAssembly({ approval, assembly: preview.assembly, ownerRuleXdr: preview.ownerRuleXdr,
+        limits: preview.limits });
+      if (JSON.stringify(this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops }))
+        !== JSON.stringify(preview.display)) throw refused();
+      const signedAuthEntriesXdr = await this.#sign({ approval, checked });
+      const signed = await this.#validators.validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr, origin: this.#origin });
+      if (!this.#open('earlierRevoke')) throw expired();
+      const confirmed = await this.#request('confirm-earlier-revoke', { id: preview.action.id, signedAuthEntriesXdr: signed.signedAuthEntriesXdr });
+      const removal = confirmed?.removal;
+      if (removal?.status !== 'removed' || removal.event !== 'verified' || removal.ruleReadback !== 'absent' || removal.ruleId !== preview.ruleId
+        || !HASH.test(removal.transactionHash ?? '') || confirmed.receipt?.hash !== removal.transactionHash) throw refused();
+      this.#set({ earlierRemoval: removal, receipt: confirmed.receipt, accountRules: null });
+      await this.#status().catch(() => {});
     });
   }
 }

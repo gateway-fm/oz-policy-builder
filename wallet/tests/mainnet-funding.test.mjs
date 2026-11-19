@@ -184,16 +184,17 @@ test('mainnet: a transaction above the per-transaction cap or the session cap is
     (error) => error.reason === 'fee_cap');
   assert.equal(over.calls.some((call) => call.sent), false);
   assert.deepEqual(readdirSync(over.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
-  const tight = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 7_000 };
+  // An installation keeps room for one removal (4500) under the cap.
+  const tight = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 11_500 };
   const session = mainnet(t, { fee: 4_000, fees: tight });
   await session.network.fundPayer();
-  const first = await session.network.submitEnvelope(contractCall(session.network.payerAddress), 'revoke-policy');
+  const first = await session.network.submitEnvelope(contractCall(session.network.payerAddress), 'install-policy');
   // The receipt says 1500 was charged; the cap still counts the 4000 the transaction could be charged,
   // so an RPC reporting a low fee cannot give back budget.
   assert.equal(first.feeChargedStroops, '1500');
   assert.equal(session.network.spentStroops, '4000');
-  await assert.rejects(() => session.network.submitEnvelope(contractCall(session.network.payerAddress), 'revoke-policy'),
-    (error) => error.reason === 'spend_cap', '4000 counted plus at most 4000 more passes the 7000 cap');
+  await assert.rejects(() => session.network.submitEnvelope(contractCall(session.network.payerAddress), 'install-policy'),
+    (error) => error.reason === 'spend_cap', '4000 counted plus 4000 more plus the removal reserve passes the 11500 cap');
   assert.equal(session.calls.filter((call) => call.sent).length, 1, 'the second was never sent');
 });
 
@@ -437,7 +438,7 @@ test('mainnet: the spend cap counts every fee sent from this work root, not only
     spent: journaledSpend(workRoot, MAINNET) });
   assert.equal(f.network.spentStroops, '5100000');
   await f.network.fundPayer();
-  await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy'), (error) => error.reason === 'spend_cap');
+  await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'install-policy'), (error) => error.reason === 'spend_cap');
   // An entry from another network, or one that does not decode, refuses: the work root cannot be accounted.
   intended('wallet-session-wrong', '0001', 100, WALLET_NETWORKS.testnet.networkId);
   assert.throws(() => journaledSpend(workRoot, MAINNET), (error) => /journal/.test(error.startup));
@@ -462,4 +463,31 @@ test('a simulation answer without diagnostic events is its own reason, from the 
   const { NETWORK_REASONS } = await import('../server/network.mjs');
   const { REFUSAL_REASONS } = await import('../server/http.mjs');
   assert.ok(NETWORK_REASONS.includes('no_diagnostic_events') && REFUSAL_REASONS.has('no_diagnostic_events'));
+});
+
+test('mainnet: removal is never blocked by the session cap, and every other step leaves room for an installation and a removal', async (t) => {
+  const fees = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 14_000 };
+  // 0 spent: an ordinary step needs room for itself plus an installation and a removal (4000 + 2 × 4500 = 13000).
+  const ok = mainnet(t, { fee: 4_000, fees });
+  await ok.network.fundPayer();
+  await ok.network.submitEnvelope(contractCall(ok.network.payerAddress), 'deploy-policy');
+  assert.equal(ok.network.spentStroops, '4000');
+  // 4000 spent: another ordinary step would leave 14000 - 8000 = 6000, less than both reserves.
+  await assert.rejects(() => ok.network.submitEnvelope(contractCall(ok.network.payerAddress), 'deploy-policy'),
+    (error) => error.reason === 'spend_cap');
+  // The installation only needs room for the removal after it (4000 + 4000 + 4500 = 12500).
+  await ok.network.submitEnvelope(contractCall(ok.network.payerAddress), 'install-policy');
+  assert.equal(ok.network.spentStroops, '8000');
+  // 8000 spent: an installation now would leave no room for its removal; a removal always goes.
+  await assert.rejects(() => ok.network.submitEnvelope(contractCall(ok.network.payerAddress), 'install-policy'),
+    (error) => error.reason === 'spend_cap');
+  const spentOut = mainnet(t, { fee: 4_000, fees, spent: '14000' });
+  await spentOut.network.fundPayer();
+  await spentOut.network.submitEnvelope(contractCall(spentOut.network.payerAddress), 'revoke-policy');
+  assert.equal(spentOut.network.spentStroops, '18000', 'counted, past the cap: removal is exempt from it');
+  // The per-transaction cap still holds for a removal.
+  const over = mainnet(t, { fee: 4_501, fees, spent: '14000' });
+  await over.network.fundPayer();
+  await assert.rejects(() => over.network.submitEnvelope(contractCall(over.network.payerAddress), 'revoke-policy'),
+    (error) => error.reason === 'fee_cap');
 });

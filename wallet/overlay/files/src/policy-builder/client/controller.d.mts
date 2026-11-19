@@ -35,6 +35,10 @@ export interface WalletState {
     readonly account?: { readonly exists: boolean; readonly minimumStroops: string } } | null;
   /** Mainnet: what the owner funds or uploads first (`readiness`), as the backend read it. */
   readonly readiness: Details | null;
+  /** The attached account's rules as stored now (`listRules`), for removing an earlier session's grant. */
+  readonly accountRules: (Details & { rules: readonly { id: number; xdr: string; owner: boolean; summary: Details | null }[] }) | null;
+  readonly earlierRevokePreview: (Details & { display: Details; ruleId: number }) | null;
+  readonly earlierRemoval: Details | null;
   readonly livePreview: (Details & { display: ConsentDisplay; statementSha256: string; cases: readonly LiveCase[] }) | null;
   readonly replay: Details | null;
   readonly installPreview: (Details & { display: Details }) | null;
@@ -108,6 +112,9 @@ export class WalletController {
   confirmDeploy(): Promise<void>;
   review(): Promise<void>;
   readiness(): Promise<void>;
+  listRules(): Promise<void>;
+  prepareEarlierRevoke(ruleId: number): Promise<void>;
+  revokeEarlier(): Promise<void>;
   createDelegate(): Promise<void>;
   checkAccount(): Promise<void>;
   prepareLive(): Promise<void>;

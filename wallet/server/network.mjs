@@ -430,7 +430,12 @@ export class WalletNetwork {
       const fee = BigInt(assembled.fee);
       const cap = isUpload(assembled.toEnvelope().v1.tx.operations) ? this.#fees.maxUploadFeeStroops : this.#fees.maxFeeStroops;
       if (fee > BigInt(cap)) refuse({ reason: 'fee_cap' });
-      if (this.#fees.sessionSpendCapStroops !== null && this.#spent + fee > BigInt(this.#fees.sessionSpendCapStroops)) {
+      // The session cap never blocks a removal (only its per-transaction cap applies), and every other
+      // step leaves room for what may still be needed: an installation keeps room for its removal, any
+      // other step for an installation and a removal.
+      const reserve = stage === 'revoke-policy' ? null : stage === 'install-policy' ? 1n : 2n;
+      if (this.#fees.sessionSpendCapStroops !== null && reserve !== null
+        && this.#spent + fee + reserve * BigInt(this.#fees.maxFeeStroops) > BigInt(this.#fees.sessionSpendCapStroops)) {
         refuse({ reason: 'spend_cap' });
       }
       checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
@@ -641,6 +646,44 @@ export class WalletNetwork {
       if (marker !== null && marker !== xdr.ScVal.scvBool(true).toXDR('base64')) refuse();
       return { ledger: observed, account, policy, ruleId, nextId, count, accountWasmHash: again.wasmHash,
         rules: ruleKeys.map((key, id) => ({ id, xdr: value(key) })), installed: marker !== null };
+    } catch (error) { refuse(error); }
+  }
+  /**
+   * Every rule the account stores now: its instance's `NextId`, then each `ContextRuleData(id)` below
+   * it (stellar-accounts 0.7.3 storage) in one request, which must report the same `NextId` and
+   * `Count` as many rules as it returns. At most 64 rule IDs. Read only.
+   */
+  async accountRules(account) {
+    try {
+      if (!StrKey.isValidContract(account)) refuse();
+      await this.assertNetwork();
+      const data = (key) => xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
+        contract: new Address(account).toScAddress(), key, durability: xdr.ContractDataDurability.persistent }));
+      const keyed = (name, ...rest) => xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name), ...rest]);
+      const instanceKey = data(xdr.ScVal.scvLedgerKeyContractInstance());
+      const counters = (response) => {
+        const entry = response.entries?.find((item) => same(item.key, instanceKey));
+        const instance = entry?.val?.type === 'contractData' && entry.val.contractData.val.type === 'scvContractInstance'
+          ? entry.val.contractData.val.instance : refuse();
+        const read = (name) => {
+          const found = (instance.storage ?? []).filter((item) => same(item.key, keyed(name)));
+          return found.length === 1 && found[0].val.type === 'scvU32' ? found[0].val.u32 : refuse();
+        };
+        return { nextId: read('NextId'), count: read('Count') };
+      };
+      const first = counters(await this.#server.getLedgerEntries(instanceKey));
+      if (first.nextId > 64 || first.count > first.nextId) refuse();
+      const ruleKeys = Array.from({ length: first.nextId }, (_, id) => data(keyed('ContextRuleData', xdr.ScVal.scvU32(id))));
+      const second = await this.#server.getLedgerEntries(instanceKey, ...ruleKeys);
+      const observed = ledger(second.latestLedger);
+      const again = counters(second);
+      const rules = ruleKeys.map((key, id) => {
+        const found = (second.entries ?? []).filter((item) => same(item.key, key));
+        if (found.length > 1) refuse();
+        return found.length ? { id, xdr: found[0].val.contractData.val.toXDR('base64') } : null;
+      }).filter(Boolean);
+      if (again.nextId !== first.nextId || again.count !== first.count || rules.length !== again.count) refuse();
+      return { ledger: observed, rules };
     } catch (error) { refuse(error); }
   }
   /**

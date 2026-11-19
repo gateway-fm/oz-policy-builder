@@ -140,3 +140,64 @@ test('changed-rule consent commits and displays exact saved and current configur
   assert.throws(() => reviewRemoval({ ...value.approval,
     configurationChange: { ...configurationChange, observedRuleXdr: value.f.ownerRuleXdr } }), /refused/);
 });
+
+// --- a grant installed by an earlier session -------------------------------------------------------
+//
+// A restarted backend holds no record of an earlier session's installation. Removal is still always
+// possible: the approval names the rule by its exact current bytes, read from the account, instead of
+// an installation transaction, and the consent shows that configuration.
+
+function earlier(change = {}) {
+  const f = fixture();
+  const ruleXdr = installedRuleXdr(f);
+  const approval = reviewRemoval({ networkId: NETWORK_ID, wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
+    installation: { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: null, ruleXdr, ...change } });
+  return { f, ruleXdr, approval };
+}
+function installedRuleXdr(f, { signers } = {}) {
+  const fields = {
+    context_type: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(f.wallet.contractId).toScVal()]),
+    id: xdr.ScVal.scvU32(RULE_ID), name: xdr.ScVal.scvString('earlier grant'),
+    policies: xdr.ScVal.scvVec([new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]),
+    policy_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]),
+    signers: signers ?? xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Delegated'),
+      new Address(Keypair.fromRawEd25519Seed(Buffer.alloc(32, 6)).publicKey()).toScVal()])]),
+    valid_until: xdr.ScVal.scvU32(300000),
+  };
+  return xdr.ScVal.scvMap(Object.keys(fields).sort().map((key) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val: fields[key] })))
+    .toXDR('base64');
+}
+
+test('an earlier session\'s grant is removed by its exact current bytes, shown in the consent', () => {
+  const { f, ruleXdr, approval } = earlier();
+  assert.equal(approval.installation.transactionHash, null);
+  assert.equal(approval.installation.ruleXdr, ruleXdr);
+  // The commitment binds the rule's bytes: the same rule ID with other bytes is another approval.
+  const other = installedRuleXdr(f, { signers: xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Delegated'),
+    new Address(Keypair.fromRawEd25519Seed(Buffer.alloc(32, 7)).publicKey()).toScVal()])]) });
+  assert.notEqual(earlier({ ruleXdr: other }).approval.commitment, approval.commitment);
+  const value = removalFor({ account: f.wallet.contractId, payer: PAYER, sequence: '100', ledger: LEDGER });
+  const checked = validateRemovalAssembly({ ...value, approval, ownerRuleXdr: f.ownerRuleXdr });
+  const display = revokeConsent({ approval, checked, maxFeeStroops: 10_000_000 });
+  assert.equal(display.installation.transaction, null);
+  assert.equal(display.installation.from_earlier_session, true);
+  assert.equal(display.installation.rule.name, 'earlier grant');
+  assert.deepEqual(display.installation.rule.signers, [['Delegated', Keypair.fromRawEd25519Seed(Buffer.alloc(32, 6)).publicKey()]]);
+  assert.match(display.warning, /not installed by this wallet session/);
+});
+
+test('an earlier session\'s removal never takes the owner\'s own rule or a rule the owner signs for', () => {
+  const f = fixture();
+  // The owner rule itself, by ID or by bytes.
+  assert.throws(() => earlier({ ruleId: 7 }), /refused/);
+  assert.throws(() => earlier({ ruleXdr: f.ownerRuleXdr }), /refused/);
+  // Any rule naming the owner's passkey: removing it could take away the owner's own access.
+  const ownerSigner = xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(f.wallet.verifier).toScVal(),
+    xdr.ScVal.scvBytes(Buffer.concat([Buffer.from(f.wallet.publicKey, 'hex'), Buffer.from([1])]))])]);
+  assert.throws(() => earlier({ ruleXdr: installedRuleXdr(f, { signers: ownerSigner }) }), /refused/);
+  // Bytes for another rule ID, or none at all with no installation transaction either.
+  assert.throws(() => earlier({ ruleId: RULE_ID + 1 }), /refused/);
+  assert.throws(() => earlier({ ruleXdr: undefined }), /refused/);
+  // A recorded installation does not also carry bytes.
+  assert.throws(() => earlier({ transactionHash: 'e'.repeat(64) }), /refused/);
+});
