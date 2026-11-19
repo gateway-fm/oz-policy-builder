@@ -93,7 +93,8 @@ test('mainnet configuration: the operator key is required, caps default conserva
     ['an upload cap above the session cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxUploadFeeStroops: 200_000_000 }],
     ['a session cap below the upload cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, sessionSpendCapStroops: 100_000_000 }],
     ['a fractional cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxFeeStroops: 1.5 }],
-    ['a registry floor below testnet\'s', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, registryMinimumVersion: 5 }],
+    ['no registry floor (versions start at 1)', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, registryMinimumVersion: 0 }],
+    ['a registry floor above the persisted checkpoint (a rollback)', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, registryMinimumVersion: 7 }],
     ['an operator key on testnet', { ...base, feePayerKeyPath: keyPath }],
     ['caps on testnet', { ...base, maxFeeStroops: 1_000_000 }],
   ]) {

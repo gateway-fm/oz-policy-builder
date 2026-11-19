@@ -22,8 +22,6 @@ export const MAINNET_FEE_DEFAULTS = Object.freeze({ maxFeeStroops: 10_000_000, m
   sessionSpendCapStroops: 150_000_000 });
 const MAINNET_FEE_CEILINGS = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: 500_000_000,
   sessionSpendCapStroops: 500_000_000 });
-/** The development registry's version: a mainnet session never accepts an older floor than testnet's. */
-const MAINNET_MIN_REGISTRY_VERSION = 6;
 /**
  * The development registry's root key, derived as the registry crate derives it
  * (`dev_signing_key`: the Ed25519 key whose seed is SHA-256 of a public label). Anyone can sign with
@@ -119,7 +117,9 @@ export function loadWalletConfig(path) {
     const network = walletNetwork(Object.hasOwn(value, 'network') ? value.network : 'testnet');
     const mainnet = network.name === 'mainnet';
     if (!mainnet && MAINNET_ONLY.some((name) => Object.hasOwn(value, name))) refused();
-    if (mainnet && (!Object.hasOwn(value, 'feePayerKeyPath') || value.registryMinimumVersion < MAINNET_MIN_REGISTRY_VERSION)) refused();
+    // The registry floor is the operator's own registry's version (at least 1): the mainnet registry is
+    // its own chain from version 1, not the development registry's (whose floor is 6).
+    if (mainnet && !Object.hasOwn(value, 'feePayerKeyPath')) refused();
     const fees = mainnet ? Object.fromEntries(Object.entries(MAINNET_FEE_DEFAULTS).map(([name, fallback]) => {
       const chosen = Object.hasOwn(value, name) ? value[name] : fallback;
       if (!Number.isSafeInteger(chosen) || chosen < 100 || chosen > MAINNET_FEE_CEILINGS[name]) refused();
