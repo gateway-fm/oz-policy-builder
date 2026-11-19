@@ -63,14 +63,20 @@ fn repo() -> PathBuf {
 
 const MAINNET: &str = "Public Global Stellar Network ; September 2015";
 
-/// The rehearsal genesis: the committed mainnet draft, unchanged but for the two things a
-/// rehearsal must change — it is keyed to testnet, and valid from an hour ago for thirty days
-/// rather than the draft's placeholder interval.
+fn committed_draft() -> RegistrySnapshot {
+    read(&repo().join("registry/mainnet/v0001.draft.json"))
+}
+
+/// The rehearsal genesis: the committed mainnet draft with what custodians fill in before
+/// signing — the pending template review reference and the interval — and keyed to testnet.
 fn genesis() -> RegistrySnapshot {
-    let mut snapshot: RegistrySnapshot = read(&repo().join("registry/mainnet/v0001.draft.json"));
+    let mut snapshot = committed_draft();
     snapshot.network_id = ozpb_domain::NetworkId::from_passphrase(TESTNET);
     snapshot.valid_from_unix = now() - 3_600;
     snapshot.expires_at_unix = now() + 30 * 86_400;
+    for template in snapshot.templates.values_mut() {
+        template.review_reference = "rehearsal: no review is claimed".to_string();
+    }
     snapshot
 }
 
@@ -256,6 +262,61 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         let secret = std::fs::read_to_string(&loose).unwrap();
         assert!(!String::from_utf8_lossy(&output.stderr).contains(secret.trim()));
     }
+
+    // The draft as committed, with its review reference still pending, is not combined.
+    let mut pending = committed_draft();
+    pending.network_id = ozpb_domain::NetworkId::from_passphrase(TESTNET);
+    pending.valid_from_unix = now() - 3_600;
+    pending.expires_at_unix = now() + 30 * 86_400;
+    let pending_path = work.path().join("pending.unsigned.json");
+    write_json(&pending_path, &pending);
+    let pending_a = work.path().join("pending.custodian-a.sig.json");
+    let pending_c = work.path().join("pending.custodian-c.sig.json");
+    custodians.sign(&pending_path, "custodian-a", &pending_a);
+    custodians.sign(&pending_path, "custodian-c", &pending_c);
+    refused(
+        &combine(
+            &pending_path,
+            &[&pending_a, &pending_c],
+            &roots,
+            &work.path().join("pending.signed.json"),
+        ),
+        "combine a draft with a pending review reference",
+        "pending review reference",
+    );
+    // Signed some other way, it does not pass verify either.
+    let key = |id: &str| {
+        let seed = std::fs::read_to_string(custodians.key(id)).unwrap();
+        let seed = stellar_strkey::ed25519::PrivateKey::from_string(seed.trim()).unwrap();
+        ed25519_dalek::SigningKey::from_bytes(&seed.0)
+    };
+    let signed_pending = ozpb_registry::sign_snapshot_with_roots(
+        &[
+            ("custodian-a", key("custodian-a")),
+            ("custodian-c", key("custodian-c")),
+        ]
+        .into_iter()
+        .map(|(id, key)| (id.to_string(), key))
+        .collect(),
+        pending,
+    )
+    .unwrap();
+    let signed_pending_path = work.path().join("pending.signed.json");
+    write_json(&signed_pending_path, &signed_pending);
+    refused(
+        &ozpb([
+            "registry".as_ref(),
+            "verify".as_ref(),
+            "--signed".as_ref(),
+            signed_pending_path.as_os_str(),
+            "--registry-roots".as_ref(),
+            roots.as_os_str(),
+            "--network".as_ref(),
+            TESTNET.as_ref(),
+        ]),
+        "verify a signed draft with a pending review reference",
+        "pending review reference",
+    );
 
     // One signature is not a quorum.
     refused(

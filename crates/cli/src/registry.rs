@@ -260,6 +260,7 @@ fn verify(args: VerifyArgs) -> Result<()> {
         .signed
         .ok_or_else(|| anyhow!("verify needs --signed or --replay"))?;
     let signed: SignedSnapshot = read_json(&path)?;
+    governance::require_no_pending_review(&signed.snapshot)?;
     let checkpoint = match args.checkpoint {
         Some(path) => Some(read_json::<RegistryCheckpoint>(&path)?),
         None => config.checkpoint,

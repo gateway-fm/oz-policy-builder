@@ -26,6 +26,9 @@ use std::collections::BTreeMap;
 pub const CHANGE_SCHEMA: &str = "registry-change/v1";
 pub const DETACHED_SIGNATURE_SCHEMA: &str = "registry-signature/v1";
 pub const MONITOR_SCHEMA: &str = "registry-monitor/v1";
+/// How a review reference begins while the custodians still have to supply it (the mainnet draft
+/// carries one). A snapshot holding one is never combined and never passes `verify`.
+pub const PENDING_REVIEW_PREFIX: &str = "PENDING, replace before signing:";
 
 /// The capability kinds a revocation of an exact code hash can name.
 const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
@@ -64,6 +67,10 @@ pub enum GovernanceError {
     SignerKeyMismatch(String),
     #[error("E_REGISTRY_TRANSPARENCY: {0}")]
     Chain(String),
+    #[error(
+        "E_REGISTRY_PARSE: {0} still carries a pending review reference; replace it before signing"
+    )]
+    PendingReview(String),
 }
 
 /// What custodians declare for the next version. Version, log index and parent root are not
@@ -229,6 +236,7 @@ pub fn combine(
     now_unix: i64,
 ) -> Result<SignedSnapshot, GovernanceError> {
     Registry::with_pinned_roots(roots.clone())?;
+    require_no_pending_review(&snapshot)?;
     let root = snapshot_root(&snapshot)?;
     let mut collected = BTreeMap::new();
     for detached in signatures {
@@ -271,8 +279,8 @@ pub fn combine(
 }
 
 /// Load-verify a published chain from genesis under the pinned roots and network: every version
-/// must load as the direct successor of the one before it, and the head must be valid at
-/// `now_unix`. Returns the head's checkpoint — what a consumer persists.
+/// must load as the direct successor of the one before it, carry no pending review reference, and
+/// the head must be valid at `now_unix`. Returns the head's checkpoint — what a consumer persists.
 ///
 /// This is stricter than a consumer's load, which needs only a higher version and the next log
 /// index: a published log starts at version 1 and log index 1 with no parent, and its versions
@@ -293,6 +301,9 @@ pub fn replay(
              not version {} at log index {}",
             genesis.version, genesis.log_index
         )));
+    }
+    for signed in chain {
+        require_no_pending_review(&signed.snapshot)?;
     }
     let mut registry = Registry::with_pinned_roots_for_network_at_version(roots, network, 0)?;
     for (offset, signed) in history.iter().enumerate() {
@@ -410,7 +421,7 @@ pub fn monitor(
     let mut head_checkpoint = checkpoint.clone();
     for signed in &relevant {
         if signed.snapshot.version == checkpoint_version {
-            require_matches_checkpoint(&signed.snapshot, &checkpoint)?;
+            require_matches_checkpoint(&signed.snapshot, &checkpoint, network)?;
         } else {
             load_historical(&mut registry, signed)?;
             head_checkpoint = registry.checkpoint()?;
@@ -468,6 +479,46 @@ pub fn monitor(
     })
 }
 
+/// Refuse a snapshot any of whose review references is still pending
+/// ([`PENDING_REVIEW_PREFIX`]): a draft custodians have not finished must not be signed by
+/// accident or distributed.
+pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), GovernanceError> {
+    let references = snapshot
+        .policies
+        .iter()
+        .map(|(key, entry)| (format!("policy/{key}"), &entry.review_reference))
+        .chain(
+            snapshot
+                .accounts
+                .iter()
+                .map(|(key, entry)| (format!("account/{key}"), &entry.review_reference)),
+        )
+        .chain(
+            snapshot
+                .verifiers
+                .iter()
+                .map(|(key, entry)| (format!("verifier/{key}"), &entry.review_reference)),
+        )
+        .chain(
+            snapshot
+                .target_adapters
+                .iter()
+                .map(|(key, entry)| (format!("target_adapter/{key}"), &entry.review_reference)),
+        )
+        .chain(
+            snapshot
+                .templates
+                .iter()
+                .map(|(key, entry)| (format!("template/{key}"), &entry.review_reference)),
+        );
+    for (entry, reference) in references {
+        if reference.trim_start().starts_with(PENDING_REVIEW_PREFIX) {
+            return Err(GovernanceError::PendingReview(entry));
+        }
+    }
+    Ok(())
+}
+
 /// The published copy of the version a consumer has already accepted must be exactly what it
 /// accepted: the same root, chain position and revocations. Its signatures are not checked again.
 /// They were checked when it was accepted, and after a rotation they belong to roots the consumer
@@ -475,7 +526,17 @@ pub fn monitor(
 fn require_matches_checkpoint(
     snapshot: &RegistrySnapshot,
     checkpoint: &RegistryCheckpoint,
+    network: NetworkId,
 ) -> Result<(), GovernanceError> {
+    // The root commits to the network, so a match implies it; checked by name all the same, so
+    // a checkpoint taken on one network is refused for what it is when monitored on another.
+    if snapshot.network_id != network {
+        return Err(RegistryError::Network {
+            expected: network.0.to_hex(),
+            found: snapshot.network_id.0.to_hex(),
+        }
+        .into());
+    }
     if snapshot_root(snapshot)? != checkpoint.root
         || snapshot.log_index != checkpoint.log_index
         || snapshot.revocations != checkpoint.revocations

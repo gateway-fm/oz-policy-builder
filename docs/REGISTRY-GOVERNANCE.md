@@ -136,7 +136,9 @@ ozpb registry combine --snapshot v0002.unsigned.json \
 ```
 
 Every signature must be over this snapshot's root, verify, and come from the key pinned under its
-id; together they must meet the threshold. The result is then loaded as a consumer would load it —
+id; together they must meet the threshold, and no review reference may still begin
+`PENDING, replace before signing:` (`verify` refuses one too). The result is then loaded as a
+consumer would load it —
 pinned roots, network, an interval not already over — and only then written, so the log
 directory never receives a file `verify` would refuse. Its place in the chain is the replay's to
 check.
@@ -237,6 +239,13 @@ expiring, not yet valid, newer:
 | 5 | the head has expired | synthesis and checks now refuse it; same |
 | 6 | a watched hash is revoked | the emergency-removal path below |
 | 1 | the published log cannot be verified against the checkpoint | treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned |
+
+Monitoring compares your checkpoint with one published source. It detects a log that contradicts
+what you accepted, but it cannot detect newer versions that source withholds: a frozen or
+selectively served log looks current. The backstop is each version's validity interval — a head
+nobody replaces reaches exit 4 within the window and exit 5 when it ends, after which nothing
+loads it — so keep intervals short enough that a freeze surfaces in time, and where it matters,
+monitor more than one copy of the log (the repository and the release assets).
 
 Watch the hashes your installed grants rely on: the account's Wasm, each owner verifier's, and
 each reviewed policy's. A generated policy is recognized by its reproduced build, not by a

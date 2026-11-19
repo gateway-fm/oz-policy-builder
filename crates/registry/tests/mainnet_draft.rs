@@ -26,7 +26,7 @@ const PLACEHOLDER_VALID_FROM: i64 = 1_798_761_600;
 const PLACEHOLDER_EXPIRES_AT: i64 = 1_814_400_000;
 
 /// How a review reference the custodians must still supply begins.
-const PENDING: &str = "PENDING, replace before signing:";
+const PENDING: &str = ozpb_registry::governance::PENDING_REVIEW_PREFIX;
 
 fn mainnet() -> NetworkId {
     NetworkId::from_passphrase(MAINNET_PASSPHRASE)
@@ -155,6 +155,8 @@ fn the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in() {
     }
     let template = &draft.templates["policy-templates/scope@1"].review_reference;
     assert!(template.starts_with(PENDING), "{template}");
+    // And so the draft as committed cannot be combined or verified by accident.
+    assert!(ozpb_registry::governance::require_no_pending_review(&draft).is_err());
 }
 
 /// Signed by any production-shaped root policy, the draft loads for mainnet inside its interval

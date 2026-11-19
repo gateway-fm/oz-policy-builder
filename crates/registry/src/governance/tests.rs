@@ -745,3 +745,58 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
         Err(GovernanceError::Registry(RegistryError::Transparency(_)))
     ));
 }
+
+/// A draft still carrying a pending review reference is not something custodians have finished:
+/// it cannot be combined, and a signed one does not replay.
+#[test]
+fn a_pending_review_reference_is_never_combined_or_replayed() {
+    let mut draft = genesis();
+    let template = draft.templates.values_mut().next().unwrap();
+    template.review_reference = format!("{PENDING_REVIEW_PREFIX} the security review's reference.");
+    let signatures = [
+        sign_detached("a", &custodian("a"), &draft).unwrap(),
+        sign_detached("b", &custodian("b"), &draft).unwrap(),
+    ];
+    assert!(matches!(
+        combine(&roots(), network(), draft.clone(), &signatures, 1_000),
+        Err(GovernanceError::PendingReview(_))
+    ));
+    assert!(matches!(
+        require_no_pending_review(&draft),
+        Err(GovernanceError::PendingReview(_))
+    ));
+    // Signed some other way, it still does not pass the gate before distribution.
+    let signed = sign_snapshot_with_roots(
+        &BTreeMap::from([
+            ("a".to_string(), custodian("a")),
+            ("b".to_string(), custodian("b")),
+        ]),
+        draft,
+    )
+    .unwrap();
+    assert!(matches!(
+        replay(roots(), network(), &[signed], 1_000),
+        Err(GovernanceError::PendingReview(_))
+    ));
+    require_no_pending_review(&genesis()).unwrap();
+}
+
+/// The accepted version's published copy must be for the consumer's network too.
+#[test]
+fn the_checkpoint_version_must_be_for_the_pinned_network() {
+    let chain = chain();
+    let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
+    let none: [Hash32; 0] = [];
+    assert!(matches!(
+        monitor(
+            roots(),
+            mainnet,
+            checkpoint_of(&chain),
+            &chain,
+            2_600,
+            0,
+            &none
+        ),
+        Err(GovernanceError::Registry(RegistryError::Network { .. }))
+    ));
+}
