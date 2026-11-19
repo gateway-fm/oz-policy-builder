@@ -4360,6 +4360,56 @@ mod tests {
         }
     }
 
+    /// The committed two-payment policy is the only generated crate whose rule accepts two
+    /// tuples of one function, differing in two positions. The differential suite runs its
+    /// cross products through a smart account; this keeps that compiled fixture what codegen
+    /// emits for the spec, lockfile included.
+    #[test]
+    fn two_payment_crate_matches_committed_output() {
+        let spec = ozpb_synthesizer::walkthroughs::two_payment_spec();
+        let generated = generate(&spec, 0, &Pins::default()).unwrap();
+        let source = emitted_rust(&generated);
+        // One whole-tuple check per accepted call, and no third.
+        assert!(source.contains("fn check_call_0("));
+        assert!(source.contains("fn check_call_1("));
+        assert!(!source.contains("fn check_call_2("));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/two-payment-policy");
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for (rel, content) in &generated.files {
+                std::fs::write(root.join(rel), content).unwrap();
+            }
+            return;
+        }
+
+        let mut committed_files: Vec<String> = walk(&root)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            })
+            .collect();
+        committed_files.sort();
+        let mut generated_files: Vec<String> = generated.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed two-payment policy and codegen output have different file sets"
+        );
+        for (rel, content) in &generated.files {
+            let committed = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|_| panic!("missing committed two-payment policy file {rel}"));
+            assert_eq!(
+                &committed, content,
+                "committed two-payment policy file {rel} differs from codegen output"
+            );
+        }
+    }
+
     #[test]
     fn generated_crate_contains_the_pinned_dependency_lockfile() {
         let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();

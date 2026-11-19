@@ -181,8 +181,13 @@ simulated transactions; the registry's roots and checkpoint.
 | **Authority surface.** Before installation, every live rule that can change the account or reset a bound policy is listed with its exact signers; the check refuses when the agent's key can do either alone, when another rule on the target gets around a stateful limit, or when a rule shape is unsupported. | `crates/call-surface-core`, `crates/toolkit/src/call_surface_live.rs`, the scan in `crates/source-rpc` | `crates/call-surface-core/src/tests.rs`, e.g. `case_6_restricted_key_that_can_manage_alone_is_refused`, `stateful_grant_beside_another_usable_rule_on_the_target_is_refused`, `new_rule_cannot_target_the_account_or_a_bound_policy`; through the pinned account, the direct-call and weak-management rows of the [state-invariant map](SCOPE.md#state-invariants-and-direct-calls) |
 | **Stateful invariants.** Only `install` initializes state; missing state denies; a cap never resets within an installation; TTL extension is bounded; archival is not revocation; reinstalling is a new grant; a failed composition rolls back. | `install`, `enforce`, `uninstall` of each generated policy | The [state-invariant map](SCOPE.md#state-invariants-and-direct-calls), row by row; `contracts/differential/tests/ttl.rs`; `missing_state_denies_in_both`, `install_is_the_only_initializer_and_double_install_fails` (`differential.rs`) |
 | **Evidence labels are earned.** A caller cannot raise a recording's trust level. | `crates/domain`, `crates/recorder-core`, the synthesis boundary in `crates/toolkit` | `downgrading_to_self_supplied_never_raises_a_level` (`crates/domain/src/lib.rs`) and the recording-input row above |
-| **Independent oracle, deterministic output.** The evaluator does not depend on codegen (both build on `policy-spec` and `domain`); the same spec yields byte-identical source. | `scripts/check-dep-rules.sh`, `crates/codegen` | `scripts/test-check-dep-rules.sh`; `generation_is_byte_deterministic`, `golden_crate_matches_committed_output`, `soroswap_crate_matches_committed_output` (run by `scripts/check-codegen-fixtures.sh`) |
+| **Independent oracle, deterministic output.** The evaluator does not depend on codegen (both build on `policy-spec` and `domain`); the same spec yields byte-identical source. | `scripts/check-dep-rules.sh`, `crates/codegen` | `scripts/test-check-dep-rules.sh`; `generation_is_byte_deterministic`, `golden_crate_matches_committed_output`, `soroswap_crate_matches_committed_output`, `two_payment_crate_matches_committed_output` (run by `scripts/check-codegen-fixtures.sh`) |
 | **No deployment or installation without the user.** The library and the MCP server never sign or submit; deployment needs the owner's explicit consent, and installation the owner's own signature over the exact reviewed transaction. | `crates/toolkit`, `wallet/shared`, `wallet/server` | `assembly_is_unsigned_and_uses_operator_trust_and_rpc_sources`; `wallet/tests/controller.test.mjs` ("deploy consent is separate and install validates and shows its consent before requesting a passkey"); `wallet/tests/install-actions.test.mjs` ("submit refuses an envelope differing from the reviewed assembly") |
+
+[MAINNET-GATES.md](MAINNET-GATES.md) maps each of architecture §10's acceptance gates before any
+mainnet use to the tests that establish it, with its status (closed, narrowed to the shipped
+grant shape, open, or a review gate) and the deviations it states. `scripts/check-mainnet-gates.sh`
+reads that document and runs each named test by its full name.
 
 ## Known limits — not findings
 
@@ -288,6 +293,10 @@ cargo build --locked -p ozpb-cli -p ozpb-mcp-server
 npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
 OZPB_BIN="$PWD/target/debug/ozpb" OZPB_MCP_BIN="$PWD/target/debug/ozpb-mcp-server" \
   npm test --prefix wallet
+
+# Every test docs/MAINNET-GATES.md names, by full name, each required to pass exactly once
+# (wallet titles need the npm ci above). It names the Wasm-gated ones without running them.
+bash scripts/check-mainnet-gates.sh
 ```
 
 Disposable build workers have their own acceptance run on the chosen Linux host

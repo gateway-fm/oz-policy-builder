@@ -11,7 +11,8 @@ fi
 expected='test result: ok\. 1 passed;'
 for name in generation_is_byte_deterministic \
             golden_crate_matches_committed_output \
-            soroswap_crate_matches_committed_output; do
+            soroswap_crate_matches_committed_output \
+            two_payment_crate_matches_committed_output; do
     test_name="tests::$name"
     if ! output="$(cargo test --locked -q -p ozpb-codegen --lib "$test_name" -- --exact 2>&1)"; then
         echo "  CODEGEN CHECK FAILED: $test_name" >&2
