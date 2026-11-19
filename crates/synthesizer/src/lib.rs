@@ -944,11 +944,23 @@ fn exact_constraints(
             }
             // Numeric bounds are only meaningful for i128 amounts; anything else is
             // ambiguous semantics and fails closed.
-            (ArgSummary::I128(_), Some(w)) => {
+            (ArgSummary::I128(observed), Some(w)) => {
                 rationale.push(format!(
                     "{}/{} arg {index}: user-widened ({}), blast radius {:?}",
                     o.contract, o.fn_name, w.intent, w.blast_radius
                 ));
+                // A widening loosens the recorded call. A bound that excludes the recorded value
+                // would refuse the call the grant was built from, so it is not a widening at all.
+                if let Some(bound) = excluding_bound(&w.bound, *observed) {
+                    let finding = SynthError::InvalidDecision(format!(
+                        "widening {}/{} arg {index}: {bound} excludes the recorded value \
+                         {observed}; a widening loosens the recorded call and cannot refuse it",
+                        o.contract, o.fn_name
+                    ));
+                    if !errors.contains(&finding) {
+                        errors.push(finding);
+                    }
+                }
                 (
                     match &w.bound {
                         WideningBound::LeI128 { max } => Constraint::LeI128 { max: max.clone() },
@@ -1031,6 +1043,21 @@ fn exact_constraints(
         });
     }
     out
+}
+
+/// How `bound` reads in a refusal, when it excludes the recorded `observed` value. A bound that
+/// does not parse is left to the spec's own canonical-value check, which names it.
+fn excluding_bound(bound: &WideningBound, observed: i128) -> Option<String> {
+    let parse = |value: &str| value.parse::<i128>().ok();
+    match bound {
+        WideningBound::LeI128 { max } => parse(max)
+            .filter(|max| observed > *max)
+            .map(|max| format!("the cap <= {max}")),
+        WideningBound::GeI128 { min } => parse(min)
+            .filter(|min| observed < *min)
+            .map(|min| format!("the floor >= {min}")),
+        WideningBound::AnyValue => None,
+    }
 }
 
 fn exact_for(arg: &ArgSummary, input: &SynthesisInput) -> Constraint {
@@ -2805,6 +2832,89 @@ mod tests {
             d.widenings = vec![amount_widening(bound, false)];
             synthesize(&input(), &d).unwrap();
         }
+    }
+
+    /// A widening loosens the recorded call; a bound that excludes the recorded value would turn
+    /// the grant against the very call it was built from. Each numeric bound is held to it, at
+    /// the boundary inclusive (the transfer recorded 500000000). Nothing checked this before:
+    /// a cap below the recorded amount synthesized.
+    #[test]
+    fn a_numeric_bound_must_admit_the_recorded_value() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let excludes = |bound: &str| {
+            vec![SynthError::InvalidDecision(format!(
+                "widening {contract}/transfer arg 2: {bound} excludes the recorded value \
+                 500000000; a widening loosens the recorded call and cannot refuse it"
+            ))]
+        };
+        let mut d = decisions();
+        d.spending_limit = None;
+        for (bound, acknowledged, refusal) in [
+            (
+                WideningBound::LeI128 {
+                    max: "499999999".to_string(),
+                },
+                true,
+                "the cap <= 499999999",
+            ),
+            (
+                WideningBound::GeI128 {
+                    min: "500000001".to_string(),
+                },
+                false,
+                "the floor >= 500000001",
+            ),
+        ] {
+            d.widenings = vec![amount_widening(bound, acknowledged)];
+            assert_eq!(synthesize(&input(), &d).unwrap_err(), excludes(refusal));
+        }
+        for (bound, acknowledged) in [
+            (
+                WideningBound::LeI128 {
+                    max: "500000000".to_string(),
+                },
+                true,
+            ),
+            (
+                WideningBound::GeI128 {
+                    min: "500000000".to_string(),
+                },
+                false,
+            ),
+        ] {
+            d.widenings = vec![amount_widening(bound.clone(), acknowledged)];
+            assert!(synthesize(&input(), &d).is_ok(), "{bound:?}");
+        }
+
+        // Two recorded calls with the same value are one finding, not two.
+        let mut two = input();
+        two.bundles = vec![bundle_with_subs(
+            (
+                &contract,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::Address(merchant_strkey()),
+                    ArgSummary::I128(500_000_000),
+                ],
+            ),
+            vec![(
+                &contract,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::Address(delegate_strkey(9)),
+                    ArgSummary::I128(500_000_000),
+                ],
+            )],
+        )];
+        d.widenings = vec![amount_widening(
+            WideningBound::LeI128 {
+                max: "1".to_string(),
+            },
+            true,
+        )];
+        assert_eq!(synthesize(&two, &d).unwrap_err(), excludes("the cap <= 1"));
     }
 
     #[test]

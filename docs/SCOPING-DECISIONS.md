@@ -55,7 +55,9 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 
 - An address or other non-`i128` argument stays exact or becomes `any_value`; a numeric bound on
   it is refused.
-- A widening that matches no recorded argument it can apply to is refused, not ignored.
+- A widening that matches no recorded argument it can apply to is refused, not ignored, and so
+  is a numeric bound that excludes the recorded value: a widening loosens the recorded call and
+  cannot refuse it.
 - One argument carries one constraint: there is no range, so a cap and a floor cannot both apply
   to the same argument. A decisions document that widens the same argument (contract, function
   and index) more than once is refused with an `E_INVALID_DECISION` finding naming it, rather than
