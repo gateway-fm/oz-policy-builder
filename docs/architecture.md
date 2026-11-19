@@ -1201,13 +1201,16 @@ crates/
   mcp-server        # bin: rmcp shell (stdio + streamable HTTP); no domain logic
   cli               # bin: the same library behind a human-oriented shell
 contracts/          # separate workspace, pinned soroban-sdk + stellar-accounts
-  golden-transfer-policy/    # generated policy, committed exactly as codegen emits it
-  soroswap-swap-policy/      # second generated example (the W3 router rule)
-  differential/              # differential, generated-suite, event, TTL and
+  differential/              # member: differential, generated-suite, event, TTL and
                              # pinned-account tests of the generated policies
-  authorized-target-fixture/ # test-only target contract for the execution fixtures
-  atomic-live-helper/        # on-chain helper for the live-enforcement layer
+  authorized-target-fixture/ # member: test-only target contract for the execution fixtures
+  atomic-live-helper/        # member: on-chain helper for the live-enforcement layer
+  golden-transfer-policy/    # excluded from the workspace so it builds standalone with its
+                             # own profile: generated policy, exactly as codegen emits it
+  soroswap-swap-policy/      # excluded likewise: second generated example (W3 router rule)
 execution-runtime/  # separate workspace: native account-Wasm and captured-target worker
+scripts/            # release gates, CI checks, fixtures and the MCP development launcher
+tests/support/      # local RPC responders shared by the CLI and MCP boundary tests
 testnet-harness/    # node: installs and exercises generated policies on testnet
 wallet/             # node: local wallet backend and validators (pollywallet integration)
 deployment/         # self-hosted MCP image, TLS proxy, disposable build workers

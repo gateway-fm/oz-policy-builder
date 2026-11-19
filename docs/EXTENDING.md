@@ -8,46 +8,18 @@ first.
 
 ## A new policy primitive or constraint kind
 
-The full path is [DEVELOPERS.md §3](DEVELOPERS.md#3-extending-the-toolkit-with-a-new-policy-primitive).
-In order, test first at each step:
+Follow [DEVELOPERS.md §3](DEVELOPERS.md#3-extending-the-toolkit-with-a-new-policy-primitive): the
+crates to touch in order, test first, from `crates/policy-spec` to the differential suite, and the
+[invariants CI enforces](DEVELOPERS.md#invariants-ci-enforces-dont-break-these), including the
+mutation gate and how to run it locally. Two consequences worth stating on their own:
 
-1. **`crates/policy-spec`** — add the `Constraint` variant; update `is_widening()` if it relaxes a
-   call, add validation for any provenance rule, and add it to a fixture.
-2. **`crates/evaluator`** — its arm in `constraint_satisfied`. This is the executable meaning of the
-   constraint, and it must not share code with codegen.
-3. **`crates/codegen`** — emit the check in `emit_lib`, embedding values only as validated
-   literals, with pre-emission validation; regenerate both committed crates with the two
-   `UPDATE_GOLDEN=1` commands in DEVELOPERS.md, never by hand.
-4. **`crates/harness`** — mutation cases in `build_suite` so the derived deny suite covers the new
-   boundary, and its `concrete_for` arm.
-5. **`crates/synthesizer`** — how it enters a spec: exact by default, or through an explicit
-   `Widening` or an adapter. Never heuristically.
-6. **`contracts/differential`** — explicit evaluator-versus-contract cases, so the generated Wasm
-   and the evaluator are shown to agree on it.
-
-A template family's registry entry declares the constraint kinds and signer predicates it covers,
-and synthesis refuses a spec that uses anything else (`within_declared_capabilities` in
-`crates/toolkit`). A new kind therefore reaches users only through a signed registry successor
-whose template entry declares it. A new template family or a newly recognized prebuilt policy
-likewise needs a capability entry in `crates/registry` — the family by name, the prebuilt by its
-reviewed Wasm hash — and a signed successor
-([registry governance](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
-
-**Gates** ([invariants CI enforces](DEVELOPERS.md#invariants-ci-enforces-dont-break-these)):
-
-- `scripts/check-dep-rules.sh` — the evaluator and harness never depend on codegen.
-- `scripts/check-codegen-fixtures.sh` — byte determinism, and the committed crates matching what
-  codegen emits.
-- Every generated crate builds standalone and passes the same `rustfmt` and `clippy -D warnings` as
-  handwritten code.
-- **The mutation gate** (`scripts/mutation-test.sh`, `.github/workflows/mutation.yml`): a pull
-  request touching one of the eight pure cores fails if a mutant on a changed line survives that
-  crate's own tests or times out. Run it locally with
-  `bash scripts/mutation-test.sh --in-diff origin/main` after
-  `cargo install cargo-mutants --locked --version 27.1.0`. Answer a survivor with a test; exclude
-  one in `.cargo/mutants.toml` only when no input can observe it, with the reason.
-- `bash scripts/verify-phase1.sh --offline` locally, the full gate before release
-  ([CONTRIBUTING.md](../CONTRIBUTING.md#what-the-gates-expect)).
+- **Code is not enough to reach users.** A template family's registry entry declares the
+  constraint kinds and signer predicates it covers, and synthesis refuses a spec that uses anything
+  else (`within_declared_capabilities` in `crates/toolkit`). A new kind is usable only after a
+  signed registry successor whose template entry declares it
+  ([registry governance](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
+- **Generated crates are regenerated, never edited**: the golden tests hold the committed crates
+  to what codegen emits ([CONTRIBUTING.md](../CONTRIBUTING.md#what-the-gates-expect)).
 
 ## A new target adapter
 

@@ -536,8 +536,8 @@ the tests guide you (TDD: add the failing test first):
    integration and policy-aware live preflight remain separate work.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
-`crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove
-what it enforces — an address or claimed kind is never sufficient. A new constraint kind must
+`crates/registry` capability entry (a prebuilt keyed by its reviewed wasm hash, a template by
+its family name) so validation can prove what it enforces — an address or claimed kind is never sufficient. A new constraint kind must
 also be declared in its template family's registry entry (`constraint_kinds`): synthesis refuses
 a spec that uses a kind the family does not declare.
 

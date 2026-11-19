@@ -6,8 +6,8 @@ Use GitHub's private vulnerability reporting: **Security → Advisories → Repo
 vulnerability** on this repository. That opens a channel visible only to the maintainers, so
 no address has to be guessed and nothing lands in a public issue first. Please do not open a
 public issue for a security report. If that option is not visible to you, open an issue that
-says only that you have a security report and asks for a private channel — no details, and we
-will open one.
+says only that you have a security report and asks for a private channel — no details — and,
+during the grant period, we will open one.
 
 Useful in a report, roughly in order: the commit you looked at, the input that reaches the
 defect (a `PolicySpec`, a recording bundle, a registry snapshot, an RPC response), what the
