@@ -2054,6 +2054,13 @@ mod tests {
             // (correctly) refuses to embed.
             let mut spec = golden_spec().spec().clone();
             let rule = spec.rules.get_mut(0)?;
+            // Only the generated policy. The golden rule also composes a reviewed spending
+            // limit, which validation lets cover nothing but SEP-41 `transfer` tuples with an
+            // i128 amount at argument 2 — so with it kept, every generated corpus of calls was
+            // refused before reaching codegen, and the property below held over no spec at
+            // all. Codegen never reads a reviewed policy, so dropping it narrows nothing.
+            rule.policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
             rule.allowed_calls = calls;
             rule.authorization.kind = predicate.0;
             rule.authorization.strict_signer_set = predicate.1;
