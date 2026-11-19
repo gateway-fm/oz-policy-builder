@@ -285,6 +285,7 @@ test('mainnet readiness names each missing pinned Wasm with its upload command a
   assert.equal(uploads.length, 0);
   assert.equal(ready.helper.configured, false);
   assert.match(ready.helper.instruction, /stellar contract deploy --wasm ozpb_atomic_live_helper\.wasm --network mainnet/);
+  assert.equal(ready.helper.uploadSimulatedFeeStroops, null, 'no reproduced helper Wasm in the directory: no cost yet');
   assert.deepEqual(ready.fees, { ...MAINNET_FEE_DEFAULTS, spentStroops: '0' });
   // The reproduced Wasm is read only when its SHA-256 is the pinned hash.
   const wasm = Buffer.from('0061736d01000000', 'hex');

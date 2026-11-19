@@ -281,8 +281,9 @@ on mainnet; `liveHelper` stays unset until you deploy it. The layer then reports
 steps: build `contracts/atomic-live-helper` with `stellar contract build --locked`, check that the
 Wasm's SHA-256 is the reviewed helper hash, run
 `stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>`
-and name the contract ID in `liveHelper`. The check stays simulation only on mainnet: nothing it
-signs is submitted.
+and name the contract ID in `liveHelper`. With the reproduced helper Wasm at
+`<pinnedWasmDir>/<hash>.wasm`, the readiness panel also shows its upload's simulated cost. The
+check stays simulation only on mainnet: nothing it signs is submitted.
 
 ## Receiving a proposal directly from Claude
 

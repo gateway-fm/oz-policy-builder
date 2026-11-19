@@ -353,7 +353,11 @@ export function createWalletActions({ session, toolchain, network, native = null
         pinned.push({ name, hash, present: false,
           upload: { ...uploadInstruction(net, pinnedWasmDir, hash), simulatedFeeStroops: cost?.feeStroops ?? null } });
       }
-      let helper = { configured: false, reviewedHash: LIVE_HELPER_WASM, instruction: HELPER_DEPLOY[net.name] };
+      // Not configured: the deployment steps and, given the reproduced helper Wasm, its upload's simulated cost.
+      const helperWasm = live ? null : readPinnedWasm(pinnedWasmDir, LIVE_HELPER_WASM);
+      const helperCost = helperWasm ? await network.uploadCost(helperWasm) : null;
+      let helper = { configured: false, reviewedHash: LIVE_HELPER_WASM, instruction: HELPER_DEPLOY[net.name],
+        uploadSimulatedFeeStroops: helperCost?.feeStroops ?? null };
       if (live) {
         const state = await network.contractLiveness(live.helper);
         helper = { configured: true, contract: live.helper, reviewedHash: LIVE_HELPER_WASM, found: state.found,

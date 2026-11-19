@@ -108,7 +108,8 @@ function MainnetReadiness({ readiness, status, busy, check }: { readiness: Recor
               reproduced Wasm is at {label(upload.wasmPath)})</>}</>}</li>;
       })}
       <li>Live helper: {helper.configured === true && helper.reviewed === true ? <>{label(helper.contract)}, the reviewed helper.</>
-        : <>{label(helper.instruction)}</>}</li>
+        : <>{label(helper.instruction)}{helper.uploadSimulatedFeeStroops
+          ? <> Uploading its code costs about {xlm(helper.uploadSimulatedFeeStroops)} (simulated).</> : null}</>}</li>
     </ul>}
   </section>;
 }
