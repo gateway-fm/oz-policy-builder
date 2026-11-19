@@ -13,9 +13,10 @@ One context rule on the native asset's Stellar Asset Contract, permitting exactl
 `transfer(SELF, G recipient, amount)` with an exact amount of at most 1,000,000 stroops (the
 bound the live check needs for its one-stroop-more denial) and a call cap, for one Ed25519
 delegate, enforced by a generated `policy-templates/scope@1` policy with no reviewed policy
-composed beside it. It is installed into OpenZeppelin's 0.7.3 example smart account, recognized
-by its exact code hash ([Soroban dependencies](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)),
-whose owner is a passkey through OpenZeppelin's WebAuthn verifier. This is the shape the
+composed beside it. It is installed into OpenZeppelin's 0.7.3 example smart account,
+recognized by its exact code hash
+([Soroban dependencies](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)), whose owner
+is a passkey through OpenZeppelin's WebAuthn verifier. This is the shape the
 [Pollywallet integration](POLLYWALLET-INTEGRATION.md) generates, checks in all four layers
 (its live layer is two named cases, the exact transfer and one stroop more), installs and
 revokes. In this tree that integration is bound to testnet.
@@ -31,6 +32,10 @@ revokes. In this tree that integration is bound to testnet.
   part and what would close it.
 - **review**: a review or process gate; the row names the evidence that closes it.
 
+A gate is only as strong as what it rests on: G1, G8 and G11 hold at installation because the
+authority check of G2 refuses or lists every other rule that could change the grant, and that
+check reads an `rpc_reported` observation, so their rows say so.
+
 A narrowed or open gate is not accepted by being listed. The owner's acceptance of a stated
 deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md), not here.
 
@@ -38,25 +43,26 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 
 | Gate | Requirement (abridged from architecture §10) | Status | Evidence | Deviation, or what would close it |
 | --- | --- | --- | --- | --- |
-| G1 | No policy-bearing grant authorizes without its declared signer predicate; strict signer sets for named identities; a dynamic predicate only explicitly labeled | **closed** | [G1](#g1-signer-predicate) | — |
+| G1 | No policy-bearing grant authorizes without its declared signer predicate; strict signer sets for named identities; a dynamic predicate only explicitly labeled | **closed** | [G1](#g1-signer-predicate) | Rests on G2's install-time check, an `rpc_reported` observation, refusing a weak management rule that could strip the policy |
 | G2 | The authority-surface check passes at install and preflight over both surfaces, archive-safe, transitive, snapshot-coherent and bounded, over the exact binding set; identities matched by the wallet; one-ledger observation; post-install changes and restorations alert; adversarial suites pass | **open** | [G2](#g2-authority-surface) | Open: post-install changes are found by an on-demand check, not alerted, and restorations are not observed. Also: the observation is `rpc_reported`, not an authenticated ledger snapshot; the through-account suites cover the pinned account and the pure check, not the live check end to end |
 | G3 | Synthesis is exact by default and never infers numeric direction from XDR type alone | **closed** | [G3](#g3-exact-synthesis) | — |
 | G4 | Accepted calls keep complete tuple correlations, each mapped to its recorded invocation | **closed** | [G4](#g4-tuple-correlation) | — |
 | G5 | Workflow claims are state-enforced or described as independent permissions | **closed** | [G5](#g5-workflow-claims) | — |
 | G6 | Reports separate offline conformance, committed-state integration and live preflight, with acquisition-derived labels; serialized input is downgraded | **narrowed** | [G6](#g6-reports-and-evidence-labels) | All four layers exist only for the native-SAC transfer; other shapes report their missing layers |
 | G7 | Stateful limits satisfy the executable invariants (missing state, install-only initialization, archival and restoration, max TTL, reinstall, inactivity, expiration changes, failed transactions) | **narrowed** | [G7](#g7-stateful-limits) | One generated fixture through one account code hash, with SDK test TTLs; a reviewed policy is not executed in composition |
-| G8 | Installed code is recognized by a reviewed registry entry or a verified generated-artifact attestation; external verifiers recognized; unknown is unverified; custom source labeled | **closed** | [G8](#g8-recognition) | Custom source is refused rather than labeled: no path accepts it |
+| G8 | Installed code is recognized by a reviewed registry entry or a verified generated-artifact attestation; external verifiers recognized; unknown is unverified; custom source labeled | **closed** | [G8](#g8-recognition) | Custom source is refused rather than labeled: no path accepts it. The code at each address is recognized from G2's `rpc_reported` observation |
 | G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | The manifest lacks source commit, template-pack hash, container digest, canonicalization version and build target; `generate` and `verify` do not check the registry root they record |
 | G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: the monitor does not report a revoked template family, the only revocation that reaches a generated policy, and nothing schedules it. Also: the mainnet log is an unsigned draft until its key ceremony; a revoked account build has no removal path, only moving the funds |
-| G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself |
-| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | No hosted processing is on the mainnet grant path; log redaction is configuration with no automated check |
+| G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
+| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | Narrowed: not applicable to the shipped shape, which involves no hosted processing. Open for the hosted package: log redaction is configuration with no automated check |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
 | G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree |
 
 ## How the evidence blocks are read
 
-Each gate's section ends with a `gate-evidence` block, one check per line:
-`<run> <path> <name>`.
+Each gate's section except a review gate's ends with one evidence block, a fence reading
+exactly ```` ```gate-evidence G<n> ````, one check per line: `<run> <path> <name>`. A closed gate
+names at least one check that runs in CI.
 
 - `ci` runs in CI. A Rust test is named by its full path as `cargo test -- --list` prints it,
   in the file that defines it; the binary follows from the path (a crate's `src/` is its unit
@@ -67,14 +73,15 @@ Each gate's section ends with a `gate-evidence` block, one check per line:
   Silicon host, and requires each of these tests by name; it runs in the
   `pinned-account-authorization` job of `.github/workflows/nightly-live.yml`. The checker
   lists them as not run, and verifies that the workflow still runs the script and that the
-  script names each test after running its binary, where its own checks require it.
+  script requires each test by name, in a `for test in` list or a `grep -qx 'test NAME ... ok'`
+  check, after running that test's binary.
 - `ci-step` is a command a workflow runs; the checker verifies that a line of the workflow, not
   a comment, still runs it. Which job, trigger or condition runs it is not checked.
 
 ```bash
-bash scripts/check-mainnet-gates.sh                   # every ci test
-bash scripts/check-mainnet-gates.sh --part host       # what each CI job runs: host, contracts, wallet
-python3 scripts/test-check-mainnet-gates.py           # the checker's own regression tests
+bash scripts/check-mainnet-gates.sh               # every ci test
+bash scripts/check-mainnet-gates.sh --part host   # one CI job's part: host, contracts or wallet
+python3 scripts/test-check-mainnet-gates.py       # the checker's own regression tests
 ```
 
 A test listed under two gates runs once. Passing establishes what each gate's status says, no
@@ -293,16 +300,17 @@ ci  wallet/tests/install-actions.test.mjs  status keeps install false when one o
 Missing state denies; `install` is the only initializer and a second install fails; the call cap
 exhausts with committed state; installations are isolated by account and rule; reinstalling
 starts a new grant. A decayed TTL is extended to the policy's validity clamped to the network
-maximum, extension never outlives the validity, a denied call extends nothing, and installing after expiry writes nothing. A later denial rolls back an earlier
-permit's counter. Through the pinned account: archived state denies until restored, an idle
+maximum, extension never outlives the validity, a denied call extends nothing, and installing
+after expiry writes nothing. A later denial rolls back an earlier permit's counter. Through the
+pinned account: archived state denies until restored, an idle
 grant survives until its shortest TTL, extending a rule's validity does not outlive the compiled
 expiry, stale state for the next rule ID is refused rather than adopted, a failed composition
 rolls back, and the cap holds across ledgers with an N+1 rollback.
 
 Deviation: the account-path suite runs one generated fixture against one account code hash,
 with the SDK's test TTLs rather than a network's. A reviewed policy (the spending limit) is not
-executed in composition through the account Wasm ([SCOPE item 3](SCOPE.md#implementation-boundaries));
-the shipped shape composes none.
+executed in composition through the account Wasm
+([SCOPE item 3](SCOPE.md#implementation-boundaries)); the shipped shape composes none.
 
 ```gate-evidence G7
 ci  contracts/differential/tests/differential.rs  missing_state_denies_in_both
@@ -341,6 +349,9 @@ reports any edited or added file as a source mismatch, and the wallet installs o
 regenerates ([generated source support](POLLYWALLET-INTEGRATION.md#generated-source-support)).
 A custom-source flow would need its own label and gate before it could be offered.
 
+Recognition at installation reads the code at each address from G2's scan, so it is as good as
+that `rpc_reported` observation ([G2](#g2-authority-surface)).
+
 ```gate-evidence G8
 ci  crates/registry/src/lib.rs  tests::unknown_hashes_fail_closed
 ci  crates/registry/src/lib.rs  tests::queries_before_load_fail_closed
@@ -362,17 +373,18 @@ ci  wallet/tests/approval.test.mjs  the wallet pins the account and verifier has
 ## G9. Artifact chain and BuildManifest
 
 The PolicySpec schema is closed, so it cannot carry a build output, and the BuildManifest
-references the spec by hash ([architecture §4.2](architecture.md#42-policyspec-and-the-artifact-chain)). The manifest hash binds the
-source, Wasm, lockfile and pipeline inputs; a manifest that misstates the compiler the Wasm
-records is refused; a generated artifact carries its Wasm and binding manifest.
+references the spec by hash
+([architecture §4.2](architecture.md#42-policyspec-and-the-artifact-chain)). The manifest hash
+binds the source, Wasm, lockfile and pipeline inputs; a manifest that misstates the compiler
+the Wasm records is refused; a generated artifact carries its Wasm and binding manifest.
 
 Open:
 
 - **Incomplete manifest.** It does not record the source commit and dirty-tree status, the
   template-pack hash, a build-container image digest, the canonicalization version or the build
   target, and the builder is labelled `local-unattested`
-  ([SCOPE item 2](SCOPE.md#implementation-boundaries)). Adding the fields rehashes every
-  manifest, so they would land with a containerized builder at a release gate.
+  ([SCOPE item 2](SCOPE.md#implementation-boundaries)). Closing it needs those fields, which
+  rehash every manifest, and a builder whose output is attested.
 - **Unchecked registry root.** `generate` and `verify` record the root the spec names without
   checking it; trust is enforced at synthesis, the install intent and the live checks, which
   load the snapshot under the pinned roots ([SCOPE item 7](SCOPE.md#implementation-boundaries)).
@@ -446,7 +458,8 @@ Deviation: [revoke-first replacement](POLLYWALLET-INTEGRATION.md#revoke-first-re
 no testnet run, and it is session-local. The through-account test makes the account's management
 calls itself rather than through the wallet
 ([wallet integration](TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)).
-Closing it needs a live replacement run through the wallet.
+Closing it needs a live replacement run through the wallet. That no other grant overlaps is
+read from G2's `rpc_reported` observation ([G2](#g2-authority-surface)).
 
 ```gate-evidence G11
 ci  crates/call-surface-core/src/tests.rs  tests::stateful_grant_beside_another_usable_rule_on_the_target_is_refused
@@ -469,11 +482,13 @@ build slot when a request is cancelled. The self-hosted workflow checks the host
 bounds and the build-worker launcher, and runs the Compose package and rootless worker
 containment.
 
-Deviation: no hosted processing is on the mainnet grant path. The wallet backend runs the local
-CLI, Gateway operates no production service, and the hosted reference instance is a testnet
-instance for review ([SCOPE](SCOPE.md#tranche-2-status)). For the hosted package itself, log redaction is
-configuration: access and container logs are disabled ([self-hosting](SELF-HOSTING.md#data-handling-and-handover)),
-and no automated test reads a log. Worker containment is accepted on the operator's chosen host
+Narrowed because the gate does not apply to the shipped shape: no hosted processing is on its
+path. The wallet backend runs the local CLI, Gateway operates no production service, and the
+hosted reference instance is a testnet instance for review ([SCOPE](SCOPE.md#tranche-2-status)).
+
+Open for the hosted package itself: log redaction is configuration, with access and container
+logs disabled ([self-hosting](SELF-HOSTING.md#data-handling-and-handover)), and no automated
+test reads a log. Worker containment is accepted on the operator's chosen host
 ([isolated builds](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)); the self-hosted workflow
 runs on changes to its paths, not on every pull request.
 
