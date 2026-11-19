@@ -233,6 +233,26 @@ class ReviewRegressions(unittest.TestCase):
         self.assertIn("synthesize_before_decisions", checks(session(decisions=dict(DECISIONS, widenings=[unlimited]),
             restatement=stated.replace("medium", "high"))))
 
+    def test_a_cap_accepted_without_a_floor_is_restated_as_having_none(self):
+        # A cap on a signed amount admits every smaller value, negatives included. The user who
+        # acknowledged that has to have been told it in the line that states the widening.
+        widening = {"contract": TARGET, "fn_name": "transfer", "arg_index": 2,
+                    "bound": {"le_i128": {"max": "2000000"}}, "no_floor_acknowledged": True,
+                    "intent": "headroom", "blast_radius": "medium"}
+        decisions = dict(DECISIONS, widenings=[widening])
+        line = f" Widen {TARGET}.transfer arg[2] to <= 2000000, no floor; blast radius: medium; reason: headroom."
+        self.assertNotIn("synthesize_before_decisions",
+                         checks(session(decisions=decisions, restatement=RESTATEMENT + line)))
+        for silent in (line.replace(", no floor", ""), line.replace("no floor", "floor 0")):
+            self.assertIn("synthesize_before_decisions",
+                          checks(session(decisions=decisions, restatement=RESTATEMENT + silent)), silent)
+        # The phrase belongs to the acknowledgement: a floor or an unacknowledged cap reads as before.
+        for other in (dict(widening, no_floor_acknowledged=False), {k: v for k, v in widening.items()
+                                                                    if k != "no_floor_acknowledged"}):
+            self.assertNotIn("synthesize_before_decisions", checks(session(
+                decisions=dict(DECISIONS, widenings=[other]),
+                restatement=RESTATEMENT + line.replace(", no floor", ""))))
+
     def test_intervening_user_message_invalidates_the_card_not_only_confirmation(self):
         events = session()
         events[COMMAND:COMMAND] = [user("Change the amount."), user("confirm")]

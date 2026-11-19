@@ -1709,6 +1709,21 @@ test('v2 deadline evidence exports the exact cutoff and both policy denials', (t
     assert.equal(step.result, 'verified_denial'); assert.equal(step.code, 6);
   }
 });
+test('v3 decisions, which accept the transfer cap\'s open floor, export as v2 did; v3 without it is refused', (t) => {
+  const v3 = ({ run }) => {
+    const d = run.walkthrough.operator_decisions;
+    d.schema = 'ozpb-soroswap-operator-decisions/v3'; d.transfer_cap.no_floor_acknowledged = true;
+  };
+  assert.deepEqual(exportEvidence(exactDeadlineEvidence(t, v3)).walkthrough.operator_decisions,
+    exportEvidence(exactDeadlineEvidence(t)).walkthrough.operator_decisions);
+  for (const unanswered of [false, undefined]) {
+    assert.throws(() => exportEvidence(exactDeadlineEvidence(t, (f) => {
+      v3(f);
+      if (unanswered === undefined) delete f.run.walkthrough.operator_decisions.transfer_cap.no_floor_acknowledged;
+      else f.run.walkthrough.operator_decisions.transfer_cap.no_floor_acknowledged = unanswered;
+    })), /invalid or inconsistent/);
+  }
+});
 for (const [name, change] of [
   ['v1 adapter', ({ pipeline }) => { pipeline.adapter.name = 'soroswap-router@1'; }],
   ['v1 control set', ({ run }) => { run.walkthrough.controls.control_set = 3; }],

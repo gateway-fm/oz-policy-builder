@@ -49,7 +49,7 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 
 | Bound | Accepts | Applies to |
 | --- | --- | --- |
-| `{"le_i128": {"max": "N"}}` — a cap | every value ≤ N, negatives included ([below](#open-question-negative-values-under-a-cap)) | `i128` arguments |
+| `{"le_i128": {"max": "N"}}` — a cap | every value ≤ N, negatives included; only with `"no_floor_acknowledged": true` beside it ([below](#open-question-negative-values-under-a-cap)) | `i128` arguments |
 | `{"ge_i128": {"min": "N"}}` — a floor | every value ≥ N, such as a swap's minimum output | `i128` arguments |
 | `"any_value"` | anything at that argument | any argument; requires `blast_radius: "high"` |
 
@@ -83,16 +83,27 @@ listed as high blast radius on the card like your own. Without a binding, synthe
 ## Open question: negative values under a cap
 
 A cap (`le_i128`) admits every smaller value, negatives included: the generated check refuses only
-values above the maximum. A cap comes from a user widening or from an adapter's maximum-input role.
-The generated scope policy does not refuse a negative amount on its own and leaves it to the target
-contract to refuse. OpenZeppelin's v0.7.0 audit finding L-06 is about the same assumption in their
-spending-limit policy, which upstream fixed in the policy.
+values above the maximum, and an `i128` is signed. The generated scope policy does not refuse a
+negative amount on its own and leaves it to the target contract to refuse. OpenZeppelin's v0.7.0
+audit finding L-06 is about the same assumption in their spending-limit policy, which upstream
+fixed in the policy.
+
+So a cap you add is a question, not a default. Synthesis does not add a floor of zero, which would
+infer a direction from the type, and one argument carries one bound, so a capped argument cannot
+also carry a floor. A cap is refused with an `E_NEEDS_DECISION` finding until its widening carries
+`"no_floor_acknowledged": true`, your statement that negative amounts pass this policy and only the
+target can refuse them; absent reads as `false`, and the rationale repeats the acknowledgement for
+each cap. On a floor or `any_value` the acknowledgement is refused as an `E_INVALID_DECISION`. A cap
+an adapter derives for a maximum-input role carries no acknowledgement: it is the adapter's reviewed
+claim about that target's code, and it too leaves a negative amount to the target.
 
 What is established here: the evaluator's spending model never permits a negative amount, and a
 spending-limit composition must admit a non-negative amount. What is not: that every target
 refuses a negative amount, or that accepting one would be harmful for a given target. Exact grants
-are unaffected. Whether the generated policy should refuse negatives under a cap is an open
-question for the security audit ([AUDIT-SCOPE.md](AUDIT-SCOPE.md#prior-relevant-findings)).
+are unaffected. Whether the generated policy should refuse negatives under a cap itself, which
+needs a bound on both sides of one argument (a constraint kind neither the spec nor the template
+registry has), is an open question for the security audit
+([AUDIT-SCOPE.md](AUDIT-SCOPE.md#prior-relevant-findings)).
 
 ## How the agent skill asks
 

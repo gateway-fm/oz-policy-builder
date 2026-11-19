@@ -99,6 +99,13 @@ pub struct Widening {
     pub fn_name: String,
     pub arg_index: u32,
     pub bound: WideningBound,
+    /// Explicit acknowledgement that a cap (`le_i128`) sets no floor: the argument is a signed
+    /// integer, so every smaller value passes, negative amounts included, and only the target can
+    /// refuse one. One argument takes one bound, so a cap cannot also carry a floor; without this
+    /// a cap is an open question. It answers nothing on a floor or `any_value`, where it is
+    /// refused. Absent reads as `false`, like `unlimited_calls_acknowledged`.
+    #[serde(default)]
+    pub no_floor_acknowledged: bool,
     /// The user's stated semantic intent ("amount is a cap, allow headroom to 100").
     pub intent: String,
     pub blast_radius: BlastRadius,
@@ -318,6 +325,27 @@ pub fn synthesize(
                 "widening {contract}/{fn_name} arg {arg_index}: {count} widenings name this \
                  argument, and an argument takes one bound; keep the one the user chose"
             )));
+        }
+    }
+    // The open-floor acknowledgement answers the question a cap asks (below) and no other. On a
+    // floor it contradicts the bound beside it; on any_value it qualifies nothing. Either way the
+    // user's answer is unclear, so the document is refused rather than the field ignored.
+    for w in decisions
+        .widenings
+        .iter()
+        .filter(|w| w.no_floor_acknowledged)
+    {
+        let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+        match &w.bound {
+            WideningBound::LeI128 { .. } => {}
+            WideningBound::GeI128 { min } => errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: the floor at {min} contradicts \
+                 no_floor_acknowledged; choose one"
+            ))),
+            WideningBound::AnyValue => errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: no_floor_acknowledged qualifies \
+                 a cap (le_i128) alone; any_value has no bound for it to qualify"
+            ))),
         }
     }
 
@@ -599,6 +627,30 @@ pub fn synthesize(
                 arg_index: w.arg_index,
                 reason: "widening matched no observed numeric argument".to_string(),
             });
+        } else if let WideningBound::LeI128 { max } = &w.bound {
+            // An applied numeric bound sits on an i128 (any other argument is refused above), and
+            // an i128 is signed: the cap renders only `x > max → deny`, so every negative amount
+            // passes and only the target can refuse it (cf. OpenZeppelin's v0.7.0 audit, L-06).
+            // A floor of zero would infer a direction from the XDR type alone, and one argument
+            // carries one bound, so the open floor is a decision the user states or synthesis
+            // asks for.
+            let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+            if w.no_floor_acknowledged {
+                rationale.push(format!(
+                    "{contract}/{fn_name} arg {arg_index}: NO FLOOR — the user acknowledged that \
+                     the cap at {max} admits every smaller value, negative amounts included; \
+                     only the target contract can refuse one"
+                ));
+            } else {
+                errors.push(SynthError::NeedsDecision(format!(
+                    "widening {contract}/{fn_name} arg {arg_index}: floor: the cap at {max} on \
+                     this signed amount sets no floor, so every smaller value passes the policy, \
+                     negative amounts included, and only the target contract can refuse one. A \
+                     capped argument cannot also carry a floor: acknowledge the open floor \
+                     (no_floor_acknowledged, only on the user's explicit acceptance) or keep the \
+                     argument exact"
+                )));
+            }
         }
     }
 
@@ -1711,6 +1763,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "({ return true; 0 } as i128) + 0".to_string(),
             },
+            no_floor_acknowledged: true,
             intent: "hostile source token".to_string(),
             blast_radius: BlastRadius::High,
         }];
@@ -1826,6 +1879,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "1000000000".to_string(),
             },
+            no_floor_acknowledged: true,
             intent: "allow headroom".to_string(),
             blast_radius: BlastRadius::Medium,
         }];
@@ -1844,6 +1898,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "nonsense".to_string(),
             blast_radius: BlastRadius::High,
         }];
@@ -2231,6 +2286,7 @@ mod tests {
             fn_name: "transfer".to_string(),
             arg_index: 2,
             bound: WideningBound::AnyValue,
+            no_floor_acknowledged: false,
             intent: "caller chooses any amount".to_string(),
             blast_radius: BlastRadius::High,
         }];
@@ -2320,6 +2376,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "wrong fn".to_string(),
             blast_radius: BlastRadius::Low,
         }];
@@ -2336,6 +2393,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "wrong index".to_string(),
             blast_radius: BlastRadius::Low,
         }];
@@ -2373,6 +2431,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "typo'd target".to_string(),
             blast_radius: BlastRadius::Low,
         }];
@@ -2395,6 +2454,7 @@ mod tests {
                 fn_name: fn_name.to_string(),
                 arg_index,
                 bound,
+                no_floor_acknowledged: false,
                 intent: "a decision about one argument".to_string(),
                 blast_radius: BlastRadius::High,
             };
@@ -2463,6 +2523,125 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A widening of the recorded transfer's amount, argument 2: an i128, a signed integer.
+    fn amount_widening(bound: WideningBound, no_floor_acknowledged: bool) -> Widening {
+        Widening {
+            contract: transfer_bundle().authorizations[0].root.call_contract(),
+            fn_name: "transfer".to_string(),
+            arg_index: 2,
+            bound,
+            no_floor_acknowledged,
+            intent: "an amount decision".to_string(),
+            blast_radius: BlastRadius::High,
+        }
+    }
+
+    /// The analogue of OpenZeppelin's v0.7.0 audit finding L-06. A cap renders only
+    /// `x > max → deny`, so on a signed amount every negative value passes the generated policy
+    /// and only the target can refuse it. Adding a floor of zero would infer a direction from the
+    /// XDR type, which synthesis never does, and one argument cannot carry a cap and a floor. So a
+    /// cap is a question until the user accepts the open floor in so many words.
+    #[test]
+    fn a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let cap = WideningBound::LeI128 {
+            max: "1000000000".to_string(),
+        };
+        let mut d = decisions();
+        d.widenings = vec![amount_widening(cap.clone(), false)];
+        assert_eq!(
+            synthesize(&input(), &d).unwrap_err(),
+            vec![SynthError::NeedsDecision(format!(
+                "widening {contract}/transfer arg 2: floor: the cap at 1000000000 on this signed \
+                 amount sets no floor, so every smaller value passes the policy, negative amounts \
+                 included, and only the target contract can refuse one. A capped argument cannot \
+                 also carry a floor: acknowledge the open floor (no_floor_acknowledged, only on \
+                 the user's explicit acceptance) or keep the argument exact"
+            ))]
+        );
+
+        d.widenings = vec![amount_widening(cap, true)];
+        let out = synthesize(&input(), &d).unwrap();
+        let amount = &out.spec.rules[0].allowed_calls[0].args[2];
+        assert_eq!(
+            amount.constraint,
+            Constraint::LeI128 {
+                max: "1000000000".to_string()
+            }
+        );
+        assert!(matches!(amount.provenance, Provenance::UserWidened { .. }));
+        assert!(
+            out.rationale.contains(&format!(
+                "{contract}/transfer arg 2: NO FLOOR — the user acknowledged that the cap at \
+                 1000000000 admits every smaller value, negative amounts included; only the \
+                 target contract can refuse one"
+            )),
+            "{:#?}",
+            out.rationale
+        );
+
+        // The question is about an argument the cap bounds. A cap that applies to nothing, or to
+        // an address, is refused for that; asking about its floor would be a question about
+        // nothing.
+        for (contract, arg_index) in [("CNOSUCHCONTRACT".to_string(), 2), (contract, 1)] {
+            let mut unapplied = amount_widening(
+                WideningBound::LeI128 {
+                    max: "10".to_string(),
+                },
+                false,
+            );
+            unapplied.contract = contract;
+            unapplied.arg_index = arg_index;
+            let mut d = decisions();
+            d.widenings = vec![unapplied];
+            let errors = synthesize(&input(), &d).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .all(|e| matches!(e, SynthError::AmbiguousArgSemantics { .. })),
+                "{errors:?}"
+            );
+        }
+    }
+
+    /// The acknowledgement answers the question a cap asks and no other. On a floor it says the
+    /// opposite of the bound beside it; on `any_value` there is no bound for it to qualify.
+    /// Either way the user's decision is unclear, so it is refused rather than ignored.
+    #[test]
+    fn the_no_floor_acknowledgement_belongs_to_a_cap_alone() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let floor = WideningBound::GeI128 {
+            min: "1".to_string(),
+        };
+        let mut d = decisions();
+        d.spending_limit = None; // the reviewed spending limit refuses an any_value amount
+        for (bound, finding) in [
+            (
+                floor.clone(),
+                format!(
+                    "widening {contract}/transfer arg 2: the floor at 1 contradicts \
+                     no_floor_acknowledged; choose one"
+                ),
+            ),
+            (
+                WideningBound::AnyValue,
+                format!(
+                    "widening {contract}/transfer arg 2: no_floor_acknowledged qualifies a cap \
+                     (le_i128) alone; any_value has no bound for it to qualify"
+                ),
+            ),
+        ] {
+            d.widenings = vec![amount_widening(bound.clone(), true)];
+            assert_eq!(
+                synthesize(&input(), &d).unwrap_err(),
+                vec![SynthError::InvalidDecision(finding)]
+            );
+            // Without it, neither asks anything about a floor.
+            d.widenings = vec![amount_widening(bound, false)];
+            synthesize(&input(), &d).unwrap();
         }
     }
 

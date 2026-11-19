@@ -248,10 +248,13 @@ said to fail closed opens — is a finding.
   non-negative amount within the limit (`spending_limit_requires_transfer_amount_at_argument_two`
   in `crates/policy-spec`, `spending_limit_constraint_intersections_include_only_their_boundaries`
   in `crates/synthesizer`). The generated scope policy does not refuse negative values on its
-  own: an upper bound (`LeI128`), which the Soroswap adapter derives for a maximum-input argument
-  and a user widening can add, admits every smaller value, negatives included, and leaves a
-  negative amount to the target to refuse. That is the assumption L-06 advises against, and a
-  question for this audit.
+  own: an upper bound (`LeI128`) admits every smaller value, negatives included, and leaves a
+  negative amount to the target to refuse. A user widening that adds one is refused with
+  `E_NEEDS_DECISION` unless it acknowledges that open floor (`no_floor_acknowledged`;
+  `a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged` in `crates/synthesizer`); the
+  Soroswap adapter derives one for a maximum-input argument as its reviewed claim about the target,
+  without that acknowledgement. Relying on the target, acknowledged or adapter-reviewed, is the
+  assumption L-06 advises against, and a question for this audit.
 - **Unbounded enforce events** in OpenZeppelin's policies, found during the conventions pass:
   embedding the whole `Context` lets a permitted call fail on the network's event-size limit.
   Generated policies publish a digest instead

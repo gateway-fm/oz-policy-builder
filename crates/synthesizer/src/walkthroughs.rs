@@ -233,6 +233,7 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
                 bound: WideningBound::LeI128 {
                     max: observed_amount_in.to_string(),
                 },
+                no_floor_acknowledged: true,
                 intent: "cap amount_in at the observed maximum input".to_string(),
                 blast_radius: BlastRadius::Medium,
             },
@@ -243,6 +244,7 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
                 bound: WideningBound::GeI128 {
                     min: observed_out_min.to_string(),
                 },
+                no_floor_acknowledged: false,
                 intent: "floor amount_out_min (user-provided absolute slippage floor)".to_string(),
                 blast_radius: BlastRadius::Medium,
             },
@@ -251,6 +253,7 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
                 fn_name: "swap_exact_tokens_for_tokens".to_string(),
                 arg_index: 4,
                 bound: WideningBound::AnyValue,
+                no_floor_acknowledged: false,
                 intent: "deadline is caller-chosen; leave unconstrained (rule valid_until \
                          still bounds WHEN authorization can occur)"
                     .to_string(),

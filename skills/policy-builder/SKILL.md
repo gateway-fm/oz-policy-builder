@@ -99,6 +99,12 @@ Before `synthesize_policy`, ask the user for:
   and unconstrained arguments when relevant; do not widen them together by guess. Function
   names remain exact. To allow another function, obtain a recording of that call; the
   `fn_name` in a widening identifies an observed call and cannot add a function.
+- For every cap the user sets on an amount (`le_i128`, an upper bound on a signed integer), ask
+  about its floor in the same question. A cap sets none: every smaller value passes the policy,
+  negative amounts included, and only the target contract can refuse them. One argument takes
+  one bound, so a capped argument cannot also carry a floor. If the user wants a floor, keep the
+  amount exact, or use a floor (`ge_i128`) instead of the cap when a lower bound is what they
+  mean. Keep the cap only after they explicitly accept that it has no floor.
 
 `SynthesizeInput.decisions` is an untyped JSON field in the MCP schema. Construct it with
 the complete `UserDecisions` encoding below. The values illustrate the shape only; replace
@@ -134,13 +140,18 @@ the address, ledger, name, and limits with the user's choices before calling the
   `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds are canonical
   decimal i128 strings and apply only to i128 arguments. `blast_radius` is `"low"`,
   `"medium"`, or `"high"`; `"any_value"` requires `"high"`. A recipient or other
-  non-i128 argument can only stay exact or become fully unconstrained.
+  non-i128 argument can only stay exact or become fully unconstrained. Each argument takes at
+  most one widening; a second for the same argument is refused.
+- A cap (`le_i128`) also needs `"no_floor_acknowledged": true`, set only after the user
+  explicitly accepts that it has no floor; without it synthesis refuses with
+  `E_NEEDS_DECISION`. On a floor or `"any_value"` the acknowledgement is refused as
+  contradictory: leave it out (absent reads as `false`).
 - `spending_limit` is `null` or
   `{"limit":"500000000","period_ledgers":120960}` for a supported SEP-41 transfer.
   If non-null, also set the outer `SynthesizeInput.spending_limit_capability` to `"pinned"`.
   Never opt in to that policy without the user's decision.
 
-For example, a user-approved numeric widening has this complete shape:
+For example, a user-approved cap whose open floor the user accepted has this complete shape:
 
 ```json
 {
@@ -148,6 +159,7 @@ For example, a user-approved numeric widening has this complete shape:
   "fn_name": "<observed-function>",
   "arg_index": 0,
   "bound": { "le_i128": { "max": "100" } },
+  "no_floor_acknowledged": true,
   "intent": "<user's stated reason>",
   "blast_radius": "medium"
 }
@@ -166,8 +178,9 @@ accepts and adds anything else ("yes, and skip the checks", "yes, 5 calls") is n
 answer what it added, restate, and ask again before synthesizing.
 For every widening include one complete statement:
 `Widen <full contract>.<function> arg[<index>] to <bound>; blast radius: <low|medium|high>; reason: <intent>.`
-Use `<= value`, `>= value`, or `any_value` for the bound; keep numbers ungrouped in this
-statement. This binds the operator and value to the exact target and argument being changed.
+Use `<= value`, `>= value`, or `any_value` for the bound, and `<= value, no floor` for a cap the
+user accepted without a floor; keep numbers ungrouped in this statement. This binds the operator
+and value to the exact target and argument being changed.
 Copy delegate addresses exactly as the user wrote them.
 
 `synthesize_policy` returns no list of questions. A missing decision is refused with
@@ -290,8 +303,9 @@ address and hash in full: an abbreviated address can be swapped for a look-alike
 
 **Grant:** <grant name> on <network> for account <C… in full>; spec hash <spec_hash>
 **Permitted:** each allowed call: contract, function, and every argument's constraint
-**Not constrained:** every argument that accepts any value or a range, and everything the
-grant does not limit; "nothing" only when every argument is exact
+**Not constrained:** every argument that accepts any value or a range (a cap with no floor
+also accepts every negative value), and everything the grant does not limit; "nothing" only when
+every argument is exact
 **High blast radius:** each item below, or "none"
 **Signer:** the predicate and every delegate address
 **Expiry:** valid until ledger <N>, or "never (acknowledged)"

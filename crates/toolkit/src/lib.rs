@@ -1251,6 +1251,48 @@ mod tests {
         );
     }
 
+    /// A tool caller that writes a cap the way it was written before the acknowledgement
+    /// existed gets a question about the floor, never a grant that admits negative amounts
+    /// unannounced: absent reads as not acknowledged.
+    #[test]
+    fn a_cap_without_the_floor_acknowledgement_needs_a_decision() {
+        let token = fx::golden_token_strkey();
+        let cap = serde_json::json!({ "contract": token, "fn_name": "transfer", "arg_index": 2,
+            "bound": { "le_i128": { "max": "1000000000" } },
+            "intent": "headroom", "blast_radius": "medium" });
+        let input_with = |widening: serde_json::Value| {
+            let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+            decisions["widenings"] = serde_json::json!([widening]);
+            SynthesizeInput {
+                bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+                selected_authorizer: Some(fx::golden_account_strkey()),
+                account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+                signed_registry_snapshot: Some(signed_registry_json()),
+                decisions,
+                spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+                template_family: "policy-templates/scope@1".to_string(),
+            }
+        };
+        let err = synthesize_policy(&input_with(cap.clone()), &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::ENeedsDecision, "{err}");
+        assert_eq!(err.details.len(), 1, "{:?}", err.details);
+        assert!(
+            err.details[0].starts_with(&format!(
+                "E_NEEDS_DECISION: widening {token}/transfer arg 2: floor:"
+            )),
+            "{:?}",
+            err.details
+        );
+
+        let mut acknowledged = cap;
+        acknowledged["no_floor_acknowledged"] = serde_json::Value::Bool(true);
+        let output = synthesize_policy(&input_with(acknowledged), &registry_trust()).unwrap();
+        assert_eq!(
+            output.spec["rules"][0]["allowed_calls"][0]["args"][2]["c"],
+            serde_json::json!({ "le_i128": { "max": "1000000000" } })
+        );
+    }
+
     /// Synthesis stamps the snapshot root into the spec, and generation copies it into the
     /// BuildManifest, so this is where a mainnet artifact would come to carry a root anyone can
     /// sign. Refused here by the registry's own construction, with the root-policy code.

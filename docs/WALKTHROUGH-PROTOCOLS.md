@@ -120,17 +120,21 @@ root. Without it the run stops before setup.
 
 ```json
 {
-  "schema": "ozpb-soroswap-operator-decisions/v2",
+  "schema": "ozpb-soroswap-operator-decisions/v3",
   "output_floor": { "min": "100000", "intent": "…" },
-  "transfer_cap": { "max": "1000000", "intent": "…" },
+  "transfer_cap": { "max": "1000000", "intent": "…", "no_floor_acknowledged": true },
   "adapter_deadline": "keep_recorded_deadline"
 }
 ```
 
 It refuses any other key, a floor below 2 (its control lowers it by one), a transfer cap below the
-fixed input or above 10 000 000, a missing intent, and anything but that exact deadline
-acceptance. The committed `testnet-harness/soroswap-decisions.json` holds the values of the
-earlier runs.
+fixed input or above 10 000 000, a missing intent, a transfer cap without
+`no_floor_acknowledged: true`, and anything but that exact deadline acceptance. The transfer
+amount is a signed `i128` and a cap bounds it from above only, so synthesis refuses a cap whose
+open floor nobody accepted ([scoping decisions](SCOPING-DECISIONS.md#widenings-you-may-choose));
+the transfer rule's policy then refuses no negative amount, which is left to the native asset
+contract. Runs journaled under v2, which predates that decision, still export as evidence. The
+committed `testnet-harness/soroswap-decisions.json` holds the values of the earlier runs.
 
 It then re-reads the pinned router's code, its factory and the native-XLM →
 `CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F` pair, the pair's tokens and

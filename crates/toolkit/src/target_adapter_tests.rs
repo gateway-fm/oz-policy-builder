@@ -208,6 +208,7 @@ fn explicit_user_widening_keeps_its_distinct_intent_and_provenance() {
         fn_name: "swap_exact_tokens_for_tokens".into(),
         arg_index: 1,
         bound: ozpb_synthesizer::WideningBound::GeI128 { min: "900".into() },
+        no_floor_acknowledged: false,
         intent: "Explicit absolute output floor for this synthetic scenario".into(),
         blast_radius: ozpb_domain::BlastRadius::High,
     });

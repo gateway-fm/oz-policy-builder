@@ -174,7 +174,7 @@ a manual permission-bundle API invocation is a separate operator-controlled path
   instances bound to their spec indices. Other compositions are refused before deployment.
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
   each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
-  output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
+  output floor and transfer cap, with the cap's acknowledged open floor, are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
   (example: `soroswap-decisions.json`); the router's input bound comes from [registry adapter v2](../docs/TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6),
   and the approved recorded deadline stays exact. That binding is a development-registry assertion, and the router's
   Wasm was not reproduced from source
@@ -645,7 +645,9 @@ preserved unsigned simulation of a 0.7.2 account; its account executable and spe
 to the 0.7.3 pin (GHSA-jpg9-m7w4-c7wc) and the spec re-hashed under development registry
 version 6, but its `record.recording_hash` and the spec's evidence recording hash are the
 preserved values and no longer derive from the edited bundle, whose schema predates the
-current recorder. It is a validation fixture, not an observation. The test reads hash-checked pinned
+current recorder. Its operator decisions were moved to schema v3, which adds the transfer cap's
+acknowledged open floor, and its rationale gained the line synthesis now writes for it; their
+`source_sha256` is the preserved value. It is a validation fixture, not an observation. The test reads hash-checked pinned
 account bytes from the committed protocol-30 capture unless `OZPB_ACCOUNT_WASM` is supplied.
 Enable it with `OZPB_PROTOCOL_DRY_RUN_E2E=1`, `OZPB_BIN` and
 `OZPB_NATIVE_WORKER`; it generates real policy Wasm and submits no transaction.

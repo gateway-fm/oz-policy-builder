@@ -6,14 +6,15 @@
     "minimum_out": "100000",
     "deadline": 1792495419,
     "operator_decisions": {
-      "schema": "ozpb-soroswap-operator-decisions/v2",
+      "schema": "ozpb-soroswap-operator-decisions/v3",
       "output_floor": {
         "min": "100000",
         "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
       },
       "transfer_cap": {
         "max": "1000000",
-        "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
+        "intent": "Permit the bounded native transfer to the exact pair as an independent capability",
+        "no_floor_acknowledged": true
       },
       "adapter_deadline": "keep_recorded_deadline",
       "source_sha256": "f60e747c82cc22422d11fad0169730b15a6226f65ef130aa7f1612c93c101e5f"
@@ -321,7 +322,8 @@
       "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 1: user-widened (Absolute output floor chosen for this controlled test swap; not a price or slippage model), blast radius Medium",
       "target CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC is the built-in Stellar Asset contract; it has no Wasm code hash",
       "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded native transfer to the exact pair as an independent capability), blast radius Medium",
-      "swap_exact_tokens_for_tokens arg 4: preserve the recorded deadline exactly"
+      "swap_exact_tokens_for_tokens arg 4: preserve the recorded deadline exactly",
+      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: NO FLOOR — the user acknowledged that the cap at 1000000 admits every smaller value, negative amounts included; only the target contract can refuse one"
     ]
   }
 }
