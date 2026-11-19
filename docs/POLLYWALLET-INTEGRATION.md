@@ -273,8 +273,10 @@ transaction may cost under this configuration (the larger of `maxFeeStroops` and
 `maxUploadFeeStroops`), never as nothing. Any other entry that cannot be read for its fees refuses
 startup; look its transaction up by the fee payer's history, and to start again from zero use a new
 work root. A removal (`revoke-policy`) is exempt from the session cap, though not from the
-per-transaction cap, and every other transaction must leave room under the session cap for one
-installation and one removal, or only for the removal when it is an installation or this session
+per-transaction cap, and needs only its own fee from the payer; both exemptions go only to exactly a
+removal (one `remove_context_rule` call on the account being changed, authorized by that account and
+nothing else); any other transaction under that label is refused. Every other transaction must leave
+room under the session cap for one installation and one removal, or only for the removal when it is an installation or this session
 already has one, so the cap never stops a grant from being taken back. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). The defaults are conservative and each cap stays under its ceiling
 (1 XLM, 50 XLM and 50 XLM), with the upload cap at most the session cap. A policy upload on mainnet

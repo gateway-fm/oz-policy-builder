@@ -1148,7 +1148,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         // Spent from here, as for an in-session removal: one that may have reached the network is never prepared again.
         earlierRemovals.set(key, { ruleId, status: 'attempted', transactionHash: null });
         let submitted;
-        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy', { account }); } catch (error) {
           if (network.canSubmitRemoval === true) earlierRemovals.delete(key);
           rethrow(error);
         }
@@ -1225,7 +1225,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         // refusal that leaves the fee payer able to submit sent nothing, so removal stays available.
         held.removalAttempted = true;
         let submitted;
-        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy', { account: record.account }); } catch (error) {
           if (network.canSubmitRemoval === true) held.removalAttempted = false;
           rethrow(error);
         }

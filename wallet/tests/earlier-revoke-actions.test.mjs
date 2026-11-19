@@ -151,7 +151,9 @@ function restartedNetwork(t, f) {
   Object.defineProperty(n, 'canSubmitRemoval', { get: () => network.canSubmitRemoval, configurable: true });
   n.prepareRemoval = (request) => network.prepareRemoval(request);
   n.sourceCapture = () => network.sourceCapture();
-  n.submitEnvelope = (envelopeXdr, stage) => { f.submissions.push({ envelopeXdr, stage }); return network.submitEnvelope(envelopeXdr, stage); };
+  n.submitEnvelope = (envelopeXdr, stage, options) => {
+    f.submissions.push({ envelopeXdr, stage }); return network.submitEnvelope(envelopeXdr, stage, options);
+  };
   return { network, calls };
 }
 

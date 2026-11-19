@@ -208,6 +208,24 @@ export function assembleTransaction(raw, simulation) {
   return { build: () => assembled };
 }
 
+/**
+ * Whether `op` is exactly a removal from `account`: one `remove_context_rule(u32)` call on that
+ * account, with one authorization entry, the account's own address credentials, for exactly that call
+ * and nothing under it. Only such a transaction gets the removal stage's exemptions.
+ */
+function isRemoval(op, account) {
+  try {
+    if (!StrKey.isValidContract(account) || op.hostFunction.type !== 'hostFunctionTypeInvokeContract' || op.auth.length !== 1) return false;
+    const call = op.hostFunction.invokeContract;
+    const [entry] = op.auth;
+    return Address.fromScAddress(call.contractAddress).toString() === account && call.functionName.toString() === 'remove_context_rule'
+      && call.args.length === 1 && call.args[0].type === 'scvU32'
+      && Address.fromScAddress(directAddressCredentials(entry.credentials).address).toString() === account
+      && entry.rootInvocation.function.type === 'sorobanAuthorizedFunctionTypeContractFn'
+      && same(entry.rootInvocation.function.contractFn, call) && entry.rootInvocation.subInvocations.length === 0;
+  } catch { return false; }
+}
+
 function confirmed(receipt, sent) {
   if (receipt.status !== 'SUCCESS' || !same(receipt.envelopeXdr, sent.toEnvelope())
     || receipt.resultXdr?.result.type !== 'txSuccess' || receipt.feeBump === true) refuse();
@@ -454,7 +472,12 @@ export class WalletNetwork {
       .addOperation(sourceAuthorization(operation, this.payerAddress)).setTimeout(120).build();
     return this.submitEnvelope(tx.toEnvelope().toXDR('base64'), stage);
   }
-  async submitEnvelope(envelopeXdr, stage) {
+  /**
+   * `stage` names the step in the journal. `revoke-policy` (with `{ account }`) is a removal: exempt
+   * from the session cap and needing only `fundRemoval`, given only to exactly a removal from that
+   * account (`isRemoval`); anything else under that label is refused.
+   */
+  async submitEnvelope(envelopeXdr, stage, { account = null } = {}) {
     try {
       // A removal needs only `fundRemoval`; every other write a funded payer (`fundPayer`).
       if (!(stage === 'revoke-policy' ? this.canSubmitRemoval : this.canSubmit) || typeof stage !== 'string'
@@ -464,6 +487,7 @@ export class WalletNetwork {
       if (original.source !== this.payerAddress || original.toEnvelope().type !== 'envelopeTypeTx'
         || original.signatures.length || original.operations.length !== 1 || original.toEnvelope().v1.tx.operations[0].sourceAccount !== null
         || original.toEnvelope().v1.tx.operations[0].body.type !== 'invokeHostFunction') refuse();
+      if (stage === 'revoke-policy' && !isRemoval(original.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp, account)) refuse();
       const expected = bytes(original.toEnvelope());
       const simulation = await this.#server.simulateTransaction(original, undefined, 'enforce');
       if (rpc.Api.isSimulationError(simulation) || !simulation.result) refuse();
