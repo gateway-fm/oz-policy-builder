@@ -49,3 +49,53 @@ from a claimed success label.
 Changing the schema changes recording hashes and downstream derived identities. Historical
 published artifacts keep their original bytes and meaning. Current synthetic examples can be
 regenerated from their source fixtures and reviewed as a complete derived chain.
+
+## Mainnet fixture corpus
+
+`crates/source-rpc/tests/captured-mainnet/` holds real mainnet transactions, captured on
+protocol 29. Each case directory keeps the unedited `result` of every call `get_transaction`
+makes: `getNetwork`, `getTransaction`, and `getLedgerEntries` for the referenced contract
+instances. `manifest.json` names each case's transaction, ledger and coverage.
+`crates/source-rpc/tests/mainnet_corpus.rs` replays them through `get_transaction` and `record`.
+It compares every recorded authorizer, invocation tree and authorized argument with the
+envelope's own XDR.
+
+| Case | What the recorder does with it |
+|---|---|
+| `sac-transfer-source-account` | source-account credential resolved to the inner source, not the fee-bump payer; Stellar Asset Contract executable; one typed transfer |
+| `classic-address-credential` | `Address` credential of a G-account that did not submit the transaction |
+| `smart-account-credential` | account built on OpenZeppelin `stellar-accounts` authorizing a call that moves native XLM out of it under a spending-limit policy; its Wasm hash is observed |
+| `nested-auth-tree` | a swap whose authorized root reaches a token transfer; every contract in the tree observed |
+| `fee-bump-invocation` | relayer-paid invocation; the fee payer authorizes nothing; fee-bump inner result checked |
+| `failed-invocation` | `E_TX_FAILED` by default; `allow_failed` records it as `executed_failed` |
+| `classic-multi-operation` | `E_NO_SOROBAN_OP`, also for every explicit `operation_index` |
+| `multi-authorizer` | every authorizer kept for synthesis to select, including an OpenZeppelin delegated signer whose entry authorizes the account's `__check_auth` |
+| `auth-args-divergence` | `require_auth_for_args`: the authorized arguments are recorded, not the invoked ones |
+| `credential-address-v2` | the protocol-27 `AddressV2` arm, with its nonce and expiration |
+
+The same evidence recorded through the import constructor is `self_supplied` with its
+transaction result and `incomplete` without it.
+
+Mainnet cannot supply the rest of what architecture §8 lists for this corpus:
+
+- meta v3: mainnet now emits meta v4, introduced in protocol 23, for classic and Soroban
+  transactions alike. The recorder's synthetic fixtures cover v3;
+- operation selection among several invocations: Stellar admits a smart-contract operation only
+  as a transaction's single operation. Synthetic envelopes cover selection;
+- `AddressWithDelegates`: none appeared in the ledgers scanned. A synthetic delegate tree covers
+  the arm;
+- `ledger_verified` and `trusted_indexer`: no acquisition path in this tree mints either label.
+
+Public RPC keeps a transaction for about seven days, so a fixture cannot be fetched again
+later. To refresh the corpus with new transactions of the same shapes:
+
+```sh
+python3 -I scripts/mainnet-recorder-fixture.py find --start <ledger> > picks.json
+python3 -I scripts/mainnet-recorder-fixture.py capture picks.json
+```
+
+`find` scans `getTransactions` from each `--start` (repeatable) and the transactions behind
+OpenZeppelin account events across the retention window. Running `capture` on the committed
+`manifest.json` refreshes the same transactions while they are still retained. The
+`getLedgerEntries` responses are current state, so a refresh changes the observed ledgers.
+Both commands only read: nothing is signed, simulated or submitted.
