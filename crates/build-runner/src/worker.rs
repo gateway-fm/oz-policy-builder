@@ -24,6 +24,51 @@ const CANCEL_CONFIRMATION: Duration = Duration::from_secs(45);
 #[cfg(test)]
 const CANCEL_CONFIRMATION: Duration = Duration::from_secs(2);
 
+/// The one argument a launcher is started with outside a job: it prints [`launcher_protocol`] and
+/// exits, reading no input or configuration and starting nothing.
+const PROTOCOL_ARGUMENT: &str = "--protocol";
+/// How long a launcher has to answer [`PROTOCOL_ARGUMENT`]: an interpreter's startup.
+#[cfg(not(test))]
+const PROTOCOL_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const PROTOCOL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The job schema a launcher reads and the frame schema it writes, as one line.
+fn launcher_protocol() -> String {
+    format!("{JOB_SCHEMA} {CONTAINED_SCHEMA}\n")
+}
+
+/// Ask the launcher at `path` which protocol it speaks, before any build. A launcher from another
+/// revision is otherwise found only by its first frame, which this API cannot read, so that
+/// build's slot is retained; refused here, it costs a failed startup instead. A launcher that
+/// predates the query takes no argument and answers nothing, and is refused the same way.
+pub(crate) fn check_protocol(path: &Path) -> Result<(), BuildError> {
+    validate_launcher(path)?;
+    let mut command = Command::new(path);
+    command
+        .arg(PROTOCOL_ARGUMENT)
+        .current_dir("/")
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let answered = match run_bounded(command, PROTOCOL_TIMEOUT) {
+        Ok(output) => output.status.success() && output.stdout == launcher_protocol().as_bytes(),
+        Err(BuildError::Timeout) => false,
+        Err(error) => return Err(error),
+    };
+    if answered {
+        Ok(())
+    } else {
+        Err(BuildError::Unavailable(format!(
+            "the worker launcher did not answer {PROTOCOL_ARGUMENT} with this API's protocol \
+             ({JOB_SCHEMA} in, {CONTAINED_SCHEMA} out): it is from another revision. Install the \
+             API and the launcher from the same revision"
+        )))
+    }
+}
+
 /// What a launcher writes first, once its SIGTERM handler is installed. A signal that arrives
 /// before then kills it, which leaves its job's removal unconfirmed and its slot retained until
 /// an operator restart, so a cancellation waits for this line however long startup takes.
@@ -910,5 +955,71 @@ time.sleep(30)"#;
         }
         .validated()
         .is_err());
+    }
+
+    /// A launcher that answers `--protocol` with `answer`, as `deployment/worker-launcher.py`
+    /// answers it, and refuses any other invocation.
+    fn protocol_launcher(answer: &str) -> (tempfile::TempDir, BuildConfig, BuildSlots) {
+        script(&format!(
+            "import sys\nif sys.argv[1:] != ['--protocol']:\n    sys.exit(1)\nsys.stdout.write({answer:?})"
+        ))
+    }
+
+    /// The API asks a launcher its protocol once, before it serves, so a launcher from another
+    /// revision stops startup instead of being found by its first frame, after a build slot was
+    /// taken and then retained.
+    #[test]
+    fn a_launcher_from_another_revision_is_refused_before_any_build() {
+        let (_directory, config, slots) =
+            protocol_launcher("build-worker-job/v1 contained-build-result/v2\n");
+        assert_eq!(config.check_worker_launcher(), Ok(()));
+        assert_eq!(slots.available(), 1);
+        for answer in [
+            "build-worker-job/v1 contained-build-result/v1\n",
+            "build-worker-job/v2 contained-build-result/v2\n",
+            "build-worker-job/v1 contained-build-result/v2",
+            "build-worker-job/v1 contained-build-result/v2\nready\n",
+            "ready\n",
+            "",
+        ] {
+            let (_directory, config, slots) = protocol_launcher(answer);
+            let error = config.check_worker_launcher().unwrap_err();
+            assert!(
+                error.to_string().contains("same revision"),
+                "{answer:?}: {error}"
+            );
+            assert_eq!(slots.available(), 1, "asking takes no slot");
+        }
+        // A launcher from before the query takes no argument and refuses one, as this tree's did.
+        let (_directory, config, _slots) =
+            script("import sys\nif len(sys.argv) != 1:\n    sys.exit(1)\nprint('ready')");
+        let error = config.check_worker_launcher().unwrap_err();
+        assert!(error.to_string().contains("same revision"), "{error}");
+        // One that never answers is bounded.
+        let (_directory, config, _slots) = script("import time\ntime.sleep(30)");
+        let start = std::time::Instant::now();
+        assert!(config.check_worker_launcher().is_err());
+        assert!(start.elapsed() < Duration::from_secs(10));
+        // Without a launcher there is nothing to ask.
+        assert_eq!(BuildConfig::default().check_worker_launcher(), Ok(()));
+    }
+
+    /// The shipped launcher answers exactly the protocol this API reads.
+    #[test]
+    fn the_shipped_launcher_answers_this_apis_protocol() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deployment/worker-launcher.py"
+        ))
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().canonicalize().unwrap().join("launcher");
+        std::fs::write(&path, source).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = BuildConfig {
+            worker_launcher: Some(path),
+            ..BuildConfig::default()
+        };
+        assert_eq!(config.check_worker_launcher(), Ok(()));
     }
 }

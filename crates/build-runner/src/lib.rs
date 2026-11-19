@@ -522,6 +522,16 @@ impl BuildConfig {
         config.validated()
     }
 
+    /// Ask the configured worker launcher, once, whether it speaks this API's protocol; a
+    /// long-running server calls it before serving. Nothing to ask without a launcher. Not part
+    /// of [`BuildConfig::validated`], which every CLI invocation runs: it starts a process.
+    pub fn check_worker_launcher(&self) -> Result<(), BuildError> {
+        match &self.worker_launcher {
+            Some(path) => worker::check_protocol(path),
+            None => Ok(()),
+        }
+    }
+
     /// Enforce the operator-input invariants.
     ///
     /// Every construction path ends here — the environment reader above and the CLI's flag

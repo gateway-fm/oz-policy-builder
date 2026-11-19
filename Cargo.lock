@@ -1352,6 +1352,7 @@ dependencies = [
  "rmcp",
  "serde_json",
  "stellar-xdr",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",
