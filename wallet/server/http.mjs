@@ -3,7 +3,7 @@ import { AgentRefusal } from './agent-handoff.mjs';
 /** Why a wallet action was refused, when the backend can say: shown to the owner as plain text. */
 export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
   'review_expired', 'grant_already_used', 'network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
-  'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events']);
+  'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events', 'delegate_key_unavailable']);
 
 const BODY_BYTES = 64 * 1024;
 const RESPONSE_BYTES = 8 * 1024 * 1024;

@@ -80,6 +80,7 @@ const REFUSED: Record<string, string> = {
   pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command under Mainnet readiness, then try again.",
   account_unfunded: "your account's XLM balance does not cover the 0.1 XLM sample payment. Send it at least that from your own wallet, then prepare the sample again.",
   no_diagnostic_events: "the operator's RPC endpoint returned no diagnostic events, which this step reads (stellar-rpc 30.0.1 returns them only with --preflight-enable-debug). Nothing was sent; the operator needs an endpoint that returns them.",
+  delegate_key_unavailable: "on mainnet the wallet holds no delegate key: the grant's delegate is the agent's own key from its proposal. The checks that need the delegate's signatures, and the one use of the grant, run only when the operator configures a delegate key file.",
   registry_root_refused: "the toolkit refused the registry's root policy (on mainnet, the development root is never trusted). Nothing was generated or signed; the operator must configure the production registry trust files.",
 };
 const explorer = (hash: string) => `${NETWORK.explorer}/tx/${hash}`;
@@ -620,8 +621,8 @@ function PolicyBuilder() {
           <p className="text-slate-400">The automation key the grant names. Connect Claude creates it for you; without Claude, create it here.</p>
           {state?.delegate?.account && !state.delegate.account.exists && <p role="alert" className="text-amber-200">
             {state.delegate.address} has no {NETWORK.name} account, and the wallet creates none. Send it at least
-            {" "}{xlm(state.delegate.account.minimumStroops)} from your own wallet before the review. Its key exists only in this backend&apos;s
-            memory: what you send cannot be recovered after the backend stops, so send only that.</p>}
+            {" "}{xlm(state.delegate.account.minimumStroops)} from your own wallet before the review. Its key is the operator&apos;s
+            delegate key file, so what you send stays recoverable by whoever holds that file.</p>}
         </div>}
         <details className="space-y-3 rounded-lg border border-slate-600 p-4">
           <summary className="cursor-pointer font-semibold">Import a grant proposal</summary>
@@ -811,6 +812,9 @@ function PolicyBuilder() {
         <h2 id="use-heading" className="text-xl font-semibold">8. Use the grant</h2>
         <Intro>The automation key makes the granted payment by itself: no passkey. Then it tries the same payment again, and the
           policy has to refuse it, because the grant allowed one use.</Intro>
+        {launched === "mainnet" && state?.status?.capabilities.delegateKey === false && <p role="status" className="text-sm text-amber-200">
+          Skipped on this mainnet session: the grant&apos;s delegate is the agent&apos;s own key, and the wallet holds no delegate key
+          (the operator&apos;s optional delegate key file is not configured). The agent uses the grant with its own key.</p>}
         <div className="flex flex-wrap gap-3">
           <button className={button} disabled={busy || !state?.installation || !!state?.removal || !!state?.grantUse
             || !state?.status?.capabilities.grantUse}

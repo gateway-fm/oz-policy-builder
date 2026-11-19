@@ -281,13 +281,23 @@ with its simulated cost once the reproduced Wasm is at that path (reproduce the 
 `OZPB_VERIFIED_ACCOUNT_WASM_OUT` and `scripts/verify-pinned-upstream.sh`). The generated policy is
 uploaded only by the deployment you confirm.
 
-**Your account and the automation delegate.** Send your new account at least 0.1 XLM before the
-sample transfer; until then preparing it refuses as `account_unfunded`. The automation delegate is a
-key in the backend's memory, and the wallet creates no account for it: section 2 shows its address
-and the minimum reserve (two base reserves, read from the latest ledger), which you send it from
-your own wallet before the review. Until it exists, the checks that need it refuse as
-`delegate_unfunded`. What you send it cannot be recovered after the backend stops, since nobody
-else holds its key; send only the minimum.
+**Your account and the sample transfer.** Send your new account at least 0.1 XLM before the
+sample transfer; until then preparing it refuses as `account_unfunded`. The sample transfer sends
+0.1 XLM of the account's to the fee payer: the operator's own account, so the XLM stays with the
+operator.
+
+**The delegate.** On mainnet the grant's delegate is the agent's own key, the one its proposal
+names, and the wallet generates no delegate key: there is no in-memory automation key on mainnet.
+The account-Wasm, captured-target and live checks sign as the delegate, and the one use of the
+grant is the delegate's transaction, so they need its key. The optional `delegateKeyPath` names
+an operator file (one secret seed, mode `0600`, checked like the fee payer's and never its key)
+whose key the wallet then holds as its one delegate: **Create local automation delegate** returns
+it, a proposal that names it can be checked and installed, and the use step runs. Without that file
+the delegate step refuses as `delegate_key_unavailable`, those checks stay unavailable, so the
+four-layer gate cannot pass and installation stays closed, and the use step says it is skipped.
+The wallet creates no account for the delegate either: section 2 shows the minimum reserve (two
+base reserves, read from the latest ledger), which you send it from your own wallet before the
+review; until then the checks that need it refuse as `delegate_unfunded`.
 
 **The live helper.** The live-enforcement check, and so installation, needs the atomic live helper
 on mainnet; `liveHelper` stays unset until you deploy it. The layer then reports the deployment

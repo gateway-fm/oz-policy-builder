@@ -137,8 +137,7 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
       try { minimum = (await network.classicAccount(grant.delegate)).minimumStroops; } catch { /* stated without the amount */ }
       return { layer: layer('unavailable', `The automation delegate ${grant.delegate} has no ${net.name} account, and the wallet creates `
         + `none there. Send it at least ${minimum ? stroopsText(minimum, net) : 'the minimum reserve (two base reserves)'} from your own `
-        + 'wallet, then prepare the check again. Its key exists only in this backend\'s memory: what you send cannot be recovered after '
-        + 'the backend stops, so send only that. Nothing was signed.') };
+        + 'wallet, then prepare the check again. Nothing was signed.') };
     }
     return { layer: layer('unavailable', `The automation delegate's ${net.name} account does not exist or could not be read back `
       + 'with its master key alone; nothing was signed.') };

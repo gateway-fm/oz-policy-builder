@@ -3,14 +3,14 @@ import { isAbsolute, normalize } from 'node:path';
 import { Keypair, StrKey, hash } from '@stellar/stellar-sdk';
 import { RawJson, parseJsonExact } from './raw-json.mjs';
 import { walletNetwork } from '../shared/networks.mjs';
-import { FeePayer, loadFeePayerKey } from './fee-payer.mjs';
+import { FeePayer, loadDelegateKey, loadFeePayerKey } from './fee-payer.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
-const OPTIONAL = ['network', 'feePayerKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
+const OPTIONAL = ['network', 'feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
 /** Fields only a mainnet configuration takes: its funding model, its caps and its pinned-code directory. */
-const MAINNET_ONLY = ['feePayerKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
+const MAINNET_ONLY = ['feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
 /**
  * Mainnet's fee caps: per transaction (a policy Wasm upload has its own, since its resource fee alone
  * was about 10 XLM on testnet in October 2026) and for the whole session. Defaults are the most an
@@ -128,6 +128,13 @@ export function loadWalletConfig(path) {
     // Mainnet: the operator's own key, which it funds; testnet: a disposable key Friendbot funds.
     const feePayer = mainnet ? loadFeePayerKey(value.feePayerKeyPath) : FeePayer.disposable();
     const pinnedWasmDir = Object.hasOwn(value, 'pinnedWasmDir') ? directory(value.pinnedWasmDir) : null;
+    // Mainnet: the grant's delegate is the agent's key. Only this optional file gives the wallet a key it may
+    // sign with as a delegate (for the checks that need its signatures and the one use of the grant).
+    const delegateKey = Object.hasOwn(value, 'delegateKeyPath') ? loadDelegateKey(value.delegateKeyPath) : null;
+    if (delegateKey && delegateKey.address === feePayer.address) {
+      throw Object.assign(new Error('delegate key refused'), { startup: 'The delegate key must not be the fee payer\'s key: the fee '
+        + 'payer is never a signer on an account.' });
+    }
     const url = new URL(value.rpcUrl);
     if (typeof value.rpcUrl !== 'string' || value.rpcUrl.length > 2048 || url.protocol !== 'https:'
       || url.username || url.password || url.search || url.hash) refused();
@@ -152,7 +159,7 @@ export function loadWalletConfig(path) {
     // Its code is read back and matched to the reviewed hash before every use, never trusted from here.
     if (Object.hasOwn(value, 'liveHelper') && (typeof value.liveHelper !== 'string' || !StrKey.isValidContract(value.liveHelper))) refused();
     const liveHelper = Object.hasOwn(value, 'liveHelper') ? value.liveHelper : null;
-    return Object.freeze({ network, feePayer, fees: Object.freeze(fees), pinnedWasmDir, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
+    return Object.freeze({ network, feePayer, delegateKey, fees: Object.freeze(fees), pinnedWasmDir, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
       rpcUrl: url.href, registrySnapshot, registryRoots, registryMinimumVersion: value.registryMinimumVersion,
       buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable, liveHelper });
   } catch (error) {

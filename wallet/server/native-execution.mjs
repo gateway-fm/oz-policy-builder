@@ -53,10 +53,29 @@ export class DelegateCapabilities {
   #keys = new Map();
   #consents = new Set();
   #network;
-  /** `network` is the session's network profile; without it no live or use capability is minted. */
-  constructor(network = null) { this.#network = network; }
+  #random;
+  #fixed = null;
+  /**
+   * `network` is the session's network profile; without it no live or use capability is minted.
+   * `random` lets `create` generate disposable keys (testnet). `key`, the operator's delegate key
+   * (mainnet, optional), is then the one key `create` returns; with neither, no delegate key exists.
+   */
+  constructor(network = null, { random = true, key = null } = {}) {
+    this.#network = network;
+    this.#random = random === true;
+    if (key) {
+      const capabilityId = randomBytes(32).toString('hex');
+      this.#keys.set(capabilityId, key);
+      this.#fixed = Object.freeze({ capabilityId, address: key.publicKey() });
+    }
+  }
+  /** Whether this backend can hold a delegate key at all. */
+  get available() { return this.#fixed !== null || this.#random; }
+  /** Whether it holds the key of delegate `address`. */
+  holds(address) { return [...this.#keys.values()].some((key) => key.publicKey() === address); }
   create() {
-    if (this.#keys.size >= MAX_DELEGATES) refuse();
+    if (this.#fixed) return this.#fixed;
+    if (!this.#random || this.#keys.size >= MAX_DELEGATES) refuse();
     const key = Keypair.random();
     const capabilityId = randomBytes(32).toString('hex');
     this.#keys.set(capabilityId, key);
@@ -69,8 +88,8 @@ export class DelegateCapabilities {
     return key;
   }
   offline(capabilityId, address) { return offlineCapability(this.#key(capabilityId, address)); }
-  /** Forget a key that never became usable, so that its slot can be used again. */
-  release(capabilityId) { this.#keys.delete(capabilityId); }
+  /** Forget a key that never became usable, so that its slot can be used again; never the operator's key. */
+  release(capabilityId) { if (this.#fixed?.capabilityId !== capabilityId) this.#keys.delete(capabilityId); }
   /** Throws unless `capabilityId` holds the key for `address`; signs nothing. */
   check(capabilityId, address) { this.#key(capabilityId, address); return true; }
   /** One live capability per consented statement (`consent`, its SHA-256), for exactly that check. */

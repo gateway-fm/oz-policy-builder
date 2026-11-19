@@ -6,6 +6,7 @@ import { loadWalletConfig } from './config.mjs';
 import { createWalletServer } from './http.mjs';
 import { WalletNetwork, journaledSpend } from './network.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
+import { DelegateCapabilities } from './native-execution.mjs';
 import { WalletSession } from './session.mjs';
 import { WalletToolchain } from './toolchain.mjs';
 
@@ -56,7 +57,10 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
   const live = config.liveHelper ? Object.freeze({ helper: config.liveHelper }) : null;
   const handoff = new AgentHandoff({ network: config.network });
-  const actions = createActions({ session, toolchain, network, native, live, handoff, pinnedWasmDir: config.pinnedWasmDir });
+  // Disposable automation keys on testnet; on mainnet only the operator's delegate key, if any.
+  const delegates = new DelegateCapabilities(config.network, { random: Boolean(config.network.friendbot),
+    key: config.delegateKey ? config.delegateKey.keypair() : null });
+  const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, pinnedWasmDir: config.pinnedWasmDir });
   const server = createWalletServer({ session, actions, handoff });
   return { server, network: config.network, preflight: () => networkPreflight(network),
     launchUrl: `${ORIGIN}/policy-builder#session=${secret}&network=${config.network.name}` };

@@ -314,7 +314,7 @@ export function createWalletActions({ session, toolchain, network, native = null
     use: use ?? null, repeat: repeat ?? null }));
   const unremoved = (held) => !held.removal && !held.removalAttempted;
   /** An installed one-use grant the automation delegate has not tried to use yet. */
-  const usable = (held) => held.record.status === 'installed' && held.grant && !held.use && !held.useAttempted && unremoved(held)
+  const usable = (held) => held.record.status === 'installed' && held.grant && delegates.holds(held.grant.delegate) && !held.use && !held.useAttempted && unremoved(held)
     && held.useSignatures < MAX_USE_SIGNATURES;
   // One recorded second try per use; a try whose simulation did not answer may be repeated, a few times.
   const repeatable = (held) => held.use?.status === 'used' && unremoved(held) && !held.repeat && held.repeatSignatures < MAX_REPEAT_SIGNATURES;
@@ -418,7 +418,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         fees: { maxFeeStroops: fees.maxFeeStroops, maxUploadFeeStroops: fees.maxUploadFeeStroops,
           sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops },
         feePayer: { address: network.payerAddress, ownerFunded },
-        capabilities: { agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+        capabilities: { delegateKey: delegates.available, agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
           liveCheck: live !== null, monitoring: [...installations.values()].some((held) => held.record.status === 'installed' && !held.removal), replacement: replaceable(), install: [...reviews.values()].some(installable),
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)),
           grantUse: [...installations.values()].some(usable), grantRepeat: [...installations.values()].some(repeatable) },
@@ -620,12 +620,13 @@ export function createWalletActions({ session, toolchain, network, native = null
     'create-delegate': async (input) => {
       exact(input, []);
       if (!native && !live || handoff.view().pairingPending || handoff.view().connection) refuse();
+      // Mainnet: no delegate key unless the operator supplied one; the grant then names the agent's own key.
+      if (!delegates.available) throw because('delegate_key_unavailable');
       const created = delegates.create();
       if (ownerFunded) {
-        // Mainnet: the wallet creates no account. The owner funds this one; until then every check that
-        // needs it refuses as `delegate_unfunded`. The key lives only in this backend's memory.
-        let account;
-        try { account = await network.classicAccount(created.address); } catch { delegates.release(created.capabilityId); refuse(); }
+        // Mainnet: the operator's key; the wallet creates no account for it. Until its owner funds it,
+        // every check that needs it refuses as `delegate_unfunded`.
+        const account = await network.classicAccount(created.address);
         return { ...created, account: { exists: account.exists, minimumStroops: account.minimumStroops } };
       }
       // A key whose account could not be created is dropped, so a retry does not use up a slot.
