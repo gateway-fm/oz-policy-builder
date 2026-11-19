@@ -476,6 +476,30 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     assert_eq!(report["revoked"][0]["reason"], "rehearsal revocation");
     let output = monitor(&checkpoint_v1_path, &[]);
     assert_eq!(output.status.code(), Some(3), "{output:?}");
+    // A watch item that can never match fails instead of reading "current" forever: a mistyped
+    // family or hash the head neither registers nor revokes, and a name that is not a family.
+    for (item, expected) in [
+        (
+            ["--template", "policy-templates/scope@l"],
+            "template family \"policy-templates/scope@l\" is neither registered nor revoked",
+        ),
+        (
+            ["--wasm-hash", &"cd".repeat(32)],
+            "is neither registered nor revoked",
+        ),
+        (
+            ["--template", "policy templates"],
+            "is not a template family name",
+        ),
+    ] {
+        let output = monitor(&checkpoint_v1_path, &item);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        refused(
+            &output,
+            "monitor a watch item that can never match",
+            expected,
+        );
+    }
     let head_path = work.path().join("checkpoint-v2.json");
     write_json(&head_path, &head);
     let output = monitor(&head_path, &[]);
@@ -639,6 +663,75 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         &synthesize(&v3),
         "synthesize v3 under the retired roots",
         "E_REGISTRY_SIGNATURE",
+    );
+
+    // 9. Revoking the template family is the revocation that reaches a generated policy: a
+    //    consumer watching the family hears of it (exit 6), and synthesis refuses the family.
+    let family = "policy-templates/scope@1";
+    let changes_v4 = work.path().join("changes-v4.json");
+    write_json(
+        &changes_v4,
+        &serde_json::json!({
+            "schema": "registry-change/v1",
+            "valid_from_unix": now() - 20,
+            "expires_at_unix": now() + 90 * 86_400,
+            "revocations": {format!("template/{family}"): "rehearsal template revocation"},
+        }),
+    );
+    let unsigned_v4 = work.path().join("v0004.unsigned.json");
+    ok(
+        ozpb([
+            "registry".as_ref(),
+            "successor".as_ref(),
+            "--parent".as_ref(),
+            v3.as_os_str(),
+            "--changes".as_ref(),
+            changes_v4.as_os_str(),
+            "--registry-roots".as_ref(),
+            rotated.as_os_str(),
+            "--network".as_ref(),
+            TESTNET.as_ref(),
+            "--out".as_ref(),
+            unsigned_v4.as_os_str(),
+        ]),
+        "successor revoking the template family",
+    );
+    let sig_d4 = work.path().join("v0004.custodian-d.sig.json");
+    let sig_e4 = work.path().join("v0004.custodian-e.sig.json");
+    custodians.sign(&unsigned_v4, "custodian-d", &sig_d4);
+    custodians.sign(&unsigned_v4, "custodian-e", &sig_e4);
+    let v4 = published.join("v0004.signed.json");
+    ok(
+        combine(&unsigned_v4, &[&sig_d4, &sig_e4], &rotated, &v4),
+        "combine v4",
+    );
+    let checkpoint_v3_path = work.path().join("checkpoint-v3.json");
+    write_json(&checkpoint_v3_path, &checkpoint_v3);
+    let output = monitor_log(
+        &checkpoint_v3_path,
+        &published,
+        &rotated,
+        &["--template", family],
+    );
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["revoked"][0]["watched"]["template_family"], family);
+    assert_eq!(
+        report["revoked"][0]["reason"],
+        "rehearsal template revocation"
+    );
+    // Watching only code, the same consumer would have heard only of a newer version.
+    let output = monitor_log(&checkpoint_v3_path, &published, &rotated, &[]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let at_v3 = work.path().join("roots-at-v3.json");
+    write_json(
+        &at_v3,
+        &serde_json::json!({"threshold": 2, "keys": rotated_keys, "checkpoint": checkpoint_v3}),
+    );
+    refused(
+        &synthesize_under(&v4, &at_v3, "3"),
+        "synthesize from a revoked template family",
+        "E_REGISTRY_REVOKED",
     );
 }
 

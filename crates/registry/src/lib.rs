@@ -1100,7 +1100,7 @@ fn is_canonical_hash(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn validate_template_family(family: &str) -> Result<(), RegistryError> {
+pub(crate) fn validate_template_family(family: &str) -> Result<(), RegistryError> {
     if family.is_empty()
         || family.len() > 128
         || !family.bytes().all(|byte| {

@@ -71,6 +71,11 @@ pub enum GovernanceError {
         "E_REGISTRY_PARSE: {0} still carries a pending review reference; replace it before signing"
     )]
     PendingReview(String),
+    #[error(
+        "{item} is neither registered nor revoked in the published head (version {version}), so \
+         watching it can never report anything; check the item"
+    )]
+    NotWatchable { item: Watched, version: u64 },
 }
 
 /// What custodians declare for the next version. Version, log index and parent root are not
@@ -349,10 +354,40 @@ pub enum MonitorStatus {
     Revoked,
 }
 
+/// Something a consumer relies on and must hear about when it is revoked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Watched {
+    /// Exact reviewed code — an account, an owner verifier, a reviewed policy, a target — under
+    /// whichever role the registry holds it.
+    Code(Hash32),
+    /// A template family. A generated policy has no registry entry of its own: it is recognized
+    /// through its family, so revoking the family is the revocation that reaches it.
+    TemplateFamily(String),
+}
+
+impl Watched {
+    /// A template family to watch, refused unless it is a valid family name by the registry's
+    /// own rule.
+    pub fn template_family(name: &str) -> Result<Self, GovernanceError> {
+        crate::validate_template_family(name)?;
+        Ok(Watched::TemplateFamily(name.to_string()))
+    }
+}
+
+impl std::fmt::Display for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Watched::Code(hash) => write!(f, "wasm hash {hash}"),
+            Watched::TemplateFamily(family) => write!(f, "template family {family:?}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RevokedHash {
-    pub wasm_hash: Hash32,
+pub struct RevokedCapability {
+    pub watched: Watched,
     pub capability: String,
     pub reason: String,
     #[serde(with = "ozpb_domain::wide_int")]
@@ -376,8 +411,8 @@ pub struct MonitorReport {
     pub valid_from_unix: i64,
     #[serde(with = "ozpb_domain::wide_int")]
     pub expires_at_unix: i64,
-    /// Every watched hash the head revokes, under any role.
-    pub revoked: Vec<RevokedHash>,
+    /// Every watched capability the head revokes.
+    pub revoked: Vec<RevokedCapability>,
 }
 
 /// Check the published head against a consumer's persisted checkpoint.
@@ -396,7 +431,7 @@ pub fn monitor(
     published: &[SignedSnapshot],
     now_unix: i64,
     expiry_window_secs: i64,
-    watched: &[Hash32],
+    watched: &[Watched],
 ) -> Result<MonitorReport, GovernanceError> {
     let checkpoint_version = checkpoint.version;
     let mut relevant: Vec<&SignedSnapshot> = published
@@ -438,17 +473,42 @@ pub fn monitor(
         ValidityStatus::Valid
     };
     let mut revoked = Vec::new();
-    for hash in watched {
-        for kind in HASH_KINDS {
-            let capability = format!("{kind}/{}", hash.to_hex());
+    for item in watched {
+        // Something the head can report on: registered under some role, or revoked (a revoked
+        // entry may also have been removed). Anything else is a watch that can never fire.
+        let registered = match item {
+            Watched::Code(hash) => {
+                let key = hash.to_hex();
+                snapshot.policies.contains_key(&key)
+                    || snapshot.accounts.contains_key(&key)
+                    || snapshot.verifiers.contains_key(&key)
+                    || snapshot.target_adapters.contains_key(&key)
+            }
+            Watched::TemplateFamily(family) => snapshot.templates.contains_key(family),
+        };
+        let revoked_before = revoked.len();
+        let capabilities: Vec<String> = match item {
+            Watched::Code(hash) => HASH_KINDS
+                .iter()
+                .map(|kind| format!("{kind}/{}", hash.to_hex()))
+                .collect(),
+            Watched::TemplateFamily(family) => vec![format!("template/{family}")],
+        };
+        for capability in capabilities {
             if let Some(revocation) = snapshot.revocations.get(&capability) {
-                revoked.push(RevokedHash {
-                    wasm_hash: *hash,
+                revoked.push(RevokedCapability {
+                    watched: item.clone(),
                     capability,
                     reason: revocation.reason.clone(),
                     effective_version: revocation.effective_version,
                 });
             }
+        }
+        if !registered && revoked.len() == revoked_before {
+            return Err(GovernanceError::NotWatchable {
+                item: item.clone(),
+                version: snapshot.version,
+            });
         }
     }
     let newer_version_available = snapshot.version > checkpoint_version;

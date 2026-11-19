@@ -6,7 +6,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
 use ozpb_domain::{Hash32, NetworkId};
-use ozpb_registry::governance::{self, ChangeSet, DetachedSignature, MonitorStatus};
+use ozpb_registry::governance::{self, ChangeSet, DetachedSignature, MonitorStatus, Watched};
 use ozpb_registry::{snapshot_root, RegistryCheckpoint, RegistrySnapshot, SignedSnapshot};
 use std::path::{Path, PathBuf};
 
@@ -68,10 +68,10 @@ pub enum Command {
     /// roots and network; print the checkpoint a consumer persists. The gate before distribution.
     Verify(VerifyArgs),
     /// Compare a consumer's checkpoint with the published log: newer version, validity expiry,
-    /// revocations of watched Wasm hashes. Prints JSON; the exit status is for cron: 0 current,
-    /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash revoked, 7 the
+    /// revocations of watched Wasm hashes and template families. Prints JSON; the exit status is for cron: 0 current,
+    /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash or template family revoked, 7 the
     /// head's interval has not started, and 1 when the published log cannot be verified against
-    /// the checkpoint.
+    /// the checkpoint or a watch item is one the head neither registers nor revokes.
     Monitor(MonitorArgs),
 }
 
@@ -148,6 +148,10 @@ pub struct MonitorArgs {
     /// A Wasm hash the consumer relies on (an installed account, policy or verifier); repeat.
     #[arg(long = "wasm-hash")]
     wasm_hashes: Vec<String>,
+    /// A template family an installed generated policy was built from (its revocation is the one
+    /// that reaches a generated policy), e.g. `policy-templates/scope@1`; repeat.
+    #[arg(long = "template")]
+    templates: Vec<String>,
     /// Trusted current time (Unix seconds); defaults to the system clock.
     #[arg(long)]
     at: Option<i64>,
@@ -294,16 +298,23 @@ fn monitor(args: MonitorArgs) -> Result<()> {
     } else {
         vec![read_json::<SignedSnapshot>(&args.published)?]
     };
-    let watched = args
+    let mut watched = args
         .wasm_hashes
         .iter()
         .map(|hash| {
             Hash32::from_hex(hash)
                 .ok()
                 .filter(|parsed| parsed.to_hex() == *hash)
+                .map(Watched::Code)
                 .ok_or_else(|| anyhow!("--wasm-hash {hash:?} is not 32 bytes of lowercase hex"))
         })
         .collect::<Result<Vec<_>>>()?;
+    for family in &args.templates {
+        watched.push(
+            Watched::template_family(family)
+                .with_context(|| format!("--template {family:?} is not a template family name"))?,
+        );
+    }
     let report = governance::monitor(
         config.root_policy,
         NetworkId::from_passphrase(&args.trust.network),
