@@ -1173,7 +1173,8 @@ synchronous, I/O-free library crates; I/O, async, transports, and processes live
 shell crates. The pipeline artifacts (§4.2) are the only interfaces between stages —
 pipes-and-filters with content-addressed contracts.
 
-**Workspace layout (one Cargo workspace):**
+**Workspace layout** (the toolkit workspace at the root; `contracts/` and `execution-runtime/`
+are separate Cargo workspaces with their own Soroban pins):
 
 ```text
 crates/
@@ -1196,16 +1197,31 @@ crates/
                     # adapters
   api-types         # MCP DTOs + the stable E_* error-code enum (serde + schemars);
                     # this crate IS the wire contract
+  toolkit           # the operations both shells call, and the only place they live
   mcp-server        # bin: rmcp shell (stdio + streamable HTTP); no domain logic
   cli               # bin: the same library behind a human-oriented shell
-contracts/
-  templates/        # no_std snippet library + golden policy crates (soroban-sdk +
-                    # stellar-accounts, pinned)
-  fixtures/         # test accounts / verifiers / target contracts for the harness
-wallet/             # TS workspace (pollywallet integration package)
-skills/policy-builder/  # Claude plugin skill (SKILL.md)
-.claude-plugin/         # Claude plugin manifest and bundled MCP server entry
+contracts/          # separate workspace, pinned soroban-sdk + stellar-accounts
+  differential/              # member: differential, generated-suite, event, TTL and
+                             # pinned-account tests of the generated policies
+  authorized-target-fixture/ # member: test-only target contract for the execution fixtures
+  atomic-live-helper/        # member: on-chain helper for the live-enforcement layer
+  golden-transfer-policy/    # excluded from the workspace so it builds standalone with its
+                             # own profile: generated policy, exactly as codegen emits it
+  soroswap-swap-policy/      # excluded likewise: second generated example (W3 router rule)
+execution-runtime/  # separate workspace: native account-Wasm and captured-target worker
+scripts/            # release gates, CI checks, fixtures and the MCP development launcher
+tests/support/      # local RPC responders shared by the CLI and MCP boundary tests
+testnet-harness/    # node: installs and exercises generated policies on testnet
+wallet/             # node: local wallet backend and validators (pollywallet integration)
+deployment/         # self-hosted MCP image, TLS proxy, disposable build workers
+registry/           # published registry logs, one directory per network
+skills/             # policy-builder and policy-builder-install Claude skills
+.claude-plugin/     # Claude plugin manifest and bundled MCP server entry
 ```
+
+The template snippet library is not a crate of its own: it is the emitter in `crates/codegen`
+(`emit_lib`, `src/render.rs`), and the generated crates under `contracts/` are its output, held
+byte-for-byte to it by the golden tests.
 
 **Dependency rules — enforced in CI, not by convention.** Shells depend on cores, never the
 reverse. `domain`, `recorder-core`, `policy-spec`, `synthesizer`, `evaluator`,

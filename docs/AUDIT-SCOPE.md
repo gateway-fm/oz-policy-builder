@@ -81,8 +81,11 @@ loc crates/codegen    # 1602 non-test, 2032 test
 ```
 
 The OpenZeppelin rows were counted with the same function in a checkout of
-`OpenZeppelin/stellar-contracts` at tag v0.7.2; the Python launcher row counts lines that are
-neither blank nor `#` comments.
+`OpenZeppelin/stellar-contracts` at tag v0.7.2. The account wrapper's Rust source is the same at
+v0.7.3, which changes only the library's `smart_account/{mod,storage}.rs`, tests, documentation
+and package versions
+([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)). The Python
+launcher row counts lines that are neither blank nor `#` comments.
 
 ### Tier 1 — on-chain code and security roots
 
@@ -98,7 +101,7 @@ neither blank nor `#` comments.
 | Reference evaluator | `crates/evaluator` | The independent oracle generated code is compared with | 364 | 625 |
 | Domain | `crates/domain` | Canonical hashing, trust labels and the pinned upstream hashes every row above depends on | 841 | 502 |
 | Contract tests | `contracts/differential` | Differential, generated-suite, event, TTL and pinned-account tests of the contracts above | — | 6,526 |
-| Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.2 | The account every grant is installed into; see below | 57 | not counted |
+| Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.3 | The account every grant is installed into; see below | 57 | not counted |
 | Other pinned OpenZeppelin wrappers | `examples/multisig-smart-account/{spending-limit-policy,ed25519-verifier,webauthn-verifier}` at v0.7.2 | Recognized by exact hash; the spending limit is composed in the [subscription walkthrough](WALKTHROUGH-SEP41.md) | 112 | not counted |
 | **Tier 1** | | | **8,626** | **15,029** |
 
@@ -230,10 +233,13 @@ said to fail closed opens — is a finding.
 ## Prior relevant findings
 
 - **GHSA-jpg9-m7w4-c7wc**, delegated signer bypass in `stellar-accounts` before 0.7.3. The account
-  this tree recognizes is OpenZeppelin's 0.7.2 example, inside the affected range, and generated
-  grants authorize through delegated signers. The recognized account moves to the 0.7.3 build
-  before the audited revision; [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md) names the
-  recognized release and `ozpb_domain::pinned_upstream` holds its hash.
+  recognized up to development registry version 5, OpenZeppelin's 0.7.2 example, is inside the
+  affected range, and generated grants authorize through delegated signers. The recognized account
+  is now the 0.7.3 build, and version 6 revokes the 0.7.2 entry; the revocation binds only under a
+  registry floor of 6 or a version-6 checkpoint ([SECURITY.md](../SECURITY.md#upstream-advisories)).
+  [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc) names the
+  recognized release and the delegation-back cases the fix cannot see, and
+  `ozpb_domain::pinned_upstream` holds its hash.
 - **OpenZeppelin v0.7.0 audit, L-06**: the spending-limit policy accepted a negative amount and
   reduced the amount spent. Upstream fixed it in the policy, so the pinned 0.7.2 spending-limit
   source refuses a negative amount. Here, the evaluator's spending model denies one
