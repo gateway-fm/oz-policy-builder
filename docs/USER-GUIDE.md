@@ -1,10 +1,10 @@
 # User guide
 
 The path from a transaction you already made to a scoped grant on your smart account, and back:
-record → decide → generate → dry-run → review → install → use → monitor → revoke. Each step names
-its entry points: the agent skill in Claude Code (which calls the MCP tools), the `ozpb` CLI, and
-the local wallet. Set up with the [tester quickstart](TESTER-QUICKSTART.md); do everything on
-testnet first.
+record → decide → generate → reference check → review → install (running the remaining dry-run
+layers) → use → monitor → revoke. Each step names its entry points: the agent skill in Claude
+Code (which calls the MCP tools), the `ozpb` CLI, and the local wallet. Set up with the
+[tester quickstart](TESTER-QUICKSTART.md); do everything on testnet first.
 
 Nothing on this path signs, deploys or installs for you. The agent and the toolkit prepare and
 check; you approve in the wallet ([trust boundaries](TRUST-BOUNDARIES.md)).

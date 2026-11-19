@@ -50,7 +50,9 @@ it shows in the report's `head.revocations` and in the project's advisory.
 
 The monitor compares the published registry with your checkpoint: the one in your roots file, or
 the one `ozpb registry verify` printed when you accepted the snapshot. The development roots file
-carries none, so for the development registry on testnet:
+carries none, so for the development registry on testnet (the commands call `ozpb` from your
+`PATH`; in a checkout built with the [tester quickstart](TESTER-QUICKSTART.md), use
+`target/debug/ozpb`):
 
 ```bash
 N="Test SDF Network ; September 2015"
