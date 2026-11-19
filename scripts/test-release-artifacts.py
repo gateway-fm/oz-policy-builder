@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Checks for scripts/release-artifacts.py with stand-in binaries and a stand-in MCP server.
 
-The release workflow runs the real binaries only when a release is published or a dry run is
-dispatched; this keeps the packaging, the wire-contract export and the assembly checked on every
+The release workflow runs the real binaries only when it is dispatched, on a release tag or as a
+dry run on a branch; this keeps the packaging, the wire-contract export and the assembly checked on every
 pull request, in about a second and without a Rust build.
 """
 
