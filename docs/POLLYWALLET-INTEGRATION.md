@@ -251,7 +251,8 @@ signed. Testnet sessions keep the development registry.
 the user running the backend, with mode `0600`; a symlink, another owner or any access for group
 or others is refused at startup, with the reason and never the content. The account is yours: fund
 it yourself with the minimum reserve plus the session cap. The backend reads it, never funds it,
-and refuses to submit while it cannot pay a fee (`payer_unfunded`). The key is held only in the
+and refuses to submit while it cannot pay a fee (`payer_unfunded`): every write but a removal needs
+at least the per-transaction cap spendable, a removal only its own fee. The key is held only in the
 backend's memory; it is not printed, logged, returned to the browser or written to the journal.
 It is only the source and fee payer of the backend's transactions, never a signer on an account:
 before it signs an envelope the backend refuses one whose authorization entries name it, carry
@@ -272,8 +273,10 @@ transaction may cost under this configuration (the larger of `maxFeeStroops` and
 `maxUploadFeeStroops`), never as nothing. Any other entry that cannot be read for its fees refuses
 startup; look its transaction up by the fee payer's history, and to start again from zero use a new
 work root. A removal (`revoke-policy`) is exempt from the session cap, though not from the
-per-transaction cap, and every other transaction must leave room under the session cap for one
-installation and one removal, or only for the removal when it is an installation or this session
+per-transaction cap, and needs only its own fee from the payer; both exemptions go only to exactly a
+removal (one `remove_context_rule` call on the account being changed, authorized by that account and
+nothing else); any other transaction under that label is refused. Every other transaction must leave
+room under the session cap for one installation and one removal, or only for the removal when it is an installation or this session
 already has one, so the cap never stops a grant from being taken back. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). The defaults are conservative and each cap stays under its ceiling
 (1 XLM, 50 XLM and 50 XLM), with the upload cap at most the session cap. A policy upload on mainnet
@@ -304,6 +307,13 @@ operator.
 
 **The delegate.** On mainnet the grant's delegate is the agent's own key, the one its proposal
 names, and the wallet generates no delegate key: there is no in-memory automation key on mainnet.
+The consents say so: on mainnet the live check's and the installation's statements name the
+delegate as the agent's own key, held by the agent and by this backend from the operator's file, and
+state plainly that the agent holds it too: with the owner's passkey signature, which every live
+simulation request carries to the operator's RPC endpoint, the agent could submit the installation
+itself before the live check's expiry ledger and then use the grant without this wallet. The live
+evidence names the holder by network (`agent_key_from_operator_file`, label
+`delegate_is_agent_key_from_operator_file`; testnet keeps `wallet_in_memory_automation_key`).
 **Installation on mainnet requires the delegate's key in a `0600` file** (`delegateKeyPath`: one
 secret seed, checked like the fee payer's and never its key). The account-Wasm, captured-target and
 live checks, three of the four layers, sign as the delegate, and the one use of the grant is the
@@ -633,7 +643,8 @@ two named cases, not the derived deny suite.
    backend's inputs (helper, candidate hash, rule ID, ledgers) and shows it: both exact calls,
    the owner's installation and each delegate transfer, the expiry N, the labels and this
    warning: until ledger N the signatures are real and submittable; the owner's alone installs
-   the rule, which gives the backend-held delegate the grant's authority until it expires;
+   the rule, which gives the delegate the grant's authority until it expires (on testnet the
+   backend's own key; on mainnet the agent's, which the agent holds too, as the statement says);
    none of them names the helper; all of them reach the operator's RPC endpoint inside the
    simulation requests; and the replay check after N compares the account with the state read
    before they existed. Consent returns the statement's SHA-256. The backend accepts it only for
@@ -675,7 +686,8 @@ A passing layer carries public evidence only: the helper, the candidate and thei
 expected rule ID, the expiry ledger, the statement hash, each case's outcome, simulation ledger
 and envelope hash. It also carries the owner's `webauthn_user_verified` with
 `human_approval_attested: false`, and the labels `state_dependent`, `simulation_only`,
-`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key`. It is
+`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key` (on mainnet
+`delegate_is_agent_key_from_operator_file`). It is
 evidence about testnet state at the simulation ledgers. Stored evidence does not age by itself; the
 [installation gate](#installation) bounds the simulation ledgers as it bounds the captured one.
 
@@ -849,12 +861,20 @@ entries, then review again.
 `prepare-earlier-revoke` takes the attached wallet and a rule ID. The backend reads the account's
 rules (`NextId`, then every `ContextRuleData` below it, in one request that must agree with
 `Count`, and must hold no entry it did not ask for), finds this wallet's owner rule among them, and
-removes only a rule shaped as a grant: a `CallContract` context, one contract's calls, limited by at
-least one policy, as every grant this wallet installs is. It refuses the owner rule itself, any rule
-naming the owner's passkey, a `Default`-context rule or one with no policy (which may be the
-owner's recovery or admin access), and a rule this session installed (use **Prepare revocation**
-for that). The page lists every rule but offers removal only for grant-shaped ones, and the browser
-checks the shape again before the passkey. It then reads the pinned account and verifier code, the owner rule and the rule within one
+removes only a rule shaped as a grant: a `CallContract` context, one other contract's calls, limited
+by at least one policy, as every grant this wallet installs is. It refuses the owner rule itself, any
+rule naming the owner's passkey, a `Default`-context rule or one with no policy (which may be the
+owner's recovery or admin access), a rule on the account's own calls (a guardian or recovery rule)
+or on a policy contract that any of the account's rules binds, and a rule this session installed
+(use **Prepare revocation** for that). The page lists every rule but offers removal only for
+grant-shaped ones, and the browser checks the shape again before the passkey. A restarted backend
+has funded nothing yet, so the removal checks its own fee payer first: on mainnet, that the
+operator's account exists, and then that it can spend this removal's own fee, when the removal is
+drafted and again before it is signed (not the per-transaction cap; a check for a removal opens no
+other write); on testnet, funding the new disposable key through Friendbot and reading the account
+back a few times, so a failed request or a lagging node leaves funding to the next try. Removing a
+grant never waits for an account creation or a deployment, and a payer that cannot pay is refused
+as `payer_unfunded`, which the page explains. It then reads the pinned account and verifier code, the owner rule and the rule within one
 ledger window, exactly as for an in-session removal, and binds the removal approval to the rule's
 current bytes in place of an installation transaction. The consent statement, which the browser
 derives itself, shows the rule as stored now and says that this session did not install it.
@@ -987,7 +1007,7 @@ cannot be repeated in the session, whatever the cause.
 | `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
 | `fee_cap` | The transaction could cost more than its cap (per transaction, or for a policy upload `maxUploadFeeStroops`); nothing was signed or sent. |
 | `spend_cap` | The transaction could take the work root's spending past `sessionSpendCapStroops`; nothing was signed or sent. |
-| `payer_unfunded` | Mainnet: the fee payer's account does not exist or cannot pay a fee. |
+| `payer_unfunded` | The fee payer cannot pay: on mainnet its account does not exist or cannot spend the fee; on testnet Friendbot did not fund it yet. |
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
 | `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |

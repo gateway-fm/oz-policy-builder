@@ -14,9 +14,12 @@ export function setup({ native = null, live = null, delegates, network: override
     profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0',
     payerAddress: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)),
     canSubmit: true,
+    // A removal can be submitted whenever any write can (tests toggle `canSubmit`).
+    get canSubmitRemoval() { return this.canSubmit; },
     assertNetwork: async () => { calls.push('network'); },
     codePresent: async (hash) => { calls.push(['code', hash]); return { present: true, ledger: 124 }; },
     fundPayer: async () => { calls.push('fund'); },
+    fundRemoval: async () => { calls.push('fund-removal'); },
     ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
     latestLedger: async () => 123,
     requireInstance: async (address, hash) => { calls.push(['instance', address, hash]); },

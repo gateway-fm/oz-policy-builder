@@ -32,8 +32,10 @@ says what changes.
   Either way the wallet reports the rule `removed` only after the account's
   `context_rule_removed` event and a readback that the rule is gone; policy cleanup is reported
   separately. It removes only grant-shaped rules (one contract's calls, limited by at least one
-  policy): the owner rule, a rule naming the owner's passkey and a `Default`-context or
-  policy-less rule are refused. On mainnet the session spend cap never stops a removal; the
+  policy): the owner rule, a rule naming the owner's passkey, a `Default`-context or
+  policy-less rule, and a rule on the account's own calls or on a policy contract are refused. A
+  restarted backend checks or funds its fee payer for the removal itself, so no deployment is
+  needed first; on mainnet an unfunded payer is refused as `payer_unfunded`. On mainnet the session spend cap never stops a removal; the
   per-transaction cap still applies. A send whose result is uncertain blocks every later write in
   that session, a removal included: look the transaction up, then start a new session. Any other
   tool that can have the owner sign `remove_context_rule` for the rule ID works too.

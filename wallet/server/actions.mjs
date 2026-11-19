@@ -171,8 +171,10 @@ export function createWalletActions({ session, toolchain, network, native = null
     await network.requireInstance(wallet.contractId, ACCOUNT_WASM);
     await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
     const read = await network.accountRules(wallet.contractId);
+    // Every policy contract the account's rules bind: a rule targeting one is not a grant this wallet installs.
+    const boundPolicies = read.rules.flatMap(({ id, xdr: raw }) => ruleSummary(raw, id)?.policies ?? []);
     return { ledger: read.ledger, rules: read.rules.map(({ id, xdr: raw }) => ({ id, xdr: raw, owner: isOwnerRule(wallet, id, raw),
-      grant: isGrantRule(raw, id), summary: ruleSummary(raw, id) })) };
+      grant: isGrantRule(raw, id, { account: wallet.contractId, boundPolicies }), summary: ruleSummary(raw, id) })) };
   }
   // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
   // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
@@ -1103,6 +1105,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       const owner = listed.rules.find((rule) => rule.owner);
       const target = listed.rules.find((rule) => rule.id === ruleId);
       if (!owner || !target || target.owner || !target.grant) refuse();
+      // A restarted backend has funded nothing yet: the removal's own fee payer is checked (mainnet: the
+      // operator's account, then this removal's fee against its balance) or funded (testnet: Friendbot)
+      // here, so removal never waits for a deployment.
+      await network.fundRemoval();
       session.invalidate('revoke');
       const record = { account: wallet.contractId, ruleId, ledger: 0 };
       const ownerRef = { wallet, ownerRuleId: owner.id, ownerRuleXdr: owner.xdr };
@@ -1123,7 +1129,9 @@ export function createWalletActions({ session, toolchain, network, native = null
     'confirm-earlier-revoke': async (input) => {
       exact(input, ['id', 'signedAuthEntriesXdr']);
       return session.consume(input.id, 'revoke', async ({ earlier, approval, checked, ruleXdr }) => {
-        if (!earlier || network.canSubmit !== true) refuse();
+        if (!earlier) refuse();
+        await network.fundRemoval();
+        if (network.canSubmitRemoval !== true) refuse();
         const { account, ruleId } = approval.installation;
         const key = `${account}:${ruleId}`;
         if (earlierRemovals.has(key)) refuse();
@@ -1140,8 +1148,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         // Spent from here, as for an in-session removal: one that may have reached the network is never prepared again.
         earlierRemovals.set(key, { ruleId, status: 'attempted', transactionHash: null });
         let submitted;
-        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
-          if (network.canSubmit === true) earlierRemovals.delete(key);
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy', { account }); } catch (error) {
+          if (network.canSubmitRemoval === true) earlierRemovals.delete(key);
           rethrow(error);
         }
         earlierRemovals.set(key, { ruleId, status: 'confirmed_unverified', transactionHash: submitted.hash });
@@ -1166,6 +1174,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       const held = get(installations, input.installationId);
       const { record, owner } = held;
       if (held.removalAttempted || !Number.isSafeInteger(record.ruleId)) refuse();
+      await network.fundRemoval();
       session.invalidate('revoke');
       // The anchor's ledger clock checks the network first.
       const { pins, fresh, rule } = await removalReads(record, owner, owner.ownerRuleXdr);
@@ -1199,7 +1208,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       exact(input, ['id', 'signedAuthEntriesXdr']);
       return session.consume(input.id, 'revoke', async ({ installationId, approval, checked, ruleXdr }) => {
         const held = get(installations, installationId);
-        if (held.removalAttempted || network.canSubmit !== true) refuse();
+        if (held.removalAttempted || network.canSubmitRemoval !== true) refuse();
         const { record, owner } = held;
         // The fee payer's sequence is only compared with the signed envelope: read with the others,
         // after the anchor's network check.
@@ -1216,8 +1225,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         // refusal that leaves the fee payer able to submit sent nothing, so removal stays available.
         held.removalAttempted = true;
         let submitted;
-        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy'); } catch (error) {
-          if (network.canSubmit === true) held.removalAttempted = false;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'revoke-policy', { account: record.account }); } catch (error) {
+          if (network.canSubmitRemoval === true) held.removalAttempted = false;
           rethrow(error);
         }
         // Confirmed: keep its identity before any verification can refuse.

@@ -75,7 +75,7 @@ const REFUSED: Record<string, string> = {
   protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
   fee_cap: "this transaction could cost more than the fee cap the operator set for it. Nothing was signed or sent.",
   spend_cap: "this transaction could take the session past the spend cap the operator set, counting what earlier sessions in this work root spent. Nothing was signed or sent.",
-  payer_unfunded: "the fee payer's account does not exist or cannot pay a transaction's fee. Fund it from your own wallet (see Mainnet readiness), then try again.",
+  payer_unfunded: "the fee payer's account does not exist or cannot pay this transaction's fee. On mainnet, fund it from your own wallet (see Mainnet readiness); on testnet, Friendbot has not funded it yet. Then try again.",
   delegate_unfunded: "the automation key has no account on this network, and the wallet creates none. Fund it with the minimum shown under section 2, then try again.",
   pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command under Mainnet readiness, then try again.",
   account_unfunded: "your account's XLM balance does not cover the 0.1 XLM sample payment. Send it at least that from your own wallet, then prepare the sample again.",

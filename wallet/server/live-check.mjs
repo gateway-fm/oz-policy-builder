@@ -15,7 +15,7 @@ import { Account, Address, Operation, TransactionBuilder, hash, xdr } from '@ste
 import { freezeCopy } from '../shared/approval.mjs';
 import { stroopsText } from '../shared/networks.mjs';
 import { installCall } from '../shared/assembly.mjs';
-import { LIVE_CASES, LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_LABELS, LIVE_RUN_MIN_LEDGERS, LIVE_SIGNATURE_LEDGERS,
+import { LIVE_CASES, LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_LABELS, LIVE_RUN_MIN_LEDGERS, LIVE_SIGNATURE_LEDGERS, delegateHolder,
   checkLiveOwnerEntry, consentDisplay, liveCases, liveShape, statementHash } from '../shared/live-consent.mjs';
 import { POLICY_NO_TUPLE_MATCHED, helperCall, validateLiveCase } from '../shared/live-enforcement.mjs';
 import { validateLiveOwnerSignature } from '../shared/signature.mjs';
@@ -256,8 +256,9 @@ export async function runLive({ network, mintCapability, prepared, approval, own
       ...(v.detail ? { detail: v.detail } : {}), ...(v.simulation_ledger ? { simulationLedger: v.simulation_ledger } : {}),
       ...(v.envelope_xdr_sha256 ? { envelopeXdrSha256: v.envelope_xdr_sha256 } : {}) })),
     owner: { authentication: owner.authentication, human_approval_attested: false },
-    delegate: 'wallet_in_memory_automation_key', submitted: false,
-    labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${expiry}`, LIVE_LABELS[3]],
+    // Who holds the delegate key: the backend's in-memory key on testnet, the agent's own key on mainnet.
+    delegate: delegateHolder(prepared.cases[0].network_id).evidence, submitted: false,
+    labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${expiry}`, delegateHolder(prepared.cases[0].network_id).label],
   };
   if (infrastructure) {
     return layer('unavailable', 'The simulation needed state restoration or ran after the signatures expired; no evidence about the '

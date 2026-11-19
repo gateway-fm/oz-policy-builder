@@ -156,7 +156,8 @@ function earlier(change = {}) {
 }
 function installedRuleXdr(f, { signers, context, policies } = {}) {
   const fields = {
-    context_type: context ?? xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(f.wallet.contractId).toScVal()]),
+    // A grant on another contract's calls, never on the account's own.
+    context_type: context ?? xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(StrKey.encodeContract(Buffer.alloc(32, 8))).toScVal()]),
     id: xdr.ScVal.scvU32(RULE_ID), name: xdr.ScVal.scvString('earlier grant'),
     policies: policies ?? xdr.ScVal.scvVec([new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]),
     policy_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]),
@@ -203,6 +204,18 @@ test('an earlier session\'s removal takes only a grant-shaped rule: a call-contr
     assert.throws(() => earlier({ ruleXdr }), /refused/, label);
   }
   assert.equal(isGrantRule(grant, RULE_ID + 1), false, 'bytes for another rule ID');
+  // A call-contract rule on the account itself (a guardian or recovery rule), or on its own policy.
+  const ownCalls = installedRuleXdr(f, { context: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(f.wallet.contractId).toScVal()]) });
+  assert.equal(isGrantRule(ownCalls, RULE_ID, { account: f.wallet.contractId }), false, 'the account\'s own calls');
+  assert.throws(() => earlier({ ruleXdr: ownCalls }), /refused/, 'the account\'s own calls');
+  const onPolicy = installedRuleXdr(f, { context: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'),
+    new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]) });
+  assert.equal(isGrantRule(onPolicy, RULE_ID), false, 'a rule on its own policy contract');
+  // A target bound as a policy in another of the account's rules.
+  const other = StrKey.encodeContract(Buffer.alloc(32, 9));
+  const onOther = installedRuleXdr(f, { context: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(other).toScVal()]) });
+  assert.equal(isGrantRule(onOther, RULE_ID, { account: f.wallet.contractId }), true);
+  assert.equal(isGrantRule(onOther, RULE_ID, { account: f.wallet.contractId, boundPolicies: [other] }), false, 'a policy bound elsewhere');
 });
 
 test('an earlier session\'s removal never takes the owner\'s own rule or a rule the owner signs for', () => {

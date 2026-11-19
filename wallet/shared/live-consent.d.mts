@@ -7,6 +7,9 @@ export const LIVE_RUN_MIN_LEDGERS: number;
 export const LIVE_MAX_PERMIT_STROOPS: bigint;
 export const LIVE_CASES: readonly ['target:original:0', 'target:argument-denial:0'];
 export const LIVE_LABELS: readonly string[];
+export type DelegateHolder = { readonly label: string; readonly evidence: string; readonly key: string };
+export const DELEGATE_HOLDERS: { readonly testnet: DelegateHolder; readonly mainnet: DelegateHolder };
+export function delegateHolder(networkId: string): DelegateHolder;
 export type LiveGrant =
   | { readonly supported: true; readonly account: string; readonly delegate: string; readonly recipient: string;
     readonly amount: string; readonly maxCalls: number }
