@@ -240,7 +240,9 @@ validates local report consistency, not imported evidence authenticity.
 `soroban-sdk` and `stellar-accounts` from scratch, which is what the timeout is mostly
 spent on. Two properties of a shared cache to plan for: it is **not pruned** (cargo does not
 GC target directories, so distinct specs accumulate — give the volume a quota and clear it on
-a schedule), and it **serializes concurrent builds** on cargo's build-directory lock, so a
+a schedule; an `--http` server instead removes each crate it builds, keeping the dependencies,
+so its clients' spec names cannot fill it), and it **serializes concurrent builds** on cargo's
+build-directory lock, so a
 hosted worker should size its concurrency to one build at a time per cache. The default path
 is per-uid and is refused if it is a symlink, not a directory, owned by another user, or
 group/world-accessible — a shared cache an attacker can pre-create is a route to poisoned
@@ -457,7 +459,12 @@ an authenticated, TLS-terminating ingress forwards (a comma-separated `host[:por
 wildcards) that is not loopback. Only then does it accept a routable address, and it then answers
 only those hosts; any other `Host`, loopback names included, is refused (`403`), as is any request
 with an `Origin` header, in either mode. It refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
-(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
+(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set, and unless builds have somewhere to go besides its
+own trust domain: an `OZPB_BUILD_WORKER_LAUNCHER` ([disposable workers](ISOLATED-BUILDS.md)), or
+`OZPB_HTTP_UNISOLATED_BUILDS=accept`, the operator's statement that it compiles its clients'
+specs beside itself, as the Compose package does for one operator with trusted clients. A
+failed build then reports its exit status without the compiler's output, which names the
+host's paths. The allowlist is a comma-separated list of the
 full `https://` URLs the record tools may reach: each entry is parsed as a URL, so a bare
 hostname is refused at startup rather than at first use. Every request to `/v1/mcp` then
 passes three checks in order: the bearer token (`401`), a request quota (`429`) and a body

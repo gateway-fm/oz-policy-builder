@@ -256,7 +256,10 @@ other than `/v1/mcp`, and keeping request bodies and headers out of its access l
 The API has a 2-CPU, 4-GiB memory, 256-process ceiling; the proxy has 0.5 CPU, 128 MiB and
 64 processes. Both run as UID 10001 with no added capabilities, no privilege escalation and
 a read-only root filesystem. The API's temporary build data and cache occupy bounded tmpfs
-mounts (512 MiB and 2 GiB), charged to its memory limit. A cold build may hit these bounds;
+mounts (512 MiB and 2 GiB), charged to its memory limit. Each build removes the crate it built
+from the cache, so the cache holds the shared dependencies, not one entry per spec name a client
+chose. The Compose file sets `OZPB_HTTP_UNISOLATED_BUILDS=accept`: the server refuses to start
+an HTTP endpoint that compiles in its own container without that statement. A cold build may hit these bounds;
 size them using your measured workload. One build slot and one compiler job are configured.
 These are service-level limits, not per-job containment. Replacing the container discards
 the writable cache and temporary files.

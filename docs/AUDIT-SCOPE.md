@@ -265,7 +265,10 @@ shipped grant shape, each with its deviations, are in the
     ([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)).
 11. **Hosted operation** is a shared-token, trusted-client boundary
     ([deviations](TRANCHE-2-VERIFICATION.md#deviations-and-open-gaps-against-the-phase-2-design),
-    [G12](MAINNET-GATES.md#g12-hosted-processing)).
+    [G12](MAINNET-GATES.md#g12-hosted-processing)). An allowlisted RPC endpoint's answer is read
+    whole, up to 24 MiB, into a generic JSON value before it is checked, which for an answer of
+    small values can occupy roughly sixteen times its size while it is parsed; the endpoint is
+    the operator's choice, and no per-method bound is set.
 12. **Accepted advisories.** RUSTSEC-2026-0387 is accepted temporarily, with an expiry
     ([SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md)); `deny.toml` ignores two unmaintained
     notices with no vulnerability, each with its reason.

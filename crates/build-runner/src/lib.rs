@@ -377,6 +377,12 @@ pub struct BuildConfig {
     /// The requesting caller's cancellation. `None`, the default, builds until completion or
     /// timeout. Set per request on a clone of the operator's configuration, never shared.
     pub cancel: Option<BuildCancel>,
+    /// Set by a server many clients share (`--http`); the CLI and a stdio server leave it off.
+    /// A failed local build then reports its exit status without the compiler's output, which
+    /// names the host's paths, and each local build removes the crate it built from the shared
+    /// cache, keeping the dependencies: otherwise every distinct spec name a client chooses
+    /// leaves its outputs there for good. A disposable worker does both by construction.
+    pub shared_server: bool,
 }
 
 /// A fail-fast bound on concurrent builds. Clones share one count, so every holder of a cloned
@@ -476,6 +482,7 @@ impl Default for BuildConfig {
             builder: Builder::Local,
             slots: None,
             cancel: None,
+            shared_server: false,
         }
     }
 }
@@ -1285,6 +1292,17 @@ fn build_local_in(
         .join(ozpb_codegen::BUILD_TARGET)
         .join("release")
         .join(&expected_name);
+    // A shared server's builds take the cache one at a time, and the build's own outputs leave
+    // it on every path out of this function. The wait counts against the build's time limit.
+    let deadline = std::time::Instant::now() + config.timeout;
+    let _evicting = match config.shared_server {
+        true => Some(EvictCrateOutputs {
+            _exclusive: exclusive_cache(deadline, config.cancel.as_ref())?,
+            release: target_dir.join(ozpb_codegen::BUILD_TARGET).join("release"),
+            crate_name: request.generated.crate_name.clone(),
+        }),
+        false => None,
+    };
     let started = std::time::SystemTime::now();
 
     let command = build_command(
@@ -1294,13 +1312,22 @@ fn build_local_in(
         &output_dir,
         &target_dir,
     );
-    let output = run_bounded_until(command, config.timeout, config.cancel.as_ref())?;
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let output = run_bounded_until(command, remaining, config.cancel.as_ref())?;
     if !output.status.success() {
-        return Err(BuildError::Failed(format!(
-            "stellar contract build exited with {}; output: {}",
-            output.status,
-            String::from_utf8_lossy(&output.combined)
-        )));
+        return Err(BuildError::Failed(match config.shared_server {
+            // The output names this host's paths and its toolchain's layout; a shared server's
+            // clients get the status, as a disposable worker's do.
+            true => format!(
+                "stellar contract build exited with {}; compiler output withheld by this server",
+                output.status
+            ),
+            false => format!(
+                "stellar contract build exited with {}; output: {}",
+                output.status,
+                String::from_utf8_lossy(&output.combined)
+            ),
+        }));
     }
 
     if !written_since(&compiled, started) {
@@ -1352,6 +1379,86 @@ fn build_local_in(
         manifest_hash,
         wasm,
     })
+}
+
+/// Local builds of a shared server, one at a time. Builds sharing a cache already queue on
+/// cargo's lock while they compile; this extends the turn to the eviction after it, so a build
+/// never removes a same-named crate another is compiling.
+static SHARED_CACHE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Wait for [`SHARED_CACHE`] until `deadline`, or until the caller cancels.
+fn exclusive_cache(
+    deadline: std::time::Instant,
+    cancel: Option<&BuildCancel>,
+) -> Result<std::sync::MutexGuard<'static, ()>, BuildError> {
+    loop {
+        match SHARED_CACHE.try_lock() {
+            Ok(guard) => return Ok(guard),
+            // Nothing panics while the lock is held but an eviction, which leaves no state.
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if cancel.is_some_and(BuildCancel::is_cancelled) {
+            return Err(BuildError::Cancelled);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(BuildError::Timeout);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// On drop, removes one crate's own outputs from a shared target directory's release profile:
+/// its Wasm and dependency file at the top and under `deps/`, any library form of it, and its
+/// fingerprint. Names are matched exactly, so another crate whose name extends this one's stays.
+/// Best effort: what cannot be removed is left, and the next build of that name replaces it.
+struct EvictCrateOutputs {
+    _exclusive: std::sync::MutexGuard<'static, ()>,
+    release: PathBuf,
+    crate_name: String,
+}
+
+impl Drop for EvictCrateOutputs {
+    fn drop(&mut self) {
+        let stem = self.crate_name.replace('-', "_");
+        let hashed = |name: &str, prefix: &str| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        };
+        let output = |name: &str| {
+            let Some((base, extension)) = name.rsplit_once('.') else {
+                return false;
+            };
+            matches!(extension, "wasm" | "d" | "rlib" | "rmeta")
+                && [Some(base), base.strip_prefix("lib")]
+                    .into_iter()
+                    .flatten()
+                    .any(|base| base == stem || hashed(base, &stem))
+        };
+        for directory in [self.release.clone(), self.release.join("deps")] {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_str().is_some_and(output) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(self.release.join(".fingerprint")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name
+                    .to_str()
+                    .is_some_and(|name| hashed(name, &self.crate_name))
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
 }
 
 /// Allowance for filesystems that store modification times coarsely (whole or even two seconds):
@@ -1781,6 +1888,9 @@ fn sanitize_build_environment(command: &mut Command) {
     command.env_clear();
     for name in [
         "PATH",
+        // `0` makes rustup refuse a missing toolchain or component rather than download it; the
+        // image and the worker launcher set it.
+        "RUSTUP_AUTO_INSTALL",
         "TMPDIR",
         "TEMP",
         "TMP",
@@ -3511,6 +3621,106 @@ mod tests {
                     .any(|(name, value)| name == forbidden && value.is_some()),
                 "the sanitized build environment explicitly carries {forbidden}"
             );
+        }
+    }
+
+    /// An operator's `RUSTUP_AUTO_INSTALL=0` (the image and the worker launcher set it) has to
+    /// reach rustup, or a missing toolchain component is downloaded rather than refused.
+    #[test]
+    #[cfg(unix)]
+    fn the_operators_rustup_auto_install_setting_reaches_the_builder() {
+        let _guard = serialized();
+        let previous = std::env::var_os("RUSTUP_AUTO_INSTALL");
+        std::env::set_var("RUSTUP_AUTO_INSTALL", "0");
+        let mut command = Command::new("env");
+        sanitize_build_environment(&mut command);
+        let output = command.output().unwrap();
+        match previous {
+            Some(value) => std::env::set_var("RUSTUP_AUTO_INSTALL", value),
+            None => std::env::remove_var("RUSTUP_AUTO_INSTALL"),
+        }
+        let environment = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == "RUSTUP_AUTO_INSTALL=0"),
+            "{environment}"
+        );
+    }
+
+    /// A shared server neither hands a client the compiler's output, which names the host's
+    /// paths, nor keeps each client's crate in the shared cache: a distinct spec name per request
+    /// grew it by about 100 KB each, never reclaimed. The dependencies, the point of the shared
+    /// cache, and other crates' outputs stay. The CLI and a stdio server keep both.
+    #[test]
+    #[cfg(unix)]
+    fn a_shared_server_withholds_compiler_output_and_evicts_the_crate_it_built() {
+        let _guard = serialized();
+        let base = private_base();
+        let target = base.path().join("target");
+        let release = target.join(ozpb_codegen::BUILD_TARGET).join("release");
+        let script = fixture_script(
+            base.path(),
+            &format!(
+                "release=\"$CARGO_TARGET_DIR/{}/release\"\n\
+                 mkdir -p \"$release/deps\" \"$release/.fingerprint/generated-test-r0-0123456789abcdef\"\n\
+                 for f in generated_test_r0.wasm generated_test_r0.d deps/generated_test_r0.wasm \
+                 deps/generated_test_r0.d; do : > \"$release/$f\"; done\n\
+                 echo \"error[E0425]: in /home/operator/HOST-PATH/src/contract.rs\" >&2\n\
+                 exit 1",
+                ozpb_codegen::BUILD_TARGET
+            ),
+        );
+        let built = [
+            "generated_test_r0.wasm",
+            "generated_test_r0.d",
+            "deps/generated_test_r0.wasm",
+            "deps/generated_test_r0.d",
+            ".fingerprint/generated-test-r0-0123456789abcdef",
+        ];
+        let others = [
+            "deps/libsoroban_sdk-0123456789abcdef.rlib",
+            ".fingerprint/soroban-sdk-0123456789abcdef",
+            "generated_test_r0_other_r0.wasm",
+            ".fingerprint/generated-test-r0-other-r0-0123456789abcdef",
+        ];
+        std::fs::create_dir_all(release.join("deps")).unwrap();
+        std::fs::create_dir_all(release.join(".fingerprint")).unwrap();
+        for other in others {
+            std::fs::write(release.join(other), b"cached").unwrap();
+        }
+        let pins = Pins::default();
+        let crate_files = generated("source");
+        let request = BuildRequest {
+            generated: &crate_files,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        for shared in [false, true] {
+            let config = BuildConfig {
+                stellar_binary: script.clone(),
+                target_dir: Some(target.clone()),
+                shared_server: shared,
+                ..BuildConfig::default()
+            };
+            let Err(BuildError::Failed(message)) = build_local_in(&request, &config, base.path())
+            else {
+                panic!("the stand-in builder fails");
+            };
+            assert_eq!(message.contains("HOST-PATH"), !shared, "{message}");
+            for path in built {
+                assert_eq!(
+                    release.join(path).exists(),
+                    !shared,
+                    "shared={shared}: {path}"
+                );
+            }
+            for path in others {
+                assert!(release.join(path).exists(), "shared={shared}: {path}");
+            }
         }
     }
 

@@ -69,7 +69,9 @@ container. The Compose service remains the separate single-operator mode.
 
 For a CLI invocation, set `OZPB_BUILD_WORKER_LAUNCHER` to the same protected executable or
 use `--build-worker-launcher`. Invalid, missing, relative, symlinked or writable launcher paths
-fail configuration; they never fall back to host compilation.
+fail configuration; they never fall back to host compilation. An unset launcher does not
+either: the HTTP server refuses to start without one unless `OZPB_HTTP_UNISOLATED_BUILDS=accept`
+says it should compile in its own trust domain, which only the Compose package sets.
 
 ## Trust and lifecycle
 
