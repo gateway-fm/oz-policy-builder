@@ -276,7 +276,9 @@ Access logging and container log retention are disabled. The proxy discards erro
 so URLs or request-derived details are not retained accidentally. Do not enable debug
 tracing, body logging, crash uploads or request analytics. This reduces diagnostics: an
 operator investigating startup failure should reproduce with synthetic input in an isolated
-environment and review any output before retaining it.
+environment and review any output before retaining it. `scripts/check-log-redaction.py` fails
+CI if a file of this package turns a log back on, prints the bearer token or the trust inputs,
+or links a log subscriber into the server; it does not cover your ingress or host.
 
 Request data is processed in memory and temporary files. Each MCP session also retains up to
 eight generated artifacts in memory for verification by reference. This is a count limit,
