@@ -2549,6 +2549,207 @@ mod tests {
         let mut r = registry();
         r.load_json(&json).unwrap();
     }
+
+    fn signed_valid_between(valid_from: i64, expires_at: i64) -> SignedSnapshot {
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        snapshot.valid_from_unix = valid_from;
+        snapshot.expires_at_unix = expires_at;
+        sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap()
+    }
+
+    #[test]
+    fn a_one_instant_validity_interval_loads_and_an_inverted_one_is_named() {
+        // Both ends are inclusive, so an interval of one second is a real interval.
+        registry()
+            .load_at(&signed_valid_between(100, 100), 100)
+            .unwrap();
+
+        // An interval that ends before it starts is malformed whatever the time: it is
+        // reported as such, not as "not yet valid" or "expired" depending on when it is read.
+        for now in [50, 150, 250] {
+            assert_eq!(
+                registry()
+                    .load_at(&signed_valid_between(200, 100), now)
+                    .unwrap_err(),
+                RegistryError::Validity {
+                    valid_from: 200,
+                    expires_at: 100
+                },
+                "read at {now}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_threshold_outside_one_to_the_key_count_is_refused() {
+        for threshold in [0, 2] {
+            let policy = RootPolicy {
+                threshold,
+                keys: BTreeMap::from([("only".to_string(), dev::dev_root_verifying_bytes())]),
+            };
+            assert!(
+                matches!(
+                    Registry::with_pinned_roots(policy),
+                    Err(RegistryError::RootPolicy(_))
+                ),
+                "threshold {threshold} of one root"
+            );
+        }
+    }
+
+    #[test]
+    fn signatures_beyond_the_threshold_are_verified_not_refused() {
+        // A 1-of-2 root policy with both roots signing: every signature verifies, and more
+        // valid signatures than the threshold is a quorum, not an error.
+        let first = SigningKey::from_bytes(&sha256(b"registry-root-1").0);
+        let second = SigningKey::from_bytes(&sha256(b"registry-root-2").0);
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([
+                ("first".to_string(), first.verifying_key().to_bytes()),
+                ("second".to_string(), second.verifying_key().to_bytes()),
+            ]),
+        };
+        let signed = sign_snapshot_with_roots(
+            &BTreeMap::from([("first".to_string(), first), ("second".to_string(), second)]),
+            dev::dev_snapshot(network(), 1),
+        )
+        .unwrap();
+        Registry::with_pinned_roots(roots)
+            .unwrap()
+            .load(&signed)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_restart_successor_must_both_follow_the_log_index_and_name_the_checkpoint_root() {
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+        };
+        let v1_snapshot = dev::dev_snapshot(network(), 1);
+        let v1 = sign_snapshot(&dev::dev_signing_key(), v1_snapshot.clone()).unwrap();
+        let mut first = Registry::with_pinned_roots(roots.clone()).unwrap();
+        first.load(&v1).unwrap();
+        let checkpoint = first.checkpoint().unwrap();
+        let restarted = || {
+            Registry::with_pinned_roots_for_network_at_checkpoint(
+                roots.clone(),
+                network(),
+                checkpoint.clone(),
+            )
+            .unwrap()
+        };
+
+        let mut good = dev::dev_snapshot(network(), 2);
+        good.previous_root = Some(checkpoint.root);
+        good.log_index = checkpoint.log_index + 1;
+
+        let mut wrong_parent = good.clone();
+        wrong_parent.previous_root = Some(sha256(b"some other root"));
+        let mut skipped_index = good.clone();
+        skipped_index.log_index = checkpoint.log_index + 2;
+        for (name, snapshot) in [
+            ("wrong parent", wrong_parent),
+            ("skipped index", skipped_index),
+        ] {
+            let signed = sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap();
+            assert!(
+                matches!(
+                    restarted().load(&signed),
+                    Err(RegistryError::Transparency(_))
+                ),
+                "{name}"
+            );
+        }
+        let signed = sign_snapshot(&dev::dev_signing_key(), good).unwrap();
+        restarted().load(&signed).unwrap();
+    }
+
+    #[test]
+    fn a_persisted_checkpoint_must_agree_with_the_same_version_snapshot_in_every_field() {
+        // The checkpoint is the consumer's persisted state, read back from storage. Its root
+        // commits to the log index and revocations, so for an intact checkpoint a matching
+        // root implies the rest; the other two comparisons are what catch a checkpoint whose
+        // fields no longer agree with each other. The snapshot offered here is exactly the
+        // one the checkpoint was taken from, so only the persisted field differs.
+        let roots = RootPolicy {
+            threshold: 1,
+            keys: BTreeMap::from([("legacy".to_string(), dev::dev_root_verifying_bytes())]),
+        };
+        let v1 = sign_snapshot(&dev::dev_signing_key(), dev::dev_snapshot(network(), 1)).unwrap();
+        let mut first = Registry::with_pinned_roots(roots.clone()).unwrap();
+        first.load(&v1).unwrap();
+        let checkpoint = first.checkpoint().unwrap();
+
+        let mut other_index = checkpoint.clone();
+        other_index.log_index += 1;
+        let mut other_revocations = checkpoint;
+        other_revocations.revocations.insert(
+            format!("policy/{}", "0".repeat(64)),
+            Revocation {
+                reason: "test".to_string(),
+                effective_version: 1,
+            },
+        );
+        for (name, persisted) in [
+            ("log index", other_index),
+            ("revocations", other_revocations),
+        ] {
+            let mut restarted = Registry::with_pinned_roots_for_network_at_checkpoint(
+                roots.clone(),
+                network(),
+                persisted,
+            )
+            .unwrap();
+            assert!(
+                matches!(restarted.load(&v1), Err(RegistryError::Transparency(_))),
+                "a persisted {name} that disagrees with the snapshot must not be satisfied by \
+                 its root alone"
+            );
+        }
+    }
+
+    fn load_with_revocation(key: &str) -> Result<Hash32, RegistryError> {
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        snapshot.revocations.insert(
+            key.to_string(),
+            Revocation {
+                reason: "test".to_string(),
+                effective_version: 1,
+            },
+        );
+        registry().load(&sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap())
+    }
+
+    fn parse_error(result: Result<Hash32, RegistryError>) -> String {
+        match result {
+            Err(RegistryError::Parse(message)) => message,
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn template_revocations_load_and_bad_keys_say_what_is_wrong() {
+        load_with_revocation("template/policy-templates/scope@1").unwrap();
+
+        let message = parse_error(load_with_revocation("policy/not-a-hash"));
+        assert!(
+            message.contains("must contain a canonical wasm hash"),
+            "{message}"
+        );
+        let message = parse_error(load_with_revocation(&format!("unknown/{}", "0".repeat(64))));
+        assert!(message.contains("unknown capability kind"), "{message}");
+    }
+
+    #[test]
+    fn a_template_family_is_one_to_128_bytes() {
+        load_with_revocation(&format!("template/{}", "a".repeat(128))).unwrap();
+        for family in [String::new(), "a".repeat(129)] {
+            let message = parse_error(load_with_revocation(&format!("template/{family}")));
+            assert!(message.contains("template family"), "{message}");
+        }
+    }
 }
 
 #[cfg(test)]

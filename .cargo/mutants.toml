@@ -37,4 +37,11 @@ exclude_re = [
     "golden_input",
     "golden_decisions",
     "golden_spec",
+
+    # Equivalent mutants: a change no input can observe.
+    #
+    # `first_shared_key` scans the smaller map and probes the larger. Both maps are sorted, so
+    # scanning either side yields the same answer, the smallest key in the intersection; the
+    # comparison only picks the cheaper side.
+    "replace <= with > in first_shared_key",
 ]
