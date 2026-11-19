@@ -67,8 +67,8 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 
 Custody details: [registry keys](REGISTRY-GOVERNANCE.md#roles),
 [the delegate key file](NATIVE-EXECUTION.md#running-the-layers-from-the-cli),
-[the wallet's keys](POLLYWALLET-INTEGRATION.md#start-the-local-backend) and
-[on mainnet](POLLYWALLET-INTEGRATION.md#mainnet-sessions),
+[the wallet's keys](POLLYWALLET-INTEGRATION.md#start-the-local-backend),
+[the wallet's keys on mainnet](POLLYWALLET-INTEGRATION.md#mainnet-sessions),
 [the handoff](AGENT-WALLET-HANDOFF.md#authority-and-data-boundaries).
 
 ## What the registry signature covers

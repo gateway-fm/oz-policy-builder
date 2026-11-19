@@ -77,10 +77,10 @@ ozpb registry monitor --published docs/examples/registry.signed.json --checkpoin
 
 A governed registry is monitored the same way with `--published registry/<network>` (its log) and
 your pinned roots. Exit `6` means a watched hash or template family is revoked; the report names
-each with the custodians' reason. Exit `1` means the published log cannot be verified against your checkpoint —
-a fork, an equivocation, a rollback, or roots you have not pinned, each an incident in itself — and
-also any other error, such as a missing checkpoint or an unreadable file, so read its message. The
-other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
+each with the custodians' reason. Exit `1` means the published log cannot be verified against
+your checkpoint — a fork, an equivocation, a rollback, or roots you have not pinned, each an
+incident in itself — and also any other error, such as a missing checkpoint or an unreadable file,
+so read its message. The other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
 
 **Act on it.**
 
