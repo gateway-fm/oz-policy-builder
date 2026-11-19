@@ -1262,7 +1262,8 @@ fn credential_nonce(entry: &SorobanAuthorizationEntry) -> Option<(&ScAddress, i6
 /// Every nonce these operation changes show the host consuming: a created temporary
 /// contract-data entry under the authorizer, keyed `LedgerKeyNonce`. Contract code cannot name
 /// that key (it has no `Val` form), so the host's `consume_nonce` is its only writer, and it
-/// writes it only where no live nonce exists — hence `Created`.
+/// writes it only where no live nonce exists — hence `Created` — and always as `Temporary`, so a
+/// change of any other shape is not one it made.
 fn collect_consumed_nonces(
     changes: &stellar_xdr::LedgerEntryChanges,
     out: &mut Vec<(ScAddress, i64)>,
@@ -1274,7 +1275,9 @@ fn collect_consumed_nonces(
         }) = change
         {
             if let ScVal::LedgerKeyNonce(key) = &data.key {
-                out.push((data.contract.clone(), key.nonce));
+                if data.durability == stellar_xdr::ContractDataDurability::Temporary {
+                    out.push((data.contract.clone(), key.nonce));
+                }
             }
         }
     }
@@ -2527,20 +2530,31 @@ mod tests {
             },
             signatures: Default::default(),
         });
-        let snap = EvidenceSnapshot::from_rpc_transaction(
-            ozpb_domain::TESTNET_PASSPHRASE,
-            fb.to_xdr_base64(Limits::none()).unwrap(),
-            Some(
-                meta_v3_consuming(&[(account_sc(), 1)])
-                    .to_xdr_base64(Limits::none())
-                    .unwrap(),
-            ),
-            1,
-            1,
-            true,
-        );
-        let b = record(&snap, RecordOptions::default()).unwrap();
-        assert_eq!(b.authorizations.len(), 1);
+        // The inner transaction's operation meta is what proves its address credential.
+        for (consumed, kept) in [(vec![(account_sc(), 1)], 1), (vec![], 0)] {
+            let snap = EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                fb.to_xdr_base64(Limits::none()).unwrap(),
+                Some(
+                    meta_v3_consuming(&consumed)
+                        .to_xdr_base64(Limits::none())
+                        .unwrap(),
+                ),
+                1,
+                1,
+                true,
+            );
+            let b = record(&snap, RecordOptions::default()).unwrap();
+            assert_eq!(b.authorizations.len(), kept, "{consumed:?}");
+            assert_eq!(
+                b.evidence_notes
+                    .iter()
+                    .filter(|note| note.starts_with("authorization entry 0 "))
+                    .count(),
+                1 - kept,
+                "{consumed:?}"
+            );
+        }
     }
 
     #[test]
@@ -3203,10 +3217,11 @@ mod tests {
     #[test]
     fn a_meta_v4_operation_proves_its_nonces() {
         use stellar_xdr::{OperationMetaV2, SorobanTransactionMetaV2, TransactionMetaV4};
-        let meta = |consumed: Vec<stellar_xdr::LedgerEntryChange>| {
+        let meta = |before: Vec<stellar_xdr::LedgerEntryChange>,
+                    consumed: Vec<stellar_xdr::LedgerEntryChange>| {
             TransactionMeta::V4(TransactionMetaV4 {
                 ext: ExtensionPoint::V0,
-                tx_changes_before: Default::default(),
+                tx_changes_before: before.try_into().unwrap(),
                 operations: vec![OperationMetaV2 {
                     ext: ExtensionPoint::V0,
                     changes: consumed.try_into().unwrap(),
@@ -3223,21 +3238,33 @@ mod tests {
                 diagnostic_events: Default::default(),
             })
         };
-        for (changes, kept) in [
-            (vec![nonce_consumed(account_sc(), 7)], 1),
+        // The host writes a nonce key only as a temporary entry.
+        let mut persistent = nonce_consumed(account_sc(), 7);
+        if let stellar_xdr::LedgerEntryChange::Created(stellar_xdr::LedgerEntry {
+            data: stellar_xdr::LedgerEntryData::ContractData(data),
+            ..
+        }) = &mut persistent
+        {
+            data.durability = stellar_xdr::ContractDataDurability::Persistent;
+        }
+        for (before, changes, kept) in [
+            (vec![], vec![nonce_consumed(account_sc(), 7)], 1),
             (
+                vec![],
                 vec![stellar_xdr::LedgerEntryChange::Created(
                     fixtures::contract_data_entry(7),
                 )],
                 0,
             ),
+            (vec![nonce_consumed(account_sc(), 7)], vec![], 0),
+            (vec![], vec![persistent.clone()], 0),
         ] {
             let snap = EvidenceSnapshot::from_rpc_transaction(
                 ozpb_domain::TESTNET_PASSPHRASE,
                 envelope_with(vec![auth_entry(address_credentials(7))])
                     .to_xdr_base64(Limits::none())
                     .unwrap(),
-                Some(meta(changes).to_xdr_base64(Limits::none()).unwrap()),
+                Some(meta(before, changes).to_xdr_base64(Limits::none()).unwrap()),
                 1,
                 1,
                 true,

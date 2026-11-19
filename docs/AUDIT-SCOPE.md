@@ -131,7 +131,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 
 | Component | Path | Why it is here | Non-test | Test |
 | --- | --- | --- | ---: | ---: |
-| Recorder core | `crates/recorder-core` | Authorizer selection, evidence trust derivation, attribution | 1,806 | 2,657 |
+| Recorder core | `crates/recorder-core` | Authorizer selection, evidence trust derivation, attribution | 1,808 | 2,679 |
 | RPC acquisition | `crates/source-rpc`: `src/account_*.rs`, `checked_account_observation.rs`, `classic_account.rs`, `contract_code.rs`, `contract_data.rs`, `ledger_witness.rs`, `assembly.rs`, `policy_state_capture.rs`, `lib.rs`; `tests/{account_storage_conformance,rpc_conformance,mainnet_corpus}.rs` | The account scan behind the authority check, transaction recording (replayed over ten verbatim mainnet transactions), the reads behind install assembly and the live policy check | 4,777 | 6,966 |
 | Toolkit operations | `crates/toolkit`: `src/lib.rs`, `verification.rs`, `install_intent.rs`, `install_assembly.rs`, `call_surface.rs`, `call_surface_live.rs`, `authority_text.rs`, `installed_grant.rs`, `policy_check.rs`; tests in `src/test_support.rs`, `src/target_adapter_tests.rs`, `tests/` | Trust lowering at the synthesis boundary, recognition of generated artifacts by rebuilding them, install intent and unsigned assembly | 3,286 | 4,460 |
 | Wallet validators | `wallet/shared` | Independent re-validation of assembly, consent, revocation and replacement, against the network the session is bound to | 1,839 | 11,273 |
@@ -140,7 +140,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | Production endpoint's HTTP boundary | `crates/mcp-server`: `src/http.rs`, `src/tool_limits.rs`, `src/preflight.rs`; `tests/{mcp_http,mcp_stdio_preflight}.rs` | The released self-hosted endpoint ([self-hosting](SELF-HOSTING.md#production-release)): bearer authentication before any quota is spent or body read, the request and per-tool quotas, the body bound, allowed hosts, the RPC allowlist every configured source must pass at startup, and the hosted refusal of signed envelopes ([G12](MAINNET-GATES.md#g12-hosted-processing)) | 445 | 1,031 |
 | Build runner and worker isolation | `crates/build-runner`, `deployment/worker-launcher.py` (tested by `scripts/test-worker-launcher.py` and `scripts/test-worker-containment.py`) | Bounded builds; the BuildManifest (`build-manifest/v2`) and its `producer` record (`build.rs`, `src/toolkit_source.rs`); reconciliation against the Wasm's own metadata; [disposable workers](ISOLATED-BUILDS.md) | 2,320 | 2,246 |
 | Registry governance CLI | `crates/cli/src/registry.rs`, `src/key_file.rs`; `tests/registry_governance_cli.rs` | `ozpb registry`: custodian keys in 0600 files, successor, signing, combining and verification, and the monitor whose exit status is the alert | 499 | 821 |
-| **Tier 2** | | | **18,218** | **29,454** |
+| **Tier 2** | | | **18,220** | **29,476** |
 
 ### Informational — not in scope
 
