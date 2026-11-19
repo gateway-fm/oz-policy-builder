@@ -251,7 +251,8 @@ signed. Testnet sessions keep the development registry.
 the user running the backend, with mode `0600`; a symlink, another owner or any access for group
 or others is refused at startup, with the reason and never the content. The account is yours: fund
 it yourself with the minimum reserve plus the session cap. The backend reads it, never funds it,
-and refuses to submit while it cannot pay a fee (`payer_unfunded`). The key is held only in the
+and refuses to submit while it cannot pay a fee (`payer_unfunded`): every write but a removal needs
+at least the per-transaction cap spendable, a removal only its own fee. The key is held only in the
 backend's memory; it is not printed, logged, returned to the browser or written to the journal.
 It is only the source and fee payer of the backend's transactions, never a signer on an account:
 before it signs an envelope the backend refuses one whose authorization entries name it, carry
@@ -865,10 +866,13 @@ owner's recovery or admin access), a rule on the account's own calls (a guardian
 or on a policy contract that any of the account's rules binds, and a rule this session installed
 (use **Prepare revocation** for that). The page lists every rule but offers removal only for
 grant-shaped ones, and the browser checks the shape again before the passkey. A restarted backend
-has funded nothing yet, so the removal checks its own fee payer first (on mainnet, that the
-operator's account can pay a fee; on testnet, funding the new disposable key through Friendbot):
-removing a grant never waits for an account creation or a deployment, and an unfunded payer is
-refused as `payer_unfunded`, which the page explains. It then reads the pinned account and verifier code, the owner rule and the rule within one
+has funded nothing yet, so the removal checks its own fee payer first: on mainnet, that the
+operator's account exists, and then that it can spend this removal's own fee, when the removal is
+drafted and again before it is signed (not the per-transaction cap; a check for a removal opens no
+other write); on testnet, funding the new disposable key through Friendbot and reading the account
+back a few times, so a failed request or a lagging node leaves funding to the next try. Removing a
+grant never waits for an account creation or a deployment, and a payer that cannot pay is refused
+as `payer_unfunded`, which the page explains. It then reads the pinned account and verifier code, the owner rule and the rule within one
 ledger window, exactly as for an in-session removal, and binds the removal approval to the rule's
 current bytes in place of an installation transaction. The consent statement, which the browser
 derives itself, shows the rule as stored now and says that this session did not install it.
@@ -1001,7 +1005,7 @@ cannot be repeated in the session, whatever the cause.
 | `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
 | `fee_cap` | The transaction could cost more than its cap (per transaction, or for a policy upload `maxUploadFeeStroops`); nothing was signed or sent. |
 | `spend_cap` | The transaction could take the work root's spending past `sessionSpendCapStroops`; nothing was signed or sent. |
-| `payer_unfunded` | Mainnet: the fee payer's account does not exist or cannot pay a fee. |
+| `payer_unfunded` | The fee payer cannot pay: on mainnet its account does not exist or cannot spend the fee; on testnet Friendbot did not fund it yet. |
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
 | `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |

@@ -159,7 +159,8 @@ restart, attach the account and use **Remove a grant an earlier session installe
 the account's rules as stored and removes the grant you choose with your passkey. Only a
 grant-shaped rule (another contract's calls, limited by at least one policy) is offered; your
 owner rule and any recovery, guardian or admin rule are not. After a restart the removal needs only
-the fee payer able to pay its fee (`payer_unfunded` otherwise), not a new deployment. Either way the
+the fee payer's account to exist and to be able to spend that removal's own fee, less than the
+per-transaction cap (`payer_unfunded` otherwise), not a new deployment. Either way the
 removal is verified by the account's `context_rule_removed` event and the rule reading back absent.
 If the registry later revokes the account or the owner verifier, revoking the grant does not help:
 follow [revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal).

@@ -146,7 +146,9 @@ function restartedNetwork(t, f) {
   const n = f.network;
   n.payerAddress = network.payerAddress;
   n.fundPayer = () => network.fundPayer();
+  n.fundRemoval = () => network.fundRemoval();
   Object.defineProperty(n, 'canSubmit', { get: () => network.canSubmit, configurable: true });
+  Object.defineProperty(n, 'canSubmitRemoval', { get: () => network.canSubmitRemoval, configurable: true });
   n.prepareRemoval = (request) => network.prepareRemoval(request);
   n.sourceCapture = () => network.sourceCapture();
   n.submitEnvelope = (envelopeXdr, stage) => { f.submissions.push({ envelopeXdr, stage }); return network.submitEnvelope(envelopeXdr, stage); };
@@ -174,7 +176,7 @@ const scValPolicies = (rule) => rule.map.find((e) => e.key.sym.toString() === 'p
 test('after a restart, with no account or deployment step, an earlier session\'s grant is still removed', async (t) => {
   const { f } = await earlierSession();
   const { network, calls } = restartedNetwork(t, f);
-  assert.equal(network.canSubmit, false, 'a restarted backend has not funded its fee payer yet');
+  assert.equal(network.canSubmitRemoval, false, 'a restarted backend has not funded its fee payer yet');
   const prepared = await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID });
   assert.match(prepared.action.id, /^[0-9a-f]{64}$/);
   assert.equal(prepared.limits.feePayer, network.payerAddress);
@@ -221,11 +223,11 @@ test('the page lists the rules, shows the removal it derived itself and collects
   await assert.rejects(() => controller.prepareEarlierRevoke(RECOVERY_ID), /refused/);
   assert.deepEqual(asked, []);
   // A fee payer that cannot pay (mainnet: the operator has not funded it) refuses with a reason the page explains.
-  const fund = f.network.fundPayer;
-  f.network.fundPayer = async () => { throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' }); };
+  const fund = f.network.fundRemoval;
+  f.network.fundRemoval = async () => { throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' }); };
   await assert.rejects(() => controller.prepareEarlierRevoke(RULE_ID), (error) => error.reason === 'payer_unfunded');
   assert.equal(controller.state.earlierRevokePreview, null);
-  f.network.fundPayer = fund;
+  f.network.fundRemoval = fund;
   await controller.prepareEarlierRevoke(RULE_ID);
   assert.equal(controller.state.earlierRevokePreview.display.installation.from_earlier_session, true);
   await controller.revokeEarlier();

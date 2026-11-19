@@ -241,7 +241,7 @@ function confirmed(receipt, sent) {
  */
 export class WalletNetwork {
   #server; #payer; #fees; #spent = 0n; #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
-  #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #installed = 0; #delegatesFunded = new Set();
+  #funded = false; #removalPayer = false; #ambiguous = false; #serial = 0; #installed = 0; #delegatesFunded = new Set();
   /**
    * `feePayer` and `fees` are the session's funding model: on testnet a disposable key and testnet's
    * ceilings; on mainnet the operator's own key and its configured caps, a session cap included.
@@ -274,6 +274,8 @@ export class WalletNetwork {
   get spentStroops() { return this.#spent.toString(); }
   /** Whether a submission could start now: the payer is funded and no earlier result is uncertain. */
   get canSubmit() { return this.#funded && !this.#ambiguous; }
+  /** Whether a removal could be submitted now: the payer can pay one (`fundRemoval`) and no earlier result is uncertain. */
+  get canSubmitRemoval() { return (this.#funded || this.#removalPayer) && !this.#ambiguous; }
   /**
    * The endpoint must serve the session's network, at protocol 30: another network refuses as
    * `network_mismatch`, another protocol (mainnet before its upgrade to 30, for one) as
@@ -377,15 +379,42 @@ export class WalletNetwork {
       this.#funded = true;
       return;
     }
-    // Friendbot exists on testnet alone; no disposable key is ever funded on another network.
-    if (this.#fundingAttempted || !this.#network.friendbot) refuse();
-    this.#fundingAttempted = true;
-    const response = await this.#fetch(`${this.#network.friendbot}/?addr=${this.payerAddress}`, {
-      method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
-    });
-    await boundedText(response, 256 * 1024);
-    await this.source();
+    // Friendbot exists on testnet alone; no disposable key is ever funded on another network. The
+    // account reading back decides, a few times over as a lagging node catches up: Friendbot answers
+    // an account it already funded with an error. One that does not read back leaves funding to the
+    // next step, with a reason the page explains.
+    if (!this.#network.friendbot) refuse();
+    try {
+      const response = await this.#fetch(`${this.#network.friendbot}/?addr=${this.payerAddress}`, {
+        method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
+      });
+      await boundedText(response, 256 * 1024);
+    } catch { /* the read-back below decides */ }
+    for (let attempt = 1; ; attempt++) {
+      try { await this.source(); break; } catch {
+        if (attempt >= 5) refuse({ reason: 'payer_unfunded' });
+        await this.#pause(2000);
+      }
+    }
     this.#funded = true;
+  }
+  /**
+   * The fee payer for a removal, which never waits for an account creation or a deployment: on testnet
+   * funded as `fundPayer` does; on mainnet the operator's account must exist, and each removal's own
+   * fee is checked against what it can spend before the removal is drafted and again before it is
+   * signed (`#payerCovers`). It opens no other write.
+   */
+  async fundRemoval() {
+    await this.assertNetwork();
+    if (this.#funded || this.#removalPayer) return;
+    if (!this.#payer.operator) return this.fundPayer();
+    if (!(await this.payerAccount()).exists) refuse({ reason: 'payer_unfunded' });
+    this.#removalPayer = true;
+  }
+  /** Mainnet: the operator's account can spend `fee` above its reserve now. */
+  async #payerCovers(fee) {
+    const account = await this.payerAccount();
+    if (!account.exists || BigInt(account.spendableStroops) < BigInt(fee)) refuse({ reason: 'payer_unfunded' });
   }
   #save(serial, phase, value) {
     writeFileSync(join(this.#journal, `${String(serial).padStart(4, '0')}.${phase}.json`),
@@ -427,7 +456,9 @@ export class WalletNetwork {
   }
   async submitEnvelope(envelopeXdr, stage) {
     try {
-      if (!this.#funded || this.#ambiguous || typeof stage !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(stage)) refuse();
+      // A removal needs only `fundRemoval`; every other write a funded payer (`fundPayer`).
+      if (!(stage === 'revoke-policy' ? this.canSubmitRemoval : this.canSubmit) || typeof stage !== 'string'
+        || !/^[a-z][a-z0-9-]{0,47}$/.test(stage)) refuse();
       await this.assertNetwork();
       const original = TransactionBuilder.fromXDR(envelopeXdr, this.#network.passphrase);
       if (original.source !== this.payerAddress || original.toEnvelope().type !== 'envelopeTypeTx'
@@ -453,6 +484,8 @@ export class WalletNetwork {
       }
       checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
       this.#assertPayerNotSigner(assembled);
+      // Mainnet: a removal is signed only when the operator's account can pay its fee now.
+      if (this.#payer.operator && stage === 'revoke-policy') await this.#payerCovers(fee);
       this.#payer.signTransaction(assembled);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
       const serial = ++this.#serial;
@@ -889,7 +922,7 @@ export class WalletNetwork {
    */
   async prepareRemoval({ wallet, ruleId, ownerReadLedger }) {
     try {
-      if (!this.#funded || this.#ambiguous || !StrKey.isValidContract(wallet?.contractId)) refuse();
+      if (!this.canSubmitRemoval || !StrKey.isValidContract(wallet?.contractId)) refuse();
       await this.assertNetwork();
       const captured = await this.sourceCapture();
       if (captured.ledger < ledger(ownerReadLedger) || captured.ledger - ownerReadLedger > 12) refuse();
@@ -915,6 +948,8 @@ export class WalletNetwork {
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
       checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
+      // Mainnet: the owner is asked to sign only a removal the operator's account can pay for.
+      if (this.#payer.operator) await this.#payerCovers(final.v1.tx.fee);
       const restored = final.v1.tx.ext.sorobanData.ext;
       return { assembly: {
         envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: this.#network.networkId,

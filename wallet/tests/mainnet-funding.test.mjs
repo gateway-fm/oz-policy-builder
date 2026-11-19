@@ -111,7 +111,7 @@ test('mainnet configuration: the operator key is required, caps default conserva
 // --- the network layer -------------------------------------------------------------------------------------
 
 /** A mainnet WalletNetwork over a fake endpoint; `fee` is what enforce-mode assembly charges. */
-function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULTS, change = () => {}, spent = '0' } = {}) {
+function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULTS, change = () => {}, spent = '0', balance = 1_000_000_000n } = {}) {
   const root = scratch(t);
   const key = Keypair.random();
   const feePayer = new FeePayer(key, true);
@@ -130,7 +130,7 @@ function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULT
     getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 30 }),
     getLatestLedger: async () => ({ sequence: 100, id: Buffer.from(hash(header.toXDR())).toString('hex'), headerXdr: header, protocolVersion: 30 }),
     getLedgerEntries: async (key) => ({ latestLedger: 100,
-      entries: payerFunded ? [accountEntry(feePayer.address, 1_000_000_000n)].filter((e) => same(e.key, key)) : [] }),
+      entries: payerFunded ? [accountEntry(feePayer.address, balance)].filter((e) => same(e.key, key)) : [] }),
     getAccount: async (address) => new Account(address, '7'),
     simulateTransaction: async (tx, _resources, mode) => { calls.push({ mode }); return { latestLedger: 100, result: { auth: [], retval: xdr.ScVal.scvVoid() } }; },
     sendTransaction: async (tx) => { calls.push({ sent: true }); sent = tx; return { status: 'PENDING', hash: Buffer.from(tx.hash()).toString('hex') }; },
@@ -181,6 +181,46 @@ test('mainnet: the wallet never funds its fee payer; an unfunded operator accoun
   assert.equal(funded.network.canSubmit, true);
   const account = await funded.network.payerAccount();
   assert.deepEqual(account, { exists: true, balanceStroops: '1000000000', minimumStroops: '10000000', spendableStroops: '990000000', ledger: 100 });
+});
+
+test('mainnet: after a restart a removal needs only its own fee from the operator account, read through the real network', async (t) => {
+  const account = 'CAWGOGD3YYSPUR6CPT6PE33DCUIGFNBVZVA5WEDGK2YM34FRLIUQBT5A';
+  // The record-mode draft of `remove_context_rule(1)`: the account's own authorization of exactly that call.
+  const recordRemoval = (server) => {
+    const simulate = server.simulateTransaction;
+    server.simulateTransaction = async (tx, resources, mode) => {
+      if (mode !== 'record') return simulate(tx, resources, mode);
+      const call = tx.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp.hostFunction.invokeContract;
+      const entry = new xdr.SorobanAuthorizationEntry({ credentials: xdr.SorobanCredentials.sorobanCredentialsAddressV2(
+        new xdr.SorobanAddressCredentials({ address: new Address(account).toScAddress(), nonce: 5n, signatureExpirationLedger: 0,
+          signature: xdr.ScVal.scvVoid() })), rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call), subInvocations: [] }) });
+      return { latestLedger: 100, result: { auth: [entry], retval: xdr.ScVal.scvVoid() } };
+    };
+  };
+  const draft = (network) => network.prepareRemoval({ wallet: { contractId: account }, ruleId: 1, ownerReadLedger: 100 });
+  // Spendable 200,000 stroops (two base reserves held back): below the 1 XLM per-transaction cap, above the removal's 2,000.
+  const f = mainnet(t, { balance: 10_200_000n, change: recordRemoval });
+  assert.equal(f.network.canSubmitRemoval, false, 'a restarted backend has checked nothing yet');
+  await assert.rejects(() => f.network.fundPayer(), (error) => error.reason === 'payer_unfunded', 'too little for every other step');
+  await f.network.fundRemoval();
+  assert.equal(f.network.canSubmitRemoval, true);
+  assert.equal(f.network.canSubmit, false, 'checking for a removal opens no other write');
+  assert.equal((await draft(f.network)).assembly.fee_stroops, 2000);
+  const removed = await f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy');
+  assert.match(removed.hash, /^[0-9a-f]{64}$/);
+  await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'install-policy'), /refused/);
+  assert.equal(f.calls.filter((call) => call.sent).length, 1);
+  // An account that cannot pay even the removal's fee is refused with the reason, before drafting and before signing.
+  const poor = mainnet(t, { balance: 10_001_000n, change: recordRemoval });
+  await poor.network.fundRemoval();
+  await assert.rejects(() => draft(poor.network), (error) => error.reason === 'payer_unfunded');
+  await assert.rejects(() => poor.network.submitEnvelope(contractCall(poor.network.payerAddress), 'revoke-policy'),
+    (error) => error.reason === 'payer_unfunded');
+  assert.equal(poor.calls.some((call) => call.sent), false);
+  assert.deepEqual(readdirSync(poor.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
+  // No account at all.
+  await assert.rejects(() => mainnet(t, { payerFunded: false }).network.fundRemoval(), (error) => error.reason === 'payer_unfunded');
 });
 
 test('mainnet: a transaction above the per-transaction cap or the session cap is refused before it is signed', async (t) => {
