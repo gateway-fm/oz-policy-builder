@@ -516,6 +516,17 @@ mod tests {
         assert!(Hash32::from_hex("abcd").is_err()); // too short
     }
 
+    #[test]
+    fn hash32_renders_as_its_hex_in_reports_and_debug_output() {
+        // Reports and error messages print hashes with `{}`; a reader compares that text with
+        // the hex a verifier computes, so it must be exactly the hex, nothing added or missing.
+        let h = sha256(b"rendered");
+        let hex = h.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert_eq!(format!("{h}"), hex);
+        assert_eq!(format!("{h:?}"), format!("Hash32({hex})"));
+    }
+
     // --- trust levels ----------------------------------------------------------------
 
     #[test]

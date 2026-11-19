@@ -689,6 +689,128 @@ mod tests {
         assert!(matches!(items[1], ScVal::Map(Some(_))));
     }
 
+    fn string(value: &str) -> ScVal {
+        ScVal::String(ScString(value.try_into().unwrap()))
+    }
+
+    /// The scalar rows of the rules table, each against an `ScVal` built by hand. Values are
+    /// chosen so a wrong variant, a dropped value or a swapped half of a wide integer all show.
+    #[test]
+    fn scalars_encode_as_the_rules_table_says() {
+        assert_eq!(expect(&-3i8), ScVal::I32(-3));
+        assert_eq!(expect(&-300i16), ScVal::I32(-300));
+        assert_eq!(expect(&-70_000i32), ScVal::I32(-70_000));
+        assert_eq!(expect(&-5_000_000_000i64), ScVal::I64(-5_000_000_000));
+        assert_eq!(expect(&200u8), ScVal::U32(200));
+        assert_eq!(expect(&60_000u16), ScVal::U32(60_000));
+        assert_eq!(expect(&u64::MAX), ScVal::U64(u64::MAX));
+        assert_eq!(expect(&'x'), string("x"));
+
+        // -(2^64) - 5 = -2·2^64 + (2^64 - 5): both halves are nonzero, so taking the wrong one
+        // or shifting the wrong way cannot pass.
+        assert_eq!(
+            expect(&(-(1i128 << 64) - 5)),
+            ScVal::I128(Int128Parts {
+                hi: -2,
+                lo: u64::MAX - 4,
+            })
+        );
+        assert_eq!(
+            expect(&((1u128 << 64) | 7)),
+            ScVal::U128(UInt128Parts { hi: 1, lo: 7 })
+        );
+    }
+
+    #[test]
+    fn both_float_widths_are_refused() {
+        for err in [
+            to_scval(&1.5f32).expect_err("an f32 must not encode"),
+            to_scval(&1.5f64).expect_err("an f64 must not encode"),
+        ] {
+            assert!(format!("{err}").contains("float"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_byte_string_encodes_as_bytes() {
+        struct Raw;
+        impl Serialize for Raw {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_bytes(&[1, 2, 3])
+            }
+        }
+        assert_eq!(
+            expect(&Raw),
+            ScVal::Bytes(vec![1u8, 2, 3].try_into().unwrap())
+        );
+    }
+
+    #[test]
+    fn option_unit_and_newtype_rows_encode_exactly() {
+        #[derive(Serialize)]
+        struct Marker;
+        #[derive(Serialize)]
+        struct Wrapper(u32);
+
+        assert_eq!(expect(&None::<u32>), vector(Vec::new()).unwrap());
+        assert_eq!(expect(&Some(5u32)), vector(vec![ScVal::U32(5)]).unwrap());
+        assert_eq!(expect(&()), ScVal::Void);
+        assert_eq!(expect(&Marker), ScVal::Void);
+        assert_eq!(
+            expect(&Wrapper(9)),
+            ScVal::U32(9),
+            "newtypes are transparent"
+        );
+    }
+
+    #[test]
+    fn tuples_and_tuple_structs_encode_as_vectors() {
+        #[derive(Serialize)]
+        struct Pair(u32, bool);
+
+        let expected = vector(vec![ScVal::U32(1), ScVal::Bool(true)]).unwrap();
+        assert_eq!(expect(&(1u32, true)), expected);
+        assert_eq!(expect(&Pair(1, true)), expected);
+    }
+
+    #[test]
+    fn a_struct_variant_carries_its_fields_in_the_map() {
+        let body = ScVal::Map(Some(
+            ScMap::sorted_from_entries(
+                vec![ScMapEntry {
+                    key: symbol("field").unwrap(),
+                    val: ScVal::U32(1),
+                }]
+                .into_iter(),
+            )
+            .unwrap(),
+        ));
+        assert_eq!(
+            expect(&Shape::Struct { field: 1 }),
+            vector(vec![symbol("struct").unwrap(), body]).unwrap()
+        );
+    }
+
+    /// The 4 MiB budget `docs/CANONICAL-HASHING.md` publishes is the one enforced: a preimage of
+    /// exactly that many bytes encodes, and the next byte of payload (four, with XDR padding) is
+    /// refused as the budget.
+    #[test]
+    fn the_preimage_budget_admits_exactly_four_mebibytes() {
+        const PUBLISHED_BUDGET: usize = 4 * 1024 * 1024;
+        let bytes = |n: usize| ScVal::Bytes(vec![0u8; n].try_into().unwrap());
+        let overhead = canonical_preimage_bytes_of(domains::POLICY_SPEC, bytes(0))
+            .unwrap()
+            .len();
+        let fits = PUBLISHED_BUDGET - overhead;
+
+        let at_budget = canonical_preimage_bytes_of(domains::POLICY_SPEC, bytes(fits)).unwrap();
+        assert_eq!(at_budget.len(), PUBLISHED_BUDGET);
+        assert_eq!(
+            canonical_preimage_bytes_of(domains::POLICY_SPEC, bytes(fits + 1)).unwrap_err(),
+            DomainError::PreimageTooLarge(PUBLISHED_BUDGET)
+        );
+    }
+
     #[test]
     fn a_float_is_refused_rather_than_encoded() {
         let err = to_scval(&1.5f64).expect_err("a float must not encode");
