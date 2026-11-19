@@ -550,7 +550,11 @@ a spec that uses a kind the family does not declare.
   independence); cores stay transport/async-free. The harness half of that rule governs a
   Tranche-2 crate.
 - Every generated crate builds standalone (`[profile.release]` with `overflow-checks`) and
-  passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
+  passes the same `rustfmt` as handwritten code, and `clippy -D warnings` too, except
+  `contracts/two-payment-policy`: for several accepted tuples of one function the emitter writes
+  a condition `clippy::nonminimal_bool` refuses, so that crate is formatted but not linted
+  until the emitter groups tuples by function
+  ([audit limit 14](AUDIT-SCOPE.md#known-limits--not-findings)).
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
 - `scripts/check-publication-allowlist.sh`: no confidential material in the public tree.
 - `scripts/mutation-test.sh` (`.github/workflows/mutation.yml`): a pull request that touches one
