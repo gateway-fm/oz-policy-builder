@@ -74,7 +74,10 @@ versions:
   digest is the same; it is now bound to the 0.7.3 hash only.
 
 Development registry version 6 recognizes the 0.7.3 account and revokes the 0.7.2 entry with the
-advisory as its reason; versions 1 to 5 are unchanged. The atomic live helper compiles in the
+advisory as its reason; versions 1 to 5 are unchanged and still recognize the 0.7.2 build. A
+caller can supply its own signed snapshot, so the revocation binds only under a floor of 6
+(`OZPB_REGISTRY_MIN_VERSION`, `--registry-min-version`, the wallet's `registryMinimumVersion`)
+or a persisted version-6 checkpoint; the shipped configurations and documented commands use 6. The atomic live helper compiles in the
 account hash, so its Wasm hash moved with it and the wallet's helper pin moved too. The
 spending-limit policy and both verifiers keep their 0.7.2 builds: their sources are identical
 at both tags.

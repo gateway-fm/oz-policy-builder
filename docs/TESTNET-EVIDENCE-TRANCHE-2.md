@@ -679,7 +679,7 @@ throwaway ed25519 key, and both rules were approved in the explicit operator mod
 prompt. The keys were deleted when the run ended. The summary is the wrapper's own export.
 
 **This is the first live run through `soroswap-router@2`, the binding of
-[development registry version 5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5),
+[development registry version 5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6),
 with the exact recorded deadline.** The router rule's input bound is `adapter_derived` from that
 binding, and its deadline is the recorded `u64` timestamp 1793372746 (15:05:46 UTC, the
 preflight time plus one hour), kept exact. The committed operator decisions supplied an output
@@ -868,7 +868,7 @@ development registry's `soroswap-router@1` binding, a development-registry asser
 was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)),
 and the floor and transfer cap from an operator decisions file. Section 14 records the first
 completed live run through that binding, including route, recipient and function controls.
-These remain historical v1 results; [registry v5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5)
+These remain historical v1 results; [registry v5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6)
 now preserves the recorded deadline exactly.
 
 Sections 15 and 16 add automated wallet installation and revocation, including an independent
@@ -1022,7 +1022,7 @@ operator mode without a human prompt. The keys were deleted when the run ended. 
 the wrapper's own export.
 
 This repeats section 17 through `soroswap-router@2`, the binding of
-[development registry version 5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5).
+[development registry version 5](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6).
 The router rule's input bound is `adapter_derived` from that binding, and its deadline is the
 recorded `u64` timestamp 1793554853 (17:40:53 UTC, the preflight time plus one hour), kept exact.
 The committed operator decisions supplied an output floor of 100,000 units and a transfer cap of

@@ -89,7 +89,7 @@ an operator JSON file using absolute canonical paths:
   "rpcUrl": "https://soroban-testnet.stellar.org",
   "registrySnapshotPath": "/absolute/path/registry.signed.json",
   "registryRootsPath": "/absolute/path/registry-roots.json",
-  "registryMinimumVersion": 1,
+  "registryMinimumVersion": 6,
   "buildJobs": 2,
   "buildTimeoutSecs": 600
 }

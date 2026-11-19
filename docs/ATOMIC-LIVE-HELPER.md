@@ -281,7 +281,8 @@ candidate policy's `NoTupleMatched` (6) inside the account's failed authenticati
 case signatures expired at ledger 5805435, readback at 5805436 showed the account's balance
 unchanged and no installed candidate. The receipt records `checkout_dirty: true` at the base
 revision: it was produced from the working tree that moved the pin, before that change was
-committed. The throwaway keys were deleted.
+committed. Its `script_sha256` is the SHA-256 of `deploy-live-helper.mjs` as committed with it.
+The throwaway keys were deleted.
 
 The run used `OZPB_RPC_URL=https://rpc.testnet.stellar.gateway.fm`. At the time the script
 attributed the denial only from the host's event log in the simulation's `error` text; that RPC

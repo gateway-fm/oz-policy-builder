@@ -175,7 +175,7 @@ a manual permission-bundle API invocation is a separate operator-controlled path
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
   each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
   output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
-  (example: `soroswap-decisions.json`); the router's input bound comes from [registry adapter v2](../docs/TARGET-ADAPTERS.md#current-binding-development-registry-version-5),
+  (example: `soroswap-decisions.json`); the router's input bound comes from [registry adapter v2](../docs/TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6),
   and the approved recorded deadline stays exact. That binding is a development-registry assertion, and the router's
   Wasm was not reproduced from source
   ([target adapters](../docs/TARGET-ADAPTERS.md#reproduction-attempt)).
@@ -398,6 +398,17 @@ before any delegated call. It replays the spec's own layer-1 suite against the i
     or `#6`, or W2's spending policy `3223` or `3221`.
 - A permit or any other attribution fails the run, and the failure cleanup removes the grant.
 
+The account's `DelegatedSignerIsContextContract` (3017, account 0.7.3) cannot arise here: the
+delegate is a classic account, never a context's contract.
+
+The committed suites in `scripts/fixtures/derived/` (W1, W2, W3 and the v1-adapter W3 shape)
+were synthesized in October 2026 for accounts running the 0.7.2 build, and their specs keep
+that `smart_account` record. They are kept as derived, not moved to the 0.7.3 pin: the
+recordings they came from are not committed, and version 6 would synthesize W3 through the
+version-2 router adapter rather than either committed shape. The replay tests read only their
+rules; the account pin `derived-denials.mjs` enforces is the run's (`account_code_hash` must be
+the current pin), which the tests set to the 0.7.3 hash.
+
 The suite's unrecognized signer sorts before any real delegate, so "authorized set plus an
 unrecognized signer" stops at the same account check as "unrecognized signer" alone. That is two
 suite cases but one live check.
@@ -511,7 +522,7 @@ rule `install.mjs` builds from the spec.
 ```
 OZPB_HARNESS_AUTHORITY_CHECK=cli OZPB_BIN=<ozpb with the check commands> \
 OZPB_REGISTRY_SNAPSHOT_ROOT=<root of the signed snapshot> OZPB_SIGNED_REGISTRY_SNAPSHOT=registry.signed.json \
-OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=4 OZPB_RPC_SOURCES_FILE=sources.json \
+OZPB_REGISTRY_ROOTS_FILE=registry-roots.json OZPB_REGISTRY_MIN_VERSION=6 OZPB_RPC_SOURCES_FILE=sources.json \
 [OZPB_RPC_SOURCE=testnet] [OZPB_HARNESS_CONFIRM=tty|operator] [OZPB_HARNESS_TRUST=trust.json] \
 bash testnet-harness/run.sh
 ```
@@ -626,10 +637,15 @@ The record of a run is the `run.json` in its run directory (`runs/<timestamp>-<p
 `https://stellar.expert/explorer/testnet/tx/<hash>` until the next testnet reset.
 
 The opt-in `protocol-dry-run.real.test.mjs` integration runs the real CLI and native
-worker for both the two-rule Soroswap observation fixture and
+worker for both `scripts/fixtures/synthetic-protocol-swap-observation.json` and
 `scripts/fixtures/synthetic-blend-claim-spec.json`. The Blend fixture is a synthetic
 claim authorization with an exact reserve-index vector; it is not an RPC recording
-or evidence that the Blend target executed. The test reads hash-checked pinned
+or evidence that the Blend target executed. The two-rule Soroswap fixture started as a
+preserved unsigned simulation of a 0.7.2 account; its account executable and spec were moved
+to the 0.7.3 pin (GHSA-jpg9-m7w4-c7wc) and the spec re-hashed under development registry
+version 6, but its `record.recording_hash` and the spec's evidence recording hash are the
+preserved values and no longer derive from the edited bundle, whose schema predates the
+current recorder. It is a validation fixture, not an observation. The test reads hash-checked pinned
 account bytes from the committed protocol-30 capture unless `OZPB_ACCOUNT_WASM` is supplied.
 Enable it with `OZPB_PROTOCOL_DRY_RUN_E2E=1`, `OZPB_BIN` and
 `OZPB_NATIVE_WORKER`; it generates real policy Wasm and submits no transaction.

@@ -4,7 +4,7 @@ import test from 'node:test';
 import { Address, StrKey, xdr } from '@stellar/stellar-sdk';
 import { inspectBundleGrant } from './bundle-grant.mjs';
 import { NETWORK_PASSPHRASE, PINNED_ACCOUNT_WASM } from './rpc.mjs';
-const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
 const C = (n) => StrKey.encodeContract(Buffer.alloc(32, n));
 const A = (value) => new Address(value).toScVal();
 function fixture(index) {
