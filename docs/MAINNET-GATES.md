@@ -569,10 +569,13 @@ and an agent can use a local stdio server.
 
 For that server, the tests below establish that it reads only allowlisted HTTPS RPC sources and
 refuses SSRF vectors, and refuses to start with a configured source the allowlist does not
-cover; redacts endpoint-controlled error text before it reaches a response; refuses an envelope
-carrying signatures before any request; keeps one session's artifacts from another;
+cover; reports a failed RPC read from any tool by its category only, withholding the endpoint's
+text, the URL a transport error quotes included; refuses an envelope carrying signatures before
+any request, in `preflight_transaction` and `record_simulation`; keeps one session's artifacts from another;
 authenticates before spending quota, bounds request bodies and refuses requests over the quota;
-and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
+refuses a spec whose reference suite would exceed its case or case-data limit before deriving it; returns a
+failed build's exit status without the compiler's output and removes each built crate from the
+shared cache; and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
 transport's bounds and the build-worker launcher, and runs the Compose package and rootless
 worker containment.
 
@@ -597,7 +600,8 @@ Also: builds are isolated from the API and from each other only in disposable-wo
 whose containment is accepted on the operator's chosen host
 ([isolated builds](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)); the Compose package
 compiles in the API's own trust domain, bounded but not isolated
-([self-hosting](SELF-HOSTING.md)). The self-hosted workflow runs on changes to its paths, not on
+([self-hosting](SELF-HOSTING.md)); the server refuses to start that way unless the operator sets
+`OZPB_HTTP_UNISOLATED_BUILDS=accept`, as that package does. The self-hosted workflow runs on changes to its paths, not on
 every pull request.
 
 ```gate-evidence G12
@@ -605,9 +609,15 @@ ci  crates/mcp-server/src/main.rs  tests::rpc_allowlist_blocks_ssrf_vectors
 ci  crates/mcp-server/src/main.rs  tests::every_configured_rpc_source_must_be_allowlisted_on_a_hosted_server
 ci  crates/mcp-server/src/main.rs  tests::hosted_sessions_do_not_share_generated_artifacts
 ci  crates/mcp-server/src/authority.rs  authority::tests::endpoint_controlled_errors_are_redacted_before_mcp_serialization
+ci  crates/mcp-server/src/main.rs  tests::hosted_rpc_errors_withhold_endpoint_controlled_text_from_every_read
 ci  crates/mcp-server/src/preflight.rs  preflight::tests::hosted_preflight_refuses_signed_material_before_any_request
+ci  crates/mcp-server/src/main.rs  tests::hosted_record_simulation_refuses_signed_material_before_any_request
 ci  crates/mcp-server/src/http.rs  http::tests::unauthenticated_requests_are_refused_without_spending_the_quota
+ci  crates/toolkit/src/verification.rs  verification::tests::a_spec_whose_reference_suite_is_too_large_is_refused_before_any_work
 ci  crates/mcp-server/src/cancel.rs  cancel::tests::cancelled_generate_code_kills_worker_group_and_frees_build_slot
+ci  crates/mcp-server/src/http.rs  http::tests::a_hosted_server_compiles_in_process_only_when_the_operator_accepts_it
+ci  crates/mcp-server/tests/mcp_http.rs  hosted_mode_refuses_to_compile_in_process_unless_the_operator_accepts_it
+ci  crates/build-runner/src/lib.rs  tests::a_shared_server_withholds_compiler_output_and_evicts_the_crate_it_built
 ci  crates/mcp-server/tests/mcp_http.rs  the_served_endpoint_authenticates_bounds_bodies_and_refuses_requests_over_the_quota
 ci  crates/mcp-server/tests/mcp_stdio_capture.rs  an_endpoint_echoing_the_envelope_never_reaches_the_response
 ci-step  .github/workflows/ci.yml  python3 scripts/check-log-redaction.py

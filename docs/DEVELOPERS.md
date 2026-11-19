@@ -130,6 +130,10 @@ ozpb reference-suite --spec spec.json
 # over exactly that list (format `ozpb-reference-suite-cases/v1`; the hash is
 # sha256("ozpb-reference-suite-cases/v1\n" + spec_hash + "\n" + compact JSON of `cases`)). The
 # testnet harness replays its live-realizable denials against an installed rule from this output.
+# A spec whose suite would derive more than 20,000 cases (cross products grow with the square of
+# a function's tuples times their arity), or whose cases would hold more than about 64 MiB (each
+# copies the tuple it varies), is refused with E_SPEC_LIMITS and both figures, here and by
+# `verify` and `prepare-dry-run`, before anything is derived or built.
 ozpb reference-suite --spec spec.json --emit-cases > cases.json
 
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
@@ -229,7 +233,7 @@ validates local report consistency, not imported evidence authenticity.
 | Flag | Env | Default |
 |---|---|---|
 | `--build-timeout-secs` | `OZPB_BUILD_TIMEOUT_SECS` | 600 |
-| `--build-cache-dir` | `OZPB_BUILD_CACHE_DIR` | a shared dir under the system temp dir |
+| `--build-cache-dir` | `OZPB_BUILD_CACHE_DIR` | a shared per-user dir beside the build directories (see below) |
 | `--build-jobs` | `OZPB_BUILD_JOBS` | available parallelism − 1 |
 | `--stellar-binary` | `OZPB_STELLAR_BINARY` | `stellar` on `PATH` |
 
@@ -237,12 +241,31 @@ validates local report consistency, not imported evidence authenticity.
 `soroban-sdk` and `stellar-accounts` from scratch, which is what the timeout is mostly
 spent on. Two properties of a shared cache to plan for: it is **not pruned** (cargo does not
 GC target directories, so distinct specs accumulate — give the volume a quota and clear it on
-a schedule), and it **serializes concurrent builds** on cargo's build-directory lock, so a
+a schedule; an `--http` server instead removes each crate it builds, keeping the dependencies,
+so its clients' spec names cannot fill it; give each server its own cache, since that removal is
+serialized only within one process), and it **serializes concurrent builds** on cargo's
+build-directory lock, so a
 hosted worker should size its concurrency to one build at a time per cache. The default path
 is per-uid and is refused if it is a symlink, not a directory, owned by another user, or
 group/world-accessible — a shared cache an attacker can pre-create is a route to poisoned
 dependency artifacts, and `verify` reproduces through the same cache, so a poisoned build
 would reproduce identically.
+
+**Where a build runs.** Each build compiles in a fresh directory, and cargo reads
+`.cargo/config.toml` from that directory and every parent of it, and takes a parent's
+`Cargo.toml` as a workspace root. A parent another local user can add entries to lets that user
+choose the compiler, which then runs as you: on Linux, any user can create `/tmp/.cargo`. So the
+build directory is created only under a directory that, like each of its parents, only root and
+you can add entries to (a read-only mount qualifies). That is the system temporary directory
+(`TMPDIR`) when it qualifies, as it does on macOS; otherwise `ozpb/build` in your cache
+directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only. The default build cache sits
+in the same directory. When neither qualifies (a `~/.cache` that a umask of 002 left
+group-writable does not), the build is refused with `E_BUILD_UNAVAILABLE` before anything runs;
+set `TMPDIR` to a private directory. Your own parents' cargo configuration still applies, as
+`~/.cargo/config.toml` does. A read-only mount is trusted as nobody can write through it, though
+it may be a view of a directory others write to elsewhere; macOS access-control entries
+(`chmod +a`) are not read. Against both, a `.cargo` (other than your cargo home) or a `Cargo.toml`
+already in the build directory or any parent is refused too.
 
 These are deliberately *not* request fields: a caller-chosen timeout is resource exhaustion
 and a caller-chosen builder path is arbitrary execution, so they stay operator configuration
@@ -445,7 +468,12 @@ an authenticated, TLS-terminating ingress forwards (a comma-separated `host[:por
 wildcards) that is not loopback. Only then does it accept a routable address, and it then answers
 only those hosts; any other `Host`, loopback names included, is refused (`403`), as is any request
 with an `Origin` header, in either mode. It refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
-(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
+(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set, and unless builds have somewhere to go besides its
+own trust domain: an `OZPB_BUILD_WORKER_LAUNCHER` ([disposable workers](ISOLATED-BUILDS.md)), or
+`OZPB_HTTP_UNISOLATED_BUILDS=accept`, the operator's statement that it compiles its clients'
+specs beside itself, as the Compose package does for one operator with trusted clients. A
+failed build then reports its exit status without the compiler's output, which names the
+host's paths. The allowlist is a comma-separated list of the
 full `https://` URLs the record tools may reach: each entry is parsed as a URL, so a bare
 hostname is refused at startup rather than at first use. Every request to `/v1/mcp` then
 passes three checks in order: the bearer token (`401`), a request quota (`429`) and a body
@@ -471,6 +499,13 @@ and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
 at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
 supplies OS-level compile isolation and a no-secrets worker role.
+
+The endpoints are the operator's, so an `--http` server reports a failed RPC read by its code and
+a fixed description only: a transport error would quote the URL (path included, where providers
+put API keys), and a JSON-RPC error or a reply carries whatever the endpoint wrote. Refusals of
+the caller's own envelope keep their wording. `record_simulation` and `preflight_transaction`
+refuse an envelope carrying signatures before any request. A stdio server, like the CLI, reports
+the endpoint's own words.
 
 A client's `notifications/cancelled` for a tool call, or the end of its MCP session, stops the
 work that call started; as MCP specifies, the cancelled call gets no response. A local build's whole process group
