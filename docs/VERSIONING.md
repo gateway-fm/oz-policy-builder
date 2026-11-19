@@ -159,8 +159,7 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
 
 ### The order for 1.0.0
 
-1.0.0 is the release a mainnet installation is made from, and each step below needs the one
-before it:
+1.0.0 is the release a mainnet installation is made from. Its steps come in this order:
 
 1. A freeze commit fixes the audited revision ([audit scope](AUDIT-SCOPE.md)).
 2. The external security audit and OpenZeppelin's review of the generated code examine that
