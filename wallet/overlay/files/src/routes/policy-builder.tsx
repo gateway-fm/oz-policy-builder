@@ -804,6 +804,10 @@ function PolicyBuilder() {
             {" "}{state.monitor.status === "unchanged" ? "Your account's rule and who can act on it are exactly as you approved."
               : state.monitor.status === "drift" ? "Something changed: review revocation below to remove this rule."
                 : "This is not a passing check; read the details."}</p>
+          <p className="text-sm">Registry: <Badge tone={object(state.monitor.registry).status === "current" ? "pass" : "wait"}>
+            {label(object(state.monitor.registry).status)}</Badge>{" "}
+            {object(state.monitor.registry).status === "not_configured" ? "No published registry log is configured (operator `registryPublishedPath`)."
+              : <>{label(object(state.monitor.registry).meaning)}. What to do: {label(object(state.monitor.registry).action)}.</>}</p>
           <Details title="Observation and ledger bounds"><Evidence title="Grant observation" value={state.monitor} /></Details>
         </>}
       </section>

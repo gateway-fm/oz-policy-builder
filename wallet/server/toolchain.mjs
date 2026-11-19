@@ -17,6 +17,24 @@ const refuse = (code) => {
 };
 /** The CLI's refusal of a registry root policy it will not trust; surfaced from every registry-reading call. */
 export const REGISTRY_ROOT_POLICY = 'E_REGISTRY_ROOT_POLICY';
+/**
+ * `ozpb registry monitor`'s exit statuses (docs/REGISTRY-GOVERNANCE.md#monitoring): what each means and
+ * what to do. Status 1, a published log that cannot be verified against the checkpoint, is an incident.
+ */
+export const REGISTRY_MONITOR = Object.freeze({
+  0: Object.freeze({ status: 'current', meaning: 'current, not expiring within the window', action: 'none' }),
+  3: Object.freeze({ status: 'newer_version', meaning: 'a newer version is published', action: 'review it, then advance the checkpoint' }),
+  7: Object.freeze({ status: 'not_yet_valid', meaning: 'the head\'s interval has not started',
+    action: 'nothing loads it yet; keep the current version until it starts, and check the start date was intended' }),
+  4: Object.freeze({ status: 'expires_soon', meaning: 'the head expires within the window', action: 'ask the custodians for a successor' }),
+  5: Object.freeze({ status: 'expired', meaning: 'the head has expired', action: 'synthesis and checks now refuse it; ask the custodians for a successor' }),
+  6: Object.freeze({ status: 'revoked', meaning: 'a watched hash is revoked', action: 'the emergency-removal path: revoke the grant, or move the funds' }),
+  1: Object.freeze({ status: 'log_unverifiable', meaning: 'the published log cannot be verified against the checkpoint',
+    action: 'treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned' }),
+});
+const unverifiable = () => freezeCopy({ status: REGISTRY_MONITOR[1].status, exit: 1, meaning: REGISTRY_MONITOR[1].meaning,
+  action: REGISTRY_MONITOR[1].action });
+
 /** Keeps only that refusal's code from an error a catch-all would otherwise discard. */
 const rootPolicy = (error) => (error?.code === REGISTRY_ROOT_POLICY ? REGISTRY_ROOT_POLICY : undefined);
 // `capture-target` codes that name the call's own outcome rather than an endpoint fault.
@@ -63,7 +81,7 @@ export class WalletToolchain {
   #config; #root; #runner; #records = new Map(); #artifacts = new Map(); #trustArgs; #network;
 
   constructor({ executable, workRoot, rpcUrl, registrySnapshot, registryRoots, registryMinimumVersion, runner = runTool, buildEnvironment = {},
-    network }) {
+    network, registryPublishedPath = null }) {
     const url = new URL(rpcUrl);
     if (!Object.values(WALLET_NETWORKS).includes(network)) refuse();
     this.#network = network;
@@ -74,7 +92,7 @@ export class WalletToolchain {
     new RawJson(registrySnapshot); new RawJson(registryRoots);
     bindWorkRoot(workRoot, network);
     this.#root = mkdtempSync(join(workRoot, 'wallet-session-'));
-    this.#config = { executable, rpcUrl, registrySnapshot, registryMinimumVersion, buildEnvironment };
+    this.#config = { executable, rpcUrl, registrySnapshot, registryMinimumVersion, buildEnvironment, registryPublishedPath };
     this.#runner = runner;
     save(join(this.#root, 'registry.signed.json'), registrySnapshot);
     save(join(this.#root, 'registry-roots.json'), registryRoots);
@@ -237,6 +255,33 @@ export class WalletToolchain {
       // The capture repeats the call (account, recipient, amount), so it is as confidential as the envelope.
       rmSync(request, { force: true }); rmSync(join(directory, 'capture-target.json'), { force: true });
     }
+  }
+
+  /**
+   * `ozpb registry monitor` against the operator's published registry log (`registryPublishedPath`)
+   * and the checkpoint in the pinned roots, watching `wasmHashes`: `{ status, exit, meaning, action,
+   * headVersion, expiresAtUnix, revoked }`, or `{ status: 'not_configured' }`. A log that cannot be
+   * verified, or a report whose status disagrees with its exit status, is `log_unverifiable`.
+   */
+  async registryMonitor({ wasmHashes }) {
+    if (this.#config.registryPublishedPath === null) return freezeCopy({ status: 'not_configured' });
+    if (!Array.isArray(wasmHashes) || !wasmHashes.length || !wasmHashes.every((h) => HASH.test(h))) refuse();
+    const args = ['registry', 'monitor', '--published', this.#config.registryPublishedPath, '--registry-roots',
+      join(this.#root, 'registry-roots.json'), '--network', this.#network.passphrase, '--expiry-window-days', '14',
+      ...wasmHashes.flatMap((h) => ['--wasm-hash', h])];
+    let ran;
+    try {
+      ran = await this.#runner(this.#config.executable, args, { env: this.#config.buildEnvironment, timeoutMs: 120_000, statuses: [3, 4, 5, 6, 7] });
+    } catch { return unverifiable(); }
+    try {
+      const known = REGISTRY_MONITOR[ran?.status];
+      const report = parseJsonExact(ran.output);
+      if (!known || ran.status === 1 || report?.schema !== 'registry-monitor/v1' || report.status !== known.status
+        || !Array.isArray(report.revoked) || typeof report.head?.version !== 'string') return unverifiable();
+      return freezeCopy({ status: known.status, exit: ran.status, meaning: known.meaning, action: known.action,
+        headVersion: report.head.version, expiresAtUnix: String(report.expires_at_unix),
+        revoked: report.revoked.map((r) => ({ wasm_hash: r.wasm_hash, capability: r.capability, reason: r.reason })) });
+    } catch { return unverifiable(); }
   }
 
   bindingRequest(artifactId, policyAddress, resolutionReference) {

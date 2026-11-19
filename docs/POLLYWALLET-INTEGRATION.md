@@ -1117,6 +1117,18 @@ must equal the preinstallation commitment; no new baseline is learned. Actual sc
 and ledger evidence remain separate from the counterfactual projection. This command returns
 a distinct monitoring observation and cannot prepare an installation.
 
+With `registryPublishedPath` naming the operator's published registry log (its directory, or its
+head file), the same check also runs `ozpb registry monitor` against it and the checkpoint in the
+pinned roots, watching the account's and the owner verifier's Wasm (a generated policy is recognized
+by its reproduced build, not by a registry entry, so it is not watched). The result is shown apart
+from the grant's: `current` (exit 0), `newer_version` (3), `not_yet_valid` (7), `expires_soon` (4),
+`expired` (5) or `revoked` (6), each with what to do as
+[the governance guide](REGISTRY-GOVERNANCE.md#monitoring) tabulates it, and `log_unverifiable`
+(exit 1, or a report that contradicts its exit status), which is an incident. A revoked account or
+verifier is not fixed by revoking the grant; follow
+[revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal).
+Without that path the registry part reports `not_configured`.
+
 An `unchanged` result means the exact recorded grant and modeled authority matched within
 the displayed ledger window. It does not cover unmodeled storage, signer/policy allocation
 counters, storage reference counts, unrelated rule names, TTL continuity, policy-counter

@@ -7,7 +7,7 @@ import { FeePayer, loadDelegateKey, loadFeePayerKey } from './fee-payer.mjs';
 import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
-const OPTIONAL = ['network', 'feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
+const OPTIONAL = ['network', 'registryPublishedPath', 'feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
 /** Fields only a mainnet configuration takes: its funding model, its caps and its pinned-code directory. */
 const MAINNET_ONLY = ['feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
@@ -128,6 +128,13 @@ export function loadWalletConfig(path) {
     // Mainnet: the operator's own key, which it funds; testnet: a disposable key Friendbot funds.
     const feePayer = mainnet ? loadFeePayerKey(value.feePayerKeyPath) : FeePayer.disposable();
     const pinnedWasmDir = Object.hasOwn(value, 'pinnedWasmDir') ? directory(value.pinnedWasmDir) : null;
+    // The operator's published registry log (a directory of signed versions, or its head file), for `registry monitor`.
+    let registryPublishedPath = null;
+    if (Object.hasOwn(value, 'registryPublishedPath')) {
+      const stat = pathInfo(value.registryPublishedPath);
+      if (!stat.isDirectory() && !stat.isFile()) refused();
+      registryPublishedPath = value.registryPublishedPath;
+    }
     // Mainnet: the grant's delegate is the agent's key. Only this optional file gives the wallet a key it may
     // sign with as a delegate (for the checks that need its signatures and the one use of the grant).
     const delegateKey = Object.hasOwn(value, 'delegateKeyPath') ? loadDelegateKey(value.delegateKeyPath) : null;
@@ -159,7 +166,7 @@ export function loadWalletConfig(path) {
     // Its code is read back and matched to the reviewed hash before every use, never trusted from here.
     if (Object.hasOwn(value, 'liveHelper') && (typeof value.liveHelper !== 'string' || !StrKey.isValidContract(value.liveHelper))) refused();
     const liveHelper = Object.hasOwn(value, 'liveHelper') ? value.liveHelper : null;
-    return Object.freeze({ network, feePayer, delegateKey, fees: Object.freeze(fees), pinnedWasmDir, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
+    return Object.freeze({ network, feePayer, delegateKey, fees: Object.freeze(fees), pinnedWasmDir, registryPublishedPath, executable: executable(value.executable), workRoot: directory(value.workRoot, true),
       rpcUrl: url.href, registrySnapshot, registryRoots, registryMinimumVersion: value.registryMinimumVersion,
       buildEnvironment: Object.freeze(buildEnvironment), nativeExecutable, liveHelper });
   } catch (error) {
