@@ -30,6 +30,8 @@ const refuse = (cause) => {
 };
 /** Testnet's fee ceilings, unchanged: no session cap, since Friendbot pays for everything there. */
 export const TESTNET_FEES = Object.freeze({ maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, sessionSpendCapStroops: null });
+/** The inclusion fee the wallet bids on every transaction it builds; the resource fee comes on top. */
+export const INCLUSION_FEE_STROOPS = 1_000_000;
 const isUpload = (operations) => operations.length === 1
   && operations[0].body.invokeHostFunctionOp?.hostFunction.type === 'hostFunctionTypeUploadContractWasm';
 const bytes = (value) => Buffer.from(value.toXDR());
@@ -203,14 +205,16 @@ export class WalletNetwork {
     this.#server = server ?? boundedRpcServer(rpcUrl, fetchImpl);
     this.#rpcUrl = rpcUrl;
     this.#fetch = fetchImpl; this.#journal = journalRoot; this.#assemble = assemble; this.#pause = pause;
-    this.#save(0, 'session', { network: network.name, networkId: network.networkId, protocolVersion: PROTOCOL_VERSION });
+    // A read-only user (the harness's native source read) keeps no journal; it then cannot submit
+    // either, since every submission journals its intended hash before it is sent.
+    if (journalRoot !== undefined) this.#save(0, 'session', { network: network.name, networkId: network.networkId, protocolVersion: PROTOCOL_VERSION });
   }
   /** The session's network profile. */
   get profile() { return this.#network; }
   get payerAddress() { return this.#payer.address; }
   /** The session's fee caps, shown to the owner before anything is signed. */
   get fees() { return this.#fees; }
-  /** Fees this session's confirmed transactions were charged, plus the full fee of any whose result is uncertain. */
+  /** The most this session's sent transactions can have been charged: each one's full fee, whatever a receipt reports. */
   get spentStroops() { return this.#spent.toString(); }
   /** Whether a submission could start now: the payer is funded and no earlier result is uncertain. */
   get canSubmit() { return this.#funded && !this.#ambiguous; }
@@ -361,7 +365,7 @@ export class WalletNetwork {
   }
   async submitOperation(operation, stage) {
     const source = await this.source();
-    const tx = new TransactionBuilder(source, { fee: '1000000', networkPassphrase: this.#network.passphrase })
+    const tx = new TransactionBuilder(source, { fee: String(INCLUSION_FEE_STROOPS), networkPassphrase: this.#network.passphrase })
       .addOperation(sourceAuthorization(operation, this.payerAddress)).setTimeout(120).build();
     return this.submitEnvelope(tx.toEnvelope().toXDR('base64'), stage);
   }
@@ -394,8 +398,9 @@ export class WalletNetwork {
       this.#save(serial, 'intended', { stage, hash: txHash, networkId: this.#network.networkId,
         envelopeXdr: assembled.toEnvelope().toXDR('base64'), status: 'submission_unknown' });
       // From this point an exception may mean a live write. Only a verified receipt
-      // releases this guard; a later action cannot silently submit a replacement. Until then the
-      // whole fee counts as spent.
+      // releases this guard; a later action cannot silently submit a replacement. The session cap
+      // counts the whole fee the transaction may be charged, not the fee an RPC later reports, so a
+      // receipt cannot give back budget.
       this.#ambiguous = true;
       this.#spent += fee;
       const sent = await this.#server.sendTransaction(assembled);
@@ -410,7 +415,6 @@ export class WalletNetwork {
         this.#save(serial, 'confirmed', { ...result, stage, envelopeXdr: receipt.envelopeXdr.toXDR('base64'),
           resultXdr: receipt.resultXdr.toXDR('base64'), resultMetaXdr: receipt.resultMetaXdr.toXDR('base64') });
         this.#ambiguous = false;
-        this.#spent += BigInt(checked.feeCharged) - fee;
         return { ...result, feeChargedStroops: checked.feeCharged, returnValue: checked.returned, events: checked.events };
       }
       refuse();
@@ -663,9 +667,9 @@ export class WalletNetwork {
     } catch (error) { refuse(error); }
   }
   /**
-   * What uploading `wasm` from the fee payer would cost, from one simulation: nothing is signed or
-   * sent. `{ resourceFeeStroops, feeStroops, ledger }`, the fee being the resource fee plus the
-   * inclusion fee the wallet offers.
+   * What uploading `wasm` from the fee payer would cost at most, from one simulation: nothing is
+   * signed or sent. `{ resourceFeeStroops, feeStroops, ledger }`, the fee being the resource fee plus
+   * the inclusion fee the wallet bids (`INCLUSION_FEE_STROOPS`), as the upload it submits will carry.
    */
   async uploadCost(wasm) {
     try {
@@ -676,7 +680,8 @@ export class WalletNetwork {
       const simulation = await this.#server.simulateTransaction(tx);
       if (rpc.Api.isSimulationError(simulation) || !/^(0|[1-9][0-9]{0,18})$/.test(String(simulation.minResourceFee))) refuse();
       const resource = BigInt(simulation.minResourceFee);
-      return { resourceFeeStroops: resource.toString(), feeStroops: (resource + 100n).toString(), ledger: ledger(simulation.latestLedger) };
+      return { resourceFeeStroops: resource.toString(), feeStroops: (resource + BigInt(INCLUSION_FEE_STROOPS)).toString(),
+        ledger: ledger(simulation.latestLedger) };
     } catch (error) { refuse(error); }
   }
   /**

@@ -252,12 +252,13 @@ account and does not fund the account.
 
 **Caps.** Every transaction is held, before it is signed, to `maxFeeStroops` (default 1 XLM) or,
 for a policy Wasm upload, `maxUploadFeeStroops` (default 12 XLM), and to `sessionSpendCapStroops`
-(default 15 XLM) together with what the session has already spent: confirmed fees as charged, and
-the whole fee of a submission whose result is uncertain. Either cap refuses before signing
+(default 15 XLM) together with what the session has already spent, counted as the whole fee each
+sent transaction may be charged, whatever a receipt later reports, so that an RPC cannot give back
+budget. Fees actually charged are usually lower. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). Each cap can be lowered, not raised past its ceiling (1 XLM, 15 XLM and
 50 XLM). The page shows both caps and the amount spent before every consent, and the policy
-deployment preview shows the upload's simulated cost; a preview whose simulated cost would pass a
-cap is refused before consent.
+deployment preview shows the upload's simulated cost (its resource fee plus the wallet's 0.1 XLM
+inclusion bid); a preview whose simulated cost would pass a cap is refused before consent.
 
 **Readiness.** `Check mainnet readiness` reads, without signing or sending anything, the fee payer's
 balance, the caps, whether the pinned account and verifier code is on mainnet and whether the live

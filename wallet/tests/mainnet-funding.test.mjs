@@ -184,14 +184,16 @@ test('mainnet: a transaction above the per-transaction cap or the session cap is
     (error) => error.reason === 'fee_cap');
   assert.equal(over.calls.some((call) => call.sent), false);
   assert.deepEqual(readdirSync(over.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
-  const tight = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 5_000 };
+  const tight = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 7_000 };
   const session = mainnet(t, { fee: 4_000, fees: tight });
   await session.network.fundPayer();
   const first = await session.network.submitEnvelope(contractCall(session.network.payerAddress), 'revoke-policy');
+  // The receipt says 1500 was charged; the cap still counts the 4000 the transaction could be charged,
+  // so an RPC reporting a low fee cannot give back budget.
   assert.equal(first.feeChargedStroops, '1500');
-  assert.equal(session.network.spentStroops, '1500', 'the fee charged, not the ceiling, once the receipt says');
+  assert.equal(session.network.spentStroops, '4000');
   await assert.rejects(() => session.network.submitEnvelope(contractCall(session.network.payerAddress), 'revoke-policy'),
-    (error) => error.reason === 'spend_cap', '1500 spent plus at most 4000 more passes the 5000 cap');
+    (error) => error.reason === 'spend_cap', '4000 counted plus at most 4000 more passes the 7000 cap');
   assert.equal(session.calls.filter((call) => call.sent).length, 1, 'the second was never sent');
 });
 
