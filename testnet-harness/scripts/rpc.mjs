@@ -55,10 +55,15 @@ export async function assertTestnet() {
   return net;
 }
 
+/**
+ * Testnet's Friendbot, pinned as the wallet's testnet profile pins it. Never the `friendbotUrl` an
+ * RPC endpoint reports: that is the endpoint's answer, and it must not pick where this machine
+ * sends requests.
+ */
+export const FRIENDBOT_URL = 'https://friendbot.stellar.org';
+
 export async function fund(address) {
-  const net = await server.getNetwork();
-  const base = net.friendbotUrl ?? 'https://friendbot.stellar.org/';
-  const res = await fetch(`${base}?addr=${encodeURIComponent(address)}`);
+  const res = await fetch(`${FRIENDBOT_URL}/?addr=${encodeURIComponent(address)}`);
   if (!res.ok) throw new Error(`friendbot refused ${address}: HTTP ${res.status}`);
 }
 

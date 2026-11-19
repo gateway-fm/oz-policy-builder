@@ -201,3 +201,15 @@ test('writeJson completes short writes and refuses a write that makes no progres
   assert.equal(JSON.parse(fs.readFileSync(path, 'utf8')).value, 'a fairly long journal value that needs several short writes');
   assert.deepEqual(fs.readdirSync(dir), ['run.json'], 'the partial temporary file is removed and never renamed');
 });
+
+test('Friendbot is the pinned testnet service, never a URL the RPC endpoint reports', async (t) => {
+  const rpcModule = await import('./rpc.mjs');
+  const address = 'GAMX62ZD4FWIKMWGVPEDR6WNL2TYTPQMO2ZJEAZUAON7VCZ5G2GWDF7W';
+  // An endpoint's getNetwork answer is its own report: it must not choose where this machine sends requests.
+  t.mock.method(rpcModule.server, 'getNetwork', async () => ({ passphrase: rpcModule.NETWORK_PASSPHRASE,
+    friendbotUrl: 'http://169.254.169.254/latest/meta-data/' }));
+  const fetched = [];
+  t.mock.method(globalThis, 'fetch', async (url) => { fetched.push(String(url)); return { ok: true, status: 200 }; });
+  await rpcModule.fund(address);
+  assert.deepEqual(fetched, [`https://friendbot.stellar.org/?addr=${address}`]);
+});

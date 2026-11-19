@@ -149,7 +149,8 @@ a manual permission-bundle API invocation is a separate operator-controlled path
 - Node ≥ 22.12 (required by `@stellar/stellar-sdk` 17), `stellar` CLI 27.0.0, and the Rust
   toolchain `rust-toolchain.toml` pins, with `wasm32v1-none`. The CLI is used by
   `ozpb generate`.
-- Network access to `soroban-testnet.stellar.org` and Friendbot. Override the RPC with
+- Network access to `soroban-testnet.stellar.org` and Friendbot (`friendbot.stellar.org`, fixed in
+  the scripts; a Friendbot URL the RPC endpoint reports is not used). Override the RPC with
   `OZPB_RPC_URL`. The scripts' own output and `run.json` show only its origin, but an error raised
   inside the RPC client can still print the full URL, so keep credentials out of it. Every script
   that signs first checks that the endpoint serves testnet.
