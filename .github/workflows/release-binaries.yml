@@ -4,8 +4,9 @@ name: release binaries
 # Release (pre-releases included) and attaches them to it, with SHA256SUMS, the MCP wire contract
 # the built server serves, and a GitHub build-provenance attestation for every asset. It deploys
 # nothing and runs no service. A `workflow_dispatch` run is a dry run on the chosen ref: it builds,
-# packages and assembles exactly as a release does, and neither attests nor uploads anything. What
-# the assets promise is docs/VERSIONING.md; how an operator verifies them, docs/SELF-HOSTING.md.
+# packages and assembles exactly as a release does, keeps its run artifacts for a day, and neither
+# attests nor attaches anything to a release. What the assets promise is docs/VERSIONING.md; how an
+# operator verifies them, docs/SELF-HOSTING.md.
 #
 # A workflow of its own rather than more jobs in publish-image.yml: the binaries need a macOS
 # runner and permission to write release assets, the images need neither, and a red check in one
