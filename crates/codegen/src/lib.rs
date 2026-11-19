@@ -183,7 +183,8 @@ pub fn generate(
     files.insert("Cargo.toml".to_string(), emit_cargo_toml(&crate_name, pins));
     files.insert("rust-toolchain.toml".to_string(), emit_rust_toolchain(pins));
     files.insert("rustfmt.toml".to_string(), emit_rustfmt_toml());
-    let (crate_root, contract) = emit_lib(&render_rule, &hash);
+    let meta = contract_meta(&render_rule, &hash)?;
+    let (crate_root, contract) = emit_lib(&render_rule, &hash, &meta);
     files.insert("src/lib.rs".to_string(), crate_root);
     files.insert("src/contract.rs".to_string(), contract);
 
@@ -207,6 +208,49 @@ pub fn generate(
         files,
         normalized_input_hash: hash,
     })
+}
+
+/// The generator's name and codegen version, as the artifact states it in `ozpb_generator`.
+///
+/// A codegen version rather than the toolkit's crate version or git revision, deliberately. Every
+/// value here is compiled into the Wasm, so it has to be a fixed point of the emitted source: a
+/// revision cannot be (the committed golden crates would have to contain the hash of the commit
+/// that contains them), and the crate version is `0.1.0` across releases, so stating it would be
+/// a claim the binary cannot back. The toolkit's revision belongs to the BuildManifest.
+fn generator_identity() -> String {
+    format!("oz-policy-builder/codegen@{CODEGEN_VERSION}")
+}
+
+/// The `contractmeta!` block of the crate root: what the artifact states about its own origin in
+/// its SEP-46 `contractmetav0` section, readable with `stellar contract info meta`.
+///
+/// Only values the normalized codegen input already determines, because these are compiled into
+/// the Wasm: the spec hash, registry snapshot and account would make one grant shape a different
+/// Wasm per spec, per registry update and per account (`normalized_hash_ignores_non_code_fields`),
+/// which is the property that lets equal grants share one deployment. Those stay in the
+/// BuildManifest, which binds this Wasm's hash to the spec it was built from.
+fn contract_meta(rule: &RenderRule, hash: &Hash32) -> Result<String, CodegenError> {
+    let mut out = String::from("\n");
+    out.push_str(&render::wrap_comment(
+        "// ",
+        "Provenance, read with `stellar contract info meta`. The spec this was built from, its \
+         registry snapshot and the toolkit revision are in the BuildManifest, not here: they \
+         would make one grant shape a different Wasm per spec.",
+    ));
+    for (key, value) in [
+        (render::MetaKey::Generator, generator_identity()),
+        (
+            render::MetaKey::TemplateFamily,
+            rule.template_family.to_string(),
+        ),
+        (render::MetaKey::CodegenInput, hash.to_hex()),
+    ] {
+        out.push_str(&render::contract_meta_entry(
+            key,
+            &render::MetaValue::new(&value)?,
+        ));
+    }
+    Ok(out)
 }
 
 fn emit_lockfile(crate_name: &str, pins: &Pins) -> Result<String, CodegenError> {
@@ -564,7 +608,7 @@ lto = true
 /// Takes a [`RenderRule`], never a `RuleSpec`: every value here has already been through its
 /// validating constructor, so no raw spec string is in scope to interpolate (§4.4 rendering
 /// safety). Emission is infallible for a well-formed `RenderRule`.
-fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
+fn emit_lib(rule: &RenderRule, hash: &Hash32, meta: &str) -> (String, String) {
     let template_family = &rule.template_family;
     let has_state = rule.has_state();
     let has_scval = rule.has_scval();
@@ -668,6 +712,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // — `unbalanced_constants` exists to prove a constant is never emitted without its use site —
     // so the attribute would hide the very thing that test checks for.
     out.push_str("#![no_std]\n\npub mod contract;\n");
+    out.push_str(meta);
     let crate_root = out;
 
     let mut out = String::new();
@@ -1847,6 +1892,174 @@ mod tests {
         );
     }
 
+    /// The `contractmeta!` entries of an emitted crate root, as `(key, value)` in source order.
+    ///
+    /// Parsed rather than searched for: a value that escaped its literal shows up as a parse
+    /// failure, an extra item or a non-literal argument, never as a substring that happens to
+    /// match.
+    fn contract_meta_of(source: &str) -> Vec<(String, String)> {
+        let file = syn::parse_file(source).expect("the crate root must parse");
+        file.items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(item)
+                    if item
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "contractmeta") =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .map(|item| {
+                let args = item
+                    .mac
+                    .parse_body_with(
+                        syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+                    )
+                    .expect("contractmeta! arguments are `name = value` pairs");
+                let pairs: Vec<(String, String)> = args
+                    .iter()
+                    .map(|pair| {
+                        let name = pair.path.get_ident().expect("a bare argument name").to_string();
+                        let syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(value),
+                            ..
+                        }) = &pair.value
+                        else {
+                            panic!("contractmeta! takes string literals")
+                        };
+                        (name, value.value())
+                    })
+                    .collect();
+                assert_eq!(
+                    pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+                    ["key", "val"],
+                    "one key and one value per entry"
+                );
+                (pairs[0].1.clone(), pairs[1].1.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_artifact_states_its_provenance_in_contract_meta() {
+        // What `stellar contract info meta` shows a reader of the deployed Wasm, without our
+        // BuildManifest: which generator, which template family, and which normalized input.
+        // Nothing that `normalized_hash_ignores_non_code_fields` keeps out of the bytes — spec
+        // hash, registry snapshot, account — may appear here, or one grant shape would stop
+        // being one Wasm.
+        for (label, spec) in [
+            ("W2 subscription", golden_spec()),
+            (
+                "W3 soroswap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+        ] {
+            let generated = generate(&spec, 0, &Pins::default()).unwrap();
+            assert_eq!(
+                contract_meta_of(&generated.files["src/lib.rs"]),
+                vec![
+                    (
+                        "ozpb_generator".to_string(),
+                        "oz-policy-builder/codegen@1".to_string()
+                    ),
+                    (
+                        "ozpb_template_family".to_string(),
+                        "policy-templates/scope@1".to_string()
+                    ),
+                    (
+                        "ozpb_codegen_input".to_string(),
+                        generated.normalized_input_hash.to_hex()
+                    ),
+                ],
+                "{label}"
+            );
+            assert!(
+                !generated.files["src/contract.rs"].contains("contractmeta"),
+                "{label}: provenance is stated once, in the crate root"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostile_meta_value_cannot_leave_its_literal() {
+        // `contractmeta!` takes string literals, so a value is emitted *inside* one. A quote
+        // would close it and turn the rest into Rust; a backslash changes what it means; a
+        // newline or `*/` breaks the line structure a reviewer reads. None is escaped: a value
+        // that would need escaping is refused.
+        for hostile in [
+            "scope@1\"); pub fn back_door() {} //",
+            "scope@1\nsoroban_sdk::contractmeta!(key = \"ozpb_generator\", val = \"forged\");",
+            "scope@1 */ pub fn back_door() {} /*",
+            "scope@1*/",
+            "scope@1\\",
+            "scope@1\"",
+            "with space",
+            "tab\there",
+            "",
+            &"a".repeat(65),
+        ] {
+            assert!(
+                render::MetaValue::new(hostile).is_err(),
+                "MetaValue accepted {hostile:?}"
+            );
+            assert!(
+                render::TemplateFamily::new(hostile).is_err(),
+                "TemplateFamily accepted {hostile:?}, and it is emitted as a meta value"
+            );
+        }
+        // What is accepted renders as exactly one item whose literal is the value, unchanged.
+        for value in ["policy-templates/scope@1", "f".repeat(64).as_str()] {
+            let line = render::contract_meta_entry(
+                render::MetaKey::TemplateFamily,
+                &render::MetaValue::new(value).unwrap(),
+            );
+            assert_eq!(syn::parse_file(&line).unwrap().items.len(), 1, "{line}");
+            assert_eq!(
+                contract_meta_of(&line),
+                vec![("ozpb_template_family".to_string(), value.to_string())]
+            );
+        }
+    }
+
+    #[test]
+    fn both_meta_layouts_are_the_ones_rustfmt_would_choose() {
+        // `use_small_heuristics = "Max"` keeps a call on one line while the whole line fits
+        // `max_width`; past it, rustfmt takes one argument per line with no trailing comma.
+        // Measured against the pinned rustfmt with the shipped rustfmt.toml, at 100 and 101.
+        let fixed = "soroban_sdk::contractmeta!(key = \"ozpb_template_family\", val = \"\");".len();
+        let entry = |total: usize| {
+            let value = "a".repeat(total - fixed);
+            (
+                render::contract_meta_entry(
+                    render::MetaKey::TemplateFamily,
+                    &render::MetaValue::new(&value).unwrap(),
+                ),
+                value,
+            )
+        };
+        let (fits, value) = entry(render::MAX_WIDTH);
+        assert_eq!(
+            fits,
+            format!(
+                "soroban_sdk::contractmeta!(key = \"ozpb_template_family\", val = \"{value}\");\n"
+            )
+        );
+        assert_eq!(fits.trim_end().chars().count(), render::MAX_WIDTH);
+        let (overflows, value) = entry(render::MAX_WIDTH + 1);
+        assert_eq!(
+            overflows,
+            format!(
+                "soroban_sdk::contractmeta!(\n    key = \"ozpb_template_family\",\n    val = \
+                 \"{value}\"\n);\n"
+            )
+        );
+    }
+
     #[test]
     fn only_contract_and_account_strkeys_are_accepted_as_addresses() {
         // A muxed or pre-auth strkey decodes cleanly but is not a Soroban `Address`; emitting
@@ -1889,17 +2102,21 @@ mod tests {
             let mut rest = source.as_str();
             let mut literals = 0usize;
             while let Some(open) = rest.find('"') {
+                // A `contractmeta!` argument may also carry the meta-value punctuation
+                // (`-./@`), and nothing else: still no quote, backslash, space or newline.
+                let meta_argument =
+                    rest[..open].ends_with("key = ") || rest[..open].ends_with("val = ");
                 rest = &rest[open + 1..];
                 let close = rest
                     .find('"')
                     .unwrap_or_else(|| panic!("{label}: unterminated string literal"));
                 let content = &rest[..close];
                 assert!(
-                    content
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                    content.bytes().all(|b| b.is_ascii_alphanumeric()
+                        || b == b'_'
+                        || (meta_argument && matches!(b, b'-' | b'.' | b'/' | b'@'))),
                     "{label}: emitted string literal {content:?} is not a bare \
-                     identifier/strkey; an untrusted value escaped its literal"
+                     identifier/strkey or meta value; an untrusted value escaped its literal"
                 );
                 literals += 1;
                 rest = &rest[close + 1..];
@@ -4514,7 +4731,7 @@ mod tests {
 
         let rule = render_rule_with(vec![external_signer()], PredicateKind::AnyOf, true);
         assert!(rule.has_external_signer());
-        let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"));
+        let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"), "");
         let source = format!("{root}\n{contract}");
         assert!(
             source.contains("const SIGNER_0_KEY: [u8; 2] = [0xaa, 0xbb];\n"),
@@ -4555,7 +4772,7 @@ mod tests {
             (false, PredicateKind::AnyOfCurrentRuleSigners),
         ] {
             let rule = render_rule_with(vec![delegate()], kind.clone(), strict);
-            let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"));
+            let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"), "");
             let source = format!("{root}\n{contract}");
             let documented = error_bullets(&docs_of(&source, "enforce"))
                 .iter()

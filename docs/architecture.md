@@ -632,6 +632,10 @@ impl GeneratedPolicy {
   Reproducible wasm: pinned Rust toolchain (`rust-toolchain.toml`), `--locked` builds, and the
   pinned `stellar contract build` whose version the manifest records and the artifact's own
   metadata confirms; a containerized builder identified by image digest is future work (§6.3).
+  The artifact states its own origin in SEP-46 `contractmetav0` entries — generator and codegen
+  version, template family, normalized codegen-input hash — readable with `stellar contract info
+  meta`. Only values the normalized input determines may go there, since they are compiled in:
+  the spec hash or registry snapshot would make one grant shape a different wasm per spec.
   Provenance lives in the BuildManifest, within the field set §6.3's scope note names — not all
   of what that section lists is carried yet. Re-derivation is automated by `verify` (§4.6), which
   arrives with that section's milestone.

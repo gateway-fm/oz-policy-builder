@@ -594,7 +594,8 @@ const WASM_META_SECTION: &str = "contractmetav0";
 const WASM_PREAMBLE: [u8; 8] = *b"\0asm\x01\0\0\0";
 
 /// Ceiling on the metadata entries read out of one Wasm. A bound on a length field that arrives
-/// from a subprocess's output, not a schema limit — real artifacts carry four.
+/// from a subprocess's output, not a schema limit — a generated policy carries seven: the
+/// toolchain's four and the generator's three.
 const MAX_WASM_META_ENTRIES: usize = 256;
 
 /// A LEB128-encoded `u32`, as the Wasm binary format writes section and name lengths, with the
@@ -1000,10 +1001,10 @@ fn validate_generated(generated: &GeneratedCrate) -> Result<(), BuildError> {
     // boundary where a caller-supplied crate is checked, and the point of a boundary is to name
     // what it requires.
     //
-    // `src/contract.rs` is required alongside the crate root, not optional. The root is a header
-    // and a `pub mod contract;` declaration, so a crate that carries only the root passes every
-    // other check here and then fails in the compiler with an unresolved module — validation
-    // reporting clean on an input it cannot build.
+    // `src/contract.rs` is required alongside the crate root, not optional. The root is a header,
+    // a `pub mod contract;` declaration and provenance meta, so a crate that carries only the
+    // root passes every other check here and then fails in the compiler with an unresolved
+    // module — validation reporting clean on an input it cannot build.
     //
     // `rust-toolchain.toml` is required for a different and sharper reason: it is what decides
     // the compiler. `clear_inherited_toolchain_selection` removes every inherited compiler
