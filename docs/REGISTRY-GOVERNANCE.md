@@ -75,8 +75,9 @@ reference first, because `sign` refuses a snapshot that holds one, as `combine` 
 The mainnet draft's template pack carries one, which names OpenZeppelin's documented review of
 the generated code ([review record](OZ-REVIEW-PACKAGE.md#review-record)), so the mainnet ceremony
 signs once that sign-off and the owner's acceptance are recorded, without waiting for the audit.
-If the audit's remediation changes the template pack, a successor version adds the audit report
-to that reference ([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
+After the audit, and before or with 1.0.0, the custodians sign a successor whose template-pack
+reference adds the audit report, whether or not the remediation changed the template pack
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
 
 **Successor.** Every later version is built from the published parent and a declared change set:
 

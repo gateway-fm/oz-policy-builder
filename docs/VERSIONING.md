@@ -238,17 +238,20 @@ order:
 7. The audit's report is recorded in the remediation log's
    [report table](AUDIT-REMEDIATION.md#report), and its findings are remediated, each fix with
    its regression test ([remediation log](AUDIT-REMEDIATION.md)), until no row of its
-   [findings table](AUDIT-REMEDIATION.md#findings) is `open`. If the remediation changes the
-   template pack, the mainnet registry gets a successor version whose template-pack review
-   reference adds the audit report
-   ([making and signing a version](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
-8. 1.0.0 is released from the remediated tree, carrying the records of steps 2, 3 and 7, and the
-   mainnet head, `roots.json` and the head checkpoint (a successor's, if step 7 signed one). The
+   [findings table](AUDIT-REMEDIATION.md#findings) is `open`.
+8. The custodians sign a successor version of the mainnet registry whose template-pack review
+   reference adds the audit report to OpenZeppelin's review, and carries any template-pack
+   change the remediation made. It is signed whether or not the template pack changed, since the
+   design has the template pack "audited once, with OpenZeppelin review"
+   ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable),
+   [making and signing a version](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
+9. 1.0.0 is released from the remediated tree, carrying the records of steps 2, 3 and 7, and the
+   successor's head, `roots.json` and the head checkpoint (the release gate's step 7). The
    owner's acceptance must hold for that tree: a new row for any deviation the remediation
    changed.
-9. If a remediated finding changes the installed policy's code or the shape of the grant, the
-   installation is repeated from 1.0.0, costing about the runbook's figures again
-   ([every mainnet write](MAINNET-INSTALL.md#every-mainnet-write-in-order-with-its-simulated-fee)).
+10. If a remediated finding changes the installed policy's code or the shape of the grant, the
+    installation is repeated from 1.0.0, costing about the runbook's figures again
+    ([every mainnet write](MAINNET-INSTALL.md#every-mainnet-write-in-order-with-its-simulated-fee)).
 
 The milestone is submitted with both of its outcomes: the installation's evidence and the
 published audit report with its remediation
