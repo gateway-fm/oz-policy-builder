@@ -21,7 +21,7 @@ per version. The procedure that produces and checks it is
   template pack produces: the custodians replace it with the reference of that review's sign-off
   row in the [review record](../../docs/OZ-REVIEW-PACKAGE.md#review-record), and confirm every
   other reference, before anyone signs. The external audit's report is not needed for version 1.
-  After the audit, and before or with 1.0.0, the custodians sign version 2, whose template-pack
+  After the audit, and before or with 1.0.0, the custodians sign a successor whose template-pack
   reference adds the audit report, whether or not the remediation changed the template pack
   ([the order for 1.0.0](../../docs/VERSIONING.md#the-order-for-100)).
 - The validity interval — `valid_from_unix` 2027-01-01T00:00:00Z, `expires_at_unix`

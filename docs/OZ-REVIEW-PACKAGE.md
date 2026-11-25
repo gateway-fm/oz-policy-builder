@@ -153,7 +153,9 @@ No change to generated code is planned for this milestone beyond the upstream it
 Encoded-literal rendering, which would embed addresses as encoded bytes and change every
 generated source and Wasm hash, stays deferred to template-pack v2
 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). The audited revision is the freeze commit
-[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names; this review and the external audit both start on it.
+[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names; this review and the external audit both start on it. A
+change to generated code this review asks for before its sign-off goes to the auditor too, and
+is within the scope of the audit's remediation.
 
 Already in this tree: the `contractmeta!` provenance above, which changed every generated source
 and Wasm hash ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1); BuildManifest

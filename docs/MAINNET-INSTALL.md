@@ -62,6 +62,12 @@ Rehearse the funding and custody model on testnet first, at no cost: [Rehearse o
    that monitoring can watch it. The head is valid only for the interval its custodians signed:
    once it expires, synthesis and the install checks refuse it until whoever then holds the roots
    publishes a successor ([validity](REGISTRY-GOVERNANCE.md#validity-expiry-and-the-end-of-the-grant-period)).
+   After the audit the custodians publish a successor whose template-pack reference adds the
+   audit report ([the order for 1.0.0](VERSIONING.md#the-order-for-100)); the monitor then
+   reports a newer version (exit 3), which is expected. Remove this grant before advancing to
+   it, and keep version 1 pinned while the grant is installed: once advanced, the persisted
+   checkpoint refuses version 1, and a grant synthesized under version 1 fails its checks under
+   another root.
 4. **A funded fee payer.** A classic account you own, its secret seed in a file with mode `0600`
    (`feePayerKeyPath`), funded with its minimum reserve (1 XLM at the current 0.5 XLM base
    reserve) plus the fees below. The wallet never funds it (`payer_unfunded`).
