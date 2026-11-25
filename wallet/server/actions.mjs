@@ -208,6 +208,12 @@ export function createWalletActions({ session, toolchain, network, native = null
   let accountCheckRunning = false;
   let liveRunning = false;
   let accountAttempted = false;
+  /**
+   * The verifier an account creation deployed before the account's own creation was refused unsent. The
+   * verifier holds no credential or owner (the account's signer names both), so the next try reuses it
+   * once it reads back with the pinned code, rather than paying for a second one.
+   */
+  let createdVerifier = null;
   let sampleAccount = null;
   let sampleSubmitted = false;
   /** Independent reads at once; every one settles before the first failure is reported. */
@@ -483,7 +489,13 @@ export function createWalletActions({ session, toolchain, network, native = null
           await requirePinned(ACCOUNT_WASM);
           await requirePinned(WEBAUTHN_WASM);
           await network.fundPayer();
-          verifier = await attempt.send(() => network.create(WEBAUTHN_WASM, [], 'deploy-verifier'));
+          if (createdVerifier) {
+            // A verifier that no longer reads back is not reused: this try deploys a new one.
+            try { await network.requireInstance(createdVerifier.contractId, WEBAUTHN_WASM); verifier = createdVerifier; }
+            catch { createdVerifier = null; }
+          }
+          verifier ??= await attempt.send(() => network.create(WEBAUTHN_WASM, [], 'deploy-verifier'));
+          createdVerifier = verifier;
           signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
             xdr.ScVal.scvBytes(credential(selected))]);
           account = await attempt.send(() => network.create(ACCOUNT_WASM, [xdr.ScVal.scvVec([signer]), xdr.ScVal.scvMap([])], 'deploy-account'));

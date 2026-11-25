@@ -37,6 +37,25 @@ test('an account creation refused before anything left can be confirmed again; a
     assert.deepEqual(result.wallet, f.wallet, name);
   }
 });
+test('an account creation refused unsent after its verifier was created reuses that verifier when confirmed again', async () => {
+  const { actions, network, calls, f } = setup();
+  const create = network.create;
+  let refusedOnce = false;
+  network.create = async (hash, args, stage) => {
+    if (stage === 'deploy-account' && !refusedOnce) { refusedOnce = true; throw Object.assign(new Error('refused'), { reason: 'fee_cap' }); }
+    return create(hash, args, stage);
+  };
+  const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+  await assert.rejects(() => actions['confirm-account']({ id: preview.action.id }), (error) => error.reason === 'fee_cap');
+  const again = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+  const before = calls.length;
+  const result = await actions['confirm-account']({ id: again.action.id });
+  assert.deepEqual(result.wallet, f.wallet);
+  assert.equal(calls.filter((call) => call === 'deploy-verifier').length, 1, 'one verifier for the session');
+  assert.ok(calls.slice(before).some((call) => Array.isArray(call) && call[0] === 'instance' && call[1] === f.wallet.verifier
+    && call[2] === WEBAUTHN_WASM), 'the reused verifier is read back with the pinned code');
+  assert.equal(result.receipts.length, 3, 'the verifier\'s receipt, the account\'s and the sample funding');
+});
 for (const change of [{ id: xdr.ScVal.scvU32(8) }, { id: xdr.ScVal.scvU32(0), name: xdr.ScVal.scvU32(1) }]) {
 test(`wrong fresh owner ${change.name ? 'name type' : 'rule ID'} never triggers sample funding or returns a wallet`, async () => {
   const { actions, network, calls, f } = setup();
