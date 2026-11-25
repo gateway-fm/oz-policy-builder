@@ -237,7 +237,9 @@ order:
 5. The release candidate is released through the release gate from the revision OpenZeppelin's
    sign-off covers. Unless `main` is still at that revision, the release commit goes on a branch
    `release/v1.0.0-rc.N` cut from it, as `v0.2.0-rc.1` and `v0.2.0-rc.2` were, and the tag is
-   made there rather than on `main` (the release gate's step 4). The branch adds nothing but the
+   made there rather than on `main` (the release gate's step 4). The CI workflow runs only on
+   pushes to `main` and on pull requests, so the candidate's CI run (the release gate's step 3)
+   comes from a pull request opened from that branch and never merged. The branch adds nothing but the
    records of steps 2 and 3, the ceremony's commit and the release commit; the records and the
    ceremony's commit land on `main` as well. The v1.0.0 notes stay a draft for the candidate:
    the release gate's step 2 renames and dates them for 1.0.0 only. The candidate carries the
