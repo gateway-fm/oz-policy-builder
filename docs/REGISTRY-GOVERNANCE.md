@@ -380,12 +380,21 @@ How long a version is trusted is the custodians' decision at signing, and nothin
 afterwards: when it ends, synthesis and the checks refuse the snapshot until a successor is
 loaded. The monitor's expiry window is there so that a successor is signed in time.
 
+Choose an interval that ends no later than the custodians' commitment to watch the registered
+code and revoke what turns out to be faulty. Until it ends, consumers trust every entry in the
+head and `monitor` reports nothing amiss short of the expiry window, whether or not anyone is
+still there to revoke one; expiry is the fail-safe for when nobody is.
+
 Gateway's stewardship of a registry it publishes — reviewing new hashes, revoking, signing
-successors — is for the grant period only, with no open-ended commitment
-([architecture §10, Maintenance](architecture.md#10-delivery-plan)). After that, the last
-published version expires on its own date. Any operator can continue: pin their own root policy
-(`--registry-roots`, `OZPB_REGISTRY_ROOTS_JSON` — any policy the code accepts) and run this same
-procedure with their own custodians, from a genesis of their own.
+successors — is for the grant period only, which ends when the Stellar Community Fund accepts the
+third milestone ([versioning](VERSIONING.md#what-10-promises-and-for-how-long)), with no
+open-ended commitment ([architecture §10, Maintenance](architecture.md#10-delivery-plan)). After
+that, the last published version expires on its own date, which is why its interval should not
+outlast that stewardship. The mainnet draft's six-month interval is a placeholder the custodians
+replace at signing ([`registry/mainnet/`](../registry/mainnet/README.md)). Any operator can
+continue: pin their own root policy (`--registry-roots`, `OZPB_REGISTRY_ROOTS_JSON` — any policy
+the code accepts) and run this same procedure with their own custodians, from a genesis of their
+own.
 
 ## Rotation, lost and compromised keys
 
