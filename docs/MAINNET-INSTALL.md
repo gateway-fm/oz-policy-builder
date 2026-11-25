@@ -9,29 +9,38 @@ submits a mainnet transaction for you, and nothing here commits anyone to runnin
 
 **Install from the 1.0.0 release.** It comes last in a fixed order: the audit and OpenZeppelin's
 review of a frozen revision, the remediation of their findings, then the mainnet registry's key
-ceremony, which can sign only once the audit's reference exists, and then the release, which
-carries the signed mainnet head ([the order for 1.0.0](VERSIONING.md#the-order-for-100)). Until
-then prerequisite 3 cannot be met. Take from that release the toolkit checkout the wallet is
-applied from, the binaries, and the signed head, `roots.json` and checkpoint attached to it.
+ceremony, which can sign only once the audit's reference exists, the owner's acceptance of the
+milestone's deviations, and then the release, which carries the signed mainnet head
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)). Until then prerequisite 3 cannot be
+met. Take from that release the toolkit checkout the wallet is applied from, the binaries, and
+the signed head, `roots.json` and checkpoint attached to it.
 
-**Check that the records which precede the installation are in that release's tree:** the audit
-report in the remediation log's [report table](AUDIT-REMEDIATION.md#report), OpenZeppelin's
-documented sign-off in the [review record](OZ-REVIEW-PACKAGE.md#review-record), and the owner's
-acceptance of the milestone's deviations in
-[acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here). While any of these
-tables is empty, do not install. The wallet does not check them.
+**Check that the records which precede the installation are in that release's tree.** Do not
+install until the remediation log's [report table](AUDIT-REMEDIATION.md#report) has the audited
+revision's report, the [review record](OZ-REVIEW-PACKAGE.md#review-record) has OpenZeppelin's
+sign-off row, and every deviation under
+[Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
+has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here) or,
+for a gate's deviation, its gate is closed. The wallet does not check them.
+
+**Commands that name mainnet.** stellar-cli 27.0.0 has no RPC URL for its built-in `mainnet`
+network: `--network mainnet` fails with `Invalid URL Bring Your Own: …`. Wherever a command here,
+or one the readiness panel prints, says `--network mainnet`, give
+`--rpc-url <your endpoint> --network-passphrase 'Public Global Stellar Network ; September 2015'`
+instead.
 
 All of the following must hold before the first mainnet write. The wallet checks each one and
 refuses, with a reason the page explains, when it does not.
 
-1. **An endpoint on protocol 30.** Mainnet runs protocol 30: a public mainnet endpoint reported it,
-   from stellar-rpc 30.0.1, on 25 November 2026. The backend refuses to start against an endpoint
-   that reports another protocol (`protocol_unsupported`).
+1. **An endpoint on protocol 30.** Mainnet runs protocol 30: `mainnet.sorobanrpc.com` and
+   `rpc.mainnet.stellar.gateway.fm` both reported it, from stellar-rpc 30.0.1, on 25 November
+   2026. The backend refuses to start against an endpoint that reports another protocol
+   (`protocol_unsupported`).
 2. **An RPC endpoint that returns diagnostic events, and answers quickly.** stellar-rpc 30.0.1
    returns diagnostic events only with `--preflight-enable-debug`; the live check, the second use
    and removal's verification read them (`no_diagnostic_events`). `mainnet.sorobanrpc.com` returned
    them when probed on 19 November 2026. The readiness panel probes your endpoint. It must also
-   answer in about a second a request
+   answer a request in about a second
    ([start the local backend](POLLYWALLET-INTEGRATION.md#start-the-local-backend)): the sample
    transfer, installation and removal must finish their reads within 12 ledgers (about a minute),
    or they are refused as `rpc_too_slow`; the live check's signatures last 12 ledgers, consent is
@@ -68,7 +77,7 @@ refuses, with a reason the page explains, when it does not.
    (Apple Silicon) host: the reviewed hash was recorded on that host, and reproducing it needs
    that host and those inputs ([testnet deployment](ATOMIC-LIVE-HELPER.md#testnet-deployment)). Check that the Wasm's SHA-256
    is the reviewed helper hash (`LIVE_HELPER_WASM` in `wallet/shared/live-consent.mjs`), then
-   `stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>`
+   `stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --rpc-url <your endpoint> --network-passphrase 'Public Global Stellar Network ; September 2015' --source <your funded mainnet key>`
    and name the contract ID in `liveHelper`. The deployment uploads and instantiates the checked
    file, and the wallet refuses a helper whose code hash on the network is not the reviewed one.
    stellar-cli 27.0.0 is the build input only: no deployment with it to mainnet or to a
@@ -93,16 +102,19 @@ Fees are in stroops (10,000,000 stroops = 1 XLM). "Resource fee" is the simulati
 transaction it builds, and its caps count resource fee plus that bid; what the network actually
 charges is usually lower, since the inclusion fee is charged at the going rate.
 
-**Where each figure comes from.** Read-only simulations. On mainnet, steps 1, 3 and 6 were
-simulated on 19 November 2026 at ledger 65,558,679, on protocol 29, and again with the same Wasm
-on 25 November 2026 at ledger 65,662,574, on protocol 30, which returned the same resource fees.
-On testnet (protocol 30), on 19 November 2026 at ledger 5,811,160, the steps mainnet cannot
-simulate before their own inputs exist (the account constructor needs a deployed verifier
-instance; creating a contract needs its code stored; the transfers and the rule changes need the
-account). Testnet is not a mainnet estimate: mainnet's state-size rent makes new persistent data
-far dearer there (the same 7,331-byte helper upload simulated at 96,811,199 on mainnet and 25,225
-on testnet). The installation and removal figures
-are the prepared fees of the [22 October 2026 testnet run](evidence/wallet-install-revoke-testnet-2026-10-22.json),
+**Where each figure comes from.** Read-only simulations: `simulateTransaction` with a random
+unfunded source account, each uploaded Wasm read from testnet by its hash with
+`getLedgerEntries`. No evidence file is kept for them. On mainnet, steps 1, 3 and 6 were
+simulated against `mainnet.sorobanrpc.com` on 19 November 2026 at ledger 65,558,679, on
+protocol 29, and again with the same Wasm on 25 November 2026 at ledger 65,662,574, on
+protocol 30, which returned the same resource fees (as did `rpc.mainnet.stellar.gateway.fm`, two
+ledgers later). On testnet (protocol 30), against `rpc.testnet.stellar.gateway.fm` on
+19 November 2026 at ledger 5,811,160, the steps mainnet cannot simulate before their own inputs
+exist (the account constructor needs a deployed verifier instance; creating a contract needs its
+code stored; the transfers and the rule changes need the account). Testnet is not a mainnet
+estimate: mainnet's state-size rent makes new persistent data far dearer there (the same
+7,331-byte helper upload simulated at 96,811,199 on mainnet and 25,225 on testnet). The
+installation and removal figures are the prepared fees of the [22 October 2026 testnet run](evidence/wallet-install-revoke-testnet-2026-10-22.json),
 when testnet's own upload fees were of mainnet's order. Each step's fee is simulated again before
 anything is signed and shown in its consent, and a step above its cap is refused before signing.
 
@@ -181,10 +193,12 @@ The network names the installed policy only by its code hash. For anyone else to
 code is, publish its build ([publishing](PUBLISHING.md)). The backend keeps what it generated in
 the session directory under `workRoot`: the `operation-*` directory whose `policy.wasm` hashes to
 the DeploymentRecord's `wasmHash` holds the spec, the generated crate, the Wasm and the
-BuildManifest. With the release's `ozpb`:
+BuildManifest. Find it (if several match, take the one whose `build-manifest.json` has the
+InstallationRecord's `specHash` as its `spec_hash`), then publish with the release's `ozpb`:
 
 ```sh
-op=<workRoot>/wallet-session-<…>/operation-<…>   # its policy.wasm hashes to the deployed wasmHash
+shasum -a 256 <workRoot>/wallet-session-*/operation-*/policy.wasm | grep <wasmHash>
+op=<workRoot>/wallet-session-<…>/operation-<…>   # the directory that line names
 ozpb publish-artifact --spec "$op/spec.json" --generated-dir "$op/generated" \
   --wasm "$op/policy.wasm" --manifest "$op/build-manifest.json" --out ./published
 ```

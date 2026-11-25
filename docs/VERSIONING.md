@@ -223,7 +223,11 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    custodians sign version 1 only after the audit, once they have replaced that text, confirmed
    every other reference and set the validity interval
    ([mainnet registry](../registry/mainnet/README.md)).
-5. 1.0.0 is released from the remediated tree, carrying the signed mainnet head, `roots.json`
-   and the head checkpoint (step 7 above).
-6. The mainnet installation is made from that release
-   ([installing on mainnet](MAINNET-INSTALL.md)).
+5. The owner's acceptance: every deviation under
+   [Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
+   has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here)
+   or, for a gate's deviation, its gate is closed (the release gate's step 3).
+6. 1.0.0 is released from the remediated tree, carrying the signed mainnet head, `roots.json`
+   and the head checkpoint (the release gate's step 7), and the records of steps 2 and 5.
+7. The mainnet installation is made from that release
+   ([installing on mainnet](MAINNET-INSTALL.md)), which checks those records first.
