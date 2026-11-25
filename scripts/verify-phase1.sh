@@ -161,14 +161,17 @@ if [ "$MODE" = release ]; then
     # comes from the differential suite building the crate as a dev-dependency. It compared one
     # untouched file with itself and passed unconditionally. The two copies do not even have the
     # same hash, because they are built in different contexts.
+    #
+    # Both builds and the clean run without CARGO_TARGET_DIR: with it set, the Wasm would land in
+    # that directory instead of $W, and `cargo clean` would empty the caller's shared target.
     G=contracts/golden-transfer-policy
     W="$G/target/wasm32v1-none/release/generated_sub_transfer_r0.wasm"
-    ( cd "$G" && stellar contract build --locked >/dev/null 2>&1 )
+    ( cd "$G" && env -u CARGO_TARGET_DIR stellar contract build --locked >/dev/null 2>&1 )
     H1=$(shasum -a 256 "$W" | cut -d' ' -f1)
-    ( cd "$G" && cargo clean >/dev/null 2>&1 )
+    ( cd "$G" && env -u CARGO_TARGET_DIR cargo clean >/dev/null 2>&1 )
     # Non-vacuity: if the artifact survives the clean, the rebuild below proves nothing.
     [ -f "$W" ] && { echo "  cargo clean did not remove the wasm — this gate would be vacuous"; exit 1; }
-    ( cd "$G" && stellar contract build --locked >/dev/null 2>&1 )
+    ( cd "$G" && env -u CARGO_TARGET_DIR stellar contract build --locked >/dev/null 2>&1 )
     H2=$(shasum -a 256 "$W" | cut -d' ' -f1)
     [ "$H1" = "$H2" ] && echo "  wasm byte-identical across a full clean rebuild: $H1" \
         || { echo "  WASM DIFFERS: $H1 vs $H2"; exit 1; }
