@@ -68,7 +68,11 @@ What the code enforces, independent of this procedure:
 
 **Genesis.** Version 1 starts from an unsigned `RegistrySnapshot` (`version` 1, `log_index` 1,
 `previous_root` null), reviewed entry by entry. Its `valid_from_unix` and `expires_at_unix` are set
-by the custodians before anyone signs: the interval is part of what they sign.
+by the custodians before anyone signs: the interval is part of what they sign
+([how long](#validity-expiry-and-the-end-of-the-grant-period)). So is every review reference: one
+still beginning `PENDING, replace before signing:` — the mainnet draft's template pack carries
+one — is replaced with the completed review's reference first, because `sign` refuses a snapshot
+that holds one, as `combine` and `verify` do.
 
 **Successor.** Every later version is built from the published parent and a declared change set:
 
@@ -101,12 +105,15 @@ under two roles, an empty revocation reason, a rewritten revocation — is never
 
 ```bash
 ozpb registry sign --snapshot v0002.unsigned.json --print-root
-# {"root": "…", "network_id": "…", "version": "2", "previous_root": "…",
-#  "valid_from_unix": "…", "expires_at_unix": "…", "revocations": […]}
+# {"root": "…", "network_id": "…", "version": "2", "log_index": "2", "previous_root": "…",
+#  "valid_from_unix": "…", "expires_at_unix": "…", "revocations": […], "pending_review": []}
 ```
 
 and diffs the unsigned file against the parent. The root is the canonical hash of the whole
 snapshot; signing it signs every entry, the network, the chain position and the interval.
+`pending_review` must be empty: it lists every entry whose review reference still begins
+`PENDING, replace before signing:`, and while it does not, a warning on stderr says the root is
+for review only.
 
 **Sign.** With a local key file (mode 0600, refused otherwise):
 
@@ -123,7 +130,13 @@ ozpb registry sign --snapshot v0002.unsigned.json --key-id custodian-c \
   --public-key <64 hex> --signature <128 hex> --out v0002.custodian-c.sig.json
 ```
 
-A signature that does not verify over that root under that public key is refused here.
+A signature that does not verify over that root under that public key is refused here. Both
+forms refuse a snapshot that still carries a pending review reference (`E_REGISTRY_PARSE`, naming
+the entry), so a draft is corrected before any custodian's signature is spent on it rather than
+at combine. A device signs whatever root it is given before the hand-in can refuse, so a device
+custodian checks `pending_review` first. The refusal belongs to these commands: a consumer's load
+checks signatures, not review references, so signatures over a pending root assembled some other
+way would load.
 
 **Combine.**
 
@@ -137,11 +150,10 @@ ozpb registry combine --snapshot v0002.unsigned.json \
 
 Every signature must be over this snapshot's root, verify, and come from the key pinned under its
 id; together they must meet the threshold, and no review reference may still begin
-`PENDING, replace before signing:` (`verify` refuses one too). The result is then loaded as a
-consumer would load it —
-pinned roots, network, an interval not already over — and only then written, so the log
-directory never receives a file `verify` would refuse. Its place in the chain is the replay's to
-check.
+`PENDING, replace before signing:` (`sign` and `verify` refuse one too). The result is then
+loaded as a consumer would load it — pinned roots, network, an interval not already over — and
+only then written, so the log directory never receives a file `verify` would refuse. Its place in
+the chain is the replay's to check.
 
 **Verify before distributing.** The gate is a replay of the whole published log:
 
@@ -156,7 +168,12 @@ and the head must be valid now (`--at <unix seconds>` checks a scheduled one). O
 be checked against a consumer's checkpoint with `verify --signed <file> --checkpoint <file>`
 (without `--checkpoint`, the roots file's own). Add `--min-version <floor>` to check it under the
 consumer's floor as well: a checkpoint older than the floor is refused with `E_REGISTRY_ROLLBACK`,
-as a consumer configured that way refuses every request.
+as a consumer configured that way refuses every request. Unlike `--registry-min-version`, it has
+no environment fallback, and no `ozpb registry` command reads its roots from
+`OZPB_REGISTRY_ROOTS_FILE` either: a floor belongs to one roots file and network, these commands
+take theirs on the command line — two different roots files across a
+[rotation](#rotation-lost-and-compromised-keys) — and the environment holds whichever deployment
+the shell is configured for. Pass the floor that goes with the roots file you name.
 
 ## Publishing
 
@@ -181,7 +198,8 @@ fails that consumer's monitor loudly.
 
 The whole procedure runs on testnet with throwaway keys before any mainnet ceremony: generate
 three keys with `keygen`, write a 2-of-3 `roots.json`, take `registry/mainnet/v0001.draft.json`,
-change its `network_id` to testnet's and set a current interval, then sign, combine, replay,
+change its `network_id` to testnet's, set a current interval and replace its pending review
+reference (with one that claims no review: a rehearsal is not one), then sign, combine, replay,
 build and sign a successor, and monitor exactly as above with
 `--network "Test SDF Network ; September 2015"`. Synthesis then accepts the replayed head under
 those roots and stamps its root into the spec, as every command that pins registry trust would,
@@ -244,6 +262,9 @@ expiring, not yet valid, newer:
 | 5 | the head has expired | synthesis and checks now refuse it; same |
 | 6 | a watched hash or template family is revoked | the emergency-removal path below |
 | 1 | the published log cannot be verified against the checkpoint — or the command is misconfigured, including a watched hash or template family the head neither registers nor revokes | read the message: a log that cannot be verified is an incident (a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned); a watch item it names is mistyped or no longer in the registry, and must be fixed, since it could never report |
+| 2 | a usage error: a flag missing, unknown or malformed, rejected before anything is read | nothing was checked and no report is printed; fix the invocation |
+
+Any other non-zero status (a crash) means the run reached no verdict; treat it as an alert too.
 
 Monitoring compares your checkpoint with one published source. It detects a log that contradicts
 what you accepted, but it cannot detect newer versions that source withholds: a frozen or
@@ -313,6 +334,7 @@ What each status should set off:
   dropped without a revocation, ask the custodians why). Otherwise treat it as a security incident:
   the published log contradicts what you accepted, or a new version is signed under roots you have
   not pinned. Do not advance anything until it is explained.
+- **2** — fix the script: the monitor never ran, so until it does nothing is being watched.
 
 ## Revocation and emergency removal
 
@@ -363,12 +385,21 @@ How long a version is trusted is the custodians' decision at signing, and nothin
 afterwards: when it ends, synthesis and the checks refuse the snapshot until a successor is
 loaded. The monitor's expiry window is there so that a successor is signed in time.
 
+Choose an interval that ends no later than the custodians' commitment to watch the registered
+code and revoke what turns out to be faulty. Until it ends, consumers trust every entry in the
+head and `monitor` reports nothing amiss short of the expiry window, whether or not anyone is
+still there to revoke one; expiry is the fail-safe for when nobody is.
+
 Gateway's stewardship of a registry it publishes — reviewing new hashes, revoking, signing
-successors — is for the grant period only, with no open-ended commitment
-([architecture §10, Maintenance](architecture.md#10-delivery-plan)). After that, the last
-published version expires on its own date. Any operator can continue: pin their own root policy
-(`--registry-roots`, `OZPB_REGISTRY_ROOTS_JSON` — any policy the code accepts) and run this same
-procedure with their own custodians, from a genesis of their own.
+successors — is for the grant period only, which ends when the Stellar Community Fund accepts the
+third milestone ([versioning](VERSIONING.md#what-10-promises-and-for-how-long)), with no
+open-ended commitment ([architecture §10, Maintenance](architecture.md#10-delivery-plan)). After
+that, the last published version expires on its own date, which is why its interval should not
+outlast that stewardship. The mainnet draft's six-month interval is a placeholder the custodians
+replace at signing ([`registry/mainnet/`](../registry/mainnet/README.md)). Any operator can
+continue: pin their own root policy (`--registry-roots`, `OZPB_REGISTRY_ROOTS_JSON` — any policy
+the code accepts) and run this same procedure with their own custodians, from a genesis of their
+own.
 
 ## Rotation, lost and compromised keys
 

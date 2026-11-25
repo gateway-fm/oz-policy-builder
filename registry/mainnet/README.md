@@ -23,7 +23,8 @@ per version. The procedure that produces and checks it is
   2027-07-01T00:00:00Z — is a **placeholder**. How long the custodians vouch for version 1 is
   their decision at signing; they set both values in the draft before anyone signs, since the
   interval is part of the root. No one commits to keeping this registry valid beyond the interval
-  they sign.
+  they sign, and the interval should not outlast their commitment to watch and revoke
+  ([validity and the end of the grant period](../../docs/REGISTRY-GOVERNANCE.md#validity-expiry-and-the-end-of-the-grant-period)).
 - `roots.json` holds **no keys**: the root policy is set at the key ceremony. Until then it is a
   placeholder that every command refuses (`E_REGISTRY_ROOT_POLICY`), so nothing can be verified
   under it by accident. Its threshold of 2 is the proposed minimum, not a decision.
