@@ -6464,7 +6464,7 @@
       }
     },
     {
-      "description": "Record an unsigned transaction envelope via simulateTransaction in record mode into a RecordingBundle. Network read through the server's configured RPC source when there is one; the envelope is confidential input.",
+      "description": "Record an unsigned transaction envelope via simulateTransaction in record mode into a RecordingBundle. Network read through the server's configured RPC source when there is one; the envelope is confidential input. A hosted server refuses an envelope carrying signatures or signed authorization entries.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
