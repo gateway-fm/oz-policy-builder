@@ -22,23 +22,34 @@ const RECORDED = JSON.parse(readFileSync(new URL('./fixtures/mainnet-rpc-2026-11
 const PAYER = Keypair.fromRawEd25519Seed(createHash('sha256').update('ozpb-wallet-mainnet-rpc-fixture').digest());
 const requestKey = ({ method, params }) => `${method} ${JSON.stringify(params ?? null)}`;
 
-/** A WalletNetwork whose endpoint answers only the recorded requests, each with its recorded response (after `change`). */
+/**
+ * A WalletNetwork whose endpoint answers only the recorded requests, each with its recorded response
+ * (after `change`). A request the recording does not hold is answered with an error and kept in
+ * `missed`, so that a refusal can be told from a gap in the recording (`refusedByCheck`).
+ */
 function replayed({ profile = WALLET_NETWORKS.mainnet, change = () => {} } = {}) {
   const answers = new Map(RECORDED.exchanges.map(({ request, response }) => [requestKey(request), structuredClone(response)]));
   change(answers);
-  const asked = [];
+  const asked = [], missed = [];
   const fetchImpl = async (url, init) => {
-    assert.equal(url, 'https://mainnet.sorobanrpc.com/');
     const body = JSON.parse(init.body);
     const key = requestKey({ method: body.method, params: body.params });
     asked.push(body.method);
-    assert.ok(answers.has(key), `not in the recording: ${key.slice(0, 200)}`);
+    if (url !== 'https://mainnet.sorobanrpc.com/' || !answers.has(key)) {
+      missed.push(`${url} ${key.slice(0, 200)}`);
+      throw new Error('not in the recording');
+    }
     return new Response(JSON.stringify({ ...answers.get(key), id: body.id }), { headers: { 'content-type': 'application/json' } });
   };
   const mainnet = profile === WALLET_NETWORKS.mainnet;
   const network = new WalletNetwork({ network: profile, rpcUrl: 'https://mainnet.sorobanrpc.com', fetchImpl,
     feePayer: new FeePayer(PAYER, mainnet), fees: mainnet ? MAINNET_FEE_DEFAULTS : TESTNET_FEES });
-  return { network, asked, answers };
+  return { network, asked, answers, missed };
+}
+/** `call` is refused by the wallet's own check on recorded answers, not by a request the recording lacks. */
+async function refusedByCheck(replay, call, predicate = () => true) {
+  await assert.rejects(call, predicate);
+  assert.deepEqual(replay.missed, [], 'every request was in the recording');
 }
 const answer = (answers, method, match = () => true) => [...answers.entries()].find(([key]) => key.startsWith(`${method} `) && match(key))[1];
 const codeKey = (hash) => xdr.LedgerKey.contractCode(new xdr.LedgerKeyContractCode({ hash: Buffer.from(hash, 'hex') })).toXDR('base64');
@@ -82,15 +93,15 @@ test('recorded mainnet: the endpoint returns diagnostic events with a simulation
 
 test('the same mainnet answers refuse a testnet session, and the checks refuse them altered', async () => {
   const testnet = replayed({ profile: WALLET_NETWORKS.testnet });
-  await assert.rejects(() => testnet.network.assertNetwork(), (error) => error.reason === 'network_mismatch');
-  await assert.rejects(() => testnet.network.codePresent(ACCOUNT_WASM), (error) => error.reason === 'network_mismatch');
+  await refusedByCheck(testnet, () => testnet.network.assertNetwork(), (error) => error.reason === 'network_mismatch');
+  await refusedByCheck(testnet, () => testnet.network.codePresent(ACCOUNT_WASM), (error) => error.reason === 'network_mismatch');
 
   const earlier = replayed({ change: (answers) => { answer(answers, 'getNetwork').result.protocolVersion = 29; } });
-  await assert.rejects(() => earlier.network.assertNetwork(), (error) => error.reason === 'protocol_unsupported' && error.protocolVersion === 29);
+  await refusedByCheck(earlier, () => earlier.network.assertNetwork(), (error) => error.reason === 'protocol_unsupported' && error.protocolVersion === 29);
 
   // A header that does not hash to the ID the endpoint reports.
   const header = replayed({ change: (answers) => { answer(answers, 'getLatestLedger').result.id = 'ab'.repeat(32); } });
-  await assert.rejects(() => header.network.ledgerClock());
+  await refusedByCheck(header, () => header.network.ledgerClock());
 
   // One byte of the stored account Wasm changed: its bytes no longer hash to the pin.
   const code = replayed({ change: (answers) => {
@@ -102,7 +113,11 @@ test('the same mainnet answers refuse a testnet session, and the checks refuse t
     entry.xdr = data.toXDR('base64');
     assert.notEqual(entry.xdr, RECORDED.exchanges.find(({ request }) => request.params?.keys?.[0] === codeKey(ACCOUNT_WASM)).response.result.entries[0].xdr);
   } });
-  await assert.rejects(() => code.network.requireCode(ACCOUNT_WASM));
-  await assert.rejects(() => code.network.codePresent(ACCOUNT_WASM));
+  await refusedByCheck(code, () => code.network.requireCode(ACCOUNT_WASM));
+  await refusedByCheck(code, () => code.network.codePresent(ACCOUNT_WASM));
   assert.deepEqual(await code.network.requireCode(WEBAUTHN_WASM), { hash: WEBAUTHN_WASM, ledger: 65662740 });
+
+  // A gap in the recording is told apart from a refusal.
+  const gap = replayed({ change: (answers) => { answers.delete([...answers.keys()].find((key) => key.includes(codeKey(ACCOUNT_WASM)))); } });
+  await assert.rejects(() => refusedByCheck(gap, () => gap.network.requireCode(ACCOUNT_WASM)), /every request was in the recording/);
 });
