@@ -803,6 +803,28 @@ fn a_pending_review_reference_is_never_signed_combined_or_replayed() {
     require_no_pending_review(&genesis()).unwrap();
 }
 
+/// What a custodian reviews before signing lists every entry whose review reference is still
+/// pending, not only the first one a refusal names, in the order the refusal checks them.
+#[test]
+fn every_pending_review_reference_is_listed() {
+    let mut draft = genesis();
+    assert!(pending_reviews(&draft).is_empty());
+    let (family, template) = draft.templates.iter_mut().next().unwrap();
+    let family = family.clone();
+    template.review_reference = format!("{PENDING_REVIEW_PREFIX} the template review.");
+    let (account, entry) = draft.accounts.iter_mut().next().unwrap();
+    let account = account.clone();
+    entry.review_reference = format!("  {PENDING_REVIEW_PREFIX} the account review.");
+    assert_eq!(
+        pending_reviews(&draft),
+        vec![format!("account/{account}"), format!("template/{family}")]
+    );
+    assert_eq!(
+        require_no_pending_review(&draft).unwrap_err(),
+        GovernanceError::PendingReview(format!("account/{account}"))
+    );
+}
+
 /// The accepted version's published copy must be for the consumer's network too.
 #[test]
 fn the_checkpoint_version_must_be_for_the_pinned_network() {

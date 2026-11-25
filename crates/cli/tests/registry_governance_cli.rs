@@ -110,33 +110,35 @@ impl Custodians {
     }
 
     fn sign_externally(&self, snapshot: &Path, id: &str, out: &Path) {
-        ok(
-            self.hand_in_device_signature(snapshot, id, out),
-            "external signature",
-        );
+        let (printed, handed_in) = self.hand_in_device_signature(snapshot, id, out);
+        // A finished snapshot: nothing pending, and no warning beside the root.
+        assert_eq!(printed.summary["pending_review"], serde_json::json!([]));
+        assert!(printed.stderr.is_empty(), "{}", printed.stderr);
+        ok(handed_in, "external signature");
     }
 
-    /// Sign the printed root outside the CLI, as a device holding the key would, and hand the
-    /// signature in by hex.
-    fn hand_in_device_signature(&self, snapshot: &Path, id: &str, out: &Path) -> Output {
+    /// Print the root, sign it outside the CLI as a device holding the key would, and hand the
+    /// signature in by hex: what `--print-root` showed the custodian, and the hand-in's output.
+    fn hand_in_device_signature(&self, snapshot: &Path, id: &str, out: &Path) -> (Printed, Output) {
         use ed25519_dalek::Signer;
-        let printed = ok(
-            ozpb([
-                "registry".as_ref(),
-                "sign".as_ref(),
-                "--snapshot".as_ref(),
-                snapshot.as_os_str(),
-                "--print-root".as_ref(),
-            ]),
-            "print root",
-        );
-        let root = hex::decode(printed["root"].as_str().unwrap()).unwrap();
+        let output = ozpb([
+            "registry".as_ref(),
+            "sign".as_ref(),
+            "--snapshot".as_ref(),
+            snapshot.as_os_str(),
+            "--print-root".as_ref(),
+        ]);
+        let printed = Printed {
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            summary: ok(output, "print root"),
+        };
+        let root = hex::decode(printed.summary["root"].as_str().unwrap()).unwrap();
         let seed = std::fs::read_to_string(self.key(id)).unwrap();
         let seed = stellar_strkey::ed25519::PrivateKey::from_string(seed.trim()).unwrap();
         let key = ed25519_dalek::SigningKey::from_bytes(&seed.0);
         let signature = hex::encode(key.sign(&root).to_bytes());
         let public = hex::encode(key.verifying_key().to_bytes());
-        ozpb([
+        let handed_in = ozpb([
             "registry",
             "sign",
             "--snapshot",
@@ -149,8 +151,15 @@ impl Custodians {
             &signature,
             "--out",
             out.to_str().unwrap(),
-        ])
+        ]);
+        (printed, handed_in)
     }
+}
+
+/// What `registry sign --print-root` showed: the summary on stdout and anything on stderr.
+struct Printed {
+    summary: serde_json::Value,
+    stderr: String,
 }
 
 fn combine(unsigned: &Path, signatures: &[&Path], roots: &Path, out: &Path) -> Output {
@@ -284,8 +293,22 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         "sign a draft with a pending review reference",
         "pending review reference",
     );
+    // A device signs whatever root it is given before the hand-in can refuse, so the printed root
+    // itself names what is pending and warns that no signature over it is accepted.
+    let (printed, handed_in) =
+        custodians.hand_in_device_signature(&pending_path, "custodian-c", &pending_c);
+    let template = "template/policy-templates/scope@1";
+    assert_eq!(
+        printed.summary["pending_review"],
+        serde_json::json!([template])
+    );
+    assert!(
+        printed.stderr.contains("root for review only") && printed.stderr.contains(template),
+        "{}",
+        printed.stderr
+    );
     refused(
-        &custodians.hand_in_device_signature(&pending_path, "custodian-c", &pending_c),
+        &handed_in,
         "hand in a device's signature over a draft with a pending review reference",
         "pending review reference",
     );
@@ -783,6 +806,10 @@ fn the_committed_mainnet_log_awaits_its_key_ceremony() {
         "print the draft's root",
     );
     assert_eq!(printed["version"], "1");
+    assert_eq!(
+        printed["pending_review"],
+        serde_json::json!(["template/policy-templates/scope@1"])
+    );
     assert_eq!(
         printed["network_id"],
         ozpb_domain::NetworkId::from_passphrase(MAINNET).0.to_hex()

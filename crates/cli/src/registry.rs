@@ -45,9 +45,10 @@ pub enum Command {
         out: PathBuf,
     },
     /// Print the canonical root of an unsigned snapshot, or sign it into a detached signature
-    /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root. A snapshot
-    /// still carrying a pending review reference has its root printed, for review, but is never
-    /// signed.
+    /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root. For a
+    /// snapshot still carrying a pending review reference, --print-root lists the entries under
+    /// `pending_review` and warns on stderr, and neither signing form nor `combine` accepts a
+    /// signature over its root.
     Sign(SignArgs),
     /// Assemble detached signatures into a signed snapshot, checking each against the pinned
     /// root policy and the threshold, and load the result as a consumer would before writing it.
@@ -181,7 +182,7 @@ pub fn run(command: Command) -> Result<()> {
             let changes: ChangeSet = read_json(&changes)?;
             let next = governance::successor(roots, network, &parent, &changes, now(at)?)?;
             write_new(&out, &next)?;
-            print_json(&root_summary(&next)?)
+            print_root_summary(&next)
         }
         Command::Sign(args) => sign(args),
         Command::Combine {
@@ -232,7 +233,7 @@ fn keygen(out: &Path, key_id: Option<String>) -> Result<()> {
 fn sign(args: SignArgs) -> Result<()> {
     let snapshot: RegistrySnapshot = read_json(&args.snapshot)?;
     if args.print_root {
-        return print_json(&root_summary(&snapshot)?);
+        return print_root_summary(&snapshot);
     }
     let (Some(key_id), Some(out)) = (args.key_id, args.out) else {
         bail!("signing needs --key-id and --out (or --print-root to only print the root)");
@@ -364,10 +365,22 @@ fn monitor(args: MonitorArgs) -> Result<()> {
     Ok(())
 }
 
-/// What a custodian checks before signing: the root and the fields it commits to that decide
-/// where and when the snapshot is trusted.
-fn root_summary(snapshot: &RegistrySnapshot) -> Result<serde_json::Value> {
-    Ok(serde_json::json!({
+/// Print what a custodian checks before signing: the root, the fields it commits to that decide
+/// where and when the snapshot is trusted, and every entry whose review reference is still
+/// pending. A custodian signing on a device signs whatever root it is shown, before any hand-in
+/// can refuse it, so a root over pending references is also marked on stderr as one no signing
+/// step accepts.
+fn print_root_summary(snapshot: &RegistrySnapshot) -> Result<()> {
+    let pending = governance::pending_reviews(snapshot);
+    if !pending.is_empty() {
+        eprintln!(
+            "root for review only: {} still carry a pending review reference, and `registry sign` \
+             and `registry combine` accept no signature over this root; replace them, then print \
+             the root again",
+            pending.join(", ")
+        );
+    }
+    print_json(&serde_json::json!({
         "root": snapshot_root(snapshot)?,
         "network_id": snapshot.network_id,
         "version": snapshot.version.to_string(),
@@ -376,6 +389,7 @@ fn root_summary(snapshot: &RegistrySnapshot) -> Result<serde_json::Value> {
         "valid_from_unix": snapshot.valid_from_unix.to_string(),
         "expires_at_unix": snapshot.expires_at_unix.to_string(),
         "revocations": snapshot.revocations.keys().collect::<Vec<_>>(),
+        "pending_review": pending,
     }))
 }
 

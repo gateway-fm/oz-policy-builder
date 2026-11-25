@@ -550,7 +550,17 @@ pub fn monitor(
 /// ([`PENDING_REVIEW_PREFIX`]): a draft custodians have not finished must not be signed by
 /// accident or distributed.
 pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), GovernanceError> {
-    let references = snapshot
+    match pending_reviews(snapshot).into_iter().next() {
+        Some(entry) => Err(GovernanceError::PendingReview(entry)),
+        None => Ok(()),
+    }
+}
+
+/// Every entry (`template/<family>`, `account/<hash>`, …) whose review reference is still
+/// pending, in the order [`require_no_pending_review`] checks them. What a custodian reviews
+/// before signing lists them all, since a device signs whatever root it is given.
+pub fn pending_reviews(snapshot: &RegistrySnapshot) -> Vec<String> {
+    snapshot
         .policies
         .iter()
         .map(|(key, entry)| (format!("policy/{key}"), &entry.review_reference))
@@ -577,13 +587,10 @@ pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), Gove
                 .templates
                 .iter()
                 .map(|(key, entry)| (format!("template/{key}"), &entry.review_reference)),
-        );
-    for (entry, reference) in references {
-        if reference.trim_start().starts_with(PENDING_REVIEW_PREFIX) {
-            return Err(GovernanceError::PendingReview(entry));
-        }
-    }
-    Ok(())
+        )
+        .filter(|(_, reference)| reference.trim_start().starts_with(PENDING_REVIEW_PREFIX))
+        .map(|(entry, _)| entry)
+        .collect()
 }
 
 /// The published copy of the version a consumer has already accepted must be exactly what it

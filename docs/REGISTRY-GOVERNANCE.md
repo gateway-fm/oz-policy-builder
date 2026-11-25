@@ -105,12 +105,15 @@ under two roles, an empty revocation reason, a rewritten revocation — is never
 
 ```bash
 ozpb registry sign --snapshot v0002.unsigned.json --print-root
-# {"root": "…", "network_id": "…", "version": "2", "previous_root": "…",
-#  "valid_from_unix": "…", "expires_at_unix": "…", "revocations": […]}
+# {"root": "…", "network_id": "…", "version": "2", "log_index": "2", "previous_root": "…",
+#  "valid_from_unix": "…", "expires_at_unix": "…", "revocations": […], "pending_review": []}
 ```
 
 and diffs the unsigned file against the parent. The root is the canonical hash of the whole
 snapshot; signing it signs every entry, the network, the chain position and the interval.
+`pending_review` must be empty: it lists every entry whose review reference still begins
+`PENDING, replace before signing:`, and while it does not, a warning on stderr says the root is
+for review only.
 
 **Sign.** With a local key file (mode 0600, refused otherwise):
 
@@ -130,8 +133,10 @@ ozpb registry sign --snapshot v0002.unsigned.json --key-id custodian-c \
 A signature that does not verify over that root under that public key is refused here. Both
 forms refuse a snapshot that still carries a pending review reference (`E_REGISTRY_PARSE`, naming
 the entry), so a draft is corrected before any custodian's signature is spent on it rather than
-at combine. `--print-root` still prints such a draft's root, for review; do not sign it on a
-device.
+at combine. A device signs whatever root it is given before the hand-in can refuse, so a device
+custodian checks `pending_review` first. The refusal belongs to these commands: a consumer's load
+checks signatures, not review references, so signatures over a pending root assembled some other
+way would load.
 
 **Combine.**
 
