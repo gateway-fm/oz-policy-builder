@@ -304,8 +304,7 @@ export class WalletNetwork {
   get canSubmitRemoval() { return (this.#funded || this.#removalPayer) && !this.#ambiguous; }
   /**
    * The endpoint must serve the session's network, at protocol 30: another network refuses as
-   * `network_mismatch`, another protocol (mainnet before its upgrade to 30, for one) as
-   * `protocol_unsupported`, carrying the protocol it reported.
+   * `network_mismatch`, another protocol as `protocol_unsupported`, carrying the protocol it reported.
    */
   async assertNetwork() {
     const reported = await this.#server.getNetwork();
@@ -399,7 +398,8 @@ export class WalletNetwork {
     if (this.#funded) return;
     if (this.#payer.operator) {
       // The operator's key is never funded by the wallet: its account must exist, funded by its owner,
-      // with at least one transaction's fee to spend above its reserve.
+      // with at least one transaction's fee to spend above its reserve. Each write is then checked
+      // against its own fee before it is signed (`submitEnvelope`).
       const account = await this.payerAccount();
       if (!account.exists || BigInt(account.spendableStroops) < BigInt(this.#fees.maxFeeStroops)) refuse({ reason: 'payer_unfunded' });
       this.#funded = true;
@@ -437,6 +437,13 @@ export class WalletNetwork {
     if (!(await this.payerAccount()).exists) refuse({ reason: 'payer_unfunded' });
     this.#removalPayer = true;
   }
+  /**
+   * Refuses `payer_unfunded` unless the fee payer can pay `stroops` now: operator-funded (always on
+   * mainnet), the operator's account must spend it above its reserve; testnet's disposable payer, which
+   * Friendbot funds, is not read. Asked before the owner consents to, or signs for, a write the payer
+   * will pay for.
+   */
+  async payerCovers(stroops) { if (this.#payer.operator) await this.#payerCovers(stroops); }
   /** The operator's account can spend `fee` above its reserve now. */
   async #payerCovers(fee) {
     const account = await this.payerAccount();
@@ -516,8 +523,12 @@ export class WalletNetwork {
       }
       checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
       this.#assertPayerNotSigner(assembled);
-      // Operator-funded: a removal is signed only when the operator's account can pay its fee now.
-      if (this.#payer.operator && stage === 'revoke-policy') await this.#payerCovers(fee);
+      // Operator-funded: every write is signed only when the operator's account can pay this transaction's fee
+      // now. `fundPayer` checked the per-transaction cap once; an upload, held to its own larger cap,
+      // can cost far more, and the account can be drawn down between writes. Refused here, nothing is
+      // journaled or counted and no submission is left uncertain, so the session can still write once the
+      // operator funds the account (the actions let such a refused step be confirmed again).
+      if (this.#payer.operator) await this.#payerCovers(fee);
       this.#payer.signTransaction(assembled);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
       const serial = ++this.#serial;
@@ -793,7 +804,9 @@ export class WalletNetwork {
   /**
    * A classic account as the owner must fund it, read only: `{ exists: false, minimumStroops, ledger }`
    * or `{ exists: true, balanceStroops, minimumStroops, spendableStroops, ledger }`. The minimum is the
-   * network's base reserve, from the latest ledger header, times two plus the account's subentries.
+   * network's base reserve, from the latest ledger header, times two plus the account's subentries
+   * plus the reserves it sponsors less those sponsored for it; what it can spend is its balance less
+   * that minimum and less its selling liabilities (XLM its open offers have set aside).
    */
   async classicAccount(address) {
     try {
@@ -811,10 +824,16 @@ export class WalletNetwork {
       const [entry] = response.entries;
       const account = entry.val?.type === 'account' ? entry.val.account : refuse();
       if (response.entries.length !== 1 || !same(entry.key, key) || !Number.isSafeInteger(account.numSubEntries)) refuse();
-      const minimum = (2n + BigInt(account.numSubEntries)) * reserve;
+      const v1 = account.ext?.type === 'v1' ? account.ext.v1 : null;
+      const v2 = v1?.ext?.type === 'v2' ? v1.ext.v2 : null;
+      const selling = v1 ? BigInt(v1.liabilities.selling) : 0n;
+      const entries = 2n + BigInt(account.numSubEntries) + BigInt(v2?.numSponsoring ?? 0) - BigInt(v2?.numSponsored ?? 0);
+      if (entries < 0n || selling < 0n) refuse();
+      const minimum = entries * reserve;
       const balance = BigInt(account.balance);
+      const spendable = balance - minimum - selling;
       return { exists: true, balanceStroops: balance.toString(), minimumStroops: minimum.toString(),
-        spendableStroops: (balance > minimum ? balance - minimum : 0n).toString(), ledger: observed };
+        spendableStroops: (spendable > 0n ? spendable : 0n).toString(), ledger: observed };
     } catch (error) { refuse(error); }
   }
   /**

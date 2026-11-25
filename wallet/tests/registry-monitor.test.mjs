@@ -1,7 +1,9 @@
 // The on-demand monitor also runs `ozpb registry monitor` against the operator's published registry
-// log and the persisted checkpoint, watching the installed grant's account and owner-verifier Wasm,
-// and shows what its exit status means (docs/REGISTRY-GOVERNANCE.md#monitoring). The CLI here is a
-// stub executable that prints the report and exits as the real one does.
+// log and the persisted checkpoint, watching the installed grant's account and owner-verifier Wasm
+// and its generated policy's template family, and shows what its exit status means
+// (docs/REGISTRY-GOVERNANCE.md#monitoring). The CLI here is a stub executable that prints the report
+// in the real one's shape (`RevokedCapability`: `watched` is `{ code }` or `{ template_family }`) and
+// exits as the real one does.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +19,7 @@ function stub(t, { status, exit, report = {}, stderr = '', executable: missing =
   const body = JSON.stringify({ schema: 'registry-monitor/v1', status, checked_at_unix: '1795000000', checkpoint_version: '6',
     head: { version: '7', log_index: '7', root: 'ef'.repeat(32), revocations: {} }, newer_version_available: status === 'newer_version',
     validity: 'valid', valid_from_unix: '1790000000', expires_at_unix: '1800000000',
-    revoked: status === 'revoked' ? [{ wasm_hash: ACCOUNT_WASM, capability: `account/${ACCOUNT_WASM}`, reason: 'advisory', effective_version: '7' }] : [],
+    revoked: status === 'revoked' ? [{ watched: { code: ACCOUNT_WASM }, capability: `account/${ACCOUNT_WASM}`, reason: 'advisory', effective_version: '7' }] : [],
     ...report });
   const executable = join(root, 'ozpb');
   writeFileSync(join(root, 'report.json'), body);
@@ -42,12 +44,45 @@ test('each exit status is read with its meaning, as the governance guide tabulat
     assert.equal(result.meaning, REGISTRY_MONITOR[exit].meaning);
     assert.equal(result.action, REGISTRY_MONITOR[exit].action);
     assert.equal(result.headVersion, '7');
-    if (status === 'revoked') assert.deepEqual(result.revoked.map((r) => r.wasm_hash), [ACCOUNT_WASM]);
+    if (status === 'revoked') {
+      assert.deepEqual(result.revoked.map((r) => ({ ...r })), [{ watched: { code: ACCOUNT_WASM }, capability: `account/${ACCOUNT_WASM}`,
+        reason: 'advisory', effectiveVersion: '7' }]);
+    }
     const a = args();
     assert.deepEqual(a.slice(0, 2), ['registry', 'monitor']);
     assert.equal(a[a.indexOf('--published') + 1], published);
     assert.equal(a.filter((x) => x === '--wasm-hash').length, 2);
     assert.ok(a.includes(ACCOUNT_WASM) && a.includes(WEBAUTHN_WASM));
+  }
+});
+
+const FAMILY = 'policy-templates/scope@1';
+
+test('the generated policy\'s template family is watched with --template, and its revocation is reported as the family', async (t) => {
+  const revoked = [{ watched: { template_family: FAMILY }, capability: `template/${FAMILY}`, reason: 'template pack withdrawn',
+    effective_version: '8' }];
+  const { toolchain, args } = stub(t, { status: 'revoked', exit: 6, report: { revoked } });
+  const result = await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM], templates: [FAMILY] });
+  assert.equal(result.status, 'revoked');
+  assert.deepEqual(result.revoked.map((r) => ({ ...r })), [{ watched: { template_family: FAMILY }, capability: `template/${FAMILY}`,
+    reason: 'template pack withdrawn', effectiveVersion: '8' }]);
+  const a = args();
+  assert.equal(a.filter((x) => x === '--template').length, 1);
+  assert.equal(a[a.indexOf('--template') + 1], FAMILY);
+  assert.equal(a.filter((x) => x === '--wasm-hash').length, 2);
+  // A name the registry would not accept as a family is never passed to the CLI.
+  for (const bad of ['', 'scope family', 'x'.repeat(129), 'policy-templates/scope@1\n--wasm-hash', 7]) {
+    await assert.rejects(() => toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM], templates: [bad] }), /refused/, String(bad));
+  }
+});
+
+// Malformed, or naming something this call did not watch (only the account's hash is watched here).
+test('a revoked entry that does not name what was watched, as the CLI prints it, is an incident', async (t) => {
+  for (const watched of [undefined, ACCOUNT_WASM, { wasm_hash: ACCOUNT_WASM }, { code: 'AB'.repeat(32) }, { template_family: '' },
+    { code: ACCOUNT_WASM, template_family: FAMILY }, { code: WEBAUTHN_WASM }, { template_family: FAMILY }]) {
+    const revoked = [{ watched, capability: `account/${ACCOUNT_WASM}`, reason: 'advisory', effective_version: '7' }];
+    const { toolchain } = stub(t, { status: 'revoked', exit: 6, report: { revoked } });
+    assert.equal((await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable', JSON.stringify(watched));
   }
 });
 
@@ -62,6 +97,12 @@ test('an unverifiable log, or a report that contradicts its exit status, is an i
   assert.equal((await contradicting.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
   const malformed = stub(t, { status: 'current', exit: 0, report: { schema: 'something else' } });
   assert.equal((await malformed.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
+  // `revoked` is the status exactly when the report lists a revocation, as the CLI derives it.
+  const revokedNothing = stub(t, { status: 'revoked', exit: 6, report: { revoked: [] } });
+  assert.equal((await revokedNothing.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
+  const currentButRevoked = stub(t, { status: 'current', exit: 0, report: { revoked: [{ watched: { code: ACCOUNT_WASM },
+    capability: `account/${ACCOUNT_WASM}`, reason: 'advisory', effective_version: '7' }] } });
+  assert.equal((await currentButRevoked.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
 });
 
 test('a monitor that could not run to a verdict is monitor_unavailable, not an incident', async (t) => {
@@ -96,7 +137,6 @@ test('without a published registry log configured, the registry part says so', a
 test('the installed-grant monitor reports the registry alongside the grant', async () => {
   const { readFileSync: read } = await import('node:fs');
   const source = read(new URL('../server/monitor.mjs', import.meta.url), 'utf8');
-  assert.match(source, /toolchain\.registryMonitor\(\{ wasmHashes: \[ACCOUNT_WASM, WEBAUTHN_WASM\] \}\)/);
   assert.doesNotMatch(source, /catch \{ registry = \{ status: 'log_unverifiable' \}/, 'a monitor that threw is unavailable, not an incident');
 });
 
@@ -125,5 +165,10 @@ test('the real `ozpb registry monitor`: the committed head is read, and the revo
     const revoked = await toolchain.registryMonitor({ wasmHashes: [revokedAccount] });
     assert.equal(revoked.status, 'revoked', JSON.stringify(revoked));
     assert.equal(revoked.exit, 6);
-    assert.deepEqual(revoked.revoked.map((r) => r.wasm_hash), [revokedAccount]);
+    assert.deepEqual(revoked.revoked.map((r) => r.watched), [{ code: revokedAccount }]);
+    assert.deepEqual(revoked.revoked.map((r) => r.capability), [`account/${revokedAccount}`]);
+    // The generated policy's family is registered in the head, so watching it is accepted and not revoked.
+    const family = await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM], templates: [FAMILY] });
+    assert.equal(family.status, current.status, JSON.stringify(family));
+    assert.deepEqual(family.revoked, []);
   });

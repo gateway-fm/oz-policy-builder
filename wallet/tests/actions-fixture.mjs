@@ -19,6 +19,7 @@ export function setup({ native = null, live = null, delegates, network: override
     assertNetwork: async () => { calls.push('network'); },
     codePresent: async (hash) => { calls.push(['code', hash]); return { present: true, ledger: 124 }; },
     fundPayer: async () => { calls.push('fund'); },
+    payerCovers: async () => {},
     fundRemoval: async () => { calls.push('fund-removal'); },
     ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
     latestLedger: async () => 123,
@@ -69,9 +70,14 @@ export function deploymentFixture(change = () => {}, options = {}) {
     if (command === 'prepare-install-intent') return f.f.intent;
     assert.fail('unexpected authority command');
   };
+  // The policy's code is on the network only once an upload of it returned; the pinned code always is.
+  let stored = false;
+  const pinned = f.network.codePresent;
+  f.network.codePresent = async (hash) => (hash === artifact.wasmHash ? { present: stored, ledger: 123456 } : pinned(hash));
   f.network.upload = async (bytes, hash) => {
     assert.equal(bytes.toString(), 'retained artifact'); assert.equal(hash, artifact.wasmHash);
     f.calls.push('upload');
+    stored = true;
     return { hash: 'c'.repeat(64), ledger: 123456, trust: 'rpc_reported' };
   };
   f.network.create = async (hash, args, stage) => {

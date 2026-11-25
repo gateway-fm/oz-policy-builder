@@ -136,6 +136,26 @@ test('a lost install response cannot cause an automatic or manual retry', async 
   await assert.rejects(f.controller.install(), /wallet action refused/);
   assert.equal(f.calls.filter(([name]) => name === 'submit').length, 1);
 });
+test('an installation the backend refused before sending keeps the review and says why; one that may have been sent does not', async () => {
+  for (const [name, again] of [['refused before sending', true], ['may have been sent', false]]) {
+    const f = fixture();
+    await prepared(f);
+    await f.controller.prepareInstall();
+    f.replies.submit = Object.assign(new Error('refused'), { reason: 'payer_unfunded' });
+    // Whether the backend offers installation again is what tells the two apart.
+    f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, install: again } };
+    const refusal = await f.controller.install().then(() => null, (error) => error);
+    assert.equal(refusal?.reason, again ? 'payer_unfunded' : undefined, name);
+    assert.equal(f.controller.state.installAttempted, !again, name);
+    assert.equal(f.controller.state.review !== null, again, name);
+    if (again) {
+      f.replies.submit = { receipt: { hash: hash('e') }, installation: INSTALLATION };
+      await f.controller.prepareInstall();
+      await f.controller.install();
+      assert.equal(f.controller.state.installation.installationId, hash('6'), name);
+    } else await assert.rejects(f.controller.prepareInstall(), /wallet action refused/, name);
+  }
+});
 test('cancelling the install consent asks no passkey and keeps the review', async () => {
   const f = fixture();
   await prepared(f);
@@ -877,6 +897,8 @@ test('new recording and generation retain confirmed and uncertain installation r
       await f.controller.prepareInstall();
       if (uncertain) {
         f.replies.submit = new Error('lost response');
+        // As the backend reports an attempt that may have left: installation is not offered again.
+        f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, install: false } };
         await assert.rejects(f.controller.install(), /refused/);
       } else await f.controller.install();
       const owner = f.controller.state.installOwner;

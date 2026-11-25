@@ -618,8 +618,14 @@ export class WalletController {
       } catch (error) {
         // A confirmed transaction the backend could not verify, or whose response was lost, is still
         // listed there: the status read adopts it, so that it can be seen and removed. The attempt
-        // cannot be repeated, so its reason is not passed on.
-        await this.#statusWhenFree();
+        // cannot be repeated, so its reason is not passed on. Unless nothing left: the fee payer refused
+        // before signing (it cannot pay, a cap), and the backend offers installation again. Then the
+        // review is kept, the reason passed on, and a new entry follows once this one has expired.
+        const refreshed = (await this.#statusWhenFree()) !== null;
+        if (refreshed && this.#state.status?.capabilities?.install === true && !this.#confirmed(display.grant.rule_id)) {
+          this.#set({ installAttempted: false, installRuleId: null, installOwner: null, review });
+          throw error;
+        }
         throw refused();
       }
       await this.#status().catch(() => {});

@@ -72,7 +72,7 @@ const REFUSED: Record<string, string> = {
   grant_already_used: "the policy says this grant was already used, but not from this page: someone holding the automation key's signatures used it. Nothing was sent. Revoke the grant.",
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",
   network_mismatch: "the operator's RPC endpoint serves another network than this session's. Nothing was signed or sent; the operator must fix the backend configuration.",
-  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
+  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports. Nothing was signed or sent.",
   fee_cap: "this transaction could cost more than the fee cap the operator set for it. Nothing was signed or sent.",
   spend_cap: "this transaction could take the session past the spend cap the operator set, counting what earlier sessions in this work root spent. Nothing was signed or sent.",
   payer_unfunded: "the fee payer's account does not exist or cannot pay this transaction's fee. If it is the operator's own key (always on mainnet), fund it from your own wallet (see the readiness panel); otherwise Friendbot has not funded the wallet's testnet key yet. Then try again.",
@@ -570,6 +570,10 @@ function PolicyBuilder() {
 
       <section className={panel} aria-labelledby="agent-heading">
         <h2 id="agent-heading" className="text-xl font-semibold">Connect Claude</h2>
+        {state?.status?.capabilities.agentHandoff === false ? <p role="status" className="text-sm text-slate-300">
+          Claude connects directly to a testnet session only. On {NETWORK.name}, after you confirm the grant in Claude, start
+          its policy-builder-install skill: it prints the grant proposal as JSON. Paste it, or save it as a file, under Import a
+          grant proposal in section 2; the wallet checks it exactly as it would a proposal sent directly.</p> : <>
         <Intro>Pair Claude, running on this computer, so it can send you a grant to review. Claude cannot sign, deploy or install
           anything.</Intro>
         <button className={button} disabled={busy || !state?.wallet || !state?.status?.capabilities.agentHandoff
@@ -607,11 +611,13 @@ function PolicyBuilder() {
           <p>The connection ends 30 minutes after pairing; reopening this page needs a new connection, and Claude then builds the grant
             again. Disconnect before changing the account or automation key. Closing this page does not guarantee disconnection.</p>
         </Details>
+        </>}
       </section>
 
       <section className={panel} aria-labelledby="record-heading">
         <h2 id="record-heading" className="text-xl font-semibold">2. The grant</h2>
-        <Intro>The permission the automation key would get. With Claude there is nothing to do here: Review proposal from Claude fills it in.</Intro>
+        <Intro>The permission the automation key would get. {state?.status?.capabilities.agentHandoff === false
+          ? "Import Claude's proposal below." : "With Claude there is nothing to do here: Review proposal from Claude fills it in."}</Intro>
         {state?.proposalReview && <div className="space-y-2 rounded-lg border-2 border-green-600 p-4 text-sm">
           <p>The regenerated permissions match the proposal. Review the grant below.</p>
           <Details title="Why the two specification hashes can differ">
@@ -819,6 +825,15 @@ function PolicyBuilder() {
             {label(object(state.monitor.registry).status)}</Badge>{" "}
             {object(state.monitor.registry).status === "not_configured" ? "No published registry log is configured (operator `registryPublishedPath`)."
               : <>{label(object(state.monitor.registry).meaning)}. What to do: {label(object(state.monitor.registry).action)}.</>}</p>
+          {items(object(state.monitor.registry).revoked).length > 0 && <ul className="list-disc pl-5 text-sm text-amber-200">
+            {items(object(state.monitor.registry).revoked).map((entry, index) => {
+              const watched = object(object(entry).watched);
+              return <li key={index}>Revoked: {typeof watched.template_family === "string"
+                ? <>template family {watched.template_family}, the one the installed policy was generated from</>
+                : <>code {label(watched.code)}</>} ({label(object(entry).capability)}, from registry version{" "}
+                {label(object(entry).effectiveVersion)}): {label(object(entry).reason)}</li>;
+            })}
+          </ul>}
           <Details title="Observation and ledger bounds"><Evidence title="Grant observation" value={state.monitor} /></Details>
         </>}
       </section>

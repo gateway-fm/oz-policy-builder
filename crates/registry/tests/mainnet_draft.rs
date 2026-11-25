@@ -155,7 +155,7 @@ fn the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in() {
     }
     let template = &draft.templates["policy-templates/scope@1"].review_reference;
     assert!(template.starts_with(PENDING), "{template}");
-    // And so the draft as committed cannot be combined or verified by accident.
+    // And so the draft as committed cannot be signed, combined or verified by accident.
     assert!(ozpb_registry::governance::require_no_pending_review(&draft).is_err());
 }
 
