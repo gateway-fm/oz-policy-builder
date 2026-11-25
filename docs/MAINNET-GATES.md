@@ -473,6 +473,7 @@ ci  crates/toolkit/src/verification.rs  verification::tests::verification_reprod
 ci  crates/toolkit/src/lib.rs  tests::generated_artifact_includes_wasm_and_a_binding_manifest
 ci  crates/toolkit/src/publication.rs  publication::tests::a_published_build_reproduces_through_verify
 ci  crates/toolkit/src/publication.rs  publication::tests::a_changed_source_byte_is_refused_by_the_index_and_then_by_the_manifest
+ci  crates/toolkit/src/publication.rs  publication::tests::a_swapped_wasm_with_a_rewritten_manifest_passes_the_checks_and_fails_verify
 ci-step  .github/workflows/self-hosted.yml  python3 -B scripts/test-check-hosted-build.py
 ci-step  .github/workflows/self-hosted.yml  bash scripts/test-hosted-container.sh
 ```
