@@ -16,7 +16,7 @@ applied from, the binaries, and the signed head, `roots.json` and checkpoint att
 
 All of these must hold before the first mainnet write. The wallet checks each one and refuses,
 with a reason the page explains, when it does not.
-Rehearse the whole install on testnet first, at no cost: [Rehearse on testnet](#rehearse-on-testnet).
+Rehearse the funding and custody model on testnet first, at no cost: [Rehearse on testnet](#rehearse-on-testnet).
 
 1. **Protocol 30 on mainnet.** Mainnet runs protocol 29 until its validators vote the upgrade (the
    vote is scheduled for 23 November 2026). The backend refuses to start against an endpoint that
@@ -194,12 +194,14 @@ work root; the delegate key file, named in the consents as the agent's key; the 
 directory and the readiness panel. One run of it costs nothing and needs no mainnet write, so it
 can come before the audit's sign-off.
 
-What stays testnet's: the passphrase and the endpoint; Friendbot, which still creates the
-delegate's account if it is missing, but never funds the fee payer; the development registry
-(prerequisite 3 is not rehearsed); and the development server, which reaches the testnet backend
-on port 4317 (prerequisite 8, a production build reaching the mainnet backend on port 4318, is not
-rehearsed). Testnet prices are not mainnet's: the fee table
-above is the estimate, not the rehearsal's figures.
+What stays testnet's, and so is not rehearsed: the passphrase and the endpoint; the delegate's
+account, which Friendbot creates on testnet if it is missing (it never funds the fee payer), where
+on mainnet the wallet only reads it, **Create local automation delegate** shows its minimum
+reserve, and every check that needs it refuses as `delegate_unfunded` until you fund it; the
+development registry (prerequisite 3 is not rehearsed); and the development server, which reaches
+the testnet backend on port 4317 (prerequisite 8, a production build reaching the mainnet backend
+on port 4318, is not rehearsed). Testnet prices are not mainnet's: the fee table above is the
+estimate, not the rehearsal's figures.
 
 1. **Keys, funded by you.** A fee payer, a key standing in for the agent's, and an owner account
    to send XLM from. `umask 077` makes the key files `0600`:
@@ -214,14 +216,19 @@ above is the estimate, not the rehearsal's figures.
    ```
 
 2. **Configuration.** Give the rehearsal a new work root (mode `0700`): the session cap counts the
-   fees of every session in it. Use the testnet fields of
-   [Start the local backend](POLLYWALLET-INTEGRATION.md#start-the-local-backend), the development
-   registry included, and add the mainnet model's fields with the caps you will set on mainnet:
+   fees of every session in it. The testnet fields are those of
+   [Start the local backend](POLLYWALLET-INTEGRATION.md#start-the-local-backend), with the
+   development registry's signed snapshot and roots; the rest is the mainnet model's, with the caps
+   you will set on mainnet. Replace each path and the helper's ID with your own:
 
    ```json
    {
      "network": "testnet",
+     "executable": "/absolute/path/oz-policy-builder/target/debug/ozpb",
      "workRoot": "/absolute/path/rehearsal/work",
+     "rpcUrl": "https://rpc.testnet.stellar.gateway.fm",
+     "registrySnapshotPath": "/absolute/path/registry.signed.json",
+     "registryRootsPath": "/absolute/path/registry-roots.json",
      "registryMinimumVersion": 6,
      "feePayerKeyPath": "/absolute/path/rehearsal/fee-payer.key",
      "delegateKeyPath": "/absolute/path/rehearsal/delegate.key",

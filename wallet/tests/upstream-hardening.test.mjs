@@ -142,7 +142,12 @@ test('the page follows the session\'s funding model, not its network name, for w
   assert.match(ROUTE, /const ownerFunded = object\(state\?\.status\?\.feePayer\)\.ownerFunded === true;/);
   assert.match(ROUTE, /\{\(launched === "mainnet" \|\| ownerFunded\) && <MainnetReadiness /);
   assert.match(ROUTE, /\{ownerFunded && state\?\.status\?\.capabilities\.delegateKey === false && /);
-  assert.doesNotMatch(ROUTE, /NETWORK\.friendbot/, 'the account step names its funding from the preview, never from Friendbot');
+  assert.doesNotMatch(ROUTE, /NETWORK\.friendbot/, 'the account step names its funding from the session, never from Friendbot');
+  // Mainnet's account step never says the wallet funds the account, even before the status arrives.
+  assert.match(ROUTE, /the account\$\{launched === "mainnet" \|\| ownerFunded \? "" : " and its funding"\}/);
+  assert.match(ROUTE, /\.\.\.\(launched === "mainnet" \|\| ownerFunded \? \[\] : \[`Fund the account with 1 \$\{NETWORK\.unit\}`\]\)/);
+  // The readiness panel: on mainnet the wallet funds nothing; it uploads the policy, never the pinned code.
+  assert.match(ROUTE, /\{NETWORK\.name === "mainnet" \? "The wallet funds nothing" : "The wallet funds no account from the fee payer"\} and uploads no pinned code on \{NETWORK\.name\}\./);
   // The real-XLM warning is the network's own.
   assert.match(ROUTE, /\{launched === "mainnet" && <p role="alert"/);
 });

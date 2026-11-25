@@ -74,7 +74,7 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   - The agent's own key (`delegateKeyPath`), the delegate the grant names. Installing a grant
     requires it: the account-Wasm, captured-target and live checks, three of the four layers
     installation requires, sign as the delegate. The live check's delegate signature is a real
-    mainnet authorization until its expiry, 12 ledgers after the check is prepared; with the
+    authorization on the session's network until its expiry, 12 ledgers after the check is prepared; with the
     owner's signature it is a submittable transfer, so installation waits until that ledger has
     passed. Without the file the wallet holds no delegate key and installation stays closed
     (`delegate_key_unavailable`). Whoever can read that file, or the backend's memory, holds the

@@ -150,9 +150,10 @@ Each backend launch creates a separate private session directory and, unless the
 its own key (`feePayerKeyPath`), an in-memory disposable testnet fee payer. Retain the session journal: an intended transaction hash is recorded before
 submission, and an uncertain result blocks subsequent writes in that session. Inspect that
 hash before starting another attempt. The fee payer key is not saved, printed or returned
-to the browser. Fresh account confirmation separately discloses a fixed one-testnet-XLM
-sample balance (`sampleFundingStroops: "10000000"`) and at most three testnet XLM in fees
-across its three transactions (`maxTotalFeeStroops: 30000000`).
+to the browser. With the disposable fee payer, fresh account confirmation separately discloses a
+fixed one-testnet-XLM sample balance (`sampleFundingStroops: "10000000"`) and at most three testnet
+XLM in fees across its three transactions (`maxTotalFeeStroops: 30000000`); with the operator's own,
+no sample balance (`"0"`) and the fees of two transactions.
 On SIGINT or SIGTERM the listener stops accepting new requests; an already admitted request
 can finish and write its receipt before shutdown. Keep the journal when interrupting a session.
 

@@ -104,7 +104,7 @@ function MainnetReadiness({ readiness, status, busy, check }: { readiness: Recor
   const helper = object(readiness?.helper);
   return <section className={panel} aria-labelledby="readiness-heading">
     <h2 id="readiness-heading" className="text-xl font-semibold">{NETWORK.name === "mainnet" ? "Mainnet" : "Testnet"} readiness</h2>
-    <p className="text-sm">The wallet funds no account from the fee payer and uploads nothing on {NETWORK.name}. Fee payer {label(object(status?.feePayer).address)}: your own
+    <p className="text-sm">{NETWORK.name === "mainnet" ? "The wallet funds nothing" : "The wallet funds no account from the fee payer"} and uploads no pinned code on {NETWORK.name}. Fee payer {label(object(status?.feePayer).address)}: your own
       account, which pays every fee, at most {xlm(fees.maxFeeStroops)} a transaction ({xlm(fees.maxUploadFeeStroops)} for the policy
       code upload) and {xlm(fees.sessionSpendCapStroops)} for this session; spent so far {xlm(fees.spentStroops)}.</p>
     <button className={button} disabled={busy} onClick={check}>Check {NETWORK.name} readiness</button>
@@ -514,8 +514,8 @@ function PolicyBuilder() {
           <ReviewWindow until={windows.account} now={now} expired="Preview the account again; it reuses the passkey you created." />
           <div className="flex flex-wrap gap-3">
             <button className={button} disabled={busy || agentActive || !open("account", state.accountPreview)}
-              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier and the account${ownerFunded ? "" : " and its funding"} (about 20–40 s)…`,
-                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", ...(ownerFunded ? [] : [`Fund the account with 1 ${NETWORK.unit}`])])}>Confirm {NETWORK.name} account deployment</button>
+              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier and the account${launched === "mainnet" || ownerFunded ? "" : " and its funding"} (about 20–40 s)…`,
+                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", ...(launched === "mainnet" || ownerFunded ? [] : [`Fund the account with 1 ${NETWORK.unit}`])])}>Confirm {NETWORK.name} account deployment</button>
             {!open("account", state.accountPreview) && credential && <button className={button} disabled={busy || agentActive}
               onClick={() => void run((value) => value.prepareAccount(credential), "Preparing the account preview again…", `Next: Confirm ${NETWORK.name} account deployment.`)}>Preview the account again</button>}
           </div>
