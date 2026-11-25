@@ -24,10 +24,10 @@ has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-rec
 for a gate's deviation, its gate is closed. The wallet does not check them.
 
 **Commands that name mainnet.** stellar-cli 27.0.0 has no RPC URL for its built-in `mainnet`
-network: `--network mainnet` fails with `Invalid URL Bring Your Own: …`. Wherever a command here,
-or one the readiness panel prints, says `--network mainnet`, give
+network: `--network mainnet` fails with `Invalid URL Bring Your Own: …`. Every mainnet command
+here, and every one the readiness panel prints, gives
 `--rpc-url <your endpoint> --network-passphrase 'Public Global Stellar Network ; September 2015'`
-instead.
+instead; use that form for any other mainnet command.
 
 All of the following must hold before the first mainnet write. The wallet checks each one and
 refuses, with a reason the page explains, when it does not.
