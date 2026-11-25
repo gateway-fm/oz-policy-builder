@@ -1255,8 +1255,9 @@ is shown apart from the grant's: `current` (exit 0), `newer_version` (3), `not_y
 [the governance guide](REGISTRY-GOVERNANCE.md#monitoring) tabulates it, and `log_unverifiable`
 (exit 1 with a registry verification fault leading the CLI's error: `E_REGISTRY_SIGNATURE`,
 `E_REGISTRY_TRANSPARENCY`, `E_REGISTRY_ROLLBACK`, `E_REGISTRY_PARSE`, `E_REGISTRY_SCHEMA` or
-`E_REGISTRY_NETWORK`; or a report that contradicts its exit status, or whose revocations name
-nothing the wallet watched), which is an incident. Each revoked item names what it revokes as the
+`E_REGISTRY_NETWORK`; or a report that contradicts its exit status, says `revoked` without listing a
+revocation or lists one under another status, or whose revocations name nothing the wallet
+watched), which is an incident. Each revoked item names what it revokes as the
 CLI does, `watched: { code }` or `watched: { template_family }`, with its `capability`, `reason` and
 `effectiveVersion`, and the page lists them. A run that reached no verdict (the CLI missing, a
 timeout, a refused root policy, an unreadable published path, a watch item the published head
