@@ -340,8 +340,8 @@ room under the session cap for one installation and one removal, or only for the
 already has one, so the cap never stops a grant from being taken back. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). The defaults are conservative and each cap stays under its ceiling
 (1 XLM, 50 XLM and 50 XLM), with the upload cap at most the session cap. A policy upload on mainnet
-can cost more than the default upload cap (18.78 XLM simulated on 19 November 2026, before mainnet's
-upgrade to protocol 30), so the operator sets
+can cost more than the default upload cap (18.78 XLM, simulated on protocol 30 on 25 November 2026),
+so the operator sets
 `maxUploadFeeStroops` and `sessionSpendCapStroops` from the simulated figures
 ([mainnet install runbook](MAINNET-INSTALL.md#the-caps-against-these-figures)). The page shows both caps and
 the amount spent before every consent, and the policy deployment preview shows the upload's
@@ -1087,7 +1087,7 @@ review and passes the reason on.
 | `payer_unfunded` | The fee payer cannot pay: the operator's own key's account (always on mainnet) does not exist or cannot spend the fee; the disposable testnet key, Friendbot did not fund it yet. |
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `delegate_key_unavailable` | Operator-funded (always on mainnet): the operator configured no delegate key file (`delegateKeyPath`), so the wallet holds no delegate key. **Create local automation delegate** refuses, the checks that sign as the delegate and the one use of the grant stay unavailable, and installation stays closed. Configure the delegate's key file and restart the backend. |
-| `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
+| `pinned_code_missing` | The pinned account or verifier code is not on the session's network (checked before an account is created, on every network); upload it with the readiness command. |
 | `account_unfunded` | With the operator's own fee payer (always on mainnet): the account's balance does not cover the sample transfer. |
 | `no_diagnostic_events` | The endpoint returned no diagnostic events, which the step reads (stellar-rpc 30.0.1 returns them only with `--preflight-enable-debug`); nothing was sent. |
 | `registry_root_refused` | The CLI's error began `E_REGISTRY_ROOT_POLICY`: it refused the registry's root policy (the development root off testnet, for one). Configure the production trust files. |
