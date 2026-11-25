@@ -70,7 +70,8 @@ async function captured(t) {
   // Simulation needs an existing source account; the recorded recipient is one. Never signed.
   const envelope = targetEnvelopeXdr(new Account(recordedCall.recipient, '1'), target.call, WALLET_NETWORKS.testnet.passphrase);
   const capture = await toolchainFor(endpoint.url).captureTarget(envelope);
-  assert.deepEqual(endpoint.methods, ['getNetwork', 'simulateTransaction', 'getNetwork', 'getLedgerEntries', 'getLedgers']);
+  // The capture checks the network once, before the simulation (crates/source-rpc/src/target_capture.rs).
+  assert.deepEqual(endpoint.methods, ['getNetwork', 'simulateTransaction', 'getLedgerEntries', 'getLedgers']);
   const checkedCapture = checkTargetCapture(capture, { call: target.call, accountAddress: target.accountAddress,
     recipient: target.recipient, notBefore: recordedCall.observed_ledger, networkId: NETWORK_ID });
 
@@ -101,7 +102,7 @@ async function captured(t) {
     expected: { runHash: checked.expected.runHash, accountAddress: target.accountAddress, delegateAddress: delegate.publicKey(),
       policyAddress: POLICY, policyCodeHash: manifest.wasm_hash, candidateContextRuleId: 3,
       observedLedger: checkedCapture.observedLedger, captureHash: checkedCapture.captureHash, recipient: target.recipient,
-      amount: target.amount } };
+      amount: target.amount, networkId: NETWORK_ID } };
 }
 
 test('the wallet captures the recorded testnet transfer through the actual CLI and accepts the actual worker report', { skip }, async (t) => {
