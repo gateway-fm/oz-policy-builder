@@ -17,8 +17,9 @@ binaries, and the signed head, `roots.json` and checkpoint attached to it.
 
 **Check that the records which precede the installation are in that release's tree.** Do not
 install until the remediation log's [report table](AUDIT-REMEDIATION.md#report) has the audited
-revision's report, the [review record](OZ-REVIEW-PACKAGE.md#review-record) has OpenZeppelin's
-sign-off row, and every deviation under
+revision's report and no row of its [findings table](AUDIT-REMEDIATION.md#findings) is `open`, the
+[review record](OZ-REVIEW-PACKAGE.md#review-record) has OpenZeppelin's sign-off row, and every
+deviation under
 [Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
 has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here) or,
 for a gate's deviation, its gate is closed. The wallet does not check them.
@@ -131,7 +132,7 @@ anything is signed and shown in its consent, and a step above its cap is refused
 | 6 | Upload the generated policy's code (22,949 bytes) | fee payer | 186,754,117 | mainnet | 187,754,117 |
 | 7 | Create the policy | fee payer | 169,173 | testnet | 1,169,173 |
 | 8 | Install the grant (`add_context_rule`) | fee payer | 1,472,660 | testnet, 22 October | 2,472,660 |
-| 9 | One use of the grant, by the delegate (only with `delegateKeyPath`) | fee payer | 147,927 | testnet, as step 5 | 1,147,927 |
+| 9 | One use of the grant, by the delegate | fee payer | 147,927 | testnet, as step 5 | 1,147,927 |
 | 10 | Remove the grant (`remove_context_rule`) | fee payer | 1,009,430 | testnet, 22 October | 2,009,430 |
 
 Nothing else writes: the live check and the second use are enforce-mode simulations, never

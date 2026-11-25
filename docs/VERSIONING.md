@@ -217,7 +217,8 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    OpenZeppelin's documented sign-off as a row of the
    [review record](OZ-REVIEW-PACKAGE.md#review-record).
 3. Their findings are remediated, each fix with its regression test
-   ([remediation log](AUDIT-REMEDIATION.md)).
+   ([remediation log](AUDIT-REMEDIATION.md)), until no row of its
+   [findings table](AUDIT-REMEDIATION.md#findings) is `open`.
 4. The mainnet registry's key ceremony. The draft genesis carries `PENDING` text where the
    template pack's review reference goes, and only the completed audit can supply it, so the
    custodians sign version 1 only after the audit, once they have replaced that text, confirmed
