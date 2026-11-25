@@ -92,7 +92,7 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
 
 | Component | Versions | Where pinned |
 | --- | --- | --- |
-| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
+| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
 | Recognized account | Your `examples/multisig-smart-account/account` at v0.7.3 (`stellar-accounts` 0.7.3, `soroban-sdk` 26.1.0), built here from source | Exact hash in `ozpb_domain::pinned_upstream` |
 | ed25519 and WebAuthn verifiers, reviewed spending-limit policy | Your `examples/multisig-smart-account` at v0.7.2 (`stellar-accounts` 0.7.2, `soroban-sdk` 26.1.0), built here from source | Exact hashes in `ozpb_domain::pinned_upstream` |
 

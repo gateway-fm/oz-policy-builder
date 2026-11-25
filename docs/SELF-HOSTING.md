@@ -6,23 +6,22 @@ cloud infrastructure or establish that an endpoint has been deployed. Releases m
 publishing workflows were added also publish images and binaries; see
 [Production release](#production-release).
 
-The hosted testnet deliverable means running the MCP tools behind an authenticated HTTPS
-address for authorized remote clients. It is not a wallet or a Stellar validator/RPC node:
-it records, synthesizes, builds and verifies policies through operator-allowed testnet RPC
-sources. User signing and installation approval remain in the wallet. A working local image
-or this guide alone does not establish that the hosted service is running.
+The third milestone's production versioned endpoint is this package as a release that operators
+run themselves ([below](#production-release)); Gateway operates no service for it. It is not a
+wallet or a Stellar validator/RPC node: it records, synthesizes, builds and verifies policies
+through operator-allowed RPC sources. User signing and installation approval remain in the
+wallet. A working local image or this guide alone does not establish that any endpoint is
+running.
 
-For a reference deployment offered during a testnet review, publish its access window and
-shutdown condition alongside its HTTPS address. Keep the self-hostable image and instructions
-available for use after that window. A temporary testnet instance is not evidence of a
-production endpoint or an ongoing availability commitment.
+A reference deployment offered for a review, as the second milestone's hosted testnet instance
+was ([its acceptance check](TESTNET-EVIDENCE-TRANCHE-2.md#26-hosted-reference-instance-acceptance-check-11-november-2026)),
+publishes its access window and shutdown condition alongside its HTTPS address; for ongoing use,
+self-host. Such an instance is not evidence of a production endpoint or an ongoing availability
+commitment, and it needs its own security and operational acceptance checks.
 
-Use the disposable-worker mode below when preparing the hosted testnet deployment. Choosing
-its hosting provider is an operational decision, not a separate milestone requirement.
-Present the actual account, hostname/TLS plan, image digest, client access boundary, cost,
-budget alert and stop condition before creating paid resources. Tranche 3 delivers a production
-versioned release that operators run themselves; Gateway operates no production service. The
-testnet deployment still needs its own security and operational acceptance checks.
+Before creating paid resources for any deployment, present the actual account, hostname/TLS plan,
+image digest, client access boundary, cost, budget alert and stop condition. Choosing a hosting
+provider is an operational decision.
 
 **The API and compiler still share a trust domain.** Container resource limits, Cargo's
 offline setting and environment filtering are useful bounds, but they do not isolate each
@@ -41,7 +40,6 @@ A release is software you run yourself; Gateway operates no service for it. What
 number keeps stable, and for how long, is [VERSIONING.md](VERSIONING.md). Each published GitHub
 Release carries:
 
-- the API and TLS proxy images ([below](#build-the-reviewed-revision));
 - for Linux x86_64, Linux aarch64 and macOS arm64, one archive per binary with the licence files:
   `ozpb` (the CLI), `ozpb-mcp-server` (stdio, or `--http` for this endpoint) and
   `ozpb-execution-runtime` (the [native worker](NATIVE-EXECUTION.md) behind `ozpb dry-run`);
@@ -49,14 +47,19 @@ Release carries:
   Schema, and the `E_*` codes;
 - `SHA256SUMS`, and a GitHub build-provenance attestation for every asset, `SHA256SUMS` included.
 
+The API and TLS proxy images are not release assets: publishing the release runs
+`publish-image.yml`, which pushes them, for amd64 and arm64, to GHCR
+([below](#build-the-reviewed-revision)).
+
 ### Obtain and verify
 
 ```sh
 tag=vX.Y.Z    # the release you are installing
+target=x86_64-unknown-linux-gnu    # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
 gh release download "$tag" --repo gateway-fm/oz-policy-builder \
-  --pattern '*-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
+  --pattern "*-$target.tar.gz" --pattern SHA256SUMS
 # On macOS, `shasum -a 256 --check` in place of `sha256sum --check`.
-grep -- '-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check
+grep -- "-$target.tar.gz\$" SHA256SUMS | sha256sum --check
 # A subshell, so the first failure stops the loop without closing your shell.
 ( set -e
   for asset in *.tar.gz SHA256SUMS; do
