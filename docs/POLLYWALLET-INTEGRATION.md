@@ -1133,7 +1133,14 @@ obligations, the authority recheck, single submission, and the event and read-ba
 against receipts in the shapes testnet returns. The grant-use tests take that installation through
 one use by the delegate (single submission, the transfer event, the counter from 0 to 1) and the
 second try, judged against synthesized enforce-mode responses: the call cap's refusal, a permit,
-another policy code, and responses bound to another envelope. They are fixture evidence, not a testnet run. The apply-script tests cover
+another policy code, and responses bound to another envelope. They are fixture evidence, not a testnet run.
+`wallet/tests/mainnet-recorded.test.mjs` replays responses recorded read-only from a mainnet
+endpoint on 25 November 2026 (`wallet/tests/fixtures/mainnet-rpc-2026-11-25.json`, its provenance
+naming the endpoint, ledgers and the one change made to them) through the backend's own RPC client:
+the passphrase and protocol 30, the ledger header hashing to its ID, the pinned account and verifier
+Wasm hashing to their pins, an unfunded operator account and its 1 XLM minimum, and diagnostic
+events returned with a simulation; the same answers refuse a testnet session, and altered ones are
+refused. The mainnet tests elsewhere use hand-written stubs. The apply-script tests cover
 immutable inputs, dirty/different upstream checkouts, symlinks, missing lock metadata, and
 binary/rename patches that omit ordinary text headers.
 
