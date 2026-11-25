@@ -94,9 +94,9 @@ field is not readable by an earlier release, so upgrade every component that exc
 
 **Exceptions.** A fix for a security defect, or a change the Stellar network forces (a protocol
 upgrade the pinned SDK cannot follow), may break a contract in a minor or patch release when
-waiting for a major one would leave users exposed or unable to work. The release notes list it
-under breaking changes and say what to do, as the v1.0.0 notes do for the
-[account advisory](release-notes/v1.0.0.md#security).
+waiting for a major one would leave users exposed or unable to work. The release notes mark it
+**Breaking** and say what to do; a security fix stays under Security, marked so, as the v1.0.0
+notes do for the [account advisory](release-notes/v1.0.0.md#security).
 
 ## Keeping the snapshot current
 
@@ -212,7 +212,10 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
 
 1. A freeze commit fixes the audited revision ([audit scope](AUDIT-SCOPE.md)).
 2. The external security audit and OpenZeppelin's review of the generated code examine that
-   revision ([review package](OZ-REVIEW-PACKAGE.md)).
+   revision ([review package](OZ-REVIEW-PACKAGE.md)). The release needs both on record: the
+   report in the remediation log's [report table](AUDIT-REMEDIATION.md#report), and
+   OpenZeppelin's documented sign-off as a row of the
+   [review record](OZ-REVIEW-PACKAGE.md#review-record).
 3. Their findings are remediated, each fix with its regression test
    ([remediation log](AUDIT-REMEDIATION.md)).
 4. The mainnet registry's key ceremony. The draft genesis carries `PENDING` text where the
