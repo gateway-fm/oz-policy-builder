@@ -27,7 +27,7 @@ pub const CHANGE_SCHEMA: &str = "registry-change/v1";
 pub const DETACHED_SIGNATURE_SCHEMA: &str = "registry-signature/v1";
 pub const MONITOR_SCHEMA: &str = "registry-monitor/v1";
 /// How a review reference begins while the custodians still have to supply it (the mainnet draft
-/// carries one). A snapshot holding one is never combined and never passes `verify`.
+/// carries one). A snapshot holding one is never signed, never combined and never passes `verify`.
 pub const PENDING_REVIEW_PREFIX: &str = "PENDING, replace before signing:";
 
 /// The capability kinds a revocation of an exact code hash can name. The monitor watches a hash
@@ -183,13 +183,16 @@ pub fn successor(
     Ok(next)
 }
 
-/// Sign a snapshot's root with a locally held key, as a detached signature.
+/// Sign a snapshot's root with a locally held key, as a detached signature. A snapshot still
+/// carrying a pending review reference is refused here, as [`combine`] would refuse it: the
+/// custodians learn of it at the first signature, not after the threshold is collected.
 pub fn sign_detached(
     key_id: &str,
     key: &SigningKey,
     snapshot: &RegistrySnapshot,
 ) -> Result<DetachedSignature, GovernanceError> {
     require_key_id(key_id)?;
+    require_no_pending_review(snapshot)?;
     let signed = sign_snapshot_with_roots(
         &BTreeMap::from([(key_id.to_string(), key.clone())]),
         snapshot.clone(),
@@ -209,7 +212,8 @@ pub fn sign_detached(
 }
 
 /// Accept a signature produced elsewhere — a hardware key, another machine — over this
-/// snapshot's root, refusing one that does not verify under the given public key.
+/// snapshot's root, refusing one that does not verify under the given public key, and refusing a
+/// snapshot with a pending review reference as [`sign_detached`] does.
 pub fn external_signature(
     key_id: &str,
     public_key: &[u8; 32],
@@ -217,6 +221,7 @@ pub fn external_signature(
     snapshot: &RegistrySnapshot,
 ) -> Result<DetachedSignature, GovernanceError> {
     require_key_id(key_id)?;
+    require_no_pending_review(snapshot)?;
     let detached = DetachedSignature {
         schema: DETACHED_SIGNATURE_SCHEMA.to_string(),
         key_id: key_id.to_string(),

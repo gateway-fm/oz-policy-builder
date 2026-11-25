@@ -68,7 +68,11 @@ What the code enforces, independent of this procedure:
 
 **Genesis.** Version 1 starts from an unsigned `RegistrySnapshot` (`version` 1, `log_index` 1,
 `previous_root` null), reviewed entry by entry. Its `valid_from_unix` and `expires_at_unix` are set
-by the custodians before anyone signs: the interval is part of what they sign.
+by the custodians before anyone signs: the interval is part of what they sign
+([how long](#validity-expiry-and-the-end-of-the-grant-period)). So is every review reference: one
+still beginning `PENDING, replace before signing:` — the mainnet draft's template pack carries
+one — is replaced with the completed review's reference first, because `sign` refuses a snapshot
+that holds one, as `combine` and `verify` do.
 
 **Successor.** Every later version is built from the published parent and a declared change set:
 
@@ -123,7 +127,11 @@ ozpb registry sign --snapshot v0002.unsigned.json --key-id custodian-c \
   --public-key <64 hex> --signature <128 hex> --out v0002.custodian-c.sig.json
 ```
 
-A signature that does not verify over that root under that public key is refused here.
+A signature that does not verify over that root under that public key is refused here. Both
+forms refuse a snapshot that still carries a pending review reference (`E_REGISTRY_PARSE`, naming
+the entry), so a draft is corrected before any custodian's signature is spent on it rather than
+at combine. `--print-root` still prints such a draft's root, for review; do not sign it on a
+device.
 
 **Combine.**
 
@@ -137,11 +145,10 @@ ozpb registry combine --snapshot v0002.unsigned.json \
 
 Every signature must be over this snapshot's root, verify, and come from the key pinned under its
 id; together they must meet the threshold, and no review reference may still begin
-`PENDING, replace before signing:` (`verify` refuses one too). The result is then loaded as a
-consumer would load it —
-pinned roots, network, an interval not already over — and only then written, so the log
-directory never receives a file `verify` would refuse. Its place in the chain is the replay's to
-check.
+`PENDING, replace before signing:` (`sign` and `verify` refuse one too). The result is then
+loaded as a consumer would load it — pinned roots, network, an interval not already over — and
+only then written, so the log directory never receives a file `verify` would refuse. Its place in
+the chain is the replay's to check.
 
 **Verify before distributing.** The gate is a replay of the whole published log:
 
@@ -181,7 +188,8 @@ fails that consumer's monitor loudly.
 
 The whole procedure runs on testnet with throwaway keys before any mainnet ceremony: generate
 three keys with `keygen`, write a 2-of-3 `roots.json`, take `registry/mainnet/v0001.draft.json`,
-change its `network_id` to testnet's and set a current interval, then sign, combine, replay,
+change its `network_id` to testnet's, set a current interval and replace its pending review
+reference (with one that claims no review: a rehearsal is not one), then sign, combine, replay,
 build and sign a successor, and monitor exactly as above with
 `--network "Test SDF Network ; September 2015"`. Synthesis then accepts the replayed head under
 those roots and stamps its root into the spec, as every command that pins registry trust would,

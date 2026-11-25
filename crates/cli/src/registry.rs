@@ -45,7 +45,9 @@ pub enum Command {
         out: PathBuf,
     },
     /// Print the canonical root of an unsigned snapshot, or sign it into a detached signature
-    /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root.
+    /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root. A snapshot
+    /// still carrying a pending review reference has its root printed, for review, but is never
+    /// signed.
     Sign(SignArgs),
     /// Assemble detached signatures into a signed snapshot, checking each against the pinned
     /// root policy and the threshold, and load the result as a consumer would before writing it.

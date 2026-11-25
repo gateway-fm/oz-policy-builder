@@ -750,33 +750,52 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
 }
 
 /// A draft still carrying a pending review reference is not something custodians have finished:
-/// it cannot be combined, and a signed one does not replay.
+/// no custodian signs it, with a local key or by handing in a device's signature, so the fault
+/// surfaces at the first signature rather than at combine once the threshold is collected. Signed
+/// some other way, it is not combined, and a signed one does not replay.
 #[test]
-fn a_pending_review_reference_is_never_combined_or_replayed() {
+fn a_pending_review_reference_is_never_signed_combined_or_replayed() {
+    use ed25519_dalek::Signer;
     let mut draft = genesis();
-    let template = draft.templates.values_mut().next().unwrap();
+    let (family, template) = draft.templates.iter_mut().next().unwrap();
     template.review_reference = format!("{PENDING_REVIEW_PREFIX} the security review's reference.");
-    let signatures = [
-        sign_detached("a", &custodian("a"), &draft).unwrap(),
-        sign_detached("b", &custodian("b"), &draft).unwrap(),
-    ];
-    assert!(matches!(
-        combine(&roots(), network(), draft.clone(), &signatures, 1_000),
-        Err(GovernanceError::PendingReview(_))
-    ));
-    assert!(matches!(
-        require_no_pending_review(&draft),
-        Err(GovernanceError::PendingReview(_))
-    ));
-    // Signed some other way, it still does not pass the gate before distribution.
+    let pending = GovernanceError::PendingReview(format!("template/{family}"));
+    assert_eq!(
+        sign_detached("a", &custodian("a"), &draft).unwrap_err(),
+        pending
+    );
+    let root = snapshot_root(&draft).unwrap();
+    let device = custodian("b");
+    let produced = hex::encode(device.sign(&root.0).to_bytes());
+    assert_eq!(
+        external_signature("b", &device.verifying_key().to_bytes(), &produced, &draft).unwrap_err(),
+        pending
+    );
+    assert_eq!(require_no_pending_review(&draft).unwrap_err(), pending);
+    // Signed some other way, it is neither combined nor passes the gate before distribution.
     let signed = sign_snapshot_with_roots(
         &BTreeMap::from([
             ("a".to_string(), custodian("a")),
             ("b".to_string(), custodian("b")),
         ]),
-        draft,
+        draft.clone(),
     )
     .unwrap();
+    let signatures: Vec<DetachedSignature> = signed
+        .signatures
+        .iter()
+        .map(|(id, signature)| DetachedSignature {
+            schema: DETACHED_SIGNATURE_SCHEMA.to_string(),
+            key_id: id.clone(),
+            public_key: hex::encode(custodian(id).verifying_key().to_bytes()),
+            root,
+            signature: signature.clone(),
+        })
+        .collect();
+    assert_eq!(
+        combine(&roots(), network(), draft, &signatures, 1_000).unwrap_err(),
+        pending
+    );
     assert!(matches!(
         replay(roots(), network(), &[signed], 1_000),
         Err(GovernanceError::PendingReview(_))

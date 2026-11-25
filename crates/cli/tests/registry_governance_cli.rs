@@ -91,26 +91,34 @@ impl Custodians {
 
     /// Sign `snapshot` with the custodian's key file, into a detached signature.
     fn sign(&self, snapshot: &Path, id: &str, out: &Path) {
+        ok(self.sign_with_key_file(snapshot, id, out), "sign");
+    }
+
+    fn sign_with_key_file(&self, snapshot: &Path, id: &str, out: &Path) -> Output {
+        ozpb([
+            "registry".as_ref(),
+            "sign".as_ref(),
+            "--snapshot".as_ref(),
+            snapshot.as_os_str(),
+            "--key-id".as_ref(),
+            id.as_ref(),
+            "--key-file".as_ref(),
+            self.key(id).as_os_str(),
+            "--out".as_ref(),
+            out.as_os_str(),
+        ])
+    }
+
+    fn sign_externally(&self, snapshot: &Path, id: &str, out: &Path) {
         ok(
-            ozpb([
-                "registry".as_ref(),
-                "sign".as_ref(),
-                "--snapshot".as_ref(),
-                snapshot.as_os_str(),
-                "--key-id".as_ref(),
-                id.as_ref(),
-                "--key-file".as_ref(),
-                self.key(id).as_os_str(),
-                "--out".as_ref(),
-                out.as_os_str(),
-            ]),
-            "sign",
+            self.hand_in_device_signature(snapshot, id, out),
+            "external signature",
         );
     }
 
     /// Sign the printed root outside the CLI, as a device holding the key would, and hand the
     /// signature in by hex.
-    fn sign_externally(&self, snapshot: &Path, id: &str, out: &Path) {
+    fn hand_in_device_signature(&self, snapshot: &Path, id: &str, out: &Path) -> Output {
         use ed25519_dalek::Signer;
         let printed = ok(
             ozpb([
@@ -128,23 +136,20 @@ impl Custodians {
         let key = ed25519_dalek::SigningKey::from_bytes(&seed.0);
         let signature = hex::encode(key.sign(&root).to_bytes());
         let public = hex::encode(key.verifying_key().to_bytes());
-        ok(
-            ozpb([
-                "registry",
-                "sign",
-                "--snapshot",
-                snapshot.to_str().unwrap(),
-                "--key-id",
-                id,
-                "--public-key",
-                &public,
-                "--signature",
-                &signature,
-                "--out",
-                out.to_str().unwrap(),
-            ]),
-            "external signature",
-        );
+        ozpb([
+            "registry",
+            "sign",
+            "--snapshot",
+            snapshot.to_str().unwrap(),
+            "--key-id",
+            id,
+            "--public-key",
+            &public,
+            "--signature",
+            &signature,
+            "--out",
+            out.to_str().unwrap(),
+        ])
     }
 }
 
@@ -263,7 +268,9 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         assert!(!String::from_utf8_lossy(&output.stderr).contains(secret.trim()));
     }
 
-    // The draft as committed, with its review reference still pending, is not combined.
+    // The draft as committed, with its review reference still pending, is not signed — with a key
+    // file, or by handing in a device's signature — so the custodians learn of it before anyone's
+    // signature is spent on it, not at combine.
     let mut pending = committed_draft();
     pending.network_id = ozpb_domain::NetworkId::from_passphrase(TESTNET);
     pending.valid_from_unix = now() - 3_600;
@@ -272,19 +279,18 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     write_json(&pending_path, &pending);
     let pending_a = work.path().join("pending.custodian-a.sig.json");
     let pending_c = work.path().join("pending.custodian-c.sig.json");
-    custodians.sign(&pending_path, "custodian-a", &pending_a);
-    custodians.sign(&pending_path, "custodian-c", &pending_c);
     refused(
-        &combine(
-            &pending_path,
-            &[&pending_a, &pending_c],
-            &roots,
-            &work.path().join("pending.signed.json"),
-        ),
-        "combine a draft with a pending review reference",
+        &custodians.sign_with_key_file(&pending_path, "custodian-a", &pending_a),
+        "sign a draft with a pending review reference",
         "pending review reference",
     );
-    // Signed some other way, it does not pass verify either.
+    refused(
+        &custodians.hand_in_device_signature(&pending_path, "custodian-c", &pending_c),
+        "hand in a device's signature over a draft with a pending review reference",
+        "pending review reference",
+    );
+    assert!(!pending_a.exists() && !pending_c.exists());
+    // Signed some other way, it is neither combined nor verified.
     let key = |id: &str| {
         let seed = std::fs::read_to_string(custodians.key(id)).unwrap();
         let seed = stellar_strkey::ed25519::PrivateKey::from_string(seed.trim()).unwrap();
@@ -301,6 +307,28 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         pending,
     )
     .unwrap();
+    for (id, path) in [("custodian-a", &pending_a), ("custodian-c", &pending_c)] {
+        write_json(
+            path,
+            &ozpb_registry::governance::DetachedSignature {
+                schema: ozpb_registry::governance::DETACHED_SIGNATURE_SCHEMA.to_string(),
+                key_id: id.to_string(),
+                public_key: hex::encode(key(id).verifying_key().to_bytes()),
+                root: ozpb_registry::snapshot_root(&signed_pending.snapshot).unwrap(),
+                signature: signed_pending.signatures[id].clone(),
+            },
+        );
+    }
+    refused(
+        &combine(
+            &pending_path,
+            &[&pending_a, &pending_c],
+            &roots,
+            &work.path().join("pending.signed.json"),
+        ),
+        "combine a draft with a pending review reference",
+        "pending review reference",
+    );
     let signed_pending_path = work.path().join("pending.signed.json");
     write_json(&signed_pending_path, &signed_pending);
     refused(
