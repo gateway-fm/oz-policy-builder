@@ -14,13 +14,14 @@ import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 export const MAX_FEE_STROOPS = 10_000_000;
 /**
  * Testnet's code upload cap: testnet's resource fee for a ~21 KB policy Wasm passed 10 XLM in
- * October 2026. Every other transaction keeps MAX_FEE_STROOPS. Mainnet's is the operator's setting.
+ * October 2026. Every other transaction keeps MAX_FEE_STROOPS. An operator-funded session's is the
+ * operator's setting.
  */
 export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
 /**
  * Refusals the page can explain: the endpoint serves another network, or another protocol than 30;
- * a transaction above the per-transaction fee cap or the session spend cap; a mainnet fee payer or
- * delegate account the owner has not funded yet; pinned code missing on the network.
+ * a transaction above the per-transaction fee cap or the session spend cap; an operator's fee payer,
+ * or a mainnet delegate account, the owner has not funded yet; pinned code missing on the network.
  */
 export const NETWORK_REASONS = Object.freeze(['network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
   'delegate_unfunded', 'pinned_code_missing', 'no_diagnostic_events']);
@@ -30,8 +31,8 @@ const refuse = (cause) => {
 };
 /**
  * The fees every earlier session in this work root may have been charged: the full fee of each
- * transaction it journaled as intended before sending, whatever happened next. A mainnet session
- * starts its spend cap from this, so restarting the backend gives back no budget. The work root is
+ * transaction it journaled as intended before sending, whatever happened next. An operator-funded
+ * session starts its spend cap from this, so restarting the backend gives back no budget. The work root is
  * bound to one network; an entry for another, or one that does not decode, refuses startup, except
  * a session's last entry that is not JSON at all: a crash while writing it, after which whether the
  * transaction left is unknown. That one counts as the most one transaction may cost under `caps`
@@ -261,14 +262,16 @@ export class WalletNetwork {
   #server; #payer; #fees; #spent = 0n; #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
   #funded = false; #removalPayer = false; #ambiguous = false; #serial = 0; #installed = 0; #delegatesFunded = new Set();
   /**
-   * `feePayer` and `fees` are the session's funding model: on testnet a disposable key and testnet's
-   * ceilings; on mainnet the operator's own key and its configured caps, a session cap included.
+   * `feePayer` and `fees` are the session's funding model: a disposable key and testnet's ceilings
+   * (testnet only), or the operator's own key and its configured caps, a session cap included
+   * (operator-funded: always on mainnet, on testnet when the operator configures it).
    */
   constructor({ rpcUrl, journalRoot, network, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep,
     feePayer = network?.friendbot ? FeePayer.disposable() : null, fees = network?.friendbot ? TESTNET_FEES : null, spentStroops = '0' }) {
     if (!network || typeof network.passphrase !== 'string' || typeof network.networkId !== 'string' || !Object.isFrozen(network)) refuse();
-    // Without Friendbot, only the operator's own funded key pays, and only within a session cap.
-    if (!(feePayer instanceof FeePayer) || (!network.friendbot && (!feePayer.operator || !Number.isSafeInteger(fees?.sessionSpendCapStroops)))
+    // Without Friendbot, only the operator's own funded key pays; the operator's key pays only within a session cap.
+    if (!(feePayer instanceof FeePayer) || (!network.friendbot && !feePayer.operator)
+      || (feePayer.operator && !Number.isSafeInteger(fees?.sessionSpendCapStroops))
       || ![fees?.maxFeeStroops, fees?.maxUploadFeeStroops].every((n) => Number.isSafeInteger(n) && n >= 100)) refuse();
     this.#payer = feePayer;
     this.#fees = Object.freeze({ ...fees });
@@ -286,6 +289,11 @@ export class WalletNetwork {
   /** The session's network profile. */
   get profile() { return this.#network; }
   get payerAddress() { return this.#payer.address; }
+  /**
+   * Whether the session is operator-funded: its fee payer is the operator's own key, which the wallet
+   * never funds and which moves no XLM. Always on mainnet; on testnet when the operator configures it.
+   */
+  get operatorFunded() { return this.#payer.operator; }
   /** The session's fee caps, shown to the owner before anything is signed. */
   get fees() { return this.#fees; }
   /** The most this session's sent transactions can have been charged: each one's full fee, whatever a receipt reports. */
@@ -417,9 +425,9 @@ export class WalletNetwork {
     this.#funded = true;
   }
   /**
-   * The fee payer for a removal, which never waits for an account creation or a deployment: on testnet
-   * funded as `fundPayer` does; on mainnet the operator's account must exist, and each removal's own
-   * fee is checked against what it can spend before the removal is drafted and again before it is
+   * The fee payer for a removal, which never waits for an account creation or a deployment: a
+   * disposable key is funded as `fundPayer` does; the operator's account must exist, and each removal's
+   * own fee is checked against what it can spend before the removal is drafted and again before it is
    * signed (`#payerCovers`). It opens no other write.
    */
   async fundRemoval() {
@@ -430,12 +438,13 @@ export class WalletNetwork {
     this.#removalPayer = true;
   }
   /**
-   * Refuses `payer_unfunded` unless the fee payer can pay `stroops` now: on mainnet the operator's account
-   * must spend it above its reserve; testnet's disposable payer, which Friendbot funds, is not read. Asked
-   * before the owner consents to, or signs for, a write the payer will pay for.
+   * Refuses `payer_unfunded` unless the fee payer can pay `stroops` now: operator-funded (always on
+   * mainnet), the operator's account must spend it above its reserve; testnet's disposable payer, which
+   * Friendbot funds, is not read. Asked before the owner consents to, or signs for, a write the payer
+   * will pay for.
    */
   async payerCovers(stroops) { if (this.#payer.operator) await this.#payerCovers(stroops); }
-  /** Mainnet: the operator's account can spend `fee` above its reserve now. */
+  /** The operator's account can spend `fee` above its reserve now. */
   async #payerCovers(fee) {
     const account = await this.payerAccount();
     if (!account.exists || BigInt(account.spendableStroops) < BigInt(fee)) refuse({ reason: 'payer_unfunded' });
@@ -450,7 +459,7 @@ export class WalletNetwork {
    * its address or carries the payer's key in its signature payload, as a smart account's
    * `Delegated(payer)` signer would. An entry resting on the source account's own signature is the
    * payer's own deployment of a contract (it is the deployer address) or, with a disposable testnet
-   * key only, its own transfer funding the sample; the operator's mainnet key authorizes nothing else.
+   * key only, its own transfer funding the sample; the operator's key authorizes nothing else.
    */
   #assertPayerNotSigner(assembled) {
     const op = assembled.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp;
@@ -514,7 +523,7 @@ export class WalletNetwork {
       }
       checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
       this.#assertPayerNotSigner(assembled);
-      // Mainnet: every write is signed only when the operator's account can pay this transaction's fee
+      // Operator-funded: every write is signed only when the operator's account can pay this transaction's fee
       // now. `fundPayer` checked the per-transaction cap once; an upload, held to its own larger cap,
       // can cost far more, and the account can be drawn down between writes. Refused here, nothing is
       // journaled or counted and no submission is left uncertain, so the session can still write once the
@@ -990,7 +999,7 @@ export class WalletNetwork {
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
       checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
-      // Mainnet: the owner is asked to sign only a removal the operator's account can pay for.
+      // Operator-funded: the owner is asked to sign only a removal the operator's account can pay for.
       if (this.#payer.operator) await this.#payerCovers(final.v1.tx.fee);
       const restored = final.v1.tx.ext.sorobanData.ext;
       return { assembly: {

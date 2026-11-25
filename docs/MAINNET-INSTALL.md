@@ -11,9 +11,9 @@ submits a mainnet transaction for you, and nothing here commits anyone to runnin
 review of a frozen revision, the remediation of their findings, then the mainnet registry's key
 ceremony, which can sign only once the audit's reference exists, the owner's acceptance of the
 milestone's deviations, and then the release, which carries the signed mainnet head
-([the order for 1.0.0](VERSIONING.md#the-order-for-100)). Until then prerequisite 3 cannot be
-met. Take from that release the toolkit checkout the wallet is applied from, the binaries, and
-the signed head, `roots.json` and checkpoint attached to it.
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)). Until then **A production registry**
+below cannot be met. Take from that release the toolkit checkout the wallet is applied from, the
+binaries, and the signed head, `roots.json` and checkpoint attached to it.
 
 **Check that the records which precede the installation are in that release's tree.** Do not
 install until the remediation log's [report table](AUDIT-REMEDIATION.md#report) has the audited
@@ -31,6 +31,7 @@ instead; use that form for any other mainnet command.
 
 All of the following must hold before the first mainnet write. The wallet checks each one and
 refuses, with a reason the page explains, when it does not.
+Rehearse the funding and custody model on testnet first, at no cost: [Rehearse on testnet](#rehearse-on-testnet).
 
 1. **An endpoint on protocol 30.** Mainnet runs protocol 30: `mainnet.sorobanrpc.com` and
    `rpc.mainnet.stellar.gateway.fm` both reported it, from stellar-rpc 30.0.1, on 25 November
@@ -259,3 +260,91 @@ Nothing is signed or sent when a step refuses; the page names the reason
   before installing anything.
 - An uncertain submission blocks every later write in the session: read the intended hash in the
   journal and look it up before starting another session.
+
+## Rehearse on testnet
+
+A testnet session whose configuration names `feePayerKeyPath` runs this runbook's funding and
+custody model through the same code as mainnet: your own fee payer key, which the wallet never
+funds and which moves no XLM; the caps, with mainnet's defaults and ceilings, counted across the
+work root; the delegate key file, named in the consents as the agent's key; the pinned-code
+directory and the readiness panel. One run of it costs nothing and needs no mainnet write, so it
+can come before the audit's sign-off.
+
+What stays testnet's, and so is not rehearsed: the passphrase and the endpoint; the delegate's
+account, which Friendbot creates on testnet if it is missing (it never funds the fee payer), where
+on mainnet the wallet only reads it, **Create local automation delegate** shows its minimum
+reserve, and every check that needs it refuses as `delegate_unfunded` until you fund it; the
+direct hand-off from Claude, which only testnet sessions offer (import the agent's proposal
+instead, as on mainnet); the development registry (**A production registry** is not rehearsed); and the development server,
+which reaches the testnet backend on port 4317 (**A production build of the wallet page**, which
+reaches the mainnet backend on port 4318, is not rehearsed). Testnet prices are not mainnet's: the
+fee table above is the estimate, not the rehearsal's figures.
+
+1. **Keys, funded by you.** A fee payer, a key standing in for the agent's, and an owner account
+   to send XLM from. `umask 077` makes the key files `0600`:
+
+   ```sh
+   stellar keys generate ozpb-rehearsal-payer --fund --network testnet
+   stellar keys generate ozpb-rehearsal-agent --fund --network testnet
+   stellar keys generate ozpb-rehearsal-owner --fund --network testnet
+   umask 077
+   stellar keys secret ozpb-rehearsal-payer > /absolute/path/rehearsal/fee-payer.key
+   stellar keys secret ozpb-rehearsal-agent > /absolute/path/rehearsal/delegate.key
+   ```
+
+2. **Configuration.** Give the rehearsal a new work root (mode `0700`): the session cap counts the
+   fees of every session in it. The testnet fields are those of
+   [Start the local backend](POLLYWALLET-INTEGRATION.md#start-the-local-backend), with the
+   development registry's signed snapshot and roots; the rest is the mainnet model's, with the caps
+   you will set on mainnet. Replace each path and the helper's ID with your own:
+
+   ```json
+   {
+     "network": "testnet",
+     "executable": "/absolute/path/oz-policy-builder/target/debug/ozpb",
+     "workRoot": "/absolute/path/rehearsal/work",
+     "rpcUrl": "https://rpc.testnet.stellar.gateway.fm",
+     "registrySnapshotPath": "/absolute/path/registry.signed.json",
+     "registryRootsPath": "/absolute/path/registry-roots.json",
+     "registryMinimumVersion": 6,
+     "feePayerKeyPath": "/absolute/path/rehearsal/fee-payer.key",
+     "delegateKeyPath": "/absolute/path/rehearsal/delegate.key",
+     "maxFeeStroops": 10000000,
+     "maxUploadFeeStroops": 200000000,
+     "sessionSpendCapStroops": 230000000,
+     "pinnedWasmDir": "/absolute/path/pinned-wasm",
+     "nativeExecutable": "/absolute/path/ozpb-execution-runtime",
+     "liveHelper": "<the helper's contract ID>"
+   }
+   ```
+
+   For `liveHelper`, deploy the helper yourself as **The atomic live helper, deployed by you** says,
+   with `--network testnet` in place of its `--rpc-url` and `--network-passphrase`,
+   or name the [current testnet helper](ATOMIC-LIVE-HELPER.md#current-helper-deployment-account-073).
+
+3. **Start and check.** `node wallet/server/main.mjs --config /absolute/path/rehearsal/operator.json`,
+   then `pnpm dev` in the applied checkout and open the launch URL. The page shows **Testnet
+   readiness**, the panel mainnet shows: run **Check testnet readiness** and read the fee payer's
+   balance, the caps, the pinned code and the diagnostic events.
+
+4. **Install and remove, as on mainnet.** Create the account: the wallet deploys it and funds
+   nothing, so send it the sample's 0.1 XLM and the grant's amount yourself:
+
+   ```sh
+   stellar contract invoke --id "$(stellar contract id asset --asset native --network testnet)" \
+     --source ozpb-rehearsal-owner --network testnet -- transfer \
+     --from "$(stellar keys address ozpb-rehearsal-owner)" --to <your account C…> --amount 20000000
+   ```
+
+   Then the sample transfer, the grant naming `$(stellar keys address ozpb-rehearsal-agent)` as
+   its delegate (**Create local automation delegate** returns that key), the deployment with its
+   simulated upload cost against the caps, the four checks, the installation and the one use.
+   Then restart the backend, check that the page's spent amount continued from the journal, and
+   remove the grant with **Remove a grant an earlier session installed**, as after a restart on
+   mainnet.
+
+5. **Keep its evidence** as listed in [Evidence to keep](#evidence-to-keep). A refusal means what
+   it means on mainnet ([If anything refuses](#if-anything-refuses)); `payer_unfunded` and
+   `account_unfunded` are fixed with a transfer from the owner key. The wallet asks Friendbot for
+   the delegate's account at most once a session: if that request fails, fund the agent key
+   yourself (`stellar keys fund ozpb-rehearsal-agent --network testnet`) and try again.

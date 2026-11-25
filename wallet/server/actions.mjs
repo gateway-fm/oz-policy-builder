@@ -138,10 +138,14 @@ export function createWalletActions({ session, toolchain, network, native = null
   pinnedWasmDir = null }) {
   const net = network?.profile;
   if (!net || typeof net.networkId !== 'string' || !Object.isFrozen(net)) refuse();
-  // The session's fee caps: testnet's fixed ceilings, or the mainnet operator's configured caps.
+  // The session's fee caps: testnet's fixed ceilings, or the operator's configured caps.
   const fees = network.fees;
-  /** Mainnet: the owner funds every account; the wallet funds nothing and moves no XLM of the fee payer's. */
-  const ownerFunded = !net.friendbot;
+  /**
+   * Operator-funded (always on mainnet; on testnet when the operator configures its own fee payer): the
+   * owner funds the account and the fee payer; the wallet moves no XLM of the fee payer's and holds the
+   * operator's caps. Friendbot stays the network's: on testnet it still creates a delegate's account.
+   */
+  const ownerFunded = !net.friendbot || network.operatorFunded === true;
   /**
    * The direct hand-off from the local agent: its `connect_wallet` accepts a testnet connection only, so
    * no other session offers or pairs it, and the agent's proposal comes in through manual import.
@@ -467,7 +471,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (handoff.view().pairingPending || handoff.view().connection) refuse();
       credential(input);
       if (accountAttempted) refuse();
-      // On mainnet the wallet deploys two contracts and funds nothing: the owner sends the account its XLM.
+      // Operator-funded, the wallet deploys two contracts and funds nothing: the owner sends the account its XLM.
       const summary = { credentialId: input.credentialId, publicKey: input.publicKey, accountWasm: ACCOUNT_WASM,
         verifierWasm: WEBAUTHN_WASM, sampleFundingStroops: ownerFunded ? '0' : '10000000', maxFeeStroops: fees.maxFeeStroops,
         maxTotalFeeStroops: (ownerFunded ? 2 : 3) * fees.maxFeeStroops, ownerFunds: ownerFunded,
@@ -510,7 +514,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         }, account.receipt.ledger);
         if (observed.ledger < account.receipt.ledger || observed.ledger - account.receipt.ledger > 12) refuse();
         freshOwner(observed.value, signer);
-        // Testnet: the disposable fee payer funds the sample. Mainnet: the owner funds the account.
+        // The disposable fee payer funds the sample; operator-funded, the owner funds the account.
         const funded = ownerFunded ? null : await network.submitOperation(Operation.invokeContractFunction({
           contract: net.nativeAsset, function: 'transfer', args: [
             new Address(network.payerAddress).toScVal(), new Address(account.contractId).toScVal(),
@@ -588,7 +592,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       const held = toolchain.artifact(input.artifactId);
       const { response: artifact } = held;
       if (attemptedArtifacts.has(input.artifactId) || attemptedArtifacts.size >= 8) refuse();
-      // Mainnet: the upload's simulated cost is shown first, and refused before consent when either cap would be passed.
+      // Operator-funded: the upload's simulated cost is shown first, and refused before consent when either cap would be passed.
       let uploadSimulatedFeeStroops = null;
       if (ownerFunded) {
         const cost = await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
@@ -682,11 +686,11 @@ export function createWalletActions({ session, toolchain, network, native = null
     'create-delegate': async (input) => {
       exact(input, []);
       if (!native && !live || handoff.view().pairingPending || handoff.view().connection) refuse();
-      // Mainnet: no delegate key unless the operator supplied one; the grant then names the agent's own key.
+      // Operator-funded: no delegate key unless the operator supplied one; the grant then names the agent's own key.
       if (!delegates.available) throw because('delegate_key_unavailable');
       const created = delegates.create();
-      if (ownerFunded) {
-        // Mainnet: the operator's key; the wallet creates no account for it. Until its owner funds it,
+      if (!net.friendbot) {
+        // Mainnet: no Friendbot, so the wallet creates no account for the delegate. Until its owner funds it,
         // every check that needs it refuses as `delegate_unfunded`.
         const account = await network.classicAccount(created.address);
         return { ...created, account: { exists: account.exists, minimumStroops: account.minimumStroops } };
@@ -919,7 +923,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       const deployment = get(deployments, review.deploymentId);
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
       await network.assertNetwork();
-      // No entry is released for the passkey while the fee payer cannot pay the installation (mainnet).
+      // No entry is released for the passkey while the fee payer cannot pay the installation (operator-funded).
       await network.payerCovers(fees.maxFeeStroops);
       await installPreconditions(review, deployment, artifact);
       const assembly = await toolchain.authority('assemble-install-transaction', { intent_request: deployment.request,
@@ -935,7 +939,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         validityLedgers: INSTALL_VALIDITY_LEDGERS, currentLedger };
       const checked = validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
       const display = installConsent({ approval: review.approval, checked, spec: artifact.spec, maxFeeStroops: fees.maxFeeStroops,
-        ruleId: review.nextRuleId });
+        ruleId: review.nextRuleId, operatorFunded: ownerFunded });
       const snapshot = await network.liveState({ account: review.approval.wallet.contractId,
         policy: deployment.response.policyAddress, ruleId: review.nextRuleId });
       // Assembly and the subsequent reads take time. Recheck the bounded ledger clock before
@@ -1177,9 +1181,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       const owner = listed.rules.find((rule) => rule.owner);
       const target = listed.rules.find((rule) => rule.id === ruleId);
       if (!owner || !target || target.owner || !target.grant) refuse();
-      // A restarted backend has funded nothing yet: the removal's own fee payer is checked (mainnet: the
-      // operator's account, then this removal's fee against its balance) or funded (testnet: Friendbot)
-      // here, so removal never waits for a deployment.
+      // A restarted backend has funded nothing yet: the removal's own fee payer is checked (operator-funded:
+      // the operator's account, then this removal's fee against its balance) or funded (the disposable
+      // testnet key: Friendbot) here, so removal never waits for a deployment.
       await network.fundRemoval();
       session.invalidate('revoke');
       const record = { account: wallet.contractId, ruleId, ledger: 0 };

@@ -228,6 +228,29 @@ test('the browser and backend derive the same statement; it binds the expiry, th
   assert.equal(HELPER, inputs.helper);
 });
 
+test('an operator-funded testnet session\'s live statement and evidence name the agent\'s key from the operator\'s file', async () => {
+  const { MAINNET_FEE_DEFAULTS } = await import('../server/config.mjs');
+  const f = await liveReviewed({ network: { operatorFunded: true, fees: MAINNET_FEE_DEFAULTS,
+    uploadCost: async () => ({ resourceFeeStroops: '5000', feeStroops: '5100', ledger: START_LEDGER }) } });
+  const { prepared, input } = await consented(f);
+  const display = prepared.live.display;
+  assert.equal(display.network, 'testnet');
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  assert.match(display.warning, /the agent's own key/);
+  // The browser derives the same statement from the session's funding model, which the status reports.
+  assert.equal((await f.actions.status({})).feePayer.ownerFunded, true);
+  const review = await f.actions.review({ deploymentId: f.deployed.deploymentId, wallet: f.f.wallet });
+  const { reviewIntent } = await import('../shared/approval.mjs');
+  const inputs = prepared.live.inputs;
+  const cases = liveCases({ approval: reviewIntent(review), spec: f.artifact.spec, helper: inputs.helper, policyCodeHash: inputs.policyCodeHash,
+    expectedRuleId: inputs.expectedRuleId, signatureExpirationLedger: inputs.signatureExpirationLedger });
+  assert.equal(statementHash(consentDisplay(cases, { currentLedger: inputs.currentLedger, operatorFunded: true })), prepared.live.statementSha256);
+  const live = layerOf(await f.actions['run-live'](input));
+  assert.equal(live.status, 'passed', JSON.stringify(live));
+  assert.equal(live.evidence.delegate, 'agent_key_from_operator_file');
+  assert.equal(live.evidence.labels[3], 'delegate_is_agent_key_from_operator_file');
+});
+
 test('the wallet pins the helper hash the real-Wasm host tests assert', async () => {
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(new URL('../../execution-runtime/tests/atomic_helper.rs', import.meta.url), 'utf8');

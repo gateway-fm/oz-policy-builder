@@ -49,16 +49,16 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const toolchain = new WalletToolchain(config);
   const journalRoot = join(toolchain.sessionRoot, 'journal');
   mkdirSync(journalRoot, { mode: 0o700 });
-  // On mainnet the spend cap counts what earlier sessions in this (network-bound) work root sent.
-  const spentStroops = config.network.friendbot ? '0' : journaledSpend(config.workRoot, config.network, config.fees);
+  // Operator-funded, the spend cap counts what earlier sessions in this (network-bound) work root sent.
+  const spentStroops = config.feePayer.operator ? journaledSpend(config.workRoot, config.network, config.fees) : '0';
   const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees,
     spentStroops });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;
   const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
   const live = config.liveHelper ? Object.freeze({ helper: config.liveHelper }) : null;
   const handoff = new AgentHandoff({ network: config.network });
-  // Disposable automation keys on testnet; on mainnet only the operator's delegate key, if any.
-  const delegates = new DelegateCapabilities(config.network, { random: Boolean(config.network.friendbot),
+  // Disposable automation keys with the disposable fee payer; operator-funded, only the operator's delegate key, if any.
+  const delegates = new DelegateCapabilities(config.network, { random: !config.feePayer.operator,
     key: config.delegateKey ? config.delegateKey.keypair() : null });
   const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, pinnedWasmDir: config.pinnedWasmDir });
   const server = createWalletServer({ session, actions, handoff });
