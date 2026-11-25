@@ -146,8 +146,8 @@ execute the CLI or submit a transaction. The backend
 listens only on `127.0.0.1:4317` for testnet and `127.0.0.1:4318` for mainnet; the approved browser origin is exactly
 `http://localhost:3000`; the numeric-IP browser origin is refused.
 
-Each backend launch creates a separate private session directory and an in-memory disposable
-testnet fee payer. Retain the session journal: an intended transaction hash is recorded before
+Each backend launch creates a separate private session directory and, unless the operator names
+its own key (`feePayerKeyPath`), an in-memory disposable testnet fee payer. Retain the session journal: an intended transaction hash is recorded before
 submission, and an uncertain result blocks subsequent writes in that session. Inspect that
 hash before starting another attempt. The fee payer key is not saved, printed or returned
 to the browser. Fresh account confirmation separately discloses a fixed one-testnet-XLM
@@ -243,7 +243,10 @@ does with each:
 }
 ```
 
-These fields are refused in a testnet configuration. `registryMinimumVersion` is the floor of the
+A testnet configuration takes the funding fields (`feePayerKeyPath` to `pinnedWasmDir`) only with `feePayerKeyPath`, and then runs this
+section's funding and custody model on testnet, to rehearse the mainnet install
+([rehearse on testnet](MAINNET-INSTALL.md#rehearse-on-testnet)); without it they are refused.
+`registryMinimumVersion` is the floor of the
 registry the session trusts: 6 is the development registry's, for testnet; the mainnet registry is
 its own chain starting at version 1 ([mainnet registry](../registry/mainnet/README.md)), so a
 mainnet operator sets the version of its own registry it has pinned (1 for the genesis, raised as
@@ -326,8 +329,9 @@ delegate as the agent's own key, held by the agent and by this backend from the 
 state plainly that the agent holds it too: with the owner's passkey signature, which every live
 simulation request carries to the operator's RPC endpoint, the agent could submit the installation
 itself before the live check's expiry ledger and then use the grant without this wallet. The live
-evidence names the holder by network (`agent_key_from_operator_file`, label
-`delegate_is_agent_key_from_operator_file`; testnet keeps `wallet_in_memory_automation_key`).
+evidence names the holder by the funding model (`agent_key_from_operator_file`, label
+`delegate_is_agent_key_from_operator_file`; testnet with the wallet's disposable fee payer keeps
+`wallet_in_memory_automation_key`).
 **Installation on mainnet requires the delegate's key in a `0600` file** (`delegateKeyPath`: one
 secret seed, checked like the fee payer's and never its key). The account-Wasm, captured-target and
 live checks, three of the four layers, sign as the delegate, and the one use of the grant is the
@@ -700,8 +704,8 @@ A passing layer carries public evidence only: the helper, the candidate and thei
 expected rule ID, the expiry ledger, the statement hash, each case's outcome, simulation ledger
 and envelope hash. It also carries the owner's `webauthn_user_verified` with
 `human_approval_attested: false`, and the labels `state_dependent`, `simulation_only`,
-`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key` (on mainnet
-`delegate_is_agent_key_from_operator_file`). It is
+`signatures_valid_until_ledger:N` and `delegate_is_wallet_in_memory_automation_key` (with the
+operator's own fee payer, as on mainnet, `delegate_is_agent_key_from_operator_file`). It is
 evidence about testnet state at the simulation ledgers. Stored evidence does not age by itself; the
 [installation gate](#installation) bounds the simulation ledgers as it bounds the captured one.
 
@@ -882,10 +886,10 @@ owner's recovery or admin access), a rule on the account's own calls (a guardian
 or on a policy contract that any of the account's rules binds, and a rule this session installed
 (use **Prepare revocation** for that). The page lists every rule but offers removal only for
 grant-shaped ones, and the browser checks the shape again before the passkey. A restarted backend
-has funded nothing yet, so the removal checks its own fee payer first: on mainnet, that the
-operator's account exists, and then that it can spend this removal's own fee, when the removal is
+has funded nothing yet, so the removal checks its own fee payer first: with the operator's own key
+(mainnet, or its testnet rehearsal), that the operator's account exists, and then that it can spend this removal's own fee, when the removal is
 drafted and again before it is signed (not the per-transaction cap; a check for a removal opens no
-other write); on testnet, funding the new disposable key through Friendbot and reading the account
+other write); with the disposable testnet key, funding it through Friendbot and reading the account
 back a few times, so a failed request or a lagging node leaves funding to the next try. Removing a
 grant never waits for an account creation or a deployment, and a payer that cannot pay is refused
 as `payer_unfunded`, which the page explains. It then reads the pinned account and verifier code, the owner rule and the rule within one
@@ -1021,10 +1025,10 @@ cannot be repeated in the session, whatever the cause.
 | `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
 | `fee_cap` | The transaction could cost more than its cap (per transaction, or for a policy upload `maxUploadFeeStroops`); nothing was signed or sent. |
 | `spend_cap` | The transaction could take the work root's spending past `sessionSpendCapStroops`; nothing was signed or sent. |
-| `payer_unfunded` | The fee payer cannot pay: on mainnet its account does not exist or cannot spend the fee; on testnet Friendbot did not fund it yet. |
+| `payer_unfunded` | The fee payer cannot pay: the operator's own key's account (always on mainnet) does not exist or cannot spend the fee; the disposable testnet key, Friendbot did not fund it yet. |
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
-| `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |
+| `account_unfunded` | With the operator's own fee payer (always on mainnet): the account's balance does not cover the sample transfer. |
 | `no_diagnostic_events` | The endpoint returned no diagnostic events, which the step reads (stellar-rpc 30.0.1 returns them only with `--preflight-enable-debug`); nothing was sent. |
 | `registry_root_refused` | The CLI's error began `E_REGISTRY_ROOT_POLICY`: it refused the registry's root policy (the development root off testnet, for one). Configure the production trust files. |
 

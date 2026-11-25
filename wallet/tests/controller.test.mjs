@@ -94,6 +94,22 @@ test('deploy consent is separate and install validates and shows its consent bef
   await assert.rejects(f.controller.install(), /wallet action refused/);
   await assert.rejects(f.controller.prepareInstall(), /wallet action refused/, 'one installation attempt per review');
 });
+test('the browser derives both consents with the funding model the backend reports: operator-funded or not', async () => {
+  for (const ownerFunded of [true, false, undefined]) {
+    const f = liveFixture();
+    if (ownerFunded !== undefined) f.replies.status.feePayer = { address: `G${'P'.repeat(55)}`, ownerFunded };
+    const seen = [];
+    const display = f.validators.consentDisplay();
+    f.validators.consentDisplay = (_cases, options) => { seen.push(['live', options.operatorFunded]); return display; };
+    f.validators.installConsent = (input) => { seen.push(['install', input.operatorFunded]); return INSTALL_DISPLAY; };
+    await livePrepared(f);
+    await f.controller.prepareLive();
+    await f.controller.prepareInstall();
+    await f.controller.install();
+    assert.deepEqual(seen, [['live', ownerFunded === true], ['install', ownerFunded === true], ['install', ownerFunded === true]], String(ownerFunded));
+  }
+});
+
 test('install consent the browser derives must equal the backend display, or no passkey is asked', async () => {
   for (const change of [
     (f) => { f.validators.installConsent = () => ({ ...INSTALL_DISPLAY, grant: { rule_id: 2, delegate: 'delegate' } }); },

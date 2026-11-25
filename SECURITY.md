@@ -65,7 +65,8 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
 - The library and the MCP server never sign, submit, or deploy, and hold no account, owner or
   fee-payer keys. The demo script, the testnet harness and the local wallet backend do on
   testnet, with disposable keys they generate, the wallet's automation delegate included. In a
-  mainnet session the local wallet backend generates no signing key and holds two the operator
+  mainnet session, and in a testnet session the operator configures with its own fee payer key
+  to rehearse one, the local wallet backend generates no signing key and holds two the operator
   supplies, each read at startup from a 0600 file the operator owns and kept in process memory:
   - The operator's fee payer key (`feePayerKeyPath`), used only as the source and fee payer of
     the backend's transactions, within per-transaction and session fee caps; it is never

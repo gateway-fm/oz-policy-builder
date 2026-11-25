@@ -143,7 +143,8 @@ export async function prepareLive({ network, helper, approval, spec, policyAddre
       + 'with its master key alone; nothing was signed.') };
   }
   const cases = liveCases({ approval, spec, helper, policyCodeHash, expectedRuleId: nextRuleId, signatureExpirationLedger: expiry });
-  const display = consentDisplay(cases, { currentLedger });
+  // The delegate key's holder is the session's funding model's: the agent's key from the operator's file when operator-funded.
+  const display = consentDisplay(cases, { currentLedger, operatorFunded: network.operatorFunded === true });
   return { prepared: freezeCopy({ cases, display, statementSha256: statementHash(display), snapshot, currentLedger,
     helper: { contract: helper, wasmHash: helperState.wasmHash, instanceLiveUntil: helperState.instanceLiveUntil,
       codeLiveUntil: helperState.codeLiveUntil } }) };
@@ -248,6 +249,7 @@ export async function runLive({ network, mintCapability, prepared, approval, own
   const expected = ['permit', 'deny'];
   const infrastructure = !passed && verdicts.some((v) => v.outcome === 'failed' && v.reason === 'simulation')
     && verdicts.every((v, i) => (v.outcome === 'failed' && v.reason === 'simulation') || v.outcome === expected[i]);
+  const holder = delegateHolder(prepared.cases[0].network_id, { operatorFunded: network.operatorFunded === true });
   const evidence = {
     helper: prepared.helper.contract, helperCodeHash: prepared.helper.wasmHash, account: prepared.cases[0].account,
     policy: prepared.cases[0].policy, policyCodeHash: prepared.cases[0].policy_code_hash, expectedRuleId: prepared.cases[0].expected_rule_id,
@@ -256,9 +258,9 @@ export async function runLive({ network, mintCapability, prepared, approval, own
       ...(v.detail ? { detail: v.detail } : {}), ...(v.simulation_ledger ? { simulationLedger: v.simulation_ledger } : {}),
       ...(v.envelope_xdr_sha256 ? { envelopeXdrSha256: v.envelope_xdr_sha256 } : {}) })),
     owner: { authentication: owner.authentication, human_approval_attested: false },
-    // Who holds the delegate key: the backend's in-memory key on testnet, the agent's own key on mainnet.
-    delegate: delegateHolder(prepared.cases[0].network_id).evidence, submitted: false,
-    labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${expiry}`, delegateHolder(prepared.cases[0].network_id).label],
+    // Who holds the delegate key: the backend's in-memory key, or operator-funded the agent's own key.
+    delegate: holder.evidence, submitted: false,
+    labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${expiry}`, holder.label],
   };
   if (infrastructure) {
     return layer('unavailable', 'The simulation needed state restoration or ran after the signatures expired; no evidence about the '
