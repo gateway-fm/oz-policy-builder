@@ -71,10 +71,12 @@ pub enum Command {
     /// roots and network; print the checkpoint a consumer persists. The gate before distribution.
     Verify(VerifyArgs),
     /// Compare a consumer's checkpoint with the published log: newer version, validity expiry,
-    /// revocations of watched Wasm hashes and template families. Prints JSON; the exit status is for cron: 0 current,
-    /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash or template family revoked, 7 the
-    /// head's interval has not started, and 1 when the published log cannot be verified against
-    /// the checkpoint or a watch item is one the head neither registers nor revokes.
+    /// revocations of watched Wasm hashes and template families. Prints JSON; the exit status is
+    /// for cron: 0 current, 3 newer version, 4 expiring within the window, 5 expired, 6 a watched
+    /// hash or template family revoked, 7 the head's interval has not started; 1 when the
+    /// published log cannot be verified against the checkpoint or a watch item is one the head
+    /// neither registers nor revokes, or any other error; 2 a usage error (a malformed or missing
+    /// flag), with nothing checked. Treat any other non-zero status as an alert too.
     Monitor(MonitorArgs),
 }
 

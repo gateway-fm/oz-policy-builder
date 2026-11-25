@@ -252,6 +252,9 @@ expiring, not yet valid, newer:
 | 5 | the head has expired | synthesis and checks now refuse it; same |
 | 6 | a watched hash or template family is revoked | the emergency-removal path below |
 | 1 | the published log cannot be verified against the checkpoint — or the command is misconfigured, including a watched hash or template family the head neither registers nor revokes | read the message: a log that cannot be verified is an incident (a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned); a watch item it names is mistyped or no longer in the registry, and must be fixed, since it could never report |
+| 2 | a usage error: a flag missing, unknown or malformed, rejected before anything is read | nothing was checked and no report is printed; fix the invocation |
+
+Any other non-zero status (a crash) means the run reached no verdict; treat it as an alert too.
 
 Monitoring compares your checkpoint with one published source. It detects a log that contradicts
 what you accepted, but it cannot detect newer versions that source withholds: a frozen or
@@ -321,6 +324,7 @@ What each status should set off:
   dropped without a revocation, ask the custodians why). Otherwise treat it as a security incident:
   the published log contradicts what you accepted, or a new version is signed under roots you have
   not pinned. Do not advance anything until it is explained.
+- **2** — fix the script: the monitor never ran, so until it does nothing is being watched.
 
 ## Revocation and emergency removal
 

@@ -528,6 +528,10 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
             expected,
         );
     }
+    // A flag the parser cannot take is a usage error, exit 2: no status, nothing was checked.
+    let output = monitor(&checkpoint_v1_path, &["--expiry-window-days", "fourteen"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
     let head_path = work.path().join("checkpoint-v2.json");
     write_json(&head_path, &head);
     let output = monitor(&head_path, &[]);
