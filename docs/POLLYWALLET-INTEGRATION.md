@@ -355,7 +355,13 @@ check stays simulation only on mainnet: nothing it signs is submitted.
 
 ## Receiving a proposal directly from Claude
 
-Use **Connect Claude** on the Policy Builder page to pair the local agent session with this
+The direct hand-off is for testnet sessions only: the agent's `connect_wallet` accepts a testnet
+connection alone, so a session on any other network reports `agentHandoff: false`, refuses
+`pair-agent`, and its page shows, in place of **Connect Claude**, how to bring the proposal in by
+[import](#importing-an-agent-proposal). On mainnet that is the way in: after confirming the grant,
+start the `policy-builder-install` skill, which prints the proposal as JSON, and paste or upload it.
+
+On testnet, use **Connect Claude** on the Policy Builder page to pair the local agent session with this
 wallet. After the final permission card is confirmed, Claude can deliver an unverified draft
 without a separate install-skill command or copying proposal JSON. The wallet shows a
 notification; select **Review proposal from Claude** to enter the same independent regeneration

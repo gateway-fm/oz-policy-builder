@@ -142,6 +142,11 @@ export function createWalletActions({ session, toolchain, network, native = null
   const fees = network.fees;
   /** Mainnet: the owner funds every account; the wallet funds nothing and moves no XLM of the fee payer's. */
   const ownerFunded = !net.friendbot;
+  /**
+   * The direct hand-off from the local agent: its `connect_wallet` accepts a testnet connection only, so
+   * no other session offers or pairs it, and the agent's proposal comes in through manual import.
+   */
+  const agentHandoff = net.name === 'testnet';
   /** The fee payer is only a transaction source and fee payer, never a signer or delegate on an account. */
   const notPayer = (address) => { if (address === network.payerAddress) refuse(); };
   /** The pinned code an account needs, refused with its upload command when it is missing on the network. */
@@ -395,6 +400,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         fees: { ...fees, spentStroops: network.spentStroops }, pinned, helper });
     },
     'pair-agent': async (input) => {
+      if (!agentHandoff) refuse();
       exact(input, ['wallet', 'delegate']);
       const wallet = walletIdentity(input.wallet);
       exact(input.delegate, ['address', 'capabilityId']);
@@ -420,7 +426,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         fees: { maxFeeStroops: fees.maxFeeStroops, maxUploadFeeStroops: fees.maxUploadFeeStroops,
           sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops },
         feePayer: { address: network.payerAddress, ownerFunded },
-        capabilities: { delegateKey: delegates.available, agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+        capabilities: { delegateKey: delegates.available, agentHandoff, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
           liveCheck: live !== null, monitoring: [...installations.values()].some((held) => held.record.status === 'installed' && !held.removal), replacement: replaceable(), install: [...reviews.values()].some(installable),
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)),
           grantUse: [...installations.values()].some(usable), grantRepeat: [...installations.values()].some(repeatable) },

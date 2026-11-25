@@ -567,6 +567,10 @@ function PolicyBuilder() {
 
       <section className={panel} aria-labelledby="agent-heading">
         <h2 id="agent-heading" className="text-xl font-semibold">Connect Claude</h2>
+        {state?.status?.capabilities.agentHandoff === false ? <p role="status" className="text-sm text-slate-300">
+          Claude connects directly to a testnet session only. On {NETWORK.name}, after you confirm the grant in Claude, start
+          its policy-builder-install skill: it prints the grant proposal as JSON. Paste it, or save it as a file, under Import a
+          grant proposal in section 2; the wallet checks it exactly as it would a proposal sent directly.</p> : <>
         <Intro>Pair Claude, running on this computer, so it can send you a grant to review. Claude cannot sign, deploy or install
           anything.</Intro>
         <button className={button} disabled={busy || !state?.wallet || !state?.status?.capabilities.agentHandoff
@@ -604,11 +608,13 @@ function PolicyBuilder() {
           <p>The connection ends 30 minutes after pairing; reopening this page needs a new connection, and Claude then builds the grant
             again. Disconnect before changing the account or automation key. Closing this page does not guarantee disconnection.</p>
         </Details>
+        </>}
       </section>
 
       <section className={panel} aria-labelledby="record-heading">
         <h2 id="record-heading" className="text-xl font-semibold">2. The grant</h2>
-        <Intro>The permission the automation key would get. With Claude there is nothing to do here: Review proposal from Claude fills it in.</Intro>
+        <Intro>The permission the automation key would get. {state?.status?.capabilities.agentHandoff === false
+          ? "Import Claude's proposal below." : "With Claude there is nothing to do here: Review proposal from Claude fills it in."}</Intro>
         {state?.proposalReview && <div className="space-y-2 rounded-lg border-2 border-green-600 p-4 text-sm">
           <p>The regenerated permissions match the proposal. Review the grant below.</p>
           <Details title="Why the two specification hashes can differ">
