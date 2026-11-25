@@ -98,6 +98,15 @@ shasum -a 256 installed.wasm      # <wasm sha256>
 ozpb verify-published ./published/<wasm sha256>/<build manifest hash>
 ```
 
+On mainnet, `stellar` 27.0.0 has no default RPC for `--network mainnet`; name your endpoint and
+the network passphrase instead, and check the result the same way
+([publishing a mainnet installation](MAINNET-INSTALL.md#publishing-the-installed-policy)):
+
+```bash
+stellar contract fetch --id <policy C-address> --rpc-url <mainnet RPC URL> \
+  --network-passphrase 'Public Global Stellar Network ; September 2015' -o installed.wasm
+```
+
 `verify-published` takes the two hashes from the last two names of the path it is given, never
 from where that path resolves, and refuses it if either directory is a symlink. It reads the build
 as untrusted content: it refuses a symlink or special file inside it, a name that is not UTF-8,
