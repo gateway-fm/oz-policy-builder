@@ -1184,18 +1184,22 @@ the wallet passes no commitment and compares the observation itself.
 
 With `registryPublishedPath` naming the operator's published registry log (its directory, or its
 head file), the same check also runs `ozpb registry monitor` against it and the checkpoint in the
-pinned roots, watching the account's and the owner verifier's Wasm (a generated policy is recognized
-by its reproduced build, not by a registry entry, so it is not watched). The result is shown apart
-from the grant's: `current` (exit 0), `newer_version` (3), `not_yet_valid` (7), `expires_soon` (4),
-`expired` (5) or `revoked` (6), each with what to do as
+pinned roots, watching the account's and the owner verifier's Wasm (`--wasm-hash`) and the
+installed policy's template family, its spec's `template_family` (`--template`): a generated policy
+has no registry entry of its own, so its family is what a revocation reaches it through. The result
+is shown apart from the grant's: `current` (exit 0), `newer_version` (3), `not_yet_valid` (7),
+`expires_soon` (4), `expired` (5) or `revoked` (6), each with what to do as
 [the governance guide](REGISTRY-GOVERNANCE.md#monitoring) tabulates it, and `log_unverifiable`
 (exit 1 with a registry verification fault leading the CLI's error: `E_REGISTRY_SIGNATURE`,
 `E_REGISTRY_TRANSPARENCY`, `E_REGISTRY_ROLLBACK`, `E_REGISTRY_PARSE`, `E_REGISTRY_SCHEMA` or
-`E_REGISTRY_NETWORK`; or a report that contradicts its exit status), which is an incident. A run
-that reached no verdict (the CLI missing, a timeout, a refused root policy, an unreadable
-published path or any other failure) is `monitor_unavailable`: the log is not being watched until
-the configuration is fixed and the monitor runs again. A revoked account or
-verifier is not fixed by revoking the grant; follow
+`E_REGISTRY_NETWORK`; or a report that contradicts its exit status, or whose revocations name
+nothing the wallet watched), which is an incident. Each revoked item names what it revokes as the
+CLI does, `watched: { code }` or `watched: { template_family }`, with its `capability`, `reason` and
+`effectiveVersion`, and the page lists them. A run that reached no verdict (the CLI missing, a
+timeout, a refused root policy, an unreadable published path, a watch item the published head
+neither registers nor revokes, or any other failure) is `monitor_unavailable`: the log is not being
+watched until the configuration is fixed and the monitor runs again. A revoked template family is
+handled by revoking the grant; a revoked account or verifier is not fixed that way: follow
 [revocation and emergency removal](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal).
 Without that path the registry part reports `not_configured`.
 

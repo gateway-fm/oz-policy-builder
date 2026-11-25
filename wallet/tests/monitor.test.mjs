@@ -121,3 +121,19 @@ test('an authority RPC/CLI failure is unavailable, never a silently learned base
   const result = await f.execute(); assert.equal(result.status, 'unavailable');
   assert.ok(!JSON.stringify(result).includes('confidential')); assert.equal(result.projectedAuthorityCommitment, null);
 });
+test('the registry part watches the account and verifier Wasm and the installed policy\'s template family, apart from the grant', async () => {
+  const f = await fixture();
+  // The generated policy has no registry entry of its own: its spec names the family it was built from.
+  f.candidate.spec = { ...f.candidate.spec, rules: f.candidate.spec.rules.map((rule) => ({ ...rule, policies: [{ generated: {
+    kind: 'gen:scope+count', template_family: 'policy-templates/scope@1', capability_schema: H('4') } }] })) };
+  const calls = [];
+  const revoked = { status: 'revoked', exit: 6, revoked: [{ watched: { template_family: 'policy-templates/scope@1' } }] };
+  f.toolchain.registryMonitor = async (watch) => { calls.push(watch); return revoked; };
+  const result = await f.execute();
+  assert.deepEqual(calls, [{ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM], templates: ['policy-templates/scope@1'] }]);
+  assert.deepEqual(result.registry, revoked);
+  assert.equal(result.status, 'unchanged', 'a registry revocation is reported beside the grant, not as grant drift');
+  // A monitor that threw is unavailable, not an incident.
+  f.toolchain.registryMonitor = async () => { throw new Error('refused'); };
+  assert.equal((await f.execute()).registry.status, 'monitor_unavailable');
+});
