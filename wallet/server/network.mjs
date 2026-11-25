@@ -795,7 +795,9 @@ export class WalletNetwork {
   /**
    * A classic account as the owner must fund it, read only: `{ exists: false, minimumStroops, ledger }`
    * or `{ exists: true, balanceStroops, minimumStroops, spendableStroops, ledger }`. The minimum is the
-   * network's base reserve, from the latest ledger header, times two plus the account's subentries.
+   * network's base reserve, from the latest ledger header, times two plus the account's subentries
+   * plus the reserves it sponsors less those sponsored for it; what it can spend is its balance less
+   * that minimum and less its selling liabilities (XLM its open offers have set aside).
    */
   async classicAccount(address) {
     try {
@@ -813,10 +815,16 @@ export class WalletNetwork {
       const [entry] = response.entries;
       const account = entry.val?.type === 'account' ? entry.val.account : refuse();
       if (response.entries.length !== 1 || !same(entry.key, key) || !Number.isSafeInteger(account.numSubEntries)) refuse();
-      const minimum = (2n + BigInt(account.numSubEntries)) * reserve;
+      const v1 = account.ext?.type === 'v1' ? account.ext.v1 : null;
+      const v2 = v1?.ext?.type === 'v2' ? v1.ext.v2 : null;
+      const selling = v1 ? BigInt(v1.liabilities.selling) : 0n;
+      const entries = 2n + BigInt(account.numSubEntries) + BigInt(v2?.numSponsoring ?? 0) - BigInt(v2?.numSponsored ?? 0);
+      if (entries < 0n || selling < 0n) refuse();
+      const minimum = entries * reserve;
       const balance = BigInt(account.balance);
+      const spendable = balance - minimum - selling;
       return { exists: true, balanceStroops: balance.toString(), minimumStroops: minimum.toString(),
-        spendableStroops: (balance > minimum ? balance - minimum : 0n).toString(), ledger: observed };
+        spendableStroops: (spendable > 0n ? spendable : 0n).toString(), ledger: observed };
     } catch (error) { refuse(error); }
   }
   /**

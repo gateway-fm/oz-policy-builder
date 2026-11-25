@@ -186,6 +186,26 @@ test('mainnet: the wallet never funds its fee payer; an unfunded operator accoun
   assert.deepEqual(account, { exists: true, balanceStroops: '1000000000', minimumStroops: '10000000', spendableStroops: '990000000', ledger: 100 });
 });
 
+test('mainnet: what the operator account can spend leaves out its selling liabilities and counts sponsorship in its reserve', async (t) => {
+  // Stellar's available balance: balance − (2 + subentries + sponsoring − sponsored) × base reserve − selling liabilities.
+  const f = mainnet(t, { change: (server, feePayer) => {
+    const accountId = Keypair.fromPublicKey(feePayer.address).xdrAccountId();
+    const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId }));
+    const ext = xdr.AccountEntryExt.v1(new xdr.AccountEntryExtensionV1({
+      liabilities: new xdr.Liabilities({ buying: 7_000_000n, selling: 3_000_000n }),
+      ext: xdr.AccountEntryExtensionV1Ext.v2(new xdr.AccountEntryExtensionV2({ numSponsored: 2, numSponsoring: 3,
+        signerSponsoringIDs: [], ext: xdr.AccountEntryExtensionV2Ext.v0() })) }));
+    const val = xdr.LedgerEntryData.account(new xdr.AccountEntry({ accountId, balance: 100_000_000n, seqNum: 7n, numSubEntries: 1,
+      inflationDest: null, flags: 0, homeDomain: '', thresholds: Buffer.from([1, 0, 0, 0]), signers: [], ext }));
+    server.getLedgerEntries = async () => ({ latestLedger: 100, entries: [{ key, val, lastModifiedLedgerSeq: 90, liveUntilLedgerSeq: undefined }] });
+  } });
+  // (2 + 1 + 3 − 2) × 5,000,000 = 20,000,000 reserved; 100,000,000 − 20,000,000 − 3,000,000 selling = 77,000,000.
+  assert.deepEqual(await f.network.payerAccount(), { exists: true, balanceStroops: '100000000', minimumStroops: '20000000',
+    spendableStroops: '77000000', ledger: 100 });
+  await f.network.payerCovers(77_000_000);
+  await assert.rejects(() => f.network.payerCovers(77_000_001), (error) => error.reason === 'payer_unfunded');
+});
+
 test('mainnet: after a restart a removal needs only its own fee from the operator account, read through the real network', async (t) => {
   const account = 'CAWGOGD3YYSPUR6CPT6PE33DCUIGFNBVZVA5WEDGK2YM34FRLIUQBT5A';
   // The record-mode draft of `remove_context_rule(1)`: the account's own authorization of exactly that call.
