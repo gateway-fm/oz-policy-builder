@@ -338,9 +338,9 @@ later (CI uses 24.15.0). From the repository root:
 
 ```sh
 # Release gate: dependency rules, publication and quoted-hash invariants, fmt and clippy over
-# both workspaces and both generated crates, all tests, the built server's wire contract against
-# docs/wire-contract.json, the differential suite, codegen determinism, clean-rebuild Wasm
-# reproducibility, licences and advisories — then the Phase 2
+# both workspaces and the four generated crates, all tests, the built server's wire contract
+# against docs/wire-contract.json, the differential suite, codegen determinism, clean-rebuild
+# Wasm reproducibility, licences and advisories — then the Phase 2
 # evidence checks and a Soroswap Wasm build. `--offline` is the reduced form and says what it skips.
 bash scripts/verify-phase2.sh
 
