@@ -391,7 +391,8 @@ export class WalletNetwork {
     if (this.#funded) return;
     if (this.#payer.operator) {
       // The operator's key is never funded by the wallet: its account must exist, funded by its owner,
-      // with at least one transaction's fee to spend above its reserve.
+      // with at least one transaction's fee to spend above its reserve. Each write is then checked
+      // against its own fee before it is signed (`submitEnvelope`).
       const account = await this.payerAccount();
       if (!account.exists || BigInt(account.spendableStroops) < BigInt(this.#fees.maxFeeStroops)) refuse({ reason: 'payer_unfunded' });
       this.#funded = true;
@@ -508,8 +509,11 @@ export class WalletNetwork {
       }
       checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
       this.#assertPayerNotSigner(assembled);
-      // Mainnet: a removal is signed only when the operator's account can pay its fee now.
-      if (this.#payer.operator && stage === 'revoke-policy') await this.#payerCovers(fee);
+      // Mainnet: every write is signed only when the operator's account can pay this transaction's fee
+      // now. `fundPayer` checked the per-transaction cap once; an upload, held to its own larger cap,
+      // can cost far more, and the account can be drawn down between writes. Refused here, nothing is
+      // journaled, counted or blocked, and the operator can fund the account and try again.
+      if (this.#payer.operator) await this.#payerCovers(fee);
       this.#payer.signTransaction(assembled);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
       const serial = ++this.#serial;

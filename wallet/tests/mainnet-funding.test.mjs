@@ -451,6 +451,30 @@ test('mainnet: a Wasm upload is held to its own cap, every other transaction to 
     (error) => error.reason === 'fee_cap');
 });
 
+test('mainnet: every write is signed only when the operator account can pay its own fee, not just the per-transaction cap', async (t) => {
+  // Spendable 20,000 (two base reserves held back): enough for the 3,000 per-transaction cap that
+  // fundPayer checks once, too little for a 40,000 upload within its own cap.
+  const fees = { maxFeeStroops: 3_000, maxUploadFeeStroops: 50_000, sessionSpendCapStroops: 1_000_000 };
+  const wasm = Buffer.from('0061736d01000000', 'hex');
+  const f = mainnet(t, { fee: 40_000, fees, balance: 10_020_000n });
+  await f.network.fundPayer();
+  assert.equal(f.network.canSubmit, true);
+  await assert.rejects(() => f.network.upload(wasm, Buffer.from(hash(wasm)).toString('hex')), (error) => error.reason === 'payer_unfunded');
+  assert.equal(f.calls.some((call) => call.sent), false, 'nothing sent');
+  assert.deepEqual(readdirSync(f.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
+  assert.equal(f.network.spentStroops, '0', 'no phantom spend');
+  assert.equal(f.network.canSubmit, true, 'the session is not blocked: the operator can fund the account and try again');
+  // Any other write is held to its own fee the same way.
+  const call = mainnet(t, { fee: 2_500, fees: { ...fees, maxFeeStroops: 2_500 }, balance: 10_002_500n });
+  await call.network.fundPayer();
+  // The payer is drawn down between the funding check and the write (another session, a manual payment).
+  call.network.payerAccount = async () => ({ exists: true, balanceStroops: '10002000', minimumStroops: '10000000', spendableStroops: '2000', ledger: 100 });
+  await assert.rejects(() => call.network.submitEnvelope(contractCall(call.network.payerAddress), 'install-policy'),
+    (error) => error.reason === 'payer_unfunded');
+  assert.equal(call.calls.some((c) => c.sent), false);
+  assert.equal(call.network.spentStroops, '0');
+});
+
 test('mainnet: after an uncertain submission its whole fee stays counted and nothing else is sent', async (t) => {
   const f = mainnet(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 100_000 },
     change: (server) => { server.sendTransaction = async () => { throw new Error('lost response'); }; } });

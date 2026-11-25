@@ -265,8 +265,10 @@ signed. Testnet sessions keep the development registry.
 the user running the backend, with mode `0600`; a symlink, another owner or any access for group
 or others is refused at startup, with the reason and never the content. The account is yours: fund
 it yourself with the minimum reserve plus the session cap. The backend reads it, never funds it,
-and refuses to submit while it cannot pay a fee (`payer_unfunded`): every write but a removal needs
-at least the per-transaction cap spendable, a removal only its own fee. The key is held only in the
+and refuses to sign while it cannot pay (`payer_unfunded`): before the first write but a removal its
+account must be able to spend at least the per-transaction cap, and before each write, a removal and
+a policy upload included, that transaction's own fee, read again just before it is signed. Such a
+refusal signs, journals and counts nothing and blocks no later write. The key is held only in the
 backend's memory; it is not printed, logged, returned to the browser or written to the journal.
 It is only the source and fee payer of the backend's transactions, never a signer on an account:
 before it signs an envelope the backend refuses one whose authorization entries name it, carry
