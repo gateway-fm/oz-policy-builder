@@ -157,6 +157,7 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | Rest of `wallet/server` | 1,004 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
 | `scripts/release-artifacts.py` (tested by `scripts/test-release-artifacts.py`), run by `.github/workflows/release-binaries.yml` | 341 | 343 | Packages the release binaries, exports the MCP wire contract and writes `SHA256SUMS`; the workflow, not counted, attests and attaches them ([VERSIONING.md](VERSIONING.md#the-release-gate)). CI also runs its export against the built server and fails when it differs from the committed `docs/wire-contract.json` ([keeping the snapshot current](VERSIONING.md#keeping-the-snapshot-current)) |
 | `testnet-harness`, `scripts/demo-tranche1.sh`, `skills/`, `wallet/overlay`, docs | — | — | Testnet demonstration, agent instructions, wallet UI |
+| `contracts/authorized-target-fixture`, `tests/support` | — | — | Test-only: the target contract the pinned-account authorization test (`scripts/test-pinned-account-authorization.sh`) builds and calls through the account, and the RPC stubs the CLI and MCP tests share; in no release artifact |
 
 ## Entry points
 
