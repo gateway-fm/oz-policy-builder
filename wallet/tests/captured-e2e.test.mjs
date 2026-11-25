@@ -105,6 +105,10 @@ async function captured(t) {
       amount: target.amount, networkId: NETWORK_ID } };
 }
 
+/** The delegate, counting the signatures it makes. */
+const counting = (signed) => ({ publicKey: () => delegate.publicKey(),
+  sign: (bytes) => { signed.n += 1; return delegate.sign(bytes); }, verify: (bytes, signature) => delegate.verify(bytes, signature) });
+
 test('the wallet captures the recorded testnet transfer through the actual CLI and accepts the actual worker report', { skip }, async (t) => {
   const run = await captured(t);
   let signatures = 0;
@@ -121,16 +125,21 @@ test('the wallet captures the recorded testnet transfer through the actual CLI a
 
 test('the actual captured worker report is refused against another review\'s amount', { skip }, async (t) => {
   const run = await captured(t);
+  const signed = { n: 0 };
   await assert.rejects(() => runCapturedExecution({ executable: runtime, jobText: run.jobText,
     expected: { ...run.expected, amount: run.expected.amount + 1n }, maxCalls: run.maxCalls,
-    signer: offlineCapability(delegate) }), /refused/);
+    signer: offlineCapability(counting(signed)) }), /native process refused; no execution evidence accepted/);
+  // Preparation matched and the cases were signed; the report is what the other amount refuses.
+  assert.ok(signed.n > 0, 'the refusal comes from the report, after signing');
 });
 
 test('the actual captured worker preparation is refused for another capture', { skip }, async (t) => {
   const run = await captured(t);
+  const signed = { n: 0 };
   await assert.rejects(() => runCapturedExecution({ executable: runtime, jobText: run.jobText,
     expected: { ...run.expected, captureHash: '0'.repeat(64) }, maxCalls: run.maxCalls,
-    signer: offlineCapability({ publicKey: () => delegate.publicKey(), sign: () => assert.fail('no signature before preparation matches'), verify: (b, s) => delegate.verify(b, s) }) }), /refused/);
+    signer: offlineCapability(counting(signed)) }), /native process refused; no execution evidence accepted/);
+  assert.equal(signed.n, 0, 'no signature before preparation matches');
 });
 
 test('the actual capture is refused for a review naming another call', { skip }, async (t) => {
