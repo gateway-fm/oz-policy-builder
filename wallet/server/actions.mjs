@@ -149,6 +149,26 @@ export function createWalletActions({ session, toolchain, network, native = null
   const agentHandoff = net.name === 'testnet';
   /** The fee payer is only a transaction source and fee payer, never a signer or delegate on an account. */
   const notPayer = (address) => { if (address === network.payerAddress) refuse(); };
+  /**
+   * One attempt at fee-payer writes the session makes once (an account's creation, a policy's
+   * deployment); `send(write)` runs one of them. After a refusal, `unsent()` says whether the attempt
+   * may be made again because nothing left: it was refused outside every write before any returned (the
+   * payer, pinned code), or inside one before the fee payer signed it (the counted spend unmoved and no
+   * submission uncertain: the payer cannot pay, a cap). A write that may have left, or a refusal after
+   * one returned, spends the attempt.
+   */
+  function oneAttempt() {
+    let inside = null, returned = false;
+    return {
+      send: async (write) => {
+        inside = network.spentStroops;
+        const value = await write();
+        inside = null; returned = true;
+        return value;
+      },
+      unsent: () => (inside === null ? !returned : network.spentStroops === inside && network.canSubmit === true),
+    };
+  }
   /** The pinned code an account needs, refused with its upload command when it is missing on the network. */
   async function requirePinned(hash) {
     const read = await network.codePresent(hash);
@@ -454,15 +474,23 @@ export function createWalletActions({ session, toolchain, network, native = null
         if (handoff.view().pairingPending || handoff.view().connection) refuse();
         if (accountAttempted) refuse();
         accountAttempted = true;
-        await network.assertNetwork();
-        // Pinned code is never uploaded by the wallet: a missing one refuses with its upload command (`readiness`).
-        await requirePinned(ACCOUNT_WASM);
-        await requirePinned(WEBAUTHN_WASM);
-        await network.fundPayer();
-        const verifier = await network.create(WEBAUTHN_WASM, [], 'deploy-verifier');
-        const signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
-          xdr.ScVal.scvBytes(credential(selected))]);
-        const account = await network.create(ACCOUNT_WASM, [xdr.ScVal.scvVec([signer]), xdr.ScVal.scvMap([])], 'deploy-account');
+        // Refused before anything left (no funded payer, pinned code missing, a cap), it may be confirmed again.
+        const attempt = oneAttempt();
+        let verifier, signer, account;
+        try {
+          await network.assertNetwork();
+          // Pinned code is never uploaded by the wallet: a missing one refuses with its upload command (`readiness`).
+          await requirePinned(ACCOUNT_WASM);
+          await requirePinned(WEBAUTHN_WASM);
+          await network.fundPayer();
+          verifier = await attempt.send(() => network.create(WEBAUTHN_WASM, [], 'deploy-verifier'));
+          signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
+            xdr.ScVal.scvBytes(credential(selected))]);
+          account = await attempt.send(() => network.create(ACCOUNT_WASM, [xdr.ScVal.scvVec([signer]), xdr.ScVal.scvMap([])], 'deploy-account'));
+        } catch (error) {
+          if (attempt.unsent()) accountAttempted = false;
+          throw error;
+        }
         // From a node at or past the deployment: one behind it does not know the account yet, so its
         // failed call is asked again too, a few times.
         const observed = await readAfter(async () => {
@@ -574,20 +602,30 @@ export function createWalletActions({ session, toolchain, network, native = null
       return session.consume(input.id, 'deploy', async ({ artifactId }) => {
         if (attemptedArtifacts.has(artifactId)) refuse();
         attemptedArtifacts.add(artifactId);
-        const held = toolchain.artifact(artifactId);
-        const artifact = held.response;
-        await network.fundPayer();
-        const upload = await network.upload(Buffer.from(held.wasmBase64, 'base64'), artifact.wasmHash);
-        const deployed = await network.create(artifact.wasmHash, [], 'deploy-policy');
-        const deploymentId = id();
-        const request = toolchain.bindingRequest(artifactId, deployed.contractId, `wallet-deployment:${deployed.receipt.hash}`);
-        const checked = await toolchain.authority('check-policy-call-surface', request);
-        if (!HASH.test(checked.binding_set_hash) || checked.spec_hash !== artifact.specHash) refuse();
-        const response = freezeCopy({ deploymentId, policyAddress: deployed.contractId, wasmHash: artifact.wasmHash,
-          bindingSet: request.binding_set, bindingSetHash: checked.binding_set_hash,
-          receipts: [upload, deployed.receipt].map(receipt) });
-        deployments.set(deploymentId, { artifactId, request, response });
-        return response;
+        // Refused before anything left (no funded payer, a cap), the artifact may be deployed again. A
+        // creation refused that way after its upload returned finds the code stored and does not upload
+        // it twice; creation reads it back by its hash either way.
+        const attempt = oneAttempt();
+        try {
+          const held = toolchain.artifact(artifactId);
+          const artifact = held.response;
+          await network.fundPayer();
+          const stored = (await network.codePresent(artifact.wasmHash)).present;
+          const upload = stored ? null : await attempt.send(() => network.upload(Buffer.from(held.wasmBase64, 'base64'), artifact.wasmHash));
+          const deployed = await attempt.send(() => network.create(artifact.wasmHash, [], 'deploy-policy'));
+          const deploymentId = id();
+          const request = toolchain.bindingRequest(artifactId, deployed.contractId, `wallet-deployment:${deployed.receipt.hash}`);
+          const checked = await toolchain.authority('check-policy-call-surface', request);
+          if (!HASH.test(checked.binding_set_hash) || checked.spec_hash !== artifact.specHash) refuse();
+          const response = freezeCopy({ deploymentId, policyAddress: deployed.contractId, wasmHash: artifact.wasmHash,
+            bindingSet: request.binding_set, bindingSetHash: checked.binding_set_hash,
+            receipts: [upload ? receipt(upload) : { status: 'already_stored', wasmHash: artifact.wasmHash }, receipt(deployed.receipt)] });
+          deployments.set(deploymentId, { artifactId, request, response });
+          return response;
+        } catch (error) {
+          if (attempt.unsent()) attemptedArtifacts.delete(artifactId);
+          throw error;
+        }
       });
     },
     review: async (input) => {
@@ -905,7 +943,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         ownerRuleXdr: owner.ownerRuleXdr, limits, display });
     },
     // Installation, step 2: the owner's passkey signature of exactly the released entry. Consuming the
-    // action spends the review whatever follows. Everything the gate depends on is read again; the fee
+    // action spends the review whatever follows, unless the fee payer refuses before signing (below).
+    // Everything the gate depends on is read again; the fee
     // payer then enforce-simulates, signs, journals and submits once, and the result is recorded first
     // as confirmed and counts as installed only with the account's own event and a read-back.
     submit: async (input) => {
@@ -936,7 +975,18 @@ export function createWalletActions({ session, toolchain, network, native = null
         const signed = await validateSignedAuthorization({ approval, checked: held.checked,
           signedAuthEntriesXdr: input.signedAuthEntriesXdr, origin: LIVE_ORIGIN });
         session.invalidate('install');
-        const submitted = await network.submitEnvelope(signed.envelopeXdr, 'install-policy');
+        // Refused before the fee payer signed (the counted spend unmoved, no submission uncertain: the payer
+        // cannot pay, a cap), nothing left and the review keeps its attempt. The entry released for it stays
+        // an open obligation, so the next is released only once this one has expired unused.
+        const before = network.spentStroops;
+        let submitted;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'install-policy'); } catch (error) {
+          if (network.spentStroops === before && network.canSubmit === true) {
+            reviews.set(held.reviewId, { ...get(reviews, held.reviewId), installAttempted: false });
+            installAttempts--;
+          }
+          throw error;
+        }
         const account = approval.wallet.contractId;
         const policy = deployment.response.policyAddress;
         // Confirmed: keep its identity before any verification can refuse, so it can still be seen and removed.

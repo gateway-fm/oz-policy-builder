@@ -302,9 +302,12 @@ account must be able to spend at least the per-transaction cap, and before each 
 a policy upload included, that transaction's own fee, read again just before it is signed. It is
 asked before the owner commits too: the policy deployment preview is refused when the account cannot
 pay the simulated upload and the policy's creation, and no installation entry is released for the
-passkey while it cannot pay one transaction. Such a refusal signs, journals and counts nothing and
-blocks no later write. The key is held only in the
-backend's memory; it is not printed, logged, returned to the browser or written to the journal.
+passkey while it cannot pay one transaction. Such a refusal, like a cap's, signs, journals and counts
+nothing and leaves no submission uncertain, so the session can still write: an account creation, a
+policy deployment or an installation refused before anything was signed can be confirmed again once
+the account is funded (the installation once the entry released for it has expired), and a
+deployment whose upload had already returned does not upload the code twice. The sample transfer is
+attempted once per session, whatever the cause. The key is held only in the backend's memory; it is not printed, logged, returned to the browser or written to the journal.
 It is only the source and fee payer of the backend's transactions, never a signer on an account:
 before it signs an envelope the backend refuses one whose authorization entries name it, carry
 its key in a signature payload (a `Delegated` signer) or rest on its signature for anything but
@@ -852,7 +855,9 @@ re-establishes the same conditions:
 **Submit.**
 
 1. Consuming the prepared action spends the review, whatever follows: a refused attempt is never
-   re-released for the same review.
+   re-released for the same review. The one exception is a refusal by the fee payer before it
+   signed (step 4: it cannot pay, a cap): nothing left, so the review keeps its attempt, and its next
+   entry is released once this one has expired unused.
 2. The gate runs again. A fresh `prepare-install-intent` must return the approved commitment and
    grant. Then the owner rule must read back unchanged and the fee payer's sequence unmoved, both
    within 12 ledgers of that authority read, and the transaction's ledger window must still be
@@ -1052,7 +1057,9 @@ setting that refused it (`maxUploadFeeStroops` or `sessionSpendCapStroops`), the
 simulated cost and the least value that lets it through, all in stroops. The page explains it
 and says what to do; anything else is shown as a plain refusal. After a
 sample or installation submission was attempted, the browser passes on no reason: that attempt
-cannot be repeated in the session, whatever the cause.
+cannot be repeated in the session, whatever the cause. The exception is an installation the fee
+payer refused before signing: the backend then offers installation again, and the browser keeps the
+review and passes the reason on.
 
 | Reason | Meaning |
 | --- | --- |

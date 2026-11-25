@@ -70,9 +70,14 @@ export function deploymentFixture(change = () => {}, options = {}) {
     if (command === 'prepare-install-intent') return f.f.intent;
     assert.fail('unexpected authority command');
   };
+  // The policy's code is on the network only once an upload of it returned; the pinned code always is.
+  let stored = false;
+  const pinned = f.network.codePresent;
+  f.network.codePresent = async (hash) => (hash === artifact.wasmHash ? { present: stored, ledger: 123456 } : pinned(hash));
   f.network.upload = async (bytes, hash) => {
     assert.equal(bytes.toString(), 'retained artifact'); assert.equal(hash, artifact.wasmHash);
     f.calls.push('upload');
+    stored = true;
     return { hash: 'c'.repeat(64), ledger: 123456, trust: 'rpc_reported' };
   };
   f.network.create = async (hash, args, stage) => {

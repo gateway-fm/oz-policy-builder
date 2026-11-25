@@ -138,7 +138,9 @@ Keep these together, for each installation:
 - the **BuildManifest** of the generated policy (its `wasm_hash`, `spec_hash` and
   `normalized_input_hash`), from the page's generated-artifact panel;
 - the **DeploymentRecord** the deployment returns (`policyAddress`, `wasmHash`, `bindingSetHash`,
-  the upload and creation transaction hashes): the deployed code hash must equal the manifest's;
+  the upload and creation transaction hashes; after a deployment refused once its upload had returned,
+  the upload's receipt says `already_stored` and its hash is in the session journal): the deployed
+  code hash must equal the manifest's;
 - the **InstallationRecord** (transaction hash and ledger, rule ID, `policyCodeHash`, `specHash`,
   `bindingSetHash`, `authorityCommitment`, the verification run and its four layers, the live
   check's consent hash): it binds the installation to the deployment and, through the spec, to the

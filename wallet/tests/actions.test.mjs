@@ -20,6 +20,23 @@ test('account preview performs no writes and separately discloses funding and fe
   await assert.rejects(() => actions['confirm-account']({ id: preview.action.id }), /unavailable|refused/);
   assert.equal(calls.filter((call) => call === 'deploy-account').length, 1);
 });
+test('an account creation refused before anything left can be confirmed again; an uncertain one cannot', async () => {
+  for (const [name, refuseOnce, again] of [
+    ['the payer', (network) => { const fund = network.fundPayer; network.fundPayer = async () => { network.fundPayer = fund; throw Object.assign(new Error('refused'), { reason: 'payer_unfunded' }); }; }, true],
+    ['missing pinned code', (network) => { const code = network.codePresent; network.codePresent = async (hash) => { network.codePresent = code; return { present: false, ledger: 124 }; }; }, true],
+    ['the verifier\'s creation, before it was signed', (network) => { const create = network.create; network.create = async () => { network.create = create; throw Object.assign(new Error('refused'), { reason: 'fee_cap' }); }; }, true],
+    ['an uncertain creation', (network) => { network.create = async () => { network.spentStroops = '1000'; network.canSubmit = false; throw new Error('ambiguous'); }; }, false],
+  ]) {
+    const { actions, network, f } = setup();
+    refuseOnce(network);
+    const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+    await assert.rejects(() => actions['confirm-account']({ id: preview.action.id }), undefined, name);
+    const retry = actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+    if (!again) { await assert.rejects(() => retry, /refused/, name); continue; }
+    const result = await actions['confirm-account']({ id: (await retry).action.id });
+    assert.deepEqual(result.wallet, f.wallet, name);
+  }
+});
 for (const change of [{ id: xdr.ScVal.scvU32(8) }, { id: xdr.ScVal.scvU32(0), name: xdr.ScVal.scvU32(1) }]) {
 test(`wrong fresh owner ${change.name ? 'name type' : 'rule ID'} never triggers sample funding or returns a wallet`, async () => {
   const { actions, network, calls, f } = setup();
@@ -87,11 +104,44 @@ test('deployment consent retains exact artifact and a review selects the actual 
   await assert.rejects(() => f.actions['prepare-deploy']({ artifactId: f.artifactId }), /refused/);
 });
 test('failed deployment cannot become an implicit upload retry', async () => {
-  const f = deploymentFixture((value) => { value.network.upload = async () => { value.calls.push('upload'); throw new Error('ambiguous'); }; });
+  // An upload whose result is uncertain, as the network leaves it: signed and counted, no further write.
+  const f = deploymentFixture((value) => { value.network.upload = async () => {
+    value.calls.push('upload'); value.network.spentStroops = '1000'; value.network.canSubmit = false; throw new Error('ambiguous');
+  }; });
   const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
   await assert.rejects(() => f.actions['confirm-deploy']({ id: preview.action.id }));
   await assert.rejects(() => f.actions['prepare-deploy']({ artifactId: f.artifactId }), /refused/);
   assert.deepEqual(f.calls.filter((call) => call === 'upload'), ['upload']);
+});
+const unfunded = () => Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+test('a deployment refused before anything left can be confirmed again; stored code is not uploaded twice', async () => {
+  for (const [name, refuseOnce] of [
+    ['the payer, before the first write', (f) => { const fund = f.network.fundPayer; f.network.fundPayer = async () => { f.network.fundPayer = fund; throw unfunded(); }; }],
+    ['the upload, before it was signed', (f) => { const upload = f.network.upload; f.network.upload = async () => { f.network.upload = upload; throw unfunded(); }; }],
+    ['the creation, before it was signed, after the upload', (f) => { const create = f.network.create; f.network.create = async () => { f.network.create = create; throw unfunded(); }; }],
+  ]) {
+    const f = deploymentFixture(refuseOnce);
+    const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+    await assert.rejects(() => f.actions['confirm-deploy']({ id: preview.action.id }), (error) => error.reason === 'payer_unfunded', name);
+    const again = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+    const deployed = await f.actions['confirm-deploy']({ id: again.action.id });
+    assert.equal(deployed.policyAddress, f.policy, name);
+    assert.equal(f.calls.filter((call) => call === 'upload').length, 1, `${name}: the code is uploaded once`);
+    assert.equal(deployed.receipts.length, 2, name);
+    if (name.endsWith('after the upload')) assert.deepEqual(deployed.receipts[0], { status: 'already_stored', wasmHash: f.artifact.wasmHash });
+    else assert.equal(deployed.receipts[0].hash, 'c'.repeat(64), name);
+  }
+});
+test('a deployment whose creation may have left, or that failed after it, stays spent', async () => {
+  for (const [name, change] of [
+    ['an uncertain creation', (f) => { f.network.create = async () => { f.network.spentStroops = '1000'; f.network.canSubmit = false; throw new Error('ambiguous'); }; }],
+    ['a refusal after the creation returned', (f) => { f.toolchain.authority = async () => ({ binding_set_hash: 'not a hash' }); }],
+  ]) {
+    const f = deploymentFixture(change);
+    const preview = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+    await assert.rejects(() => f.actions['confirm-deploy']({ id: preview.action.id }), undefined, name);
+    await assert.rejects(() => f.actions['prepare-deploy']({ artifactId: f.artifactId }), /refused/, name);
+  }
 });
 test('authority intent cannot substitute a policy after the browser has retained the deployment', async () => {
   const f = deploymentFixture();

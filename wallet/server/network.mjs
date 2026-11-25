@@ -518,7 +518,8 @@ export class WalletNetwork {
       // Mainnet: every write is signed only when the operator's account can pay this transaction's fee
       // now. `fundPayer` checked the per-transaction cap once; an upload, held to its own larger cap,
       // can cost far more, and the account can be drawn down between writes. Refused here, nothing is
-      // journaled, counted or blocked, and the operator can fund the account and try again.
+      // journaled or counted and no submission is left uncertain, so the session can still write once the
+      // operator funds the account (the actions let such a refused step be confirmed again).
       if (this.#payer.operator) await this.#payerCovers(fee);
       this.#payer.signTransaction(assembled);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
