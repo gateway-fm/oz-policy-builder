@@ -296,8 +296,7 @@ export class WalletNetwork {
   get canSubmitRemoval() { return (this.#funded || this.#removalPayer) && !this.#ambiguous; }
   /**
    * The endpoint must serve the session's network, at protocol 30: another network refuses as
-   * `network_mismatch`, another protocol (mainnet before its upgrade to 30, for one) as
-   * `protocol_unsupported`, carrying the protocol it reported.
+   * `network_mismatch`, another protocol as `protocol_unsupported`, carrying the protocol it reported.
    */
   async assertNetwork() {
     const reported = await this.#server.getNetwork();

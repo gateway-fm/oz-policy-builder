@@ -333,11 +333,16 @@ test('mainnet readiness names each missing pinned Wasm with its upload command a
   assert.deepEqual(ready.pinned.find((p) => p.name === 'verifier'), { name: 'verifier', hash: WEBAUTHN_WASM, present: true });
   const account = ready.pinned.find((p) => p.name === 'account');
   assert.equal(account.present, false);
-  assert.equal(account.upload.command, `stellar contract upload --wasm ${dir}/${ACCOUNT_WASM}.wasm --network mainnet --source <your funded mainnet key>`);
+  // stellar-cli has no built-in mainnet RPC (`--network mainnet` fails): the owner names an endpoint. A
+  // placeholder, never the operator's rpcUrl, which may embed a key and would reach the browser.
+  const MAINNET_ARGS = `--rpc-url <your mainnet RPC endpoint> --network-passphrase '${Networks.PUBLIC}'`;
+  assert.equal(account.upload.command, `stellar contract upload --wasm ${dir}/${ACCOUNT_WASM}.wasm ${MAINNET_ARGS} --source <your funded mainnet key>`);
   assert.equal(account.upload.simulatedFeeStroops, null, 'no reproduced Wasm in the directory: no cost yet');
   assert.equal(uploads.length, 0);
   assert.equal(ready.helper.configured, false);
-  assert.match(ready.helper.instruction, /stellar contract deploy --wasm ozpb_atomic_live_helper\.wasm --network mainnet/);
+  assert.ok(ready.helper.instruction.includes(`stellar contract deploy --wasm ozpb_atomic_live_helper.wasm ${MAINNET_ARGS} --source`),
+    ready.helper.instruction);
+  assert.doesNotMatch(ready.helper.instruction, /--network mainnet/);
   assert.equal(ready.helper.uploadSimulatedFeeStroops, null, 'no reproduced helper Wasm in the directory: no cost yet');
   assert.deepEqual(ready.fees, { ...MAINNET_FEE_DEFAULTS, spentStroops: '0' });
   // The reproduced Wasm is read only when its SHA-256 is the pinned hash.
@@ -350,7 +355,10 @@ test('mainnet readiness names each missing pinned Wasm with its upload command a
   symlinkSync(join(dir, `${wasmHash}.wasm`), join(dir, `${'b'.repeat(64)}.wasm`));
   assert.equal(readPinnedWasm(dir, 'b'.repeat(64)), null, 'a symlink');
   assert.deepEqual({ ...uploadInstruction(MAINNET, null, wasmHash) }, { wasmPath: `<pinnedWasmDir>/${wasmHash}.wasm`,
-    command: `stellar contract upload --wasm <pinnedWasmDir>/${wasmHash}.wasm --network mainnet --source <your funded mainnet key>` });
+    command: `stellar contract upload --wasm <pinnedWasmDir>/${wasmHash}.wasm ${MAINNET_ARGS} --source <your funded mainnet key>` });
+  // Testnet keeps stellar-cli's built-in network.
+  assert.equal(uploadInstruction(WALLET_NETWORKS.testnet, null, wasmHash).command,
+    `stellar contract upload --wasm <pinnedWasmDir>/${wasmHash}.wasm --network testnet --source <your funded testnet key>`);
 });
 
 test('mainnet: a delegate is a key in memory whose account the owner funds; the wallet creates none', async () => {

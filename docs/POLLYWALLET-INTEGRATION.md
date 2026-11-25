@@ -350,7 +350,7 @@ live check, the second use and removal's verification read those events, and ste
 returns them only when the endpoint runs with `--preflight-enable-debug`; without them those steps
 refuse as `no_diagnostic_events`. The wallet never uploads pinned code itself: account creation refuses as
 `pinned_code_missing` while either is missing, and the readiness panel shows the exact command,
-`stellar contract upload --wasm <pinnedWasmDir>/<hash>.wasm --network mainnet --source <your funded mainnet key>`,
+`stellar contract upload --wasm <pinnedWasmDir>/<hash>.wasm --rpc-url <your mainnet RPC endpoint> --network-passphrase 'Public Global Stellar Network ; September 2015' --source <your funded mainnet key>`,
 with its simulated cost once the reproduced Wasm is at that path (reproduce the account Wasm with
 `OZPB_VERIFIED_ACCOUNT_WASM_OUT` and `scripts/verify-pinned-upstream.sh`). The generated policy is
 uploaded only by the deployment you confirm.
@@ -387,8 +387,10 @@ review; until then the checks that need it refuse as `delegate_unfunded`.
 on mainnet; `liveHelper` stays unset until you deploy it. The layer then reports the deployment
 steps: build `contracts/atomic-live-helper` with `stellar contract build --locked`, check that the
 Wasm's SHA-256 is the reviewed helper hash, run
-`stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>`
-and name the contract ID in `liveHelper`. With the reproduced helper Wasm at
+`stellar contract deploy --wasm ozpb_atomic_live_helper.wasm --rpc-url <your mainnet RPC endpoint> --network-passphrase 'Public Global Stellar Network ; September 2015' --source <your funded mainnet key>`
+and name the contract ID in `liveHelper`. stellar-cli has no built-in mainnet RPC (`--network mainnet`
+fails asking for an RPC provider), so both commands name an endpoint; the page shows a placeholder
+for it, never the backend's `rpcUrl`, which may carry an API key. With the reproduced helper Wasm at
 `<pinnedWasmDir>/<hash>.wasm`, the readiness panel also shows its upload's simulated cost. The
 check stays simulation only on mainnet: nothing it signs is submitted.
 

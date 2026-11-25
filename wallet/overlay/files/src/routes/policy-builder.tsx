@@ -72,7 +72,7 @@ const REFUSED: Record<string, string> = {
   grant_already_used: "the policy says this grant was already used, but not from this page: someone holding the automation key's signatures used it. Nothing was sent. Revoke the grant.",
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",
   network_mismatch: "the operator's RPC endpoint serves another network than this session's. Nothing was signed or sent; the operator must fix the backend configuration.",
-  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
+  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports. Nothing was signed or sent.",
   fee_cap: "this transaction could cost more than the fee cap the operator set for it. Nothing was signed or sent.",
   spend_cap: "this transaction could take the session past the spend cap the operator set, counting what earlier sessions in this work root spent. Nothing was signed or sent.",
   payer_unfunded: "the fee payer's account does not exist or cannot pay this transaction's fee. On mainnet, fund it from your own wallet (see Mainnet readiness); on testnet, Friendbot has not funded it yet. Then try again.",
