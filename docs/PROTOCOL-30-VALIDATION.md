@@ -42,9 +42,9 @@ lookup, but the files themselves are not authenticated ledger proofs.
 
 Historical Protocol-29 captures remain unchanged and are refused for current execution.
 Protocol 31 and muxed contract addresses remain unsupported. The off-chain worker still uses
-SDK 30.0.0-rc.1. The stable SDK 30.0.0 requires host 30.0.1, so moving to it first needs the
-[advisory exception](SECURITY-EXCEPTIONS.md) reassessed for that host, then these compatibility
-gates repeated.
+SDK 30.0.0-rc.1. The stable SDK 30.0.0 requires host 30.0.1 (as of 25 November 2026), so moving
+to it first needs the [advisory exception](SECURITY-EXCEPTIONS.md) reassessed for that host, then
+these compatibility gates repeated.
 
 This validation does not change the crypto-bigint exception or its expiry. Passing the audited
 dependency gate does not mean that dependency has been fixed; see

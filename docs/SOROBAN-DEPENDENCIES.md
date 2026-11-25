@@ -118,8 +118,9 @@ plain-address constraints do not normalize them into an allowed address.
 The worker's release-candidate SDK is off-chain only. The generated policy/helper SDK 28.0.0,
 OpenZeppelin pins, CLI 27.0.0 build pin and recognized account/verifier Wasm are unchanged.
 The stable SDK 30.0.0 requires host 30.0.1, outside the inventory reviewed for the
-[advisory exception](SECURITY-EXCEPTIONS.md); the worker moves to it once that exception is
-reassessed for the new host, and its compatibility gates are then repeated. Current
+[advisory exception](SECURITY-EXCEPTIONS.md). Moving the worker to it needs that exception
+reassessed for the new host and its compatibility gates repeated; until then it stays on the
+release candidate. Current
 contracts continue to run on protocol 30; the host migration does not upgrade installed code.
 The wallet backend/harness use JavaScript SDK 17.4.0; the applied Pollywallet root is pinned
 with its lockfile to SDK 16.4.1, which also decodes protocol-30 headers.
@@ -152,7 +153,7 @@ account or policy is automatically upgraded by this rollout.
 ## Security follow-up
 
 This update does **not** resolve [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
-As checked on 28 October, 11 November and 25 November 2026, the published Soroban hosts through 30.0.1 still require
+As checked through 30.0.0 on 28 October and 11 November, and through 30.0.1 on 25 November 2026, the published Soroban hosts still require
 elliptic-curve 0.13 / crypto-bigint 0.5.5. The advisory's fixed range begins at 0.7.6;
 a direct update to that version cannot satisfy the old dependency requirement. No unsupported
 cryptographic fork is introduced here.
