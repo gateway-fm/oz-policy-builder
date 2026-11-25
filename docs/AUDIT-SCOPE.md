@@ -55,7 +55,7 @@ Read before scoping findings:
 
 ## Components in scope
 
-Counted on 19 November 2026 from the tree that carries this table. *Non-test* is every non-blank
+Counted on 25 November 2026 from the tree that carries this table. *Non-test* is every non-blank
 line of tracked `.rs` and `.mjs` files that is not a `//` comment (nor a `/*` or `*` comment line
 in JavaScript) and is not test code. *Test* is the same measure over `tests/` directories,
 `#[cfg(test)]` modules, files named `test.rs`, `tests.rs`, `*_tests.rs` or `test_support.rs`, and
@@ -104,7 +104,7 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Code generator | `crates/codegen` (`src/lib.rs`, `src/render.rs`) | The only source of generated statements ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable), ring 1), the render-safe literal types, and the `contractmeta!` provenance entries (`render::MetaValue`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2) | 1,750 | 2,855 |
 | Generated policies | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy` | The on-chain artifact, committed exactly as codegen emits it; the last two are test fixtures, a transfer whose amount is bounded on both sides and a rule with two tuples of one function | 1,181 | tested below |
 | Atomic live helper | `contracts/atomic-live-helper` | On-chain contract the owner signs into for the [live-enforcement check](ATOMIC-LIVE-HELPER.md) | 163 | 50 |
-| Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,823 | 3,177 |
+| Registry | `crates/registry` | Governance roots, rollback and equivocation resistance, capabilities by exact hash, the account method inventory; the custodian, replay and monitoring logic in `src/governance.rs` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | 1,828 | 3,213 |
 | Call-surface core | `crates/call-surface-core` | The install-time authority verdict | 1,101 | 1,509 |
 | Synthesizer | `crates/synthesizer` | Exact-by-default decisions, adapters, composition checks | 1,752 | 2,404 |
 | PolicySpec | `crates/policy-spec` | Schema, validation typestate, signer-set hash | 1,357 | 1,473 |
@@ -113,7 +113,7 @@ and the whole set runs weekly (`scripts/mutation-test.sh`, `.github/workflows/mu
 | Contract tests | `contracts/differential` | Differential, generated-suite (the two-payment cross products included), event, TTL and pinned-account tests of the contracts above | — | 6,981 |
 | Pinned OpenZeppelin account | `examples/multisig-smart-account/account` at v0.7.3 | The account every grant is installed into; see below | 57 | not counted |
 | Other pinned OpenZeppelin wrappers | `examples/multisig-smart-account/{spending-limit-policy,ed25519-verifier,webauthn-verifier}` at v0.7.2 | Recognized by exact hash; the spending limit is composed in the [subscription walkthrough](WALKTHROUGH-SEP41.md) | 112 | not counted |
-| **Tier 1** | | | **10,514** | **19,780** |
+| **Tier 1** | | | **10,519** | **19,816** |
 
 **The pinned account is outside OpenZeppelin's own audit.** Their v0.7.0 audit report (in the
 `audits/` directory of their repository) lists only `packages/` files in scope. The account this
@@ -134,13 +134,13 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | Recorder core | `crates/recorder-core` | Authorizer selection, evidence trust derivation, attribution | 1,808 | 2,679 |
 | RPC acquisition | `crates/source-rpc`: `src/account_*.rs`, `checked_account_observation.rs`, `classic_account.rs`, `contract_code.rs`, `contract_data.rs`, `ledger_witness.rs`, `assembly.rs`, `policy_state_capture.rs`, `lib.rs`; `tests/{account_storage_conformance,rpc_conformance,mainnet_corpus}.rs` | The account scan behind the authority check, transaction recording (replayed over ten verbatim mainnet transactions), the reads behind install assembly and the live policy check | 4,777 | 6,966 |
 | Toolkit operations | `crates/toolkit`: `src/lib.rs`, `verification.rs`, `install_intent.rs`, `install_assembly.rs`, `call_surface.rs`, `call_surface_live.rs`, `authority_text.rs`, `installed_grant.rs`, `policy_check.rs`; tests in `src/test_support.rs`, `src/target_adapter_tests.rs`, `tests/` | Trust lowering at the synthesis boundary, recognition of generated artifacts by rebuilding them, install intent and unsigned assembly | 3,419 | 5,041 |
-| Wallet validators | `wallet/shared` | Independent re-validation of assembly, consent, revocation and replacement, against the network the session is bound to | 1,864 | 11,917 |
-| Wallet backend install path | `wallet/server/`: `actions.mjs`, `install.mjs`, `network.mjs`, `live-signing.mjs`, `http.mjs`, `session.mjs`, `tool.mjs`, `fee-payer.mjs` | Consent, signature collection, submission, event-verified records; on mainnet, the operator's fee-payer key and the reading of the delegate's key file | 2,535 | in the wallet validators row (all of `wallet/tests`) |
-| Wallet mainnet configuration, delegate key and live check | `wallet/server/`: `config.mjs`, `pinned-code.mjs`, `live-check.mjs`, `native-execution.mjs`, `native-protocol.mjs` | The operator configuration: the development root refused on mainnet, the persisted checkpoint and the registry floor, the fee caps and their ceilings. The checks of the pinned account and verifier code on the network. The live check, whose owner and delegate signatures are real authorizations on the session's network until they expire, and on mainnet are signed with the agent's own key. The delegate key's three signing capabilities and the guard that keeps offline signatures off every live network | 749 | in the wallet validators row |
+| Wallet validators | `wallet/shared` | Independent re-validation of assembly, consent, revocation and replacement, against the network the session is bound to | 1,864 | 12,492 |
+| Wallet backend install path | `wallet/server/`: `actions.mjs`, `install.mjs`, `network.mjs`, `live-signing.mjs`, `http.mjs`, `session.mjs`, `tool.mjs`, `fee-payer.mjs` | Consent, signature collection, submission, event-verified records; on mainnet, the operator's fee-payer key and the reading of the delegate's key file | 2,588 | in the wallet validators row (all of `wallet/tests`) |
+| Wallet mainnet configuration, delegate key and live check | `wallet/server/`: `config.mjs`, `pinned-code.mjs`, `live-check.mjs`, `native-execution.mjs`, `native-protocol.mjs` | The operator configuration: the development root refused on mainnet, the persisted checkpoint and the registry floor, the fee caps and their ceilings. The checks of the pinned account and verifier code on the network. The live check, whose owner and delegate signatures are real authorizations on the session's network until they expire, and on mainnet are signed with the agent's own key. The delegate key's three signing capabilities and the guard that keeps offline signatures off every live network | 757 | in the wallet validators row |
 | Production endpoint's HTTP boundary | `crates/mcp-server`: `src/http.rs`, `src/tool_limits.rs`, `src/preflight.rs`; `tests/{mcp_http,mcp_stdio_preflight}.rs` | The released self-hosted endpoint ([self-hosting](SELF-HOSTING.md#production-release)): bearer authentication before any quota is spent or body read, the request and per-tool quotas, the body bound, allowed hosts, the RPC allowlist every configured source must pass at startup, and the hosted refusal of signed envelopes ([G12](MAINNET-GATES.md#g12-hosted-processing)) | 470 | 1,040 |
 | Build runner and worker isolation | `crates/build-runner`, `deployment/worker-launcher.py` (tested by `scripts/test-worker-launcher.py` and `scripts/test-worker-containment.py`) | Bounded builds; the BuildManifest (`build-manifest/v2`) and its `producer` record (`build.rs`, `src/toolkit_source.rs`); reconciliation against the Wasm's own metadata; [disposable workers](ISOLATED-BUILDS.md) | 2,622 | 2,460 |
-| Registry governance CLI | `crates/cli/src/registry.rs`, `src/key_file.rs`; `tests/registry_governance_cli.rs` | `ozpb registry`: custodian keys in 0600 files, successor, signing, combining and verification, and the monitor whose exit status is the alert | 513 | 880 |
-| **Tier 2** | | | **18,757** | **30,983** |
+| Registry governance CLI | `crates/cli/src/registry.rs`, `src/key_file.rs`; `tests/registry_governance_cli.rs` | `ozpb registry`: custodian keys in 0600 files, successor, signing, combining and verification, and the monitor whose exit status is the alert | 523 | 929 |
+| **Tier 2** | | | **18,828** | **31,607** |
 
 ### Informational — not in scope
 
@@ -152,9 +152,9 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 | `crates/harness` | 1,198 | 1,048 | Derives the permit/deny suite: evidence, not enforcement |
 | `crates/source-bundle` | 47 | 198 | Import adapter whose output is `self_supplied` |
 | Rest of `crates/source-rpc` (target and footprint capture, target Wasm, preflight; `tests/{target_capture_conformance,protocol30_headers}.rs`) | 1,694 | 2,672 | Dry-run and preflight evidence |
-| Rest of `crates/toolkit` (dry run, its report, preflight, capture, publication) | 2,002 | 1,662 | Same |
+| Rest of `crates/toolkit` (dry run, its report, preflight, capture, publication) | 2,002 | 1,694 | Same |
 | `execution-runtime` | 2,577 | 2,133 | Offline native worker for the account-Wasm layer |
-| Rest of `wallet/server` | 1,004 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
+| Rest of `wallet/server` | 1,019 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
 | `scripts/release-artifacts.py` (tested by `scripts/test-release-artifacts.py`), run by `.github/workflows/release-binaries.yml` | 341 | 343 | Packages the release binaries, exports the MCP wire contract and writes `SHA256SUMS`; the workflow, not counted, attests and attaches them ([VERSIONING.md](VERSIONING.md#the-release-gate)). CI also runs its export against the built server and fails when it differs from the committed `docs/wire-contract.json` ([keeping the snapshot current](VERSIONING.md#keeping-the-snapshot-current)) |
 | `testnet-harness`, `scripts/demo-tranche1.sh`, `skills/`, `wallet/overlay`, docs | — | — | Testnet demonstration, agent instructions, wallet UI |
 | `contracts/authorized-target-fixture`, `tests/support` | — | — | Test-only: the target contract the pinned-account authorization test (`scripts/test-pinned-account-authorization.sh`) builds and calls through the account, and the RPC stubs the CLI and MCP tests share; in no release artifact |
