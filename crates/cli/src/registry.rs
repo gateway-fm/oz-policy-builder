@@ -130,7 +130,9 @@ pub struct VerifyArgs {
     #[arg(long, conflicts_with = "replay")]
     checkpoint: Option<PathBuf>,
     /// With --signed: the minimum acceptable version. A checkpoint (given, or the roots file's)
-    /// older than it is refused with E_REGISTRY_ROLLBACK, as consumers refuse it.
+    /// older than it is refused with E_REGISTRY_ROLLBACK, as consumers refuse it. Not read from
+    /// OZPB_REGISTRY_MIN_VERSION: a floor belongs to one roots file, and this command takes its
+    /// roots file on the command line, never from the environment.
     #[arg(long, conflicts_with = "replay", default_value_t = 0)]
     min_version: u64,
     /// Trusted current time (Unix seconds); defaults to the system clock.

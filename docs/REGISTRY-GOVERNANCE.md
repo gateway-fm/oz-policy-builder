@@ -163,7 +163,12 @@ and the head must be valid now (`--at <unix seconds>` checks a scheduled one). O
 be checked against a consumer's checkpoint with `verify --signed <file> --checkpoint <file>`
 (without `--checkpoint`, the roots file's own). Add `--min-version <floor>` to check it under the
 consumer's floor as well: a checkpoint older than the floor is refused with `E_REGISTRY_ROLLBACK`,
-as a consumer configured that way refuses every request.
+as a consumer configured that way refuses every request. Unlike `--registry-min-version`, it has
+no environment fallback, and no `ozpb registry` command reads its roots from
+`OZPB_REGISTRY_ROOTS_FILE` either: a floor belongs to one roots file and network, these commands
+take theirs on the command line — two different roots files across a
+[rotation](#rotation-lost-and-compromised-keys) — and the environment holds whichever deployment
+the shell is configured for. Pass the floor that goes with the roots file you name.
 
 ## Publishing
 
