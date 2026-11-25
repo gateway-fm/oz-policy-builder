@@ -402,6 +402,17 @@ operatorTest('account preview: the owner funds the account; the caps are shown b
   assert.deepEqual(calls.filter((call) => Array.isArray(call) && call[0] === 'code').map((call) => call[1]), [ACCOUNT_WASM, WEBAUTHN_WASM]);
 });
 
+test('mainnet is owner-funded by its network alone: a network that does not say so is still treated as operator-funded', async () => {
+  // No `operatorFunded` reported (a mainnet WalletNetwork always is; this one does not say): mainnet has no Friendbot.
+  const { actions, calls, f } = setup({ network: { profile: MAINNET, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0' } });
+  const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+  assert.equal(preview.summary.ownerFunds, true);
+  assert.equal(preview.summary.sampleFundingStroops, '0');
+  assert.equal((await actions.status({})).feePayer.ownerFunded, true);
+  await actions['confirm-account']({ id: preview.action.id });
+  assert.equal(calls.includes('fund-account'), false, 'the wallet moves no XLM of the fee payer\'s');
+});
+
 operatorTest('pinned account or verifier code missing on the network is refused, never uploaded', async (_t, network) => {
   for (const missing of [ACCOUNT_WASM, WEBAUTHN_WASM]) {
     const { actions, calls, f } = operatorActions(network, { codePresent: async (hash) => ({ present: hash !== missing, ledger: 100 }) });
