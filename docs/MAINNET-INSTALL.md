@@ -7,22 +7,27 @@ submits a mainnet transaction for you, and nothing here commits anyone to runnin
 
 ## Prerequisites
 
-**Install from the 1.0.0 release.** It comes last in a fixed order: the audit and OpenZeppelin's
-review of a frozen revision, the remediation of their findings, then the mainnet registry's key
-ceremony, which can sign only once the audit's reference exists, the owner's acceptance of the
-milestone's deviations, and then the release, which carries the signed mainnet head
-([the order for 1.0.0](VERSIONING.md#the-order-for-100)). Until then **A production registry**
-below cannot be met. Take from that release the toolkit checkout the wallet is applied from, the
-binaries, and the signed head, `roots.json` and checkpoint attached to it.
+**Install from the `1.0.0-rc.N` release candidate.** It comes in a fixed order
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)): OpenZeppelin's review of a frozen
+revision and their documented sign-off, the owner's acceptance of the milestone's deviations, the
+mainnet registry's key ceremony, whose template-pack review reference cites that sign-off, and
+the release candidate, which carries the signed mainnet head. The external audit of the same
+revision runs alongside; its report and remediation lead to 1.0.0, not to this installation.
+Until the release candidate exists **A production registry** below cannot be met. Take from it
+the toolkit checkout the wallet is applied from, the binaries, and the signed head, `roots.json`
+and checkpoint attached to it. If a remediated audit finding later changes the installed policy's
+code or the shape of the grant, the installation is repeated from 1.0.0, at about the
+[fee table's](#every-mainnet-write-in-order-with-its-simulated-fee) cost again.
 
 **Check that the records which precede the installation are in that release's tree.** Do not
-install until the remediation log's [report table](AUDIT-REMEDIATION.md#report) has the audited
-revision's report and no row of its [findings table](AUDIT-REMEDIATION.md#findings) is `open`, the
-[review record](OZ-REVIEW-PACKAGE.md#review-record) has OpenZeppelin's sign-off row, and every
-deviation under
+install until the [review record](OZ-REVIEW-PACKAGE.md#review-record) has OpenZeppelin's sign-off
+row and every deviation under
 [Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
 has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here) or,
-for a gate's deviation, its gate is closed. The wallet does not check them.
+for a gate's deviation, its gate is closed. The wallet does not check them. The audit's report
+in the remediation log's [report table](AUDIT-REMEDIATION.md#report), with no row of its
+[findings table](AUDIT-REMEDIATION.md#findings) `open`, is required for 1.0.0 and for the
+milestone's submission, not for this installation.
 
 **Commands that name mainnet.** stellar-cli 27.0.0 has no RPC URL for its built-in `mainnet`
 network: `--network mainnet` fails with `Invalid URL Bring Your Own: …`. Every mainnet command
@@ -269,7 +274,7 @@ custody model through the same code as mainnet: your own fee payer key, which th
 funds and which moves no XLM; the caps, with mainnet's defaults and ceilings, counted across the
 work root; the delegate key file, named in the consents as the agent's key; the pinned-code
 directory and the readiness panel. One run of it costs nothing and needs no mainnet write, so it
-can come before the audit's sign-off.
+can come before OpenZeppelin's sign-off and the release candidate.
 
 What stays testnet's, and so is not rehearsed: the passphrase and the endpoint; the delegate's
 account, which Friendbot creates on testnet if it is missing (it never funds the fee payer), where

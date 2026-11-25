@@ -55,8 +55,9 @@ fn derived() -> RegistrySnapshot {
     // The development text claims an audit that has not happened; custodians sign every word.
     for template in snapshot.templates.values_mut() {
         template.review_reference = format!(
-            "{PENDING} the reference of the completed security review that covers this template \
-             family's code generation. No review is referenced yet."
+            "{PENDING} the reference of OpenZeppelin's documented review of the code this template \
+             family generates: its sign-off row in the review record \
+             (docs/OZ-REVIEW-PACKAGE.md#review-record). No review is referenced yet."
         );
     }
     snapshot
@@ -120,7 +121,9 @@ fn the_draft_is_a_mainnet_genesis_with_only_cross_network_code() {
 
 /// Custodians sign every word of the draft, so it claims no review that has not happened. The
 /// development entries' "audited with the template pack" is such a claim; the template pack's
-/// reference is pending text the custodians replace with the real review's before signing.
+/// reference is pending text the custodians replace with the real review's before signing. That
+/// review is OpenZeppelin's of the generated code, whose sign-off comes before the ceremony; the
+/// audit's report may come after it (`docs/VERSIONING.md`, the order for 1.0.0).
 #[test]
 fn the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in() {
     let draft = committed();
@@ -155,6 +158,10 @@ fn the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in() {
     }
     let template = &draft.templates["policy-templates/scope@1"].review_reference;
     assert!(template.starts_with(PENDING), "{template}");
+    assert!(
+        template.contains("OZ-REVIEW-PACKAGE.md#review-record"),
+        "the template pack's reference awaits OpenZeppelin's review record: {template}"
+    );
     // And so the draft as committed cannot be signed, combined or verified by accident.
     assert!(ozpb_registry::governance::require_no_pending_review(&draft).is_err());
 }

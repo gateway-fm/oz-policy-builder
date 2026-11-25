@@ -153,7 +153,7 @@ No change to generated code is planned for this milestone beyond the upstream it
 Encoded-literal rendering, which would embed addresses as encoded bytes and change every
 generated source and Wasm hash, stays deferred to template-pack v2
 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). The audited revision is the freeze commit
-[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names when the audit starts.
+[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names; this review and the external audit both start on it.
 
 Already in this tree: the `contractmeta!` provenance above, which changed every generated source
 and Wasm hash ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1); BuildManifest
@@ -176,7 +176,10 @@ wallet support described in [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md).
 
 Records OpenZeppelin's documented sign-off on generated-code quality when it is given, one row
 per review, with a link to where the review itself can be read. An empty table means no review
-has been recorded.
+has been recorded. The sign-off row comes before the mainnet installation: the mainnet registry's
+template pack cites it as its review reference, and the release candidate the installation is
+made from carries it, without waiting for the audit's report
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
 
 | Date | Reviewer | Scope | Outcome | Link |
 | --- | --- | --- | --- | --- |

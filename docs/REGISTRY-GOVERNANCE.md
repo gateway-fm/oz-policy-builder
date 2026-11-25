@@ -70,9 +70,13 @@ What the code enforces, independent of this procedure:
 `previous_root` null), reviewed entry by entry. Its `valid_from_unix` and `expires_at_unix` are set
 by the custodians before anyone signs: the interval is part of what they sign
 ([how long](#validity-expiry-and-the-end-of-the-grant-period)). So is every review reference: one
-still beginning `PENDING, replace before signing:` — the mainnet draft's template pack carries
-one — is replaced with the completed review's reference first, because `sign` refuses a snapshot
-that holds one, as `combine` and `verify` do.
+still beginning `PENDING, replace before signing:` is replaced with the completed review's
+reference first, because `sign` refuses a snapshot that holds one, as `combine` and `verify` do.
+The mainnet draft's template pack carries one, which names OpenZeppelin's documented review of
+the generated code ([review record](OZ-REVIEW-PACKAGE.md#review-record)), so the mainnet ceremony
+signs once that sign-off and the owner's acceptance are recorded, without waiting for the audit.
+If the audit's remediation changes the template pack, a successor version adds the audit report
+to that reference ([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
 
 **Successor.** Every later version is built from the published parent and a declared change set:
 

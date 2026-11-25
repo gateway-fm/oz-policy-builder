@@ -59,7 +59,7 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
 | G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **open** | [G12](#g12-hosted-processing) | Open for the release's endpoint, the self-hosted HTTP server: a static check holds the package's log settings, but no test drives the endpoint and reads what it retains. Also: builds are isolated from the API only in worker mode, accepted on the operator's host |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
-| G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree |
+| G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree. The one mainnet installation precedes it, a deviation for the owner's acceptance ([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)) |
 
 ## How the evidence blocks are read
 
@@ -651,4 +651,8 @@ authorization-to-install path: components, trust boundaries, threat model, invar
 limits. What closes the gate is the audit report for a frozen revision, with every finding's
 remediation or accepted risk, and OpenZeppelin's review of the generated code
 ([review package](OZ-REVIEW-PACKAGE.md)). No audit report is in this tree; the tests above are
-evidence for an auditor, not a substitute.
+evidence for an auditor, not a substitute. OpenZeppelin's sign-off comes before the milestone's
+one mainnet installation, the audit's report and remediation before 1.0.0, so the installation
+is made before this gate closes, a deviation stated for the owner's acceptance
+([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance),
+[the order for 1.0.0](VERSIONING.md#the-order-for-100)).
