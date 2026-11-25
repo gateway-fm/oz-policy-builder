@@ -13,7 +13,8 @@
 import { randomBytes } from 'node:crypto';
 import { Account, Address, Operation, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
 import { freezeCopy } from '../shared/approval.mjs';
-import { stroopsText } from '../shared/networks.mjs';
+import { WALLET_NETWORKS, stroopsText } from '../shared/networks.mjs';
+import { stellarNetworkArgs } from './pinned-code.mjs';
 import { installCall } from '../shared/assembly.mjs';
 import { LIVE_CASES, LIVE_CONSENT_MIN_LEDGERS, LIVE_HELPER_WASM, LIVE_LABELS, LIVE_RUN_MIN_LEDGERS, LIVE_SIGNATURE_LEDGERS, delegateHolder,
   checkLiveOwnerEntry, consentDisplay, liveCases, liveShape, statementHash } from '../shared/live-consent.mjs';
@@ -32,7 +33,8 @@ export const HELPER_DEPLOY = Object.freeze({
     + '`liveHelper`.',
   mainnet: 'Mainnet has none until the owner deploys the reviewed helper: build contracts/atomic-live-helper with `stellar contract '
     + `build --locked\`, check its SHA-256 is ${LIVE_HELPER_WASM}, then run \`stellar contract deploy --wasm `
-    + 'ozpb_atomic_live_helper.wasm --network mainnet --source <your funded mainnet key>` and name the contract ID in `liveHelper` '
+    + `ozpb_atomic_live_helper.wasm ${stellarNetworkArgs(WALLET_NETWORKS.mainnet)} --source <your funded mainnet key>\` and name `
+    + 'the contract ID in `liveHelper` '
     + '(docs/POLLYWALLET-INTEGRATION.md#mainnet-sessions). Installation needs this layer, so it stays unavailable until then.',
 });
 const refuse = () => { throw new Error('live check refused; prepare it again'); };

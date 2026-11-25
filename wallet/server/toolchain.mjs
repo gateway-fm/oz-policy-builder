@@ -28,7 +28,8 @@ export const REGISTRY_MONITOR = Object.freeze({
     action: 'nothing loads it yet; keep the current version until it starts, and check the start date was intended' }),
   4: Object.freeze({ status: 'expires_soon', meaning: 'the head expires within the window', action: 'ask the custodians for a successor' }),
   5: Object.freeze({ status: 'expired', meaning: 'the head has expired', action: 'synthesis and checks now refuse it; ask the custodians for a successor' }),
-  6: Object.freeze({ status: 'revoked', meaning: 'a watched hash is revoked', action: 'the emergency-removal path: revoke the grant, or move the funds' }),
+  6: Object.freeze({ status: 'revoked', meaning: 'a watched hash or template family is revoked',
+    action: 'the emergency-removal path: revoke the grant, or move the funds' }),
   1: Object.freeze({ status: 'log_unverifiable', meaning: 'the published log cannot be verified against the checkpoint',
     action: 'treat as an incident: a fork, an equivocation, a rollback, or a new version signed under roots you have not pinned' }),
 });
@@ -51,6 +52,8 @@ const rootPolicy = (error) => (error?.code === REGISTRY_ROOT_POLICY ? REGISTRY_R
 // `capture-target` codes that name the call's own outcome rather than an endpoint fault.
 const TARGET_CODES = Object.freeze(['E_TARGET_REFUSED', 'E_TARGET_ARCHIVED']);
 const integer = (n, low, high) => Number.isSafeInteger(n) && n >= low && n <= high;
+/** A template family name by the registry's own rule (`validate_template_family`). */
+const FAMILY = /^[A-Za-z0-9_./@-]{1,128}$/;
 const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const display = (value) => JSON.parse(JSON.stringify(value, (_key, part) => typeof part === 'bigint' ? part.toString() : part));
 const save = (path, body) => writeFileSync(path, body, { mode: 0o600, flag: 'wx' });
@@ -270,18 +273,31 @@ export class WalletToolchain {
 
   /**
    * `ozpb registry monitor` against the operator's published registry log (`registryPublishedPath`)
-   * and the checkpoint in the pinned roots, watching `wasmHashes`: `{ status, exit, meaning, action,
-   * headVersion, expiresAtUnix, revoked }`, or `{ status: 'not_configured' }`. A log the CLI says
-   * cannot be verified (exit 1 naming a registry fault), or a report whose status disagrees with its
-   * exit status, is `log_unverifiable`: an incident. A run that reached no verdict (no CLI, a timeout,
-   * a refused root policy, any other failure) is `monitor_unavailable`.
+   * and the checkpoint in the pinned roots, watching `wasmHashes` (`--wasm-hash`) and the template
+   * families in `templates` (`--template`: a generated policy has no registry entry of its own, so its
+   * family is what is revoked for it): `{ status, exit, meaning, action, headVersion, expiresAtUnix,
+   * revoked }`, each revoked item `{ watched, capability, reason, effectiveVersion }` with `watched`
+   * as the CLI names it, `{ code }` or `{ template_family }`; or `{ status: 'not_configured' }`. A log
+   * the CLI says cannot be verified (exit 1 naming a registry fault), or a report whose status
+   * disagrees with its exit status or with its revocations, or whose revocations name nothing this
+   * call watched, is `log_unverifiable`: an incident. A run that reached no verdict (no CLI, a timeout, a refused root
+   * policy, a watch item the head does not know, any other failure) is `monitor_unavailable`.
    */
-  async registryMonitor({ wasmHashes }) {
+  async registryMonitor({ wasmHashes, templates = [] }) {
     if (this.#config.registryPublishedPath === null) return freezeCopy({ status: 'not_configured' });
-    if (!Array.isArray(wasmHashes) || !wasmHashes.length || !wasmHashes.every((h) => HASH.test(h))) refuse();
+    if (!Array.isArray(wasmHashes) || !wasmHashes.length || !wasmHashes.every((h) => HASH.test(h))
+      || !Array.isArray(templates) || !templates.every((family) => typeof family === 'string' && FAMILY.test(family))) refuse();
     const args = ['registry', 'monitor', '--published', this.#config.registryPublishedPath, '--registry-roots',
       join(this.#root, 'registry-roots.json'), '--network', this.#network.passphrase, '--expiry-window-days', '14',
-      ...wasmHashes.flatMap((h) => ['--wasm-hash', h])];
+      ...wasmHashes.flatMap((h) => ['--wasm-hash', h]), ...templates.flatMap((family) => ['--template', family])];
+    // `RevokedCapability.watched`, serde's external tag: exactly one of the two, naming an item watched here.
+    const watched = (item) => {
+      const keys = item && typeof item === 'object' && !Array.isArray(item) ? Object.keys(item) : [];
+      if (keys.length !== 1) return null;
+      if (keys[0] === 'code') return wasmHashes.includes(item.code) ? { code: item.code } : null;
+      if (keys[0] === 'template_family') return templates.includes(item.template_family) ? { template_family: item.template_family } : null;
+      return null;
+    };
     let ran;
     try {
       ran = await this.#runner(this.#config.executable, args, { env: this.#config.buildEnvironment, timeoutMs: 120_000,
@@ -292,9 +308,13 @@ export class WalletToolchain {
       const report = parseJsonExact(ran.output);
       if (!known || ran.status === 1 || report?.schema !== 'registry-monitor/v1' || report.status !== known.status
         || !Array.isArray(report.revoked) || typeof report.head?.version !== 'string') return unverifiable();
+      const revoked = report.revoked.map((r) => ({ watched: watched(r?.watched), capability: r?.capability, reason: r?.reason,
+        effectiveVersion: r?.effective_version }));
+      // The CLI's status is `revoked` exactly when it lists a revocation.
+      if (revoked.some((r) => r.watched === null || typeof r.capability !== 'string' || typeof r.reason !== 'string'
+        || typeof r.effectiveVersion !== 'string') || (known.status === 'revoked') !== (revoked.length > 0)) return unverifiable();
       return freezeCopy({ status: known.status, exit: ran.status, meaning: known.meaning, action: known.action,
-        headVersion: report.head.version, expiresAtUnix: String(report.expires_at_unix),
-        revoked: report.revoked.map((r) => ({ wasm_hash: r.wasm_hash, capability: r.capability, reason: r.reason })) });
+        headVersion: report.head.version, expiresAtUnix: String(report.expires_at_unix), revoked });
     } catch { return unverifiable(); }
   }
 

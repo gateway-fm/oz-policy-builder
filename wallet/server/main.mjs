@@ -29,7 +29,7 @@ export async function networkPreflight(network) {
   try { await network.assertNetwork(); return null; } catch (error) {
     if (error?.reason === 'protocol_unsupported') {
       return `The RPC endpoint reports protocol ${error.protocolVersion ?? 'unknown'} for ${network.profile.name}; this wallet runs on `
-        + `protocol 30 only. A network still on an earlier protocol is refused until its validators have upgraded to 30.`;
+        + `protocol 30 only.`;
     }
     if (error?.reason === 'network_mismatch') {
       return `The RPC endpoint does not serve ${network.profile.name}, the network this session was configured for (operator \`network\`).`;
