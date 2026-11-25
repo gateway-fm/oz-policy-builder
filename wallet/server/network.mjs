@@ -430,6 +430,12 @@ export class WalletNetwork {
     if (!(await this.payerAccount()).exists) refuse({ reason: 'payer_unfunded' });
     this.#removalPayer = true;
   }
+  /**
+   * Refuses `payer_unfunded` unless the fee payer can pay `stroops` now: on mainnet the operator's account
+   * must spend it above its reserve; testnet's disposable payer, which Friendbot funds, is not read. Asked
+   * before the owner consents to, or signs for, a write the payer will pay for.
+   */
+  async payerCovers(stroops) { if (this.#payer.operator) await this.#payerCovers(stroops); }
   /** Mainnet: the operator's account can spend `fee` above its reserve now. */
   async #payerCovers(fee) {
     const account = await this.payerAccount();

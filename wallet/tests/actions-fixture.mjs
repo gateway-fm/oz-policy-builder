@@ -19,6 +19,7 @@ export function setup({ native = null, live = null, delegates, network: override
     assertNetwork: async () => { calls.push('network'); },
     codePresent: async (hash) => { calls.push(['code', hash]); return { present: true, ledger: 124 }; },
     fundPayer: async () => { calls.push('fund'); },
+    payerCovers: async () => {},
     fundRemoval: async () => { calls.push('fund-removal'); },
     ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
     latestLedger: async () => 123,

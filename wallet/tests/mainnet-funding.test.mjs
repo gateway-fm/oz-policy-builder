@@ -475,6 +475,34 @@ test('mainnet: every write is signed only when the operator account can pay its 
   assert.equal(call.network.spentStroops, '0');
 });
 
+test('payerCovers: on mainnet the operator account must be able to spend the amount now; testnet\'s disposable payer is not read', async (t) => {
+  const f = mainnet(t, { balance: 10_020_000n });
+  await f.network.payerCovers(20_000);
+  await assert.rejects(() => f.network.payerCovers(20_001), (error) => error.reason === 'payer_unfunded');
+  await assert.rejects(() => mainnet(t, { payerFunded: false }).network.payerCovers(1), (error) => error.reason === 'payer_unfunded');
+  const testnet = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: 'https://rpc.example/', journalRoot: scratch(t),
+    server: new Proxy({}, { get: () => () => assert.fail('nothing is read') }) });
+  await testnet.payerCovers(10n ** 18n);
+});
+
+test('mainnet deployment is refused before consent when the operator account cannot pay the upload and the policy\'s creation', async () => {
+  const cost = '5100';
+  for (const [spendable, refused] of [[10_005_099n, true], [10_005_100n, false]]) {
+    const asked = [];
+    const f = deploymentFixture(() => {}, { network: { profile: MAINNET, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0',
+      uploadCost: async () => ({ resourceFeeStroops: cost, feeStroops: cost, ledger: 100 }),
+      payerCovers: async (stroops) => {
+        asked.push(BigInt(stroops));
+        if (BigInt(stroops) > spendable) throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+      } } });
+    const prepared = f.actions['prepare-deploy']({ artifactId: f.artifactId });
+    if (refused) await assert.rejects(() => prepared, (error) => error.reason === 'payer_unfunded', String(spendable));
+    else assert.equal((await prepared).summary.uploadSimulatedFeeStroops, cost);
+    assert.deepEqual(asked, [10_005_100n], 'the simulated upload plus one transaction for the policy\'s creation');
+    assert.deepEqual(f.calls, [], 'nothing deployed');
+  }
+});
+
 test('mainnet: after an uncertain submission its whole fee stays counted and nothing else is sent', async (t) => {
   const f = mainnet(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 100_000 },
     change: (server) => { server.sendTransaction = async () => { throw new Error('lost response'); }; } });

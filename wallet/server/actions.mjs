@@ -560,6 +560,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         // The upload, the policy's creation, and room for an installation and its removal.
         const needed = BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops);
         if (needed > BigInt(fees.sessionSpendCapStroops)) throw capped('spend_cap', 'sessionSpendCapStroops', needed);
+        // And the operator's account must be able to pay the upload and the policy's creation now, before consent.
+        await network.payerCovers(BigInt(cost.feeStroops) + BigInt(fees.maxFeeStroops));
       }
       return { action: session.issue('deploy', { artifactId: input.artifactId }), summary: {
         specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: fees.maxFeeStroops,
@@ -867,6 +869,8 @@ export function createWalletActions({ session, toolchain, network, native = null
       const deployment = get(deployments, review.deploymentId);
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
       await network.assertNetwork();
+      // No entry is released for the passkey while the fee payer cannot pay the installation (mainnet).
+      await network.payerCovers(fees.maxFeeStroops);
       await installPreconditions(review, deployment, artifact);
       const assembly = await toolchain.authority('assemble-install-transaction', { intent_request: deployment.request,
         fee_payer: network.payerAddress, max_fee_stroops: fees.maxFeeStroops, validity_ledgers: INSTALL_VALIDITY_LEDGERS });

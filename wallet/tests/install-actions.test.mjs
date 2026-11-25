@@ -390,6 +390,23 @@ test('submit accepts ledgers that close while the authority recheck runs', async
   assert.equal(submitted.installation.status, 'installed');
 });
 
+test('an installation entry is released for the passkey only when the fee payer can pay the installation', async () => {
+  const f = await installable();
+  await verified(f);
+  const asked = [];
+  f.network.payerCovers = async (stroops) => {
+    asked.push(stroops);
+    throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+  };
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), (error) => error.reason === 'payer_unfunded');
+  assert.deepEqual(asked, [f.network.fees.maxFeeStroops]);
+  assert.equal(f.obligations.length, 0, 'no entry released, so no obligation');
+  assert.equal(assembles(f).length, 0, 'refused before the CLI assembles anything');
+  f.network.payerCovers = async () => {};
+  const { result, signed } = await assembled(f);
+  assert.equal((await f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed })).installation.status, 'installed');
+});
+
 test('nothing is released or spent while the fee payer cannot submit', async () => {
   const f = await installable();
   await verified(f);
