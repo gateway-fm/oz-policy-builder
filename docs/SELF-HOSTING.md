@@ -155,7 +155,8 @@ decide whether a Rust source file contains confidential information.
 The context carries no `.git`, so the image cannot ask which commit it is built from: the
 `OZPB_TOOLKIT_SOURCE` build argument tells it, and every BuildManifest the image writes records
 that commit as `producer.toolkit_source`. Without the argument, they record none. Like every
-manifest field it is the builder's statement, not something `verify` checks.
+manifest field it is the builder's statement, not something `verify` checks; the integration check
+below refuses an image whose manifests do not record the clean commit it was given.
 
 The base image and TLS proxy are pinned by digest. Rust and Stellar CLI match the recorded
 Wasm build inputs; Stellar downloads are checked by SHA-256. OS packages resolve during
@@ -273,13 +274,15 @@ Run the disposable integration check against a locally built image:
 ```sh
 OZPB_IMAGE="$(docker image inspect ozpb-self-host:reviewed --format '{{.Id}}')" \
 OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:reviewed --format '{{.Id}}')" \
+OZPB_TOOLKIT_COMMIT="$revision" \
   bash scripts/test-hosted-container.sh
 ```
 
 It generates a local test certificate, verifies it, checks authentication, host/origin/path
 guards, initialization, body limits and the request quota, then tears that endpoint down.
 Fresh service containers then run real MCP `generate_code` and `verify` through TLS, checking
-the returned Wasm digest and explicit source/Wasm/manifest reproduction dimensions.
+the returned Wasm digest, the toolkit commit its manifest records, and explicit
+source/Wasm/manifest reproduction dimensions.
 A separate container also runs real `generate` and `verify` with `--network none` and no mounted
 credentials. The standalone `check-hosted-endpoint.py` exhausts its supplied quota on
 purpose: use it only against a fresh isolated endpoint, not another operator's active service.

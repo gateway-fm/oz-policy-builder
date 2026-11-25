@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${OZPB_IMAGE:?Set the image ID built from the tested revision}"
 : "${OZPB_PROXY_IMAGE:?Set the proxy image ID built from the tested revision}"
+: "${OZPB_TOOLKIT_COMMIT:?Set the commit the image was built from (its OZPB_TOOLKIT_SOURCE build argument)}"
 WORK="$(mktemp -d)"
 PROJECT="ozpb-check-$$"
 export OZPB_CONFIG_DIR="$WORK"
@@ -57,5 +58,6 @@ for attempt in {1..30}; do
     sleep 1
 done
 python3 scripts/check-hosted-build.py "https://localhost:$OZPB_TLS_PORT/v1/mcp" \
-    --token-file "$WORK/bearer-token" --ca-file "$WORK/tls.crt" --spec docs/examples/subscription-spec.json
+    --token-file "$WORK/bearer-token" --ca-file "$WORK/tls.crt" --spec docs/examples/subscription-spec.json \
+    --expect-toolkit-commit "$OZPB_TOOLKIT_COMMIT"
 "${compose[@]}" down --remove-orphans >/dev/null

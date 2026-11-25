@@ -158,6 +158,14 @@ class ImageRecordsTheExportedCommitTests(unittest.TestCase):
                 for line in builds:
                     if "--target proxy" in line:
                         self.assertNotIn("OZPB_TOOLKIT_SOURCE", line, "the proxy stage takes none")
+                # The container check is told the same commit and refuses an image recording another.
+                check = text.index("bash scripts/test-hosted-container.sh")
+                told = re.findall(
+                    r"(?m)^\s*export OZPB_TOOLKIT_COMMIT=\"\$\(git rev-parse --verify 'HEAD\^\{commit\}'\)\"$",
+                    text[:check],
+                )
+                self.assertEqual(len(told), 1, "the container check is told the exported commit")
+                self.assertIn("python3 -B scripts/test-check-hosted-build.py", text, "its comparator is tested")
 
 
 if __name__ == "__main__":

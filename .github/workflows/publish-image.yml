@@ -81,6 +81,7 @@ jobs:
         run: |
           python3 scripts/test-hosted-context.py
           python3 scripts/test-hosted-mcp.py
+          python3 -B scripts/test-check-hosted-build.py
           python3 scripts/test-worker-launcher.py
       - name: build immutable source context and both images
         run: |
@@ -101,6 +102,8 @@ jobs:
           set -euo pipefail
           export OZPB_IMAGE="$(docker image inspect ozpb-self-host:check --format '{{.Id}}')"
           export OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:check --format '{{.Id}}')"
+          # The same commit the build step passed as OZPB_TOOLKIT_SOURCE; the generated manifest must record it.
+          export OZPB_TOOLKIT_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
           bash scripts/test-hosted-container.sh
       - name: rootless worker containment and independent lifecycle
         run: |
