@@ -2,8 +2,8 @@
 
 The integration adds a Policy Builder route to a pinned Pollywallet checkout. Pollywallet
 owns the passkey interaction; the local wallet backend owns its RPC connection, registry
-roots, retained artifacts and disposable testnet fee payer. MCP output cannot select a
-command, RPC endpoint, file path or signing identity.
+roots, retained artifacts and fee payer: a disposable key on testnet, the operator's own funded
+key on mainnet. MCP output cannot select a command, RPC endpoint, file path or signing identity.
 
 Pollywallet is the wallet named in the public architecture. Its pinned upstream default
 account differs from the account recognized by this toolkit. The integration therefore
@@ -146,13 +146,17 @@ execute the CLI or submit a transaction. The backend
 listens only on `127.0.0.1:4317` for testnet and `127.0.0.1:4318` for mainnet; the approved browser origin is exactly
 `http://localhost:3000`; the numeric-IP browser origin is refused.
 
-Each backend launch creates a separate private session directory and an in-memory disposable
-testnet fee payer. Retain the session journal: an intended transaction hash is recorded before
-submission, and an uncertain result blocks subsequent writes in that session. Inspect that
-hash before starting another attempt. The fee payer key is not saved, printed or returned
-to the browser. Fresh account confirmation separately discloses a fixed one-testnet-XLM
-sample balance (`sampleFundingStroops: "10000000"`) and at most three testnet XLM in fees
-across its three transactions (`maxTotalFeeStroops: 30000000`).
+Each backend launch creates a separate private session directory. Its fee payer is, on testnet,
+an in-memory disposable key Friendbot funds and, on mainnet, the operator's own key read from
+`feePayerKeyPath`, which the operator funds ([Mainnet sessions](#mainnet-sessions)). Retain the
+session journal: an intended transaction hash is recorded before submission, and an uncertain
+result blocks subsequent writes in that session. Inspect that hash before starting another
+attempt. The fee payer key is not saved, printed or returned to the browser. Fresh account
+confirmation separately discloses the sample balance the fee payer sends the new account and the
+most its transactions may cost in fees: on testnet a fixed one-testnet-XLM sample
+(`sampleFundingStroops: "10000000"`) and at most three testnet XLM across its three transactions
+(`maxTotalFeeStroops: 30000000`); on mainnet no sample funding (`sampleFundingStroops: "0"`: the
+owner funds the account) and at most twice `maxFeeStroops` across its two transactions.
 On SIGINT or SIGTERM the listener stops accepting new requests; an already admitted request
 can finish and write its receipt before shutdown. Keep the journal when interrupting a session.
 
@@ -166,8 +170,10 @@ as follows:
 
 - **The endpoint.** Every RPC read first checks that `getNetwork` reports the session's passphrase
   and protocol 30. Another network is refused as `network_mismatch`; another protocol as
-  `protocol_unsupported`. Protocol 30 is the only one this wallet supports on either network, so a
-  mainnet endpoint still on protocol 29 is refused, at startup and on every read.
+  `protocol_unsupported`. Protocol 30 is the only one this wallet supports on either network, and
+  both run it: mainnet reported protocol 30 (`getNetwork` and `getVersionInfo` on a mainnet
+  endpoint, 25 November 2026). An endpoint reporting any other protocol is refused, at startup and
+  on every read.
 - **The journal.** The session journal's first entry, `0000.session.json`, records the network
   name and ID, before any obligation or submission.
 - **The work root.** The first session writes `ozpb-wallet-network.json` into `workRoot`. A later
@@ -196,8 +202,8 @@ the account can be used only from a browser at `http://localhost:3000` on the ma
 the passkey, and any other page served on a `localhost` port can ask for the same passkey (see the
 table below), so do not keep more in it than the session needs.
 
-Mainnet runs protocol 29 until its validators upgrade it to 30; until then the backend refuses
-to start against a mainnet endpoint (`protocol_unsupported`).
+Mainnet runs protocol 30 (a mainnet endpoint reported it on 25 November 2026). The backend refuses
+to start against an endpoint that reports any other protocol (`protocol_unsupported`).
 
 **A production build, never the development server.** The upstream app is a testnet prototype,
 and a mainnet session runs only from a production build made for mainnet. In the applied
@@ -229,21 +235,47 @@ does with each:
 | Passkeys created without an `rp.id`, so their relying party is `localhost` on every port; upstream's sign-in asks without naming a credential | Not contained by the build. A mainnet build serves no upstream page, but any page on any `localhost` port (another local app, the testnet development server) can ask the browser for the owner passkey and get a signature over a challenge it chose. The wallet checks the origin of every assertion it receives; nothing here relies on the on-chain verifier to. During a mainnet session run nothing else on `localhost`, approve a passkey prompt only for a statement the Policy Builder shows, and keep the account's funds minimal |
 | No content security policy or security headers | Unchanged: the preview server is loopback-only and serves this build to the operator's own browser |
 
-**Configuration.** A mainnet operator file adds, to the fields above:
+**Configuration.** A mainnet operator file takes the fields above and its own. One that can carry
+an installation through, as the [mainnet install runbook](MAINNET-INSTALL.md) lays it out:
 
 ```json
 {
   "network": "mainnet",
+  "executable": "/absolute/path/oz-policy-builder/target/release/ozpb",
+  "workRoot": "/absolute/path/wallet-state-mainnet",
+  "rpcUrl": "https://mainnet.sorobanrpc.com",
+  "registrySnapshotPath": "/absolute/path/mainnet-registry/v0001.signed.json",
+  "registryRootsPath": "/absolute/path/mainnet-registry-roots.json",
+  "registryMinimumVersion": 1,
+  "registryPublishedPath": "/absolute/path/mainnet-registry",
+  "buildJobs": 2,
+  "buildTimeoutSecs": 600,
+  "nativeExecutable": "/absolute/path/ozpb-execution-runtime",
   "feePayerKeyPath": "/absolute/path/fee-payer.key",
+  "delegateKeyPath": "/absolute/path/delegate.key",
   "maxFeeStroops": 10000000,
-  "maxUploadFeeStroops": 120000000,
-  "sessionSpendCapStroops": 150000000,
+  "maxUploadFeeStroops": 200000000,
+  "sessionSpendCapStroops": 250000000,
   "pinnedWasmDir": "/absolute/path/pinned-wasm",
-  "registryMinimumVersion": 1
+  "liveHelper": "<the C… contract ID of the live helper you deployed>"
 }
 ```
 
-These fields are refused in a testnet configuration. `registryMinimumVersion` is the floor of the
+Each of these is needed for an installation: without `nativeExecutable` the account-Wasm and
+captured-target layers, without `delegateKeyPath` every layer that signs as the delegate, and
+without `liveHelper` the live layer stay unavailable, so the four-layer gate cannot pass. Leave
+`liveHelper` out until you have deployed the helper (**The live helper** below): the backend
+refuses anything but a contract ID there. The caps shown let the policy upload through at the
+runbook's simulated figures, with a margin: the default upload cap (12 XLM) refuses an upload that
+simulated at 18.78 XLM, and the session cap must cover the steps before it, the upload, and an
+installation and a removal
+([the caps against these figures](MAINNET-INSTALL.md#the-caps-against-these-figures)). Set both
+from the simulated cost the deployment preview shows on your endpoint, plus what this work root
+has already spent, within the ceilings below. The endpoint must return diagnostic events
+(**Readiness** below); `mainnet.sorobanrpc.com` did when probed on 19 November 2026.
+
+`feePayerKeyPath`, `delegateKeyPath`, the three caps and `pinnedWasmDir` are refused in a testnet
+configuration. `registryMinimumVersion` is the floor of the
 registry the session trusts: 6 is the development registry's, for testnet; the mainnet registry is
 its own chain starting at version 1 ([mainnet registry](../registry/mainnet/README.md)), so a
 mainnet operator sets the version of its own registry it has pinned (1 for the genesis, raised as
@@ -296,7 +328,8 @@ room under the session cap for one installation and one removal, or only for the
 already has one, so the cap never stops a grant from being taken back. Either cap refuses before signing
 (`fee_cap`, `spend_cap`). The defaults are conservative and each cap stays under its ceiling
 (1 XLM, 50 XLM and 50 XLM), with the upload cap at most the session cap. A policy upload on mainnet
-can cost more than the default upload cap (18.78 XLM simulated on protocol 29), so the operator sets
+can cost more than the default upload cap (18.78 XLM simulated on 19 November 2026, before mainnet's
+upgrade to protocol 30), so the operator sets
 `maxUploadFeeStroops` and `sessionSpendCapStroops` from the simulated figures
 ([mainnet install runbook](MAINNET-INSTALL.md#the-caps-against-these-figures)). The page shows both caps and
 the amount spent before every consent, and the policy deployment preview shows the upload's
@@ -399,9 +432,11 @@ owner signing or submission. Continue through the separate deployment, four-laye
 installation consent and passkey steps below.
 
 To complete account and live execution checks, the grant's delegate must be the automation
-delegate held by this backend session. Create that delegate first and provide its public address
-to the agent. A proposal naming an external delegate can be inspected and regenerated, but those
-checks remain unavailable and installation stays blocked; importing never changes the delegate.
+delegate held by this backend session: on testnet a key it creates, on mainnet the key in
+`delegateKeyPath`. Create that delegate first (on mainnet **Create local automation delegate**
+returns the configured key) and provide its public address to the agent. A proposal naming an
+external delegate can be inspected and regenerated, but those checks remain unavailable and
+installation stays blocked; importing never changes the delegate.
 
 The import boundary has unit and action/controller tests plus a browser check against a synthetic
 backend. With the applied checkout's Vite server running, run
@@ -1026,11 +1061,12 @@ cannot be repeated in the session, whatever the cause.
 | `review_expired` | The prepared action is no longer available, in the backend or in this browser: it expired or was already used. |
 | `grant_already_used` | The policy counted a use of the installed grant that this page did not make; nothing was signed or sent. Revoke the grant. |
 | `network_mismatch` | The operator's RPC endpoint serves another network than the session's; nothing was signed or sent. |
-| `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30, for example mainnet before its upgrade; nothing was signed or sent. |
+| `protocol_unsupported` | The operator's RPC endpoint reports a protocol other than 30; nothing was signed or sent. |
 | `fee_cap` | The transaction could cost more than its cap (per transaction, or for a policy upload `maxUploadFeeStroops`); nothing was signed or sent. |
 | `spend_cap` | The transaction could take the work root's spending past `sessionSpendCapStroops`; nothing was signed or sent. |
 | `payer_unfunded` | The fee payer cannot pay: on mainnet its account does not exist or cannot spend the fee; on testnet Friendbot did not fund it yet. |
 | `delegate_unfunded` | Mainnet: the automation delegate has no account; fund it with the minimum shown. |
+| `delegate_key_unavailable` | Mainnet: the operator configured no delegate key file (`delegateKeyPath`), so the wallet holds no delegate key. **Create local automation delegate** refuses, the checks that sign as the delegate and the one use of the grant stay unavailable, and installation stays closed. Configure the delegate's key file and restart the backend. |
 | `pinned_code_missing` | Mainnet: pinned account or verifier code is not on the network; upload it with the readiness command. |
 | `account_unfunded` | Mainnet: the account's balance does not cover the sample transfer. |
 | `no_diagnostic_events` | The endpoint returned no diagnostic events, which the step reads (stellar-rpc 30.0.1 returns them only with `--preflight-enable-debug`); nothing was sent. |
