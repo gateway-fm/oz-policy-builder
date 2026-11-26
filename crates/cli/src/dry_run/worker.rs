@@ -564,9 +564,28 @@ mod tests {
 
     fn script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("worker.sh");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&path, &format!("#!/bin/sh\n{body}\n"), 0o700);
         path
+    }
+
+    /// Write an executable fixture without this process ever holding it open for writing. A thread
+    /// that forks while another thread has a file open for writing hands that descriptor to its child
+    /// until the child execs; executing the file in that window fails with ETXTBSY ("text file busy")
+    /// on Linux, which the code under test rightly reports as a program that could not start. Tests
+    /// run in parallel threads that fork, so `cp`, a process of its own, writes the file instead.
+    fn write_executable(path: &Path, contents: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut staged = path.as_os_str().to_owned();
+        staged.push(".staged");
+        std::fs::write(&staged, contents).unwrap();
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&staged)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(copied.success(), "cp {path:?}");
+        std::fs::remove_file(&staged).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
     fn accept(_: &serde_json::Value) -> Result<(), &'static str> {
