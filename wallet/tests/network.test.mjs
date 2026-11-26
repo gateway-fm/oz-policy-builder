@@ -463,8 +463,8 @@ test('a policy Wasm upload may cost up to 15 testnet XLM; nothing else above 1',
   const envelope = xdr.TransactionEnvelope.fromXDR(original.toEnvelope().toXDR());
   envelope.v1.tx.fee = 101_422_794;
   envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(101_421_794).build());
-  assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET, TESTNET_FEES),
-    original.toEnvelope().toXDR(), Networks.TESTNET), /refused/, 'a contract call above 1 XLM stays refused');
+  assert.throws(() => checkPreparedEnvelope(TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.TESTNET),
+    original.toEnvelope().toXDR(), Networks.TESTNET, TESTNET_FEES), /refused/, 'a contract call above 1 XLM stays refused');
 });
 
 test('target identity reports the canonical native SAC builtin without inventing a Wasm hash', async () => {

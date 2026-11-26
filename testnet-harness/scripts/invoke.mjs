@@ -87,7 +87,7 @@ try {
   if (negativeControl) {
     const observed = await enforceSimulation(payer, op);
     simulationLedger = observed.ledger;
-    if (observed.result === 'deny') throw new SimulationError(label, observed.error);
+    if (observed.result === 'deny') throw new SimulationError(label, observed.error, observed.events);
     if (observed.result !== 'permit') throw new Error('unexpected enforcing simulation result');
     outcome = { result: 'permit', observation: 'enforcing_simulation', ledger: simulationLedger };
     log(`UNEXPECTED SIMULATION PERMIT  ${label}; no fee transaction submitted`);

@@ -61,14 +61,18 @@ ozpb publish-artifact --spec spec.json --generated-dir ./generated \
 
 It prints the Wasm hash, the manifest hash, the directory it wrote, `spec_rules` and whether
 that build was already there. It writes the build into a staging directory beside the
-destination and renames it into place, so a build is there whole or not at all. Publishing the
-same build again changes nothing. It refuses, writing nothing:
+destination and renames it into place, so a build is there whole or not at all. Whatever the
+publisher's umask, each directory of the build is mode 0755 and each file 0644, and so are
+`--out` and `<out>/<wasm hash>/` when this publish creates them, so a web server or another user
+can read the build if they can reach `--out`. A directory that already existed keeps its mode,
+and so does any directory above `--out`. Publishing the same build again changes nothing. It
+refuses, writing nothing:
 
 | Code | When |
 | --- | --- |
 | `E_PUBLISH_WASM_MISMATCH` | The Wasm's SHA-256 is not the manifest's `wasm_hash`. |
 | `E_PUBLISH_MANIFEST_MISMATCH` | The manifest does not describe the files: another spec (`spec_hash`), an edited, added or removed crate file (`source_hash`), another or no `Cargo.lock` (`lockfile_hash`), binary build output in the generated directory, or a manifest not written the way the toolkit writes it, which `verify` could never reproduce. |
-| `E_PUBLISH_PATH` | A crate file name that is not a plain relative path; `<out>/<wasm hash>` is a symlink; or an existing destination is, or holds, a symlink or a special file. |
+| `E_PUBLISH_PATH` | A crate file name that is not a plain relative path; `<out>/<wasm hash>` is a symlink or not a directory; or an existing destination is, or holds, a symlink or a special file. |
 | `E_PUBLISH_CONFLICT` | `<out>/<wasm hash>/<manifest hash>/` already holds other content. It is left as it is. |
 | `E_RESOURCE_LIMIT` | An existing destination is over the reader's ceilings below. |
 | `E_SPEC_INVALID` | The spec does not parse or validate. |

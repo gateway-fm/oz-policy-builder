@@ -13,7 +13,7 @@ export type LiveGrant =
   | { readonly supported: false; readonly reason: string };
 export interface ConsentDisplay {
   readonly schema: 'ozpb-live-consent/v1';
-  readonly network: 'testnet';
+  readonly network: 'testnet' | 'mainnet';
   readonly network_id: string;
   readonly current_ledger: number;
   readonly signature_expiration_ledger: number;
@@ -29,8 +29,8 @@ export interface LiveOwnerChecked {
   readonly expirationLedger: number;
   readonly authorityCommitment: string;
 }
-export function liveGrant(spec: unknown): LiveGrant;
-export function liveShape(input: { spec: unknown; intent: unknown; wallet: unknown }): LiveGrant;
+export function liveGrant(spec: unknown, networkId: string): LiveGrant;
+export function liveShape(input: { spec: unknown; intent: unknown; wallet: unknown; networkId: string }): LiveGrant;
 export function liveCases(input: {
   approval: Approval; spec: unknown; helper: string; policyCodeHash: string; expectedRuleId: number; signatureExpirationLedger: number;
 }): readonly [LiveCase, LiveCase];
