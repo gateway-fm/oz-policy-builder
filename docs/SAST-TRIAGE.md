@@ -56,3 +56,12 @@ a finding.
 | 993334633 | medium | `testnet-harness/scripts/protocol-dry-run.mjs` `save` · file inclusion (CWE-23) | Not exploitable | A `mkdtemp` directory beside the run's secrets file, and indexed fixed names under `--run-dir`. Writes use `wx`. | Not exploitable: local testnet harness CLI; fixed names in a mkdtemp directory and the operator's --run-dir; O_EXCL writes. |
 | 868501979 | low | `scripts/test-check-unmodeled-acknowledged.py` · file inclusion (CWE-23) | Not exploitable | A test writes its own case file names into a `tempfile.TemporaryDirectory`. | Not exploitable: test code writing its own fixture names into a temporary directory. |
 | 874346057, 874346064, 874346070 | low | `scripts/atomic-live-helper-fixture.py`, `scripts/native-execution-fixture.py` · use of assert (CWE-703) | Not exploitable | These scripts build test fixtures. Only the repository's test scripts run them, with plain `python3`, so the asserts stay active. Their inputs are the test's own `mktemp` directory and committed examples, and the asserts gate no trust decision. | Not exploitable: test-fixture generator run only by the repository's test scripts with python3 (asserts active); gates no trust decision. |
+
+## Reported by pull-request scans after 19 November 2026
+
+Aikido's pull-request scan reports only items new against `main`, and gives a scan link rather
+than an issue ID until the code reaches `main`.
+
+| Scan | Severity | File · rule | Disposition | Why: where the value comes from | Ignore reason for Aikido |
+| --- | --- | --- | --- | --- | --- |
+| Pull-request scan, 26 Nov 2026 | critical | `crates/cli/src/registry.rs` `load_roots` (and `read_json`) · path traversal (CWE-23) | Not exploitable | `ozpb registry` is the custodians' governance CLI on their own machine; it serves no network request. Every path is an argument the custodian types (`--registry-roots`, `--snapshot`, `--out`, the log directory) or a file name read from that directory. Reading the file the operator names is the command's purpose; writes use `create_new` and never replace a file. | Not exploitable: local governance CLI; paths are the operator's own command-line arguments, no network input. |
