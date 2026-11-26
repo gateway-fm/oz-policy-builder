@@ -349,6 +349,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # The release-binaries workflow runs the real binaries only when dispatched: on a tag whose
       # release is still a draft, or as a dry run on a branch. This runs its packaging script
       # against stand-ins on every change, so a broken archive, export or checksum step is found

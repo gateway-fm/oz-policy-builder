@@ -7,6 +7,7 @@ export interface SampleDescriptor {
   readonly ownerRuleXdr: string;
 }
 export interface SampleApproval {
+  readonly networkId: string;
   readonly wallet: WalletIdentity;
   readonly descriptor: SampleDescriptor;
   readonly ownerRuleXdr: string;
@@ -15,6 +16,6 @@ export interface SampleApproval {
 }
 export const SAMPLE_AMOUNT_STROOPS: '1000000';
 export const SAMPLE_MAX_FEE_STROOPS: 10000000;
-export function sampleCall(input: {wallet: WalletIdentity; recipient: string}): xdr.InvokeContractArgs;
+export function sampleCall(input: {wallet: WalletIdentity; recipient: string; networkId: string}): xdr.InvokeContractArgs;
 export function reviewSample(input: unknown): SampleApproval;
 export function validateSampleAssembly(input: unknown): CheckedAssembly;

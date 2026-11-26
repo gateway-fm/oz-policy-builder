@@ -841,20 +841,22 @@ export class WalletController {
       const { wallet, accountRules } = this.#state;
       const listed = accountRules?.rules?.find((rule) => rule.id === ruleId);
       const owner = accountRules?.rules?.find((rule) => rule.owner);
-      // Only a grant-shaped rule is offered; the validators check its bytes again (shared/revoke.mjs isGrantRule).
+      // Only a grant-shaped rule is offered; the validators check its bytes again (shared/revoke.mjs isGrantRule),
+      // against the policies the listed rules bind, derived here from their bytes rather than the backend's `grant`.
       if (!wallet || !listed || listed.owner || !listed.grant || !owner) throw refused();
       const status = await this.#status();
       const started = this.#started();
       const result = await this.#request('prepare-earlier-revoke', { wallet, ruleId });
       if (!HASH.test(result?.action?.id ?? '') || result.ruleXdr !== listed.xdr || result.limits?.maxFeeStroops !== status.maxFeeStroops) throw refused();
       const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: owner.id, ownerRuleXdr: result.ownerRuleXdr,
-        networkId: this.#pins.networkId, installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: listed.xdr } });
+        networkId: this.#pins.networkId, installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: listed.xdr },
+        listedRules: accountRules.rules });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
         limits: result.limits });
       const display = this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops });
       if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
       this.#set({ earlierRevokePreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
-        ownerRuleId: owner.id, ruleId, ruleXdr: listed.xdr, limits: result.limits, display },
+        ownerRuleId: owner.id, ruleId, ruleXdr: listed.xdr, listedRules: approval.listedRules, limits: result.limits, display },
       windows: this.#windows('earlierRevoke', this.#window(started, result.action)) });
     });
   }
@@ -868,7 +870,8 @@ export class WalletController {
       if (!open) throw expired();
       const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: preview.ownerRuleId, ownerRuleXdr: preview.ownerRuleXdr,
         networkId: this.#pins.networkId,
-        installation: { account: wallet.contractId, ruleId: preview.ruleId, transactionHash: null, ruleXdr: preview.ruleXdr } });
+        installation: { account: wallet.contractId, ruleId: preview.ruleId, transactionHash: null, ruleXdr: preview.ruleXdr },
+        listedRules: preview.listedRules });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: preview.assembly, ownerRuleXdr: preview.ownerRuleXdr,
         limits: preview.limits });
       if (JSON.stringify(this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops }))
