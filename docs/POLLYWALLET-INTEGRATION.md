@@ -889,11 +889,15 @@ other write); on testnet, funding the new disposable key through Friendbot and r
 back a few times, so a failed request or a lagging node leaves funding to the next try. Removing a
 grant never waits for an account creation or a deployment, and a payer that cannot pay is refused
 as `payer_unfunded`, which the page explains. It then reads the pinned account and verifier code, the owner rule and the rule within one
-ledger window, exactly as for an in-session removal, and binds the removal approval to the rule's
+ledger window, exactly as for an in-session removal, with the account's whole rule listing in the
+same window, against which the rule must still be a grant; and binds the removal approval to the rule's
 current bytes in place of an installation transaction. The consent statement, which the browser
-derives itself, shows the rule as stored now and says that this session did not install it.
-`confirm-earlier-revoke` reads everything again and refuses if the rule's bytes changed, checks the
-owner's signature, and submits once. Success needs the account's `context_rule_removed` and the rule
+derives itself, shows the rule as stored now and says that this session did not install it; the
+browser takes the policies other rules bind from the listed rules' bytes, not from the backend's
+`grant` mark, and either side refuses a listing holding a rule it cannot decode.
+`confirm-earlier-revoke` reads everything again, the listing included, and refuses if the rule's
+bytes changed or another rule now binds its target as a policy, checks the owner's signature, and
+submits once. Success needs the account's `context_rule_removed` and the rule
 reading back absent, as below; policy cleanup is reported `not_checked`. Each rule is removed at
 most once per session, and `status` lists these removals as `earlierRemovals`.
 

@@ -117,8 +117,13 @@ enum Written {
 /// directory beside it, which is renamed into place. A destination that already exists is read
 /// and must hold exactly this build; it is never modified.
 fn write_published(out: &Path, artifact: &PublishedArtifact) -> Result<Written> {
+    // Others must reach the build too: `out` and `<out>/<wasm hash>` are 0755 when this call
+    // created them. One that already existed keeps its mode.
+    if create_directory(out)? {
+        set_mode(out, 0o755)?;
+    }
     let parent = out.join(&artifact.wasm_hash);
-    std::fs::create_dir_all(&parent).with_context(|| format!("creating {}", parent.display()))?;
+    let created = create_directory(&parent)?;
     // Not followed: a symlink here would put the build outside `out`.
     if !std::fs::symlink_metadata(&parent)
         .with_context(|| format!("reading {}", parent.display()))?
@@ -129,6 +134,9 @@ fn write_published(out: &Path, artifact: &PublishedArtifact) -> Result<Written> 
             "{} is not a directory (a symlink is not followed)",
             parent.display()
         )));
+    }
+    if created {
+        set_mode(&parent, 0o755)?;
     }
     let destination = parent.join(&artifact.manifest_hash);
     let already_present = || -> Result<Written> {
@@ -151,13 +159,9 @@ fn write_published(out: &Path, artifact: &PublishedArtifact) -> Result<Written> 
         }
         std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
     }
-    // A published build is for others to read; the staging directory is created owner-only.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("setting permissions on {}", staging.path().display()))?;
-    }
+    // A published build is for others to read. The staging directory is created owner-only, and
+    // the publisher's umask can narrow everything written in it.
+    readable_by_others(staging.path())?;
     match std::fs::rename(staging.path(), &destination) {
         Ok(()) => {
             // Moved: nothing is left at the staging path for the guard to remove.
@@ -169,6 +173,60 @@ fn write_published(out: &Path, artifact: &PublishedArtifact) -> Result<Written> 
         Err(_) if exists(&destination)? => already_present(),
         Err(error) => Err(error).with_context(|| format!("moving into {}", destination.display())),
     }
+}
+
+/// Create `path` and any missing directory above it, and say whether this call created `path`
+/// itself. Whatever is already there is left for the caller to check.
+fn create_directory(path: &Path) -> Result<bool> {
+    if path.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    if let Some(above) = path.parent() {
+        std::fs::create_dir_all(above).with_context(|| format!("creating {}", above.display()))?;
+    }
+    match std::fs::create_dir(path) {
+        Ok(()) => Ok(true),
+        Err(_) if exists(path)? => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("creating {}", path.display())),
+    }
+}
+
+/// Mode 0755 for `root` and every directory under it, 0644 for every file. Only for the staging
+/// tree this process has just written, which holds nothing else.
+fn readable_by_others(root: &Path) -> Result<()> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        set_mode(&directory, 0o755)?;
+        let entries = std::fs::read_dir(&directory)
+            .with_context(|| format!("reading {}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.with_context(|| format!("reading {}", directory.display()))?;
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .with_context(|| format!("reading {}", path.display()))?;
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                set_mode(&path, 0o644)?;
+            } else {
+                anyhow::bail!("{} is not a file or a directory", path.display());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("setting permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_: &Path, _: u32) -> Result<()> {
+    Ok(())
 }
 
 fn exists(path: &Path) -> Result<bool> {
@@ -438,6 +496,10 @@ mod tests {
 
     #[test]
     fn a_build_is_written_whole_read_back_and_never_overwritten() {
+        #[cfg(unix)]
+        let _serial = UMASK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path().join("published");
         let artifact = synthetic();
@@ -481,6 +543,110 @@ mod tests {
             EC::EPublishConflict
         );
         assert_eq!(std::fs::read(&index).unwrap(), b"edited\n");
+    }
+
+    /// The umask is the process's, so the test that changes it and every test that asserts a
+    /// mode the umask could narrow hold this lock.
+    #[cfg(unix)]
+    static UMASK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Sets the umask until dropped, then restores the previous one, even if the test fails.
+    #[cfg(unix)]
+    struct Umask(nix::sys::stat::Mode);
+
+    #[cfg(unix)]
+    impl Umask {
+        fn set(bits: nix::libc::mode_t) -> Self {
+            let mode = nix::sys::stat::Mode::from_bits_truncate(bits);
+            Umask(nix::sys::stat::umask(mode))
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Umask {
+        fn drop(&mut self) {
+            nix::sys::stat::umask(self.0);
+        }
+    }
+
+    /// Every directory and file under `root`, by path relative to it, with its permission bits.
+    #[cfg(unix)]
+    fn modes(root: &Path) -> BTreeMap<String, u32> {
+        use std::os::unix::fs::PermissionsExt;
+        let mut found = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let name = path.strip_prefix(root).unwrap().to_str().unwrap();
+                found.insert(name.to_string(), metadata.permissions().mode() & 0o7777);
+                if metadata.is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    /// A published build is for others to read, whatever the publisher's umask: every directory
+    /// of it is 0755 and every file 0644, and so are `out` and the Wasm-hash directory when this
+    /// publication created them. One that already existed keeps the mode it had.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_published_under_a_restrictive_umask_is_readable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = UMASK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("published");
+        let artifact = synthetic();
+        let parent = out.join(&artifact.wasm_hash);
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        let expected = |artifact: &PublishedArtifact| {
+            let mut expected = BTreeMap::new();
+            for name in artifact.files.keys() {
+                expected.insert(name.clone(), 0o644);
+                for directory in Path::new(name).ancestors().skip(1) {
+                    if !directory.as_os_str().is_empty() {
+                        expected.insert(directory.to_str().unwrap().to_string(), 0o755);
+                    }
+                }
+            }
+            expected
+        };
+
+        let written = {
+            let _umask = Umask::set(0o077);
+            write_published(&out, &artifact)
+        };
+        assert_eq!(written.unwrap(), Written::New);
+        let destination = parent.join(&artifact.manifest_hash);
+        assert_eq!(mode(&destination), 0o755);
+        assert_eq!(modes(&destination), expected(&artifact));
+        assert!(
+            modes(&destination).contains_key("source/src"),
+            "the tree has nested directories"
+        );
+        assert_eq!(mode(&parent), 0o755, "the Wasm-hash directory it created");
+        assert_eq!(mode(&out), 0o755, "the --out directory it created");
+
+        // A second build of the same Wasm: the existing directories are not loosened.
+        for directory in [&out, &parent] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        let mut other = synthetic();
+        other.manifest_hash = "cd".repeat(32);
+        let written = {
+            let _umask = Umask::set(0o077);
+            write_published(&out, &other)
+        };
+        assert_eq!(written.unwrap(), Written::New);
+        assert_eq!((mode(&out), mode(&parent)), (0o750, 0o750));
+        let destination = parent.join(&other.manifest_hash);
+        assert_eq!(mode(&destination), 0o755);
+        assert_eq!(modes(&destination), expected(&other));
     }
 
     /// The command reads the two hashes from the path it is given and refuses a damaged build
@@ -590,6 +756,15 @@ mod tests {
             EC::EPublishPath
         );
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+        // Nor is anything else at that name that is not a directory.
+        let out = temp.path().join("other");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join(&artifact.wasm_hash), b"").unwrap();
+        assert_eq!(
+            code(write_published(&out, &artifact).unwrap_err()),
+            EC::EPublishPath
+        );
     }
 
     #[cfg(unix)]

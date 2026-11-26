@@ -143,8 +143,18 @@ function fromSchema(schema, where, refuse) {
       return reads(branching) ?? union(schema[branching].map((branch, i) => fromSchema(branch, `${where}|${i}`, refuse)));
     }
   }
-  if (schema.const !== undefined) return reads('const', 'type') ?? literal(schema.const);
-  if (schema.enum !== undefined) return reads('enum', 'type') ?? union(schema.enum.map(literal));
+  // A sibling `type` must admit every literal: one it does not is a value the schema refuses although
+  // the literals list it, so the pair is refused rather than read as the literals alone.
+  const jsonTypes = (v) => (v === null ? ['null'] : Array.isArray(v) ? ['array'] : typeof v === 'number'
+    ? (Number.isInteger(v) ? ['integer', 'number'] : ['number']) : [typeof v]);
+  const typed = (values) => {
+    if (schema.type === undefined) return null;
+    const types = [schema.type].flat();
+    const stray = values.filter((v) => !jsonTypes(v).some((t) => types.includes(t)));
+    return stray.length ? unreadable(`${JSON.stringify(stray)} beside type ${JSON.stringify(schema.type)}: ${JSON.stringify(schema)}`) : null;
+  };
+  if (schema.const !== undefined) return reads('const', 'type') ?? typed([schema.const]) ?? literal(schema.const);
+  if (schema.enum !== undefined) return reads('enum', 'type') ?? typed(schema.enum) ?? union(schema.enum.map(literal));
   if (Array.isArray(schema.type)) return union(schema.type.map((t) => fromSchema({ ...schema, type: t }, where, refuse)));
   switch (schema.type) {
     case 'string': case 'boolean': case 'null': return reads('type') ?? { k: schema.type };
@@ -413,6 +423,39 @@ test('a null in an enum is the null type, which `| null` declares', () => {
   const errors = drift(declarations().replace('readonly scheme: PolicyKeyScheme | null;',
     "readonly scheme: 'ed25519' | 'webauthn_p256' | null;"), contract);
   assert.deepEqual(errors.filter((e) => e.startsWith('PolicyVerifierObservation.scheme')), []);
+});
+
+test('a const or enum literal its sibling type does not admit is refused, not read as the literal', () => {
+  // The nullable enum above with `type` narrowed to a string: the schema now refuses null, which the literals still list.
+  const nonNullable = snapshot();
+  for (const [tool, field] of Object.values(ROOTS)) {
+    const def = toolSchema(nonNullable, tool, field).$defs?.PolicyVerifierObservation;
+    if (def) def.properties.scheme = { type: 'string', enum: ['ed25519', 'webauthn_p256', null] };
+  }
+  const errors = drift(declarations().replace('readonly scheme: PolicyKeyScheme | null;',
+    "readonly scheme: 'ed25519' | 'webauthn_p256' | null;"), nonNullable);
+  assert.equal(errors.length, 1, errors.join('\n'));
+  assert.match(errors[0], /^PolicyVerifierObservation\.scheme: \[null\] beside type "string"/);
+  // A const whose type admits no string.
+  const integer = snapshot();
+  toolSchema(integer, 'assemble_install_transaction', 'outputSchema').$defs.InstallAssemblyRestoration.oneOf[2].type = 'integer';
+  const constErrors = drift(declarations(), integer);
+  assert.equal(constErrors.length, 1, constErrors.join('\n'));
+  assert.match(constErrors[0], /^InstallAssemblyRestoration\|2: \["automatic_within_invocation"\] beside type "integer"/);
+});
+
+test('a literal\'s JSON type is checked against `type`, a string or a list, an integer being a number too', () => {
+  const read = (schema) => { const refused = []; const model = fromSchema(schema, 'x', (m) => refused.push(m)); return { model, refused }; };
+  for (const schema of [{ type: 'number', const: 1 }, { type: 'integer', const: 2 }, { type: ['string', 'null'], const: null },
+    { type: 'boolean', enum: [true, false] }, { type: ['integer', 'string'], enum: [1, 'a'] }]) {
+    assert.deepEqual(read(schema).refused, [], JSON.stringify(schema));
+  }
+  for (const schema of [{ type: 'integer', const: 1.5 }, { type: 'string', const: null }, { type: 'string', enum: ['a', true] },
+    { type: ['string', 'null'], enum: ['a', 1] }]) {
+    const { model, refused } = read(schema);
+    assert.equal(model.k, 'unread', JSON.stringify(schema));
+    assert.equal(refused.length, 1, JSON.stringify(schema));
+  }
 });
 
 test('the drift check fails on a declaration no schema uses, and on syntax it cannot read', () => {

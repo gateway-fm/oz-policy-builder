@@ -357,11 +357,17 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
   `xdr:<canonical base64>` and explain their decoded meaning alongside the call. A number
   elsewhere on the card does not describe the argument. Repeat the form for every call.
 - **Not constrained** sets every bound the user chose beside the value the recording held,
-  which the rationale states as `recorded value <N>` for that argument, and says how far it
-  reaches: the bound's maximum as a multiple of the recorded value (`×10³⁶ the recorded
-  amount`, or the plain ratio when it is small; the maximum alone when the recorded value is 0),
-  or that it has no maximum. Write the recorded value as an ungrouped decimal. A rating stays the user's however large a finite bound is, so
-  this comparison is how the card shows a cap far beyond what was recorded.
+  which the rationale states as `recorded value <N>` for that argument, all on the one **Not
+  constrained** line: name the argument as `function arg[i] on <full contract address>`, give
+  its bound, then write `recorded value <N>` (or `recorded amount <N>`) before naming any other
+  argument, as in `transfer arg[2] on <C… in full>: >= 0 and <= 5000; recorded value 1000, so
+  the maximum is ×5 the recorded amount`. A number that only equals it (a bound's end, an
+  argument index) does not show it. Then say how far the
+  bound reaches: its maximum as a multiple of the recorded value (`×10³⁶ the recorded amount`,
+  or the plain ratio when it is small; the maximum alone when the recorded value is 0), or that
+  it has no maximum. Write the recorded value as an ungrouped decimal. A rating stays the user's
+  however large a finite bound is, so this comparison is how the card shows a cap far beyond
+  what was recorded.
 - **High blast radius** lists every `any_value` argument, whether user-widened or
   adapter-derived. An adapter derives `any_value` for a caller-chosen argument such as a swap
   deadline; its provenance names the adapter but carries no blast-radius field, and accepting
