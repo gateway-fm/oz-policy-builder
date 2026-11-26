@@ -79,6 +79,21 @@ test('assemble returns the exact unsigned installation, independently re-validat
   assert.equal(f.submissions.length, 0, 'assembling submits nothing');
 });
 
+test('a restarted wallet releases no installation entry until an earlier session\'s signatures have expired', async () => {
+  // What an earlier backend on this work root journaled for the account (`earlierAuthorizationExpiry`).
+  let earlier = 0;
+  const f = await installable({ priorAuthorizationExpiry: () => earlier });
+  await verified(f);
+  earlier = f.state.ledger;
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), { reason: 'signatures_still_valid' });
+  assert.deepEqual(f.obligations, [], 'no obligation journaled, no entry released');
+  earlier = f.state.ledger - 1;
+  const { result } = await assembled(f);
+  assert.equal(f.obligations.length, 1);
+  assert.equal(f.submissions.length, 0, 'assembling submits nothing');
+  assert.match(result.action.id, /^[0-9a-f]{64}$/);
+});
+
 test('submit refuses an envelope differing from the reviewed assembly', async () => {
   for (const change of ['other entry', 'other origin', 'unsigned', 'two entries']) {
     const f = await installable();
