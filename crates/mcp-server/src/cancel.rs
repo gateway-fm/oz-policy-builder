@@ -150,19 +150,38 @@ mod tests {
     /// `stellar contract build` waits on cargo and rustc.
     #[cfg(unix)]
     fn slow_builder(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let pidfile = dir.join("grandchild.pid");
         let builder = dir.join("stellar");
-        std::fs::write(
+        write_executable(
             &builder,
-            format!(
+            &format!(
                 "#!/bin/sh\n/bin/sleep 30 &\necho $! > {0}.tmp && /bin/mv {0}.tmp {0}\nwait\n",
                 pidfile.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&builder, std::fs::Permissions::from_mode(0o755)).unwrap();
+            0o755,
+        );
         (builder, pidfile)
+    }
+
+    /// Write an executable fixture without this process ever holding it open for writing. A thread
+    /// that forks while another thread has a file open for writing hands that descriptor to its child
+    /// until the child execs; executing the file in that window fails with ETXTBSY ("text file busy")
+    /// on Linux, which the code under test rightly reports as a program that could not start. Tests
+    /// run in parallel threads that fork, so `cp`, a process of its own, writes the file instead.
+    #[cfg(unix)]
+    fn write_executable(path: &std::path::Path, contents: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut staged = path.as_os_str().to_owned();
+        staged.push(".staged");
+        std::fs::write(&staged, contents).unwrap();
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&staged)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(copied.success(), "cp {path:?}");
+        std::fs::remove_file(&staged).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
     #[cfg(unix)]
