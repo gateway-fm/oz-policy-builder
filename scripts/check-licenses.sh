@@ -50,10 +50,14 @@ echo "== security advisories (RustSec; all workspaces; fail closed) =="
 # Runs over all workspaces — contracts and native execution have separate
 # Soroban SDK dependency graphs. A missing/unreachable database is not evidence that the dependency
 # tree is safe, so cargo-deny's non-zero verdict is propagated unchanged.
-# The shared ignores belong to the Soroban trees (the temporary crypto-bigint exception
-# and an unmaintained build-time macro crate), so this run cannot match them. This is
-# the shared-config artefact above, silenced on the side that does not own it. The contracts run below keeps the warning,
-# which is where a genuinely stale ignore would surface.
+# Two shared ignores belong to the Soroban trees (the temporary crypto-bigint exception and
+# an unmaintained build-time macro crate), so this run cannot match them; it is the
+# shared-config artefact above, silenced on the side that does not own them. The contracts
+# run below keeps the warning, which is where a stale Soroban ignore would surface.
+# The chrono ignore (RUSTSEC-2026-0543) is the reverse: it belongs to this toolkit tree,
+# reached through rmcp, so the contracts run always warns that it was not detected there —
+# expected, not a stale entry. Silencing the warning here means nothing reports the chrono
+# ignore going stale: re-check it by hand on every rmcp upgrade, as its entry in deny.toml says.
 cargo deny --locked check advisories -A advisory-not-detected
 cargo deny --locked --manifest-path contracts/Cargo.toml --config deny.toml check advisories
 cargo deny --locked --manifest-path execution-runtime/Cargo.toml --config deny.toml check advisories -A advisory-not-detected
