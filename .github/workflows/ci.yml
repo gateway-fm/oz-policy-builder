@@ -63,8 +63,20 @@ jobs:
   host:
     name: host workspace (fmt · clippy · test · dep-rules · determinism)
     needs: [harness, native-execution, release-packaging, wallet-browser]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
+      - name: require the wallet, native worker and packaging jobs to pass
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          failed = {name: job["result"] for name, job in json.loads(os.environ["REQUIRED_RESULTS"]).items()
+                    if job["result"] != "success"}
+          if failed:
+              raise SystemExit(f"Required CI jobs did not pass: {failed}")
+          PYTHON
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
