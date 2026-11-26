@@ -70,7 +70,17 @@ runs every check `self-hosted.yml` runs on each, and publishes them to
 `docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy` under
 the release tag, with a GitHub build-provenance attestation. The workflow summary lists both
 `@sha256` references; use those, and check them with
-`gh attestation verify oci://<reference> --repo gateway-fm/oz-policy-builder`. A published
+
+```sh
+gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
+  --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/publish-image.yml \
+  --source-ref "refs/tags/<tag>" --source-digest "<release commit>" --deny-self-hosted-runners
+```
+
+If publication fails partway, rerun the original GitHub Actions run. Each platform job retests
+any digest it staged earlier. Promotion reuses a final tag only if it resolves to the same index.
+
+A published
 image is software for operators to run; it does not mean an endpoint is running.
 
 Both Docker Hub repositories must exist and be public before the first release that publishes
