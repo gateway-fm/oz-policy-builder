@@ -2,9 +2,9 @@ name: publish image
 
 # Publishes the self-hosted API and TLS proxy images to Docker Hub for a published GitHub Release,
 # after every check the self-hosted workflow runs (build-context boundary, TLS and offline
-# reproduction, rootless worker containment), on each architecture. It deploys nothing and runs
-# no service. A pull request that changes this file runs the same build and checks on both
-# architectures without logging in or pushing.
+# reproduction, what the endpoint retains, rootless worker containment), on each architecture.
+# It deploys nothing and runs no service. A pull request that changes this file runs the same
+# build and checks on both architectures without logging in or pushing.
 #
 # Docker Hub credentials are scoped to release steps. PR builds use a read-only GitHub token.
 on:
@@ -103,6 +103,7 @@ jobs:
           python3 scripts/test-hosted-context.py
           python3 scripts/test-hosted-mcp.py
           python3 -B scripts/test-check-hosted-build.py
+          python3 -B scripts/test-check-hosted-retention.py
           python3 scripts/test-worker-launcher.py
       - name: build immutable source context and both images
         run: |
@@ -128,7 +129,7 @@ jobs:
           suffix="$RELEASE_TAG-$ARCH-run-$GITHUB_RUN_ID"
           bash scripts/release-oci.sh restore ozpb-self-host:check "$REPOSITORY:$suffix" "$revision" "$SOURCE_URL"
           bash scripts/release-oci.sh restore ozpb-proxy:check "$REPOSITORY-proxy:$suffix" "$revision" "$SOURCE_URL"
-      - name: TLS transport and real offline artifact reproduction
+      - name: TLS transport, real offline artifact reproduction and what the endpoint retains
         run: |
           set -euo pipefail
           export OZPB_IMAGE="$(docker image inspect ozpb-self-host:check --format '{{.Id}}')"

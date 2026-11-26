@@ -287,7 +287,11 @@ It generates a local test certificate, verifies it, checks authentication, host/
 guards, initialization, body limits and the request quota, then tears that endpoint down.
 Fresh service containers then run real MCP `generate_code` and `verify` through TLS, checking
 the returned Wasm digest, the toolkit commit its manifest records, and explicit
-source/Wasm/manifest reproduction dimensions.
+source/Wasm/manifest reproduction dimensions. These containers keep their output (`json-file` in
+place of the package's `none`), and `check-hosted-retention.py` then sends a canary bearer token,
+builds a spec named with a canary and sends a signed canary envelope, and fails if the token or
+any canary is in either container's output, its tmpfs files or the files it changed, or if the
+output is anything but the server's startup line.
 A separate container also runs real `generate` and `verify` with `--network none` and no mounted
 credentials. The standalone `check-hosted-endpoint.py` exhausts its supplied quota on
 purpose: use it only against a fresh isolated endpoint, not another operator's active service.
@@ -300,7 +304,9 @@ tracing, body logging, crash uploads or request analytics. This reduces diagnost
 operator investigating startup failure should reproduce with synthetic input in an isolated
 environment and review any output before retaining it. `scripts/check-log-redaction.py` fails
 CI if a file of this package turns a log back on, prints the bearer token or the trust inputs,
-or links a log subscriber into the server; it does not cover your ingress or host.
+or links a log subscriber into the server; it does not cover your ingress or host. The
+disposable integration check, `scripts/test-hosted-container.sh`, reads what a running package
+retains, with its output kept, and fails if the token or canary request content is in it.
 
 Request data is processed in memory and temporary files. Each MCP session also retains up to
 eight generated artifacts in memory for verification by reference. This is a count limit,

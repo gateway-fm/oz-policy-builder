@@ -57,7 +57,7 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | Open: the default builder, which the shipped path uses, compiles without a container, so its manifests name no image, and every field is the producer's unattested statement. By design, `generate` and `verify` do not check the registry root they record |
 | G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: a revoked account build or owner verifier has documented owner procedures but no tooled or exercised path. Also: the mainnet log is an unsigned draft until its key ceremony; the operator schedules the monitor |
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
-| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **open** | [G12](#g12-hosted-processing) | Open for the release's endpoint, the self-hosted HTTP server: a static check holds the package's log settings, but no test drives the endpoint and reads what it retains. Also: builds are isolated from the API only in worker mode, accepted on the operator's host |
+| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | Builds are isolated from the API only in worker mode, accepted on the operator's host; the Compose package compiles beside the API, with the operator's acceptance. What a running endpoint retains is read for the package's two containers and the requests its test sends; a failed startup's error and a panic's message are not provoked, and an ingress that keeps container output retains them |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
 | G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | The full-path audit, published remediation and OpenZeppelin's sign-off are required before any mainnet installation. |
 
@@ -584,8 +584,8 @@ authenticates before spending quota, bounds request bodies and refuses requests 
 refuses a spec whose reference suite would exceed its case or case-data limit before deriving it; returns a
 failed build's exit status without the compiler's output and removes each built crate from the
 shared cache; and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
-transport's bounds and the build-worker launcher, and runs the Compose package and rootless
-worker containment.
+transport's bounds and the build-worker launcher, and runs the Compose package, reading what it
+retains, and rootless worker containment.
 
 The package keeps confidential input out of logs by retaining none
 ([data handling](SELF-HOSTING.md#data-handling-and-handover)), and `scripts/check-log-redaction.py`
@@ -597,20 +597,31 @@ the bearer token or the trust inputs; and the workspace must link no log subscri
 crate, so the log events of the server's dependencies go nowhere. Its self-test changes each
 setting in turn and requires the refusal.
 
-Open: log redaction is checked as configuration, not observed. What the server's own code writes
-is read, not tested: on stderr, one line at startup naming the listen address, the error that
-stops a failed startup, and the message of any panic. The shipped package drops all of it; a
-deployment [behind an ingress](SELF-HOSTING.md#behind-your-own-ingress-instead-of-the-proxy)
-whose orchestrator keeps container output retains it. Closing it needs a test that drives the packaged endpoint with
-confidential input and finds none of it in any log or retained output.
+The container test also reads what a running endpoint retains. It keeps both Compose services'
+output (the `json-file` log driver in place of `none`), and `scripts/check-hosted-retention.py`
+sends through the TLS proxy a canary bearer token, which is refused; then, authenticated, it
+builds a spec whose name is a canary through the compiler, and sends an envelope with a canary
+signature to `preflight_transaction` and `record_simulation`, which refuse it as signed
+material. It reads every file in both containers' tmpfs mounts and `/dev/shm`, stops them, and
+reads their stdout and stderr and each file `docker diff` lists outside their mounts. It fails if
+the bearer token or any canary is in any of them, or if the output is anything but the server's
+startup line: the API must print that line alone and the proxy nothing, so neither a line about
+a request nor a log that kept nothing can pass.
 
-Also: builds are isolated from the API and from each other only in disposable-worker mode,
+Deviation: builds are isolated from the API and from each other only in disposable-worker mode,
 whose containment is accepted on the operator's chosen host
 ([isolated builds](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)); the Compose package
 compiles in the API's own trust domain, bounded but not isolated
 ([self-hosting](SELF-HOSTING.md)); the server refuses to start that way unless the operator sets
-`OZPB_HTTP_UNISOLATED_BUILDS=accept`, as that package does. The self-hosted workflow runs on changes to its paths, not on
-every pull request.
+`OZPB_HTTP_UNISOLATED_BUILDS=accept`, as that package does. Retention is read for the package's
+two containers and the requests the test sends. Of what the server's own code writes on stderr,
+the test sees the startup line naming the listen address; the error that stops a failed startup
+and the message of any panic are read in the code, not provoked, and a deployment
+[behind an ingress](SELF-HOSTING.md#behind-your-own-ingress-instead-of-the-proxy) whose
+orchestrator keeps container output retains them. The operator's own ingress and host are
+outside the test. Closing it needs the shipped package to compile in disposable workers, and a
+test that provokes a failed startup and a panic and reads what they print. The self-hosted
+workflow runs on changes to its paths, not on every pull request.
 
 ```gate-evidence G12
 ci  crates/mcp-server/src/main.rs  tests::rpc_allowlist_blocks_ssrf_vectors
@@ -631,6 +642,7 @@ ci  crates/mcp-server/tests/mcp_stdio_capture.rs  an_endpoint_echoing_the_envelo
 ci-step  .github/workflows/ci.yml  python3 scripts/check-log-redaction.py
 ci-step  .github/workflows/ci.yml  python3 scripts/test-check-log-redaction.py
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-hosted-mcp.py
+ci-step  .github/workflows/self-hosted.yml  python3 -B scripts/test-check-hosted-retention.py
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-worker-launcher.py
 ci-step  .github/workflows/self-hosted.yml  bash scripts/test-hosted-container.sh
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-worker-containment.py --image "$worker_image"
