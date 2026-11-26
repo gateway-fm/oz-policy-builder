@@ -73,8 +73,13 @@ names at least one check that runs in CI.
   Silicon host, and requires each of these tests by name; it runs in the
   `pinned-account-authorization` job of `.github/workflows/nightly-live.yml`. The checker
   lists them as not run, and verifies that the workflow still runs the script and that the
-  script requires each test by name, in a `for test in` list or a `grep -qx 'test NAME ... ok'`
-  check, after running that test's binary.
+  script requires each test by name, in a `for test in` list whose body checks
+  `grep -qx "test $test ... ok"` or in a `grep -qx 'test NAME ... ok'` check, after running that
+  test's binary. The loop or check must sit at the top level of the script, unindented, and stop
+  it with a non-zero status when the test is missing: under `set -e`, or through `|| exit` or a
+  `|| { ... }` block ending in `exit N`, N from 1 to 255. A loop body holds only that check. A
+  check used as an `if` or `!` condition, or followed by `|| true`, `|| :`, `&&` or a pipe,
+  requires nothing.
 - `ci-step` is a command a workflow runs; the checker verifies that a line of the workflow, not
   a comment, still runs it. Which job, trigger or condition runs it is not checked.
 
