@@ -845,6 +845,46 @@ fn the_checkpoint_version_must_be_for_the_pinned_network() {
     ));
 }
 
+/// A mainnet checkpoint can predate the rule that a pending review reference is never admitted,
+/// and the checkpoint's own version is not loaded again, so monitoring checks that version itself:
+/// accepted with a pending reference, it is refused; with the reference resolved, it is current.
+#[test]
+fn mainnet_monitoring_refuses_a_pending_review_at_the_checkpoint_version() {
+    let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
+    let none: [Watched; 0] = [];
+    let accepted = |snapshot: &RegistrySnapshot| {
+        let signers = BTreeMap::from([
+            ("a".to_string(), custodian("a")),
+            ("b".to_string(), custodian("b")),
+        ]);
+        let checkpoint = RegistryCheckpoint {
+            version: snapshot.version,
+            log_index: snapshot.log_index,
+            root: snapshot_root(snapshot).unwrap(),
+            revocations: snapshot.revocations.clone(),
+        };
+        (
+            sign_snapshot_with_roots(&signers, snapshot.clone()).unwrap(),
+            checkpoint,
+        )
+    };
+    let mut reviewed = genesis();
+    reviewed.network_id = mainnet;
+    let (signed, checkpoint) = accepted(&reviewed);
+    let report = monitor(roots(), mainnet, checkpoint, &[signed], 1_500, 0, &none).unwrap();
+    assert_eq!(report.status, MonitorStatus::Current);
+
+    let mut pending = reviewed;
+    let (family, template) = pending.templates.iter_mut().next().unwrap();
+    let family = family.clone();
+    template.review_reference = format!("{PENDING_REVIEW_PREFIX} the security review's reference.");
+    let (signed, checkpoint) = accepted(&pending);
+    assert_eq!(
+        monitor(roots(), mainnet, checkpoint, &[signed], 1_500, 0, &none).unwrap_err(),
+        GovernanceError::PendingReview(format!("template/{family}"))
+    );
+}
+
 /// The validity boundaries, to the second: the head (version 3) is valid from 2_500 to 5_000
 /// inclusive, and "expires soon" starts exactly `window` seconds before its end.
 #[test]
