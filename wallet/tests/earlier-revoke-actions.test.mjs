@@ -83,6 +83,29 @@ test('an earlier session\'s removal offers only grant-shaped rules, never a reco
   assert.equal((await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID })).ruleXdr, f.rule.toXDR('base64'));
 });
 
+test('the rule listing a removal decides by is read in the removal\'s ledger window, at preparation and before submission', async () => {
+  // A listing from a node behind the anchor is asked again and then refused; one from past the
+  // window's end is outside it. Neither releases a draft or submits.
+  for (const offset of [-13, 20]) {
+    let shifted = true;
+    const { f } = await earlierSession();
+    const listing = f.network.accountRules;
+    f.network.accountRules = async (account) => {
+      const read = await listing(account);
+      return shifted ? { ...read, ledger: read.ledger + offset } : read;
+    };
+    await assert.rejects(() => f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID }), /refused/, `prepare ${offset}`);
+    // Prepared with a current listing, then confirmed with an out-of-window one.
+    shifted = false;
+    const prepared = await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID });
+    const signed = await f.signEntry(ownerEntryOf(prepared));
+    shifted = true;
+    await assert.rejects(() => f.actions['confirm-earlier-revoke']({ id: prepared.action.id, signedAuthEntriesXdr: signed }), /refused/,
+      `confirm ${offset}`);
+    assert.equal(f.submissions.length, 0, String(offset));
+  }
+});
+
 /**
  * A restarted backend: a fresh WalletNetwork over a stub endpoint, its fee payer never funded by an
  * account or deployment step. Funding, the removal's draft, the fee payer's sequence and submission go
@@ -174,6 +197,29 @@ test('a rule on the account\'s own calls, or on a policy the account has bound, 
   assert.equal(f.submissions.length, 0);
 });
 const scValPolicies = (rule) => rule.map.find((e) => e.key.sym.toString() === 'policies').val.vec.map((v) => Address.fromScVal(v).toString());
+/** The contract a stored rule's `CallContract` context names. */
+const scValTarget = (rule) => Address.fromScVal(rule.map.find((e) => e.key.sym.toString() === 'context_type').val.vec[1]).toString();
+/** Another rule binding the grant's target as one of its policies: from then on the grant's rule is not a grant this wallet installs. */
+const binderOf = (fx, id = RULE_ID + 4) => ({ id, xdr: recoveryRuleXdr({ id, policies: [scValTarget(fx.rule)] }) });
+
+test('a rule that binds the grant\'s target after the owner picked it refuses the removal at preparation', async () => {
+  // The listing the owner picked from has no such rule; the one read inside the removal's window has.
+  let listings = 0;
+  const { f } = await earlierSession({ extra: (fx) => (++listings > 1 ? [binderOf(fx)] : []) });
+  await assert.rejects(() => f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID }), /refused/);
+  assert.equal(f.submissions.length, 0);
+});
+
+test('a rule that binds the grant\'s target after preparation refuses the removal before submission', async () => {
+  let bound = false;
+  const { f } = await earlierSession({ extra: (fx) => (bound ? [binderOf(fx)] : []) });
+  const prepared = await f.actions['prepare-earlier-revoke']({ wallet: f.f.wallet, ruleId: RULE_ID });
+  const signed = await f.signEntry(ownerEntryOf(prepared));
+  bound = true;
+  await assert.rejects(() => f.actions['confirm-earlier-revoke']({ id: prepared.action.id, signedAuthEntriesXdr: signed }), /refused/);
+  assert.equal(f.submissions.length, 0);
+  assert.deepEqual((await f.actions.status({})).earlierRemovals, [], 'nothing was attempted');
+});
 
 test('after a restart, with no account or deployment step, an earlier session\'s grant is still removed', async (t) => {
   const { f } = await earlierSession();
@@ -235,4 +281,39 @@ test('the page lists the rules, shows the removal it derived itself and collects
   await controller.revokeEarlier();
   assert.equal(controller.state.earlierRemoval.status, 'removed');
   assert.deepEqual(signedBy, [f.rule.toXDR('base64')], 'the passkey was asked once, for exactly the listed bytes');
+});
+
+test('the page derives the bound policies from the listed rules, not from the backend\'s grant flag', async () => {
+  const { WalletController } = await import('../overlay/files/src/policy-builder/client/controller.mjs');
+  const { reviewRemoval, revokeConsent, validateRemovalAssembly } = await import('../shared/revoke.mjs');
+  const { validateSignedAuthorization } = await import('../shared/signature.mjs');
+  const { ACCOUNT_WASM, WEBAUTHN_WASM } = await import('../shared/approval.mjs');
+  const { f } = await earlierSession();
+  const signedBy = [];
+  const answered = [];
+  // An inconsistent backend: its listing has a rule binding the grant's target as a policy, yet still marks the grant `grant: true`.
+  const listing = async (body) => {
+    const listed = await f.actions['account-rules'](body);
+    const binder = binderOf(f);
+    return { ...listed, rules: [...listed.rules, { ...binder, owner: false, grant: false, summary: null }] };
+  };
+  const controller = new WalletController({
+    pins: { network: 'testnet', networkId: WALLET_NETWORKS.testnet.networkId, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
+    validators: { reviewRemoval, revokeConsent, validateRemovalAssembly, validateSignedAuthorization },
+    origin: 'http://localhost:3000', request: async (name, body) => {
+      const result = await (name === 'account-rules' ? listing(body) : f.actions[name](body));
+      answered.push(name);
+      return result;
+    },
+    sign: async ({ checked }) => { signedBy.push(checked); return f.signEntry(checked.authEntriesXdr[0]); } });
+  await controller.connect();
+  controller.attachWallet(f.f.wallet);
+  await controller.listRules();
+  assert.deepEqual(controller.state.accountRules.rules.map((r) => [r.id, r.grant]), [[7, false], [RULE_ID, true], [RULE_ID + 4, false]]);
+  await assert.rejects(() => controller.prepareEarlierRevoke(RULE_ID), /refused/);
+  // The backend prepared the removal; the page refused it from the listing it holds.
+  assert.equal(answered.at(-1), 'prepare-earlier-revoke');
+  assert.equal(controller.state.earlierRevokePreview, null);
+  assert.deepEqual(signedBy, []);
+  assert.equal(f.submissions.length, 0);
 });
