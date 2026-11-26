@@ -147,18 +147,20 @@ test('changed-rule consent commits and displays exact saved and current configur
 // possible: the approval names the rule by its exact current bytes, read from the account, instead of
 // an installation transaction, and the consent shows that configuration.
 
-function earlier(change = {}) {
+function earlier(change = {}, listedRules = undefined) {
   const f = fixture();
   const ruleXdr = installedRuleXdr(f);
-  const approval = reviewRemoval({ networkId: NETWORK_ID, wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
-    installation: { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: null, ruleXdr, ...change } });
+  const installation = { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: null, ruleXdr, ...change };
+  const approval = reviewRemoval({ networkId: NETWORK_ID, wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr, installation,
+    // The account's rules as listed: by default the owner rule and this one.
+    listedRules: listedRules === undefined ? [{ id: 7, xdr: f.ownerRuleXdr }, { id: installation.ruleId, xdr: installation.ruleXdr }] : listedRules });
   return { f, ruleXdr, approval };
 }
-function installedRuleXdr(f, { signers, context, policies } = {}) {
+function installedRuleXdr(f, { signers, context, policies, id = RULE_ID } = {}) {
   const fields = {
     // A grant on another contract's calls, never on the account's own.
     context_type: context ?? xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(StrKey.encodeContract(Buffer.alloc(32, 8))).toScVal()]),
-    id: xdr.ScVal.scvU32(RULE_ID), name: xdr.ScVal.scvString('earlier grant'),
+    id: xdr.ScVal.scvU32(id), name: xdr.ScVal.scvString('earlier grant'),
     policies: policies ?? xdr.ScVal.scvVec([new Address(StrKey.encodeContract(Buffer.alloc(32, 5))).toScVal()]),
     policy_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]), signer_ids: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]),
     signers: signers ?? xdr.ScVal.scvVec([xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Delegated'),
@@ -216,6 +218,33 @@ test('an earlier session\'s removal takes only a grant-shaped rule: a call-contr
   const onOther = installedRuleXdr(f, { context: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('CallContract'), new Address(other).toScVal()]) });
   assert.equal(isGrantRule(onOther, RULE_ID, { account: f.wallet.contractId }), true);
   assert.equal(isGrantRule(onOther, RULE_ID, { account: f.wallet.contractId, boundPolicies: [other] }), false, 'a policy bound elsewhere');
+});
+
+test('an earlier session\'s removal derives the bound policies from the listed rules, and checks them again before signing', () => {
+  const { f, ruleXdr, approval } = earlier();
+  assert.deepEqual(approval.listedRules.map((rule) => rule.id), [7, RULE_ID]);
+  const owner = { id: 7, xdr: f.ownerRuleXdr };
+  // Another listed rule binding the grant's target as one of its policies.
+  const target = new Address(StrKey.encodeContract(Buffer.alloc(32, 8))).toScVal();
+  const binder = { id: RULE_ID + 1, xdr: installedRuleXdr(f, { id: RULE_ID + 1, policies: xdr.ScVal.scvVec([target]) }) };
+  for (const [label, listed] of [
+    ['no listing', null],
+    ['a listing without the rule', [owner]],
+    ['a listing with other bytes for the rule', [owner, { id: RULE_ID, xdr: installedRuleXdr(f, { policies: xdr.ScVal.scvVec([
+      new Address(StrKey.encodeContract(Buffer.alloc(32, 4))).toScVal()]) }) }]],
+    ['a listing naming one rule twice', [owner, { id: RULE_ID, xdr: ruleXdr }, { id: RULE_ID, xdr: ruleXdr }]],
+    ['another listed rule binding the target as a policy', [owner, { id: RULE_ID, xdr: ruleXdr }, binder]],
+    ['a listed rule that does not decode', [owner, { id: RULE_ID, xdr: ruleXdr }, { id: RULE_ID + 1, xdr: 'AAAA' }]],
+    ['a listed rule whose bytes are another rule\'s', [owner, { id: RULE_ID, xdr: ruleXdr }, { id: RULE_ID + 2, xdr: binder.xdr }]],
+  ]) assert.throws(() => earlier({}, listed), /refused/, label);
+  // The assembly's validation reviews the approval again, from the listing it carries.
+  const value = removalFor({ account: f.wallet.contractId, payer: PAYER, sequence: '100', ledger: LEDGER });
+  assert.equal(validateRemovalAssembly({ ...value, approval, ownerRuleXdr: f.ownerRuleXdr }).authorityCommitment, approval.commitment);
+  assert.throws(() => validateRemovalAssembly({ ...value, approval: { ...approval, listedRules: [...approval.listedRules, binder] },
+    ownerRuleXdr: f.ownerRuleXdr }), /refused/);
+  // A recorded installation's removal carries no listing.
+  assert.throws(() => reviewRemoval({ networkId: NETWORK_ID, wallet: f.wallet, ownerRuleId: 7, ownerRuleXdr: f.ownerRuleXdr,
+    installation: { account: f.wallet.contractId, ruleId: RULE_ID, transactionHash: 'e'.repeat(64) }, listedRules: [owner] }), /refused/);
 });
 
 test('an earlier session\'s removal never takes the owner\'s own rule or a rule the owner signs for', () => {

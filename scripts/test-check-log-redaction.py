@@ -204,6 +204,37 @@ class LogRedactionTests(unittest.TestCase):
                           f"export OZPB_HTTP_BEARER_TOKEN\n{line}\n")
                 self.refused(needle)
 
+    def test_entrypoint_printing_a_command_substitution_is_refused(self):
+        # A substitution's output is captured only as the whole value of an assignment; anywhere
+        # else it is printed or run, so what runs inside it is held to the same rules.
+        for line, needle in (
+            ('printf "%s\\n" "$(printenv OZPB_HTTP_BEARER_TOKEN)"', "printenv"),
+            ('echo "$(cat "$token_file")"', "token file"),
+            ("echo $(env)", "printenv/env"),
+            ("$(printenv OZPB_HTTP_BEARER_TOKEN)", "printenv"),
+            ('echo "$(echo "$OZPB_RPC_SOURCES_JSON")"', "OZPB_RPC_SOURCES_JSON"),
+            ("echo `printenv OZPB_HTTP_BEARER_TOKEN`", "printenv"),
+            # A substitution with parentheses inside, and one that is only part of an argument.
+            ('echo "$(printenv OZPB_HTTP_BEARER_TOKEN "$(:)")"', "printenv"),
+            ("(printenv OZPB_HTTP_BEARER_TOKEN)", "printenv"),
+            ('cat "$(dirname "$token_file")/bearer-token"', "token file"),
+            ('cat -- "$(true)" "$token_file"', "token file"),
+        ):
+            with self.subTest(line=line):
+                self.setUp()
+                self.edit(redaction.ENTRYPOINT, "export OZPB_HTTP_BEARER_TOKEN\n",
+                          f"export OZPB_HTTP_BEARER_TOKEN\n{line}\n")
+                self.refused(needle)
+
+    def test_entrypoint_capturing_a_substitution_in_an_assignment_is_accepted(self):
+        for line in ('copy=$(cat "$token_file")', "seen=$(printenv OZPB_HTTP_BEARER_TOKEN)",
+                     "dump=`env`"):
+            with self.subTest(line=line):
+                self.setUp()
+                self.edit(redaction.ENTRYPOINT, "export OZPB_HTTP_BEARER_TOKEN\n",
+                          f"export OZPB_HTTP_BEARER_TOKEN\n{line}\n")
+                self.assertEqual(redaction.check(self.root), [])
+
     # The binaries: a log subscriber is what would make the server's own events reach stderr.
 
     def test_linked_log_subscriber_is_refused(self):

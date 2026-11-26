@@ -236,7 +236,9 @@ export async function runLive({ network, mintCapability, prepared, approval, own
     verdicts.push({ case: LIVE_CASES[index], ...validateLiveCase({ intent, envelopeXdr, simulation }) });
   }
   const [permit, denial] = verdicts;
-  if (verdicts.some((v) => v.reason === 'no_diagnostic_events')) {
+  if (verdicts.some((v) => v.reason === 'no_diagnostic_events')
+    && verdicts.every((v, i) => v.reason === 'no_diagnostic_events' || (v.outcome === 'failed' && v.reason === 'simulation')
+      || v.outcome === ['permit', 'deny'][i])) {
     return layer('unavailable', 'The operator RPC returned no diagnostic events, so neither case could be judged; stellar-rpc 30.0.1 '
       + 'returns them only with --preflight-enable-debug. Use an endpoint that does. Nothing was submitted; the signatures already '
       + `created stay valid until ledger ${expiry}.`);
