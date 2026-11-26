@@ -716,15 +716,24 @@ fn workspace_parent() -> Result<PathBuf, BuildError> {
     let user_cache = absolute("XDG_CACHE_HOME")
         .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
         .map(|cache| cache.join("ozpb").join("build"));
-    // Cargo's own home, by the rule `sanitize_build_environment` passes to the builder.
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| absolute("HOME").map(|home| home.join(".cargo")));
     workspace_parent_from(
         &std::env::temp_dir(),
         user_cache.as_deref(),
-        cargo_home.as_deref(),
+        cargo_home().as_deref(),
     )
+}
+
+/// Cargo's own home, by the rule `sanitize_build_environment` passes to the builder.
+#[cfg(unix)]
+fn cargo_home() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute())
+                .map(|home| home.join(".cargo"))
+        })
 }
 
 #[cfg(not(unix))]
@@ -4014,6 +4023,9 @@ mod tests {
     #[cfg(unix)]
     fn a_build_directory_whose_parents_another_user_can_write_is_refused() {
         let base = private_base();
+        // The user's own cargo home, as the builder passes it: a test base under the home
+        // directory (a Linux runner's, beside `~/.cargo`) is otherwise refused for it.
+        let own = cargo_home();
         let private = base.path().join("private");
         directory(&private, 0o700);
         let shared = base.path().join("shared");
@@ -4028,11 +4040,11 @@ mod tests {
         std::os::unix::fs::symlink(&inside_shared, &link).unwrap();
 
         assert_eq!(
-            workspace_parent_from(&private, None, None).unwrap(),
+            workspace_parent_from(&private, None, own.as_deref()).unwrap(),
             private.canonicalize().unwrap()
         );
         for refused in [&shared, &group, &inside_shared, &link] {
-            match workspace_parent_from(refused, None, None) {
+            match workspace_parent_from(refused, None, own.as_deref()) {
                 Err(BuildError::Unavailable(message)) => assert!(
                     message.contains("TMPDIR") && !message.contains(".ozpb-ancestry-"),
                     "{message}"
@@ -4050,6 +4062,7 @@ mod tests {
     #[cfg(unix)]
     fn a_build_directory_under_cargo_configuration_or_a_manifest_is_refused() {
         let base = private_base();
+        let own = cargo_home();
         let configured = base.path().join("configured");
         directory(&configured, 0o700);
         directory(&configured.join(".cargo"), 0o700);
@@ -4065,7 +4078,7 @@ mod tests {
             (&below_configured, ".cargo"),
             (&below_manifest, "Cargo.toml"),
         ] {
-            match workspace_parent_from(refused, None, None) {
+            match workspace_parent_from(refused, None, own.as_deref()) {
                 Err(BuildError::Unavailable(message)) => {
                     assert!(
                         message.contains(names) && message.contains("TMPDIR"),
@@ -4080,8 +4093,19 @@ mod tests {
         directory(&home.join(".cargo"), 0o700);
         let below_home = home.join("tmp");
         directory(&below_home, 0o700);
-        assert!(workspace_parent_from(&below_home, None, Some(&home.join(".cargo"))).is_ok());
-        assert!(workspace_parent_from(&below_home, None, None).is_err());
+        // A `.cargo` that is the cargo home does not count. Where the base already sits beside the
+        // real cargo home (a Linux runner's home directory), that one shows it; elsewhere a
+        // stand-in home does.
+        match private_ancestry(base.path(), None) {
+            Ok(_) => assert!(
+                workspace_parent_from(&below_home, None, Some(&home.join(".cargo"))).is_ok()
+            ),
+            Err(reason) => {
+                assert!(reason.contains(".cargo"), "{reason}");
+                assert!(workspace_parent_from(base.path(), None, own.as_deref()).is_ok());
+            }
+        }
+        assert!(workspace_parent_from(&below_home, None, own.as_deref()).is_err());
     }
 
     /// Where the temporary directory is shared — `/tmp` on Linux — the user's cache stands in,
@@ -4094,7 +4118,8 @@ mod tests {
         let shared = base.path().join("shared");
         directory(&shared, 0o1777);
         let cache = base.path().join("cache").join("ozpb").join("build");
-        let chosen = workspace_parent_from(&shared, Some(&cache), None).unwrap();
+        let own = cargo_home();
+        let chosen = workspace_parent_from(&shared, Some(&cache), own.as_deref()).unwrap();
         assert_eq!(chosen, cache.canonicalize().unwrap());
         let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
         assert_eq!(
@@ -4103,7 +4128,7 @@ mod tests {
             "created group- or world-accessible: {mode:o}"
         );
         assert!(matches!(
-            workspace_parent_from(&shared, Some(&shared.join("cache")), None),
+            workspace_parent_from(&shared, Some(&shared.join("cache")), own.as_deref()),
             Err(BuildError::Unavailable(_))
         ));
     }
