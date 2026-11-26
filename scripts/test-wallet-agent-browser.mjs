@@ -16,7 +16,7 @@ const f = proposalFixture(), handoff = new AgentHandoff({ network: WALLET_NETWOR
 const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'b'.repeat(64) };
 let imports = 0, reads = 0;
 const actions = createWalletActions({ handoff, session: {}, native: {},
-  delegates: { create: () => delegate, check: (cap, address) => {
+  delegates: { available: true, create: () => delegate, check: (cap, address) => {
     assert.equal(cap, delegate.capabilityId); assert.equal(address, delegate.address);
   } }, network: { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0',
     ensureDelegateAccount: async () => {}, assertNetwork: async () => { reads++; },

@@ -175,27 +175,40 @@ def check_entrypoint(text):
         problems.append(f"{ENTRYPOINT}: shell tracing in the interpreter line prints the bearer token")
     for line in lines[1:]:
         code = re.sub(r"(^|\s)#.*$", "", line)
+        # Backquotes are the older spelling of a command substitution.
+        code = re.sub(r"`([^`]*)`", r"$(\1)", code)
         if re.search(r"\bset\b[^;&|]*?(\s-[A-Za-z]*x|\s-o\s+xtrace\b)", code):
             problems.append(f"{ENTRYPOINT}: shell tracing prints the bearer token as it is read")
-        # A command substitution's output is captured, not printed: `$(cat "$token_file")` is how
-        # the script reads the token. Everything else on the line reaches stdout or stderr.
-        shown = re.sub(r"\$\([^()]*\)", "", code)
+        # A command substitution's output is captured only as the whole value of an assignment:
+        # `NAME=$(cat "$token_file")` is how the script reads the token. Anywhere else, as an
+        # echo or printf argument or as a command of its own, its output is printed or run. So
+        # the rest is read twice: with each substitution removed, which keeps the arguments
+        # around it together, and with each one's command spliced in as a command of its own.
+        # A `(` starts a command too: a subshell, or a substitution with parentheses inside.
+        captured = re.sub(r"^(\s*[A-Za-z_]\w*=)\$\([^()]*\)\s*$", r"\1", code)
+        readings = dict.fromkeys((re.sub(r"\$\([^()]*\)", "", captured),
+                                  re.sub(r"\$\(([^()]*)\)", r"; \1 ;", captured)))
         # …unless the substitution sends its output to stderr, which is printed after all.
         inners = re.findall(r"\$\(([^()]*)\)", code)
         if any(re.search(r">&2|>\s*/dev/stderr", inner) for inner in inners):
             problems.append(f"{ENTRYPOINT}: a command substitution prints to stderr")
-        start = r"(^|[;&|]\s*)\s*"
-        if re.search(start + r"printenv\b", shown) or re.search(start + r"env\s*($|[;&|>])", shown):
-            problems.append(f"{ENTRYPOINT}: printenv/env prints the bearer token and trust inputs")
-        if re.search(r"\bexport\s+-p\b", shown) or re.search(start + r"set\s*($|[;&|>])", shown):
-            problems.append(f"{ENTRYPOINT}: export -p / set prints the bearer token and trust inputs")
-        if re.search(r"\bcat\b[^;&|]*(\$\{?token_file\b|bearer-token)", shown):
-            problems.append(f"{ENTRYPOINT}: cat of the token file prints the bearer token")
-        # To the end of the line: a `|` inside a quoted string must not end the printed text.
-        for command in re.findall(r"\b(?:echo|printf)\b.*", shown):
-            for variable in SECRET_VARIABLES:
-                if re.search(rf"\$\{{?{variable}\b", command):
-                    problems.append(f"{ENTRYPOINT}: prints {variable}")
+        start = r"(^|[;&|(]\s*)\s*"
+        found = []
+        for shown in readings:
+            if (re.search(start + r"printenv\b", shown)
+                    or re.search(start + r"env\s*($|[;&|>)])", shown)):
+                found.append(f"{ENTRYPOINT}: printenv/env prints the bearer token and trust inputs")
+            if (re.search(r"\bexport\s+-p\b", shown)
+                    or re.search(start + r"set\s*($|[;&|>)])", shown)):
+                found.append(f"{ENTRYPOINT}: export -p / set prints the bearer token and trust inputs")
+            if re.search(r"\bcat\b[^;&|]*(\$\{?token_file\b|bearer-token)", shown):
+                found.append(f"{ENTRYPOINT}: cat of the token file prints the bearer token")
+            # To the end of the line: a `|` inside a quoted string must not end the printed text.
+            for command in re.findall(r"\b(?:echo|printf)\b.*", shown):
+                for variable in SECRET_VARIABLES:
+                    if re.search(rf"\$\{{?{variable}\b", command):
+                        found.append(f"{ENTRYPOINT}: prints {variable}")
+        problems.extend(dict.fromkeys(found))
     return problems
 
 

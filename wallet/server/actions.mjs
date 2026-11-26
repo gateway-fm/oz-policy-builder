@@ -10,7 +10,7 @@ import { SAMPLE_AMOUNT_STROOPS, reviewSample, validateSampleAssembly } from '../
 import { validateSignedAuthorization } from '../shared/signature.mjs';
 import { validateAssembly } from '../shared/assembly.mjs';
 import { INSTALL_VALIDITY_LEDGERS, installConsent } from '../shared/install.mjs';
-import { isGrantRule, isOwnerRule, reviewRemoval, revokeConsent, ruleSummary, validateRemovalAssembly } from '../shared/revoke.mjs';
+import { boundPolicies, isGrantRule, isOwnerRule, reviewRemoval, revokeConsent, ruleSummary, validateRemovalAssembly } from '../shared/revoke.mjs';
 import { addedRuleId, installGate, verifyInstallation, verifyRemoval } from './install.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
@@ -208,9 +208,9 @@ export function createWalletActions({ session, toolchain, network, native = null
     await network.requireInstance(wallet.verifier, WEBAUTHN_WASM);
     const read = await network.accountRules(wallet.contractId);
     // Every policy contract the account's rules bind: a rule targeting one is not a grant this wallet installs.
-    const boundPolicies = read.rules.flatMap(({ id, xdr: raw }) => ruleSummary(raw, id)?.policies ?? []);
+    const bound = boundPolicies(read.rules);
     return { ledger: read.ledger, rules: read.rules.map(({ id, xdr: raw }) => ({ id, xdr: raw, owner: isOwnerRule(wallet, id, raw),
-      grant: isGrantRule(raw, id, { account: wallet.contractId, boundPolicies }), summary: ruleSummary(raw, id) })) };
+      grant: isGrantRule(raw, id, { account: wallet.contractId, boundPolicies: bound }), summary: ruleSummary(raw, id) })) };
   }
   // A fresh allowance follows only confirmed removal of every tracked attempt. An ambiguous
   // or unrecorded attempt consumes the session; replacement cannot turn it into a retry.
@@ -293,13 +293,16 @@ export function createWalletActions({ session, toolchain, network, native = null
     return refuse();
   }
   const readbackAfter = (account, ruleId, ledger) => readAfter(() => network.ruleReadback(account, ruleId), ledger);
+  /** The attached account's whole rule listing from a node at or past `ledger`. */
+  const listingAfter = (wallet, ledger) => readAfter(() => network.accountRules(wallet.contractId), ledger);
   const markerAfter = (account, policy, ruleId, ledger) => readAfter(() => network.liveState({ account, policy, ruleId }), ledger);
   /**
    * A removal's reads after one anchor ledger: the account's and verifier's pinned code, the owner
    * rule and the rule being removed. They are independent, so they are asked at once: one after
    * another, a slow RPC (seconds a request) cannot fit them in the 12-ledger window removal checks.
    * Each must still come from a node at or past the anchor; a lagging node is asked again. Reads
-   * that still miss the window refuse as `rpc_too_slow`; the owner can prepare again.
+   * that still miss the window refuse as `rpc_too_slow`; the owner can prepare again. `alongside`
+   * is given the anchor.
    */
   async function removalReads(record, owner, ownerRuleXdr, alongside = async () => null) {
     const anchor = await clockedLedger(network);
@@ -312,13 +315,13 @@ export function createWalletActions({ session, toolchain, network, native = null
     const [account, verifier, fresh, rule, also] = await settled([
       pinned(record.account, ACCOUNT_WASM), pinned(owner.wallet.verifier, WEBAUTHN_WASM),
       readAfter(() => ownerRead(owner.wallet, owner.ownerRuleId, ownerRuleXdr), anchor),
-      readAfter(() => network.ruleReadback(record.account, record.ruleId), anchor), alongside()]);
+      readAfter(() => network.ruleReadback(record.account, record.ruleId), anchor), alongside(anchor)]);
     return { pins: { anchor, ledgers: [account.instanceLedger, account.codeLedger, verifier.instanceLedger, verifier.codeLedger] },
       fresh, rule, also };
   }
-  function removalReadWindow(pins, owner, rule, currentLedger, installedLedger) {
+  function removalReadWindow(pins, owner, rule, currentLedger, installedLedger, also = []) {
     if (!Number.isSafeInteger(currentLedger) || currentLedger < pins.anchor || currentLedger - pins.anchor > 12
-      || [...pins.ledgers, owner.ledger, rule.ledger].some((ledger) => !Number.isSafeInteger(ledger)
+      || [...pins.ledgers, owner.ledger, rule.ledger, ...also].some((ledger) => !Number.isSafeInteger(ledger)
         || ledger < Math.max(installedLedger, pins.anchor) || ledger > currentLedger || currentLedger - ledger > 12)) {
       throw new SlowReads();
     }
@@ -1189,7 +1192,9 @@ export function createWalletActions({ session, toolchain, network, native = null
     // Removal of a rule an earlier backend session installed, which this one holds no record of. The
     // rule is bound by its exact current bytes, read again before release and before submission. Only a
     // grant-shaped rule is removed (`isGrantRule`): never the owner rule, a rule naming the owner's
-    // passkey, or a recovery or admin rule. Otherwise as `prepare-revoke`.
+    // passkey, or a recovery or admin rule. Whether another rule binds its target as a policy is decided
+    // from the account's whole rule listing, read again inside the removal's window each time.
+    // Otherwise as `prepare-revoke`.
     'prepare-earlier-revoke': async (input) => {
       exact(input, ['wallet', 'ruleId']);
       const wallet = walletIdentity(input.wallet);
@@ -1207,14 +1212,14 @@ export function createWalletActions({ session, toolchain, network, native = null
       session.invalidate('revoke');
       const record = { account: wallet.contractId, ruleId, ledger: 0 };
       const ownerRef = { wallet, ownerRuleId: owner.id, ownerRuleXdr: owner.xdr };
-      const { pins, fresh, rule } = await removalReads(record, ownerRef, owner.xdr);
+      const { pins, fresh, rule, also: rules } = await removalReads(record, ownerRef, owner.xdr, (anchor) => listingAfter(wallet, anchor));
       if (rule.status !== 'present' || rule.xdr !== target.xdr) refuse();
       const approval = reviewRemoval({ ...ownerRef, ownerRuleXdr: fresh.ownerRuleXdr, networkId: net.networkId,
-        installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: rule.xdr } });
+        installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: rule.xdr }, listedRules: rules.rules });
       const prepared = await network.prepareRemoval({ wallet, ruleId, ownerReadLedger: fresh.ledger });
       const checked = validateRemovalAssembly({ approval, assembly: prepared.assembly, ownerRuleXdr: fresh.ownerRuleXdr, limits: prepared.limits });
       const releaseLedger = await clockedLedger(network);
-      removalReadWindow(pins, fresh, rule, releaseLedger, 0);
+      removalReadWindow(pins, fresh, rule, releaseLedger, 0, [rules.ledger]);
       if (releaseLedger + 1 >= checked.maxLedger) refuse();
       const display = revokeConsent({ approval, checked, maxFeeStroops: fees.maxFeeStroops });
       const action = session.issue('revoke', { earlier: { wallet, ownerRuleId: owner.id }, approval, checked, ruleXdr: rule.xdr });
@@ -1232,11 +1237,15 @@ export function createWalletActions({ session, toolchain, network, native = null
         if (earlierRemovals.has(key)) refuse();
         const record = { account, ruleId, ledger: 0 };
         const ownerRef = { wallet: earlier.wallet, ownerRuleId: earlier.ownerRuleId };
-        const { pins, fresh, rule, also: source } = await removalReads(record, ownerRef, approval.ownerRuleXdr, () => network.sourceCapture());
+        const { pins, fresh, rule, also: [source, rules] } = await removalReads(record, ownerRef, approval.ownerRuleXdr,
+          (anchor) => settled([network.sourceCapture(), listingAfter(earlier.wallet, anchor)]));
         const currentLedger = await network.latestLedger();
-        removalReadWindow(pins, fresh, rule, currentLedger, 0);
+        removalReadWindow(pins, fresh, rule, currentLedger, 0, [rules.ledger]);
         if (rule.status !== 'present' || rule.xdr !== ruleXdr || source.sourceSequence !== String(sourceOf(checked.envelopeXdr))
           || currentLedger + 1 >= checked.maxLedger || currentLedger < fresh.ledger || currentLedger - fresh.ledger > 12) refuse();
+        // Still a grant against the rules listed now: the same approval, reviewed again from the fresh listing.
+        if (reviewRemoval({ wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr: approval.ownerRuleXdr,
+          networkId: approval.networkId, installation: approval.installation, listedRules: rules.rules }).commitment !== approval.commitment) refuse();
         const signed = await validateSignedAuthorization({ approval, checked, signedAuthEntriesXdr: input.signedAuthEntriesXdr,
           origin: LIVE_ORIGIN });
         session.invalidate('revoke');
