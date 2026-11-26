@@ -59,7 +59,7 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
 | G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | Builds are isolated from the API only in worker mode, accepted on the operator's host; the Compose package compiles beside the API, with the operator's acceptance. What a running endpoint retains is read for the package's two containers and the requests its test sends; a failed startup's error and a panic's message are not provoked, and an ingress that keeps container output retains them |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
-| G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | The full-path audit, published remediation and OpenZeppelin's sign-off are required before any mainnet installation. |
+| G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree. The one mainnet installation precedes it, a deviation for the owner's acceptance ([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)) |
 
 ## How the evidence blocks are read
 
@@ -668,6 +668,8 @@ authorization-to-install path: components, trust boundaries, threat model, invar
 limits. What closes the gate is the audit report for a frozen revision, with every finding's
 remediation or accepted risk, and OpenZeppelin's review of the generated code
 ([review package](OZ-REVIEW-PACKAGE.md)). No audit report is in this tree; the tests above are
-evidence for the auditor. The published audit and remediation and OpenZeppelin's documented
-sign-off are prerequisites to any mainnet installation
-([release order](VERSIONING.md#the-order-for-100)).
+evidence for the auditor, not a substitute. OpenZeppelin's sign-off comes before the milestone's
+one mainnet installation, the audit's report and remediation before 1.0.0, so the installation
+is made before this gate closes, a deviation stated for the owner's acceptance
+([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance),
+[the order for 1.0.0](VERSIONING.md#the-order-for-100)).

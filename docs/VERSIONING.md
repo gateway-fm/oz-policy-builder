@@ -175,8 +175,9 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
    Dispatch `ci.yml`, `nightly-live.yml` (without the live-write probe), and `mutation.yml` on
    that commit's branch. Check the run's `headSha` against the release commit and wait for each
    dispatch to finish successfully. Run `release-binaries.yml` on the branch as a packaging
-   rehearsal. A candidate used for the milestone also needs the
-   [Tranche 3 acceptance records](TRANCHE-3-VERIFICATION.md).
+   rehearsal. A release that delivers the milestone, or the candidate its mainnet installation is
+   made from, also needs the
+   [Tranche 3 acceptance records](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here).
 4. **Tag the tested commit.** If a merge produces a different release commit, dispatch the three
    workflows again for its SHA before tagging. Create and push an annotated `vX.Y.Z` tag.
 5. **Create a draft GitHub Release** from the tag, titled for the milestone it delivers when it
@@ -203,20 +204,80 @@ The steps to make release `X.Y.Z`; the decision to release, and the version, are
 
 ### The order for 1.0.0
 
-1. Freeze a revision for OpenZeppelin's generated-code review and the external
-   [audit](AUDIT-SCOPE.md) of the authorization-to-install path. Both reviews can start together.
-2. Publish the audit report and remediate its findings with regression tests. Record those
-   outcomes in [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md). Record OpenZeppelin's documented
-   sign-off for the remediated generated code in the [review record](OZ-REVIEW-PACKAGE.md#review-record).
-3. Close [G14](MAINNET-GATES.md#g14-security-review) and record the owner's acceptance for every
-   remaining deviation against the release revision in [Tranche 3 verification](TRANCHE-3-VERIFICATION.md).
-4. At the [mainnet registry ceremony](../registry/mainnet/README.md), replace the pending
-   template-pack reference with both review records. The custodians confirm the reviewed code,
-   set the validity interval, sign the production snapshot and publish its verified checkpoint.
-5. Release an exact-revision-tested `1.0.0-rc.N` through the release gate above. Install from that
-   candidate with the owner's passkey, then [publish the installed policy by its Wasm hash](MAINNET-INSTALL.md#publishing-the-installed-policy).
-6. Release 1.0.0 with the audited software and the production registry head. If the release
-   changes the reviewed policy or the grant shape, review the changed revision before replacing
-   the installation. Revoke the earlier grant before installing a replacement.
+The milestone's one mainnet installation is made from a release candidate, `1.0.0-rc.N`
+([pre-releases](#pre-releases)); 1.0.0 follows the audit's remediation. The steps come in this
+order:
 
-Submit the milestone with the installation evidence and the published audit report and remediation.
+1. A freeze commit fixes the reviewed revision ([audit scope](AUDIT-SCOPE.md)). OpenZeppelin's
+   review of the generated code ([review package](OZ-REVIEW-PACKAGE.md)) and the external
+   security audit of the authorization-to-install path both start on it, in parallel.
+2. OpenZeppelin's documented sign-off is recorded as a row of the
+   [review record](OZ-REVIEW-PACKAGE.md#review-record). A change to generated code their review
+   asks for before they sign off goes to the auditor too, and is within the remediation's scope
+   (step 7).
+3. The owner's acceptance: every deviation under
+   [Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
+   has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here)
+   or, for a gate's deviation, its gate is closed (the release gate's step 3). One of them is
+   that the installation precedes the audit's report and remediation
+   ([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)).
+4. The mainnet registry's key ceremony. The draft genesis carries `PENDING` text where the
+   template pack's review reference goes, naming OpenZeppelin's review record: their review of
+   the generated code is the review of what the template pack produces. The custodians sign
+   version 1 once that sign-off row exists, after replacing the text with its reference,
+   confirming every other reference and setting the validity interval
+   ([mainnet registry](../registry/mainnet/README.md)). The audit's report is not needed for
+   version 1; it enters through the successor of step 8. The ceremony's commit replaces
+   `registry/mainnet/v0001.draft.json` with `v0001.signed.json`, writes the custodians' keys into
+   `roots.json`, and updates what reads the draft or calls the log unsigned:
+   `crates/registry/tests/mainnet_draft.rs`, `crates/cli/tests/registry_governance_cli.rs`
+   (`the_committed_mainnet_log_awaits_its_key_ceremony`, and the rehearsal genesis it builds from
+   the draft) and every document or comment that names the draft or calls the mainnet log an
+   unsigned draft (the wallet's mainnet test fixture among them).
+5. The release candidate is released through the release gate from the revision OpenZeppelin's
+   sign-off covers. Unless `main` is still at that revision, the release commit goes on a branch
+   `release/v1.0.0-rc.N` cut from it, as `v0.2.0-rc.1` and `v0.2.0-rc.2` were. The release
+   gate's workflows are dispatched on that branch and checked against the release commit, and the
+   tag is made there on the tested commit rather than on `main` (the release gate's steps 3 and
+   4). The branch adds nothing but the records of steps 2 and 3, the ceremony's commit and the
+   release commit; the records and the ceremony's commit land on `main` as well. The v1.0.0
+   notes stay a draft for the candidate: they are renamed and dated (the release gate's step 2)
+   for 1.0.0 only. The candidate carries the signed head, `roots.json` and the head checkpoint (the
+   release gate's step 7).
+6. The owner makes the mainnet installation from that release candidate
+   ([installing on mainnet](MAINNET-INSTALL.md)), checking those records first, since the wallet
+   does not, and the installed policy's build is published by its Wasm hash
+   ([publishing the installed policy](MAINNET-INSTALL.md#publishing-the-installed-policy)).
+7. The audit's report is recorded in the remediation log's
+   [report table](AUDIT-REMEDIATION.md#report), and its findings are remediated, each fix with
+   its regression test ([remediation log](AUDIT-REMEDIATION.md)), until no row of its
+   [findings table](AUDIT-REMEDIATION.md#findings) is `open`. That closes
+   [G14](MAINNET-GATES.md#g14-security-review).
+8. The custodians sign a successor version of the mainnet registry whose template-pack review
+   reference adds the audit report to OpenZeppelin's review, and carries any template-pack
+   change the remediation made. It is signed whether or not the template pack changed, since the
+   design has the template pack "audited once, with OpenZeppelin review"
+   ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable),
+   [making and signing a version](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)). Once it
+   is published, `ozpb registry monitor` reports it to an operator still on version 1 as a newer
+   version (exit 3), as expected ([monitoring](REGISTRY-GOVERNANCE.md#monitoring)). Once
+   advanced, the persisted checkpoint refuses version 1, and a grant synthesized under version 1
+   fails its checks under another root: remove the demonstration grant
+   ([how to revoke](MAINNET-INSTALL.md#how-to-revoke)) before moving its operator to the
+   successor, and keep version 1 pinned while it is installed.
+9. 1.0.0 is released from the remediated tree, carrying the records of steps 2, 3 and 7, and the
+   successor's head, `roots.json` and the head checkpoint (the release gate's step 7). The
+   owner's acceptance must hold for that tree: a new row for any deviation the remediation
+   changed.
+10. If a remediated finding changes the installed policy's code or the shape of the grant, the
+    demonstration grant is removed if it is still installed
+    ([how to revoke](MAINNET-INSTALL.md#how-to-revoke)). When the finding is in that policy's
+    code, the successor of step 8 also revokes `policy/<wasm hash>` of the candidate's build,
+    which recognition then refuses
+    ([revocation](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal)). The installation is
+    repeated from 1.0.0, costing about the runbook's figures again
+    ([every mainnet write](MAINNET-INSTALL.md#every-mainnet-write-in-order-with-its-simulated-fee)).
+
+The milestone is submitted with both of its outcomes: the installation's evidence and the
+published audit report with its remediation
+([TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md#contracted-outcome-and-milestone-boundary)).

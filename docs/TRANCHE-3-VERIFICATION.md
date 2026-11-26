@@ -5,7 +5,7 @@ what remains, naming whom each remaining step rests on. It claims nothing the tr
 hold: no mainnet installation, audit report or OpenZeppelin sign-off is recorded here.
 [MAINNET-GATES.md](MAINNET-GATES.md) states, for each acceptance gate before any mainnet use,
 whether its tests close it and every deviation that keeps a gate narrowed or open. This guide
-records the owner's acceptance of those deviations, and of the five it states itself, each against
+records the owner's acceptance of those deviations, and of the seven it states itself, each against
 the revision it was accepted for.
 
 ## Contracted outcome and milestone boundary
@@ -19,22 +19,26 @@ audit report with its remediation. The proposal's payment schedule adds professi
 testing at the mainnet launch. [Architecture Phase 3](architecture.md#10-delivery-plan) gives
 the technical design and the acceptance gates before any mainnet use.
 
-OpenZeppelin's review and the audit can start in parallel on the freeze revision. The published
-audit and remediation, OpenZeppelin's documented sign-off, and the owner's other gate decisions
-precede the mainnet registry's signing ceremony and the release candidate used for installation.
-The milestone is submitted with both the installation evidence and the published audit and
-remediation. See [the order for 1.0.0](VERSIONING.md#the-order-for-100).
+The order ([the order for 1.0.0](VERSIONING.md#the-order-for-100)): OpenZeppelin's review and
+the audit start together on one freeze commit; after OpenZeppelin's documented sign-off and the
+owner's acceptance below, the mainnet registry is signed and a `1.0.0-rc.N` release candidate
+carries it; the one mainnet installation is made from that candidate; the audit's report and
+remediation lead to a registry successor whose template-pack reference adds the report, and to
+1.0.0, which carries it; the installation is repeated from 1.0.0 only if a remediated finding
+changes the installed policy's code or the shape of the grant. The milestone is submitted
+with both outcomes: the installation's evidence and the published audit report with its
+remediation.
 
 | Contracted item | What this tree implements | What remains, and on whom |
 | --- | --- | --- |
 | Production versioned endpoint | A release operators run themselves; Gateway operates no service. [VERSIONING.md](VERSIONING.md) says what 1.0.0 keeps stable and gives the release gate. The tree's own MCP wire contract is committed as [`wire-contract.json`](wire-contract.json): CI fails when the built server serves another, and an `api-types` test pins the `E_*` codes to it ([keeping the snapshot current](VERSIONING.md#keeping-the-snapshot-current)). `release-binaries.yml` builds `ozpb`, `ozpb-mcp-server` and the native worker for three platforms, with `SHA256SUMS`, the MCP wire contract and build-provenance attestations; `publish-image.yml` publishes the images. [Self-hosting](SELF-HOSTING.md#production-release) says how to verify, configure (mainnet included) and upgrade them. The HTTP endpoint's tests are [G12](MAINNET-GATES.md#g12-hosted-processing). | No release candidate or 1.0.0 release exists: the workspace version is 0.1.0. Both are the owner's, in [the order for 1.0.0](VERSIONING.md#the-order-for-100): `1.0.0-rc.N` for the mainnet installation, then 1.0.0 after the audit's remediation. G12 is narrowed: what a running endpoint retains is read for the package's own containers and the requests its test sends, and builds are isolated from the API only in worker mode. |
 | Documentation | By reader in the [documentation index](README.md): usage ([user guide](USER-GUIDE.md), [tester quickstart](TESTER-QUICKSTART.md), [MCP server](MCP-WALKTHROUGH.md)), the [scoping-decision rationale](SCOPING-DECISIONS.md), [trust boundaries](TRUST-BOUNDARIES.md), the [extension guide](EXTENDING.md) for primitives, adapters and wallets, [registry governance](REGISTRY-GOVERNANCE.md), the [disclosure policy](../SECURITY.md), [incident and revocation guidance](INCIDENT-RESPONSE.md) and the owner's [mainnet runbook](MAINNET-INSTALL.md). | Nothing is recorded yet for the audit or the mainnet installation; the [remediation log](AUDIT-REMEDIATION.md) and the runbook's [evidence to keep](MAINNET-INSTALL.md#evidence-to-keep) say what each will hold. |
 | Full test suite | CI on every pull request (`.github/workflows/ci.yml`); the Wasm and pinned-account gates nightly, on demand and on path changes (`nightly-live.yml`); mutation testing of the eight pure cores, on the lines a pull request changes and weekly in full (`mutation.yml`); the [mainnet gate map](MAINNET-GATES.md), whose named tests CI runs by full name (`scripts/check-mainnet-gates.sh`); the recorder's mainnet corpus (`crates/source-rpc/tests/mainnet_corpus.rs`); the wire-contract check against the built server (`scripts/release-artifacts.py check-wire-contract`) and the wallet's typed install surface held to it (`wallet/tests/install-wire.test.mjs`); and the release gate (`scripts/verify-phase2.sh`). [AUDIT-SCOPE](AUDIT-SCOPE.md#building-and-running-the-gates) lists every command. | The gate map's open gates (G2, G9, G10) and narrowed ones (G6, G7, G8, G11, G12), each with what would close it, and its review gate, G14. Architecture §8's mainnet walkthroughs are narrowed to one installation ([below](#deviations-for-the-owners-acceptance)). Accepting a deviation is the owner's; closing an open gate is the project's. |
-| Security-audit remediation through the SCF Audit Bank | The audit's entry point, [AUDIT-SCOPE.md](AUDIT-SCOPE.md): components in two tiers with line counts, trust boundaries with a data-flow diagram, a threat model by actor and by STRIDE category, invariants with their tests, known limits and every gate. Already triaged: Aikido's static-analysis items ([SAST-TRIAGE.md](SAST-TRIAGE.md)) and the temporarily accepted advisory ([SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md)). [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md) is the remediation log. | The audit itself: no report has been received and the log is empty. Applying to the Audit Bank and naming the freeze commit are the owner's; the report is the auditor's; remediation, each fix with its regression test, is the project's. The audit runs on the freeze commit alongside OpenZeppelin's review; its published report and remediation precede any mainnet installation. The production registry references that report. |
+| Security-audit remediation through the SCF Audit Bank | The audit's entry point, [AUDIT-SCOPE.md](AUDIT-SCOPE.md): components in two tiers with line counts, trust boundaries with a data-flow diagram, a threat model by actor and by STRIDE category, invariants with their tests, known limits and every gate. Already triaged: Aikido's static-analysis items ([SAST-TRIAGE.md](SAST-TRIAGE.md)) and the temporarily accepted advisory ([SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md)). [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md) is the remediation log. | The audit itself: no report has been received and the log is empty. Applying to the Audit Bank and naming the freeze commit are the owner's; the report is the auditor's; remediation, each fix with its regression test, is the project's. The audit runs on the freeze commit alongside OpenZeppelin's review; its report and remediation precede 1.0.0, not the mainnet installation ([deviation 6](#deviations-for-the-owners-acceptance)), and a mainnet registry successor adds the report to the template pack's review reference. |
 | Documented OpenZeppelin sign-off on generated-code quality, before mainnet | The [review package](OZ-REVIEW-PACKAGE.md): what to read, how a generated policy uses `stellar-accounts`, the version pairing, where each of the five review gates stands, the upstream items, and a [review record](OZ-REVIEW-PACKAGE.md#review-record) for the sign-off. | OpenZeppelin's review and documented sign-off, theirs to give; the review record is empty. The sign-off row comes before the mainnet registry's key ceremony, whose template-pack review reference cites it, and before the release candidate the installation is made from. The generated-code changes the package lists as made, the emitter's single-guard fix among them, are in this tree, and none is planned beyond the upstream items ([what will still change](OZ-REVIEW-PACKAGE.md#what-will-still-change-before-the-audited-revision)). |
 | One mainnet wallet integration | The Pollywallet integration's [mainnet sessions](POLLYWALLET-INTEGRATION.md#mainnet-sessions): a production build of the page, the operator's fee payer and the agent's delegate key from 0600 files, per-transaction, upload and session fee caps, production registry trust only, readiness checks, and removal of a grant an earlier session installed; an operator-funded testnet profile runs the same funding and custody model on testnet ([rehearse on testnet](MAINNET-INSTALL.md#rehearse-on-testnet)). It installs [the shipped grant shape](MAINNET-GATES.md#the-grant-shape-this-tranche-ships) after all four check layers pass. | A signed production registry, from the custodians' key ceremony. The owner's helper deployment, funding and passkey ([runbook](MAINNET-INSTALL.md)). On the agent side the direct handoff reaches only a testnet wallet ([MCP on mainnet](MCP-WALKTHROUGH.md#6-on-mainnet)). |
 | Professional user testing at the mainnet launch (the proposal's payment schedule) | The [tester quickstart](TESTER-QUICKSTART.md): the whole flow locally on testnet, and what a tester reports. | What the testing involves is SCF's to say, and asking is the owner's. Nothing in this tree records it. |
-| **Outcome:** a mainnet install of a generated policy | The path in the row above, the [evidence to keep](MAINNET-INSTALL.md#evidence-to-keep) for it, and [publishing the installed policy](MAINNET-INSTALL.md#publishing-the-installed-policy) so that a reviewer can check its code against the chain with `ozpb verify-published`. | Not done: no mainnet installation is recorded in this tree. It is the owner's, with a person's passkey, from the `1.0.0-rc.N` release candidate. |
+| **Outcome:** a mainnet install of a generated policy | The path in the row above, the [evidence to keep](MAINNET-INSTALL.md#evidence-to-keep) for it, and [publishing the installed policy](MAINNET-INSTALL.md#publishing-the-installed-policy) so that a reviewer can check its code against the chain with `ozpb verify-published`. | Not done: no mainnet installation is recorded in this tree. It is the owner's, with a person's passkey, from the `1.0.0-rc.N` release candidate, and again from 1.0.0 only if a remediated audit finding changes the installed policy's code or the shape of the grant. |
 | **Outcome:** a published audit report and its remediation | [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md), with an empty report and findings table. | Not done: no report exists. Publication follows the audit; the milestone is submitted with it and the installation's evidence together. |
 
 ### Against the Phase 3 design
@@ -58,7 +62,7 @@ deviations to accept or refuse are:
    [§8](architecture.md#8-testing-strategy) plans the walkthroughs "against mainnet manually at
    release gates". The mainnet run this milestone contemplates is the single native-XLM
    installation of [the shipped grant shape](MAINNET-GATES.md#the-grant-shape-this-tranche-ships),
-   through the wallet. The Blend, SEP-41 and
+   through the wallet, repeated from 1.0.0 only as deviation 6 says. The Blend, SEP-41 and
    Soroswap walkthroughs stay on testnet: the harness that runs them is bound to testnet, there
    is no Blend adapter, and the mainnet registry draft carries no target-adapter binding, since
    the Soroswap binding is a testnet-only development-registry assertion
@@ -84,11 +88,23 @@ deviations to accept or refuse are:
    needs that acceptance reassessed first
    ([release notes](release-notes/v1.0.0.md#the-native-worker-ships-on-a-release-candidate),
    [security exceptions](SECURITY-EXCEPTIONS.md)).
-6. **Configurable composition.** The [SCF RFP](https://github.com/stellar/scf-handbook/blob/6a274a99be56be8b4ff51a3342f594bc3c522f1b/scf-awards/build-award/rfp-track.md#oz-accounts-policy-builder)
+6. **The mainnet installation precedes the audit's report and remediation.**
+   [Architecture §10](architecture.md#10-delivery-plan) lists the security review of the
+   authorization-to-install path among the acceptance gates before any mainnet use
+   ([G14](MAINNET-GATES.md#g14-security-review)). The milestone asks for
+   OpenZeppelin's sign-off "before mainnet" and for the published audit report and remediation
+   as an outcome. The one installation of deviation 2 is made from a release candidate once
+   OpenZeppelin's sign-off and these acceptance rows are recorded, while the audit may still be
+   running; G14 closes with the audit's report and remediation, before 1.0.0. OpenZeppelin's
+   sign-off covers the generated code only, so recording, synthesis, the authority check and the
+   wallet's install path are used on mainnet before any audit finding about them is known. If a
+   remediated finding changes the installed policy's code or the shape of the grant, the
+   installation is repeated from 1.0.0 ([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
+7. **Configurable composition.** The [SCF RFP](https://github.com/stellar/scf-handbook/blob/6a274a99be56be8b4ff51a3342f594bc3c522f1b/scf-awards/build-award/rfp-track.md#oz-accounts-policy-builder)
    asks for configurable composition and generation. The synthesizer can attach the reviewed
    spending limit to a compatible transfer and always emits a generated policy. A configuration-only
    path using existing OpenZeppelin primitives, including the threshold policies, remains open.
-7. **Edited source.** Users can inspect and export Rust. The verified wallet refuses edited source.
+8. **Edited source.** Users can inspect and export Rust. The verified wallet refuses edited source.
    A separate build, review and explicit deployment flow for edited Rust remains open. Both RFP
    scope gaps need delivery or SCF acceptance before claiming the full RFP scope.
 
