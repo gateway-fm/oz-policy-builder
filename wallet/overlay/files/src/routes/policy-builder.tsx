@@ -816,6 +816,15 @@ function PolicyBuilder() {
             {label(object(state.monitor.registry).status)}</Badge>{" "}
             {object(state.monitor.registry).status === "not_configured" ? "No published registry log is configured (operator `registryPublishedPath`)."
               : <>{label(object(state.monitor.registry).meaning)}. What to do: {label(object(state.monitor.registry).action)}.</>}</p>
+          {items(object(state.monitor.registry).revoked).length > 0 && <ul className="list-disc pl-5 text-sm text-amber-200">
+            {items(object(state.monitor.registry).revoked).map((entry, index) => {
+              const watched = object(object(entry).watched);
+              return <li key={index}>Revoked: {typeof watched.template_family === "string"
+                ? <>template family {watched.template_family}, the one the installed policy was generated from</>
+                : <>code {label(watched.code)}</>} ({label(object(entry).capability)}, from registry version{" "}
+                {label(object(entry).effectiveVersion)}): {label(object(entry).reason)}</li>;
+            })}
+          </ul>}
           <Details title="Observation and ledger bounds"><Evidence title="Grant observation" value={state.monitor} /></Details>
         </>}
       </section>
