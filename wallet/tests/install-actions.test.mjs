@@ -87,7 +87,12 @@ test('a restarted wallet releases no installation entry until an earlier session
   earlier = f.state.ledger;
   await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), { reason: 'signatures_still_valid' });
   assert.deepEqual(f.obligations, [], 'no obligation journaled, no entry released');
+  // The clock is past it, but the CLI's authority observation is not: the earliest read decides.
   earlier = f.state.ledger - 1;
+  f.freshChange = (intent) => { intent.authority.verdict.observed_ledger = f.state.ledger - 1; };
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), { reason: 'signatures_still_valid' });
+  assert.deepEqual(f.obligations, []);
+  f.freshChange = null;
   const { result } = await assembled(f);
   assert.equal(f.obligations.length, 1);
   assert.equal(f.submissions.length, 0, 'assembling submits nothing');

@@ -313,9 +313,9 @@ nothing and leaves no submission uncertain, so the session can still write: an a
 policy deployment or an installation refused before anything was signed can be confirmed again once
 the account is funded (the installation once the entry released for it has expired). Nothing
 already done is paid for twice: a deployment whose upload had returned does not upload the code
-again, and its new preview finds the code stored and checks the caps and the account against the
-policy's creation alone; an account creation whose verifier had been created reuses it once it reads back with
-the pinned code (the verifier holds no credential; the account's signer names it). The sample transfer is
+again, and its new preview finds the code stored and leaves the upload out of the session cap and
+the account check; an account creation whose verifier had been created reuses it once it reads
+back with the pinned code (the verifier holds no credential; the account's signer names it). The sample transfer is
 attempted once per session, whatever the cause. The key is held only in the backend's memory; it is not printed, logged, returned to the browser or written to the journal.
 It is only the source and fee payer of the backend's transactions, never a signer on an account:
 before it signs an envelope the backend refuses one whose authorization entries name it, carry

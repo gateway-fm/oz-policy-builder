@@ -657,7 +657,7 @@ operatorTest('a creation-only retry, once the code is stored, is previewed and c
   const first = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
   assert.equal(first.summary.codeStored, false);
   await assert.rejects(() => f.actions['confirm-deploy']({ id: first.action.id }), (error) => error.reason === 'payer_unfunded');
-  // Counting the upload again would need 100 spent + 100 + 3 × 10 XLM, past the 150 XLM session cap.
+  // Counting the upload again would need 10 XLM spent + 10 + 3 × 1, past the 15 XLM session cap.
   const again = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
   assert.equal(simulated, 1, 'the stored code is not simulated again');
   assert.deepEqual(asked, [110_000_000n, 10_000_000n], 'the retry asks the payer for the policy\'s creation only');
