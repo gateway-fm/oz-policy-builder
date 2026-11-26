@@ -182,14 +182,13 @@ gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
   --source-ref "refs/tags/<tag>" --source-digest "<release commit>" --deny-self-hosted-runners
 ```
 
-A published
-image is software for operators to run; it does not mean an endpoint is running.
+A published image is software for operators to run; it does not mean an endpoint is running.
 
-An organization owner creates both public Docker Hub repositories with immutable tags before
-publication. The existing 0.2.0 pre-release images remain on GHCR. The Docker Hub repositories
-use immutable tags. If publication fails after staging a platform
-image or manifest, rerun the same GitHub Actions run. It reuses that run's staged digests and
-verifies any final tag already published. GitHub stores the attestations for each image digest.
+An organization owner creates both public Docker Hub repositories, with immutable tags, before
+publication. The existing 0.2.0 pre-release images remain on GHCR. If publication fails after
+staging a platform image or manifest, rerun the same GitHub Actions run: it reuses that run's
+staged digests and verifies any final tag already published. GitHub stores the attestations for
+each image digest.
 
 ## Configure the operator boundary
 
