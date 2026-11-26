@@ -134,15 +134,17 @@ exists for each.
 
 ## Upstream items
 
-- **Unbounded enforce events.** Your three policies embed the whole `Context` in their enforce
-  event, so a permitted call with a large enough argument fails on the network's event-size limit
-  ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15, divergence 9 and "Three upstream
-  defects"). Reported as
-  [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852),
-  where the direction discussed is a bounded projection of the context (`EnforcedContext`) rather
-  than a digest. `stellar-accounts` 0.8.0 still embeds the `Context`, so generated policies keep
-  `context_hash`; they may move to a released projection type, which would change every
-  generated Wasm and the asserted event size.
+- **Unbounded enforce events.** In `stellar-accounts` 0.8.0 your three policies embed the whole
+  `Context` in their enforce event, so a permitted call with a large enough argument fails on the
+  network's event-size limit ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15,
+  divergence 9 and "Three upstream defects"). Reported as
+  [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852)
+  and fixed by
+  [OpenZeppelin/stellar-contracts#896](https://github.com/OpenZeppelin/stellar-contracts/pull/896),
+  merged on 20 November 2026, which replaces the `Context` with a bounded `EnforcedContext`
+  projection. No release carries it yet; v0.8.0 is the latest. Generated policies keep
+  `context_hash` until a release ships the type. Moving to it would change every generated Wasm
+  and the asserted event size.
 - **Your checklist's `cargo build --target wasm32v1-none --release`** cannot succeed inside your
   own workspace, whose root enables soroban-sdk's `experimental_spec_shaking_v2`; `stellar
   contract build` sets what that feature's build script requires (§15, "Three upstream defects").
