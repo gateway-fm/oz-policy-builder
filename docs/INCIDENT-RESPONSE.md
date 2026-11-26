@@ -130,7 +130,7 @@ N="Test SDF Network ; September 2015"
 # once, when you accept the snapshot:
 ozpb registry verify --signed docs/examples/registry.signed.json \
   --registry-roots docs/examples/registry-roots.json --network "$N" > checkpoint.json
-# then on a schedule, against the newest published copy:
+# then on a schedule, against the published copy:
 ozpb registry monitor --published docs/examples/registry.signed.json --checkpoint checkpoint.json \
   --registry-roots docs/examples/registry-roots.json --network "$N" \
   --wasm-hash <account wasm hash> --wasm-hash <owner verifier wasm hash> \
@@ -138,12 +138,18 @@ ozpb registry monitor --published docs/examples/registry.signed.json --checkpoin
   --template policy-templates/scope@1
 ```
 
-A governed registry is monitored the same way with `--published registry/<network>` (its log) and
-your pinned roots. Exit `6` means a watched hash or template family is revoked; the report names
-each with the custodians' reason. Exit `1` means the published log cannot be verified against
-your checkpoint — a fork, an equivocation, a rollback, or roots you have not pinned, each an
-incident in itself — and also any other error, such as a missing checkpoint or an unreadable file,
-so read its message. The other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
+One published file is checked as a head that directly extends your checkpoint, so it verifies
+only while it is your checkpoint's version or the next one. The development registry publishes
+that one file and no log: once it is two or more versions past your checkpoint, the monitor exits
+`1` for the missing versions between. Review the new version and accept it again with
+`ozpb registry verify`. A governed registry keeps every version, so monitor it with
+`--published registry/<network>` (its log) and your pinned roots, and a head several versions on
+is checked through each of them. Exit `6` means a watched hash or template family is revoked; the
+report names each with the custodians' reason. Exit `1` means the published log cannot be
+verified against your checkpoint — a fork, an equivocation, a rollback, a gap in the versions,
+or roots you have not pinned, each an incident in itself unless it is the single file's gap
+above — and also any other error, such as a missing checkpoint or an unreadable file, so read
+its message. The other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
 
 **Act on it.**
 
@@ -214,10 +220,14 @@ What is specific to generated code:
   changes every affected source and Wasm hash, so a grant built before it is replaced, not
   updated: revoke it, regenerate from the same recording and decisions, review, and install.
 - **The advisory names what is affected**: the template family, the toolkit releases and the grant
-  shapes (constraint kinds, compositions) that reach the defect. The spec and BuildManifest record
-  the template family and the constraints, but not the generator's source revision
-  ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)), so keep a note of which release
-  generated each grant you install.
+  shapes (constraint kinds, compositions) that reach the defect. Keep each installed grant's
+  PolicySpec: it records the template family, every constraint and the composed policies, which
+  is what an advisory's shapes are matched against. Its BuildManifest records the template family
+  and the `spec_hash` that ties it to that spec, but no constraint or composition. Its producer
+  record names the toolkit commit when the build knew it, and the template-pack hash: the
+  producer's own statements, not an attestation
+  ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)). So keep the spec with the manifest,
+  and a note of which release generated each grant you install.
 - **A template family that is unsound is revoked** (`template/<family>`); a corrected template is a
   new family version, because a revocation is permanent.
 
