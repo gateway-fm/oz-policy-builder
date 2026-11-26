@@ -100,6 +100,7 @@ FILES = {
         "for (const name of ['a foreign key']) test(`wallet refuses ${name} before signing`, () => {});\n"
     ),
     "scripts/test-pinned-account-authorization.sh": (
+        "set -euo pipefail\n"
         "# delta_holds is named here only in a comment, which requires nothing.\n"
         "cargo test --test account_wasm_invariants -- --ignored\n"
         "for test in delta_holds; do grep -qx \"test $test ... ok\" log; done\n"
@@ -296,6 +297,80 @@ class FixtureCheckerTests(unittest.TestCase):
         self.edit("scripts/test-pinned-account-authorization.sh", "for test in delta_holds",
                   "echo delta_holds\nfor test in other")
         self.assert_red(self.run_checker(), "delta_holds")
+
+    RELEASE = "scripts/test-pinned-account-authorization.sh"
+    ERREXIT = "set -euo pipefail\n"
+    DELTA_LOOP = 'for test in delta_holds; do grep -qx "test $test ... ok" log; done\n'
+
+    def test_a_release_check_that_cannot_fail_the_script_requires_nothing(self):
+        # Each case leaves delta_holds' name in place while letting the script finish green
+        # without that test having passed.
+        check = 'grep -qx "test $test ... ok" log'
+        loops = {
+            "no check": 'echo "$test"',
+            "|| true": f"{check} || true",
+            "|| :": f"{check} || :",
+            "|| exit 0": f"{check} || exit 0",
+            "|| echo": f"{check} || echo missing",
+            "&& list": f"{check} && echo found",
+            "if condition": f"if {check}; then :; fi",
+            "negated": f"! {check}",
+            "single-quoted $test": "grep -qx 'test $test ... ok' log",
+            "group exits with echo's status": f"{check} || {{ echo missing; exit; }}",
+            "exit 256 wraps to 0": f"{check} || exit 256",
+            "conditional exit in the group": f"{check} || {{ if [ -n x ]; then exit 1; fi; }}",
+            "continue in the group": f"{check} || {{ continue; exit 1; }}",
+            "group piped": f"{check} || {{ echo missing; exit 1; }} | cat",
+            "continue before the check": f"continue; {check} || exit 1",
+        }
+        cases = [(self.ERREXIT, f"for test in delta_holds; do {body}; done\n", name)
+                 for name, body in loops.items()]
+        cases += [
+            (self.ERREXIT, 'for test in delta_holds; do grep -qx "test $test ... ok" log || exit 1; '
+             "done | cat\n", "piped loop"),
+            (self.ERREXIT, "grep -qx 'test delta_holds ... ok' log || true\n", "plain || true"),
+            (self.ERREXIT, "grep -qx 'test delta_holds ... ok' log && echo found\n", "plain &&"),
+            (self.ERREXIT, "grep -qx 'test delta_holds ... ok' log || { echo missing; exit 1; } &\n",
+             "plain group in the background"),
+            (self.ERREXIT, "never_called() {\n    grep -qx 'test delta_holds ... ok' log || exit 1\n}\n",
+             "inside a function"),
+            (self.ERREXIT, "if false; then\n    grep -qx 'test delta_holds ... ok' log || exit 1\nfi\n",
+             "inside an if"),
+            (self.ERREXIT, "if false; then\n    for test in delta_holds; do\n"
+             '        grep -qx "test $test ... ok" log || exit 1\n    done\nfi\n', "loop inside an if"),
+            ("", self.DELTA_LOOP, "no set -e"),
+            ("", "grep -qx 'test delta_holds ... ok' log\n", "plain without set -e"),
+            (self.ERREXIT + "set +e\n", self.DELTA_LOOP, "set +e"),
+        ]
+        for errexit, loop, name in cases:
+            with self.subTest(case=name):
+                self.setUp()
+                self.edit(self.RELEASE, self.ERREXIT, errexit)
+                self.edit(self.RELEASE, self.DELTA_LOOP, loop)
+                self.assert_red(self.run_checker(), "does not require 'delta_holds'")
+
+    def test_a_release_check_that_fails_the_script_requires_its_tests(self):
+        cases = [
+            ("", 'for test in delta_holds; do grep -qx "test $test ... ok" log || exit 1; done\n',
+             "|| exit 1"),
+            ("", 'for test in delta_holds; do grep -qx "test $test ... ok" log || exit; done\n',
+             "|| exit"),
+            ("", 'for test in \\\n    delta_holds; do\n'
+                 '    grep -qx "test $test ... ok" "$work/log" || {\n'
+                 '        echo "missing: $test" >&2\n        exit 1\n    }\ndone\n',
+             "|| { ... exit 1 } across lines"),
+            ("", "grep -qx 'test delta_holds ... ok' \\\n    log || {\n"
+                 "    echo missing >&2\n    exit 1\n}\n", "plain check with a group"),
+            ("set -o errexit\n", self.DELTA_LOOP, "set -o errexit"),
+            (self.ERREXIT, "grep -qx 'test delta_holds ... ok' log\n", "plain under set -e"),
+        ]
+        for errexit, loop, name in cases:
+            with self.subTest(case=name):
+                self.setUp()
+                self.edit(self.RELEASE, self.ERREXIT, errexit)
+                self.edit(self.RELEASE, self.DELTA_LOOP, loop)
+                result = self.run_checker()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_release_tests_need_the_scheduled_job_that_runs_the_release_gate(self):
         self.edit(".github/workflows/nightly-live.yml",
