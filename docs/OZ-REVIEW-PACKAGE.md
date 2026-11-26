@@ -143,7 +143,7 @@ exists for each.
   [OpenZeppelin/stellar-contracts#896](https://github.com/OpenZeppelin/stellar-contracts/pull/896),
   merged on 20 November 2026, which replaces the `Context` with a bounded `EnforcedContext`
   projection. No release carries it yet; v0.8.0 is the latest. Generated policies keep
-  `context_hash` until a release ships the type. Moving to it would change every generated Wasm
+  `context_hash`: a generated policy cannot name a type its pinned `stellar-accounts` lacks. Moving to it would change every generated Wasm
   and the asserted event size.
 - **Your checklist's `cargo build --target wasm32v1-none --release`** cannot succeed inside your
   own workspace, whose root enables soroban-sdk's `experimental_spec_shaking_v2`; `stellar

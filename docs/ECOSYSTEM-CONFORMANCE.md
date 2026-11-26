@@ -1144,7 +1144,7 @@ merged on 20 November 2026. On their main branch the enforce events carry a boun
 `EnforcedContext`: the target and function name of a call, or the executable and salt of a
 deployment, without arguments. No release carries it yet; v0.8.0, the latest, still embeds the
 `Context`. A generated policy cannot name a type its pinned `stellar-accounts` lacks, so generated
-policies keep `context_hash` until a release ships `EnforcedContext`.
+policies keep `context_hash`.
 
 ### Three upstream defects found while doing this
 
