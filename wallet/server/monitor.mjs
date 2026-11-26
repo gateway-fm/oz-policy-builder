@@ -100,11 +100,14 @@ export async function monitorInstallation({ network, toolchain, record, owner, c
     if (authority.observed_ledger > currentLedger || currentLedger - authority.observed_ledger > 12) unavailable.push('authority_outside_ledger_window');
   }
   if (record.validUntilLedger !== null && currentLedger > record.validUntilLedger) inactive.push('grant_expired');
-  // The registry the grant's recognition rests on: the account's and owner verifier's Wasm in the
-  // operator's published log. A generated policy is recognized by its reproduced build, not by a
-  // registry entry, so it is not watched here. Reported apart from the grant: it is about the codes.
+  // The registry the grant's recognition rests on, in the operator's published log: the account's and
+  // owner verifier's Wasm, and the template family of the installed generated policy. That policy has
+  // no registry entry of its own (it is recognized through its family and its reproduced build), so a
+  // revocation of the family is what reaches it. Reported apart from the grant: it is about the codes.
+  const templates = [...new Set((candidate.spec?.rules ?? []).flatMap((rule) => rule?.policies ?? [])
+    .map((policy) => policy?.generated?.template_family).filter((family) => typeof family === 'string'))];
   let registry;
-  try { registry = toolchain.registryMonitor ? await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM] })
+  try { registry = toolchain.registryMonitor ? await toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM], templates })
     : { status: 'not_configured' }; } catch { registry = { ...MONITOR_UNAVAILABLE }; }
   return freezeCopy({ registry, schema: 'ozpb:wallet-monitor:v1', installationId: record.installationId, account: record.account,
     ruleId: record.ruleId, status: reasons.length ? 'drift' : unavailable.length ? 'unavailable' : inactive.length ? 'inactive' : 'unchanged',
