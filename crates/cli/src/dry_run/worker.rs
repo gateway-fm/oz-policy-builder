@@ -193,7 +193,9 @@ impl Worker {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let Ok(mut child) = command.spawn() else {
+        let Ok(mut child) =
+            spawn_unless_busy(|| command.spawn(), SPAWN_BUSY_ATTEMPTS, SPAWN_BUSY_PAUSE)
+        else {
             return (Outcome::Refused("worker_spawn_failed"), Vec::new());
         };
         let group = child.id();
@@ -557,6 +559,31 @@ fn group_has_members(_: u32) -> bool {
     false
 }
 
+/// Spawn attempts while the snapshot is busy, and the pause between them: half a second at most.
+const SPAWN_BUSY_ATTEMPTS: u32 = 50;
+const SPAWN_BUSY_PAUSE: Duration = Duration::from_millis(10);
+
+/// Start the worker, retrying while its executable is busy. This process wrote the snapshot an
+/// instant earlier; a child another thread forked meanwhile holds that write handle until it
+/// execs, and until then exec fails with ETXTBSY (Linux). Any other failure, and a snapshot still
+/// busy after `attempts`, is returned as it is.
+fn spawn_unless_busy<T>(
+    mut spawn: impl FnMut() -> std::io::Result<T>,
+    attempts: u32,
+    pause: Duration,
+) -> std::io::Result<T> {
+    let mut left = attempts;
+    loop {
+        match spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && left > 1 => {
+                left -= 1;
+                std::thread::sleep(pause);
+            }
+            result => return result,
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -574,7 +601,6 @@ mod tests {
     /// on Linux, which the code under test rightly reports as a program that could not start. Tests
     /// run in parallel threads that fork, so `cp`, a process of its own, writes the file instead.
     fn write_executable(path: &Path, contents: &str, mode: u32) {
-        use std::os::unix::fs::PermissionsExt;
         let mut staged = path.as_os_str().to_owned();
         staged.push(".staged");
         std::fs::write(&staged, contents).unwrap();
@@ -590,6 +616,62 @@ mod tests {
 
     fn accept(_: &serde_json::Value) -> Result<(), &'static str> {
         Ok(())
+    }
+
+    fn busy() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)
+    }
+
+    #[test]
+    fn a_busy_executable_is_retried_within_the_bound() {
+        let mut calls = 0;
+        let started = spawn_unless_busy(
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(busy())
+                } else {
+                    Ok(7)
+                }
+            },
+            4,
+            Duration::ZERO,
+        );
+        assert_eq!(started.unwrap(), 7);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn an_executable_that_stays_busy_is_refused_at_the_bound() {
+        let mut calls = 0;
+        let started: std::io::Result<()> = spawn_unless_busy(
+            || {
+                calls += 1;
+                Err(busy())
+            },
+            4,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            started.unwrap_err().kind(),
+            std::io::ErrorKind::ExecutableFileBusy
+        );
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn other_spawn_failures_are_not_retried() {
+        let mut calls = 0;
+        let started: std::io::Result<()> = spawn_unless_busy(
+            || {
+                calls += 1;
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            },
+            4,
+            Duration::ZERO,
+        );
+        assert_eq!(started.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(calls, 1);
     }
 
     fn never_sign(_: &serde_json::Value) -> Result<serde_json::Value, &'static str> {
