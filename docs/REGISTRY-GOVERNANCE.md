@@ -389,9 +389,12 @@ that the old custodians handed over. `verify --replay` checks a log under one po
 rotation, replay the versions before it under the old roots and check the later ones with
 `verify --signed <file> --checkpoint <file>` under the new.
 
-- A **lost** key: while the remaining custodians still meet the threshold, rotate it out. Below
-  the threshold the chain cannot continue; consumers must pin a new policy and accept a new
-  genesis, announced out of band.
+- A **lost** key: rotate it out by the procedure above. Rotation needs no old private key:
+  `successor` checks version N's existing signatures against the current roots' public keys, and
+  the new custodians sign version N+1. So it works even when the remaining custodians are below
+  the threshold, and consumers keep their checkpoint and the revocation history. Below the
+  threshold nothing more can be signed under the current roots, so rotate before the next change
+  is due.
 - A **compromised** key: rotate it out at once, and treat any version signed after the suspected
   compromise as suspect until the other custodians have re-reviewed it.
 
