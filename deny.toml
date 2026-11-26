@@ -59,6 +59,12 @@ ignore = [
     # not a vulnerability; there is no code path we can change to drop it. Revisit when
     # soroban-sdk's dependency tree stops depending on `paste`.
     { id = "RUSTSEC-2024-0436", reason = "unmaintained build-time transitive dep (soroban-sdk macros); no vulnerability; not directly controllable" },
+    # `chrono` reaches the toolkit only through the official MCP SDK: rmcp depends on it
+    # unconditionally and enables schemars' `chrono04` feature (still so in rmcp 3.11.0).
+    # RUSTSEC-2026-0543 is an unmaintained notice with no vulnerability and no patched version.
+    # No code here calls chrono. Revisit on every rmcp upgrade (nothing reports this ignore going
+    # stale; see scripts/check-licenses.sh) and whenever a chrono advisory names a flaw.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained transitive dep via rmcp/schemars (MCP SDK); no vulnerability; not directly controllable" },
 ]
 
 [bans]
