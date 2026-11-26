@@ -504,8 +504,7 @@ sys.stdout.flush()
     fn script(body: &str) -> (tempfile::TempDir, BuildConfig, BuildSlots) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().canonicalize().unwrap().join("launcher");
-        std::fs::write(&path, format!("#!/usr/bin/python3\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::write_executable(&path, &format!("#!/usr/bin/python3\n{body}\n"), 0o700);
         let slots = BuildSlots::new(1).unwrap();
         let config = BuildConfig {
             worker_launcher: Some(path),
