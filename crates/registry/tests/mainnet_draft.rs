@@ -166,30 +166,41 @@ fn the_draft_claims_no_audit_and_marks_what_custodians_must_fill_in() {
     assert!(ozpb_registry::governance::require_no_pending_review(&draft).is_err());
 }
 
-/// Signed by any production-shaped root policy, the draft loads for mainnet inside its interval
-/// and recognizes everything a mainnet install needs — and nothing for testnet.
+/// A quorum cannot admit the unfinished draft. Once the reference is resolved, the same
+/// production-shaped root policy admits the reviewed capabilities on mainnet.
 #[test]
-fn the_draft_loads_for_mainnet_once_signed_and_recognizes_the_reviewed_code() {
-    let custodian = |id: &str| SigningKey::from_bytes(&sha256(id.as_bytes()).0);
+fn mainnet_admission_requires_a_resolved_review_even_with_a_quorum_signature() {
+    let custodians: BTreeMap<_, _> = ["a", "b", "c"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                SigningKey::from_bytes(&sha256(id.as_bytes()).0),
+            )
+        })
+        .collect();
     let roots = RootPolicy {
         threshold: 2,
-        keys: ["a", "b", "c"]
-            .into_iter()
-            .map(|id| (id.to_string(), custodian(id).verifying_key().to_bytes()))
+        keys: custodians
+            .iter()
+            .map(|(id, key)| (id.clone(), key.verifying_key().to_bytes()))
             .collect(),
     };
-    let draft = committed();
-    let signed = sign_snapshot_with_roots(
-        &BTreeMap::from([
-            ("a".to_string(), custodian("a")),
-            ("c".to_string(), custodian("c")),
-        ]),
-        draft.clone(),
-    )
-    .unwrap();
-
+    let mut draft = committed();
     let mut registry =
         Registry::with_pinned_roots_for_network_at_version(roots.clone(), mainnet(), 1).unwrap();
+    let pending = sign_snapshot_with_roots(&custodians, draft.clone()).unwrap();
+    assert!(matches!(
+        registry.load_at(&pending, PLACEHOLDER_VALID_FROM),
+        Err(RegistryError::Parse(message)) if message.contains("pending")
+    ));
+
+    draft
+        .templates
+        .get_mut("policy-templates/scope@1")
+        .unwrap()
+        .review_reference = "https://example.invalid/synthetic-completed-review".to_string();
+    let signed = sign_snapshot_with_roots(&custodians, draft).unwrap();
     registry.load_at(&signed, PLACEHOLDER_VALID_FROM).unwrap();
     let authority = registry
         .resolve_account_authority(&pinned_upstream::OZ_SMART_ACCOUNT_WASM)

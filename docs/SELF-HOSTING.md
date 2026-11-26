@@ -55,6 +55,7 @@ The API and TLS proxy images are not release assets: publishing the release runs
 
 ```sh
 tag=vX.Y.Z    # the release you are installing
+revision='<tested-release-commit>'
 target=x86_64-unknown-linux-gnu    # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
 gh release download "$tag" --repo gateway-fm/oz-policy-builder \
   --pattern "*-$target.tar.gz" --pattern SHA256SUMS
@@ -65,12 +66,12 @@ grep -- "-$target.tar.gz\$" SHA256SUMS | sha256sum --check
   for asset in *.tar.gz SHA256SUMS; do
     gh attestation verify "$asset" --repo gateway-fm/oz-policy-builder \
       --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/release-binaries.yml \
-      --source-ref "refs/tags/$tag" --deny-self-hosted-runners
+      --source-ref "refs/tags/$tag" --source-digest "$revision" --deny-self-hosted-runners
   done )
 ```
 
-`--repo` alone accepts an attestation from any workflow in the repository; the other three
-flags require the one that publishes releases, run for this tag on a GitHub-hosted runner.
+The attestation checks require the release workflow, this tag, the tested source commit and a
+GitHub-hosted runner.
 Verify images the same way, by digest (below). The Linux
 binaries are built on Ubuntu 24.04 and may need a glibc as new as its; on an older host, build
 from the tag instead (`cargo build --locked --release -p ozpb-cli -p ozpb-mcp-server`, and the
@@ -171,23 +172,24 @@ than a mutable tag. `self-hosted.yml` builds and tests in CI and never pushes.
 For each published GitHub Release whose tag (`v` plus the workspace version in `Cargo.toml`)
 contains it, `publish-image.yml` builds both images for amd64 and arm64 from the release tag,
 runs every check `self-hosted.yml` runs on each, and publishes them to
-`ghcr.io/gateway-fm/oz-policy-builder` and `ghcr.io/gateway-fm/oz-policy-builder-proxy` under
+`docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy` under
 the release tag, with a GitHub build-provenance attestation. The workflow summary lists both
 `@sha256` references; use those, and check each with
 
 ```sh
 gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
   --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/publish-image.yml \
-  --source-ref "refs/tags/<tag>" --deny-self-hosted-runners
+  --source-ref "refs/tags/<tag>" --source-digest "<release commit>" --deny-self-hosted-runners
 ```
 
 A published
 image is software for operators to run; it does not mean an endpoint is running.
 
-GHCR creates a new package as private. After the first publication an organization owner makes
-both packages public once, under the package's settings; GitHub does not allow making a public
-package private again. Until then, pulls and attestation checks from outside the organization
-are refused. `v0.1.0` predates the workflow and has no images.
+An organization owner creates both public Docker Hub repositories with immutable tags before
+publication. The existing 0.2.0 pre-release images remain on GHCR. The Docker Hub repositories
+use immutable tags. If publication fails after staging a platform
+image or manifest, rerun the same GitHub Actions run. It reuses that run's staged digests and
+verifies any final tag already published. GitHub stores the attestations for each image digest.
 
 ## Configure the operator boundary
 

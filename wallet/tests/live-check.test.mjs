@@ -10,6 +10,24 @@ import { denialSimulation, permitChanges, permitSimulation, withProbe } from './
 const layerOf = (result) => result.verification.layers.find((layer) => layer.layer === 'live_enforcement');
 const base64Entries = (text) => /AAAA[A-Za-z0-9+/]{200,}/.test(text);
 
+test('a restarted wallet waits past prior expiry on both the clock and live snapshot before releasing an entry', async () => {
+  const f = await liveReviewed({ priorAuthorizationExpiry: () => START_LEDGER });
+  const input = { reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId };
+  await assert.rejects(() => f.actions['prepare-live'](input), { reason: 'signatures_still_valid' });
+
+  f.state.ledger++;
+  f.state.readLedger = START_LEDGER;
+  const consent = ({ action, statementSha256 }) => f.actions['consent-live']({ id: action.id, statementSha256 });
+  const stale = await f.actions['prepare-live'](input);
+  await assert.rejects(() => consent(stale.live), { reason: 'signatures_still_valid' });
+  assert.equal(f.records.length, 0);
+
+  f.state.readLedger = f.state.ledger;
+  const fresh = await f.actions['prepare-live'](input);
+  assert.ok((await consent(fresh.live)).ownerEntryXdr);
+  assert.equal(f.records.length, 1);
+});
+
 test('without a configured helper, the live layer is not offered', async () => {
   const { actions } = setup();
   assert.equal((await actions.status({})).capabilities.liveCheck, false);

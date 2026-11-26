@@ -4,7 +4,7 @@ const ENDPOINTS = new Set(['status', 'readiness', 'prepare-account', 'confirm-ac
   'confirm-revoke', 'use-grant', 'try-grant-again', 'account-rules', 'prepare-earlier-revoke', 'confirm-earlier-revoke']);
 const refused = () => new Error('wallet request refused; reconnect or try a fresh review');
 /** The closed set of reasons a refusal may name (the backend's REFUSAL_REASONS); any other is dropped. */
-export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
+export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'replay_journal_unavailable', 'account_changed',
   'review_expired', 'grant_already_used', 'network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
   'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events', 'delegate_key_unavailable']);
 /** The operator setting a cap refusal may name, by reason (the backend's CAP_SETTINGS). */

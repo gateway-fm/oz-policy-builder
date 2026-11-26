@@ -135,7 +135,7 @@ function transferredExactly(net, events, { account, recipient, amount }) {
  */
 export function createWalletActions({ session, toolchain, network, native = null, live = null,
   delegates = new DelegateCapabilities(network?.profile ?? null), pause = sleep, handoff = new AgentHandoff({ network: network?.profile }),
-  pinnedWasmDir = null }) {
+  pinnedWasmDir = null, priorAuthorizationExpiry = () => 0 }) {
   const net = network?.profile;
   if (!net || typeof net.networkId !== 'string' || !Object.isFrozen(net)) refuse();
   // The session's fee caps: testnet's fixed ceilings, or the operator's configured caps.
@@ -153,6 +153,13 @@ export function createWalletActions({ session, toolchain, network, native = null
   const agentHandoff = net.name === 'testnet';
   /** The fee payer is only a transaction source and fee payer, never a signer or delegate on an account. */
   const notPayer = (address) => { if (address === network.payerAddress) refuse(); };
+  async function requireEarlierAuthorizationExpiry(account, observedLedger) {
+    const expires = priorAuthorizationExpiry(account);
+    if (!expires) return;
+    const latest = observedLedger ?? await clockedLedger(network);
+    if (!Number.isSafeInteger(latest) || latest <= expires) throw because('signatures_still_valid');
+  }
+
   /**
    * One attempt at fee-payer writes the session makes once (an account's creation, a policy's
    * deployment); `send(write)` runs one of them. After a refusal, `unsent()` says whether the attempt
@@ -843,6 +850,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       delegates.check(input.capabilityId, delegate);
       session.invalidate('live');
       session.invalidate('live_sign');
+      await requireEarlierAuthorizationExpiry(review.approval.wallet.contractId);
       // Earlier signatures still valid: a new check would add more before the replay check can run.
       if (liveRecords.length && (await clockedLedger(network)) <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) {
         throw Object.assign(new Error('wallet action refused; refresh and review again'), { reason: 'signatures_still_valid' });
@@ -870,7 +878,8 @@ export function createWalletActions({ session, toolchain, network, native = null
       return session.consume(input.id, 'live', async (held) => {
         if (!live || input.statementSha256 !== held.prepared.statementSha256) refuse();
         const review = get(reviews, held.reviewId);
-        await consentWindow({ network, prepared: held.prepared });
+        const consentLedger = await consentWindow({ network, prepared: held.prepared });
+        await requireEarlierAuthorizationExpiry(review.approval.wallet.contractId, Math.min(consentLedger, held.prepared.snapshot.ledger));
         const record = replayRecord(held.prepared);
         network.recordLiveObligation(record);
         liveRecords.push(record);
@@ -945,6 +954,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       // Assembly and the subsequent reads take time. Recheck the bounded ledger clock before
       // recording any signing obligation or releasing an owner entry to the browser.
       const releaseLedger = await clockedLedger(network);
+      await requireEarlierAuthorizationExpiry(review.approval.wallet.contractId, Math.min(releaseLedger, snapshot.ledger, observed));
       installGate({ review, deployment, artifact, currentLedger: releaseLedger });
       limits.currentLedger = releaseLedger;
       validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });

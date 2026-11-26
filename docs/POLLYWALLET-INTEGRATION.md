@@ -770,10 +770,8 @@ signature is still valid, `Check that the live-check signatures were not used` r
 and a new live check is refused. After N, it re-reads the same state. The ledger it judges by is
 that of the read itself, never a separate request, which a lagging node could answer. It reports
 `unchanged`, or `changed` with what moved and an alert not to install. The check runs when the
-owner asks for it; nothing runs it automatically. A record outlives an aborted run, but only in
-the running backend: the journal entry is evidence for the operator, and a restarted backend does
-not read an earlier session's journal. After a restart, wait until the earlier N has passed before
-preparing another check. `requireNoReplay` in
+owner asks for it. A record outlives an aborted run. After restart the backend checks retained
+journal expiries before releasing new signatures, and a new review checks the account state. `requireNoReplay` in
 [`wallet/server/live-check.mjs`](../wallet/server/live-check.mjs) is the guard the installation
 flow must call before it signs anything; it refuses unless the check reports `unchanged`, and
 without any record. [Installation](#installation) calls it before it releases an entry for the
@@ -853,8 +851,9 @@ re-establishes the same conditions:
    It journals the entry's expiry with that state as a new obligation only after these checks,
    before the entry leaves the backend. From then on a
    passkey may have signed it. Until it expires, no other installation entry is released. After it
-   expires, the replay check compares the account with that state. Like the live check's, these
-   obligations exist only in the running backend; see [After a restart](#after-a-restart).
+   expires, the replay check compares the account with that state. The comparison uses the
+   running session's records. After restart, recovered expiries block new signing until a fresh
+   account review can proceed. See [After a restart](#after-a-restart).
 5. The browser derives the consent statement itself from the review and the validated assembly and
    requires it to equal the backend's. The statement shows the exact `add_context_rule` call, what
    installing grants (delegate, target, allowed calls, call cap, expiry, rule ID), the
@@ -905,27 +904,17 @@ status read.
 
 ### After a restart
 
-Replay obligations, the one-installation-per-session limit and the installation records exist only
-in the running backend. The session journal keeps every obligation (`live-check` and
-`install-release` entries) and every submission for the operator, but a restarted backend does
-not read it. So after a restart:
+The backend checks previous sessions in the configured work root before releasing a live-check or
+installation authorization. The same account must reach a ledger strictly past every earlier
+authorization's expiry. A malformed or unreadable authorization journal blocks new signing for
+the work root. Keep that work root across restarts for the same accounts, including when replacing
+the fee payer. The next attempt uses a fresh account review and the ordinary authority checks.
 
-- The new backend does not know that an installation entry released before the restart may have
-  been signed. Until that entry expires, it could still land, and it would install the same grant
-  a second time, with a call cap of its own.
-- The new backend has no record of a rule the earlier one installed. It can still remove it:
-  attach the account, then **Remove a grant an earlier session installed** under section 9 lists
-  the account's rules as stored now (`account-rules`), and removal of one is prepared and signed
-  as below, bound to the rule's exact current bytes instead of an installation record.
-
-Before installing again after a restart, the operator:
-
-1. Reads the latest `signatureExpirationLedger` among the earlier session's `live-check` and
-   `install-release` journal entries, and waits until that ledger has passed.
-2. Checks the account's rules, with the list above or a new review, whose authority evidence lists
-   every rule. A rule that is not expected must be removed first, with the removal above. (The
-   harness's `lifecycle.mjs` is testnet only.)
-3. Only then starts a new review.
+A restarted backend does not have the earlier session's in-memory installation records. It can
+still remove a rule through **Remove a grant an earlier session installed**. The wallet reads the
+current rules and binds the review to the selected rule's exact bytes. On-chain removal takes the
+rule ID. Changes between the last check and ledger inclusion are possible, so keep account
+management serialized while removing a grant.
 
 An installation that needs a separate restoration transaction is refused. Restore the archived
 entries, then review again.

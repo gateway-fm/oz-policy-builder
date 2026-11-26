@@ -54,7 +54,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-revision:
+    name: verify release CI on the exact tagged revision
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/require-release-checks.sh
+
   build:
+    needs: verify-revision
+    if: ${{ !cancelled() && (github.ref_type != 'tag' || needs.verify-revision.result == 'success') }}
     name: build (${{ matrix.target }})
     strategy:
       fail-fast: true

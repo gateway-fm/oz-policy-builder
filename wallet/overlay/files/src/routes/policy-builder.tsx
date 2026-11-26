@@ -68,6 +68,7 @@ const REFUSED: Record<string, string> = {
   rpc_too_slow: "the RPC answered too slowly for this step to be done safely (its reads must fit within about a minute), so the backend stopped before submitting anything. Try again; if it keeps happening, the operator needs a faster RPC endpoint.",
   evidence_stale: "the checks are more than 30 minutes old. Run them again: section 4, then the live check, then install.",
   signatures_still_valid: "signatures this wallet released earlier, by the live check or an installation entry, are still valid. Wait until their ledger has passed, then try again.",
+  replay_journal_unavailable: "the local wallet could not verify an earlier authorization journal. Inspect or restore it before signing again.",
   account_changed: "your account changed while signatures this wallet released were valid. Do not install; find out what changed first.",
   grant_already_used: "the policy says this grant was already used, but not from this page: someone holding the automation key's signatures used it. Nothing was sent. Revoke the grant.",
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",

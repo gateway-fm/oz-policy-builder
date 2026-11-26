@@ -472,6 +472,7 @@ pub fn synthesize(
             .and_then(|t| input.adapters.iter().find(|a| a.target_code_hash == t.hash));
         // Dedup identical tuples; merge their evidence paths.
         let mut tuples: Vec<(AllowedCall, Vec<String>)> = Vec::new();
+        let mut requires_adapter = false;
         for o in calls {
             let matched_adapter =
                 adapter.filter(|adapter| adapter.matches_call(&o.fn_name, o.args));
@@ -483,6 +484,15 @@ pub fn synthesize(
                 &mut errors,
                 &mut rationale,
             );
+            if let Some(adapter) = matched_adapter {
+                requires_adapter |= args.iter().any(|arg| match arg.provenance {
+                    Provenance::AdapterDerived { .. } => true,
+                    Provenance::UserWidened { .. } => {
+                        adapter.role(&o.fn_name, arg.index as usize).is_some()
+                    }
+                    _ => false,
+                });
+            }
             let call = AllowedCall {
                 fn_name: o.fn_name.clone(),
                 args,
@@ -504,15 +514,9 @@ pub fn synthesize(
             })
             .collect();
 
-        // If the reviewed adapter introduced any code-hash-bound constraint, the rule's
-        // effect-minimality claim is valid only while the target's code hash holds — escalate
-        // the drift policy from evidence-only/warn to adapter-required/refuse (§6.1).
-        let adapter_derived = allowed_calls.iter().any(|c| {
-            c.args
-                .iter()
-                .any(|a| matches!(a.provenance, Provenance::AdapterDerived { .. }))
-        });
-        if adapter_derived {
+        // User-selected bounds checked against an adapter role also rely on that code, even
+        // when none of the constraints has adapter-derived provenance.
+        if requires_adapter {
             if let Some(t) = target_code_hash.as_mut() {
                 t.role = TargetHashRole::AdapterRequired;
                 t.on_drift = DriftResponse::Refuse;
@@ -3459,6 +3463,31 @@ mod tests {
                 "{widening:?}: {arg:?}"
             );
         }
+
+        // All positions normally widened by the adapter now have explicit decisions. The
+        // output's low-risk open upper bound is still justified by the reviewed router code.
+        let mut d = decisions.clone();
+        let mut floor = swap_widening(
+            &router,
+            1,
+            WideningBound::GeI128 {
+                min: "950".to_string(),
+            },
+        );
+        floor.blast_radius = BlastRadius::Low;
+        d.widenings = vec![swap_widening(&router, 0, range("0", "2000")), floor];
+        let bound = synthesize(&input, &d).unwrap();
+        let rule = &bound.spec.rules[0];
+        assert!(rule
+            .allowed_calls
+            .iter()
+            .flat_map(|call| &call.args)
+            .all(|arg| !matches!(arg.provenance, Provenance::AdapterDerived { .. })));
+        let hash = rule.context.target_code_hash.as_ref().unwrap();
+        assert_eq!(hash.role, TargetHashRole::AdapterRequired);
+        assert_eq!(hash.on_drift, DriftResponse::Refuse);
+        let (unbound, _, _) = adapted_swap(false);
+        assert!(synthesize(&unbound, &d).is_err());
 
         // Without the binding nothing declares the role, so the decision is the user's alone.
         let (unbound, _, _) = adapted_swap(false);

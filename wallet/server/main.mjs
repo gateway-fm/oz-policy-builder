@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadWalletConfig } from './config.mjs';
 import { createWalletServer } from './http.mjs';
-import { WalletNetwork, journaledSpend } from './network.mjs';
+import { WalletNetwork, earlierAuthorizationExpiry, journaledSpend } from './network.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
 import { DelegateCapabilities } from './native-execution.mjs';
 import { WalletSession } from './session.mjs';
@@ -60,7 +60,9 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   // Disposable automation keys with the disposable fee payer; operator-funded, only the operator's delegate key, if any.
   const delegates = new DelegateCapabilities(config.network, { random: !config.feePayer.operator,
     key: config.delegateKey ? config.delegateKey.keypair() : null });
-  const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, pinnedWasmDir: config.pinnedWasmDir });
+  const priorAuthorizationExpiry = (account) => earlierAuthorizationExpiry(config.workRoot, toolchain.sessionRoot, config.network, account);
+  const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, priorAuthorizationExpiry,
+    pinnedWasmDir: config.pinnedWasmDir });
   const server = createWalletServer({ session, actions, handoff });
   return { server, network: config.network, preflight: () => networkPreflight(network),
     launchUrl: `${ORIGIN}/policy-builder#session=${secret}&network=${config.network.name}` };

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Keypair, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { PROTOCOL_VERSION } from '../shared/networks.mjs';
@@ -29,6 +29,60 @@ const refuse = (cause) => {
   throw Object.assign(new Error('wallet network operation refused; inspect the local journal before retrying'),
     NETWORK_REASONS.includes(cause?.reason) ? { reason: cause.reason, ...(cause.protocolVersion !== undefined ? { protocolVersion: cause.protocolVersion } : {}) } : {});
 };
+function readJournalEntry(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('invalid journal entry');
+    const buffer = Buffer.alloc(stat.size);
+    if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) throw new Error('incomplete journal entry');
+    return buffer.toString('utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Latest still-possible authorization from a prior backend using this network's work root. */
+export function earlierAuthorizationExpiry(workRoot, currentSession, network, account) {
+  if (!StrKey.isValidContract(account)) refuse();
+  let expires = 0;
+  try {
+    for (const session of readdirSync(workRoot).filter((name) => name.startsWith('wallet-session-'))) {
+      if (session === basename(currentSession)) continue;
+      const directory = join(workRoot, session);
+      if (!lstatSync(directory).isDirectory()) refuse();
+      const journal = join(directory, 'journal');
+      try {
+        if (!lstatSync(journal).isDirectory()) refuse();
+      } catch (error) {
+        // A failed startup can leave a session directory before creating the journal.
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      const records = readdirSync(journal).filter((name) => /^[0-9]{4,}\.(?:live-check|install-release)\.json$/.test(name));
+      if (!records.length) continue;
+      try {
+        const binding = JSON.parse(readJournalEntry(join(journal, '0000.session.json')));
+        if (binding.networkId !== network.networkId) refuse();
+      } catch (error) {
+        // Sessions predating the network marker belonged to testnet. Mainnet startup rejects
+        // unbound work roots and mainnet journals always include the session binding.
+        if (network.name !== 'testnet' || error?.code !== 'ENOENT') throw error;
+      }
+      for (const name of records) {
+        const record = JSON.parse(readJournalEntry(join(journal, name)));
+        const affected = record.snapshot?.account;
+        if (!StrKey.isValidContract(affected)) refuse();
+        const expiry = ledger(record.signatureExpirationLedger);
+        if (affected === account) expires = Math.max(expires, expiry);
+      }
+    }
+  } catch {
+    throw Object.assign(new Error('wallet replay journal could not be verified'), { reason: 'replay_journal_unavailable' });
+  }
+  return expires;
+}
+
 /**
  * The fees every earlier session in this work root may have been charged: the full fee of each
  * transaction it journaled as intended before sending, whatever happened next. An operator-funded
@@ -52,18 +106,13 @@ export function journaledSpend(workRoot, network, caps = null) {
       names = readdirSync(journal);
     } catch (error) { if (error?.code === 'ENOENT') continue; refused(); }
     // Serials are padded to four digits and grow past them; the last is the highest of any phase.
-    const serial = (entry) => /^([0-9]{4,})\.[a-z]+\.json$/.exec(entry)?.[1];
+    const serial = (entry) => /^([0-9]{4,})\.[a-z-]+\.json$/.exec(entry)?.[1];
     const last = names.map(serial).filter(Boolean).map(BigInt).reduce((a, b) => (b > a ? b : a), -1n);
     for (const name of names.filter((entry) => /^[0-9]{4,}\.intended\.json$/.test(entry))) {
-      let fd;
       try {
-        fd = openSync(join(journal, name), constants.O_RDONLY | constants.O_NOFOLLOW);
-        const stat = fstatSync(fd);
-        if (!stat.isFile() || stat.size > 1024 * 1024) refused();
-        const buffer = Buffer.alloc(stat.size);
-        if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) refused();
+        const text = readJournalEntry(join(journal, name));
         let entry;
-        try { entry = JSON.parse(buffer.toString('utf8')); } catch (error) {
+        try { entry = JSON.parse(text); } catch (error) {
           const truncated = error instanceof SyntaxError && BigInt(serial(name)) === last
             && names.filter((other) => serial(other) === serial(name)).length === 1;
           if (!truncated || !caps || !Number.isSafeInteger(caps.maxFeeStroops) || !Number.isSafeInteger(caps.maxUploadFeeStroops)) refused();
@@ -74,7 +123,7 @@ export function journaledSpend(workRoot, network, caps = null) {
         const envelope = xdr.TransactionEnvelope.fromXDR(entry.envelopeXdr, 'base64');
         if (envelope.type !== 'envelopeTypeTx' || !Number.isSafeInteger(envelope.v1.tx.fee)) refused();
         total += BigInt(envelope.v1.tx.fee);
-      } catch { refused(); } finally { if (fd !== undefined) closeSync(fd); }
+      } catch { refused(); }
     }
   }
   return total.toString();
@@ -451,7 +500,7 @@ export class WalletNetwork {
   }
   #save(serial, phase, value) {
     writeFileSync(join(this.#journal, `${String(serial).padStart(4, '0')}.${phase}.json`),
-      JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+      JSON.stringify(value), { mode: 0o600, flag: 'wx', flush: true });
   }
   /**
    * The fee payer is the transaction's source and pays its fee; it is never a signer on an account.

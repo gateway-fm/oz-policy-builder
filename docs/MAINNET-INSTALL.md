@@ -7,27 +7,14 @@ submits a mainnet transaction for you, and nothing here commits anyone to runnin
 
 ## Prerequisites
 
-**Install from the `1.0.0-rc.N` release candidate.** It comes in a fixed order
-([the order for 1.0.0](VERSIONING.md#the-order-for-100)): OpenZeppelin's review of a frozen
-revision and their documented sign-off, the owner's acceptance of the milestone's deviations, the
-mainnet registry's key ceremony, whose template-pack review reference cites that sign-off, and
-the release candidate, which carries the signed mainnet head. The external audit of the same
-revision runs alongside; its report and remediation lead to 1.0.0, not to this installation.
-Until the release candidate exists **A production registry** below cannot be met. Take from it
-the toolkit checkout the wallet is applied from, the binaries, and the signed head, `roots.json`
-and checkpoint attached to it. If a remediated audit finding later changes the installed policy's
-code or the shape of the grant, the installation is repeated from 1.0.0, at about the
-[fee table's](#every-mainnet-write-in-order-with-its-simulated-fee) cost again.
-
-**Check that the records which precede the installation are in that release's tree.** Do not
-install until the [review record](OZ-REVIEW-PACKAGE.md#review-record) has OpenZeppelin's sign-off
-row and every deviation under
-[Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
-has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here) or,
-for a gate's deviation, its gate is closed. The wallet does not check them. The audit's report
-in the remediation log's [report table](AUDIT-REMEDIATION.md#report), with no row of its
-[findings table](AUDIT-REMEDIATION.md#findings) `open`, is required for 1.0.0 and for the
-milestone's submission, not for this installation.
+**Install from an audited `1.0.0-rc.N`.** Before any mainnet write, check the
+[OpenZeppelin review record](OZ-REVIEW-PACKAGE.md#review-record), the published full-path
+[audit report and remediation](AUDIT-REMEDIATION.md), the
+[gate decisions](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here), and the exact-revision
+[release checks](VERSIONING.md#the-release-gate). The release candidate must carry the signed
+production registry referencing both reviews. Use that candidate's source, binaries, signed
+head, `roots.json` and checkpoint. These release prerequisites are reviewed by the owner before
+using the wallet.
 
 **Commands that name mainnet.** stellar-cli 27.0.0 has no RPC URL for its built-in `mainnet`
 network: `--network mainnet` fails with `Invalid URL Bring Your Own: …`. Every mainnet command
@@ -62,12 +49,9 @@ Rehearse the funding and custody model on testnet first, at no cost: [Rehearse o
    that monitoring can watch it. The head is valid only for the interval its custodians signed:
    once it expires, synthesis and the install checks refuse it until whoever then holds the roots
    publishes a successor ([validity](REGISTRY-GOVERNANCE.md#validity-expiry-and-the-end-of-the-grant-period)).
-   After the audit the custodians publish a successor whose template-pack reference adds the
-   audit report ([the order for 1.0.0](VERSIONING.md#the-order-for-100)); the monitor then
-   reports a newer version (exit 3), which is expected. Remove this grant before advancing to
-   it, and keep version 1 pinned while the grant is installed: once advanced, the persisted
-   checkpoint refuses version 1, and a grant synthesized under version 1 fails its checks under
-   another root.
+   If custodians publish a successor, remove this grant before advancing the pinned registry.
+   An advanced checkpoint refuses the earlier root, and a grant synthesized for that root fails
+   its install checks under another one.
 4. **A funded fee payer.** A classic account you own, its secret seed in a file with mode `0600`
    (`feePayerKeyPath`), funded with its minimum reserve (1 XLM at the current 0.5 XLM base
    reserve) plus the fees below. The wallet never funds it (`payer_unfunded`).
