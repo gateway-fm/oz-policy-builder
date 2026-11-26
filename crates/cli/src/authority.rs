@@ -41,9 +41,9 @@ pub struct InstalledGrantArgs {
     #[arg(long, value_parser = recorded_commitment, requires = "min_ledger")]
     recorded_authority_commitment: Option<String>,
     /// The oldest ledger a scheduled run accepts an observation of: the installation's ledger on
-    /// the first run, then one past the last run's `observed_ledger`. An older observation exits
-    /// 4, so an endpoint stuck on an old ledger is not read as unchanged. Needs
-    /// --recorded-authority-commitment.
+    /// the first run, then one past the `observed_ledger` of the last run that exited 0, never
+    /// lowered. An older observation exits 4, so an endpoint stuck on an old ledger is not read
+    /// as unchanged. Needs --recorded-authority-commitment.
     #[arg(long, requires = "recorded_authority_commitment")]
     min_ledger: Option<u32>,
     #[command(flatten)]

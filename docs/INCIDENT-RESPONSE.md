@@ -58,7 +58,7 @@ ozpb check-installed-grant --request installed-grant.json --rpc-sources rpc-sour
   --registry-roots grant-monitor-roots.json \
   --registry-min-version <the installation's registry version> \
   --recorded-authority-commitment <the installation's authority_commitment> \
-  --min-ledger <installation ledger, then the last run's observed_ledger + 1>
+  --min-ledger <installation ledger, then observed_ledger + 1 from the last run that exited 0>
 ```
 
 The request is `{"candidate": …, "installed_rule": …}`: the `check-policy-call-surface` request
@@ -70,8 +70,10 @@ keeps it with its installation record. The JSON observation is printed either wa
 **The ledger floor.** An endpoint that stopped ingesting keeps serving an old, consistent ledger,
 which would read as unchanged on every run. `--min-ledger` refuses an observation of an older
 ledger (exit 4): pass the installation's ledger on the first run, then one more than the
-`observed_ledger` of the last run's JSON, so a ledger that does not advance is no answer. At a
-ledger every five or six seconds, an hourly run may pass a floor several hundred higher.
+`observed_ledger` of the last run that exited 0, so a ledger that does not advance is no answer.
+Record the floor only from such a run and never lower it: a stale run's older ledger would
+otherwise let that endpoint pass as unchanged again. At a ledger every five or six seconds, an
+hourly run may pass a floor several hundred higher.
 
 **The registry version is the installation's.** The request's spec pins the exact registry
 snapshot the installation was checked under, and the commitment covers its root. Under the

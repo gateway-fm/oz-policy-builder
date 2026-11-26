@@ -120,11 +120,71 @@ def rust_check(root, path, name, where):
         raise PlanError(f"{where}: {path} has no test function for '{name}'")
 
 
+CHECK_FILE = r"""\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)"""
+LOOP_CHECK = re.compile(r'grep\s+-qx\s+"test\s+\$\{?test\}?\s+\.\.\.\s+ok"' + CHECK_FILE)
+NAMED_CHECK = re.compile(r"""grep\s+-qx\s+(['"])test\s+(\w+)\s+\.\.\.\s+ok\1""" + CHECK_FILE)
+LOOP = re.compile(r"^for\s+test\s+in\s+([^;\n]*);\s*do\b", re.M)
+DONE = re.compile(r"(?:^|;)[ \t]*done\b([^\n]*)", re.M)
+EXIT_CODE = r"(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])"
+END_OF_COMMAND = r"[ \t]*(?:[;#]|$)"
+
+
+def errexit_changes(text):
+    """[(offset, on)] for each `set` line that turns `-e` on or off. Only an unindented line
+    turns it on, since an indented one may sit in a function or subshell; any line turns it
+    off."""
+    changes = []
+    for line in re.finditer(r"^([ \t]*)set\s+([^;\n]*)", text, flags=re.M):
+        words = line.group(2).split()
+        for index, word in enumerate(words):
+            if word in {"-", "--"}:
+                break
+            if word in {"-o", "+o"}:
+                on = word[0] == "-" and words[index + 1:index + 2] == ["errexit"]
+                off = word[0] == "+" and words[index + 1:index + 2] == ["errexit"]
+            elif re.fullmatch(r"[-+][A-Za-z]+", word) and "e" in word[1:]:
+                on, off = word[0] == "-", word[0] == "+"
+            else:
+                continue
+            if off or (on and not line.group(1)):
+                changes.append((line.start(), on))
+    return changes
+
+
+def failure_end(text, match, errexit, end):
+    """Where the failure handling of the `grep` at `match` ends, if a failed grep stops the script
+    with a non-zero status; else None. That handling is `|| exit [N]`, a `|| { ... }` block
+    whose last command is `exit N`, or nothing at all under `set -e`; N is 1 to 255. A block
+    with `continue`, `break` or `return`, or whose `exit` is conditional, does not count, nor do
+    `|| true`, `|| :`, `&&` or a pipe."""
+    after = text[match.end():end]
+    direct = re.match(rf"[ \t]*\|\|[ \t]*exit(?:[ \t]+{EXIT_CODE})?(?={END_OF_COMMAND})", after,
+                      flags=re.M)
+    if direct:
+        return match.end() + direct.end()
+    group = re.match(r"[ \t]*\|\|[ \t]*\{(.*?)(?:^|;)[ \t]*\}", after, flags=re.M | re.S)
+    if group:
+        commands = [c.strip() for c in re.split(r"[;\n]", group.group(1)) if c.strip()]
+        if commands and re.fullmatch(rf"exit[ \t]+{EXIT_CODE}", commands[-1]) and \
+                not any(re.match(r"(?:continue|break|return)\b", c) for c in commands):
+            return match.end() + group.end()
+        return None
+    if errexit and re.match(r"[ \t]*(?:;[ \t]*(?!then\b|do\b)|#|$)", after, flags=re.M):
+        return match.end()
+    return None
+
+
 def release_requirements(script):
-    """{(binary, name)} for each test the release script requires by name to have passed: the
-    names of a `for test in ...; do` loop and of a `grep -qx 'test NAME ... ok'` check, each
-    paired with the `--test` binary the script ran last above it. A name anywhere else, a comment
-    included, requires nothing."""
+    """{(binary, name)} for each test the release script requires by name to have passed, each
+    paired with the `--test` binary the script ran last above it:
+    - the names of an unindented `for test in ...; do` loop whose body is exactly
+      `grep -qx "test $test ... ok" FILE` and its failure handling (see `failure_end`), the loop
+      not piped or part of a list;
+    - the name in an unindented `grep -qx 'test NAME ... ok' FILE` check with failure handling,
+      nothing after it on its line.
+    An unindented line is taken to be at the top level of the script, since the script indents
+    what a function, `if` or loop holds. A name anywhere else, a comment included, requires
+    nothing."""
     logical, pending = [], ""
     for line in script.splitlines():
         if line.lstrip().startswith("#"):
@@ -134,18 +194,32 @@ def release_requirements(script):
             continue
         logical.append(pending + line)
         pending = ""
-    required, binary = set(), None
-    for line in logical:
-        found = re.search(r"--test\s+(\w+)", line)
-        if found:
-            binary = found.group(1)
-        if binary is None:
+    text = "\n".join(logical)
+    binaries = [(m.start(), m.group(1)) for m in re.finditer(r"--test\s+(\w+)", text)]
+    changes = errexit_changes(text)
+
+    def last(pairs, offset, default):
+        return next((value for start, value in reversed(pairs) if start < offset), default)
+
+    required = set()
+    for loop in LOOP.finditer(text):
+        binary = last(binaries, loop.start(), None)
+        done = DONE.search(text, loop.end())
+        # A loop that is piped or part of a list runs where a failure does not stop the script.
+        if binary is None or done is None or not re.fullmatch(r"[ \t]*(?:[;#].*)?", done.group(1)):
             continue
-        loop = re.search(r"\bfor\s+test\s+in\s+([^;]*);\s*do\b", line)
-        if loop:
+        body = re.compile(r"\s*").match(text, loop.end()).end()
+        check = LOOP_CHECK.match(text, body, done.start())
+        stop = check and failure_end(text, check, last(changes, body, False), done.start())
+        if stop and re.fullmatch(r"[\s;]*", text[stop:done.start()]):
             required.update((binary, name) for name in loop.group(1).split())
-        for name in re.findall(r"grep\s+-qx\s+['\"]test\s+(\w+)\s+\.\.\.\s+ok['\"]", line):
-            required.add((binary, name))
+    for check in NAMED_CHECK.finditer(text):
+        binary = last(binaries, check.start(), None)
+        if binary is None or check.start() > 0 and text[check.start() - 1] != "\n":
+            continue
+        stop = failure_end(text, check, last(changes, check.start(), False), len(text))
+        if stop is not None and re.match(END_OF_COMMAND, text[stop:], flags=re.M):
+            required.add((binary, check.group(2)))
     return required
 
 

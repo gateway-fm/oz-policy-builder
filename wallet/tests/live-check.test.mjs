@@ -245,6 +245,36 @@ test('a policy decision is never masked as unavailable by the other case needing
   assert.deepEqual(live.evidence.cases.map((c) => c.outcome), ['failed', 'permit']);
 });
 
+test('a policy decision is never masked as unavailable by the other case returning no diagnostic events', async () => {
+  // stellar-rpc 30.0.1 without --preflight-enable-debug: no events, and a denial's host error alone.
+  const silentPermit = (entries, P) => withProbe(P, () => permitSimulation(permitChanges(entries), { entries, events: [] }));
+  const silentDenial = (entries, P) => ({ ...withProbe(P, () => denialSimulation(entries)), error: 'HostError: Error(Auth, InvalidAction)', events: [] });
+  const adjacentPermitted = (entries, P) => withProbe({ ...P, permitAmount: 1000001n },
+    () => permitSimulation(permitChanges(entries, { amount: 1000001n }), { entries, amount: 1000001n }));
+  const run = async (respond) => {
+    const f = await liveReviewed({ respond });
+    const { input } = await consented(f);
+    return layerOf(await f.actions['run-live'](input));
+  };
+  const masked = await run((kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : adjacentPermitted(entries, P)));
+  assert.equal(masked.status, 'failed', 'a permitted adjacent amount is the candidate\'s own wrong decision');
+  assert.deepEqual(masked.evidence.cases.map((c) => [c.outcome, c.reason]),
+    [['failed', 'no_diagnostic_events'], ['permit', 'candidate_permitted']]);
+  // Unjudgeable beside the expected outcome, beside a response needing restoration, or both
+  // unjudgeable: the endpoint, not the candidate.
+  const restoring = (response) => ({ ...response, restorePreamble: { minResourceFee: '1' } });
+  for (const respond of [(kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : null),
+    (kind, entries, P) => (kind === 'permit' ? null : silentDenial(entries, P)),
+    (kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : silentDenial(entries, P)),
+    (kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : restoring(withProbe(P, () => denialSimulation(entries)))),
+    (kind, entries, P) => (kind === 'permit'
+      ? restoring(withProbe(P, () => permitSimulation(permitChanges(entries), { entries }))) : silentDenial(entries, P))]) {
+    const live = await run(respond);
+    assert.equal(live.status, 'unavailable', JSON.stringify(live));
+    assert.match(live.detail, /no diagnostic events/);
+  }
+});
+
 test('a candidate missing on testnet is unavailable, not a failed candidate', async () => {
   const f = await liveReviewed();
   const liveness = f.network.contractLiveness;
