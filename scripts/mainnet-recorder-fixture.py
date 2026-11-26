@@ -181,14 +181,17 @@ def cases_of(record):
     arms = [arm(entry["credentials"]) for entry in auth]
     authorizers = [credential_address(entry["credentials"]) or tx["source_account"] for entry in auth]
     plain = 0 if kind == "tx" else 1  # a plain envelope keeps each case apart from the fee bump
+    # A fee bump counts only when another account pays: both fee-bump cases' tests require it.
+    payer = record["envelopeJson"]["tx_fee_bump"]["tx"]["fee_source"] if kind == "tx_fee_bump" else None
+    paid_by_another = payer is not None and payer != tx["source_account"]
     if not success:
         if call:
             found["failed-invocation"] = plain
         return found
-    if kind == "tx_fee_bump":
+    if paid_by_another and payer not in authorizers:
         # The relayer pattern: one party pays the fee, another authorizes the call.
         found["fee-bump-invocation"] = 0 if "address" in arms else 1
-    if kind == "tx_fee_bump" and call and call["function_name"] == "transfer" and arms == ["source_account"]:
+    if paid_by_another and call and call["function_name"] == "transfer" and arms == ["source_account"]:
         # Fee-bumped only: the case pins that the credential resolves to the inner source and
         # never to the fee payer, and its test requires the fee bump.
         found["sac-transfer-source-account"] = 0
@@ -235,6 +238,11 @@ def instances(url, contracts):
 def unusable_instances(keys, result):
     """Why a `getLedgerEntries` answer cannot stand in the corpus, or None. The recorder refuses
     a case unless every instance asked for is in the answer and live at its `latestLedger`."""
+    answered = [entry.get("key") for entry in result.get("entries") or []]
+    if len(set(answered)) != len(answered):
+        return "an instance is answered more than once"
+    if set(answered) - set(keys):
+        return "the answer holds an unrequested key"
     entries = {entry.get("key"): entry for entry in result.get("entries") or []}
     for key in keys:
         if key not in entries:
