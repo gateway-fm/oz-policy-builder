@@ -49,7 +49,7 @@ the spec carries it as `user_widened` provenance with that intent and rating.
 
 | Bound | Accepts | Applies to |
 | --- | --- | --- |
-| `{"range_i128": {"min": "M", "max": "N"}}` — a range, the recommended form of "up to N" with M = 0 | every value from M to N, both included; the generated policy refuses everything else, negatives included | `i128` arguments |
+| `{"range_i128": {"min": "M", "max": "N"}}` — a range, the recommended form of "up to N" with M = 0 | every value from M to N, both included; the generated policy refuses everything else, so with M ≥ 0 every negative amount. A negative M admits negative amounts down to M without an acknowledgement, and the rationale names that floor | `i128` arguments |
 | `{"le_i128": {"max": "N"}}` — a cap | every value ≤ N, negatives included; only with `"no_floor_acknowledged": true` beside it ([below](#open-question-negative-values-under-a-cap)) | `i128` arguments |
 | `{"ge_i128": {"min": "N"}}` — a floor | every value ≥ N, such as a swap's minimum output | `i128` arguments |
 | `"any_value"` | anything at that argument | any argument; requires `blast_radius: "high"` |

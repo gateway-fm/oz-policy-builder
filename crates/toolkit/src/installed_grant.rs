@@ -161,8 +161,9 @@ pub enum InstalledGrantComparison {
 }
 
 /// Compare one observation with the recorded commitment, refusing one older than `min_ledger`
-/// (the installation's ledger, or one past the last observation). Never adopts the observation
-/// as a new baseline: only the recorded commitment reads as unchanged.
+/// (the installation's ledger, or one past the last observation that read as `Unchanged`).
+/// Never adopts the observation as a new baseline: only the recorded commitment reads as
+/// unchanged.
 pub fn compare_installed_grant(
     output: &CheckInstalledGrantOutput,
     recorded_authority_commitment: &str,
