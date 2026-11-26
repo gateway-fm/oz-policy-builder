@@ -48,8 +48,9 @@ Release carries:
 - `SHA256SUMS`, and a GitHub build-provenance attestation for every asset, `SHA256SUMS` included.
 
 The API and TLS proxy images are not release assets: publishing the release runs
-`publish-image.yml`, which pushes them, for amd64 and arm64, to GHCR
-([below](#build-the-reviewed-revision)).
+`publish-image.yml`, which pushes them, for amd64 and arm64, to Docker Hub
+(`docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy`;
+[below](#build-the-reviewed-revision)).
 
 ### Obtain and verify
 
