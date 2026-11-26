@@ -202,16 +202,16 @@ model of it is the reviewed method inventory in `crates/registry/src/account_met
 
 | Component | Non-test | Test | Note |
 | --- | ---: | ---: | --- |
-| Rest of `crates/mcp-server` | 1,544 | 2,815 | Thin shell; its HTTP boundary is in Tier 2 |
-| Rest of `crates/cli` | 2,884 | 2,033 | Thin shell, except that `ozpb dry-run` holds a delegate key (`src/dry_run/`; see SECURITY.md) |
+| Rest of `crates/mcp-server` | 1,544 | 2,828 | Thin shell; its HTTP boundary is in Tier 2 |
+| Rest of `crates/cli` | 3,015 | 2,132 | Thin shell, except that `ozpb dry-run` holds a delegate key (`src/dry_run/`; see SECURITY.md) |
 | `crates/api-types` | 1,127 | 1,215 | Wire types and stable error codes |
 | `crates/harness` | 1,198 | 1,048 | Derives the permit/deny suite: evidence, not enforcement |
 | `crates/source-bundle` | 47 | 198 | Import adapter whose output is `self_supplied` |
 | Rest of `crates/source-rpc` (target and footprint capture, target Wasm, preflight; `tests/{target_capture_conformance,protocol30_headers}.rs`) | 1,694 | 2,672 | Dry-run and preflight evidence |
 | Rest of `crates/toolkit` (dry run, its report, preflight, capture, publication) | 2,002 | 1,694 | Same |
 | `execution-runtime` | 2,577 | 2,133 | Offline native worker for the account-Wasm layer |
-| Rest of `wallet/server` | 1,019 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
-| `scripts/release-artifacts.py` (tested by `scripts/test-release-artifacts.py`), run by `.github/workflows/release-binaries.yml` | 341 | 343 | Packages the release binaries, exports the MCP wire contract and writes `SHA256SUMS`; the workflow, not counted, attests and attaches them ([VERSIONING.md](VERSIONING.md#the-release-gate)). CI also runs its export against the built server and fails when it differs from the committed `docs/wire-contract.json` ([keeping the snapshot current](VERSIONING.md#keeping-the-snapshot-current)) |
+| Rest of `wallet/server` | 1,021 | — | Monitoring, the native worker process and captured-execution glue, the agent draft bridge, startup |
+| `scripts/release-artifacts.py` (tested by `scripts/test-release-artifacts.py`), run by `.github/workflows/release-binaries.yml` | 374 | 358 | Packages the release binaries, exports the MCP wire contract and writes `SHA256SUMS`; the workflow, not counted, attests and attaches them ([VERSIONING.md](VERSIONING.md#the-release-gate)). CI also runs its export against the built server and fails when it differs from the committed `docs/wire-contract.json` ([keeping the snapshot current](VERSIONING.md#keeping-the-snapshot-current)) |
 | `testnet-harness`, `scripts/demo-tranche1.sh`, `skills/`, `wallet/overlay`, docs | — | — | Testnet demonstration, agent instructions, wallet UI |
 | `contracts/authorized-target-fixture`, `tests/support` | — | — | Test-only: the target contract the pinned-account authorization test (`scripts/test-pinned-account-authorization.sh`) builds and calls through the account, and the RPC stubs the CLI and MCP tests share; in no release artifact |
 
